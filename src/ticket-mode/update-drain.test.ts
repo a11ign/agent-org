@@ -124,7 +124,7 @@ test("A11-169: /api/config tells the page the instance's version and the drainin
   const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {} };
   const drain = memoryDrain();
   const { api } = createBoard({ settings, source: createFakeTracker([]), codeHost: createFakeCodeHost(), key: "a".repeat(48), queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool,
-    poolDeps: { drain }, version: "v0.273.0", now: () => at(13, 0) });
+    poolDeps: { drain }, version: "v0.273.0", next: () => null, now: () => at(13, 0) });
   const [, calm] = await api("GET", "/api/config", {}) as [number, any];
   assert.equal(calm.version, "v0.273.0");
   assert.equal(calm.updateNote, null, "a non-breaking update shows nothing on the board");
@@ -132,7 +132,7 @@ test("A11-169: /api/config tells the page the instance's version and the drainin
   const [, config] = await api("GET", "/api/config", {}) as [number, any];
   assert.deepEqual(config.updateNote, { target: "v0.280.0", deadline: at(14, 30), finishing: 0, forced: false, stopped: 0 });
   const [, queue] = await api("GET", "/api/queue", {}) as [number, any];
-  assert.deepEqual(queue.update, { version: "v0.273.0", note: config.updateNote });
+  assert.deepEqual(queue.update, { version: "v0.273.0", note: config.updateNote, next: null });
 });
 
 test("A11-169: requeueForUpdate keeps what a run was doing and drops what its live agent held, and touches only a live run", () => {

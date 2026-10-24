@@ -1,0 +1,166 @@
+/* The update in progress (A11-217): the card that takes the main column while the board restarts, and the banner a draining breaking release puts above Tickets and Runs. Every value is a token. */
+
+/* The main column while the card shows: the card is centred, as the boards have it. */
+.shell-main-updating {
+  padding: var(--update-top) var(--space-24) var(--space-40);
+  align-items: center;
+  gap: 0;
+}
+
+.updating-card {
+  width: 100%;
+  max-width: var(--measure-update-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-20);
+  padding: var(--space-28) var(--space-28) var(--space-24);
+  background: var(--color-sidebar);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-12);
+}
+
+.updating-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+}
+/* As the boards have it, the icon is a flex item that may shrink beside a long subtitle. */
+.updating-icon {
+  width: var(--icon-28);
+  height: var(--icon-28);
+}
+.updating-spinner-track {
+  stroke: var(--color-border);
+}
+.updating-spinner-arc {
+  stroke: var(--color-accent-lighter);
+}
+.updating-tick-ring {
+  stroke: var(--color-success-dot);
+}
+.updating-tick-mark {
+  stroke: var(--color-done-text);
+}
+/* The card's spinner turns a little faster than the list's. */
+.updating-card .spin {
+  animation-duration: var(--spinner-duration-update);
+}
+
+.updating-titles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.updating-title {
+  margin: 0;
+  font-size: var(--font-size-update-title);
+  line-height: var(--line-height-update-title);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-mark);
+}
+.updating-sub {
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+
+.updating-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.updating-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+}
+.updating-step-ring {
+  flex: 0 0 auto;
+  width: var(--icon-16);
+  height: var(--icon-16);
+  border: var(--step-ring-width) solid;
+  border-radius: 50%;
+}
+.updating-step-done {
+  color: var(--color-text-nav);
+}
+.updating-step-done .updating-step-ring {
+  border-color: var(--color-success-dot);
+  background: var(--color-success-dot);
+}
+.updating-step-now {
+  color: var(--color-text);
+}
+.updating-step-now .updating-step-ring {
+  border-color: var(--color-accent-lighter);
+}
+.updating-step-next {
+  color: var(--color-text-muted);
+}
+.updating-step-next .updating-step-ring {
+  border-color: var(--color-border-hover);
+}
+
+.updating-runs {
+  padding-top: var(--space-14);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+
+.updating-slow {
+  padding: var(--space-10) var(--space-12);
+  background: var(--color-warn-bg);
+  border: 1px solid var(--color-warn-border);
+  border-radius: var(--radius-8);
+  color: var(--color-warn-slow-text);
+  text-wrap: pretty;
+}
+.updating-slow-heading,
+.updating-code {
+  color: var(--color-warn-slow-heading);
+}
+.updating-slow-heading {
+  font-weight: var(--font-weight-semibold);
+}
+.updating-code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+}
+
+.updating-back-link {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-5) var(--space-14);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  border-radius: var(--radius-6);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+}
+
+/* The banner a draining breaking release puts above the Tickets and Runs pages: an amber box with a dot and the words the backend builds. */
+.drain-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-14);
+  padding: var(--space-10) var(--space-14);
+  background: var(--color-warn-bg);
+  border: 1px solid var(--color-warn-border);
+  border-radius: var(--radius-8);
+  color: var(--color-warn-soft);
+}
+.drain-banner-dot {
+  flex: 0 0 auto;
+  width: var(--dot-size-small);
+  height: var(--dot-size-small);
+  border-radius: 50%;
+  background: var(--color-warn-text);
+}
+.drain-banner-text {
+  flex: 1 1 var(--measure-banner-basis);
+}

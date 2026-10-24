@@ -33,7 +33,8 @@ import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
 import { claimantOf } from "./settings.ts";
 import { defaultHerdr } from "./pool-herdr.ts";
 import { defaultDrainStore, updateNoteOf } from "./pool-drain.ts";
-import { runningToolVersion } from "../install/tool-versions.ts";
+import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
+import { nextVersion, toolFolderReads } from "./update-next.ts";
 import type { UpdateNote } from "./board-view/update-banner.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
@@ -87,6 +88,8 @@ export type BoardDeps = Readonly<{
   mintTerminal?: () => Promise<TerminalMint>;
   /** The version this instance runs (A11-169): `TOOL_ROOT`'s own when absent, and null for a test that names none. */
   version?: string | null;
+  /** The version an `agent-org update` is moving this instance to, while it is moving (A11-217): the tool folder's own when absent, and null for a test that names none. */
+  next?: () => string | null;
   /** What the Settings page's Plugins section reads and runs through (A11-163): the real catalog, loader and programs unless a test replaces them. */
   plugins?: PluginsSeam;
 }>;
@@ -220,8 +223,8 @@ type Board = Readonly<{
   /** This instance's name as a claim names it (`claimantOf`), read once. */
   claimant: () => string;
   plans: boolean;
-  /** The version this instance runs, and the breaking update that drains, if one does (A11-169). */
-  update: () => Readonly<{ version: string | null; note: UpdateNote | null }>;
+  /** The version this instance runs, the breaking update that drains, if one does (A11-169), and the version an update is moving to while it moves (A11-217). */
+  update: () => Readonly<{ version: string | null; note: UpdateNote | null; next: string | null }>;
   wake: () => void;
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
   whoAmI: () => Promise<Assignee | null>;
@@ -406,13 +409,14 @@ export type ConfigView = Awaited<ReturnType<typeof configView>>;
 
 async function configView(board: Board) {
   const { deps, settings, store, plans } = board;
+  const update = board.update();
   // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
   // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
   return { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
     publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
     pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
     writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
-    writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: board.update().version, updateNote: board.update().note };
+    writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: update.version, updateNote: update.note };
 }
 
 /** The GET routes: the board's config, the Pick lists, the queue and the new-ticket requests. `undefined` when no route here names the request. */
@@ -696,11 +700,24 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 
-/** What the board is told of the update: the version this instance runs, and the breaking update that drains, read from the drain record each time it is asked (A11-169). */
+/**
+ * What the board is told of the update: the version this instance runs, the breaking update that drains, read from the drain record each time it is asked (A11-169), and `next`, the version a
+ * normal or breaking update is moving to while `agent-org update` holds its lock (A11-217), which the page reads to know a restart is an update's. A checkout install has no tool folder, so no `next`.
+ */
 function updateReader(deps: BoardDeps, store: Pick<Board["store"], "get">): Board["update"] {
   const drainStore = deps.poolDeps?.drain ?? defaultDrainStore();
   const version = deps.version === undefined ? runningToolVersion() : deps.version;
-  return () => ({ version, note: updateNoteOf(drainStore.read(), store.get()) });
+  const reads = toolFolderReads(toolDir(process.env, homedir()));
+  const next = deps.next ?? (() => nextVersion(version, reads));
+  // A folder that cannot be read while an update builds is no reason to fail the queue read: the page then has no target, as before.
+  const nextOrNull = (): string | null => {
+    try {
+      return next();
+    } catch {
+      return null;
+    }
+  };
+  return () => ({ version, note: updateNoteOf(drainStore.read(), store.get()), next: nextOrNull() });
 }
 
 /** The request handler, with every dependency named, so a test drives it without a socket. */

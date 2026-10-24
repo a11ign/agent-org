@@ -11,6 +11,23 @@ describe("pillOf", () => {
   it.each(["loading", "ready", "empty", "error"] as const)("is Connected while the read is %s", (state) => {
     expect(pillOf(state)).toEqual({ tone: "connected", label: "Connected" });
   });
+
+  const UPDATING = { kind: "updating", release: "normal", from: "v0.273.0", to: "v0.280.0", slow: false } as const;
+
+  it("is amber Updating while the page shows the Updating screen, Slow included (A11-217)", () => {
+    expect(pillOf("reconnecting", UPDATING)).toEqual({ tone: "updating", label: "Updating" });
+    expect(pillOf("reconnecting", { ...UPDATING, slow: true })).toEqual({ tone: "updating", label: "Updating" });
+  });
+
+  it("is Connected on the Back screen and for a restart that is not an update", () => {
+    expect(pillOf("ready", { kind: "back", to: "v0.280.0", release: "normal" })).toEqual({ tone: "connected", label: "Connected" });
+    expect(pillOf("reconnecting")).toEqual({ tone: "connected", label: "Connected" });
+    expect(pillOf("reconnecting", { kind: "none" })).toEqual({ tone: "connected", label: "Connected" });
+  });
+
+  it("is Unreachable for an SSH remote even if an update was under way: that state keeps priority", () => {
+    expect(pillOf("unreachable", UPDATING)).toEqual({ tone: "unreachable", label: "Unreachable · retrying" });
+  });
 });
 
 describe("isLive", () => {
