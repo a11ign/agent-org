@@ -7,7 +7,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { startHerdr, type MoveDeps } from "./herdr-move.ts";
 import type { HerdrPlace } from "./herdr-place.ts";
 import { retireGuards } from "./interim-guards.ts";
-import { main, unitFor, type RunResult, type ServiceDeps } from "./service.ts";
+import { main, ServiceRefusal, unitFor, type RunResult, type ServiceDeps } from "./service.ts";
 
 const done = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
 const IN_UNIT: HerdrPlace = { kind: "unit", where: "process group of io.github.agent-org.herdr" };
@@ -109,7 +109,7 @@ test("a unit that cannot be written fails step 1 and says which folder to make w
 test("guards whose retirement never settles time out with a message instead of ending the process", async () => {
   const { deps } = mac({ from: { kind: "none" } });
   const hanging: MoveDeps = { ...deps, limitMs: 50, retire: () => new Promise(() => undefined) };
-  await assert.rejects(() => startHerdr({ move: true }, hanging), { message: "`retiring the interim guards` did not finish within 0.05s" });
+  await assert.rejects(() => startHerdr({ move: true }, hanging), (err: Error) => err instanceof ServiceRefusal && err.message === "`retiring the interim guards` did not finish within 0.05s");
 });
 
 test("a plain start of herdr prints no steps and does not wait for the server to answer", async () => {

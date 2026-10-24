@@ -6,6 +6,9 @@
 
 export const MS_PER_SECOND = 1000;
 
+/** What `withinTime` rejects with, so a caller can turn it into its own kind of refusal. */
+export class TimeLimitError extends Error {}
+
 /**
  * `promise`, or a rejection `` `<what>` did not finish within <n>s `` when `ms` passes first. The timer is cleared as soon as `promise` settles, so a settled wait leaves nothing behind.
  * @param what the step, as the message names it
@@ -13,7 +16,7 @@ export const MS_PER_SECOND = 1000;
 export function withinTime<T>(ms: number, what: string, promise: Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`\`${what}\` did not finish within ${ms / MS_PER_SECOND}s`)), ms);
+    timer = setTimeout(() => reject(new TimeLimitError(`\`${what}\` did not finish within ${ms / MS_PER_SECOND}s`)), ms);
   });
   return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
 }

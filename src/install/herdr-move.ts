@@ -13,7 +13,7 @@ import { retireGuards, replacementsNow, type GuardDeps } from "./interim-guards.
 import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
 import { defaultServiceDeps, herdrSessionOfHost, ServiceRefusal, startService, unitFor, type Started, type ServiceDeps } from "./service.ts";
 import { readLiveRuns } from "./instance-queue.ts";
-import { MS_PER_SECOND, withinTime } from "./time-limit.ts";
+import { MS_PER_SECOND, TimeLimitError, withinTime } from "./time-limit.ts";
 
 export type MoveDeps = Readonly<{
   services: ServiceDeps;
@@ -58,7 +58,7 @@ export async function startHerdr({ move }: { move: boolean }, deps: MoveDeps, sa
     throw new ServiceRefusal(`the herdr server for session ${session} runs outside agent-org-herdr.service (${whereOf(place)}), and moving it ends every pane and agent in it: ${running(deps.liveRuns())}. `
       + "Run `agent-org start herdr --move` at a quiet moment");
   }
-  if (!move) return withinTime(limitMs, "starting the herdr unit", startService("herdr", deps.services));
+  if (!move) return bounded(limitMs, "starting the herdr unit", startService("herdr", deps.services));
   return moveHerdr({ session, place, outside }, deps, say);
 }
 
@@ -86,16 +86,25 @@ async function moveHerdr({ session, place, outside }: { session: string; place: 
     report(STEP.stop, `stopped the herdr server that ran outside the unit (${whereOf(place)}); herdr restores its workspaces when the unit's server is up`);
   });
   const started = await step(STEP.start, "starting the unit", `Run \`agent-org status herdr\` and read ${logHint}`, async () => {
-    const result = await withinTime(limitMs, "starting the herdr unit", startService("herdr", deps.services));
+    const result = await bounded(limitMs, "starting the herdr unit", startService("herdr", deps.services));
     report(STEP.start, `started the herdr unit (${result.manager} ${result.id}), logging to ${logHint}`);
     return result;
   });
   await step(STEP.answer, "waiting for the server in the unit", `Read ${logHint}, then run \`agent-org start herdr\``, async () => {
     report(STEP.answer, `the herdr server for session ${session} answers in the unit (${await answeringInUnit(session, deps)})`);
   });
-  for (const line of await withinTime(limitMs, "retiring the interim guards", deps.retire())) say(line);
+  for (const line of await bounded(limitMs, "retiring the interim guards", deps.retire())) say(line);
   say(`moved herdr into its service: the server for session ${session} runs in ${started.id}, and herdr restores its workspaces in it`);
   return started;
+}
+
+/** `withinTime`, with the time-out refused as a `ServiceRefusal` like every other refusal here, so a caller that prints refusals and carries on (onboard) does so for it too. */
+async function bounded<T>(ms: number, what: string, promise: Promise<T>): Promise<T> {
+  try {
+    return await withinTime(ms, what, promise);
+  } catch (err) {
+    throw err instanceof TimeLimitError ? new ServiceRefusal(err.message) : err;
+  }
 }
 
 /** Run one step of the move. A failure is refused as `step <n> of 4 (<doing>) failed: <why>. <fix>`: the person is told which step ended it, and what to do. */

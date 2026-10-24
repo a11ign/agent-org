@@ -24,6 +24,13 @@ test("a process that exits before the body settles gets one line that names the 
   void running;
 });
 
+test("an exit with any other code is not named: it is a decision, not an unsettled await", () => {
+  const { proc, written } = fakeProcess();
+  void runCommand("start ui", () => new Promise<number>(() => undefined), proc);
+  proc.emit("exit", 2);
+  assert.deepEqual(written, []);
+});
+
 test("a body that settles sets the exit code, says nothing, and leaves no listener on the process", async () => {
   const { proc, written } = fakeProcess();
   await runCommand("stop ui", async () => 3, proc);

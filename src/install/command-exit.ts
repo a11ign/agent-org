@@ -6,6 +6,9 @@
 // naming the command. It cannot resume the lost work, so the exit code stays Node's 13 and a script still sees the failure.
 import type { EventEmitter } from "node:events";
 
+/** The exit code Node gives a process whose event loop emptied while a top-level `await` was pending. An exit with any other code is a decision, and not this. */
+const UNSETTLED_AWAIT_EXIT = 13;
+
 /** The part of `process` the wrapper uses; a test passes a stand-in. */
 export type CommandProcess = EventEmitter & { exitCode?: number | string | null; stderr: { write: (text: string) => unknown } };
 
@@ -16,6 +19,7 @@ export type CommandProcess = EventEmitter & { exitCode?: number | string | null;
  */
 export async function runCommand(label: string, body: () => Promise<number>, proc: CommandProcess = process): Promise<void> {
   const onExit = (code: number): void => {
+    if (code !== UNSETTLED_AWAIT_EXIT) return;
     proc.stderr.write(`agent-org ${label}: ended before it finished, waiting on something nothing could finish (Node exit ${code}). This is a bug in agent-org: what it printed above was done, and nothing after it was.\n`);
   };
   proc.on("exit", onExit);
