@@ -515,6 +515,9 @@ function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: s
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
 }
 
+/** Whether an open pull request is read at a head other than `head`. PURE. */
+const movedFrom = (head: string, read: PullFeedback): boolean => read.state === "open" && read.head !== null && read.head !== head;
+
 /**
  * The board brought a pull request up to date with main (A11-215, the `updated` check record), and the watch now reads it at the head that push made: the run's outcome head moves with it, as it does for agent-org's own merge of a blocker's
  * branch (A11-153), because that push is no person's answer to a run that ended `needs-human`. An outcome head at another commit was moved by someone else, and stays.
@@ -522,8 +525,8 @@ function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: s
 function followUpdatesFromMain(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
   for (const { url, read } of readable) {
     const updated = entry.checkHeads?.[url];
-    if (updated?.step !== "updated" || read.state !== "open" || read.head === null || read.head === updated.head || entry.outcomeHeads?.[url] !== updated.head) continue;
-    const to = read.head;
+    if (updated?.step !== "updated" || !movedFrom(updated.head, read) || entry.outcomeHeads?.[url] !== updated.head) continue;
+    const to = read.head!;
     update(ctx, (queue) => moveOutcomeHeads(queue, entry.ticket.key, updated.head, to));
   }
 }

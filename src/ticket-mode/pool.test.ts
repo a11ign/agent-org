@@ -5430,6 +5430,16 @@ const PR_2 = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/p
 const MAIN = "x/nbl-ui-netbox";
 const HELD_NOTE = "ui is red on main / not this run's";
 
+/** NBF-1 ended needs-human on a pull request whose `ui` is red, held by a first watch because `ui` is red on main. */
+async function needsHumanRunHeldOnMain() {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("ui", 41)] }) };
+  const ci = withCi(ghFor(pulls), { 41: TEST_FAILED });
+  ci.host.seedDefaultBranch(MAIN, ["ui"], { passing: [], pending: [] });
+  const ctx = await needsHumanRun(ci);
+  await watchRound(ctx.pool);
+  return { pulls, ci, ctx };
+}
+
 /** Two finished runs, each Awaiting review on a pull request whose `ui` is red, held by a first watch because `ui` is red on main. */
 async function twoRunsHeldOnMain() {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("ui", 41)] }), 2: feedbackPull({ head: HEAD_2, checks: [redCheck("ui", 42)] }) };
@@ -5476,11 +5486,7 @@ test("A11-215: a held pull request whose update conflicts gets the conflict roun
 });
 
 test("A11-215: a run the board does not watch, parked on a question, is resumed with the conflict line when its held pull request cannot be updated from main", async () => {
-  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("ui", 41)] }) };
-  const ci = withCi(ghFor(pulls), { 41: TEST_FAILED });
-  ci.host.seedDefaultBranch(MAIN, ["ui"], { passing: [], pending: [] });
-  const ctx = await needsHumanRun(ci);
-  await watchRound(ctx.pool);
+  const { pulls, ci, ctx } = await needsHumanRunHeldOnMain();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.waitingOnMain], ["finished", ["ui"]], "held on main, with no round");
   ci.host.seedDefaultBranch(MAIN, [], { passing: ["ui"], pending: [] });
   ci.host.branchUpdates.answers.set(approvedPr.url, { kind: "conflict" });
@@ -5489,11 +5495,7 @@ test("A11-215: a run the board does not watch, parked on a question, is resumed 
 });
 
 test("A11-215: the push the board makes to a run that ended needs-human is no person's answer: once the watch reads the new head, the question is still open", async () => {
-  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("ui", 41)] }) };
-  const ci = withCi(ghFor(pulls), { 41: TEST_FAILED });
-  ci.host.seedDefaultBranch(MAIN, ["ui"], { passing: [], pending: [] });
-  const ctx = await needsHumanRun(ci);
-  await watchRound(ctx.pool);
+  const { pulls, ci, ctx } = await needsHumanRunHeldOnMain();
   ci.host.seedDefaultBranch(MAIN, [], { passing: ["ui"], pending: [] });
   await watchRound(ctx.pool);
   assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.step, "updated");
