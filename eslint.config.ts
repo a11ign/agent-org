@@ -44,7 +44,8 @@ export default [
   { ignores: ["node_modules/**", "ui/dist/**", "ui/.astro/**"] },
   // A11-188: the UI package's `.astro` files, through eslint-plugin-astro's parser (its `recommended` config sets the parser and the Astro rules). The Clean Code rules are added to the
   // `.astro` file itself, whose frontmatter this parser reads, and the `<script>` of a page reaches the `.ts` block below as a virtual `.ts` file.
-  ...astro.configs["flat/recommended"],
+  // The last entry of `recommended` names no `files`, so it is scoped here: the Astro rules judge `.astro` files and no `.ts` file.
+  ...astro.configs["flat/recommended"].map((entry) => ({ ...entry, files: entry.files ?? ["**/*.astro"] })),
   {
     files: ["**/*.astro"],
     plugins: { "clean-code": cleanCode },

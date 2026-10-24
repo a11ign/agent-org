@@ -701,7 +701,7 @@ be read but not run.
 
 `ui/` is the board UI's foundation (A11-188, part of A11-187): **Astro with React islands**, strict TypeScript, built to **static files** (`output: "static"`, `base: "/next"`) with no adapter and no server of its own. The instance's server stays the only server, and serving the build is a later ticket's. Nothing of `src/ticket-mode/ui.html` is ported: its one page here is a placeholder that proves the build, a React island, the two self-hosted fonts (Inter and JetBrains Mono, bundled from Fontsource, nothing fetched from another origin) and the screenshot.
 
-`ui/` is a private package of its own, **not a pnpm workspace member** (the layout check refuses a `pnpm-workspace.yaml`), with its own `ui/pnpm-lock.yaml`. It is not part of the tool's install, and `package.json`'s `files` does not ship it.
+`ui/` is a private package of its own, **not a pnpm workspace member** (the layout check refuses a `pnpm-workspace.yaml`), with its own `ui/pnpm-lock.yaml`. `package.json`'s `files` does not ship it and `pnpm install --prod` never installs its dependencies, so a machine needs none of them (an install unpacks the tag's source, `ui/` included, and ignores it; shipping the built UI is A11-191's).
 
 To work on it, from the repository root:
 
