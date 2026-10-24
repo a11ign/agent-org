@@ -248,19 +248,28 @@ describe("usePoll states", () => {
     expect(result.current).toMatchObject({ state: "ready", data: [2], refusal: null });
   });
 
-  it("refresh reads at once, and a failure it meets does not reset the backoff", async () => {
-    const start = Date.now();
-    const { read, calls } = scripted<number[]>([fail(), fail(), fail(), ok([1])]);
-    const { result } = renderHook(() => usePoll(read, { connection: LOCAL }));
+  it("refresh reads at once and starts the backoff over: a failure it meets waits 2s, not the 16s the failures in a row would", async () => {
+    const { result, calls, start } = await scriptedPoll<number[]>([fail(), fail(), fail(), fail(), fail()]);
+    for (const ms of [2_000, 4_000, 1_000]) await advance(ms);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000]);
+    await act(async () => { result.current.refresh(); });
     await advance(0);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000, 7_000]);
+    await advance(1_999);
+    expect(calls).toHaveLength(4);
+    await advance(1);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000, 7_000, 9_000]);
+    await advance(4_000);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000, 7_000, 9_000, 13_000]);
+  });
+
+  it("refresh after a success leaves the 5s cadence as it was", async () => {
+    const { result, calls, start } = await scriptedPoll<number[]>([ok([1])]);
     await advance(1_000);
     await act(async () => { result.current.refresh(); });
     await advance(0);
-    expect(seen(calls, start)).toEqual([0, 1_000]);
-    await advance(3_999);
-    expect(calls).toHaveLength(2);
-    await advance(1);
-    expect(seen(calls, start)).toEqual([0, 1_000, 5_000]);
+    await advance(5_000);
+    expect(seen(calls, start)).toEqual([0, 1_000, 6_000]);
   });
 });
 
@@ -420,6 +429,35 @@ const restart = (): Answer<never> => answerWith(0, "Failed to fetch");
 function focusWindow() {
   window.dispatchEvent(new Event("focus"));
 }
+
+describe("usePoll with the proxy's last known data (A11-195)", () => {
+  it("shows the proxy's last known data at once when the first read already finds the connection unreachable, and the data it holds once it has some", async () => {
+    const personal: ViewConnection = { name: "personal", kind: "ssh" };
+    const gone = (kept: unknown) => (async () => new Response(JSON.stringify({ error: "cannot reach personal over SSH: timed out", ...(kept === undefined ? {} : { lastKnown: kept }) }), { status: 502 })) as unknown as typeof globalThis.fetch;
+    const fresh = renderHook(() => usePoll(createClient(personal, { fetch: gone({ value: [{ key: "A11-1" }], readAt: "2026-10-24T10:00:00.000Z" }) }).tickets, { connection: personal }));
+    await advance(0);
+    expect(fresh.result.current).toMatchObject({ state: "unreachable", data: [{ key: "A11-1" }], refusal: "cannot reach personal over SSH: timed out" });
+    const none = renderHook(() => usePoll(createClient(personal, { fetch: gone(undefined) }).tickets, { connection: personal }));
+    await advance(0);
+    expect(none.result.current).toMatchObject({ state: "unreachable", data: null });
+    let good = true;
+    const live = createClient(personal, { fetch: (async () => new Response(JSON.stringify([{ key: "A11-2" }]))) as unknown as typeof globalThis.fetch });
+    const down = createClient(personal, { fetch: gone({ value: [{ key: "A11-1" }], readAt: "2026-10-24T10:00:00.000Z" }) });
+    const holding = renderHook(() => usePoll((signal) => (good ? live.tickets(signal) : down.tickets(signal)), { connection: personal }));
+    await advance(0);
+    good = false;
+    await advance(5_000);
+    expect(holding.result.current).toMatchObject({ state: "unreachable", data: [{ key: "A11-2" }] });
+  });
+
+  it("ignores a last known on a failure that is not the proxy's 'cannot reach'", async () => {
+    const personal: ViewConnection = { name: "personal", kind: "ssh" };
+    const client = createClient(personal, { fetch: (async () => new Response(JSON.stringify({ error: "tracker refused", lastKnown: { value: [{ key: "A11-1" }], readAt: "2026-10-24T10:00:00.000Z" } }), { status: 500 })) as unknown as typeof globalThis.fetch });
+    const { result } = renderHook(() => usePoll(client.tickets, { connection: personal }));
+    await advance(0);
+    expect(result.current).toMatchObject({ state: "error", data: null });
+  });
+});
 
 describe("usePoll reads again on focus and when the page is shown (A11-211)", () => {
   it("reads at once when the window gains focus, without waiting for the 5s timer", async () => {

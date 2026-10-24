@@ -119,6 +119,16 @@ describe("the client's answers", () => {
     expect(await createClient(LOCAL, { fetch }).queue()).toEqual({ ok: true, data: { entries: [], max: 2 } });
   });
 
+  it("carries the last known answer of an SSH connection the proxy cannot reach, with when it was read, and only then", async () => {
+    const kept = { value: { entries: [], max: 2 }, readAt: "2026-10-24T10:00:00.000Z" };
+    const refusal = "cannot reach personal over SSH: timed out";
+    const unreachable = await createClient(SSH, { fetch: answering(502, { error: refusal, lastKnown: kept }).fetch }).queue();
+    expect(unreachable).toEqual({ ok: false, status: 502, refusal, unreachable: true, lastKnown: { data: kept.value, readAt: kept.readAt } });
+    expect(await createClient(SSH, { fetch: answering(502, { error: refusal }).fetch }).queue()).toEqual({ ok: false, status: 502, refusal, unreachable: true });
+    expect(await createClient(LOCAL, { fetch: answering(502, { error: refusal, lastKnown: kept }).fetch }).queue()).toEqual({ ok: false, status: 502, refusal, unreachable: false });
+    expect(await createClient(SSH, { fetch: answering(502, { error: refusal, lastKnown: { value: 1 } }).fetch }).queue()).toEqual({ ok: false, status: 502, refusal, unreachable: true });
+  });
+
   it("returns a refused mutation's text as data, whatever the status, and does not throw", async () => {
     const refusal = "NBF-3 waits on a ticket or its plan, which Start anyway does not pass";
     for (const status of [400, 403, 404, 503]) {

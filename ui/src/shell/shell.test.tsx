@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type Stand } from "../../test/fixtures.ts";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type InstanceAnswers, type Stand } from "../../test/fixtures.ts";
 import { TicketsPage } from "../tickets/TicketsPage.tsx";
 import { Placeholder } from "./Placeholder.tsx";
 import type { Page } from "./routes.ts";
 import { ShellFrame } from "./ShellFrame.tsx";
-import { ShellProvider } from "./ShellProvider.tsx";
+import { ShellProvider, useShell } from "./ShellProvider.tsx";
 
 beforeEach(() => {
   localStorage.clear();
@@ -303,5 +303,104 @@ describe("the sidebar's order", () => {
     await shellOn("tickets");
     expect(within(sidebar()).getByRole("navigation", { name: "Main" })).toBeTruthy();
     expect(screen.getByRole("main")).toBeTruthy();
+  });
+});
+
+const REFUSAL = "cannot reach personal over SSH: agents: Permission denied (publickey).";
+
+/** Shows what a page reads of the shell, and a button for Check now. */
+function Probe() {
+  const { unreachable, reconnected, checkNow } = useShell();
+  return <div><output aria-label="unreachable">{unreachable ?? "none"}</output><output aria-label="reconnected">{String(reconnected)}</output><button type="button" onClick={checkNow}>Check now</button></div>;
+}
+const probeOn = (stand: Stand) => {
+  const fetchWith = standFetch(stand);
+  render(<ShellProvider fetchWith={fetchWith}><ShellFrame page="runs"><Probe /></ShellFrame></ShellProvider>);
+  return fetchWith;
+};
+const value = (name: string) => textOf(screen.getByLabelText(name));
+const refocus = () => act(async () => { window.dispatchEvent(new Event("focus")); });
+
+/** An SSH instance whose queue read, and tickets read when `reads` is set, fail while it is down. */
+function sshInstance() {
+  const link = { down: false, tickets: [ticket({ key: "A11-1" })] };
+  const instance: InstanceAnswers = {
+    get tickets() { return link.tickets; },
+    get queueFails() { return link.down ? { status: 502, error: REFUSAL } : undefined; },
+  };
+  return { link, stand: { connections: [PERSONAL], instances: { personal: instance } } satisfies Stand };
+}
+
+/** The probe on an SSH remote that answers, and then goes down and is noticed. */
+async function droppedRemote() {
+  history.replaceState(null, "", "/next/runs?connection=personal");
+  const { link, stand } = sshInstance();
+  const fetchWith = probeOn(stand);
+  await waitFor(() => expect(value("unreachable")).toBe("none"));
+  link.down = true;
+  await refocus();
+  await waitFor(() => expect(value("unreachable")).toBe(REFUSAL));
+  return { link, fetchWith };
+}
+
+describe("the shell's unreachable state, which every page can use (A11-195)", () => {
+  it("holds the backend's sentence once an SSH remote's queue read finds it unreachable, and null before", async () => {
+    await droppedRemote();
+    expect(value("reconnected")).toBe("false");
+  });
+
+  it("holds the sentence of a tickets read that is unreachable when the page opens", async () => {
+    history.replaceState(null, "", "/next/runs?connection=personal");
+    probeOn({ connections: [PERSONAL], instances: { personal: { ticketsFail: { status: 502, error: REFUSAL } } } });
+    await waitFor(() => expect(value("unreachable")).toBe(REFUSAL));
+  });
+});
+
+describe("the shell's unreachable state: what else it covers (A11-195)", () => {
+  it("holds the sentence of a config read that is unreachable while the queue and the tickets answer", async () => {
+    history.replaceState(null, "", "/next/runs?connection=personal");
+    probeOn({ connections: [PERSONAL], instances: { personal: { configFail: { status: 502, error: REFUSAL } } } });
+    await waitFor(() => expect(value("unreachable")).toBe(REFUSAL));
+  });
+
+  it("reads the parents only from a tickets read that answered, so they are read once the connection is back and not from the last known tickets", async () => {
+    history.replaceState(null, "", "/next/runs?connection=personal");
+    const link = { down: true };
+    const kept = { value: [ticket({ key: "A11-1" })], readAt: "2026-10-24T10:00:00.000Z" };
+    const instance: InstanceAnswers = {
+      get ticketsFail() { return link.down ? { status: 502, error: REFUSAL, lastKnown: kept } : undefined; },
+      get queueFails() { return link.down ? { status: 502, error: REFUSAL } : undefined; },
+    };
+    const fetchWith = probeOn({ connections: [PERSONAL], instances: { personal: instance } });
+    await waitFor(() => expect(value("unreachable")).toBe(REFUSAL));
+    await new Promise((done) => setTimeout(done, 50));
+    expect(fetchWith.paths).not.toContain("/c/personal/api/parents");
+    link.down = false;
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(fetchWith.paths).toContain("/c/personal/api/parents"));
+  });
+
+  it("is null for a local connection whose reads fail, and for an https one", async () => {
+    for (const connection of [HERE, WORK]) {
+      history.replaceState(null, "", `/next/runs?connection=${connection.name}`);
+      const fetchWith = probeOn({ connections: [connection], instances: { [connection.name]: { queueFails: { status: 502, error: REFUSAL }, ticketsFail: { status: 502, error: REFUSAL } } } });
+      await waitFor(() => expect(fetchWith.paths).toContain(`/c/${connection.name}/api/queue`));
+      await refocus();
+      expect(value("unreachable")).toBe("none");
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("reads the tickets and the config again when the connection answers again, and says it is reconnected; Check now is what asks", async () => {
+    const { link, fetchWith } = await droppedRemote();
+    const reads = (path: string) => fetchWith.paths.filter((read) => read === path).length;
+    const before = { tickets: reads("/c/personal/api/tickets"), config: reads("/c/personal/api/config") };
+    link.down = false;
+    link.tickets = [ticket({ key: "A11-1" }), ticket({ key: "A11-2" })];
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(value("unreachable")).toBe("none"));
+    await waitFor(() => expect(reads("/c/personal/api/tickets")).toBe(before.tickets + 1));
+    expect(reads("/c/personal/api/config")).toBe(before.config + 1);
+    expect(value("reconnected")).toBe("true");
   });
 });

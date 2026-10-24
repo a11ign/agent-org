@@ -37,6 +37,7 @@ import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json, type Served } from "./local-http.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
+import { createLastKnown, lastKnownDir, type LastKnown } from "./last-known.ts";
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 import type { TerminalRun } from "./terminal-pair.ts";
@@ -190,6 +191,8 @@ export type UiDeps = Readonly<{
   read: ConnectionsRead;
   connections: Connections;
   forward?: Forward;
+  /** The last good answer of each SSH connection, which a call that cannot reach it is answered with beside its refusal (`remote-proxy.ts`). Absent, none is kept. */
+  lastKnown?: LastKnown;
   /**
    * The exposure plugin that serves the page (A11-162): the name it answers to and the `Host` and `Origin` values under it, asked only for a `Host` that is not this server's own
    * loopback, so a hostile one costs no call. Absent, or an exposure that serves nothing, the page answers on loopback only.
@@ -345,7 +348,7 @@ export function createUi(deps: UiDeps) {
     } catch (err) {
       return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
     }
-    const [status, value] = await proxy(connections, name, { method: request.method ?? "GET", path, body }, deps.forward);
+    const [status, value] = await proxy(connections, name, { method: request.method ?? "GET", path, body }, deps.forward, deps.lastKnown);
     sendJson(response, status, value);
   }
 
@@ -414,7 +417,7 @@ async function serve(): Promise<void> {
   if (read.refusal !== null) log(read.refusal);
   const connections = createConnections(read.connections, { local: { port: settings.port, keyPath } });
   const pairing = createPairing();
-  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections, exposure: active.exposure() });
+  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections, lastKnown: createLastKnown(lastKnownDir(settings.stateDir)), exposure: active.exposure() });
   // Every tunnel this service opened ends with it.
   process.on("exit", () => connections.close());
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));

@@ -56,6 +56,8 @@ type BarProps = Readonly<{
   options: QueueOptions;
   batch: BatchState;
   busy: boolean;
+  /** True while the instance cannot be reached: nothing can be queued. */
+  paused: boolean;
   onClear: () => void;
   onQueue: () => void;
 }>;
@@ -64,7 +66,7 @@ type BarProps = Readonly<{
  * The bar that shows while tickets are selected: how many, Clear, the Custom pill while the batch differs from the default, the Options cog that opens the popover, and Queue. It sticks
  * to the bottom of the page.
  */
-export function QueueBar({ config, count, options, batch, busy, onClear, onQueue }: BarProps) {
+export function QueueBar({ config, count, options, batch, busy, paused, onClear, onQueue }: BarProps) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
   const cog = useRef<HTMLButtonElement>(null);
@@ -82,7 +84,7 @@ export function QueueBar({ config, count, options, batch, busy, onClear, onQueue
         </button>
         {open ? <RunOptions config={config} options={options} batch={batch} close={close} anchor={anchor} cog={cog} /> : null}
       </div>
-      <button type="button" className="primary" disabled={busy} onClick={onQueue}>{queueLabel(count)}</button>
+      <button type="button" className="primary" disabled={busy || paused} onClick={onQueue}>{queueLabel(count)}</button>
     </div>
   );
 }

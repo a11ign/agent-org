@@ -8,7 +8,7 @@ import { nextDelay } from "./poll-schedule.ts";
 export type PollerOptions<T> = Readonly<{ read: (signal: AbortSignal) => Promise<Answer<T>>; onAnswer: (answer: Answer<T>) => void; repeat?: boolean }>;
 
 /**
- * A running poll: `refresh` reads now ("Check now") and resolves to that answer, or to the answer of the read already in flight, or to null when the read is dropped,
+ * A running poll: `refresh` reads now ("Check now", "Retry"), forgets the failures in a row so a failure it meets waits 2s, and resolves to that answer, or to the answer of the read already in flight, or to null when the read is dropped,
  * and `stop` ends the poll, dropping a read still in flight.
  */
 export type Poller<T> = Readonly<{ refresh: () => Promise<Answer<T> | null>; stop: () => void }>;
@@ -59,13 +59,18 @@ export function startPolling<T>({ read, onAnswer, repeat = true }: PollerOptions
     failuresInARow = 0;
     void readNow();
   };
+  /** "Check now": the backoff starts over, then the read is made now (or joins the one in flight, which then counts as the first failure). */
+  const refresh = (): Promise<Answer<T> | null> => {
+    failuresInARow = 0;
+    return readNow();
+  };
   const onVisibility = () => (hidden() ? cancelTimer() : readAfterWaking());
 
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("focus", readAfterWaking);
   if (!hidden()) void readNow();
   return {
-    refresh: readNow,
+    refresh,
     stop: () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", readAfterWaking);

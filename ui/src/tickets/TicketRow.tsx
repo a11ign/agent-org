@@ -13,6 +13,8 @@ export type RowContext = Readonly<{
   showsOwner: boolean;
   /** Why Grill is disabled on this machine, or null when it is not. */
   grillReason: string | null;
+  /** True while the instance cannot be reached: the rows are the last known ones, and nothing on them can be picked, queued or grilled. */
+  paused: boolean;
   pick: (keys: readonly string[]) => void;
   unpick: (keys: readonly string[]) => void;
   toggleParent: (key: string) => void;
@@ -45,7 +47,7 @@ function ChildrenOf({ ticket, context }: Readonly<{ ticket: TicketView; context:
   return (
     <>
       <span className="row-note">{childrenNote(ticket)}</span>
-      <button type="button" className="ghost ghost-small" title={QUEUE_CHILDREN_TITLE} onClick={() => context.queueChildren(ticket)}>{QUEUE_CHILDREN}</button>
+      <button type="button" className="ghost ghost-small" title={QUEUE_CHILDREN_TITLE} disabled={context.paused} onClick={() => context.queueChildren(ticket)}>{QUEUE_CHILDREN}</button>
     </>
   );
 }
@@ -56,7 +58,7 @@ function Decision({ ticket, context }: Readonly<{ ticket: TicketView; context: R
   return (
     <>
       <span className="pill-tag pill-tag-warn" title={ticket.needsDecision.reason}>{NEEDS_DECISION}</span>
-      <button type="button" className="ghost ghost-small" title={context.grillReason ?? GRILL_TITLE} disabled={context.grillReason !== null} onClick={() => context.grill(ticket)}>{GRILL}</button>
+      <button type="button" className="ghost ghost-small" title={context.grillReason ?? GRILL_TITLE} disabled={context.grillReason !== null || context.paused} onClick={() => context.grill(ticket)}>{GRILL}</button>
     </>
   );
 }
@@ -87,7 +89,7 @@ function LeafRow({ ticket, depth, context }: Readonly<{ ticket: TicketView; dept
   const reason = isParentTicket(ticket) ? "A parent is not queued: queue its children" : undefined;
   return (
     <div className={`row${onQueue ? " row-dim" : ""}${picked ? " row-picked" : ""}`} style={indent(depth)} data-key={ticket.key}>
-      <input type="checkbox" aria-label={`Select ${ticket.key}`} checked={picked} disabled={!free} {...(reason === undefined ? {} : { title: reason })} onChange={(event) => (event.target.checked ? context.pick([ticket.key]) : context.unpick([ticket.key]))} />
+      <input type="checkbox" aria-label={`Select ${ticket.key}`} checked={picked} disabled={!free || context.paused} {...(reason === undefined ? {} : { title: reason })} onChange={(event) => (event.target.checked ? context.pick([ticket.key]) : context.unpick([ticket.key]))} />
       <PriorityMark priority={ticket.priority} />
       <span className="row-key">{ticket.key}</span>
       <Title ticket={ticket} />
@@ -110,7 +112,7 @@ function ParentRow({ node, depth, context }: Readonly<{ node: TicketNode<TicketV
       <button type="button" className="fold-button" aria-label={`${open ? "Collapse" : "Expand"} ${ticket.key}`} aria-expanded={open} onClick={() => context.toggleParent(ticket.key)}>
         <FoldChevron open={open} />
       </button>
-      <input ref={box} type="checkbox" aria-label={`Select the tickets under ${ticket.key}`} checked={tick.checked} disabled={tick.keys.length === 0} onChange={(event) => (event.target.checked ? context.pick(tick.keys) : context.unpick(tick.keys))} />
+      <input ref={box} type="checkbox" aria-label={`Select the tickets under ${ticket.key}`} checked={tick.checked} disabled={tick.keys.length === 0 || context.paused} onChange={(event) => (event.target.checked ? context.pick(tick.keys) : context.unpick(tick.keys))} />
       <span className="row-key">{ticket.key}</span>
       <Title ticket={ticket} />
       {node.context === true ? <span className="row-note">Not in this view</span> : null}

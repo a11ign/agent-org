@@ -32,8 +32,8 @@ export const queueingConfig = (fields: Partial<ConfigView> = {}): ConfigView => 
 /** `/api/queue` holding one run in each of the phases. */
 export const queueOf = (...phases: readonly string[]): QueueView => ({ entries: phases.map((phase, index) => ({ ticket: { key: `A11-${index + 1}` }, phase })) }) as unknown as QueueView;
 
-/** A failure an instance answers with: the status and its sentence. */
-export type Failure = Readonly<{ status: number; error: string }>;
+/** A failure an instance answers with: the status and its sentence, and, as `ticket:ui`'s proxy sends beside a "cannot reach" sentence, the last answer it kept. */
+export type Failure = Readonly<{ status: number; error: string; lastKnown?: Readonly<{ value: unknown; readAt: string }> }>;
 
 /** A request an instance was given: its method, its path with the query, and its JSON body when it had one. */
 export type Request = Readonly<{ method: string; path: string; body?: unknown }>;
@@ -58,6 +58,9 @@ export type Stand = Readonly<{
 // `fallback` answers for any instance `instances` does not name, and for the root `/api/...` of a page with no connections.
 
 const json = (body: unknown, status = 200): { status: number; body: string } => ({ status, body: JSON.stringify(body) });
+
+/** A failure as the proxy answers it: its sentence, and its `lastKnown` when it has one. */
+const failed = ({ status, error, lastKnown }: Failure): { status: number; body: string } => json({ error, ...(lastKnown === undefined ? {} : { lastKnown }) }, status);
 
 const isFailure = (value: unknown): value is Failure => typeof value === "object" && value !== null && "status" in value && "error" in value;
 
@@ -90,11 +93,11 @@ export function answerFor(stand: Stand, path: string, request: Readonly<{ method
   if (posted !== null) return posted;
   switch (route) {
     case "/api/config":
-      return answers.configFail === undefined ? json(answers.config ?? config()) : json({ error: answers.configFail.error }, answers.configFail.status);
+      return answers.configFail === undefined ? json(answers.config ?? config()) : failed(answers.configFail);
     case "/api/tickets":
-      return answers.ticketsFail === undefined ? (pageAnswer(answers, new URLSearchParams(path.split("?")[1] ?? "")) ?? json(answers.tickets ?? [])) : json({ error: answers.ticketsFail.error }, answers.ticketsFail.status);
+      return answers.ticketsFail === undefined ? (pageAnswer(answers, new URLSearchParams(path.split("?")[1] ?? "")) ?? json(answers.tickets ?? [])) : failed(answers.ticketsFail);
     case "/api/queue":
-      return answers.queueFails === undefined ? json(answers.queue ?? queueOf()) : json({ error: answers.queueFails.error }, answers.queueFails.status);
+      return answers.queueFails === undefined ? json(answers.queue ?? queueOf()) : failed(answers.queueFails);
     case "/api/parents":
       return json(answers.parents ?? []);
     case "/api/people":

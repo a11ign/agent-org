@@ -203,6 +203,19 @@
 .status-banner-text {
   flex: 1 1 var(--measure-banner-basis);
 }
+/* The Instance unreachable board's second action reads a step softer than Check now. */
+.alert-banner-actions .alert-button-secondary {
+  color: var(--color-danger-body);
+}
+
+/* The board's banner once the instance answers again. */
+.reconnected-banner {
+  padding: var(--space-8) var(--space-14);
+  border: 1px solid var(--color-success-border);
+  border-radius: var(--radius-8);
+  background: var(--color-success-bg);
+  color: var(--color-success-body);
+}
 .status-banner-link {
   padding: var(--space-3) var(--space-12);
   border: 1px solid var(--color-warn-border-strong);
@@ -271,6 +284,10 @@
 .row-picked,
 .row-picked:hover {
   background: var(--color-selection);
+}
+/* The last known list, while the instance cannot be reached: the board draws its rows at 0.6. */
+.ticket-section-paused .row {
+  opacity: 0.6;
 }
 .row-dim {
   opacity: 0.5;

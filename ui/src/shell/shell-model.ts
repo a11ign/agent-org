@@ -4,7 +4,7 @@
 // `chosenProject`, and a goal is a label of the `Goal` group. They are used here, never restated.
 import { defaultScope, inScope } from "../../../src/ticket-mode/assignee-filter.ts";
 import type { PollState, PollView } from "../api/use-poll.ts";
-import type { ConfigView, QueueView, Ticket, TicketView } from "../api/types.ts";
+import type { ConfigView, QueueView, Ticket, TicketView, ViewConnection } from "../api/types.ts";
 
 export type Pill = Readonly<{ tone: "connected" | "unreachable"; label: string }>;
 
@@ -14,6 +14,19 @@ export type Pill = Readonly<{ tone: "connected" | "unreachable"; label: string }
  */
 export function pillOf(state: PollState): Pill {
   return state === "unreachable" ? { tone: "unreachable", label: "Unreachable · retrying" } : { tone: "connected", label: "Connected" };
+}
+
+/** Whether a read has answered with the instance's own data, as opposed to loading, failing, or showing the last known data of a failure. PURE. */
+export const isLive = (state: PollState): boolean => state === "ready" || state === "empty";
+
+/**
+ * The backend's sentence while the connection shown is an SSH remote that cannot be reached, else null: when any of the shell's reads is `unreachable`. The first of `views` that is
+ * wins, so the queue poll, which drives the connection pill, comes first, then the reads made once. A local or https connection's failure is never this, only an error or a reconnect. PURE.
+ */
+export function unreachableOf(connection: Pick<ViewConnection, "kind"> | null, views: readonly Pick<PollView<unknown>, "state" | "refusal">[]): string | null {
+  if (connection?.kind !== "ssh") return null;
+  const down = views.find(({ state }) => state === "unreachable");
+  return down === undefined ? null : (down.refusal ?? "");
 }
 
 /** How many runs are running now: the Runs badge. A run is running while its `phase` is `running`. PURE. */

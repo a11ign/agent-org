@@ -51,13 +51,15 @@ function failureOf(connection: ViewConnection | null, answer: Extract<Answer<unk
 /** The view an answer makes, given the one before it. */
 function viewAfter<T>(before: PollView<T>, answer: Answer<T>, isEmpty: (data: T) => boolean, connection: ViewConnection | null): PollView<T> {
   if (answer.ok) return { state: isEmpty(answer.data) ? "empty" : "ready", data: answer.data, refusal: null };
-  return { state: failureOf(connection, answer), data: before.data, refusal: answer.refusal };
+  // Data this page already holds is at least as new as the proxy's copy, which it wrote from those same answers; the copy is for a page that has read nothing yet.
+  const data = before.data ?? (answer.unreachable ? (answer.lastKnown?.data ?? null) : null);
+  return { state: failureOf(connection, answer), data, refusal: answer.refusal };
 }
 
 /**
  * A page's data from one of the client's reads, polled (see `startPolling`) while the page is shown. A change of connection drops the read in flight and
- * starts again from `loading`, so one connection's data never lands on another's view. `refresh` is "Check now": it reads at once, and a failure it
- * meets counts toward the backoff like any other. `current` is for a click on a link built from the data (a run's terminal): the held data while it was read no
+ * starts again from `loading`, so one connection's data never lands on another's view. `refresh` is "Check now": it reads at once and starts the backoff over, so a failure it
+ * meets waits 2s before the next read. A page that has read nothing yet and finds its SSH connection unreachable shows the proxy's last known data, if it kept any. `current` is for a click on a link built from the data (a run's terminal): the held data while it was read no
  * more than one poll interval ago, else a read made now, resolving to its data, or to null when that read fails.
  */
 export function usePoll<T>(read: (signal: AbortSignal) => Promise<Answer<T>>, { connection, isEmpty = isEmptyList, repeat = true }: PollOptions<T>): Poll<T> {

@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { createServer as createTcpServer } from "node:net";
 import type { Connection, Connections, Target } from "./connections.ts";
 import { localTerminal, Unreachable } from "./remote.ts";
+import { tmpDir } from "../lib/tmp-fixture.ts";
+import { createLastKnown, lastKnownDir } from "./last-known.ts";
 import { forwardHeaders, httpForward, passedOn, proxy, type Forward } from "./remote-proxy.ts";
 
 const KEY = "b".repeat(48);
@@ -233,4 +235,101 @@ test("A11-163: the Plugins section is read through any connection, and its actio
     assert.match((body as { error: string }).error, new RegExp(`${remote.name}'s settings are not changed from here`));
   }
   assert.deepEqual(sent, ["/api/plugins/action", "/api/plugins", "/api/plugins"], "the local action and both reads were sent, and neither remote action");
+});
+
+/** A forward that answers `body` with `status` until `down` is set, then fails as an instance that stopped. */
+function flaky(body: unknown, status = 200) {
+  const state = { down: false };
+  const forward: Forward = async () => {
+    if (state.down) throw new Error("socket hang up");
+    return { status, body: JSON.stringify(body) };
+  };
+  return { state, forward };
+}
+
+const CANNOT_REACH_INSTANCE = "cannot reach personal's instance over SSH: socket hang up. Is agent-org ticket:serve running there?";
+
+test("A11-195: an SSH connection's good read is kept, and each of the three ways it cannot be reached answers its sentence with that read and when it was read", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")), { now: () => Date.parse("2026-10-24T10:00:00.000Z") });
+  const tickets = [{ key: "A11-1", title: "one" }];
+  const up = fixed(overSsh("/s"));
+  const instance = flaky(tickets);
+  const request = { method: "GET", path: "/api/tickets", body: null };
+  assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [200, tickets], "a good read is answered as it was");
+  const kept = { value: tickets, readAt: "2026-10-24T10:00:00.000Z" };
+  instance.state.down = true;
+  assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE, lastKnown: kept }], "the instance does not answer");
+  const refused: Forward = async () => ({ status: 401, body: "{}" });
+  const [, keyRefused] = await proxy(up.remotes, "personal", request, refused, store);
+  assert.match((keyRefused as { error: string }).error, /^cannot reach personal over SSH: its instance refused the key/);
+  assert.deepEqual((keyRefused as { lastKnown: unknown }).lastKnown, kept, "the key is refused");
+  const down = fixed("agents: Permission denied (publickey).");
+  assert.deepEqual(await proxy(down.remotes, "personal", request, instance.forward, store),
+    [502, { error: "cannot reach personal over SSH: agents: Permission denied (publickey).", lastKnown: kept }], "the tunnel does not open");
+});
+
+test("A11-195: a path nothing was read from has no last known, and a read with a query is never kept", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
+  const up = fixed(overSsh("/s"));
+  const instance = flaky([]);
+  await proxy(up.remotes, "personal", { method: "GET", path: "/api/tickets", body: null }, instance.forward, store);
+  await proxy(up.remotes, "personal", { method: "GET", path: "/api/tickets?assignee=me&after=2", body: null }, instance.forward, store);
+  instance.state.down = true;
+  for (const path of ["/api/tickets?assignee=me&after=2", "/api/queue"]) {
+    assert.deepEqual(await proxy(up.remotes, "personal", { method: "GET", path, body: null }, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE }], path);
+  }
+});
+
+test("A11-195: a local or https connection, a POST, a refusal and a body that is not JSON are neither kept nor recalled", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
+  const read = { method: "GET", path: "/api/tickets", body: null };
+  for (const connection of [{ name: "personal", kind: "local" }, { name: "personal", kind: "https", origin: "https://agents.example.com", keyFile: "/k" }] as Connection[]) {
+    const here = fixed(overSsh("/s"), connection);
+    const instance = flaky([{ key: "A11-1" }]);
+    assert.equal((await proxy(here.remotes, "personal", read, instance.forward, store))[0], 200);
+    instance.state.down = true;
+    const [status, answer] = await proxy(here.remotes, "personal", read, instance.forward, store);
+    assert.equal(status, 502);
+    assert.deepEqual(Object.keys(answer as object), ["error"], `${connection.kind} has no last known`);
+  }
+  const up = fixed(overSsh("/s"));
+  const posted = flaky({ entries: [] });
+  await proxy(up.remotes, "personal", { method: "POST", path: "/api/paused", body: "{}" }, posted.forward, store);
+  const refusing = flaky({ error: "no" }, 500);
+  await proxy(up.remotes, "personal", read, refusing.forward, store);
+  const garbled: Forward = async () => ({ status: 200, body: "<html>" });
+  assert.deepEqual(await proxy(up.remotes, "personal", read, garbled, store), [502, { error: "personal's instance answered with something that is not JSON" }]);
+  posted.state.down = true;
+  assert.deepEqual(await proxy(up.remotes, "personal", read, posted.forward, store), [502, { error: CANNOT_REACH_INSTANCE }], "nothing was kept from any of them");
+  assert.deepEqual(await proxy(up.remotes, "personal", { method: "POST", path: "/api/paused", body: "{}" }, posted.forward, store), [502, { error: CANNOT_REACH_INSTANCE }], "a POST is never answered with a read");
+});
+
+test("A11-195: without a store the answers are as they were", async () => {
+  const up = fixed(overSsh("/s"));
+  const instance = flaky([]);
+  const request = { method: "GET", path: "/api/tickets", body: null };
+  await proxy(up.remotes, "personal", request, instance.forward);
+  instance.state.down = true;
+  assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward), [502, { error: CANNOT_REACH_INSTANCE }]);
+});
+
+test("A11-195: the configuration is kept as the page was given it, with the terminal address through the tunnel", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
+  const up = fixed(overSsh("/s", 50002));
+  const instance = flaky({ terminal: TERMINAL, max: 2 });
+  const request = { method: "GET", path: "/api/config", body: null };
+  await proxy(up.remotes, "personal", request, instance.forward, store);
+  instance.state.down = true;
+  const [, down] = await proxy(up.remotes, "personal", request, instance.forward, store);
+  assert.equal((down as { lastKnown: { value: { terminal: string } } }).lastKnown.value.terminal, "http://127.0.0.1:50002/?ws={workspace}&pane={pane}&view=terminal");
+});
+
+test("A11-195: a connection pointed at another ssh target is not answered with the old target's last read", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
+  const instance = flaky([{ key: "A11-1" }]);
+  const request = { method: "GET", path: "/api/tickets", body: null };
+  await proxy(fixed(overSsh("/s")).remotes, "personal", request, instance.forward, store);
+  instance.state.down = true;
+  const repointed = fixed(overSsh("/s"), { ...PERSONAL, ssh: "me@elsewhere" });
+  assert.deepEqual(await proxy(repointed.remotes, "personal", request, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE }]);
 });
