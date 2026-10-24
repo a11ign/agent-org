@@ -1885,9 +1885,17 @@ function renderConnections(refusal) {
   $("connections-note").hidden = !refusal;
 }
 
-// The shown instance's view, read afresh. Nothing chosen on one instance carries over to another. `quiet` is the poll's retry of a first open that failed: it leaves the
-// message on screen as it is, so Reconnecting does not blink between tries.
-async function load({ quiet = false } = {}) {
+/**
+ * What a read the board can do without answers when it fails (`fallback`): the poll's own load lets a restart through instead, so the whole open is tried again and nothing
+ * the restart cost it is kept as if the instance had said so.
+ */
+function restartFailsPolledLoad(err, polled, fallback = {}) {
+  if (polled && err instanceof Restarting) throw err;
+  return fallback;
+}
+// The shown instance's view, read afresh. Nothing chosen on one instance carries over to another. `polled` is the poll's own first open: it leaves the message on screen as it
+// is, so Reconnecting does not blink between tries, and a read that gets no answer fails the open, to be tried again, where the person's own load goes on without it.
+async function load({ polled = false } = {}) {
   state.selected = new Set();
   state.toPublish = new Set();
   state.parents = [];
@@ -1897,19 +1905,19 @@ async function load({ quiet = false } = {}) {
   state.loaded = false;
   const loads = ++state.loads;
   $("children-note").hidden = true;
-  if (!quiet) report(null);
+  if (!polled) report(null);
   setup(await call("GET", "/api/config"));
   const [tickets, queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);
   state.tickets = tickets;
   setQueue(queue);
   // The new-ticket list is read on its own: a failure there is said, and the board still loads.
-  setWriters(state.writer ? await call("GET", "/api/writer").catch((err) => { report(err); return { runs: [] }; }) : { runs: [] });
+  setWriters(state.writer ? await call("GET", "/api/writer").catch((err) => { restartFailsPolledLoad(err, polled); report(err); return { runs: [] }; }) : { runs: [] });
   // An empty list says why, in the instance's words, which name its setting. An instance from before it could say keeps a plain line.
-  state.empty = state.tickets.length > 0 ? null : (await call("GET", "/api/pick").catch(() => null))?.empty ?? "No open tickets to list.";
+  state.empty = state.tickets.length > 0 ? null : (await call("GET", "/api/pick").catch((err) => restartFailsPolledLoad(err, polled))).empty ?? "No open tickets to list.";
   render();
   if (loads === state.loads) state.loaded = true;
   // Parents are read after the first render, so the list never waits on them. Without them, every ticket stands on its own.
-  state.parents = await call("GET", "/api/parents").catch(() => []);
+  state.parents = await call("GET", "/api/parents").catch((err) => restartFailsPolledLoad(err, polled, []));
   renderPick();
   // The Settings page, when its address is shown, is drawn again for the instance just chosen, so nothing of another instance stays on it.
   if (onSettingsPage()) drawSettings().catch(report);
@@ -1974,7 +1982,7 @@ async function open() {
     showRoute();
     connectionsRead = true;
   }
-  await load({ quiet: true });
+  await load({ polled: true });
   // The card the link names is scrolled to, once the page has drawn it (A11-129). The Settings address names no card.
   if (location.hash && !onSettingsPage()) scrollToNamedCard();
   opened = true;

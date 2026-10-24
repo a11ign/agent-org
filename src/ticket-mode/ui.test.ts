@@ -3171,3 +3171,44 @@ test("A11-211: a click on a terminal link right after a press that returned the 
   assert.equal(terminalOf(p, "T-1")!.fire("click"), false);
   assert.equal(p.tabs.length, 0);
 });
+
+/** A page first opened while only `path` gets no answer: it says Reconnecting, with no red, and backs off. */
+async function openedWhileOnlyUnanswered(path: string, options: PageOptions) {
+  const p = await page(new Map(), { ...options, down: { rejects: true, paths: [path] } });
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["", "Reconnecting…"]);
+  assert.equal(p.delays.at(-1), 2_000, "and it backs off");
+  return p;
+}
+
+test("A11-211: a page first opened while only the new-ticket read gets no answer says Reconnecting and tries the open again, not red and loaded", async () => {
+  const p = await openedWhileOnlyUnanswered("/api/writer", { config: WRITER_CONFIG, connections: WORK_ALONE, writers: { runs: [RUN] } });
+  assert.equal(p.$("writers-list").children.length, 0, "no request is drawn yet, and the board is not taken for loaded");
+  p.setOutage(null);
+  await p.poll();
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["", ""]);
+  assert.equal(p.$("writers-list").children.length, 1, "the open ran again, and the request is drawn");
+});
+
+test("A11-211: a page first opened while only the parents read gets no answer tries the open again, so the tree is not left without its parents", async () => {
+  const p = await openedWhileOnlyUnanswered("/api/parents", { tickets: EPIC, parents: [ticketIn("E-1", { title: "epic" })] });
+  p.setOutage(null);
+  await p.poll();
+  assert.equal(reconnecting(p), "");
+  assert.equal(p.requested.filter((path) => path === "/api/parents").length, 2, "the parents were read again");
+});
+
+/** The person chooses another instance in the switcher, and its load settles. */
+async function switchTo(p: Page, name: string) {
+  p.$("connection").value = name;
+  p.$("connection").fire("change");
+  await settleAll();
+}
+
+test("A11-211: a load the person started (a switch of instance) still goes on without the new-ticket list when that read gets no answer, and says so in red", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, connections: WORK_AND_PERSONAL, writers: { runs: [RUN] } });
+  p.setOutage({ rejects: true, paths: ["/c/personal/api/writer"] });
+  await switchTo(p, "personal");
+  assert.equal(p.$("error").textContent, "Failed to fetch");
+  assert.equal(reconnecting(p), "");
+  assert.ok(p.shownKeys().length > 0, "and the board still loads");
+});
