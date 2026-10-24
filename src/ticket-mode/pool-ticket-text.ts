@@ -6,12 +6,13 @@
 //   - a queued run whose plan was stamped with another hash is marked stale, and re-planned before its worker starts (`replanStale`): the stale plan and the files its stamp lists are copied for the planner and
 //     detached from the ticket, because the planning skill refuses a ticket that already has a plan and two attached plans would give the worker two approaches;
 //   - a run that is live is sent the change as a message through herdr (`tellLiveRuns`), and its next round's brief carries the new text anyway;
-//   - a queued run whose blocker's pull request has merged is given what that pull request found (`learnFromBlockers`), and a plan written before the merge is written again with it.
+//   - a queued run whose blocker's pull request has merged is given what that pull request found (`learnFromBlockers`), and a plan written before the merge is written again with it. The same read records what the pull request declared of its blocker's ticket (A11-206).
 // A plan with no stamp, such as one a person attached, is never read as stale: nothing records the text it was written against.
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { type Learned, markTicketChanged, type PlannedAgainst, recordLearned, recordTicketChange, replan, type TicketChange } from "./queue/queue-ticket-text.ts";
+import { type Learned, markTicketChanged, type PlannedAgainst, recordBlockerDeclared, recordLearned, recordTicketChange, replan, type TicketChange } from "./queue/queue-ticket-text.ts";
+import { declaredByBlockerPull } from "./queue/queue-declarations.ts";
 import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
@@ -20,7 +21,7 @@ import { stepSectionText } from "./plan-step-sections.ts";
 import { descriptionHash, ticketReadOf, type TicketRead } from "./ticket-read.ts";
 import { BLOCKERS_DIR, diffText, type Finding, PREVIOUS_PLAN_DIR } from "./brief-ticket-text.ts";
 import { ticketDir } from "./ticket-paths.ts";
-import { type Ticket } from "./source.ts";
+import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
 import { type PoolContext } from "./pool-context.ts";
 import type { MergedFindings } from "../plugins/contracts/code-host.ts";
 
@@ -123,31 +124,100 @@ function saveFindings(ctx: PoolContext, key: string, blocker: string, url: strin
   return path;
 }
 
+/** Reads a merged pull request, at most once in a pass: the answer is kept, a `null` among them, and so is a refusal, which is thrown again to whoever asks next in the pass. */
+type PassReader = (url: string) => MergedFindings | null;
+
+/** A reader of merged pull requests for one pass, or null when the code host reads none. */
+function passReaderOf({ codeHost }: PoolContext): PassReader | null {
+  if (codeHost.readMergedFindings === undefined) return null;
+  const read = new Map<string, () => MergedFindings | null>();
+  return (url) => {
+    if (!read.has(url)) read.set(url, answerOf(() => codeHost.readMergedFindings!(url)));
+    return read.get(url)!();
+  };
+}
+
+/** The answer of `ask`, asked once: what it returned, or what it threw, again on each call. */
+function answerOf<T>(ask: () => T): () => T {
+  let answer: { found: T } | { refusal: unknown };
+  try {
+    answer = { found: ask() };
+  } catch (refusal) {
+    answer = { refusal };
+  }
+  return () => {
+    if ("refusal" in answer) throw answer.refusal;
+    return answer.found;
+  };
+}
+
 /**
  * Give each queued run the findings of its blockers' merged pull requests (A11-167): for each merged pull request a run has not learned from, the code host is asked what it found, the answer is saved
  * under the run's folder, and the run records it. A pull request the host cannot read is asked again on the next refresh, and a host that does not read findings gives none. A review round or a talk
- * session continues work that is done, and learns nothing.
+ * session continues work that is done, and learns nothing. Every queued run, a round or a session too, also has what each merged pull request declared of its blocker's ticket recorded (A11-206), from
+ * the same read, which {@link recordDeclarations} says.
  */
 export function learnFromBlockers(ctx: PoolContext): void {
-  const { codeHost, store } = ctx;
-  if (codeHost.readMergedFindings === undefined) return;
-  // A pull request several dependents wait on is read once in a pass.
-  const read = new Map<string, MergedFindings | null>();
-  for (const entry of store.get().entries) {
-    if (entry.phase !== "queued" || entry.review !== undefined || entry.talk === true) continue;
-    for (const { url, blocker } of unlearned(entry)) {
-      try {
-        if (!read.has(url)) read.set(url, codeHost.readMergedFindings(url));
-        const found = read.get(url)!;
-        if (found === null) continue;
-        const learned: Learned = { key: blocker, number: found.number, title: found.title, file: saveFindings(ctx, entry.ticket.key, blocker, url, found) };
-        update(ctx, (queue) => recordLearned(queue, entry.ticket.key, url, learned));
-        log(`${entry.ticket.key}: learns from ${blocker} (#${found.number} merged)`);
-      } catch (err) {
-        // The findings could not be read or saved: the next refresh asks again, and the refresh goes on.
-        log(`${entry.ticket.key}: what ${blocker}'s pull request found could not be read: ${messageOf(err)}`);
-      }
+  const read = passReaderOf(ctx);
+  for (const entry of ctx.store.get().entries) {
+    if (entry.phase !== "queued") continue;
+    recordDeclarations(ctx, entry, read);
+    if (read !== null && entry.review === undefined && entry.talk !== true) learnFindings(ctx, entry, read);
+  }
+}
+
+/** Record the findings of the merged pull requests of a queued work run's blockers that it has not learned from yet. A read or a save that fails is said, and asked again on the next refresh. */
+function learnFindings(ctx: PoolContext, entry: Entry, read: PassReader): void {
+  for (const { url, blocker } of unlearned(entry)) {
+    try {
+      const found = read(url);
+      if (found === null) continue;
+      const learned: Learned = { key: blocker, number: found.number, title: found.title, file: saveFindings(ctx, entry.ticket.key, blocker, url, found) };
+      update(ctx, (queue) => recordLearned(queue, entry.ticket.key, url, learned));
+      log(`${entry.ticket.key}: learns from ${blocker} (#${found.number} merged)`);
+    } catch (err) {
+      // The findings could not be read or saved: the next refresh asks again, and the refresh goes on.
+      log(`${entry.ticket.key}: what ${blocker}'s pull request found could not be read: ${messageOf(err)}`);
     }
+  }
+}
+
+/** The merged pull requests of a run's blockers whose declaration it has not recorded yet, each with its address, its blocker's key and how many pull requests that blocker links. PURE. */
+function undeclared(entry: Entry): { url: string; blocker: string; pullCount: number }[] {
+  const merged = (entry.blockers ?? []).flatMap(({ key, pulls }) => Object.entries(pulls).filter(([, state]) => state === "merged").map(([url]) => ({ url, blocker: key, pullCount: Object.keys(pulls).length })));
+  return merged.filter(({ url }) => entry.blockersDeclared?.[url] === undefined);
+}
+
+/**
+ * Record what each merged pull request of a queued run's blockers declared of its blocker's ticket (A11-206), once for each: a blocker whose pull request said `Partial:` has more to come, so the run waits for it
+ * (`board-view/pull-status-and-notes.ts`). A pull request the code host cannot read (`null`, or a refusal) records nothing, so the run keeps waiting and the next refresh asks again. A code host that reads no bodies
+ * (`read` is null) cannot say, so every merged pull request records `none`, and the run follows A11-154's rule on the pull requests' states alone.
+ */
+function recordDeclarations(ctx: PoolContext, entry: Entry, read: PassReader | null): void {
+  const due = undeclared(entry);
+  if (read === null) recordUnreadable(ctx, entry, due);
+  else for (const pull of due) recordDeclaration(ctx, entry, pull, read);
+}
+
+/** A merged pull request of a blocker whose declaration a run has not recorded: its address, its blocker's key and how many pull requests that blocker links. */
+type DueDeclaration = ReturnType<typeof undeclared>[number];
+
+/** Record `none` for each of `due`, and say once that this code host reads no body, which is why. */
+function recordUnreadable(ctx: PoolContext, entry: Entry, due: readonly DueDeclaration[]): void {
+  if (due.length === 0) return;
+  log(`${entry.ticket.key}: this code host cannot read a pull request's body, so ${[...new Set(due.map(({ blocker }) => blocker))].join(", ")}'s merged pull requests count as complete`);
+  for (const { url } of due) update(ctx, (queue) => recordBlockerDeclared(queue, entry.ticket.key, url, { kind: "none" }));
+}
+
+/** Record what one merged pull request of a blocker declared, read through `read`. A refusal is said, and asked again on the next refresh. */
+function recordDeclaration(ctx: PoolContext, entry: Entry, { url, blocker, pullCount }: DueDeclaration, read: PassReader): void {
+  try {
+    const found = read(url);
+    if (found === null) return;
+    const declared = declaredByBlockerPull(found.body, blocker, pullCount, ctx.source.keywords ?? DEFAULT_KEYWORDS);
+    update(ctx, (queue) => recordBlockerDeclared(queue, entry.ticket.key, url, declared));
+  } catch (err) {
+    log(`${entry.ticket.key}: what ${blocker}'s pull request declared could not be read, and is asked again at the next refresh: ${messageOf(err)}`);
   }
 }
 

@@ -938,7 +938,11 @@ test("A11-154: a run whose blocker's pull request merged starts though the block
   const merged = { "https://github.com/a11ign/agent-org/pull/1800": "merged" as const };
   for (const [state, started] of [["started", true], ["canceled", false]] as const) {
     const tracker: TicketSource = { ...source, blockers: async () => new Map([["NBF-1", [blocks("NBF-0", state, "In Progress", merged)]]]) };
-    const { pool, entry, store } = setup(1, ["NBF-1"], {}, { source: tracker });
+    const host = createFakeCodeHost();
+    host.seedPull("a11ign/agent-org", 1800, { state: "merged" });
+    const { pool, entry, store } = setup(1, ["NBF-1"], {}, { source: tracker, codeHost: host });
+    await pool.tick();
+    await pool.refreshTracker();
     await pool.tick();
     assert.equal(entry("NBF-1").phase, started ? "running" : "queued", `a ${state} blocker whose pull request merged`);
     if (!started) assert.equal(waitNote(entry("NBF-1"), store.get().entries), "NBF-0 was canceled: a person decides");
@@ -6290,6 +6294,113 @@ test("what a blocker's pull request found is read once for the dependents that w
   const written = await captureStderr(() => other.pool.refreshTracker());
   assert.ok(written.some((line) => line.includes("what A11-165's pull request found could not be read: gh exploded")));
   assert.equal(other.entry("NBF-1").learned, undefined);
+});
+
+/** The address of pull request `number` of announcement-emulator, which A11-206's blockers merged. */
+const EMULATOR_PULL = (number: number): string => `https://github.com/a11ign/announcement-emulator/pull/${number}`;
+
+/** A tracker whose ticket A11-165 is In Progress with `pulls` merged, blocking each of `keys`, and a code host holding each pull request's `bodies` merged. */
+function blockedByInProgress(keys: string[], bodies: Record<number, string>) {
+  const world = followed(keys);
+  const pulls = Object.fromEntries(Object.keys(bodies).map((number) => [EMULATOR_PULL(Number(number)), "merged" as const]));
+  for (const key of keys) world.blocked.set(key, [blocks("A11-165", "started", "In Progress", pulls)]);
+  const host = createFakeCodeHost();
+  for (const [number, body] of Object.entries(bodies)) host.seedPull("a11ign/announcement-emulator", Number(number), { state: "merged", findings: { title: `Pull request ${number}`, number: Number(number), body, sections: [] } });
+  return { world, host, gh: { run: () => "", calls: [], codeHost: host, host } as World };
+}
+
+/** The reads of a pull request's body the code host answered. */
+const bodyReads = (host: ReturnType<typeof createFakeCodeHost>, url: string): number => host.calls.filter((call) => call === `readMergedFindings ${url}`).length;
+
+test("A11-206: a sweep records what each merged pull request of a blocker declared of its ticket, for a queued work run and a queued review round", async () => {
+  const { world, gh } = blockedByInProgress(["NBF-1", "NBF-2"], {
+    3: "Refs A11-165\n\nPartial: step 1 of 2: the control pull request", 4: "Closes A11-165", 5: "no declaration here", 6: "Refs A11-165\n\nPartial: the sibling pull request",
+  });
+  const made = setup(1, ["NBF-1", "NBF-2"], PLANNER, { source: world.tracker, planFirst: ["NBF-1", "NBF-2"], gh });
+  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? { ...e, review: [{ url: EMULATOR_PULL(3), repo: "announcement-emulator" }] } : e)) });
+  await made.pool.refreshTracker();
+  const expected = { [EMULATOR_PULL(3)]: { kind: "partial", remains: "step 1 of 2: the control pull request" }, [EMULATOR_PULL(4)]: { kind: "closes" }, [EMULATOR_PULL(5)]: { kind: "none" }, [EMULATOR_PULL(6)]: { kind: "none" } };
+  assert.deepEqual(made.entry("NBF-1").blockersDeclared, expected, "a work run; a Partial: line in free words beside other pull requests is none (A11-181)");
+  assert.deepEqual(made.entry("NBF-2").blockersDeclared, expected, "a review round");
+  assert.equal(Object.keys(made.entry("NBF-1").learned ?? {}).length, 4, "findings are still learned by a work run");
+  assert.equal(made.entry("NBF-2").learned, undefined, "and a review round still learns none");
+});
+
+test("A11-206: a pull request whose declaration is recorded is not read again, and one the code host cannot read records nothing and is asked again", async () => {
+  const { world, host, gh } = blockedByInProgress(["NBF-1"], { 3: "Closes A11-165" });
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
+  await made.pool.refreshTracker();
+  await made.pool.refreshTracker();
+  assert.equal(bodyReads(host, EMULATOR_PULL(3)), 1, "read once across two sweeps");
+  const unreadable = blockedByInProgress(["NBF-1"], {});
+  unreadable.world.blocked.set("NBF-1", [blocks("A11-165", "started", "In Progress", { [EMULATOR_PULL(9)]: "merged" })]);
+  const other = setup(1, ["NBF-1"], {}, { source: unreadable.world.tracker, gh: unreadable.gh });
+  await other.pool.refreshTracker();
+  assert.equal(other.entry("NBF-1").blockersDeclared, undefined, "a null read records nothing");
+  unreadable.host.seedPull("a11ign/announcement-emulator", 9, { state: "merged" });
+  await other.pool.refreshTracker();
+  assert.deepEqual(other.entry("NBF-1").blockersDeclared, { [EMULATOR_PULL(9)]: { kind: "none" } }, "and the next sweep asks again");
+  const refusing = blockedByInProgress(["NBF-1"], { 3: "Closes A11-165" });
+  refusing.host.readMergedFindings = () => { throw new Error("gh exploded"); };
+  const refused = setup(1, ["NBF-1"], {}, { source: refusing.world.tracker, gh: refusing.gh });
+  const written = await captureStderr(() => refused.pool.refreshTracker());
+  assert.ok(written.some((line) => line.includes("what A11-165's pull request declared could not be read, and is asked again at the next refresh: gh exploded")));
+  assert.equal(refused.entry("NBF-1").blockersDeclared, undefined, "a refusal records nothing");
+  let asked = 0;
+  refusing.host.readMergedFindings = () => { asked += 1; throw new Error("gh exploded"); };
+  await captureStderr(() => refused.pool.refreshTracker());
+  assert.equal(asked, 1, "and a refusal is asked about once in a sweep, though a work run both learns from the pull request and records what it declared");
+});
+
+test("A11-206: a run whose blocker's merged pull request cannot be read yet does not start, and starts once it is read as complete", async () => {
+  const world = followed(["NBF-1"]);
+  world.blocked.set("NBF-1", [blocks("A11-165", "started", "In Progress", { [EMULATOR_PULL(9)]: "merged" })]);
+  const host = createFakeCodeHost();
+  const made = setup(1, ["NBF-1"], {}, { source: world.tracker, codeHost: host });
+  await made.pool.tick();
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  assert.equal(made.entry("NBF-1").phase, "queued", "an unread body holds it");
+  assert.equal(waitNote(made.entry("NBF-1"), made.store.get().entries), "Waits for A11-165 (its merged pull requests are not read yet)");
+  host.seedPull("a11ign/announcement-emulator", 9, { state: "merged" });
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  assert.equal(made.entry("NBF-1").phase, "running", "read as complete: A11-154's rule lets it go though the ticket is In Progress");
+});
+
+test("A11-206: a run whose blocker's merged pull request declared Partial: does not start", async () => {
+  const { world, gh } = blockedByInProgress(["NBF-1"], { 3: "Refs A11-165\n\nPartial: step 1 of 2: the control pull request" });
+  const made = setup(1, ["NBF-1"], {}, { source: world.tracker, gh });
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  assert.equal(made.entry("NBF-1").phase, "queued");
+  assert.equal(waitNote(made.entry("NBF-1"), made.store.get().entries), "Waits for A11-165 (step 1 of 2 merged)");
+});
+
+test("A11-206: a code host that reads no bodies records none, says so once, and lets a run go on A11-154's rule", async () => {
+  const world = followed(["NBF-1"]);
+  world.blocked.set("NBF-1", [blocks("A11-165", "started", "In Progress", { [EMULATOR_PULL(9)]: "merged" })]);
+  const blind = { ...createFakeCodeHost(), readMergedFindings: undefined } as unknown as ReturnType<typeof createFakeCodeHost>;
+  const made = setup(1, ["NBF-1"], {}, { source: world.tracker, codeHost: blind });
+  const written = await captureStderr(() => made.pool.refreshTracker());
+  assert.deepEqual(made.entry("NBF-1").blockersDeclared, { [EMULATOR_PULL(9)]: { kind: "none" } });
+  assert.equal(written.filter((line) => line.includes("this code host cannot read a pull request's body")).length, 1);
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  assert.equal(made.entry("NBF-1").phase, "running");
+});
+
+test("A11-206: a run does not start while its blocker's own run is working, though every pull request the blocker has so far merged", async () => {
+  const world = followed(["NBF-0", "NBF-1"]);
+  world.blocked.set("NBF-1", [blocks("NBF-0", "started", "In Progress", { [EMULATOR_PULL(9)]: "merged" })]);
+  const host = createFakeCodeHost();
+  host.seedPull("a11ign/announcement-emulator", 9, { state: "merged" });
+  const made = setup(2, ["NBF-0", "NBF-1"], {}, { source: world.tracker, codeHost: host });
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  assert.equal(made.entry("NBF-0").phase, "running");
+  assert.equal(made.entry("NBF-1").phase, "queued", "it waits, and a slot was free");
+  assert.equal(waitNote(made.entry("NBF-1"), made.store.get().entries), "Waits for NBF-0 (running)");
 });
 
 test("a plan the stamp would push past the size every reader skips beyond is attached as it is, unstamped, and so is never read as stale", async () => {

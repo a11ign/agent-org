@@ -1,7 +1,7 @@
 import { CONCLUDED, openPulls, RESULT_KINDS, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "../board-view/plan-steps.ts";
-import type { PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
+import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import { needsDecision } from "../open-decisions.ts";
@@ -134,6 +134,8 @@ export type Entry = Readonly<{
   ticketChanges?: readonly TicketChange[];
   /** What the planner of this queued run was given from its blockers' merged pull requests, by pull request address (A11-167). */
   learned?: Readonly<Record<string, Learned>>;
+  /** What each merged pull request of this queued run's blockers declared of its blocker's ticket, by pull request address, once the sweep read its body (A11-206). A merged one not here is not read yet, and holds the run. */
+  blockersDeclared?: Readonly<Record<string, BlockerPullDeclared>>;
   /** Set on a planning run that replaces a stale plan: the files of that plan, as the board copied them before it detached the plan (A11-167). Dropped once the new plan is attached. */
   previousPlan?: readonly string[];
   /** The addresses of the merged pull requests whose findings the last planning brief of this run gave its planner, so its plan can be held to naming each (A11-167). */

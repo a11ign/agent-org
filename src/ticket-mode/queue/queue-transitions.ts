@@ -340,10 +340,10 @@ export function park(queue: Queue, key: string, outcome: Outcome, now: number, r
  * behind but the mark that its plan was decided for the person; `unattended` is false for a plan that reached the ticket some other way.
  */
 export function planDone(queue: Queue, key: string, { unattended = true }: { unattended?: boolean; } = {}): Queue {
-  // The choice it was planned with and what its blockers gave its planner are kept (A11-167): a plan that goes stale is written again on the same choice, and the findings are not read twice.
+  // The choice it was planned with and what its blockers gave its planner are kept (A11-167): a plan that goes stale is written again on the same choice, and the findings are not read twice. What their pull requests declared is kept too (A11-206), so a run does not wait a sweep for it again.
   // A stale plan written again leaves a run that had these before it: the record of the move it made, the plan steps merged and the overlap a person started it past (A11-167).
-  return replace(queue, key, ({ ticket, repos, model, effort, queuedAt, blockers, plan, learned, plannedAgainst, movedFrom, steps, overlapOverride }) =>
-    ({ ticket, repos, model, effort, ...(unattended ? { planned: true } : {}), ...(plan ? { plannedWith: plan } : {}), ...(learned ? { learned } : {}), ...(plannedAgainst ? { plannedAgainst } : {}),
+  return replace(queue, key, ({ ticket, repos, model, effort, queuedAt, blockers, plan, learned, blockersDeclared, plannedAgainst, movedFrom, steps, overlapOverride }) =>
+    ({ ticket, repos, model, effort, ...(unattended ? { planned: true } : {}), ...(plan ? { plannedWith: plan } : {}), ...(learned ? { learned } : {}), ...(blockersDeclared ? { blockersDeclared } : {}), ...(plannedAgainst ? { plannedAgainst } : {}),
       ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}), ...(overlapOverride ? { overlapOverride } : {}), phase: "queued", queuedAt, ...(blockers ? { blockers } : {}) }));
 }
 

@@ -3,6 +3,7 @@
 //
 // THE TYPES ARE THE ENTRY'S, THE TRANSITIONS ARE THE QUEUE'S. `Entry` (`queue-entries-and-outcomes.ts`) names the three types below for its `plannedAgainst`, `ticketChange` and `learned` fields; the
 // transitions record them. They sit apart from the rest of the queue so each of those modules stays within the public API a module may have.
+import type { BlockerPullDeclared } from "../board-view/pull-declared.ts";
 import type { PlanStamp } from "../plan-stamp.ts";
 import type { TicketRead } from "../ticket-read.ts";
 import { replace, type Queue, type RunChoice } from "./queue-entries-and-outcomes.ts";
@@ -59,6 +60,11 @@ export function recordTicketChange(queue: Queue, key: string, change: TicketChan
 /** Record what a queued run's planner is given from a merged pull request of one of its blockers, by the pull request's address (A11-167). */
 export function recordLearned(queue: Queue, key: string, url: string, learned: Learned): Queue {
   return replace(queue, key, (entry) => (entry.phase === "queued" ? { ...entry, learned: { ...entry.learned, [url]: learned } } : entry));
+}
+
+/** Record what a merged pull request of one of a queued run's blockers declared of its blocker's ticket, by the pull request's address (A11-206). */
+export function recordBlockerDeclared(queue: Queue, key: string, url: string, declared: BlockerPullDeclared): Queue {
+  return replace(queue, key, (entry) => (entry.phase === "queued" ? { ...entry, blockersDeclared: { ...entry.blockersDeclared, [url]: declared } } : entry));
 }
 
 /** The pull requests a planning brief gave its planner the findings of (A11-167): the plan is held to naming each. */

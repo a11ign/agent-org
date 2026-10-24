@@ -7,9 +7,10 @@
 import { settledByPulls } from "../board-view/pull-settled.ts";
 import { stepNamed } from "../board-view/plan-steps.ts";
 import { pullsOf } from "../board-view/view-types-and-filters.ts";
-import type { PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
+import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
 import { replace, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
-import type { Declaration } from "../ticket-references.ts";
+import { declarationOf, type Declaration } from "../ticket-references.ts";
+import type { Keywords } from "../source.ts";
 
 /** One merged pull request's body, read: its address, and what the body declares of the ticket (null for nothing). */
 export type ReadDeclaration = Readonly<{ url: string; declaration: Declaration | null }>;
@@ -38,6 +39,17 @@ export function declare(read: readonly ReadDeclaration[], pullCount: number): Pu
   const remains = read.map(({ declaration }) => remainsOf(declaration, pullCount)).find((words) => words !== null);
   if (remains !== undefined && remains !== null) return { kind: "partial", remains, urls };
   return { kind: read.some(({ declaration }) => declaration?.kind === "closes") ? "closes" : "none", urls };
+}
+
+/**
+ * What one merged pull request of a BLOCKER declares of the blocker's ticket `key` (A11-206), by the grammar and the rule ({@link remainsOf}) {@link declare} reads a run's with: a `Partial:` line leaves the ticket open when it names a plan
+ * step or the blocker has exactly one pull request (`pullCount`); sibling pull requests that finish the ticket together, each with free words, declare `none`. PURE.
+ */
+export function declaredByBlockerPull(body: string, key: string, pullCount: number, keywords: Keywords): BlockerPullDeclared {
+  const declaration = declarationOf(body, key, keywords);
+  const remains = remainsOf(declaration, pullCount);
+  if (remains !== null) return { kind: "partial", remains };
+  return { kind: declaration?.kind === "closes" ? "closes" : "none" };
 }
 
 /** Whether two `partial` declarations name different steps of the plan: no step at all on both is the same, and different words for the same step are too (A11-181). PURE. */
