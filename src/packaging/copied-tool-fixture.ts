@@ -73,6 +73,14 @@ export function installedClackPrompts(): string {
   return realpathSync(dirname(createRequire(import.meta.url).resolve("@clack/prompts/package.json")));
 }
 
+/** The directory of the `smol-toml` this checkout resolves: an offline install of the tool is given it, as it is given the toolchain (A11-221, the atomic reviewer's Codex trust reads Codex's config with it). */
+export function installedSmolToml(): string {
+  // Its `exports` does not name `package.json`, so the package root is found from its entry point: the nearest folder above it that holds a `package.json`.
+  let folder = dirname(createRequire(import.meta.url).resolve("smol-toml"));
+  while (!existsSync(join(folder, "package.json"))) folder = dirname(folder);
+  return realpathSync(folder);
+}
+
 function copyInto(target: string, source: string): void {
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(source, target);
