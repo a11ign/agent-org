@@ -1,0 +1,525 @@
+/* The Plugins page: its header, tabs, concern cards, Claude plugin cards, banners and confirm dialog, as the eight Plugins boards lay them out. Every value is a token. */
+
+.plugins {
+  width: 100%;
+  max-width: var(--measure-plugins);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-18);
+}
+.plugins-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.plugins-lede,
+.plugin-lede {
+  margin: 0;
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+.plugins-lede {
+  max-width: var(--measure-plugins-lede);
+}
+.plugins-kind {
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-rail);
+}
+.plugins-remote {
+  margin: 0;
+  color: var(--color-text-count);
+}
+.plugin-lede code,
+.plugin-note code,
+.plugin-lock code,
+.plugin-switched code {
+  font-size: var(--font-size-small);
+  color: var(--color-text-nav);
+}
+
+/* The two kinds of plugin. */
+.plugin-tabs {
+  display: flex;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+.plugin-tab-button {
+  margin-bottom: -1px;
+  padding: var(--space-8) var(--space-12);
+  border: 0;
+  border-bottom: var(--space-2) solid transparent;
+  background: transparent;
+  color: var(--color-text-count);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+}
+.plugin-tab-button-on {
+  border-bottom-color: var(--color-accent-light);
+  color: var(--color-text);
+}
+.plugin-tab-count {
+  margin-left: var(--space-4);
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-regular);
+}
+.plugin-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+.plugin-tab-claude {
+  gap: var(--space-18);
+}
+.plugin-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+/* A status is a dot and words, in the tone of what it says. */
+.plugin-dot {
+  flex: 0 0 auto;
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: 50%;
+}
+.tone-dot-ok {
+  background: var(--color-success-dot);
+}
+.tone-dot-warn {
+  background: var(--color-warn-text);
+}
+.tone-dot-danger {
+  background: var(--color-danger-dot);
+}
+.tone-dot-unknown {
+  background: var(--color-text-muted);
+}
+.tone-text-ok {
+  color: var(--color-done-text);
+}
+.tone-text-warn {
+  color: var(--color-warn-text);
+}
+.tone-text-danger {
+  color: var(--color-danger-text);
+}
+.tone-text-unknown {
+  color: var(--color-text-count);
+}
+.plugin-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+/* A card: the header that opens it, and what is inside. */
+.plugin-card {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-sidebar);
+}
+.plugin-head {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-16);
+  padding: var(--space-12) var(--space-16);
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+  text-align: left;
+}
+button.plugin-head:hover {
+  background: var(--color-row-hover);
+}
+.plugin-head .plugin-status {
+  flex: 0 0 var(--measure-plugin-status);
+}
+.plugin-chevron {
+  flex: 0 0 auto;
+  stroke: var(--color-text-count);
+}
+.plugin-head[aria-expanded="true"] .plugin-chevron {
+  transform: rotate(90deg);
+}
+.plugin-name {
+  flex: 0 0 var(--measure-plugin-name);
+  font-weight: var(--font-weight-semibold);
+}
+.plugin-head-static .plugin-name {
+  overflow-wrap: anywhere;
+}
+.plugin-purpose {
+  flex: 1 1 var(--measure-plugin-purpose);
+  min-width: 0;
+  color: var(--color-text-count);
+}
+.plugin-which {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+.plugin-which-name {
+  font-weight: var(--font-weight-medium);
+}
+.plugin-chip {
+  padding: 0 var(--space-6);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-4);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-label);
+}
+.plugin-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding: var(--space-16);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+/* A check: the dot, what was checked, what it found, and the fix to run. */
+.plugin-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-6) var(--space-12);
+}
+.plugin-check-dot {
+  flex: 0 0 auto;
+  padding-top: var(--space-2);
+}
+.plugin-check-dot .plugin-dot {
+  display: inline-block;
+  width: var(--pool-dot-size);
+  height: var(--pool-dot-size);
+}
+.plugin-check-text {
+  flex: 1 1 var(--measure-alert-text);
+  min-width: 0;
+}
+.plugin-check-name {
+  color: var(--color-text-nav);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+}
+.plugin-check-fix {
+  margin-top: var(--space-6);
+}
+.plugin-command {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+}
+.plugin-command-label {
+  color: var(--color-text-muted);
+}
+.plugin-command-text {
+  min-width: 0;
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-hover);
+  color: var(--color-text);
+  font-size: var(--font-size-small);
+  overflow-wrap: anywhere;
+}
+
+/* The commands that set a secret. */
+.plugin-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-14);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-8);
+  background: var(--color-sidebar);
+}
+.plugin-panel-words {
+  margin: 0;
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+.plugin-panel .plugin-command-text {
+  flex: 1 1 var(--measure-banner-basis);
+  padding: var(--space-6) var(--space-10);
+  background: var(--color-page);
+}
+
+/* Which plugin is active. */
+.plugin-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+.plugin-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.plugin-choices-legend {
+  padding: 0 0 var(--space-8);
+  font-weight: var(--font-weight-medium);
+}
+.plugin-choice-option {
+  flex: 1 1 var(--measure-plugin-choice);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-8);
+  cursor: pointer;
+}
+.plugin-choice-option-on {
+  border-color: var(--color-accent);
+  background: var(--color-staged);
+}
+.plugin-choice-option input {
+  margin: var(--space-3) 0 0;
+  accent-color: var(--color-accent-light);
+}
+.plugin-choice-name {
+  display: block;
+  font-weight: var(--font-weight-medium);
+}
+.plugin-choice-words {
+  display: block;
+  color: var(--color-text-count);
+}
+.plugin-choice-reason {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+.plugin-switched {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-10);
+  color: var(--color-warn-text);
+}
+.plugin-switched code {
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+.plugin-warning {
+  display: flex;
+  margin: 0;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--color-warn-border);
+  border-radius: var(--radius-8);
+  background: var(--color-warn-bg);
+  color: var(--color-warn-note-text);
+}
+.plugin-note {
+  margin: 0;
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+
+/* The controls of a plugin, and why one is off. */
+.plugin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+  padding-top: var(--space-12);
+  border-top: 1px solid var(--color-card-divider);
+}
+.plugin-lock {
+  flex: 1 1 var(--measure-plugin-choice);
+  color: var(--color-text-muted);
+}
+
+/* A Claude plugin's card. */
+.plugin-claude-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-16);
+  padding: var(--space-14) var(--space-16);
+  border-bottom: 1px solid var(--color-border);
+}
+.plugin-claude-name {
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+}
+.plugin-spacer {
+  flex: 1 1 0;
+}
+.plugin-claude-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-18);
+  padding: var(--space-16);
+}
+.plugin-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.plugin-subhead {
+  font-weight: var(--font-weight-semibold);
+}
+.plugin-rows {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-8);
+  background: var(--color-surface);
+}
+.plugin-job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6) var(--space-24);
+  padding: var(--space-10) var(--space-14);
+}
+.plugin-job + .plugin-job {
+  border-top: 1px solid var(--color-card-divider);
+}
+.plugin-job-words {
+  display: block;
+  color: var(--color-text-count);
+}
+.plugin-value {
+  max-width: 100%;
+  color: var(--color-text-rail);
+  font-size: var(--font-size-small);
+  overflow-wrap: anywhere;
+}
+.plugin-job .settings-select {
+  min-width: var(--measure-skill-select);
+  max-width: 100%;
+}
+.plugin-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-10);
+}
+.plugin-add-field {
+  flex: 1 1 var(--measure-add-basis);
+  max-width: var(--measure-add-max);
+  display: block;
+}
+.plugin-add-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-5) var(--space-10);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-sidebar);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-body);
+}
+
+/* How the last change came out. */
+.notice {
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid;
+  border-radius: var(--radius-8);
+}
+.notice code {
+  font-size: var(--font-size-small);
+}
+.notice-success {
+  border-color: var(--color-success-border);
+  background: var(--color-success-bg);
+  color: var(--color-success-body);
+}
+.notice-danger {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-body);
+}
+.notice-warn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-14);
+  border-color: var(--color-warn-border);
+  background: var(--color-warn-bg);
+  color: var(--color-warn-soft);
+}
+.notice-text {
+  flex: 1 1 var(--measure-alert-text);
+}
+.banner-heading-danger {
+  color: var(--color-danger-heading);
+}
+
+/* The confirm dialog is narrower than the review, and sits lower. */
+.dialog-overlay.dialog-overlay-confirm {
+  padding: var(--dialog-top-confirm) var(--dialog-side);
+}
+.dialog.dialog-confirm {
+  width: var(--dialog-width-confirm);
+}
+.dialog-body-words {
+  gap: var(--space-8);
+  color: var(--color-text-nav);
+}
+.dialog-note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+
+/* Loading: six cards, each a mark, two lines and a pill. */
+.skeleton-plugins {
+  gap: var(--space-12);
+  width: 100%;
+  max-width: var(--measure-readable);
+}
+.skeleton-plugin-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+  padding: var(--space-14) var(--space-16);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-sidebar);
+}
+.skeleton-plugin-lines {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.sk-plugin-mark {
+  flex: 0 0 auto;
+  width: var(--skeleton-avatar-size);
+  height: var(--skeleton-avatar-size);
+  border-radius: 50%;
+}
+.sk-plugin-title {
+  width: var(--skeleton-plugin-title-width);
+  height: var(--skeleton-plugin-title-height);
+}
+.sk-plugin-text {
+  width: 55%;
+  height: var(--skeleton-text-height);
+}
+.sk-plugin-pill {
+  flex: 0 0 auto;
+  width: var(--skeleton-plugin-pill-width);
+  height: var(--skeleton-runs-pill-height);
+  border-radius: var(--radius-pill);
+}

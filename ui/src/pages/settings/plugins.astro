@@ -1,9 +1,11 @@
 ---
-import { App } from "../../shell/App.tsx";
+import "../../settings/settings.css";
+import "../../plugins/plugins-page.css";
+import { PluginsApp } from "../../plugins/PluginsApp.tsx";
 import { TITLES } from "../../shell/routes.ts";
 import Shell from "../../layouts/Shell.astro";
 ---
 
 <Shell title={TITLES.plugins}>
-  <App client:load section="plugins" />
+  <PluginsApp client:load />
 </Shell>

@@ -1,10 +1,10 @@
 ## What it is
 
-Step 1 of 2 of the Atomaut Plugins page: the read and the badge, not the page yet. `GET /api/plugins` gains `claude` (the Claude Code plugins `tickets.plugins` lists, read from the host file as it is now) and `attention` (the number of plugins that need attention, one each: an agent-org plugin that failed or has a failing check, a package the registry refused, a Claude plugin that does not load, whose health is unknown, or that has a contract row). The answer to a plugin action gains `backup`, the file the save kept. In `ui/src/plugins/`, the Settings sub-nav's Plugins link shows "1 needs attention" ("N need attention") only when the one read of `/api/plugins` counts more than zero, on every Settings page. The Plugins page itself is still the shell's placeholder.
+Step 2 of 2 of the Atomaut Plugins page: `/next/settings/plugins` is the page the eight Plugins boards draw, in place of the shell's placeholder. Integrations are one card for each concern (its checks with each fix and a Copy button, the commands that set its secrets, the "Active plugin" choice where a concern has more than one plugin, its own settings edited through the Settings flow, and Disable, Enable, Install and Uninstall as the plan allows, off with the plan's sentence where it refuses). Uninstall and a replacing install ask first, in the backend's own sentence. The outcome is the Applied, Refused or file-changed banner, and an instance that cannot be reached is the Health unknown board. The Claude plugins tab lists `tickets.plugins`, with each plugin's health, skills and needs, and adds, removes and changes a skill through the Settings preview and save, asking first for a dangerous key. No `src/` file changes.
 
 ## Acceptance
 
-`src/plugins/attention.test.ts` counts each kind once and leaves a whole, disabled or uninstalled plugin out; `src/ticket-mode/plugins-api.test.ts` holds `claude` and `attention` over a seam that runs no program; `src/plugins/page-actions.test.ts` holds `backup`, the conflict sentence for a stale `base` with nothing written, and the refusal of an unconfirmed uninstall and replacing install. `ui/src/plugins/attention.test.tsx` holds the words, hidden at 0, after a failed read, while loading and while an SSH instance is unreachable, and one `/api/plugins` request of the instance shown, never before the connections are known. `ui/test/plugins/badge.page.test.ts` drives Chromium over the build: the badge on Models, Workers and Machine at 1440px and 390px with no horizontal overflow (captures in `ui/captures/plugins/`).
+`ui/src/plugins/plugins-actions.test.tsx` holds each action (install, enable, disable, uninstall), both confirmations (Cancel and Escape post nothing; the yes posts `confirmed: true`), Applied with the in-force sentence and the backup, Refused with the server's sentence and the file-changed banner with its re-read. `plugins-states.test.tsx` holds loading, the failed read, health unknown, the badge count, a remote instance and a refused host file. `plugins-claude.test.tsx` holds the Claude tab, add, remove and the skill selects through the preview and save. `plugins-model.test.ts` holds the words of each status, and `ui/test/plugins/conflict.test.ts` holds the conflict sentence the page keeps to the one `runAction` throws. `ui/test/plugins/plugins.page.test.ts` drives Chromium over the build: the eight boards' states and the Claude tab at 1440px and 390px with no horizontal overflow (captures in `ui/captures/plugins/`).
 
 Acceptance:
 ```bash
@@ -13,8 +13,8 @@ pnpm --dir ui install --frozen-lockfile --ignore-scripts >/dev/null
 pnpm ui:typecheck
 pnpm ui:build >/dev/null
 pnpm ui:test
-npx eslint src/plugins/attention.ts src/ticket-mode/plugins-api.ts src/plugins/page-actions.ts ui --quiet
-ls ui/captures/plugins/plugins-badge-1440x900.png ui/captures/plugins/plugins-badge-390x844.png'
+npx eslint ui --quiet
+ls ui/captures/plugins/plugins-ready-1440x900.png ui/captures/plugins/plugins-conflict-390x844.png ui/captures/plugins/plugins-claude-390x844.png'
 ```
 
-Consumer-declaration: none -- `ui/` is a private package nothing else reads, and `PluginsAnswer` gains fields that `ui.html` ignores; no option is added to a project declaration.
+Consumer-declaration: none -- `ui/` is a private package nothing else reads; no option is added to a project declaration.
