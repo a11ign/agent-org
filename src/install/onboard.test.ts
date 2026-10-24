@@ -11,6 +11,7 @@ import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import type { OnboardStep } from "../plugins/manifest.ts";
 import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "../plugins/registry.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
+import { HerdrInstallRefusal } from "./herdr-install.ts";
 import { onboard, onboardServices, OnboardRefusal, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 import { createTailscale, freshState } from "../../plugins/tailscale/stub.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
@@ -113,7 +114,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
   const answers2: Record<string, (args: string[]) => RunResult> = {};
   let plugins: string | null = null;
   const value: OnboardDeps = {
-    env: {}, home, platform: "darwin", interactive: false,
+    env: {}, home, platform: "darwin", arch: "arm64", interactive: false,
     ask: async (question) => { asked.push(question); return answers.shift() ?? ""; },
     askHidden: async (question) => { hidden.push(question); return KEY; },
     // The Keychain, as the Linear plugin's steps reach it: `security` finds a key stored under a service, and `security -i` stores the one the person pastes (A11-222), the command on its standard input.
@@ -151,6 +152,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     codeHost: () => { const host = createFakeCodeHost(); host.seedOwners(null); return host; },
     prompts: NO_PROMPTS,
     ensureBun: async () => ({ path: "/h/.bun/bin/bun", installed: false }),
+    installHerdr: async () => { throw new Error("must not be asked: herdr is on PATH"); }, putOnPath: () => { throw new Error("must not be asked"); },
     herdrPlugins: () => plugins,
     newestPluginTag: () => "v0.4.13",
     run: (file, args) => {
@@ -164,8 +166,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     ghAs: () => listedGh(),
     replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }),
     diagnose: async () => [],
-    chromium: () => BROWSERS_READY,
-    isRoot: () => false,
+    chromium: () => BROWSERS_READY, isRoot: () => false,
     startServices: async (names) => { started.push(...names); return names.map((name) => ({ name, ok: true, line: `started the ${name} service`, address: name === "ui" ? "http://127.0.0.1:4748/" : null })); },
     fetch: linearKnowsTheKey, color: false,
     out: { log: (line: string) => printed.push(line) },
@@ -568,7 +569,7 @@ function greenDoctor(home: string): DoctorDeps {
     mode: () => 0o600, serviceState: () => "running", answers: async () => true, healthy: async () => true, unitProblem: () => null,
     pnpmVersion: () => ({ version: "10.34.5", via: "npm exec" as const }),
     probe: async () => 200,
-    hostPlace: async () => ({ kind: "no-project" }), platform: "linux",
+    hostPlace: async () => ({ kind: "no-project" }), platform: "linux", arch: "x64",
     herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }),
     herdrIntegrations: () => ({ status: 0, stdout: "claude: current (v10)\ncodex: current (v8)\n", stderr: "" }), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/t/ui-build", declared: true, looked: "/t/ui-build", version: "v0.280.0" }),
@@ -745,7 +746,7 @@ test("--no-start: onboard writes the host file and starts no service", async () 
 
 // A11-158: a plugin the host file disables is not run, so onboard does not prompt for what it needs.
 test("A11-158: a disabled tailscale exposure and a disabled atomic reviewer ask for neither Tailscale nor Codex", async () => {
-  const base = deps({ which: () => null });
+  const base = deps({ which: (name) => (name === "herdr" ? "/usr/local/bin/herdr" : null) });
   mkdirSync(join(base.home, ".agent-org"), { recursive: true });
   writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify({ tickets: { providers: {
     exposure: { provider: "tailscale", enabled: false }, reviewer: { provider: "atomic", enabled: false } } } }));
@@ -947,12 +948,13 @@ test("A11-184: an integration that does not install is said with its reason and 
   assert.ok(w.printed.some((line) => line.startsWith("started")) || w.started.length > 0, "the services still start");
 });
 
-test("A11-184: with no herdr on PATH both integration lines say so, with the same commands, and nothing is run", async () => {
-  const w = deps({ which: (name) => (name === "herdr" ? null : "/usr/local/bin/tool") });
-  await onboard(options({ repos: [w.repo], terminal: false }), w.deps);
+test("A11-184: with herdr gone after the first step both integration lines say so, with onboard's command and the same integration commands, and nothing is run", async () => {
+  let asked = 0;
+  const w = deps({ which: (name) => (name === "herdr" ? (asked++ === 0 ? "/usr/local/bin/herdr" : null) : "/usr/local/bin/tool") });
+  await assert.rejects(onboard(options({ repos: [w.repo], terminal: false }), w.deps), OnboardRefusal);
   assert.deepEqual(w.printed.filter((line) => line.includes("integration")), [
-    "    herdr is not on PATH. Install herdr, then run `herdr integration install claude`.",
-    "    herdr is not on PATH. Install herdr, then run `herdr integration install codex`.",
+    "    herdr is not on PATH. Run `agent-org onboard`, which installs herdr 0.9.3, then run `herdr integration install claude`.",
+    "    herdr is not on PATH. Run `agent-org onboard`, which installs herdr 0.9.3, then run `herdr integration install codex`.",
   ]);
   assert.deepEqual(w.printed.filter((line) => line.startsWith("  ✗ herdr does not know")), ["  ✗ herdr does not know Claude yet", "  ✗ herdr does not know Codex yet"]);
   assert.deepEqual(w.ran.filter((line) => line.startsWith("herdr")), []);
@@ -1147,4 +1149,91 @@ test("A11-186: a host file that is not JSON, or cannot be read, refuses an absen
   writeFileSync(join(home, ".agent-org", "host.json"), "{}");
   await assert.rejects(onboard(options({ profile: "new-laptop", start: false }), d), (error: unknown) => error instanceof OnboardRefusal && /cannot be read \(EACCES: permission denied\), so onboard will not write over it/.test(error.message));
   assert.deepEqual(written, []);
+});
+
+// ---- A11-223: onboard installs herdr, at the version this release pins, before anything that needs it
+
+/** A machine with no herdr until `installHerdr` has run; then it is found, as a PATH that holds its directory finds it. */
+function noHerdr(over: Partial<OnboardDeps> = {}, install: () => Promise<{ path: string; version: string }> = async () => ({ path: "/h/.local/bin/herdr", version: "0.9.3" })) {
+  let present = false;
+  const calls: string[] = [];
+  const w = deps({
+    which: (name) => (name === "herdr" ? (present ? "/h/.local/bin/herdr" : null) : "/usr/local/bin/tool"),
+    installHerdr: async () => { calls.push("install"); const done = await install(); present = true; return done; },
+    putOnPath: (dir) => { calls.push(`path ${dir}`); },
+    ...over,
+  });
+  return { ...w, calls };
+}
+
+test("A11-223: with no herdr on PATH, onboard installs the pinned herdr, says one line for it, and then starts the services", async () => {
+  const w = noHerdr();
+  await onboard(options({ repos: [w.repo] }), w.deps);
+  assert.deepEqual(w.calls, ["install", "path /h/.local/bin"]);
+  assert.equal(w.printed.filter((line) => line.includes("herdr v")).length, 1);
+  assert.ok(w.printed.includes("  ✓ Installed herdr v0.9.3"), w.printed.join("\n"));
+  assert.deepEqual(w.started, ["herdr", "instance", "ui", "terminal", "auto-update"], "herdr is the first service, started after it was installed");
+  assert.ok(w.printed.indexOf("  ✓ Installed herdr v0.9.3") < w.printed.findIndex((line) => line.includes("Worker terminal")), "before the steps that call herdr");
+});
+
+test("A11-223: a herdr directory that is not on PATH is put on it for the run, and the person is told the line that keeps it there", async () => {
+  const w = noHerdr();
+  await onboard(options({ repos: [w.repo] }), w.deps);
+  assert.ok(w.calls.includes("path /h/.local/bin"));
+  assert.ok(w.printed.includes('/h/.local/bin is not on your PATH. Add this line to your shell\'s rc file (~/.zshrc or ~/.bashrc), then open a new terminal:\n  export PATH="/h/.local/bin:$PATH"'), w.printed.join("\n"));
+  const onPath = noHerdr({ env: { PATH: "/usr/bin:/h/.local/bin" } });
+  await onboard(options({ repos: [onPath.repo] }), onPath.deps);
+  assert.deepEqual(onPath.calls, ["install"], "a directory already on PATH is left alone");
+  assert.ok(!onPath.printed.some((line) => line.includes("is not on your PATH")));
+});
+
+test("A11-223: a herdr that is already on PATH is not installed again, at any version, and nothing is said of it", async () => {
+  const w = deps();
+  await onboard(options({ repos: [w.repo] }), w.deps);
+  assert.ok(!w.printed.some((line) => line.includes("Installed herdr")));
+  assert.deepEqual(w.started, ["herdr", "instance", "ui", "terminal", "auto-update"]);
+});
+
+test("A11-223: a failed install stops onboard at that step with ✗ and the command to run by hand, and writes, runs and starts nothing", async () => {
+  const w = noHerdr({}, async () => { throw new HerdrInstallRefusal("https://herdr.dev/latest.json could not be read: getaddrinfo ENOTFOUND herdr.dev"); });
+  await assert.rejects(onboard(options({ repos: [w.repo] }), w.deps), (error: unknown) => error instanceof OnboardRefusal && error.message === "stopped at herdr, before anything was written or started");
+  assert.deepEqual(w.printed, [
+    "  ✗ herdr was not installed: https://herdr.dev/latest.json could not be read: getaddrinfo ENOTFOUND herdr.dev",
+    "    Run this, then run `agent-org onboard` again:",
+    "    mkdir -p ~/.local/bin && curl -fsSL https://github.com/herdrdev/herdr/releases/download/v0.9.3/herdr-macos-aarch64 -o ~/.local/bin/herdr.download && chmod +x ~/.local/bin/herdr.download && mv ~/.local/bin/herdr.download ~/.local/bin/herdr",
+  ]);
+  assert.deepEqual(w.started, [], "no service is started: not herdr, the instance, the ui or the terminal");
+  assert.deepEqual(w.written, [], "no file is written");
+  assert.deepEqual(w.ran, [], "no program is run: no plugin, no integration");
+  assert.deepEqual(w.calls, ["install"], "and the PATH is not touched");
+  assert.ok(!existsSync(join(w.home, ".agent-org", "host.json")));
+});
+
+test("A11-223: an install that is not a refusal (a bug, not a network) is not hidden as one", async () => {
+  const w = noHerdr({}, async () => { throw new TypeError("deps.writeExecutable is not a function"); });
+  await assert.rejects(onboard(options({ repos: [w.repo] }), w.deps), TypeError);
+  assert.deepEqual(w.started, []);
+});
+
+test("A11-223: an install that wrote herdr where PATH still cannot find it stops the same way", async () => {
+  const w = deps({ which: (name) => (name === "herdr" ? null : "/usr/local/bin/tool"), installHerdr: async () => ({ path: "/h/.local/bin/herdr", version: "0.9.3" }), putOnPath: () => undefined });
+  await assert.rejects(onboard(options({ repos: [w.repo] }), w.deps), OnboardRefusal);
+  assert.ok(w.printed.includes("  ✗ herdr was not installed: /h/.local/bin/herdr was written, but `herdr` is still not found on PATH"), w.printed.join("\n"));
+  assert.deepEqual([w.started, w.written, w.ran], [[], [], []]);
+});
+
+test("A11-223: herdr gone by the time the services would start keeps all of them from starting, and says so with the hand command", async () => {
+  let asked = 0;
+  const w = deps({ which: (name) => (name === "herdr" ? (asked++ < 3 ? "/usr/local/bin/herdr" : null) : "/usr/local/bin/tool") });
+  await assert.rejects(onboard(options({ repos: [w.repo], terminal: false }), w.deps), (error: unknown) => error instanceof OnboardRefusal && /^stopped at herdr, after the host file was written/.test(error.message));
+  assert.deepEqual(w.started, []);
+  assert.ok(w.printed.includes("  ✗ herdr was not installed: `herdr` is no longer on PATH"), w.printed.join("\n"));
+  assert.ok(w.printed.some((line) => line.startsWith("    mkdir -p ~/.local/bin && curl -fsSL https://github.com/herdrdev/herdr/releases/download/v0.9.3/")));
+});
+
+test("A11-223: with --no-start, nothing is started, so a herdr that is missing at the end is not a stop", async () => {
+  let asked = 0;
+  const w = deps({ which: (name) => (name === "herdr" ? (asked++ < 3 ? "/usr/local/bin/herdr" : null) : "/usr/local/bin/tool") });
+  await onboard(options({ repos: [w.repo], terminal: false, start: false }), w.deps);
+  assert.deepEqual(w.started, []);
 });

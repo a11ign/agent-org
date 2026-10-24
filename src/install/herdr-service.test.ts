@@ -49,7 +49,7 @@ test("the herdr unit runs `herdr --session <s> server` with the instance's envir
 test("the herdr unit is refused, naming the fix, when herdr is not on PATH", () => {
   const { services, files } = setup();
   files.delete("/opt/bin/herdr");
-  assert.throws(() => unitFor("herdr", services), /the herdr service runs `herdr`, and this machine has none on PATH/);
+  assert.throws(() => unitFor("herdr", services), (error: Error) => error.message === "the herdr service runs `herdr`, and this machine has none on PATH. Run `agent-org onboard`, which installs herdr 0.9.3, then start the herdr service again.");
 });
 
 test("the instance and the terminal Want= and start After= herdr, and no unit names it in Requires=, BindsTo= or PartOf=", () => {

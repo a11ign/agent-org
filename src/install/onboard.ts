@@ -19,6 +19,8 @@
 // as `doctor --fix` moves it. A key the host file already holds is kept as it is; onboard writes only the keys that are absent.
 //
 // IT SETS UP WHAT TICKET MODE NEEDS TO WORK OUT OF THE BOX:
+//   - HERDR, FIRST (A11-223). It runs every worker's terminal, so when `herdr` is not on PATH onboard installs the version this release pins (`herdr-install.ts`) before it reads a profile or writes anything. If that
+//     fails onboard stops there, with the command to run by hand, and nothing is written or started. A herdr at another version is left alone: replacing it ends live panes, and doctor says so.
 //   - THE WEB TERMINAL (A11-66). Onboard installs bun when the machine has none (`bun.ts`), installs the plugin at its newest release tag with
 //     `herdr plugin install devswha/herdr-web-ui --ref <tag> --yes` (A11-184: never the default branch), writes the exposure block's `terminal` when it is absent, and starts the `terminal` service. A step
 //     that fails is said with its reason and leaves `terminal` unwritten, so the board never links to a terminal nothing serves.
@@ -41,9 +43,9 @@
 // App's key is copied and never printed.
 //
 // IT ENDS BY DIAGNOSING: the same checks `agent-org doctor` runs are printed, so the person sees whether the machine is ready.
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { parseArgs } from "node:util";
@@ -64,6 +66,7 @@ import { ensureBun } from "./bun.ts";
 import { chromiumProblems, chromiumReport, lacksLibraries, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
+import { handInstallCommand, HerdrInstallRefusal, installHerdr, TOOL_HERDR_VERSION } from "./herdr-install.ts";
 import { HERDR_INTEGRATIONS, integrationInstallCommand, newestPluginTag, type HerdrIntegration } from "./herdr-upkeep.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
@@ -103,6 +106,8 @@ export type OnboardDeps = Readonly<{
   env: Env;
   home: string;
   platform: NodeJS.Platform;
+  /** The CPU (`process.arch`): which herdr build this machine takes, and the hand command that names it (A11-223). */
+  arch: string;
   /** A person is at the terminal, so what no flag gave can be asked. */
   interactive: boolean;
   ask: (question: string) => Promise<string>;
@@ -136,6 +141,10 @@ export type OnboardDeps = Readonly<{
   color: boolean;
   /** The `bun` this machine has, installed into `~/.bun/bin` when it has none. */
   ensureBun: () => Promise<{ path: string; installed: boolean }>;
+  /** Put the herdr this release pins into herdr's install dir (A11-223); THROWS `HerdrInstallRefusal` with the reason when it cannot. */
+  installHerdr: () => Promise<{ path: string; version: string }>;
+  /** Put `dir` first on this process's PATH, so the herdr just installed is found by the steps and services that follow. */
+  putOnPath: (dir: string) => void;
   /** The text of herdr's `plugins.json`, or null. */
   herdrPlugins: () => string | null;
   /** The newest release tag of a herdr plugin's GitHub repository (A11-184); throws with the reason when it cannot be read or the repository has none. */
@@ -399,13 +408,47 @@ function setUpHerdrIntegrations(deps: Session): void {
   for (const { name, failure } of results) if (failure !== null) deps.say.failed(`herdr does not know ${INTEGRATION_WORDS[name]} yet`, failure);
 }
 
+/** The words of the PATH line install.sh prints for its own directory (A11-185), for herdr's. */
+const pathNote = (dir: string): string => `${dir} is not on your PATH. Add this line to your shell's rc file (~/.zshrc or ~/.bashrc), then open a new terminal:\n  export PATH="${dir}:$PATH"`;
+
+/**
+ * Stop onboard because herdr is not here (A11-223): a ✗ line with why and the exact command to run by hand, then a refusal that says how far onboard got (`stopped`). herdr runs every
+ * worker's terminal, so nothing that needs it is set up or started without it.
+ */
+function refuseWithoutHerdr(why: string, stopped: string, deps: Session): never {
+  const command = handInstallCommand(deps.platform, deps.arch, deps.env);
+  deps.say.failed(`herdr was not installed: ${why}`, `Run this, then run \`agent-org onboard\` again:\n${command}`);
+  throw new OnboardRefusal(`stopped at herdr, ${stopped}`);
+}
+
+/**
+ * herdr, the first step (A11-223): when it is not on PATH, install the version this release pins, and say so in one line. It runs before the profile, the clones, the plugin steps and every write, since
+ * the terminal, the integrations and the services all call herdr. A herdr at another version is left alone: replacing it ends live panes, so doctor warns and a person applies the pinned step.
+ */
+async function ensureHerdr(deps: Session): Promise<void> {
+  if (deps.which("herdr") !== null) return;
+  let installed: { path: string; version: string };
+  try {
+    installed = await deps.installHerdr();
+  } catch (err) {
+    if (!(err instanceof HerdrInstallRefusal)) throw err;
+    refuseWithoutHerdr(err.message, "before anything was written or started", deps);
+  }
+  const dir = dirname(installed.path);
+  const onPath = (deps.env.PATH ?? "").split(delimiter).includes(dir);
+  if (!onPath) deps.putOnPath(dir);
+  if (deps.which("herdr") === null) refuseWithoutHerdr(`${installed.path} was written, but \`herdr\` is still not found on PATH`, "before anything was written or started", deps);
+  deps.say.done(`Installed herdr v${installed.version}`, `at ${installed.path}`);
+  if (!onPath) deps.say.note(pathNote(dir));
+}
+
 /** What a person calls each agent herdr has an integration for. */
 const INTEGRATION_WORDS: Readonly<Record<HerdrIntegration, string>> = { claude: "Claude", codex: "Codex" };
 
 /** What installing one integration did: the sentence for `--verbose` when it installed, or why it did not and the command to run. */
 function installIntegration(name: HerdrIntegration, deps: Session): Readonly<{ done: string; failure: string | null }> {
   const command = integrationInstallCommand(name);
-  if (deps.which("herdr") === null) return { done: "", failure: `herdr is not on PATH. Install herdr, then run \`${command}\`.` };
+  if (deps.which("herdr") === null) return { done: "", failure: `herdr is not on PATH. Run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, then run \`${command}\`.` };
   const result = deps.run("herdr", ["integration", "install", name]);
   return result.status === 0 ? { done: `installed herdr's ${name} integration`, failure: null } : { done: "", failure: `${firstLine(result)}. Run \`${command}\`.` };
 }
@@ -674,6 +717,8 @@ function sayNext(board: string | null, say: OnboardOutput): void {
 /** What onboard does once the host file is written: the guards, the services, doctor's checks, and the ending: whether this machine is set up, and what to run next. */
 async function finishOnboard({ options, terminal }: Readonly<{ options: OnboardOptions; terminal: boolean }>, deps: Session) {
   sayGuards(await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements }), deps.say);
+  // herdr removed since the first step: the herdr, instance, ui and terminal services all need it, so none is started without it.
+  if (options.start && deps.which("herdr") === null) refuseWithoutHerdr("`herdr` is no longer on PATH", "after the host file was written and before any service was started", deps);
   const services = options.start ? await deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })) : [];
   sayServices(services, deps.say);
   sayChecks(await deps.diagnose(), deps.say);
@@ -687,6 +732,7 @@ async function finishOnboard({ options, terminal }: Readonly<{ options: OnboardO
 /** Write the host file and the notes, install the conventions plugin, and start the services. @returns the host file's path */
 export async function onboard(options: OnboardOptions, injected: OnboardDeps): Promise<string> {
   const deps: Session = { ...injected, say: onboardOutput(injected.out, { verbose: options.verbose, color: injected.color }) };
+  await ensureHerdr(deps);
   const hostFile = hostFilePath(deps.env, deps.home, (path) => readHostText(path, deps));
   const profile = options.profile === undefined ? null : await profileFor(options, heldClones(hostFile, deps), deps);
   const host = await currentHost(hostFile, deps);
@@ -765,7 +811,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       repos: values.repo, keychain: values["linear-keychain"], keyFile: values["linear-key-file"], profile: values.profile, start: !values["no-start"],
       terminal: !values["no-terminal"], autoUpdate: !values["no-auto-update"], updateChannel: channel, verbose: values.verbose,
     }, {
-      env: process.env, home, platform: process.platform, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+      env: process.env, home, platform: process.platform, arch: process.arch, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
       ask, askHidden, exec: realExec, catalog: defaultCatalog, loadPlugins: (providers, pluginDeps) => loadEnabled(providers, defaultCatalog(), pluginDeps),
       readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
       exists: (path) => existsSync(path), removeFile: (path) => rmSync(path, { force: true }),
@@ -782,6 +828,19 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         },
         writeExecutable: (path, data) => writeAtomic(path, data, 0o755),
       }),
+      installHerdr: () => installHerdr({
+        home, env: process.env, platform: process.platform, arch: process.arch,
+        download: async (url) => {
+          const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+          if (!response.ok) throw new Error(`answered ${response.status}`);
+          return Buffer.from(await response.arrayBuffer());
+        },
+        writeExecutable: (path, data) => writeAtomic(path, data, 0o755),
+        place: (from, to) => renameSync(from, to),
+        remove: (path) => rmSync(path, { force: true }),
+        versionOf: (path) => { const result = runProgram(path, ["--version"]); return result.status === 0 ? result.stdout : null; },
+      }),
+      putOnPath: (dir) => { process.env.PATH = [dir, process.env.PATH].filter(Boolean).join(delimiter); },
       herdrPlugins: () => readOrNull(join(herdrConfigDir(process.env, home), "plugins.json")),
       newestPluginTag: (repo) => newestPluginTag(repo),
       run: runProgram,
