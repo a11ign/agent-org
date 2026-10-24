@@ -7,8 +7,14 @@ import { isBlank, lookAtRun, type ActionInputs } from "../runs/use-run-actions.t
 import type { RunEntry } from "../runs/runs-model.ts";
 import { openTerminalWhenReady } from "../tickets/terminal.ts";
 
-/** When the queue the page draws was read: the moment it last changed, which is at most one poll interval ago while the poll keeps answering. */
-export const useQueueReadAt = (queue: QueueView): number => useMemo(() => Date.now(), [queue]);
+/**
+ * When the queue the page draws was read: the poll's own `readAt` (the shell hands the whole poll on, though its type names less), else the moment this page first drew the queue it holds, which is
+ * never earlier than the read.
+ */
+export function useQueueReadAt(read: object, queue: QueueView): number {
+  const drawn = useMemo(() => Date.now(), [queue]);
+  return "readAt" in read && typeof read.readAt === "number" ? read.readAt : drawn;
+}
 
 /**
  * A click on the run's terminal link built from a queue older than one poll interval: the pane it names may have moved (the instance restarted since), so the click opens the tab itself, in the

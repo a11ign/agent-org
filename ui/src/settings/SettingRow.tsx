@@ -35,6 +35,13 @@ function RowInput({ row, edit }: Readonly<{ row: Row; edit: Edit }>) {
 /** Whether the row can be returned to its default: it is edited in place, the file holds a value for it, and nothing has been emptied on it yet. */
 const canReturnToDefault = (row: Row, edit: Edit | null): edit is Edit => edit !== null && !edit.readOnly && row.raw !== null && edit.draft !== "";
 
+/** Empties the row's draft, and puts focus on the row's input: the button goes with the draft, and a keyboard user is not left on the page's body. */
+function returnToDefault(button: HTMLElement, edit: Edit): void {
+  const input = button.closest(".setting-control")?.querySelector<HTMLElement>("input, textarea");
+  edit.onType("");
+  input?.focus();
+}
+
 /**
  * One host-file key as the boards draw it: the key, what it does, when it is by default and in force, and, on the right, the input that changes it. A key the page does not change in place
  * shows its value (or the alias text of an old key that is set) and says why it is read-only. A row with a staged change is tinted; a draft that does not read is said on its row.
@@ -60,7 +67,7 @@ export function SettingRow({ row, edit, staged, problem }: Readonly<{ row: Row; 
       <div className={json ? "setting-control setting-control-wide" : "setting-control"}>
         {edit === null ? <span className="setting-value">{row.alias ?? row.value}</span> : <RowInput row={row} edit={edit} />}
         {canReturnToDefault(row, edit) ? (
-          <button type="button" className="ghost ghost-small setting-reset" onClick={() => edit.onType("")}>Return to default</button>
+          <button type="button" className="ghost ghost-small setting-reset" aria-label={`Return ${row.key} to default`} onClick={(event) => returnToDefault(event.currentTarget, edit)}>Return to default</button>
         ) : null}
       </div>
     </div>

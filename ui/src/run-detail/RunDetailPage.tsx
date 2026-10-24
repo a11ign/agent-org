@@ -36,7 +36,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   const inputs = { client, connection, config, refresh: read.refresh };
   const actions = useRunActions(inputs);
   const talk = useTalk(inputs);
-  const followTerminal = useFollowTerminal(inputs, entry, useQueueReadAt(queue));
+  const followTerminal = useFollowTerminal(inputs, entry, useQueueReadAt(read, queue));
   const board = boardOf(entry, queue);
   const headerActions = headerActionsOf(entry, queue);
   const clear = () => {

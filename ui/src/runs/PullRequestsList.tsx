@@ -1,16 +1,13 @@
 import { safeHref, unlistedPulls } from "../../../src/ticket-mode/board-view.ts";
 import type { ViewEntry } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
+import { ExtraGroup } from "./ExtraGroup.tsx";
 
 /** The open pull requests the pool has read that no run lists, as `ui.html`'s "Pull requests" list: a person's pull request, or one no run has. Not drawn when there are none. */
 export function PullRequestsList({ entries, reviews }: Readonly<{ entries: readonly ViewEntry[]; reviews: Readonly<Record<string, string>> }>) {
   const pulls = unlistedPulls(entries, reviews);
   if (pulls.length === 0) return null;
   return (
-    <section className="runs-list runs-extra" aria-label="Pull requests">
-      <div className="runs-extra-head">
-        <span className="runs-head-label">Pull requests</span>
-        <span className="runs-head-count">{pulls.length}</span>
-      </div>
+    <ExtraGroup label="Pull requests" count={pulls.length}>
       {pulls.map((pull) => {
         const href = safeHref(pull.url);
         return (
@@ -20,6 +17,6 @@ export function PullRequestsList({ entries, reviews }: Readonly<{ entries: reado
           </div>
         );
       })}
-    </section>
+    </ExtraGroup>
   );
 }

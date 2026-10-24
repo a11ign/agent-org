@@ -1,4 +1,6 @@
-import { fireEvent } from "@testing-library/react";
+import { fireEvent, renderHook } from "@testing-library/react";
+import type { QueueView } from "../api/types.ts";
+import { useQueueReadAt } from "./use-stale-terminal.ts";
 import { PERSONAL, queueingConfig, type InstanceAnswers } from "../../test/fixtures.ts";
 import { detailStand, queueOf, RUNS_OF, TERMINAL, type RunFields } from "../../test/run-detail/run-detail-stand.ts";
 import { pageFor, screen, textOf, waitFor, within } from "./run-detail-harness.tsx";
@@ -127,12 +129,12 @@ describe("everything this run noted", () => {
     expect([...disclosure("Everything this run noted").querySelectorAll("li")].map(textOf)).toEqual(expect.arrayContaining(["pnpm test: 12 of 12 pass", "the screenshot is attached"]));
   });
 
-  it("starts closed and opens by keyboard-reachable summary", async () => {
+  it("starts closed, and is a native disclosure whose summary a keyboard reaches", async () => {
     await open(queued("A11-85", { sessionNote: "a note" }));
     const node = disclosure("Everything this run noted");
     expect(node.hasAttribute("open")).toBe(false);
-    fireEvent.click(node.querySelector("summary") as HTMLElement);
-    expect(node.querySelector("summary")).not.toBeNull();
+    expect(node.tagName).toBe("DETAILS");
+    expect(node.querySelector("summary")?.tagName).toBe("SUMMARY");
   });
 
   it("is not drawn for a run with no note", async () => {
@@ -202,5 +204,19 @@ describe("the run's terminal link read afresh when its queue is older than one p
     expect(open).not.toHaveBeenCalled();
     expect(fireEvent.click(link())).toBe(true);
     expect(open).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("when the queue the page draws was read", () => {
+  const queue = queueOf([]) as QueueView;
+
+  it("is the poll's own read time when the shell hands it on, however long ago the page drew the queue", () => {
+    expect(renderHook(() => useQueueReadAt({ readAt: 1234 }, queue)).result.current).toBe(1234);
+  });
+
+  it("is the moment the page drew the queue when the poll names no read time", () => {
+    const before = Date.now();
+    const at = renderHook(() => useQueueReadAt({}, queue)).result.current;
+    expect(at).toBeGreaterThanOrEqual(before);
   });
 });

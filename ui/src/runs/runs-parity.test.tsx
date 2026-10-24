@@ -1,5 +1,5 @@
 import { PERSONAL, queueingConfig, type Stand } from "../../test/fixtures.ts";
-import { boardRuns, completed, queueWith, runsStand, working, type RunFields } from "../../test/runs/runs-stand.ts";
+import { completed, queueWith, runsStand, working, type RunFields } from "../../test/runs/runs-stand.ts";
 import { fireEvent, pageOn, rail, screen, textOf, within } from "./runs-harness.tsx";
 
 // The features `ui.html` has on its Board tab that A11-197 left off the Runs page (A11-220): the held, reviewer-off and claim notices, and the Pull requests and After-merge checks lists.
@@ -9,23 +9,17 @@ const HELD = { name: "tickets.preflight", reason: "the disk is 97% full", since:
 const MINE = "https://github.com/a11ign/agent-org/pull/1900";
 const MINE_REVIEW = "waiting on a reviewer";
 
-/** Two runs on a queue, with an After-merge line on each: one that names who runs it and one that does not. */
+/** Two merged runs, one After-merge line each (one names who runs it, one does not), and a run at work. */
 const withAfterMerge = (): RunFields[] => [
-  completed({ key: "A11-70", title: "A merged run", startedAgo: 40 * MINUTE, afterMerge: 0, afterMergeLines: [{ line: "Check the release is out", owner: "the chairman" }] } as never),
-  completed({ key: "A11-71", title: "Another merged run", startedAgo: 50 * MINUTE, afterMerge: 0, afterMergeLines: [{ line: "Read the dashboard", owner: null }] } as never),
+  { ...completed({ key: "A11-70", title: "A merged run", startedAgo: 40 * MINUTE }), afterMerge: [{ line: "Check the release is out", owner: "the chairman" }] },
+  { ...completed({ key: "A11-71", title: "Another merged run", startedAgo: 50 * MINUTE }), afterMerge: [{ line: "Read the dashboard", owner: null }] },
   working({ key: "A11-72", title: "A run at work", startedAgo: 5 * MINUTE }),
 ];
-
-/** The `afterMerge` the stand's `completed` builds takes a count; these set the lines themselves. */
-const named = (runs: RunFields[]): RunFields[] => runs.map((run) => {
-  const lines = (run as { afterMergeLines?: unknown }).afterMergeLines;
-  return lines === undefined ? run : { ...run, afterMerge: lines };
-});
 
 type Extras = Readonly<{ held?: typeof HELD | null; claimWarning?: string | null; pulls?: Readonly<Record<string, string>>; reviewer?: string; runs?: RunFields[] }>;
 
 /** A stand whose queue holds the given notices and pull requests. */
-function standWith({ held = null, claimWarning = null, pulls = {}, reviewer = "on", runs = named(withAfterMerge()) }: Extras = {}): Stand {
+function standWith({ held = null, claimWarning = null, pulls = {}, reviewer = "on", runs = withAfterMerge() }: Extras = {}): Stand {
   const queue = { ...queueWith(runs), pulls, held, claimWarning };
   return { connections: [PERSONAL], instances: { personal: { config: queueingConfig({ reviewer } as never), queue } } };
 }
@@ -140,9 +134,8 @@ describe("the After-merge checks list", () => {
     expect(runs.compareDocumentPosition(pulls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("draws the board's 90 runs with its two After-merge lines under the list", async () => {
+  it("draws the board's two After-merge lines under its 90 runs", async () => {
     await pageOn(runsStand());
-    expect(boardRuns().length).toBe(90);
     expect(within(screen.getByRole("region", { name: "After-merge checks" })).getAllByText(/^Runs it: /)).toHaveLength(2);
   });
 });

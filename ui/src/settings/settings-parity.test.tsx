@@ -73,15 +73,15 @@ describe("a provider's row", () => {
 describe("returning a key to its default", () => {
   it("stages the key's removal from a row the file holds, and the button goes", async () => {
     await pageOn("workers");
-    fireEvent.click(within(rowOf("tickets.stallMinutes")).getByRole("button", { name: "Return to default" }));
+    fireEvent.click(within(rowOf("tickets.stallMinutes")).getByRole("button", { name: /^Return \S+ to default$/ }));
     expect(screen.getByRole("region", { name: /^Unsaved changes/ }).textContent).toContain("1 unsaved change");
     expect(inputOf("tickets.stallMinutes").value).toBe("");
-    expect(within(rowOf("tickets.stallMinutes")).queryByRole("button", { name: "Return to default" })).toBeNull();
+    expect(within(rowOf("tickets.stallMinutes")).queryByRole("button", { name: /^Return \S+ to default$/ })).toBeNull();
   });
 
   it("sends the removal when saved", async () => {
     const { fetchWith } = await pageOn("workers");
-    fireEvent.click(within(rowOf("tickets.stallMinutes")).getByRole("button", { name: "Return to default" }));
+    fireEvent.click(within(rowOf("tickets.stallMinutes")).getByRole("button", { name: /^Return \S+ to default$/ }));
     fireEvent.click(within(screen.getByRole("region", { name: /^Unsaved changes/ })).getByRole("button", { name: "Review changes" }));
     await screen.findByRole("button", { name: "Save to host.json" });
     expect(posts(fetchWith, "/api/settings/preview").map((request) => request.body)).toEqual([{ file: "host.json", changes: [{ key: "tickets.stallMinutes", remove: true }] }]);
@@ -91,16 +91,35 @@ describe("returning a key to its default", () => {
     const files = { ...BOARD_FILES, host: { ...BOARD_FILES.host, tickets: { ...(BOARD_FILES.host.tickets as object), drafts: true } } };
     const { fetchWith } = await pageOn("workers", { state: settingsOf({ view: () => viewOf(files) }) });
     expect((inputOf("tickets.drafts") as HTMLInputElement).checked).toBe(true);
-    fireEvent.click(within(rowOf("tickets.drafts")).getByRole("button", { name: "Return to default" }));
+    fireEvent.click(within(rowOf("tickets.drafts")).getByRole("button", { name: /^Return \S+ to default$/ }));
     expect(within(rowOf("tickets.drafts")).getByText("default")).toBeTruthy();
     fireEvent.click(within(screen.getByRole("region", { name: /^Unsaved changes/ })).getByRole("button", { name: "Review changes" }));
     await screen.findByRole("button", { name: "Save to host.json" });
     expect(posts(fetchWith, "/api/settings/preview").map((request) => request.body)).toEqual([{ file: "host.json", changes: [{ key: "tickets.drafts", remove: true }] }]);
   });
 
+  it("puts focus on the row's input, so a keyboard user is not left on the page when the button goes", async () => {
+    await pageOn("workers");
+    fireEvent.click(within(rowOf("tickets.stallMinutes")).getByRole("button", { name: "Return tickets.stallMinutes to default" }));
+    expect(document.activeElement).toBe(inputOf("tickets.stallMinutes"));
+  });
+
+  it("settles when the switch is saved removed: the file holds no value, so nothing stays staged", async () => {
+    const files = { ...BOARD_FILES, host: { ...BOARD_FILES.host, tickets: { ...(BOARD_FILES.host.tickets as object), drafts: true } } };
+    const state = settingsOf({ view: () => viewOf(files) });
+    await pageOn("workers", { state });
+    fireEvent.click(within(rowOf("tickets.drafts")).getByRole("button", { name: "Return tickets.drafts to default" }));
+    fireEvent.click(within(screen.getByRole("region", { name: /^Unsaved changes/ })).getByRole("button", { name: "Review changes" }));
+    fireEvent.click(await screen.findByLabelText("I am changing tickets.drafts"));
+    fireEvent.click(screen.getByRole("button", { name: "Save to host.json" }));
+    state.view = () => viewOf(BOARD_FILES);
+    await screen.findByText("Saved to host.json.");
+    await waitFor(() => expect(screen.queryByRole("region", { name: /^Unsaved changes/ })).toBeNull());
+  });
+
   it("is not offered on a key the file does not hold", async () => {
     await pageOn("workers");
-    expect(within(rowOf("tickets.preflight")).queryByRole("button", { name: "Return to default" })).toBeNull();
+    expect(within(rowOf("tickets.preflight")).queryByRole("button", { name: /^Return \S+ to default$/ })).toBeNull();
   });
 });
 

@@ -30,6 +30,13 @@ describe("what a draft stages", () => {
     expect(staged.map(({ change }) => change)).toEqual([{ key: "tickets.stallMinutes", remove: true }, { key: "home", remove: true }, { key: "tickets.preflight", remove: true }]);
   });
 
+  it("stages an emptied switch as returning its key to its default, and not once the file holds no value for it", () => {
+    const set = row({ key: "tickets.drafts", input: "boolean", raw: "true", default: "false" });
+    expect(stagingOf([set], { [idOf(set)]: "" }, {}).staged.map(({ change }) => change)).toEqual([{ key: "tickets.drafts", remove: true }]);
+    const unset = row({ key: "tickets.drafts", input: "boolean", raw: null, default: "false" });
+    expect(stagingOf([unset], { [idOf(unset)]: "" }, {}).staged).toEqual([]);
+  });
+
   it("says a number or JSON that does not read, on its row, and stages nothing for it", () => {
     const { staged, problems } = stagingOf([stall, list], { [idOf(stall)]: "soon", [idOf(list)]: "[{" }, {});
     expect(staged).toEqual([]);

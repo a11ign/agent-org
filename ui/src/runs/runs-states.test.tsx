@@ -76,8 +76,7 @@ describe("the error state", () => {
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(fetchWith.paths.filter((path) => path === "/c/personal/api/queue").length).toBe(reads + 1));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-    // The key is on the run's row and on its After-merge line (A11-220).
-    expect((await screen.findAllByText("A11-179", { exact: false })).length).toBeGreaterThan(0);
+    await waitFor(() => expect(keysShown()).toContain("A11-179"));
     expect(keysShown()).toHaveLength(50);
   });
 

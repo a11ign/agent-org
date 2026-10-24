@@ -104,6 +104,8 @@ function readDraft(row: Row, draft: string): Read {
 
 /** Whether `text` says what the file already holds for the row: the same text, or the same value (`5.0` for `5`, a list laid out another way). */
 export function sameAsFile(row: Row, text: string): boolean {
+  // A switch returned to its default (an empty draft) says what the file says once the file holds no value for the key.
+  if (row.input === "boolean" && text === "") return row.raw === null;
   const file = baselineOf(row);
   return text === file || JSON.stringify(readDraft(row, text)) === JSON.stringify(readDraft(row, file));
 }

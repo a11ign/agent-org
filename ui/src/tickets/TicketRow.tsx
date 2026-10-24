@@ -74,7 +74,7 @@ function PlanMark({ ticket, context }: Readonly<{ ticket: TicketView; context: R
   return <NoPlanMark note={missing.note} covered={missing.covered} />;
 }
 
-/** The labels a ticket carries in a group, as small tags after its title, each titled with its group. The Goal group's is the goal pill's already. */
+/** The labels a ticket carries in a group, as small tags after its title, each titled with its group. The Goal group's is the goal pill's already, and the board's row with an open decision draws the decision in place of it. */
 function LabelTags({ ticket }: Readonly<{ ticket: TicketView }>) {
   return (
     <>
