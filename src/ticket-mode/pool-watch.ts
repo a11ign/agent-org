@@ -4,7 +4,7 @@
 import { herdrReason, readAgents } from "../herdr-agents.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { log, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
-import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, settle } from "./pool-settle.ts";
+import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, recordWrittenStep, settle } from "./pool-settle.ts";
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { checkRound, conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
@@ -110,6 +110,8 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     const latest = () => store.get().entries.find((e) => e.ticket.key === key) ?? entry;
     const current = latest();
     const outcomePath = join(dir, OUTCOME_FILE);
+    // The step the worker says it is on is read while it works, so the page shows it as the worker moves on (A11-219).
+    recordWrittenStep(ctx, current);
     if ((seen === "idle" || seen === "done") && outcomeWritten(dir)) {
       settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8")));
       // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled. A decline it was not yet told of is told now, not to a run that just ended.

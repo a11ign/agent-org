@@ -14,7 +14,9 @@ import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, folderClaimMisses, folderClaimR
 import { type PlanStamp, stampedPlan, urlsNamedIn } from "./plan-stamp.ts";
 import { type TicketRead } from "./ticket-read.ts";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, recordPullStates, unpark } from "./queue/queue-transitions.ts";
-import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
+import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
+import { writtenStep } from "./outcome.ts";
+import { recordCurrentStep } from "./queue/queue-run-detail.ts";
 import { recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { clearPartial } from "./queue/queue-next-step.ts";
 import { type Ticket } from "./source.ts";
@@ -31,6 +33,22 @@ import { herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { PullState } from "./source.ts";
+
+/**
+ * Record the plan step a live run's worker wrote as `currentStep` in its outcome file (A11-219), as written, without settling anything: it is read while the agent works and again when its outcome is settled. A file
+ * the run was marked stale on is an earlier run's and says nothing of this one. Reading the same file again changes nothing.
+ */
+export function recordWrittenStep(ctx: PoolContext, entry: Entry): void {
+  const { dir } = runPlace(ctx, entry);
+  const path = join(dir, OUTCOME_FILE);
+  try {
+    if (!outcomeWritten(dir)) return;
+    const step = writtenStep(readFileSync(path, "utf8"));
+    if (step !== null) update(ctx, (queue) => recordCurrentStep(queue, entry.ticket.key, step));
+  } catch {
+    // A file that cannot be read says no step; the watch reads it for the run's end as it always did, and must not stop the pass for a step.
+  }
+}
 
 /**
  * A run's agent wrote `working`: its reason becomes the run's latest note, for every ticket in the run, and the run carries on. The file's own
@@ -50,6 +68,7 @@ function noteStillWorking(ctx: PoolContext, entry: Entry, reason: string): void 
  * a proposed edit is recorded with the ticket's text, and any other outcome ends the run.
  */
 export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome): void {
+  recordWrittenStep(ctx, entry);
   if (outcome.kind === "working") return noteStillWorking(ctx, entry, outcome.reason);
   if (outcome.kind === "reviewed") {
     if (entry.review === undefined) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a reviewed outcome, but its run was not a review run" });

@@ -4,6 +4,7 @@ import { isParked, isPublishing, isWatched, resumesOnConflict, runActions, runSt
 import { settledByPulls } from "../board-view/pull-settled.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictsIn } from "../worker-files.ts";
+import type { RunWorker } from "./queue-run-detail.ts";
 import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type Queue, type WorkingNote, writerLive } from "./queue-entries-and-outcomes.ts";
 
 /**
@@ -213,9 +214,11 @@ export function setMax(queue: Queue, max: number): Queue {
   return { ...queue, max };
 }
 
-export function markStarting(queue: Queue, key: string, now: number): Queue {
-  // The round that follows a stop for an update is under way: the board stops saying the run was stopped (A11-169).
-  return replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, ...entry }) => ({ ...entry, phase: "starting", startedAt: now }));
+export function markStarting(queue: Queue, key: string, now: number, worker?: RunWorker): Queue {
+  // The round that follows a stop for an update is under way: the board stops saying the run was stopped (A11-169). What a start records of the run's plan and machine is read again
+  // for this start, so the earlier one's is dropped (A11-219).
+  return replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, plannedSteps: _planned, currentStep: _step, ...entry }) =>
+    ({ ...entry, phase: "starting", startedAt: now, ...(worker === undefined ? {} : { worker }) }));
 }
 
 /**

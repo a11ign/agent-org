@@ -973,3 +973,14 @@ test("A11-175: both planner briefs tell the planner to give each step of a numbe
     assert.ok(brief.includes("`## Paths` still lists every path of every step, because `pr:open` reads it as the Region."));
   }
 });
+
+test("A11-219: a plan with numbered steps has its worker write the step it is on in its outcome file, and a run without steps is not told to", () => {
+  const brief = (numberedSteps?: boolean) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", ...(numberedSteps === undefined ? {} : { numberedSteps }) });
+  const line = '{ "kind": "working", "reason": "<the step you are on>", "currentStep": <N> }';
+  assert.ok(brief(true).includes(line), "the brief shows the progress note");
+  assert.match(brief(true), /That is the one `working` that is not about background work: it is only a progress note, and your turn still ends on a real outcome/, "and says it is not the background-work `working`");
+  assert.equal(brief(false).includes("currentStep"), false);
+  assert.equal(brief().includes("currentStep"), false);
+  assert.match(brief(), /nothing will wake you\.\n\nA person may answer you here/, "the paragraphs around the working rule are as they were without steps");
+  assert.match(brief(true), /nothing will wake you\.\n\nThe plan has numbered steps[^\n]*\n\nA person may answer you here/, "and with steps the new paragraph stands alone between them");
+});
