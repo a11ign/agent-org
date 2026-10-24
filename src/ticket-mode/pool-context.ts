@@ -19,6 +19,9 @@ import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type Reviewer
 import { type DrainStore } from "./pool-drain.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
 
+/** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
+export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
+
 export type PoolDeps = Readonly<{
   settings: TicketSettings;
   source: TicketSource;
@@ -103,6 +106,8 @@ export type PoolContext = Readonly<{
   answered: Map<string, number>;
   startedHere: Set<string>;
   attaching: Set<string>;
+  /** The planning runs whose plan attach failed in a way worth trying again (A11-216), by herdr name: how many tries failed and the time the next one may start. Kept in memory: a restart tries again from the first. */
+  attachRetries: Map<string, AttachRetry>;
   /** The live runs whose ticket's change is being sent to their worker now, by ticket key, so a second refresh does not send it twice (A11-167). */
   telling: Set<string>;
   /** The runs whose worktree agent-org is rebasing onto a stacked branch now: no run of theirs starts until it is done (A11-116). */
@@ -164,6 +169,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const startedHere = new Set<string>();
   /** The planning runs whose plans are being attached, by herdr name, so a tick that sees the same outcome file meanwhile does not attach them again. */
   const attaching = new Set<string>();
+  const attachRetries = new Map<string, AttachRetry>();
   /** The moves to the working state still on their way to the tracker, by ticket key: a restore of the ticket waits for its move. */
   const pendingMoves = new Map<string, Promise<void>>();
   /** The queued runs Remove is putting the ticket back for, by ticket key: no tick starts one of them while it is taken off the queue. */
@@ -210,7 +216,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const finishing = new Set<string>();
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
-    startedHere, attaching, telling: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
+    startedHere, attaching, attachRetries, telling: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };
 }

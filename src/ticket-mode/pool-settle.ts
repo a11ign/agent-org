@@ -6,6 +6,7 @@ import { type PlannedAgainst, recordStampedPlan } from "./queue/queue-ticket-tex
 import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
 import { FINDINGS_RETRIED_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
+import { ATTACH_TRIES, ATTACH_WAITS_MS, isTransient, MS_PER_SECOND } from "./attach-retry.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { findingsMiss, findingsRefusal, retriedUrls } from "./blocker-findings-check.ts";
@@ -36,7 +37,9 @@ import type { PullState } from "./source.ts";
  * time says whether it is newer than the note recorded, so reading the same file on every tick changes nothing.
  */
 function noteStillWorking(ctx: PoolContext, entry: Entry, reason: string): void {
-  const { now } = ctx;
+  const { attachRetries, now } = ctx;
+  // The agent is working again, so a plan attach waiting to be tried again belongs to an outcome it has replaced: its next `planned` is attached afresh, and the stall watch reads the run as it does any other.
+  attachRetries.delete(runPlace(ctx, entry).name);
   const path = join(runPlace(ctx, entry).dir, OUTCOME_FILE);
   const at = existsSync(path) ? statSync(path).mtimeMs : now();
   updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, reason, at, now()));
@@ -251,15 +254,40 @@ function stampPlan(ctx: PoolContext, files: readonly string[], read: TicketRead 
   return { ...stamp, named: urlsNamedIn(text) };
 }
 
+/** Whether the plan attach of the run `name` is waiting out the backoff after a failure worth trying again (A11-216): no call to the tracker is made before the time it names. */
+const waitingToRetry = (ctx: PoolContext, name: string): boolean => (ctx.attachRetries.get(name)?.nextAt ?? 0) > ctx.now();
+
+/** A plan attach that failed: the error it threw, how the failure is worded for a person, and where the run's files are. */
+type AttachFailure = Readonly<{ err: unknown; failed: string; files: string }>;
+
+/**
+ * A plan attach of the run `entry` is in threw `err`. A refusal (a 4xx, a validation error, anything {@link isTransient} does not call a network or server failure) ends the run for a person at once, naming it.
+ * A network or 5xx failure is tried again by the board, from the files still on disk and without waking the planner: the wait before the next try (A11-216) and the retry number are put on the
+ * card of every ticket in the run, and the run stays running. The {@link ATTACH_TRIES}th failure ends the run for a person. A run stopped meanwhile is left as it is.
+ */
+function attachFailed(ctx: PoolContext, entry: Entry, { err, failed, files }: AttachFailure): void {
+  if (!sameRun(ctx, entry)) return;
+  const { attachRetries, now } = ctx;
+  const { name } = runPlace(ctx, entry);
+  const failures = (attachRetries.get(name)?.failures ?? 0) + 1;
+  if (!isTransient(err)) return end(ctx, entry, { kind: "needs-human", reason: `${failed} (${messageOf(err)}): ${files}` });
+  if (failures >= ATTACH_TRIES) return end(ctx, entry, { kind: "needs-human", reason: `${failed} after ${ATTACH_TRIES} tries (${messageOf(err)}): ${files}` });
+  const wait = ATTACH_WAITS_MS[failures - 1];
+  const at = now();
+  attachRetries.set(name, { failures, nextAt: at + wait });
+  updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, `attaching the plan (retry ${failures})`, at, at));
+  log(`${entry.batch ?? entry.ticket.key}'s plan could not be attached (${messageOf(err)}): trying again in ${wait / MS_PER_SECOND} seconds, retry ${failures} of ${ATTACH_TRIES - 1}`);
+}
+
 /**
  * Attach a planning run's files to its ticket, close its workspace, and queue the ticket again to be worked. A plan that cannot be attached ends
- * the run for a person, with its files kept in the ticket's `plan` folder.
+ * the run for a person, with its files kept in the ticket's `plan` folder, unless the failure was the network's or the tracker's own (a 5xx): then the board tries again later ({@link attachFailed}).
  */
 async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   const { attaching, herdr, session, settings, source } = ctx;
   const key = entry.ticket.key;
   const { name } = runPlace(ctx, entry);
-  if (attaching.has(name)) return;
+  if (attaching.has(name) || waitingToRetry(ctx, name)) return;
   attaching.add(name);
   const planDir = join(ticketDir(settings, key), PLAN_DIR);
   try {
@@ -276,13 +304,16 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
     forgetRun(ctx, name);
     update(ctx, (queue) => planDone(stamp === null ? queue : recordStampedPlan(queue, key, stamp), key));
   } catch (err) {
-    if (sameRun(ctx, entry)) end(ctx, entry, { kind: "needs-human", reason: `the plan could not be attached (${messageOf(err)}): its files are in ${planDir}` });
+    attachFailed(ctx, entry, { err, failed: "the plan could not be attached", files: `its files are in ${planDir}` });
   } finally {
     attaching.delete(name);
   }
 }
 
-/** Attach the plan files in `dir` to the ticket `key`. Null once they are attached, or else the outcome that hands the ticket to a person. */
+/**
+ * Attach the plan files in `dir` to the ticket `key`. Null once they are attached, or else the outcome that hands the ticket to a person. A network or server failure is thrown on, for the batch to try again as a
+ * whole ({@link attachFailed}); any other failure hands this one ticket back.
+ */
 async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<Outcome | null> {
   const { settings, source } = ctx;
   const member = entryOf(ctx, key);
@@ -296,6 +327,7 @@ async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<
     if (stamp !== null) update(ctx, (queue) => recordStampedPlan(queue, key, stamp));
     return null;
   } catch (err) {
+    if (isTransient(err)) throw err;
     return { kind: "needs-human", reason: `the plan could not be attached (${messageOf(err)}): its files are in ${dir}` };
   }
 }
@@ -309,7 +341,7 @@ async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<
 async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   const { attaching, herdr, now, session, settings } = ctx;
   const { name, dir } = runPlace(ctx, entry);
-  if (attaching.has(name)) return;
+  if (attaching.has(name) || waitingToRetry(ctx, name)) return;
   attaching.add(name);
   const members = runMembers(ctx, entry);
   const planDir = join(dir, PLAN_DIR);
@@ -340,7 +372,7 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
     });
   } catch (err) {
     const [still] = members.filter((member) => sameRun(ctx, member));
-    if (still !== undefined) end(ctx, still, { kind: "needs-human", reason: `the plans could not be attached (${messageOf(err)}): their files are in ${planDir}` });
+    if (still !== undefined) attachFailed(ctx, still, { err, failed: "the plans could not be attached", files: `their files are in ${planDir}` });
   } finally {
     attaching.delete(name);
   }

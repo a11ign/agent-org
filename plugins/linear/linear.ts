@@ -193,6 +193,9 @@ export function scopedQuery(scope: string): { text: string; variables: Record<st
 /** The seams every call to Linear goes through: the key, which goes only to Linear, and the `fetch` that sends it. */
 type Client = Readonly<{ key: string; request: Fetch }>;
 
+/** An error that carries the HTTP `status` the server answered with, as data, so the board tries a 5xx again without reading the message (tracker contract 1.7). */
+const answered = (message: string, status: number): Error => Object.assign(new Error(message), { status });
+
 async function query<T>(client: Client, text: string, variables: Record<string, unknown>): Promise<T> {
   const { key, request } = client;
   const response = await request(LINEAR_API, {
@@ -202,7 +205,7 @@ async function query<T>(client: Client, text: string, variables: Record<string, 
   });
   const body = await response.json().catch(() => null) as { data?: T; errors?: { message: string }[] } | null;
   if (!response.ok || body === null || body.errors?.length) {
-    throw new Error(`Linear answered ${response.status}: ${body?.errors?.map((e) => e.message).join("; ") ?? "no JSON"}`);
+    throw answered(`Linear answered ${response.status}: ${body?.errors?.map((e) => e.message).join("; ") ?? "no JSON"}`, response.status);
   }
   return body.data as T;
 }
@@ -278,7 +281,7 @@ async function attachFile(client: Client, issueId: string, path: string, title: 
   // The file goes to the storage address Linear signed, without the key: the signature is the permission.
   const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
     ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
-  if (!put.ok) throw new Error(`the upload of ${title} was refused (${put.status})`);
+  if (!put.ok) throw answered(`the upload of ${title} was refused (${put.status})`, put.status);
   const { attachmentCreate }: { attachmentCreate: { success: boolean } } = await query(client,
     "mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
     { issueId, url: assetUrl, title });

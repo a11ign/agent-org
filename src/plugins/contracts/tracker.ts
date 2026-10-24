@@ -1,5 +1,5 @@
 // @ts-check
-// module: the tracker contract, version 1.6 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
+// module: the tracker contract, version 1.7 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
 // A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
 // implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
@@ -8,6 +8,10 @@
 // 1.1 (A11-159) ADDS `TrackerWriting`, which a tracker plugin declares in its manifest (`agentOrg.tooling.writer`): the tools a new-ticket run files with, what the hook refuses of
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
+//
+// 1.7 (A11-216) ADDS a documented property of the error `attachPlan` throws: its `status`, the HTTP status the tracker answered with. The board tries a plan attach again, with a wait, when it failed on the network (`fetch`'s own
+// `TypeError("fetch failed")`, a timeout, a reset) or the tracker answered 5xx, and hands a person any other failure at once. Nothing in a type changes and the property is optional, so a 1.6 tracker still passes: its 5xx reads
+// as a refusal, as it did.
 //
 // 1.6 (A11-207) ADDS the optional `titles` of a `Blocker`: the title of each pull request it links, by address, so the brief of a ticket that waits on it can list every pull request with its state, title and address. It is optional, so a
 // 1.5 tracker still passes: the brief then takes the title the board read from the merged pull request, and otherwise says the tracker gave none.
@@ -28,7 +32,7 @@
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.6";
+export const TRACKER_CONTRACT_VERSION = "1.7";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -236,6 +240,10 @@ export interface TicketSource {
    * started and its team has a state of that name. Teams name their states differently, so one without it keeps the ticket's state, and the
    * returned note says so; it is null when nothing was left undone. A file already attached under its name is not attached again, so an attempt
    * that was cut off can be repeated. A source without it takes no plans, so the board offers no planning. Throws when the tracker refuses.
+   *
+   * A thrown error may carry the HTTP `status` the tracker answered with (contract 1.7). The board tries the attach again, after a wait and from the same files, when it failed on the network (`fetch`'s own
+   * `TypeError("fetch failed")`, a timeout, a reset) or carries a 5xx `status`, so a tracker throws those unchanged; any other error is a refusal and goes to a person at once. The board never reads the
+   * message to tell them apart.
    */
   attachPlan?(key: string, files: readonly string[], state: string | null): Promise<string | null>;
   /**

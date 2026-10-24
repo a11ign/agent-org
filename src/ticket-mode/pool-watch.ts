@@ -114,7 +114,8 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
       settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8")));
       // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled. A decline it was not yet told of is told now, not to a run that just ended.
       if (sameRun(ctx, current)) {
-        watchStall(ctx, current, seen);
+        // A plan attach being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the planner (A11-216).
+        if (!ctx.attachRetries.has(name)) watchStall(ctx, current, seen);
         retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
       }
       continue;
