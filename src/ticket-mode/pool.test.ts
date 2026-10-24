@@ -27,7 +27,7 @@ import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { claimantOf, parseTicketSettings } from "./settings.ts";
 import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
-import { gateReviewJudge, REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { descriptionHash, ticketReadOf } from "./ticket-read.ts";
@@ -40,8 +40,6 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakePublisher } from "../plugins/fakes/publisher.ts";
 import { createFakeReviewer, reviewerOver } from "../plugins/fakes/reviewer.ts";
 import { corePolicy } from "../plugins/policy.ts";
-import { fakePluginDeps } from "../plugins/fakes/deps.ts";
-import { createCodeHost as createGithubCodeHost } from "../../plugins/github/code-host.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
 import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
@@ -6735,53 +6733,35 @@ test("A11-175: a queued run's plan is read with the paths of each step section, 
 
 // ---- A11-175: the reviewer starts once the REQUIRED checks have settled green ----
 
-const labRun = (name: string, conclusion: string) => ({ name, status: "COMPLETED", conclusion, completedAt: at(1000) });
-/** a11ign/lab#144 as the incident left it: the three required checks green, and `checks (cross-repo)`, which is not required, red. */
-const LAB_144 = [labRun("gate", "SUCCESS"), labRun("refusalOwners", "SUCCESS"), labRun("checks (own)", "SUCCESS"), labRun("checks (cross-repo)", "FAILURE")];
-
 /**
- * A world whose pull request 1 is read by the GitHub plugin itself over a scripted `gh`, judged by the real gate: `pr view` answers the pull request with `rollup`, and the GraphQL read answers that `required`
- * of its checks are required (a failing `gh` when `required` is null).
+ * A world whose pull request 1 the code host holds with the verdict of its checks: `settled` is what the plugin worked out from GitHub's rollup and its required checks (the plugin's own
+ * tests, `plugins/github/code-host.test.ts`, and the judge's, `work-gate/pr-orders.test.ts`, hold that reading), and `unrequiredRed` names the red check that holds nothing. What this file
+ * holds is what the board does with that verdict.
  */
-function checksWorld(rollup: unknown[], required: string[] | null) {
+function checksWorld(settled: boolean, unrequiredRed?: string[]) {
   const host = createFakeCodeHost("worker-bot");
-  const asked: string[][] = [];
-  const exec = (_file: string, args: readonly string[]) => {
-    asked.push([...args]);
-    if (args[0] === "pr") return { status: 0, stdout: JSON.stringify({ headRefOid: "h1", reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false, statusCheckRollup: rollup, body: "" }), stderr: "" };
-    if (required === null) return { status: 1, stdout: "", stderr: "gh: HTTP 502" };
-    const nodes = rollup.map((check) => ({ __typename: "CheckRun", name: (check as { name: string }).name, isRequired: required.includes((check as { name: string }).name) }));
-    return { status: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes } } } }] } } } } }), stderr: "" };
-  };
-  const plugin = createGithubCodeHost(fakePluginDeps({ policy: corePolicy(gateReviewJudge), exec }));
-  const codeHost: CodeHost = { ...host, readReviewState: plugin.readReviewState, readPullState: () => "OPEN",
-    openPullUrlsOf: (repository) => (repository === SWEPT_REPO ? [sweptPr] : []) };
-  return { world: { codeHost, host } as World, asked };
+  host.seedPull(SWEPT_REPO, 1, { head: "h1", settled, ...(unrequiredRed === undefined ? {} : { unrequiredRed }) });
+  // The pull request is in SWEPT_REPO only: every other repository the sweep asks about has none open.
+  const codeHost: CodeHost = { ...host, openPullUrlsOf: (repository) => (repository === SWEPT_REPO ? [sweptPr] : []) };
+  return { world: { codeHost, host } as World };
 }
 
 test("A11-175: a pull request whose only red check is not required gets its reviewer", async () => {
   await loadReviewerGate();
   const { port, starts } = rereviewer();
-  const { world, asked } = checksWorld(LAB_144, ["gate", "refusalOwners", "checks (own)"]);
+  const { world } = checksWorld(true, ["checks (cross-repo)"]);
   const ctx = setup(1, [], REVIEWING, { gh: world, reviewerPort: port });
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map(({ ref }) => ref), [{ pr: sweptPr, head: "h1" }], "lab#144: every required check is green, so the reviewer starts");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "reviewing");
-  assert.deepEqual(asked.map((args) => args.slice(0, 2)), [["pr", "view"], ["api", "graphql"]], "GitHub is asked which checks are required, because the rollup was not all green");
+  assert.ok(world.host.calls.includes(`readReviewState ${sweptPr}`), "the code host is asked whether the head has settled");
 });
 
-test("A11-175: a pull request with a required check red, running or unreadable is not started, and the board says it is waiting for checks", async () => {
+test("A11-175: a pull request whose checks have not settled (a required one red or running, or the required ones unreadable) is not started, and the board says it is waiting for checks", async () => {
   await loadReviewerGate();
-  const running = { name: "checks (own)", status: "IN_PROGRESS", conclusion: null };
-  for (const [why, rollup, required] of [
-    ["a required check is red", LAB_144, ["gate", "checks (cross-repo)"]],
-    ["a required check is still running", [labRun("gate", "SUCCESS"), running, labRun("checks (cross-repo)", "FAILURE")], ["gate", "checks (own)"]],
-    ["GitHub would not say which are required", LAB_144, null],
-  ] as const) {
-    const { port, starts } = rereviewer();
-    const ctx = setup(1, [], REVIEWING, { gh: checksWorld([...rollup], required === null ? null : [...required]).world, reviewerPort: port });
-    ctx.pool.reviewNewHeads();
-    assert.deepEqual(starts, [], why);
-    assert.equal(ctx.pool.pullReviews()[sweptPr], "waiting for checks at h1", why);
-  }
+  const { port, starts } = rereviewer();
+  const ctx = setup(1, [], REVIEWING, { gh: checksWorld(false).world, reviewerPort: port });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts, []);
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "waiting for checks at h1");
 });

@@ -51,7 +51,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, leadsListText, shippedUnitText, shippedUnits } = await import("../host-units/shipped-unit-texts-and-declarations.ts");
+const { SHIPPED_DIR, PLUGIN_HOST_DIR, PLUGIN_HOST_SCRIPTS, TOOL_ENTRIES, HOST_DATA_ENTRIES, leadsListText, shippedUnitText, shippedUnits } = await import("../host-units/shipped-unit-texts-and-declarations.ts");
 const { hostUnitDrift, unclassifiedEntries } = await import("../host-units.ts");
 const { identityDrift, ownedIdentityFiles } = await import("../host-units/host-drift-findings-and-notes.ts");
 const { wrapperInputsOf } = await import("../plugins/host-place.ts");
@@ -80,7 +80,8 @@ const HOME_LITERAL = /\/home\/[A-Za-z_][\w.-]*/;
 const TOOL_SOURCES = ["host-units.ts", "host-config.ts", "board-snapshot-scope.ts"];
 /** The wrapper's template and its renderer are the GitHub plugin's since A11-160, and are still the tool's own files that name no host. */
 const PLUGIN_SOURCES = ["wrapper/gh", "wrapper.ts"].map((name) => fileURLToPath(new URL(`../../plugins/github/${name}`, import.meta.url)));
-const toolFiles = () => [...TOOL_SOURCES.map((name) => join(TOOL_SRC, name)), ...PLUGIN_SOURCES, ...TOOL_ENTRIES.map((name) => join(SHIPPED_DIR, name))];
+/** The scripts that run `gh` are the GitHub plugin's since A11-160 (step 9): `plugins/github/host/`, beside no unit, and still the tool's own files that name no host. */
+const toolFiles = () => [...TOOL_SOURCES.map((name) => join(TOOL_SRC, name)), ...PLUGIN_SOURCES, ...TOOL_ENTRIES.map((name) => join(SHIPPED_DIR, name)), ...PLUGIN_HOST_SCRIPTS.map((name) => join(PLUGIN_HOST_DIR, name))];
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -129,7 +130,8 @@ const TODAYS_TEXT = {
   // #1067 MOVED IT AGAIN, deliberately: the unit makes a pass over the tool's checkout before the project's, bounded by `timeout`, and `TimeoutStartSec` is raised to cover both. Same staleness, same remedy.
   "a11ign-worktree-prune.service": "d06f9ef4fd19f80426b949e712e7131ab9150bfb31966fa404981f3a3db78ffa",
   "a11ign-worktree-prune.timer": "82d72dd99d18eddb5285245bc4f5b9b750b1e88536be7759cdc524d9b1cbe467",
-  "a11ign-board-report.service": "3e7791d9f24ae9aa3519898259f1ea68c1f8b4cd721f97b62916c9f81835b0c1",
+  // A11-160 (step 9) MOVED THIS ONE, deliberately, in one word of one line: `ExecStart` names the dispatcher where the GitHub plugin keeps it (`plugins/github/host/board-report-dispatch.sh`), since the script runs `gh`.
+  "a11ign-board-report.service": "4bc913ef8138c4d76f9a3ab3774c7a3cdd86fab06842c6817190f17891efa3cf",
   "a11ign-board-report.timer": "6edd74ab8a7d4117197dddd448e30a2ab63ab9972799dd90f5f500c067f033f1",
 };
 // #3466 MOVED THIS ONE, deliberately: the wrapper records every call in `gh-calls.tsv` and no longer `exec`s gh-real. The installed copy reads
@@ -215,8 +217,8 @@ const CLASSIFIED_BEYOND_THE_EIGHT: { name: string; matches: (name: string) => bo
   { name: "chairman-watch pair", matches: (name) => name.startsWith("chairman-watch."), count: 2, message: "POSITIVE CONTROL: #2901's optional pair is two more, so the 8 below is still the original eight" },
   { name: "chairman listener", matches: (name) => name === "chairman-listen.service.in", count: 1, message: "POSITIVE CONTROL: #2907's listener service is one more, with no timer, so the 8 below is still the original eight" },
   { name: "agent-org launcher", matches: (name) => name === "agent-org", count: 1, message: "POSITIVE CONTROL: #3532's launcher is one more, copied to binDir, so the 8 below is still the original eight" },
-  { name: "trace-weekly trio", matches: (name) => name.startsWith("trace-weekly"), count: 3, message: "POSITIVE CONTROL: a11ign/a11ign#3627's pair and its script are three more, so the 8 below is still the original eight" },
-  { name: "manager-spend trio", matches: (name) => name.startsWith("manager-spend-post"), count: 3, message: "POSITIVE CONTROL: agent-org#912's pair and its script are three more, so the 8 below is still the original eight" },
+  { name: "trace-weekly pair", matches: (name) => name.startsWith("trace-weekly"), count: 2, message: "POSITIVE CONTROL: a11ign/a11ign#3627's pair is two more (its script is the GitHub plugin's since A11-160), so the 8 below is still the original eight" },
+  { name: "manager-spend pair", matches: (name) => name.startsWith("manager-spend-post"), count: 2, message: "POSITIVE CONTROL: agent-org#912's pair is two more (its script is the GitHub plugin's since A11-160), so the 8 below is still the original eight" },
   { name: "trace-ingest pair", matches: (name) => name.startsWith("trace-ingest"), count: 2, message: "POSITIVE CONTROL: a11ign/agent-org#498's pair is two more, so the 8 below is still the original eight" },
   { name: "trace-publish pair", matches: (name) => name.startsWith("trace-publish."), count: 2, message: "POSITIVE CONTROL: a11ign/a11ign#3515's pair is two more, so the 8 below is still the original eight" },
   { name: "trace-publish server", matches: (name) => name === "trace-publish-serve.service.in", count: 1, message: "POSITIVE CONTROL: a11ign/agent-org#1159's server is one more, with no timer, so the 8 below is still the original eight" },
@@ -230,16 +232,16 @@ const CLASSIFIED_BEYOND_THE_EIGHT: { name: string; matches: (name: string) => bo
   { name: "claude seat wrapper", matches: (name) => name === "claude", count: 1, message: "POSITIVE CONTROL: a11ign#4823's wrapper is one more, copied to the first PATH directory and not binDir, so the 8 below is still the original eight" },
 ];
 
-testEach("#2620: the tool's 35 entries are classified -- the original 8, the trace store's clock pair (a11ign/agent-org#498), the shadow window's two (#2867), the chairman watcher's two (#2901), the listener's one (#2907), the agent-org launcher (#3532) the weekly report's three (a11ign/a11ign#3627) the trace pages' two (a11ign/a11ign#3515) the trace pages' server (a11ign/agent-org#1159) the /tmp janitor's three (a11ign/a11ign#3849) the OTel receiver's one (a11ign/a11ign#4071) the kernel reboot's two (a11ign/a11ign#4053) the daily confidence reading's two (a11ign/a11ign#4885) the GitHub event receiver's one (agent-org#980) and the `claude` seat wrapper (a11ign#4823) -- and the host-data entry is host.json's, not a file", CLASSIFIED_BEYOND_THE_EIGHT, (c) => {
+testEach("#2620: the tool's 33 entries are classified -- the original 8, the trace store's clock pair (a11ign/agent-org#498), the shadow window's two (#2867), the chairman watcher's two (#2901), the listener's one (#2907), the agent-org launcher (#3532) the weekly report's two (a11ign/a11ign#3627; its script, and the daily manager-spend reading's, are the GitHub plugin's since A11-160) the daily manager-spend reading's two (agent-org#912) the trace pages' two (a11ign/a11ign#3515) the trace pages' server (a11ign/agent-org#1159) the /tmp janitor's three (a11ign/a11ign#3849) the OTel receiver's one (a11ign/a11ign#4071) the kernel reboot's two (a11ign/a11ign#4053) the daily confidence reading's two (a11ign/a11ign#4885) the GitHub event receiver's one (agent-org#980) and the `claude` seat wrapper (a11ign#4823) -- and the host-data entry is host.json's, not a file", CLASSIFIED_BEYOND_THE_EIGHT, (c) => {
   const inTool = readdirSync(SHIPPED_DIR).sort();
   assert.equal(inTool.filter(c.matches).length, c.count, c.message);
 });
 
-test("#2620: the tool's directory holds the original eight (seven since the `gh` wrapper moved to plugins/github, A11-160) beside those classified above, and the host-data entry is host.json's, not a file", () => {
+test("#2620: the tool's directory holds the original eight (six since the `gh` wrapper and the board dispatcher moved to plugins/github, A11-160) beside those classified above, and the host-data entry is host.json's, not a file", () => {
   // (#3233) The row also counted eight entries in the PROJECT's `.agent-org/units/` and asserted them equal to a11ign's `units.own`: that is a11ign's tree, and moved there.
   const inTool = readdirSync(SHIPPED_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
-  assert.equal(inTool.length - CLASSIFIED_BEYOND_THE_EIGHT.reduce((total, c) => total + inTool.filter(c.matches).length, 0), 7, "POSITIVE CONTROL: seven entries stay in the tool's host directory, the eighth, the `gh` wrapper, being the GitHub plugin's since A11-160");
+  assert.equal(inTool.length - CLASSIFIED_BEYOND_THE_EIGHT.reduce((total, c) => total + inTool.filter(c.matches).length, 0), 6, "POSITIVE CONTROL: six entries stay in the tool's host directory, the other two, the `gh` wrapper and the board dispatcher, being the GitHub plugin's since A11-160");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
   for (const name of hostData) assert.ok(!existsSync(join(SHIPPED_DIR, name)), `${name} is host.json's now, not a file`);
@@ -361,7 +363,7 @@ test("#2620: the declaration is found through $AGENT_ORG_HOST, else beside the p
 
 // --- 6. the board dispatcher reads the project, not a11ign ---------------------------------------------------------------------
 
-const DISPATCH = join(SHIPPED_DIR, "board-report-dispatch.sh");
+const DISPATCH = join(PLUGIN_HOST_DIR, "board-report-dispatch.sh");
 
 /** Run the dispatcher in `cwd` with a stub `gh` that records its arguments, one call per line. */
 function dispatch(cwd: string) {

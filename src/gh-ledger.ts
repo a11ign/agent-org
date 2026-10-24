@@ -1,6 +1,7 @@
 // @ts-check
 // THE READER OF THE `gh` CALL LEDGER (#3466) -- a module with almost nothing to import, since it is run by hand on a host
-// where nothing else is wanted: node's own, `api-pool.ts` (a leaf) and `ticket-port/core-pool-probe.ts`, which asks the code host for the core pool's probe only when a refusal is diagnosed.
+// where nothing else is wanted: node's own, `api-pool.ts` (a leaf) and the two delegates of `ticket-port/` (`core-pool-probe.ts`, `graphql-pool-probe.ts`) and `plugins/rows.ts`, which ask the code host for a pool's probe
+// and for the runner of a queued call only when a refusal is diagnosed or a queue is retried.
 //
 // `plugins/github/wrapper/gh` WRITES the ledger (one TAB-separated line per call, shell, so a call pays no node start-up and the wrapper has
 // no dependency on where this checkout lives); this file only READS it and answers the question #3448 could not: WHICH
@@ -12,11 +13,12 @@
 // reads, retries and clears them, the same split the ledger has.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
+import { poolFromHeaders } from "./api-pool.ts";
+import { rows } from "./plugins/rows.ts";
 import { corePoolProbe } from "./ticket-port/core-pool-probe.ts";
+import { graphqlPoolProbe } from "./ticket-port/graphql-pool-probe.ts";
 
 /**
  * `sessionId` is the 9th field, the id of the session that made the call (`plugins/github/wrapper/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did.
@@ -652,26 +654,33 @@ export function retryDue(dir: string, { nowMs, run, poolLeftOf = NO_READING, lim
   return dueCalls(readQueue(dir), nowMs).slice(0, limit).map((call) => attemptCall(call, { nowMs, run, poolLeftOf }));
 }
 
-/** The real run: `gh` as the account whose queue this is, from the directory it was asked in, with its stdin, as its session and workspace (so a comment carries the role that wrote it). */
+/** The most a queued call may print: `spawnSync`'s own default, which this retry has always run under. */
+const RETRY_MAX_BUFFER = 1024 * 1024;
+
+/**
+ * The real run: `gh` as the account whose queue this is, from the directory it was asked in, with its stdin, as its session and workspace (so a comment carries the role that wrote it). The process is the code host's
+ * (A11-160, step 9), a runner that never throws; the account, the directory, the bound and the stdin are this retry's policy and are asked of it.
+ */
 export const spawnQueued: RunQueued = (call, argv) => {
   if (call.cwd !== "" && !existsSync(call.cwd)) return { status: 1, stderr: `the directory the call was made from is gone: ${call.cwd}` };
   const stdinPath = join(call.dir, `${call.id}.stdin`);
-  const env: NodeJS.ProcessEnv = { ...process.env, GH_CONFIG_DIR: dirname(call.dir), A11Y_GH_QUEUE_RETRY: "1" };
+  const env: Record<string, string> = { GH_CONFIG_DIR: dirname(call.dir), A11Y_GH_QUEUE_RETRY: "1" };
   if (call.workspace !== NONE) env.HERDR_WORKSPACE_ID = call.workspace;
   if (call.session !== NONE) env.CLAUDE_CODE_SESSION_ID = call.session;
   if (call.argv[0] === "pr" && call.argv[1] === "create") env.A11Y_PR_OPEN = "1"; // only `pr:open` queues a create
-  const r = spawnSync("gh", argv, { cwd: call.cwd === "" ? undefined : call.cwd, env, encoding: "utf8", timeout: RETRY_TIMEOUT_MS, input: existsSync(stdinPath) ? readFileSync(stdinPath) : "" });
-  return { status: r.status, stderr: `${r.stderr ?? ""}${r.error ? String(r.error.message) : ""}`, stdout: r.stdout ?? "" };
+  const run = rows().answeringRunnerWith({ ...(call.cwd === "" ? {} : { cwd: call.cwd }), env, timeoutMs: RETRY_TIMEOUT_MS, maxBuffer: RETRY_MAX_BUFFER });
+  const r = run(argv, { input: existsSync(stdinPath) ? readFileSync(stdinPath, "utf8") : "" });
+  // A call that could not start or was cut has no status, and its stderr is the reason (the code host puts the spawn error there).
+  return { status: r.status, stderr: r.stderr, stdout: r.stdout };
 };
 
 /**
- * The probe for the pool a refusal names, or `null` when it cannot be had: the core pool's probe is the code host's (`corePoolProbe`), and a code host that cannot be loaded is no answer, which the queue
+ * The probe for the pool a refusal names, or `null` when it cannot be had: both pools' probes are the code host's (`corePoolProbe`, `graphqlPoolProbe`), and a code host that cannot be loaded is no answer, which the queue
  * retry reads as it reads a pool that gave none, and never as a reason to stop retrying what GitHub refused.
  */
 function probeFor(stderr: string): string[] | null {
-  if (/graphql/i.test(stderr)) return [...GRAPHQL_POOL_PROBE];
   try {
-    return [...corePoolProbe()];
+    return [...(/graphql/i.test(stderr) ? graphqlPoolProbe() : corePoolProbe())];
   } catch {
     return null;
   }

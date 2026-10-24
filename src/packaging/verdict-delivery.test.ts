@@ -10,11 +10,14 @@
  *   (4) a conflicting pull request whose owner is idle is named, and one whose owner is working, or not listed, is not;
  *   (5) the canary tick reads both signals as samples, and a refused read is `null`, never zero.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { DEFAULT_CANARY_OPTIONS, machineryCanaryTick, withMachineryFlag, type CanaryIo } from "../org-health.ts";
@@ -30,6 +33,8 @@ const HEAD = "5b1615ab".repeat(5);
 const HEAD8 = HEAD.slice(0, 8);
 const OTHER_HEAD = "c0ffee12".repeat(5);
 const OPTIONS = { ...DEFAULT_CANARY_OPTIONS };
+
+afterEach(() => forgetActivation());
 
 /** A verdict block the way a reviewer writes it in its pane; `bullet` is the mark Codex puts before the first line of its final message. */
 function pane(pr: number, head: string, verdict: string, { bullet = false, body = "**Review body**" }: { bullet?: boolean; body?: string } = {}): string {
@@ -96,12 +101,15 @@ test("#1649 (3) THE RECORD refuses a file that does not parse: THROWS, and the g
   assert.match(recordWrittenVerdicts({ dir, written: [{ session: "reviewer-1654", pr: 1654, head: HEAD, verdict: "convinced" }], now: T0 }) ?? "", /verdict-written not recorded/);
 });
 
-test("#1649 (3) THE READ of GitHub asks for the state, the head and the verdict-bearing fields, and a refused read is null", () => {
-  const asked: string[][] = [];
-  const read = pullReadOf((args) => { asked.push(args); return JSON.stringify({ state: "OPEN", headRefOid: HEAD, comments: [], reviews: [] }); }, "a11ign/a11ign");
-  assert.deepEqual(read(1655), { open: true, head: HEAD, comments: [], reviews: [] });
-  assert.deepEqual(asked[0], ["pr", "view", "1655", "--repo", "a11ign/a11ign", "--json", "state,headRefOid,comments,reviews"]);
-  assert.equal(pullReadOf(() => { throw new Error("HTTP 502"); }, "a11ign/a11ign")(1655), null);
+test("#1649 (3) THE READ of a pull request answers its state, its head and its comments from the code host's pull request, and a pull request the code host cannot read is null", () => {
+  const host = createFakeCodeHost();
+  fakePull(host.rowsWorld, 1655, { headRefOid: HEAD, comments: ["a note"] });
+  fakePull(host.rowsWorld, 1656, { headRefOid: OTHER_HEAD, merged: true });
+  substituteCodeHost(host);
+  const read = pullReadOf(() => { throw new Error("the run is the code host's to use, and the fake has no gh"); }, "a11ign/a11ign");
+  assert.deepEqual(read(1655), { open: true, head: HEAD, comments: [{ body: "a note" }], reviews: [] });
+  assert.deepEqual(read(1656), { open: false, head: OTHER_HEAD, comments: [], reviews: [] }, "a merged pull request is not open");
+  assert.equal(read(1657), null, "a pull request the code host holds none of cannot be read, and the reconciliation does not read that as delivered");
 });
 
 test("#1649 (4) THE CONFLICT: a conflicting pull request whose owner is idle is named; a working owner, an unlisted owner, or a clean pull request is not", () => {

@@ -26,7 +26,7 @@ const reads = delegates("requiredContextsOf", "checkRunsOfCommit", "closingIssue
 /** @param {string[]} args */
 export const gh = (args: string[]) => {
   // #1053: every importer reaches GitHub through this, so the leak guard sits here rather than at each call site.
-  assertNoLeakInArgv("gh", args);
+  assertNoLeakInArgv(rows().command, args);
   // A11-160: the code host runs it. This is the code host's TRANSITIONAL `ownRun`, for the importers that have not moved and hold no runner of their own (row claims, the sweeps, the nightly); it goes with the last of them.
   return rows().ownRun(args);
 };

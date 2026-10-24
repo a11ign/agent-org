@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh` or file outside a temp directory is touched; the reads are fixtures, and the source tree is only read (a11ign/agent-org#1674)
+// no-token: gh -- no `gh` or file outside a temp directory is touched; the reads are the fake code host's world, and the source tree is only read (a11ign/agent-org#1674, A11-160)
 // #1674: a daily reading that met a budget refusal was filed as a finished day, so its p90 was never asked again. A day whose text carries the refusal is asked again by the next
 // tick that has budget, and a day that is still refused when the next day's tick runs is stamped `unread` in its key and ends a streak.
 //
@@ -8,9 +8,10 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { FAILURE_LEDGER_FILE, parseFailureLedger } from "../failure-ledger.ts";
-import { APPROVED_UNQUEUED_KIND, type MergedPr, type OpenPr, type ReviewRead, postApprovedUnqueued } from "../approved-unqueued.ts";
+import { APPROVED_UNQUEUED_KIND, READING_ROW, type MergedPr, type OpenPr, type ReviewRead, postApprovedUnqueued } from "../approved-unqueued.ts";
+import { forgetActivation, seeded as seededIn, type Seed } from "../plugins/fakes/approved-unqueued-world.test.support.ts";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-11T12:00:00Z");
@@ -33,27 +34,13 @@ const measured: MergedPr = { number: 1, mergedAt: ago(196), reviews: approvedAgo
 const dayReading = (day: string, count: number, refused = false) => `<!-- approved-unqueued: ${day} count=${count} -->\n### Approved pull requests left unqueued, ${day} (UTC)\n\n`
   + `| o/home | unknown | 0 of 0 | not read${refused ? ` (${BUDGET_MESSAGE})` : ""} |`;
 
-/** A fake `gh`: the comments on #928 are the store, every write lands in it, and `refuseMerged` makes the merged read refuse for budget as the gate's cap does. */
-function fakeGh({ comments = [] as { id: number; body: string }[], merged = [] as MergedPr[] } = {}) {
-  const calls: string[][] = [];
-  const store = comments.map((comment) => ({ ...comment }));
-  const state = { refuseMerged: false, merged };
-  const run = (args: string[]): string => {
-    calls.push(args);
-    const text = args.join(" ");
-    if (args[0] === "api" && args.some((arg) => arg.includes("/issues/928/comments"))) return store.map((comment) => JSON.stringify(comment)).join("\n");
-    if (text.includes("pullRequests(states:MERGED")) {
-      if (state.refuseMerged) throw new Error(BUDGET_MESSAGE);
-      return JSON.stringify(state.merged);
-    }
-    if (text.includes("mergeQueueEntry{state}")) return JSON.stringify({ merged: false, autoMergeRequest: null, mergeQueueEntry: null });
-    if (args[0] === "issue" && args[1] === "comment") { store.push({ id: 1000 + store.length, body: args[args.indexOf("--body") + 1] }); return "https://github.com/o/home/issues/928#issuecomment-1\n"; }
-    if (args[0] === "api" && args.includes("PATCH")) { store.find((comment) => args[args.indexOf("PATCH") + 1].endsWith(`/${comment.id}`))!.body = args[args.length - 1].slice(5); return "{}"; }
-    throw new Error(`fake gh: unexpected call ${text.slice(0, 80)}`);
-  };
-  const writes = () => calls.filter((args) => args[0] === "issue" || args.includes("PATCH"));
-  return { run, calls, store, state, writes };
-}
+afterEach(() => forgetActivation());
+/** The fake code host's world: the comments on #928 are the row's, every write lands in them, and a refused merged read is the world's `mergedWindowOf` failing for budget as the gate's cap does. */
+const seeded = (world: Seed = {}) => {
+  const gh = seededIn({ repo: REPO, now: NOW, readingRow: READING_ROW }, world);
+  const refuseMerged = (refused: boolean) => { if (refused) gh.held.failures.set("mergedWindowOf", new Error(BUDGET_MESSAGE)); else gh.held.failures.delete("mergedWindowOf"); };
+  return { ...gh, refuseMerged };
+};
 
 /** A private directory for the failure ledger, removed after the file's tests. */
 const made: string[] = [];
@@ -74,64 +61,62 @@ const ledgerIn = (dir: string) => {
 test("a day whose p90 read was refused is asked again by the next tick with budget: the comment is EDITED to carry the p90, and its count is unchanged", () => {
   const dir = scratch();
   const logPath = join(dir, FAILURE_LEDGER_FILE);
-  const gh = fakeGh();
-  gh.state.refuseMerged = true;
+  const gh = seeded({ prs: [pr()], merged: [measured] });
+  gh.refuseMerged(true);
   const first = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath });
   assert.deepEqual([first.posted, (first as any).how, (first as any).count], [true, "created", 1]);
-  assert.match(gh.store[0].body, /count=1 -->/);
-  assert.match(gh.store[0].body, /\| o\/home \| unknown \| 0 of 0 \| not read \(gate-budget: refused /);
+  assert.match(gh.comments()[0].body, /count=1 -->/);
+  assert.match(gh.comments()[0].body, /\| o\/home \| unknown \| 0 of 0 \| not read \(gate-budget: refused /);
 
-  gh.state.refuseMerged = false;
-  gh.state.merged = [measured];
+  gh.refuseMerged(false);
   const again = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW + 2 * MIN, run: gh.run, logPath });
   assert.deepEqual([again.posted, (again as any).how, (again as any).count], [true, "edited", 1], "asked again, not `already-posted`");
-  assert.equal(gh.store.length, 1, "still one comment for the day");
-  assert.match(gh.store[0].body, /^<!-- approved-unqueued: 2026-10-11 count=1 -->/, "the key's count is unchanged");
-  assert.match(gh.store[0].body, /\| o\/home \| 3\.0 \| 1 of 1 \| within \|/);
-  assert.doesNotMatch(gh.store[0].body, /gate-budget/);
+  assert.equal(gh.comments().length, 1, "still one comment for the day");
+  assert.match(gh.comments()[0].body, /^<!-- approved-unqueued: 2026-10-11 count=1 -->/, "the key's count is unchanged");
+  assert.match(gh.comments()[0].body, /\| o\/home \| 3\.0 \| 1 of 1 \| within \|/);
+  assert.doesNotMatch(gh.comments()[0].body, /gate-budget/);
 });
 
 test("twin: a day whose comment carries no refusal is `already-posted` on the next tick, and that tick reads nothing", () => {
   const dir = scratch();
   const logPath = join(dir, FAILURE_LEDGER_FILE);
-  const gh = fakeGh();
-  gh.state.merged = [measured];
+  const gh = seeded({ prs: [pr()], merged: [measured] });
   postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath });
   const before = gh.calls.length;
   const again = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW + 2 * MIN, run: gh.run, logPath });
   assert.deepEqual([again.posted, (again as any).why], [false, "already-posted"]);
-  assert.equal(gh.calls.length - before, 1, "only the comments are read");
-  assert.deepEqual(gh.writes().filter((args) => args[0] === "issue").length, 1);
+  assert.deepEqual(gh.calls.slice(before).map((call) => call.op), ["keyedCommentsOf"], "only the comments are read");
+  assert.deepEqual(gh.writes().filter((call) => call.op === "postRowComment").length, 1);
 });
 
 test("a day still refused when the NEXT day's tick runs is stamped `unread` in its key, and that ends its streak", () => {
   const dir = scratch();
   const logPath = join(dir, FAILURE_LEDGER_FILE);
   // 10-10 had 2 unarmed and its p90 was refused; 10-11 has 1 unarmed, so without the stamp the streak is two days and an incident files.
-  const gh = fakeGh({ comments: [{ id: 5, body: dayReading("2026-10-10", 2, true) }] });
-  gh.state.refuseMerged = true;
+  const gh = seeded({ prs: [pr()], comments: [{ id: 5, body: dayReading("2026-10-10", 2, true) }] });
+  gh.refuseMerged(true);
   const result = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath });
   assert.equal(result.incidents, 0);
   assert.deepEqual(ledgerIn(dir), []);
-  assert.match(gh.store[0].body, /^<!-- approved-unqueued: 2026-10-10 count=unread -->/, "yesterday is stamped unread");
-  assert.match(gh.store[0].body, /\| o\/home \| unknown \| 0 of 0 \| not read \(gate-budget: refused /, "the text is kept as it was");
-  assert.match(gh.store[1].body, /^<!-- approved-unqueued: 2026-10-11 count=1 -->/);
+  assert.match(gh.comments()[0].body, /^<!-- approved-unqueued: 2026-10-10 count=unread -->/, "yesterday is stamped unread");
+  assert.match(gh.comments()[0].body, /\| o\/home \| unknown \| 0 of 0 \| not read \(gate-budget: refused /, "the text is kept as it was");
+  assert.match(gh.comments()[1].body, /^<!-- approved-unqueued: 2026-10-11 count=1 -->/);
 
   postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW + 2 * MIN, run: gh.run, logPath });
-  const stamped = gh.writes().filter((args) => args.includes("PATCH") && args[args.indexOf("PATCH") + 1].endsWith("/5"));
+  const stamped = gh.writes().filter((call) => call.op === "editComment" && call.request.id === 5);
   assert.equal(stamped.length, 1, "yesterday is stamped once, not on every tick");
 });
 
 test("twin: the same day with NO refusal in it is not stamped, and its streak of two days files one incident", () => {
   const dir = scratch();
   const logPath = join(dir, FAILURE_LEDGER_FILE);
-  const gh = fakeGh({ comments: [{ id: 5, body: dayReading("2026-10-10", 2) }] });
-  gh.state.refuseMerged = true;
+  const gh = seeded({ prs: [pr()], comments: [{ id: 5, body: dayReading("2026-10-10", 2) }] });
+  gh.refuseMerged(true);
   const result = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath });
   assert.equal(result.incidents, 1);
   assert.equal(ledgerIn(dir)[0]?.classKey, APPROVED_UNQUEUED_KIND);
-  assert.deepEqual(gh.writes().filter((args) => args.includes("PATCH")), []);
-  assert.match(gh.store[0].body, /^<!-- approved-unqueued: 2026-10-10 count=2 -->/);
+  assert.deepEqual(gh.writes().filter((call) => call.op === "editComment"), []);
+  assert.match(gh.comments()[0].body, /^<!-- approved-unqueued: 2026-10-10 count=2 -->/);
 });
 
 test("the daily readers that key a comment by day are derived from the tree, and each is named with whether it has a budget-refusal path", () => {

@@ -33,7 +33,7 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { wrapperInputsOf } from "../plugins/host-place.ts";
 import { renderWrapper } from "../../plugins/github/wrapper.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { shippedUnits, SHIPPED_DIR, execCommands, entriesFromCommand, opaqueCommands, shellCommandWords, shellSpawnsGh, shippedHostScripts, unitEntryPoints, programCandidates, PROJECT_UNITS_DIR, shippedUnitText, shippedScriptText, leadsListText, OPTIONAL_UNITS, HOST_OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, declaredProjectKeys, workTickToolForm, autoMemorySeatLabels } from "../host-units/shipped-unit-texts-and-declarations.ts";
+import { shippedUnits, SHIPPED_DIR, PLUGIN_HOST_DIR, PLUGIN_HOST_SCRIPTS, execCommands, entriesFromCommand, opaqueCommands, shellCommandWords, shellSpawnsGh, shippedHostScripts, unitEntryPoints, programCandidates, PROJECT_UNITS_DIR, shippedUnitText, shippedScriptText, leadsListText, OPTIONAL_UNITS, HOST_OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, declaredProjectKeys, workTickToolForm, autoMemorySeatLabels } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { type Finding, unitState, unitDrift, systemdUserAvailable, orphanedUnits, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, humanLoginOnHost, HUMAN_LOGIN_ON_HOST, retiredHere, addedOnSomeRef, orphanOrigin, supersededHostScripts, hostIdentityDrift, hostIdentityNotes, ownedIdentityFiles, compileCacheNotes, WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, codexTrustDrift, codexTrustedProjects, windowEnd, seatWrapperNotes } from "../host-units/host-drift-findings-and-notes.ts";
 import { driftReport, hostUnitsNotChecked, hostUnitsInstall, hostUnitDrift, permissionModeDrift, missingUnitPrograms, workingDirectoryOf, rowReviewSkillInstall, rowReviewSkillDrift, rowReviewSkillPath, rowReviewSkillState, modelEffortDrift, sessionModelDrift, unclassifiedEntries, hostVariableAsRun } from "../host-units.ts";
 import { hostIdentityInstall, reviewerDoorInstall, ROW_REVIEW_SKILL_FILES, ROW_REVIEW_SKILL_SOURCE, sessionModelNotes, lastModelIn, liveClaudeSessions, windowEndNotes } from "../host-units/gh-wrapper-and-notes.ts";
@@ -1274,7 +1274,7 @@ test("#1993: the board dispatch is SHIPPED, and faithful to the pair that actual
   // committing them.
   const service = shippedText("a11ign-board-report.service");
   const timer = shippedText("a11ign-board-report.timer");
-  assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
+  assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/plugins\/github\/host\/board-report-dispatch\.sh$/m,
     "#1998: the SHIPPED program, named the way the other code-running units name theirs. It read "
     + "`/home/agent/.local/bin/board-report-dispatch.sh` until then -- 31 lines of bash carried by no "
     + "commit anywhere, so every property above was a property of a file nobody here could read");
@@ -1397,8 +1397,10 @@ test("#2782: the prune's API spend is ONE claim read per removable tree, declare
   // to reach `gh`, answers null -- so the walk can tell the two apart.
   assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.ts")), null,
     "control: the import walk answers null for a closure that is clean, so the answer below is a reading");
-  assert.match(String(ghSpawnReachedFrom(entry)), /worktree-removal\.ts$/,
-    "the spend is in the ONE file every remover asks, so it is a single, nameable read rather than a scatter of `gh` calls");
+  // Since A11-160's step 9 no file spawns `gh`: the walk stops at the first file that asks the code host for its rows. The prune asks it in two places only, the claim read every remover asks (`worktree-removal.ts`) and the
+  // open-pull hold (`ticket-port/open-pull-heads.ts`), so the spend is still a nameable read and not a scatter of calls.
+  assert.match(String(ghSpawnReachedFrom(entry)), /(?:worktree-removal|ticket-port\/open-pull-heads)\.ts$/,
+    "the spend is in the files the prune asks the code host in, so it is a single, nameable read rather than a scatter of `gh` calls");
   const spending = unitsSpendingGh().find((u) => u.unit === "a11ign-worktree-prune.service");
   assert.ok(spending, "the unit is charged for an identity, so it cannot quietly spend the person's pool");
   assert.equal(spending.declared, true, "and it declares which account");
@@ -1574,14 +1576,15 @@ test("#2000: which shipped timers run their service at `host:install`, and which
  * so the dispatcher is read through that link. The first assertion below is the link's own control -- that this path IS the shipped file -- so
  * every comparison against it is a comparison against the tool under test.
  */
-const DISPATCH = join(PROJECT_ROOT, "packages/agent-org/host/board-report-dispatch.sh");
+const DISPATCH = join(PROJECT_ROOT, "packages/agent-org/plugins/github/host/board-report-dispatch.sh");
 
 test("#1998: the dispatch ships here, and it is the program that actually runs", () => {
-  assert.equal(realpathSync(DISPATCH), join(SHIPPED_DIR, "board-report-dispatch.sh"),
-    "the project's `packages/agent-org` is this tool, so the path the unit names is the file this tool ships");
+  assert.equal(realpathSync(DISPATCH), join(PLUGIN_HOST_DIR, "board-report-dispatch.sh"),
+    "the project's `packages/agent-org` is this tool, so the path the unit names is the file this tool ships (the GitHub plugin's, since the script runs `gh`: A11-160, step 9)");
   assert.ok(shippedHostScripts().includes("board-report-dispatch.sh"),
-    "in the same directory as the unit that starts it -- the whole row in one assertion");
-  const script = shippedText("board-report-dispatch.sh");
+    "among the scripts this tool ships beside its units, which now include the plugin's `host/` -- the whole row in one assertion");
+  assert.ok(!existsSync(join(SHIPPED_DIR, "board-report-dispatch.sh")), "and it is not also in `host/`: one copy");
+  const script = readFileSync(join(PLUGIN_HOST_DIR, "board-report-dispatch.sh"), "utf8");
   assert.match(script, /^set -euo pipefail$/m,
     "byte-faithful to the installed copy, whose own first act this is: a dispatch that swallowed a "
     + "failed `gh workflow run` would log a run id it never created");
@@ -1591,6 +1594,19 @@ test("#1998: the dispatch ships here, and it is the program that actually runs",
     + "would find one and charge the unit for half of what it spends");
   assert.match(script, /gh workflow run "\$\{WORKFLOW\}" --repo "\$\{REPO\}"/,
     "the dispatch itself, quoted from the file that has fired at 07:10 every morning since 2026-09-18");
+});
+
+test("A11-160: the scripts that run `gh` are the GitHub plugin's, listed by name, found in its `host/`, and the host directory holds none", () => {
+  const inPlugin = readdirSync(PLUGIN_HOST_DIR).filter((name) => name.endsWith(".sh")).sort();
+  assert.deepEqual(inPlugin, [...PLUGIN_HOST_SCRIPTS].sort(), "the plugin's directory holds exactly the scripts the tool records for it");
+  assert.deepEqual(readdirSync(SHIPPED_DIR).filter((name) => name.endsWith(".sh")), [], "and `host/` holds no script: the units stay there, their programs are the plugin's");
+  assert.deepEqual(shippedHostScripts(), [...PLUGIN_HOST_SCRIPTS].sort(), "`shippedHostScripts` reads both directories");
+  assert.deepEqual(shippedHostScripts("/stand-in", { read: (() => ["x.sh", "y.in"]) as never }), ["x.sh"], "a directory a test stands in for the tool's is read alone: the plugin's is not added to it");
+  const starts: Record<string, string> = { "board-report-dispatch.sh": "board-report.service.in", "manager-spend-post.sh": "manager-spend-post.service.in", "trace-weekly-post.sh": "trace-weekly.service.in" };
+  assert.deepEqual(Object.keys(starts).sort(), [...PLUGIN_HOST_SCRIPTS].sort(), "POSITIVE CONTROL: every script has the unit that starts it named here");
+  for (const [script, unit] of Object.entries(starts)) {
+    assert.ok(readFileSync(join(SHIPPED_DIR, unit), "utf8").split("\n").includes(`ExecStart=/usr/bin/bash packages/agent-org/plugins/github/host/${script}`), `${unit} starts ${script} where the plugin keeps it`);
+  }
 });
 
 test("#1998: the board dispatch's `gh` is READ, not merely not-ruled-out", () => {
@@ -1617,7 +1633,7 @@ test("#1998: the board dispatch's `gh` is READ, not merely not-ruled-out", () =>
 test("#1998: `unitEntryPoints` follows a shell interpreter exactly as it follows `node`", () => {
   const service = shippedText("a11ign-board-report.service");
   assert.deepEqual(unitEntryPoints(service), [DISPATCH]);
-  assert.deepEqual(entriesFromCommand("/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh"),
+  assert.deepEqual(entriesFromCommand("/usr/bin/bash packages/agent-org/plugins/github/host/board-report-dispatch.sh"),
     [DISPATCH],
     "RELATIVE TO THIS CHECKOUT and not to the `WorkingDirectory` the unit names, or the answer would be "
     + "right in the primary checkout and wrong in every worktree and in CI");
@@ -1659,13 +1675,13 @@ test("#1998 NEGATIVE CONTROL: a shell script OUT of the tree is still OPAQUE", (
     ["/home/agent/.local/bin/board-report-dispatch.sh"],
     "the exact command this unit carried until this row, still unreadable and still charged");
   assert.deepEqual(
-    opaqueCommands("[Service]\nExecStart=/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh\n"),
+    opaqueCommands("[Service]\nExecStart=/usr/bin/bash packages/agent-org/plugins/github/host/board-report-dispatch.sh\n"),
     [], "POSITIVE CONTROL: the same interpreter, a path this repository ships, and it is readable");
 });
 
 test("#1998: a shell script spawns `gh` as a WORD, which the JavaScript pattern cannot see", () => {
-  assert.equal(ghSpawnReachedFrom(join(SHIPPED_DIR, "board-report-dispatch.sh")),
-    join(SHIPPED_DIR, "board-report-dispatch.sh"));
+  assert.equal(ghSpawnReachedFrom(join(PLUGIN_HOST_DIR, "board-report-dispatch.sh")),
+    join(PLUGIN_HOST_DIR, "board-report-dispatch.sh"));
   assert.deepEqual(shellCommandWords('RUN_ID="$(gh run list --repo x)"'), ["gh", "\""],
     "the `(` split: the line's own first word is an assignment, skipped, and the call sits one "
     + "substitution in. The trailing `\"` is the OVER-APPROXIMATION this reader is allowed -- splitting "
@@ -3166,14 +3182,14 @@ test("#3464: a tool command is the same command however its words are separated 
 testEach("#3627: installed as the tool, the weekly report's service runs the script from the tool and is told where the project's declaration is", [
   { name: "runs from the tool", check: (installed: string) => assert.match(installed, /^WorkingDirectory=\/tool$/m) },
   { name: "the project's declaration", check: (installed: string) => assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m) },
-  { name: "the script", check: (installed: string) => assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m) },
+  { name: "the script", check: (installed: string) => assert.match(installed, /^ExecStart=\/usr\/bin\/bash plugins\/github\/host\/trace-weekly-post\.sh$/m) },
 ], (c) => c.check(installedAsTool("trace-weekly.service.in")));
 
 // agent-org#912: the daily reading, installed the same way as the weekly report above, so the two cannot drift apart unnoticed.
 testEach("#912: installed as the tool, the daily manager-spend service runs the script from the tool and is told where the project's declaration is", [
   { name: "runs from the tool", check: (installed: string) => assert.match(installed, /^WorkingDirectory=\/tool$/m) },
   { name: "the project's declaration", check: (installed: string) => assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m) },
-  { name: "the script", check: (installed: string) => assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/manager-spend-post\.sh$/m) },
+  { name: "the script", check: (installed: string) => assert.match(installed, /^ExecStart=\/usr\/bin\/bash plugins\/github\/host\/manager-spend-post\.sh$/m) },
 ], (c) => c.check(installedAsTool("manager-spend-post.service.in")));
 
 testEach("#3515: installed as the tool, the trace pages' service runs publish.ts from the tool and is told where the host's declaration is", [

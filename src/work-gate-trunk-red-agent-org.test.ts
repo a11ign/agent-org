@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is an injected `run` seam answering from a fixture; `readTrunkRed`'s default `gh` is never reached
+// no-token: gh -- every read here is the fake code host's, seeded from a fixture (A11-160, step 9); `readTrunkRed`'s default `gh` is never reached
 /**
  * #3079: A RED `main` IN A DECLARED CODE REPOSITORY WAKES SOMEBODY.
  *
@@ -8,13 +8,18 @@
  * EVERY "NO ORDER" ASSERTION HERE HAS ITS POSITIVE CONTROL IN THE SAME FIXTURE WITH ONE FIELD CHANGED: a green newest run yields nothing only because
  * the same payload with `failure` yields an order, and a cancelled newest run is looked through only because the run behind it decides the answer.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
 import { readLanes, readScopeTrunkRed, scopeTick } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { scopesOf } from "./work-gate/vocabulary.ts";
 import { stuckRowOf } from "./wake/merge-queue-wait.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { trunkRunsKey } from "./plugins/fakes/code-host-queue.ts";
+
+afterEach(() => forgetActivation());
 
 const REPO = "a11ign/agent-org";
 const BAD = "f02ecda0e5a1b2c3d4e5f60718293a4b5c6d7e8f";
@@ -31,21 +36,32 @@ const JOBS = { jobs: [{ id: 9, name: "gate", conclusion: "failure" }] };
 const LOG = `gate\tThe tool's whole suite\t2026-10-02T20:06:19.1Z not ok 7 - ${TEST}\n`;
 const PULLS = [{ number: 56, title: "claim release reads one repository", labels: [{ name: "session:worker-3075" }] }];
 
-function fakeGh(state: { runs: unknown, pulls?: unknown }) {
-  const calls: string[][] = [];
-  const gh = (args: string[]) => {
-    calls.push(args);
-    const text = args.join(" ");
-    if (text.includes("/actions/workflows/ci.yml/runs") || text.includes("/actions/workflows/trunk.yml/runs")) return JSON.stringify(state.runs);
-    if (/\/actions\/runs\/\d+\/jobs/.test(text)) return JSON.stringify(JOBS);
-    if (args[0] === "run" && args[1] === "view") return LOG;
-    if (text.includes("/pulls")) return JSON.stringify(state.pulls ?? PULLS);
-    throw new Error(`unexpected gh call: ${text}`);
-  };
+/**
+ * The fake code host's world, installed: the runs the two event filters of agent-org's `ci.yml` answer (and the primary's `trunk.yml`), the jobs and the failed log of every run, and the merged pull request each
+ * run's head came from (the first of `pulls`, or none when it is empty). `gh` is what `readTrunkRed` is handed as its `run`, which a fake code host never calls; `calls` are the world's, in order, the reads of a run's
+ * jobs and log among them.
+ */
+function fakeGh(state: { runs: unknown, pulls?: { number: number; title: string; labels: { name: string }[] }[] }) {
+  const host = createFakeCodeHost();
+  const { ci, tail, calls } = host.rowsWorld;
+  const runs = (state.runs as { workflow_runs: { id: number; head_sha: string }[] }).workflow_runs;
+  for (const filter of agentOrg.eventFilters) tail.queue.trunkRuns.set(trunkRunsKey(REPO, "ci.yml", filter), runs);
+  tail.queue.trunkRuns.set(trunkRunsKey(PRIMARY_TRUNK.repo, "trunk.yml", null), runs);
+  const noted = <T>(map: Map<string, T>, line: string) => { const get = map.get.bind(map); map.get = (id) => { calls.push(`${line} ${id}`); return get(id); }; return map; };
+  ci.jobs = noted(new Map(), "jobsOfRun");
+  ci.logs = noted(new Map(), "failedLogOfRun");
+  const pull = (state.pulls ?? PULLS)[0];
+  for (const run of runs) {
+    ci.jobs.set(String(run.id), JOBS.jobs);
+    ci.logs.set(String(run.id), LOG);
+    tail.queue.originPulls.set(run.head_sha, pull === undefined ? null : { number: pull.number, title: pull.title, labels: pull.labels.map((label) => label.name) });
+  }
+  substituteCodeHost(host);
+  const gh = (): string => { throw new Error("the fake code host acts on its own state: no run is made"); };
   return { gh, calls };
 }
 const agentOrg = trunkOfCodeRepository("agent-org", REPO);
-const readRed = (runs: unknown, pulls?: unknown) => readTrunkRed(fakeGh({ runs, pulls }).gh, agentOrg);
+const readRed = (runs: unknown, pulls?: { number: number; title: string; labels: { name: string }[] }[]) => readTrunkRed(fakeGh({ runs, pulls }).gh, agentOrg);
 
 test("ACCEPTANCE: a newest verdict of `failure` on agent-org's main yields a trunk-red order for a session that can act, naming repository, run, job and sha", () => {
   const [order, ...rest] = trunkRedOrders(readRed(RED_NOW));
@@ -73,15 +89,14 @@ test("a cancelled or in-flight newest run is LOOKED THROUGH to the one before it
 test("the read asks for PUSH and SCHEDULE runs of `ci.yml` on main, in agent-org, and a healthy main costs two runs reads and one jobs read (agent-org#539)", () => {
   const healthy = fakeGh({ runs: { workflow_runs: [run(3, "success", "2026-10-02T21:03:33Z")] } });
   assert.equal(readTrunkRed(healthy.gh, agentOrg), null);
-  const runsRead = (event: string) => ["api", "--method", "GET", `repos/${REPO}/actions/workflows/ci.yml/runs`, "-f", "branch=main", "-f", `event=${event}`, "-f", "per_page=10"];
-  assert.deepEqual(healthy.calls, [runsRead("push"), runsRead("schedule"), ["api", `repos/${REPO}/actions/runs/3/jobs?per_page=100`]],
+  const runsRead = (event: string) => `trunkRunsOf ${REPO} ci.yml event=${event}`;
+  assert.deepEqual(healthy.calls, [runsRead("push"), runsRead("schedule"), "jobsOfRun 3"],
     "the jobs of the newest verdict run are read even when it is green: a `continue-on-error` leg reads red only there");
   const red = fakeGh({ runs: RED_NOW });
   readTrunkRed(red.gh, agentOrg);
-  assert.deepEqual(red.calls.slice(2).map((c) => (c[0] === "run" ? `run view ${c[3]} ${c[4]}` : c[1])), [
-    `repos/${REPO}/actions/runs/1/jobs?per_page=100`, `run view --repo ${REPO}`, `repos/${REPO}/commits/${BAD}/pulls`],
+  assert.deepEqual(red.calls.slice(2), ["jobsOfRun 1", "failedLogOfRun 1", `originPullOfCommit ${REPO} ${BAD}`],
   "jobs, the log, the merged PR; no annotations call, because there is no recheck job");
-  assert.ok(red.calls.every((c) => !c.some((a) => a.includes("a11ign/a11ign"))), "nothing is asked of the primary's repository");
+  assert.ok(red.calls.every((c) => !c.includes("a11ign/a11ign")), "nothing is asked of the primary's repository");
 });
 
 test("with no merged PR known, or the merging session already the router, the order goes to product-manager and carries no fallback", () => {
@@ -117,8 +132,8 @@ test("THE PRIMARY'S READ AND ORDER ARE UNCHANGED: the same calls, and the same p
   const gh = fakeGh({ runs: { workflow_runs: [run(3, "success", "2026-10-02T21:03:33Z")] } });
   assert.equal(readTrunkRed(gh.gh), null);
   assert.equal(readTrunkRed(gh.gh, PRIMARY_TRUNK), null, "omitted and explicit are one source");
-  assert.deepEqual(gh.calls[0], ["api", "--method", "GET", `repos/${PRIMARY_TRUNK.repo}/actions/workflows/trunk.yml/runs`, "-f", "branch=main", "-f", "per_page=10"],
-    "no `event=push`, and `trunk.yml`");
+  // The argument list of that read is the plugin's (`plugins/github/rows/queue-rows.test.ts`); here it is the read asked: `trunk.yml`, with no event filter.
+  assert.equal(gh.calls[0], `trunkRunsOf ${PRIMARY_TRUNK.repo} trunk.yml`, "no `event=push`, and `trunk.yml`");
   const [order] = trunkRedOrders({ runId: 1, url: "https://github.com/a11ign/a11ign/actions/runs/1", sha: "a1b2c3d4e5f6789012345678901234567890abcd",
     failedJobs: ["trunkBuildTest / run"], failingTests: ["the README's quickstart"], recheck: "pass", parentFailingTests: null,
     originPr: { number: 2372, title: "x", session: "worker-tooling" } });
@@ -136,7 +151,7 @@ function tickOf(key: string, runs: unknown) {
   const scope = scopeOf(key);
   const readings = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null, trunkRed: readScopeTrunkRed(scope, fakeGh({ runs }).gh) }),
     tracker: () => NO_TRACKER };
-  return scopeTick(scope, { drain: false }, readLanes(scope, (args: string[]) => (args[0] === "pr" ? "[]" : "[]")), readings).orders as { cause: string, session: string, causeKey: string, prompt: string }[];
+  return scopeTick(scope, { drain: false }, readLanes(scope, () => "[]"), readings).orders as { cause: string, session: string, causeKey: string, prompt: string }[];
 }
 
 test("DONE-WHEN 3, replayed: the scope's tick yields the order on a red main and none on a green one", () => {

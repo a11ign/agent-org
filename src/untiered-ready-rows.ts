@@ -23,10 +23,11 @@
 // the same stock is one question however the tracker lists it.
 //
 // A LEAF: relative imports of leaves only, like `org-retro.ts`, which imports it and runs before any install.
-import { execFileSync } from "node:child_process";
 import { READY_LABEL } from "./claim-labels.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5076: the ready list is a connection, never a search
 import { asListJson } from "./ticket-port/rows-since.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 import { HOLD_LABEL_PREFIX } from "./idle-claimant.ts";
 import { LANE_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { HAIKU_TIER_LABEL } from "./worker-profile.ts";
@@ -170,21 +171,19 @@ export function untieredLines(ready: UntieredReady | null | undefined): string[]
   return [`- ${label}: ${ready.count}: first ${Math.min(ready.count, LISTED_ROWS)}: ${names(ready.rows)}${apart}`];
 }
 
-/** @param {string[]} args @returns {string} */
-function gh(args: string[]): string {
-  return execFileSync("gh", args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"], timeout: READ_TIMEOUT_MS });
-}
+/** The code host's own runner with this read's bound and buffer, its stderr kept to the failure (A11-160, step 9). @param {string[]} args @returns {string} */
+const ghRead: RowsRun = (args) => rows().runnerWith({ timeoutMs: READ_TIMEOUT_MS, maxBuffer: MAX_BUFFER, echo: false })(args);
 
 /**
  * THE REAL READER of one declared tracker: its open `ready` rows (a connection read, #5076), carrying the fields read. A failure throws; `untieredReadyRows` names it.
- * @param {{ key: string, repo: string }} tracker `repo` is `owner/name` @param {(args: string[]) => string} [run] @returns {TrackerReader}
+ * @param {{ key: string, repo: string }} tracker `repo` is `owner/name` @returns {TrackerReader}
  */
-export function ghReadyReader({ key, repo }: { key: string; repo: string; }, run: (args: string[]) => string = gh): TrackerReader {
+export function ghReadyReader({ key, repo }: { key: string; repo: string; }): TrackerReader {
   return {
     key,
     repo,
     // #5076: `repository.issues(labels:)`, a connection -- `gh issue list --label` was sent as a GitHub SEARCH. `asListJson` gives back the `gh issue list --json` shape.
-    listRows: () => readRowsByLabel({ label: READY_LABEL, state: "OPEN", repo, run,
+    listRows: () => readRowsByLabel({ label: READY_LABEL, state: "OPEN", repo, run: ghRead,
       select: "number title body labels(first:50){nodes{name}} comments(first:100){nodes{body}}" }).map(asListJson) as ReadyRow[],
   };
 }

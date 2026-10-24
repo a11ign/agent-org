@@ -1,7 +1,7 @@
 // no-token: gh
 //
 // Every GitHub fact in this file is a fixture in the fake code host's world (A11-160, step 5): the pass reads it, and its default `arm` runs the REAL `runArmPr` over the same code host, so `arm-pr`'s own
-// reads and writes land in the fake too. The only `run` is the one the authorship verdict is handed, which has not moved. True of the IMPORT and false of every CALL.
+// reads and writes land in the fake too, the changed-file list of the authorship verdict among them (A11-160, step 9). The `run` the pass is handed must never run. True of the IMPORT and false of every CALL.
 /**
  * agent-org#1622: AN OUTSIDE PASS REPORTS "armed" ONLY AFTER A READ-BACK SAYS SO, AND EVERY REFUSAL `arm-pr` MAKES IS NAMED, NOT PASSED.
  *
@@ -60,7 +60,7 @@ function seeded(w: World) {
   world.repo = REPO;
   const pull: FakeRowPull = { number: 7, body: "Closes #1", headRefName: "agent/lane-7", labels: [], isDraft: w.list?.isDraft === true, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-23T10:00:00Z",
     comments: [], baseRefName: "main", isCrossRepository: false, reviewDecision: "REVIEW_REQUIRED", author: OUTSIDE, headRefOid: "abc123",
-    closes: [{ number: 1, repo: REPO, title: "a row", labels: [] }], ...w.pull };
+    closes: [{ number: 1, repo: REPO, title: "a row", labels: [] }], ...(w.files === undefined ? {} : { files: w.files }), ...w.pull };
   world.pulls.set(7, pull);
   world.rows.set(1, fakeRow(world, 1, { blockedBy: w.blockedBy ?? [] }));
   for (const blocker of w.blockedBy ?? []) world.rows.set(blocker, fakeRow(world, blocker));
@@ -80,7 +80,6 @@ function drive(w: World = {}, lanes: { lanes: Lane[] } = NO_LANES) {
   const lines: string[] = [];
   const prs: OutsideArmPr[] = [{ ...LIST, ...w.list }];
   const run = (args: string[]): string => {
-    if (args[0] === "api" && args[2]?.endsWith("/files")) return (w.files ?? []).join("\n");
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
   const result = outsideArmPass({ repo: REPO, switchesPath: "", on: true, prs, run, log: (line) => lines.push(line), lanes });

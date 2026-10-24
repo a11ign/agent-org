@@ -25,7 +25,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 TimeoutStartSec=900
 
 # `/usr/bin/bash <repository-relative path>`: the tree copy IS the program, not copied anywhere.
-ExecStart=/usr/bin/bash packages/agent-org/host/manager-spend-post.sh
+ExecStart=/usr/bin/bash packages/agent-org/plugins/github/host/manager-spend-post.sh
 
 # NO [Install] SECTION, and its absence is load-bearing: `WantedBy=default.target` would run this oneshot, and post a reading, at every boot.
 # The timer is the only thing that may start it.

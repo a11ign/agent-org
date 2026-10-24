@@ -23,6 +23,8 @@ function execOptionsOf(deps: Seams, request: RunnerRequest): ExecOptions {
     ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
     ...(request.maxBuffer === undefined ? {} : { maxBuffer: request.maxBuffer }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    ...(request.env === undefined ? {} : { env: request.env }),
+    ...(request.inherit === true ? { inherit: true } : {}),
     ...(withoutEnv.length === 0 ? {} : { withoutEnv }),
   };
 }

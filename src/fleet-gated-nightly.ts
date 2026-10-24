@@ -40,6 +40,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { gh, REPO } from "./board-data.ts";
+import { rows } from "./plugins/rows.ts";
 import { promptable, clearThenPrompt, PROMPT_REFUSED_PREFIX } from "./prompt-session.ts";
 import { readAgents } from "./herdr-agents.ts";
 import { herdrRun } from "./herdr-agents.ts";
@@ -55,8 +56,6 @@ export const SESSION = "orchestrator";
 export const EXIT = { OK: 0, CANNOT_ASK: 2 };
 
 /** @param {string[]} args */
-const defaultGhRun = (args: string[]) => gh(args);
-/** @param {string[]} args */
 const defaultHerdrRun = (args: string[]) => herdrRun(args);
 
 // `gh issue list` defaults to 30 -- fine for a label-scoped slice today, silent
@@ -71,14 +70,11 @@ const LIMIT = 500;
  * selector both feeders share does not).
  * Throws on a refused read, and on a listing that saturated `LIMIT` and so MAY BE TRUNCATED; never
  * returns `[]` or a partial list for either. See this file's header for why that distinction is the
- * whole point.
- * @param {(args: string[]) => string} run
+ * whole point. The listing is the code host's (`openRowsCarryingLabel`), run as the board's `gh` runs.
  * @returns {{ number: number, comments: unknown[] }[]}
  */
-export function fleetGatedRows(run: (args: string[]) => string = defaultGhRun): { number: number; comments: unknown[]; }[] {
-  const out = run(["issue", "list", "--repo", REPO, "--state", "open",
-    ...FLEET_GATED_SELECTOR.listArgs, "--json", "number,comments", "--limit", String(LIMIT)]);
-  const issues = JSON.parse(out);
+export function fleetGatedRows(): { number: number; comments: unknown[]; }[] {
+  const issues = rows().openRowsCarryingLabel({ repo: REPO, label: FLEET_GATED_SELECTOR.label, limit: LIMIT, run: gh });
   if (issues.length >= LIMIT) {
     throw new Error(`fleetGatedRows: the listing returned ${issues.length} row(s) against a limit of `
       + `${LIMIT}, so it MAY BE TRUNCATED and this firing would examine only part of the fleet-gated `
@@ -117,30 +113,30 @@ export function wakeText(issues: { number: number; }[]) {
 export type FiringResult = { kind: "cannot-ask", message: string } | { kind: "quiet", comment: string } | { kind: "not-woken", comment: string, why: string } | { kind: "woke", comment: string, wakeReport: string | null };
 
 /**
- * THE WHOLE ORCHESTRATION, injectable, so a test can inject stubs for `ghRun`/`herdrRun` and assert what
- * this firing actually DOES rather than only its pure text helpers -- the same seam `work-gate.ts`'s
- * `performActions` uses (`@param run`, defaulted to the real spawn). Before this, only `fleetGatedRows`,
+ * THE WHOLE ORCHESTRATION, injectable, so a test can inject a stub for `herdrRun` (the code host's rows are the
+ * test's own world) and assert what this firing actually DOES rather than only its pure text helpers --
+ * the same seam `work-gate.ts`'s `performActions` uses. Before this, only `fleetGatedRows`,
  * `examinedComment` and `wakeText` were under test; `main`'s own two side effects -- the comment on #914
  * and the wake to `orchestrator` -- were not (reviewer-2 proved it on PR #1844 by swapping the real #914
  * comment for a print and showing the acceptance command still passed).
  *
- * Returns a tagged result rather than performing any I/O itself beyond `ghRun`/`herdrRun`, so `main` is a
- * thin projection onto stdout/stderr/exit code and every branch below is assertable without a real `gh`
- * or `herdr` in the loop.
+ * Returns a tagged result rather than performing any I/O itself beyond the code host's rows and `herdrRun`, so
+ * `main` is a thin projection onto stdout/stderr/exit code and every branch below is assertable without a real
+ * code host or `herdr` in the loop.
  *
- * @param {{ ghRun?: (args: string[]) => string, herdrRun?: (args: string[]) => string,
+ * @param {{ herdrRun?: (args: string[]) => string,
  *           now?: () => string, sleep?: (ms: number) => void }} [deps]
  *   `sleep` is the clear's settle ({@link clearThenPrompt}): real by default, injected by a test that is not about it (#2546)
  * @returns {FiringResult}
  */
-export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun,
+export function performFiring({ herdrRun = defaultHerdrRun,
   now = () => new Date().toISOString(), sleep }: {
-        ghRun?: (args: string[]) => string; herdrRun?: (args: string[]) => string;
+        herdrRun?: (args: string[]) => string;
         now?: () => string; sleep?: (ms: number) => void;
     } = {}): FiringResult {
   let issues: { number: number; comments: unknown[]; }[];
   try {
-    issues = fleetGatedRows(ghRun);
+    issues = fleetGatedRows();
   } catch (error: any) {
     return { kind: "cannot-ask", message: `CANNOT ASK: could not list fleet-gated rows `
       + `(${error?.message ?? error}). Nothing was examined and nothing was posted.` };
@@ -148,7 +144,7 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
 
   const comment = examinedComment(issues, now());
   try {
-    ghRun(["issue", "comment", STANDING_ROW, "--repo", REPO, "--body", comment]);
+    rows().commentOnIssue({ repo: REPO, issue: STANDING_ROW, body: comment, run: gh });
   } catch (error: any) {
     return { kind: "cannot-ask", message: `CANNOT ASK: could not post the examined-count comment on `
       + `#${STANDING_ROW} (${error?.message ?? error}).` };

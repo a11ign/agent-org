@@ -58,7 +58,6 @@
  *      #1481 at `8244cf0f`: that failure escaped as an uncaught throw and Node exited 1, "nothing done",
  *      after `hold:dispatcher` had already been removed.
  */
-import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -69,10 +68,11 @@ import { parseWaits, WAIT_MARKER, MANUAL_WAIT_HOURS, waitItemOf, declaredWaitsOf
 import { holdCycleOf, holdCycleText, refKey } from "./hold-cycle.ts";
 import type { CycleParty } from "./hold-cycle.ts";
 import { closedRefsOf } from "./board-truth-audit.ts";
-import { pullRequestFieldsOf } from "./ticket-port/pull-request-fields.ts";
 import { REPO } from "./project-identity.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
 const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, DISPLACED_NOT_HELD: 3 };
 
@@ -87,9 +87,9 @@ const mention = (pr: HeldPr): string => (pr.key === "" ? `#${pr.number}` : `${pr
 /**
  * The calls of the first repository that never carried `--repo` (the merge and the auto-merge read) stay as they were; a keyed one
  * is aimed, because without it `gh` answers for whatever repository the working directory is (#3479).
- * @param {HeldPr} pr @returns {string[]}
+ * @param {HeldPr} pr @returns {{ repo?: string }}
  */
-const aimedIfKeyed = (pr: HeldPr): string[] => (pr.key === "" ? [] : ["--repo", pr.repo]);
+const aimedIfKeyed = (pr: HeldPr): { repo?: string } => (pr.key === "" ? {} : { repo: pr.repo });
 
 /** @param {HeldPr} pr @returns {string} the same aim as text for a command an operator is told to type, with its trailing space */
 const aimedFlags = (pr: HeldPr): string => (pr.key === "" ? "" : `--repo ${pr.repo} `);
@@ -116,8 +116,15 @@ export function holdRepository({ key, ref }: { key: string | undefined; ref: str
   return found ? { repo: found.repo, key: found.key } : { error: `REFUSING: the project declares no first code repository. Declared: ${declared}.` };
 }
 
-/** @param {string[]} args */
-const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+/** What `execFileSync` let a program print before it cut it off (1 MiB), which every `gh` call here has been held to. */
+const EXEC_FILE_BUFFER = 1024 * 1024;
+
+/**
+ * The code host's program, run as this command always ran `gh`: what it says on stderr kept to the failure (the label that was not found is read off it), and the leak guard in the RUNNER, so a body is checked
+ * wherever it is sent (#1053: every script that sends a body to GitHub is declared in `TRACKER_WRITERS` and guarded). A11-160: the process is the code host's, and what is asked of it is a named operation of its rows.
+ * @returns {RowsRun}
+ */
+const hostRun = (): RowsRun => rows().runnerWith({ echo: false, maxBuffer: EXEC_FILE_BUFFER, guard: (args) => assertNoLeakInArgv(rows().command, [...args]) });
 
 /**
  * This PR's labels, or `null` when the answer could not be had.
@@ -131,13 +138,9 @@ const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8", stdi
  */
 export function prLabels(number: number, repo: string = REPO): string[] | null {
   try {
-    const pr = JSON.parse(gh(["pr", "view", String(number), "--repo", repo, "--json", "labels"]));
-    if (!Array.isArray(pr.labels)) return null;
-    const names = pr.labels.map((l: { name?: unknown; }) => l?.name);
-    return names.every((n: unknown) => typeof n === "string")
-      ? (names as string[]) : null;
+    return rows().heldPullLabelsOf({ repo, number, run: hostRun() });
   } catch {
-    return null;
+    return null; // a code host that cannot be reached is a lookup that failed, which is never "nobody holds it"
   }
 }
 
@@ -185,26 +188,12 @@ export function holdDecision({ holders, session, steal }: { holders: string[]; s
  * @param {HeldPr} pr @param {string} session @param {"add"|"remove"} how
  */
 function writeLabel(pr: HeldPr, session: string, how: "add" | "remove") {
-  const label = `${HOLD_PREFIX}${session}`;
-  try {
-    writeRawLabel(pr, label, how);
-  } catch (error) {
-    if (how !== "add" || !isLabelNotFound(error, label)) throw error;
-    gh(["label", "create", label, "--repo", pr.repo, "--force",
-      "--description", `This PR is HELD by ${session} and must not merge.`]);
-    writeRawLabel(pr, label, how);
-  }
-}
-
-/** @param {unknown} error @param {string} label @returns {boolean} whether `gh` said THIS label does not exist */
-function isLabelNotFound(error: unknown, label: string): boolean {
-  const stderr = (error as {stderr?: unknown})?.stderr;
-  return typeof stderr === "string" && stderr.includes(`'${label}' not found`);
+  rows().editHeldPullLabel({ repo: pr.repo, number: pr.number, label: `${HOLD_PREFIX}${session}`, how, createdWith: `This PR is HELD by ${session} and must not merge.`, run: hostRun() });
 }
 
 /** @param {HeldPr} pr @param {string} label @param {"add"|"remove"} how */
 function writeRawLabel(pr: HeldPr, label: string, how: "add" | "remove") {
-  gh(["pr", "edit", String(pr.number), "--repo", pr.repo, `--${how}-label`, label]);
+  rows().editHeldPullLabel({ repo: pr.repo, number: pr.number, label, how, run: hostRun() });
 }
 
 /**
@@ -215,14 +204,12 @@ function writeRawLabel(pr: HeldPr, label: string, how: "add" | "remove") {
  * @returns {{ autoMergeRequest?: unknown } | null}
  */
 function readAutoMerge(pr: HeldPr): { autoMergeRequest?: unknown; } | null {
+  // `state` ALONGSIDE `autoMergeRequest`, because a null `autoMergeRequest` means "disarmed" or "merged" and the field cannot tell you which. `disarmVerdict` and `armVerdict` both need the second one -- see their
+  // headings and #845, where three reads said NOT-ARMED about a PR that had merged four seconds earlier.
   try {
-    // `state` ALONGSIDE `autoMergeRequest`, because a null `autoMergeRequest` means "disarmed" or
-    // "merged" and the field cannot tell you which. `disarmVerdict` and `armVerdict` both need the
-    // second one -- see their headings and #845, where three reads said NOT-ARMED about a PR that had
-    // merged four seconds earlier.
-    return JSON.parse(gh(["pr", "view", String(pr.number), "--repo", pr.repo,
-      "--json", "autoMergeRequest,state"]));
+    return rows().autoMergeOfHeldPull({ repo: pr.repo, number: pr.number, run: hostRun() });
   } catch {
+    // The operation answers `null` for a refused read itself; this catch is for `rows()` and `hostRun()`, which refuse (no code host with rows, no runner with a policy) before it is asked, and that is also "could not be had".
     return null;
   }
 }
@@ -361,7 +348,7 @@ function holdCycleRefusal(pr: HeldPr, until: string | null, target: { number: nu
  * @param {string} repo @param {number} number @param {string} fields @returns {any | null}
  */
 function readPullRequest(repo: string, number: number, fields: string): Record<string, any> | null {
-  return pullRequestFieldsOf({ repo, number, fields, run: gh });
+  return rows().pullRequestFieldsOf({ repo, number, fields, run: hostRun() });
 }
 
 /**
@@ -372,12 +359,9 @@ function readPullRequest(repo: string, number: number, fields: string): Record<s
  */
 function readTargetFacts(target: { repo: string; number: number; }): { fact: RefFact; openPullRequests: PullRequestRef[]; row: any; } | null {
   try {
-    const row = JSON.parse(gh(["issue", "view", String(target.number), "--repo", target.repo, "--json", "state,labels,closedByPullRequestsReferences,body,comments"]));
-    const state = String(row.state ?? "").toLowerCase();
-    if (!["open", "closed"].includes(state) || !Array.isArray(row.labels) || !Array.isArray(row.closedByPullRequestsReferences)) return null;
-    const openPullRequests = row.closedByPullRequestsReferences.map((ref: { number: number; repository?: { name?: string; owner?: { login?: string; }; }; }) =>
-      ({ number: ref.number, repo: `${ref.repository?.owner?.login}/${ref.repository?.name}` }));
-    return { fact: { state: state as RefFact["state"], labels: row.labels.map((l: { name: string; }) => l.name), resolvedAt: null, changedAt: null }, openPullRequests, row };
+    const read = rows().holdTargetRowOf({ repo: target.repo, number: target.number, run: hostRun() });
+    if (read === null) return null;
+    return { fact: { state: read.state as RefFact["state"], labels: read.labels, resolvedAt: null, changedAt: null }, openPullRequests: read.openPullRequests, row: read.row };
   } catch {
     return null;
   }
@@ -408,11 +392,10 @@ function writeUntilMarker(pr: HeldPr, session: string, until: string | null): bo
   const body = [WAIT_MARKER, `Held by \`${session}\`.`,
     until === null ? "No condition was named, so nothing says when this hold ends." : `Waiting-for: ${until}`].join("\n");
   try {
-    const write = ["pr", "comment", String(pr.number), "--repo", pr.repo, "--body", body];
-    assertNoLeakInArgv("gh", write); // #1053: every script that sends a body to GitHub is declared in `TRACKER_WRITERS` and guarded
-    gh(write);
-    const comments = JSON.parse(gh(["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "comments"])).comments ?? [];
-    return comments.some((c: { body?: string; }) => String(c?.body ?? "").trim() === body);
+    // #1053: the runner's guard refuses a body that leaks, before anything is sent.
+    const run = hostRun();
+    rows().commentOnPull({ repo: pr.repo, number: pr.number, body, run });
+    return rows().readPullComments({ repo: pr.repo, number: pr.number, run }).some((comment) => comment.body.trim() === body);
   } catch {
     return false;
   }
@@ -472,7 +455,7 @@ function releaseHold(pr: HeldPr, session: string, holders: string[]): number {
  */
 function rearmAfterRelease(pr: HeldPr): number {
   try {
-    gh(["pr", "merge", "--auto", "--merge", String(pr.number), ...aimedIfKeyed(pr)]);
+    rows().armHeldPull({ number: pr.number, ...aimedIfKeyed(pr), run: hostRun() });
   } catch {
     // NOT the verdict, in either direction -- the state read below is. `gh pr merge` can fail having
     // armed, and can succeed having done nothing, which is the asymmetry `disarmAutoMerge` records for
@@ -650,14 +633,14 @@ function markForRearm(pr: HeldPr): boolean {
  */
 function disarmAutoMerge(pr: HeldPr): { disarmed: boolean; reason: string; } {
   try {
-    gh(["pr", "merge", "--disable-auto", String(pr.number), ...aimedIfKeyed(pr)]);
+    rows().disarmHeldPull({ number: pr.number, ...aimedIfKeyed(pr), run: hostRun() });
   } catch {
     // NOT a failure on its own: `gh` exits non-zero when auto-merge was never enabled. The state read
     // below is what decides, which is the whole point of not trusting the exit code in either direction.
   }
   let after;
   try {
-    after = JSON.parse(gh(["pr", "view", String(pr.number), ...aimedIfKeyed(pr), "--json", "autoMergeRequest"]));
+    after = rows().autoMergeRequestOfHeldPull({ number: pr.number, ...aimedIfKeyed(pr), run: hostRun() });
   } catch (cause) {
     return { disarmed: false, reason: "COULD NOT READ `autoMergeRequest` back after disarming: "
       + `${(cause as Error).message}. Unverified is not disarmed -- check by hand.` };

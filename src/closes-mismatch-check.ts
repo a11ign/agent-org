@@ -82,6 +82,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { claimRecordOf, type RowComment } from "./claim-record.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
+import { rows } from "./plugins/rows.ts";
 
 // GitHub's own documented closing keywords -- close/closes/closed, fix/fixes/fixed, resolve/resolves/
 // resolved -- immediately followed by `#<number>`. Used only to LOCATE the phrase in the body for a
@@ -338,17 +339,9 @@ const CLAIMED_ROWS_PAGE = 100;
  */
 export function lookupOpenClaimedRows(repo: string = REPO, run: (args: string[]) => string = gh): ClaimedRow[] | null {
   return lookup(() => {
-    const [owner, name] = repo.split("/");
-    const query = "query($owner:String!,$name:String!,$label:String!,$count:Int!,$window:Int!){"
-      + "repository(owner:$owner,name:$name){issues(states:OPEN,labels:[$label],first:$count){totalCount nodes{number "
-      + "comments(last:$window){totalCount nodes{body createdAt author{login}}}}}}}";
-    const issues = JSON.parse(run(["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`,
-      "-F", `label=${CLAIM_LABEL}`, "-F", `count=${CLAIMED_ROWS_PAGE}`, "-F", `window=${CLAIM_COMMENT_WINDOW}`])).data.repository.issues;
-    if (issues.totalCount > issues.nodes.length) throw new Error("the claimed rows exceed one page");
-    return issues.nodes.map((issue: { number: number, comments: { totalCount: number, nodes: RowComment[] } }) => {
-      const comments = issue.comments.nodes;
-      return { number: issue.number, repo, comments, unreadable: issue.comments.totalCount > comments.length && claimRecordOf(comments) === null };
-    });
+    const page = rows().claimedRowsWithComments({ repo, label: CLAIM_LABEL, count: CLAIMED_ROWS_PAGE, window: CLAIM_COMMENT_WINDOW, run });
+    if (page.total > page.rows.length) throw new Error("the claimed rows exceed one page");
+    return page.rows.map(({ number, comments, commentsTotal }) => ({ number, repo, comments, unreadable: commentsTotal > comments.length && claimRecordOf(comments) === null }));
   });
 }
 
@@ -389,11 +382,7 @@ export function lookupClaimedRowsOfTrackers(repos: readonly string[], read: (rep
  * @param {number} prNumber @param {string} prRepo @returns {PrHead | null}
  */
 export function lookupPrHead(prNumber: number, prRepo: string): PrHead | null {
-  return lookup(() => {
-    const pull = JSON.parse(gh(["api", `repos/${prRepo}/pulls/${prNumber}`]));
-    if (typeof pull.head.ref !== "string" || pull.head.ref === "") throw new Error("the PR names no head branch");
-    return { branch: pull.head.ref, fork: pull.head.repo?.full_name !== pull.base.repo.full_name };
-  });
+  return lookup(() => rows().headBranchAndForkOf({ repo: prRepo, number: prNumber, run: gh }));
 }
 
 /** The two reads the third direction makes, injectable so the wiring is testable without GitHub. */
@@ -484,15 +473,15 @@ export function consumerDeclarationVerdict(report: ConsumerDeclarationReport): {
 }
 
 /**
- * THE ONE DIRECT CALL THIS DIRECTION ADDS (agent-org#873, `ceo` ruling on agent-org#838, option 1: the gh-call baseline of this file rises 2 -> 3): ONE
- * file of the consumer's default branch, with no `ref` so GitHub answers from the default branch, raw. It moves into the code-host port when its adapter
- * is built; it is not a fifth ticket operation (ADR 0046 decision 3). The parser's closed character set for `repo` and `path` is what lets them into
- * the URL. `ref` (agent-org#839) names a commit; absent is the default branch. `null` on any failure: "could not read" is never "read, and it held it".
+ * THE ONE FILE READ THIS DIRECTION ADDS (agent-org#873, `ceo` ruling on agent-org#838): ONE file of the consumer's default branch, with no `ref` so GitHub answers from
+ * the default branch, raw. It is the code host's `consumerFileTextOf` now (A11-160, step 9); it is not a fifth ticket operation (ADR 0046 decision 3). The parser's
+ * closed character set for `repo` and `path` is what lets them into the address. `ref` (agent-org#839) names a commit; absent is the default branch. `null` on any
+ * failure: "could not read" is never "read, and it held it".
  * @param {string} repo @param {string} path @returns {string | null}
  */
 export function lookupConsumerFile(repo: string, path: string, ref?: string): string | null {
-  const at = ref === undefined ? "" : `?ref=${ref}`; // agent-org#839: the detector reads a file AS A MERGE LEFT IT; a caller's `ref` is a validated commit oid
-  return lookup(() => gh(["api", `repos/${repo}/contents/${path}${at}`, "-H", "Accept: application/vnd.github.raw"]));
+  // agent-org#839: the detector reads a file AS A MERGE LEFT IT; a caller's `ref` is a validated commit oid
+  return lookup(() => rows().consumerFileTextOf({ repo, path, ...(ref === undefined ? {} : { ref }), run: gh }));
 }
 
 /**

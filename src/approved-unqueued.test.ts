@@ -1,14 +1,15 @@
-// no-token: gh -- no `gh` or file outside a temp directory is touched; the pull requests, reviews, comments and clock are fixtures (a11ign/agent-org#893)
+// no-token: gh -- no `gh` or file outside a temp directory is touched; the pull requests, reviews, comments and clock are fixtures, and what the reading asks of GitHub is answered by the fake code host's world (a11ign/agent-org#893, A11-160)
 // #893: the daily reading of approved pull requests left unqueued over 15 minutes, with the p90 of approval-to-queue, and the incident a count above 0 on two consecutive days files.
 //
-// EVERY "NOT LISTED" / "NO INCIDENT" ASSERTION HAS A TWIN: the SAME fixture with ONE thing changed that DOES list or file one (`pr`, `reviews` and `fakeGh` below), so a reading that
+// EVERY "NOT LISTED" / "NO INCIDENT" ASSERTION HAS A TWIN: the SAME fixture with ONE thing changed that DOES list or file one (`pr`, `reviews` and `seeded` below), so a reading that
 // never fires turns the twins red and one that always fires turns the controls red. The mutations, both directions, are in the pull request.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
+import { forgetActivation, seeded as seededIn, type Seed } from "./plugins/fakes/approved-unqueued-world.test.support.ts";
 import {
   APPROVED_UNQUEUED_KIND, MERGED_WINDOW, P90_TARGET_MINUTES, PERSIST_DAYS, READING_ROW, UNQUEUED_MINUTES, approvalToQueueMinutes, approvedSince, countOf, failingCheck, incidentEvents,
   listingOf, p90Of, parseKey, postApprovedUnqueued, readReading, renderReading, repositoryP90, streakEnding, type MergedPr, type OpenPr, type ReviewRead,
@@ -122,65 +123,52 @@ test("only the newest 40 by merge time are in the p90, whatever order they were 
   assert.equal(reading.p90Minutes, 3);
 });
 
-/** A fake `gh`: reads are answered from the fixtures and every call is recorded, so a write is something the test can point at. */
-function fakeGh({ comments = [], armed = {}, merged: mergedByRepo = {}, refuse = [] }: {
-  comments?: { id: number; body: string }[]; armed?: Record<number, unknown>; merged?: Record<string, MergedPr[]>; refuse?: string[];
-} = {}) {
-  const calls: string[][] = [];
-  const store = comments.map((comment) => ({ ...comment }));
-  const run = (args: string[]): string => {
-    calls.push(args);
-    const text = args.join(" ");
-    if (refuse.some((fragment) => text.includes(fragment))) throw new Error(`gh refused: ${text.slice(0, 60)}`);
-    if (args[0] === "api" && args.some((arg) => arg.includes("/issues/928/comments"))) return store.map((comment) => JSON.stringify(comment)).join("\n");
-    if (text.includes("mergeQueueEntry{state}")) return JSON.stringify(armed[Number(args[args.indexOf("-F") + 1].slice(2))] ?? { merged: false, autoMergeRequest: null, mergeQueueEntry: null });
-    if (text.includes("pullRequests(states:MERGED")) return JSON.stringify(mergedByRepo[`${args.find((arg) => arg.startsWith("o="))!.slice(2)}/${args.find((arg) => arg.startsWith("r="))!.slice(2)}`] ?? []);
-    if (args[0] === "issue" && args[1] === "comment") { store.push({ id: 1000 + store.length, body: args[args.indexOf("--body") + 1] }); return "https://github.com/o/home/issues/928#issuecomment-1\n"; }
-    if (args[0] === "api" && args.includes("PATCH")) { store.find((comment) => args[args.indexOf("PATCH") + 1].endsWith(`/${comment.id}`))!.body = args[args.length - 1].slice(5); return "{}"; }
-    throw new Error(`fake gh: unexpected call ${text.slice(0, 80)}`);
-  };
-  const writes = () => calls.filter((args) => args[0] === "issue" || args.includes("PATCH"));
-  return { run, calls, store, writes };
-}
+afterEach(() => forgetActivation());
+const seeded = (world: Seed = {}) => seededIn({ repo: REPO, now: NOW, readingRow: READING_ROW }, world);
 
 test("a reading lists the unarmed ones, asks for arming only past the threshold, and never for a draft", () => {
   const prs = [pr({ number: 1 }), pr({ number: 2 }, 5), pr({ number: 3, isDraft: true }), pr({ number: 4, labels: ["hold:worker-9"] }), pr({ number: 5 }), pr({ number: 6, reviewDecision: "REVIEW_REQUIRED" })];
-  const gh = fakeGh({ armed: { 5: { merged: false, autoMergeRequest: { enabledAt: ago(3) }, mergeQueueEntry: null } } });
+  const gh = seeded({ prs, armed: [5] });
   const reading = readReading({ prs, repos: [REPO], now: NOW, run: gh.run });
   assert.deepEqual(reading.listed.map((row) => [row.number, row.reason]).sort(), [[1, "not armed"], [3, "draft"], [4, "hold"]]);
-  const armingAsked = gh.calls.filter((args) => args.join(" ").includes("mergeQueueEntry{state}")).map((args) => args[args.indexOf("-F") + 1]);
-  assert.deepEqual(armingAsked.sort(), ["n=1", "n=4", "n=5"]);
+  const armingAsked = gh.asked("armedNodeOf").map((request) => request.number);
+  assert.deepEqual(armingAsked.sort(), [1, 4, 5]);
+  assert.deepEqual(gh.asked("reviewsOf"), [], "the tick's list carries the reviews, so none is read");
   assert.deepEqual(reading.unread, []);
 });
 
 test("a pull request in a repository that is not declared is not read", () => {
-  const reading = readReading({ prs: [pr({ repo: OTHER })], repos: [REPO], now: NOW, run: fakeGh().run });
+  const prs = [pr({ repo: OTHER })];
+  const reading = readReading({ prs, repos: [REPO], now: NOW, run: seeded({ prs }).run });
   assert.deepEqual(reading.listed, []);
-  assert.equal(readReading({ prs: [pr({ repo: OTHER })], repos: [REPO, OTHER], now: NOW, run: fakeGh().run }).listed.length, 1);
+  assert.equal(readReading({ prs, repos: [REPO, OTHER], now: NOW, run: seeded({ prs }).run }).listed.length, 1);
 });
 
 test("an arming read that fails is named unread and is not counted; with nothing else listed the day is `unread`, never 0", () => {
-  const gh = fakeGh({ refuse: ["mergeQueueEntry"] });
+  const gh = seeded({ prs: [pr()] });
+  gh.held.failures.set("armedNodeOf", new Error("gh refused: the arming read"));
   const reading = readReading({ prs: [pr()], repos: [REPO], now: NOW, run: gh.run });
   assert.equal(reading.listed.length, 0);
   assert.equal(reading.unread.length, 1);
   assert.equal(countOf(reading), "unread");
   assert.match(renderReading(reading), /count=unread/);
-  const clean = readReading({ prs: [pr({}, 5)], repos: [REPO], now: NOW, run: fakeGh().run });
+  const young = [pr({}, 5)];
+  const clean = readReading({ prs: young, repos: [REPO], now: NOW, run: seeded({ prs: young }).run });
   assert.equal(countOf(clean), 0);
 });
 
 test("reviews missing from the tick's list are read once, per candidate", () => {
-  const gh = fakeGh();
   const bare = { ...pr(), reviews: undefined };
-  const run = (args: string[]) => (args.some((arg) => arg.endsWith("/pulls/7/reviews")) ? JSON.stringify([{ state: "APPROVED", submitted_at: ago(40) }]) : gh.run(args));
-  const reading = readReading({ prs: [bare], repos: [REPO], now: NOW, run });
+  const gh = seeded({ prs: [bare] });
+  gh.held.pulls.get(7)!.reviews = [{ state: "APPROVED", submittedAt: ago(40) }];
+  const reading = readReading({ prs: [bare], repos: [REPO], now: NOW, run: gh.run });
   assert.equal(reading.listed[0]?.waitingMinutes, 40);
+  assert.deepEqual(gh.asked("reviewsOf").map((request) => request.number), [7], "read once, for the one candidate that lacked them");
 });
 
 test("the comment's first line is its key, and it round-trips", () => {
-  const gh = fakeGh();
-  const reading = readReading({ prs: [pr({ number: 1 }), pr({ number: 4, labels: ["hold:worker-9"] })], repos: [REPO], now: NOW, run: gh.run });
+  const prs = [pr({ number: 1 }), pr({ number: 4, labels: ["hold:worker-9"] })];
+  const reading = readReading({ prs, repos: [REPO], now: NOW, run: seeded({ prs }).run });
   const text = renderReading(reading);
   assert.deepEqual(parseKey(text), { day: "2026-10-11", count: 2 });
   assert.match(text, /hold \(worker-9\)/);
@@ -230,29 +218,29 @@ const ledgerIn = (dir: string) => {
 
 test("the first post of the day creates ONE comment, and files nothing for a first day", () => {
   const dir = scratch();
-  const gh = fakeGh({ merged: { [REPO]: [merged(1, { approvedMin: 200, queuedMin: 196 })] } });
+  const gh = seeded({ prs: [pr()], merged: [merged(1, { approvedMin: 200, queuedMin: 196 })] });
   const result = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath: join(dir, FAILURE_LEDGER_FILE) });
   assert.deepEqual([result.posted, (result as any).how, (result as any).count, result.incidents], [true, "created", 1, 0]);
   assert.equal(gh.writes().length, 1);
-  assert.deepEqual(gh.writes()[0].slice(0, 5), ["issue", "comment", "928", "--repo", REPO]);
-  assert.match(gh.store[0].body, /\| o\/home \| 4\.0 \| 1 of 1 \| within \|/);
+  assert.deepEqual([gh.writes()[0].op, gh.writes()[0].request.row, gh.writes()[0].request.repo], ["postRowComment", READING_ROW, REPO]);
+  assert.match(gh.comments()[0].body, /\| o\/home \| 4\.0 \| 1 of 1 \| within \|/);
   assert.deepEqual(ledgerIn(dir), []);
 });
 
 test("a re-run edits the day's comment and does not duplicate it; the tick's own call reads nothing more", () => {
   const dir = scratch();
   const logPath = join(dir, FAILURE_LEDGER_FILE);
-  const gh = fakeGh();
+  const gh = seeded({ prs: [pr({ number: 1 }), pr({ number: 2 })] });
   postApprovedUnqueued({ prs: [pr({ number: 1 })], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath });
   const before = gh.calls.length;
   const again = postApprovedUnqueued({ prs: [pr({ number: 1 })], repos: [REPO], repo: REPO, now: NOW + 2 * MIN, run: gh.run, logPath });
   assert.deepEqual([again.posted, (again as any).why], [false, "already-posted"]);
-  assert.equal(gh.calls.length - before, 1, "only the comments read: no pull request, arming or merged read");
+  assert.deepEqual(gh.calls.slice(before).map((call) => call.op), ["keyedCommentsOf"], "only the comments read: no pull request, arming or merged read");
   const refreshed = postApprovedUnqueued({ prs: [pr({ number: 1 }), pr({ number: 2 })], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath, refresh: true });
   assert.deepEqual([refreshed.posted, (refreshed as any).how], [true, "edited"]);
-  assert.equal(gh.store.length, 1, "one comment for the day");
-  assert.match(gh.store[0].body, /count=2/);
-  assert.equal(gh.writes().filter((args) => args[0] === "issue").length, 1);
+  assert.equal(gh.comments().length, 1, "one comment for the day");
+  assert.match(gh.comments()[0].body, /count=2/);
+  assert.equal(gh.writes().filter((call) => call.op === "postRowComment").length, 1);
   const same = postApprovedUnqueued({ prs: [pr({ number: 1 }), pr({ number: 2 })], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath, refresh: true });
   assert.deepEqual([same.posted, (same as any).why], [false, "unchanged"]);
 });
@@ -260,7 +248,7 @@ test("a re-run edits the day's comment and does not duplicate it; the tick's own
 test("two consecutive days above 0 file ONE incident through the failure ledger, once however often it runs", () => {
   const dir = scratch();
   const logPath = join(dir, FAILURE_LEDGER_FILE);
-  const gh = fakeGh({ comments: [{ id: 5, body: dayBody("2026-10-10", 2) }] });
+  const gh = seeded({ prs: [pr()], comments: [{ id: 5, body: dayBody("2026-10-10", 2) }] });
   const first = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath });
   assert.equal(first.incidents, 1);
   postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW + 2 * MIN, run: gh.run, logPath });
@@ -272,7 +260,7 @@ test("two consecutive days above 0 file ONE incident through the failure ledger,
 
 test("a 0 day between two days above 0 files nothing", () => {
   const dir = scratch();
-  const gh = fakeGh({ comments: [{ id: 5, body: dayBody("2026-10-09", 2) }, { id: 6, body: dayBody("2026-10-10", 0) }] });
+  const gh = seeded({ prs: [pr()], comments: [{ id: 5, body: dayBody("2026-10-09", 2) }, { id: 6, body: dayBody("2026-10-10", 0) }] });
   const result = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath: join(dir, FAILURE_LEDGER_FILE) });
   assert.equal(result.incidents, 0);
   assert.deepEqual(ledgerIn(dir), []);
@@ -280,7 +268,7 @@ test("a 0 day between two days above 0 files nothing", () => {
 
 test("a refused open-pull-request list posts nothing: not a 0", () => {
   const dir = scratch();
-  const gh = fakeGh();
+  const gh = seeded();
   const result = postApprovedUnqueued({ prs: null, repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath: join(dir, FAILURE_LEDGER_FILE) });
   assert.deepEqual([result.posted, (result as any).why], [false, "unread"]);
   assert.deepEqual(gh.writes(), []);
@@ -288,16 +276,19 @@ test("a refused open-pull-request list posts nothing: not a 0", () => {
 
 test("a merged read that is refused is `not read` in its repository's row, and the open half is still posted", () => {
   const dir = scratch();
-  const gh = fakeGh({ refuse: ["pullRequests(states:MERGED"] });
+  const gh = seeded({ prs: [pr()] });
+  gh.held.failures.set("mergedWindowOf", new Error("gh refused: the merged read"));
   const result = postApprovedUnqueued({ prs: [pr()], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath: join(dir, FAILURE_LEDGER_FILE) });
   assert.equal(result.posted, true);
-  assert.match(gh.store[0].body, /\| o\/home \| unknown \| 0 of 0 \| not read/);
+  assert.match(gh.comments()[0].body, /\| o\/home \| unknown \| 0 of 0 \| not read/);
 });
 
 test("nothing it reads is changed: the only writes are the day's comment", () => {
   const dir = scratch();
-  const gh = fakeGh({ merged: { [REPO]: [merged(1, { approvedMin: 200, queuedMin: 190 })] } });
-  postApprovedUnqueued({ prs: [pr(), pr({ number: 2, isDraft: true }), pr({ number: 3, labels: ["hold:worker-1"] })], repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath: join(dir, FAILURE_LEDGER_FILE) });
-  const notReads = gh.calls.filter((args) => !(args[0] === "api" && !args.includes("PATCH")));
-  assert.deepEqual(notReads.map((args) => args.slice(0, 2).join(" ")), ["issue comment"]);
+  const prs = [pr(), pr({ number: 2, isDraft: true }), pr({ number: 3, labels: ["hold:worker-1"] })];
+  const gh = seeded({ prs, merged: [merged(1, { approvedMin: 200, queuedMin: 190 })] });
+  const pulls = JSON.stringify([...gh.held.pulls.values()]);
+  postApprovedUnqueued({ prs, repos: [REPO], repo: REPO, now: NOW, run: gh.run, logPath: join(dir, FAILURE_LEDGER_FILE) });
+  assert.deepEqual(gh.writes().map((call) => call.op), ["postRowComment"]);
+  assert.equal(JSON.stringify([...gh.held.pulls.values()]), pulls, "no pull request was merged, armed, commented on or labelled");
 });

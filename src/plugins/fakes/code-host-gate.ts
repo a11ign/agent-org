@@ -158,8 +158,9 @@ function rowReads(world: FakeRowsWorld): Pick<CodeHostRows, "unlabeledEventsOf" 
     openRowsOf: ({ limit }) => [...world.rows.values()].filter((row) => row.state === "OPEN").sort((a, b) => b.number - a.number).slice(0, limit).map((row) => ({ number: row.number, title: row.title, body: row.body,
       labels: row.labels.map((name) => ({ name })), blockedBy: { nodes: row.blockedBy.map((number) => ({ number })) }, milestone: null, updatedAt: row.createdAt, createdAt: row.createdAt })),
     labelNamesWithPrefix: ({ prefix }) => (world.gate.labelListNotAList ? null : [...new Set([...world.labelsCreated, ...[...world.rows.values()].flatMap((row) => row.labels)])].filter((name) => name.startsWith(prefix))),
-    closedClaimedRowsOf: ({ numbers, claimLabel }) => numbers.flatMap((number) => {
-      const row = world.rows.get(number);
+    // A read aimed at ANOTHER tracker (`aim`, a keyed tracker's repository) is of that tracker's row, which is among the world's foreign rows; a row it holds none of is read from the home rows, as before.
+    closedClaimedRowsOf: ({ aim, numbers, claimLabel }) => numbers.flatMap((number) => {
+      const row = (aim === undefined ? undefined : world.foreignRows.get(`${aim}#${number}`)) ?? world.rows.get(number);
       if (row === undefined || row.state !== "CLOSED" || !row.labels.includes(claimLabel)) return [];
       return [{ number, labels: row.labels.map((name) => ({ name })), comments: row.comments.map((c) => ({ body: c.body, createdAt: c.createdAt, author: { login: c.author } })),
         closedByPullRequestsReferences: (world.gate.crossReferences.get(number) ?? []).slice(0, 5) }];

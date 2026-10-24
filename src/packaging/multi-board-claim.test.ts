@@ -12,7 +12,7 @@
  *   5. The merge-blocking parser and `pr-open` ACCEPT `Closes a11ign/a11ign#7` and REFUSE the malformed cross-repository forms.
  * And the cost the row's closing comment reports: how many `gh` calls a claim's reads spend per declared repository.
  */
-import { afterEach, test } from "node:test";
+import { afterEach, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { parseProjectDeclaration } from "../project-config.ts";
 import {
@@ -24,10 +24,12 @@ import {
 import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
 import { closesDeclarationReport, closesReferences, extractClosesDeclaration } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { checkBody, checkRegion, main } from "../pr-open.ts";
-import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { fakeRow, type FakeRowPull } from "../plugins/fakes/code-host-rows.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
 
 const FIRST = { key: "", repo: "a11ign/a11ign" };
 const SECOND = { key: "nvda-worker", repo: "a11ign/nvda-worker" };
@@ -47,28 +49,6 @@ const regionBody = (...lines: string[]) => `## What it is\n\nx\n\n## Region\n\n\
 
 /** An open pull request as `gh pr list --json number,changedFiles,files,body,labels` answers. */
 const ghPr = (number: number, files: string[], body = "") => ({ number, changedFiles: files.length, files: files.map((path) => ({ path })), body, labels: [] });
-
-interface Fake { calls: string[][]; run: (args: string[]) => string }
-
-/** `gh` answering by repository: the row's body and edge from the TRACKER, and each repository's open pull requests from that repository. */
-function fakeGh({ region, prs, failing = [] }: { region: string; prs: Record<string, object[]>; failing?: string[] }): Fake {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (readsRowsByLabel(args) !== null) return connectionOf([]); // #5039: the claimed rows are read by label over graphql; nobody else holds one
-    const repo = args[args.indexOf("--repo") + 1];
-    if (args[0] === "pr" && args[1] === "list") {
-      if (failing.includes(repo)) throw new Error(`HTTP 502 from ${repo}`);
-      return JSON.stringify(prs[repo] ?? []);
-    }
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "issue" && args[1] === "view") {
-      return args[args.indexOf("--json") + 1] === "blockedBy" ? JSON.stringify({ blockedBy: { nodes: [] } }) : JSON.stringify({ body: region });
-    }
-    return "";
-  };
-  return { calls, run };
-}
 
 /**
  * The fake code host holding what the claim reads (A11-160, step 7): the asking row in its tracker's repository, and the open pull requests of each repository (the first's are the world's own, another's are the rules'
@@ -169,10 +149,12 @@ test("#2617: an open pull request of the SECOND repository that reads as touchin
 });
 
 test("#2617: an entry read from the FIRST repository carries no `repo` or `repoKey` -- only another repository's does", () => {
-  const fake = fakeGh({ region: "", prs: { [FIRST.repo]: [ghPr(1, ["a.mjs"])], [SECOND.repo]: [ghPr(2, ["b.ts"])] } });
-  const prs = lookupOpenPrFiles({ run: fake.run, log: () => {}, repos: BOTH }) ?? [];
+  substituteCodeHost(fakeWorld({ region: "", prs: { [FIRST.repo]: [ghPr(1, ["a.mjs"])], [SECOND.repo]: [ghPr(2, ["b.ts"])] } }).host);
+  const prs = lookupOpenPrFiles({ log: () => {}, repos: BOTH }) ?? [];
   assert.equal(prs.length, 2, "control: both were read");
-  assert.deepEqual(Object.keys(prs[0]).sort(), ["changedFiles", "closes", "files", "held", "number"], "the first's shape is what it always was");
+  // `branch` is there because the pull requests this world holds carry a head branch; it is the listing's own field, not a locator.
+  assert.deepEqual(Object.keys(prs[0]).sort(), ["branch", "changedFiles", "closes", "files", "held", "number"], "the first's shape is what it always was");
+  assert.ok(!("repo" in prs[0]) && !("repoKey" in prs[0]), "and names no repository: it is the claim's own");
   assert.equal((prs[1] as { repo?: string }).repo, SECOND.repo);
   assert.equal((prs[1] as { repoKey?: string }).repoKey, SECOND.key);
 });
@@ -181,8 +163,8 @@ test("#2617: an entry read from the FIRST repository carries no `repo` or `repoK
 
 test("#2617 done-when 1c: a failed read of the SECOND repository is INCONCLUSIVE -- null, named aloud with the repository, never `no overlap`", () => {
   const said: string[] = [];
-  const fake = fakeGh({ region: regionBody("nvda-worker:src/x.ts"), prs: { [FIRST.repo]: [] }, failing: [SECOND.repo] });
-  const prs = lookupOpenPrFiles({ run: fake.run, log: (line) => said.push(line), repos: BOTH });
+  substituteCodeHost(fakeWorld({ region: regionBody("nvda-worker:src/x.ts"), prs: { [FIRST.repo]: [] }, failing: [SECOND.repo] }).host);
+  const prs = lookupOpenPrFiles({ log: (line) => said.push(line), repos: BOTH });
   assert.equal(prs, null, "the first repository answering must not turn the second's failure into a quiet pass");
   assert.equal(said.length, 1);
   assert.match(said[0], /could not read a11ign\/nvda-worker's open pull requests .*INCONCLUSIVE, never "no overlap"/);
@@ -194,16 +176,16 @@ test("#2617 done-when 1c: a failed read of the SECOND repository is INCONCLUSIVE
 });
 
 test("#2617 POSITIVE CONTROL for the above: with the second repository answering, the same `check` prints the CLEAR sentence", () => {
-  const fake = fakeGh({ region: regionBody("nvda-worker:src/x.ts"), prs: { [FIRST.repo]: [], [SECOND.repo]: [] } });
-  const prs = lookupOpenPrFiles({ run: fake.run, log: () => {}, repos: BOTH });
+  substituteCodeHost(fakeWorld({ region: regionBody("nvda-worker:src/x.ts"), prs: { [FIRST.repo]: [], [SECOND.repo]: [] } }).host);
+  const prs = lookupOpenPrFiles({ log: () => {}, repos: BOTH });
   assert.deepEqual(prs, [], "both answered, both empty: an empty list is a real answer, distinct from null");
   assert.match(b4Lines(["nvda-worker:src/x.ts"], prs).join("\n"), /B4: no open pull request holds any file/);
 });
 
 test("#2617: a failure of the FIRST repository is INCONCLUSIVE too, and says which", () => {
   const said: string[] = [];
-  const fake = fakeGh({ region: "", prs: {}, failing: [FIRST.repo] });
-  assert.equal(lookupOpenPrFiles({ run: fake.run, log: (line) => said.push(line), repos: BOTH }), null);
+  substituteCodeHost(fakeWorld({ region: "", prs: {}, failing: [FIRST.repo] }).host);
+  assert.equal(lookupOpenPrFiles({ log: (line) => said.push(line), repos: BOTH }), null);
   assert.match(said[0], /could not read a11ign\/a11ign's open pull requests/);
 });
 
@@ -346,7 +328,7 @@ test("#2617 done-when 2: `pr-open` reads the Region of a qualified row from THAT
   });
   assert.equal(code, 0, out.join(""));
   assert.deepEqual(asked, [[7, "a11ign/a11ign"]], "the row was read from the repository the body named");
-  assert.deepEqual(sent[0]?.slice(0, 2), ["pr", "create"], "the PR was sent");
+  assert.deepEqual(sent[0]?.slice(0, 2), ["fake-pull-write", "create"], "the PR was sent");
   assert.match(out.join(""), /REGION: 1 changed path\(s\) against a11ign\/a11ign#7's Region .*1 inside/,
     "src/x.ts is inside `nvda-worker:src/x.ts` because THIS tree is nvda-worker (--repo)");
   const bare = checkRegion(`${ACCEPTANCE}\nCloses #5\n`, [], { git: () => "src/x.ts", code: BOTH, rowBody: (n: number, repo?: string) => { asked.push([n, repo]); return rows[n]; }, rootFiles: NO_ROOT_FILES });

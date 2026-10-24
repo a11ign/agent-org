@@ -265,7 +265,7 @@ test("#2974: the prune and the board report take their project from the checkout
     assert.ok(prune.includes(`ExecStart=%h/.local/bin/node src/prune-worktrees.ts --apply ${dirs.widgets}`),
       `the prune is handed the repository it prunes (its cwd is the tool's now): ${prune.join(" | ")}`);
     const report = nonComment(serviceOf(toolHost, "board-report"));
-    assert.ok(report.includes("ExecStart=/usr/bin/bash host/board-report-dispatch.sh"));
+    assert.ok(report.includes("ExecStart=/usr/bin/bash plugins/github/host/board-report-dispatch.sh"));
     assert.ok(report.includes(`Environment=AGENT_ORG_PROJECT=${dirs.widgets}/.agent-org/project.json`),
       "the dispatcher reads the project's declaration from $AGENT_ORG_PROJECT, which its default would otherwise look for in the tool's directory");
     const timer = shippedUnitText("acme-work-tick.timer", { host: toolHost, units: ACME_UNITS });

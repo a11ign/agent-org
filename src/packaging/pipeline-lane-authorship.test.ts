@@ -1,7 +1,8 @@
 // no-token: gh
 //
-// Every `gh` call in this file is a fixture: `main` takes an injected `login`, `authorshipVerdict` an injected `run`, and `runArmPr` runs on the fake code host's world (A11-160, step 5),
-// with the one read that has not moved into the code host -- the file list of the pull request, which `authorshipVerdict` asks of the `run` it is handed -- answered by a `run` of this file.
+// Every `gh` call in this file is a fixture: `main` takes an injected `login`, `loginThrough` asks the fake code host's rows who `gh` authors as (A11-160, step 9: the login, and the reasons no read could
+// say it, are `world.tail.pullwork`'s), and `runArmPr` and `authorshipVerdict` run on the fake code host's world (steps 5 and 9: the file list of the pull request is the world's too).
+// How the two reads are made and in what order (`api user`, then the GraphQL viewer) and what each failure says is `plugins/github/rows/pullwork-rows.test.ts`.
 // The sweep as a real process over a stub `gh` first on PATH is the plugin's end-to-end test (`plugins/github/rows/pipeline-lane-authorship-process.test.ts`).
 /**
  * #3254, #1756 RULING ITEM 7: `ceo`, `product-manager` and `orchestrator` do not author pull requests touching
@@ -23,7 +24,7 @@
  * The lane data is built here, never read from the project's own `docs/lane-ownership.json`: a test that read it would
  * pass or fail on whether the project had merged its `reviewOnly` field, and the tool's suite must not depend on that.
  */
-import { afterEach, test } from "node:test";
+import { afterEach, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { laneLabelsFor } from "../row-file/title-kind-and-label-refusals.ts";
 import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN, APP_ROLE_LANE_OWNER } from "../lane-ownership.ts";
@@ -37,6 +38,10 @@ import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
 import { main, EXIT_NOTHING_SENT, loginThrough } from "../pr-open.ts";
 import { testEach } from "../lib/test-each.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+let host = createFakeCodeHost();
+beforeEach(() => { host = createFakeCodeHost(); substituteCodeHost(host); });
 
 const LEADS = "a11ign-ai-leads";
 const WORKERS = "a11ign-ai-workers";
@@ -125,8 +130,7 @@ test("#3254 (3), THE ABSENCE OF AN OVERRIDE IS ASSERTED: no spelling of one chan
 afterEach(() => forgetActivation());
 
 /**
- * Drives `runArmPr` for a PR by `author` touching `files`, with `body` and `labels` on it, on the fake code host's world: pull request #7 and the one row it closes. The file list is what `authorshipVerdict`
- * asks of the `run` it is handed (it has not moved into the code host), and the deliberate-refusal verdict, which reads GitHub's own JSON through helpers that have not moved either, is the head-against-tip rule
+ * Drives `runArmPr` for a PR by `author` touching `files`, with `body` and `labels` on it, on the fake code host's world: pull request #7 (with those files) and the one row it closes. The deliberate-refusal verdict, which reads GitHub's own JSON through helpers that have not moved either, is the head-against-tip rule
  * of a11ign's `deliberateRefusals` job (`mergeSafetyVerdict`, agent-org#1501) over the recorded head `abc123` and the branch's real `tip`: the same refusal, with its reason, for an org author.
  */
 function driveArm({ author, files, body = "Closes #1", labels = [] as string[], lanes = LANES, tip = "abc123" }: {
@@ -135,13 +139,10 @@ function driveArm({ author, files, body = "Closes #1", labels = [] as string[], 
   const { rowsWorld: world } = host;
   world.repo = "a11ign/a11ign";
   world.rows.set(1, fakeRow(world, 1));
-  const pull = fakePull(world, 7, { body, labels, author, headRefName: "agent/lane-7", headRefOid: "abc123" });
+  const pull = fakePull(world, 7, { body, labels, author, headRefName: "agent/lane-7", headRefOid: "abc123", files });
   substituteCodeHost(host);
   const said: string[] = [];
-  const read: string[][] = [];
   const run = (args: string[]): string => {
-    read.push(args);
-    if (args[0] === "api" && args[2]?.endsWith("/files")) return files.join("\n");
     throw new Error(`a read that has moved into the code host reached the caller's run: ${args.join(" ")}`);
   };
   const deliberate: typeof deliberateRefusalVerdict = () => {
@@ -150,7 +151,7 @@ function driveArm({ author, files, body = "Closes #1", labels = [] as string[], 
   };
   const code = runArmPr({ argv: ["--pr=7", "--repo=a11ign/a11ign"], env: {}, run, sleep: () => "ok" as const,
     log: (l: string) => said.push(l), error: (l: string) => said.push(l), lanes, deliberate });
-  return { code, said: said.join("\n"), merged: pull.armed, comments: pull.comments, read };
+  return { code, said: said.join("\n"), merged: pull.armed, comments: pull.comments, world };
 }
 
 test("#3254 (2): arm-pr REFUSES a leads-login PR touching the pipeline -- exit REFUSED, no merge call, names the row and the ruling", () => {
@@ -181,15 +182,22 @@ test("#3254 (3) POSITIVE CONTROLS at arm-pr: the workers login, a consumer-gate-
 });
 
 test("#3254: a file list that cannot be read is CANNOT_ASK for the leads login -- never 'clear' -- and costs every OTHER author no call", () => {
-  const calls: string[][] = [];
-  const failing = authorshipVerdict({ number: "7", repo: "a11ign/a11ign", author: LEADS, lanes: LANES,
-    run: (args) => { calls.push(args); throw new Error("HTTP 502"); } });
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { rowsWorld: world } = host;
+  const never = (args: string[]): string => { throw new Error(`the code host answers; no gh is run (${args.join(" ")})`); };
+  world.failures.set("pullFilenamesOf", new Error("HTTP 502"));
+  const failing = authorshipVerdict({ number: "7", repo: "a11ign/a11ign", author: LEADS, lanes: LANES, run: never });
   assert.equal(failing.kind, "cannot-ask");
-  const before = calls.length;
-  const workers = authorshipVerdict({ number: "7", repo: "a11ign/a11ign", author: WORKERS, lanes: LANES,
-    run: (args) => { calls.push(args); throw new Error("must not be asked"); } });
+  assert.match((failing as { why: string }).why, /could not read #7's changed files: HTTP 502/);
+  assert.deepEqual(world.calls, [], "the refused read is the code host's, refused before it was made");
+  world.failures.clear();
+  world.tail.readouts.pulls.set("a11ign/a11ign#7", { title: "", body: "", additions: 0, deletions: 0, files: [WORKFLOW] });
+  assert.equal(authorshipVerdict({ number: "7", repo: "a11ign/a11ign", author: LEADS, lanes: LANES, run: never }).kind, "refused", "CONTROL: the same read, answered, refuses the leads login");
+  const before = world.calls.length;
+  const workers = authorshipVerdict({ number: "7", repo: "a11ign/a11ign", author: WORKERS, lanes: LANES, run: never });
   assert.deepEqual(workers, { kind: "clear" });
-  assert.equal(calls.length, before, "the workers login's PR read no file list");
+  assert.equal(world.calls.length, before, "the workers login's PR read no file list");
 });
 
 test("#3254: a HELD PR is not armed and is not refused -- the refusal speaks only when the run was about to arm", () => {
@@ -250,28 +258,20 @@ test("#3254: a login pr-open cannot read REFUSES a pipeline diff -- unreadable i
 // --- #811: an installation token cannot answer `gh api user`; the identity comes from the GraphQL viewer ---
 
 const BOT = "a11ign-workers[bot]";
-const ACCESS_403 = Object.assign(new Error("Command failed: gh api user --jq .login"),
-  { stderr: "gh: Resource not accessible by integration (HTTP 403)\n" });
+const ACCESS_403 = "`gh api user`: gh: Resource not accessible by integration (HTTP 403)";
 
-/** A `gh` that answers as `token` would: `api user` and the GraphQL viewer each from its own entry, a function throwing. */
-function fakeGh(answers: { user: string | (() => string); viewer: string | (() => string) }) {
-  const asked: string[] = [];
-  const gh = (args: string[]) => {
-    const which = args[0] === "api" && args[1] === "user" ? "user"
-      : args[0] === "api" && args[1] === "graphql" && args.join(" ").includes("viewer") ? "viewer" : null;
-    assert.ok(which, `an unexpected gh call: ${args.join(" ")}`);
-    asked.push(which);
-    const answer = answers[which];
-    return typeof answer === "function" ? answer() : answer;
-  };
-  return { gh, asked };
-}
-const refuses403 = () => { throw ACCESS_403; };
+/** The runner `loginThrough` is handed: the fake code host's rows ignore it, and a program here would be a read made past them. */
+const NO_PROGRAM = (): string => { throw new Error("the code host's rows answer the login; no program is run here"); };
+/** The login the code host will say `gh` authors as. */
+const asLogin = (login: string): void => { host.rowsWorld.tail.pullwork.login = login; };
+/** No read can say it, for these reasons (one per read, as the code host answers them). */
+const unreadable = (...failures: string[]): void => { host.rowsWorld.tail.pullwork.login = null; host.rowsWorld.tail.pullwork.loginFailures = failures; };
 
 test("#811 (1): an installation token's identity opening a diff into .github/workflows/ is NOT refused", () => {
-  const { gh, asked } = fakeGh({ user: refuses403, viewer: BOT });
-  const out = drivePrOpen([WORKFLOW], () => loginThrough(gh));
-  assert.deepEqual(asked, ["user", "viewer"], "the viewer is asked after `api user` is refused, and only then");
+  asLogin(BOT);
+  let asked = 0;
+  const out = drivePrOpen([WORKFLOW], () => { asked += 1; return loginThrough(NO_PROGRAM); });
+  assert.equal(asked, 1, "the identity was read");
   // authorship is checked BEFORE the body (`main`), and this fixture's bare body fails the later acceptance check, so "not
   // refused" is the absence of the authorship refusals, as at #3254 (3) -- and `asked` above proves the identity was read.
   assert.doesNotMatch(out.said, /Ruling item 7|could not say who|review-only lane/);
@@ -280,39 +280,40 @@ test("#811 (1): an installation token's identity opening a diff into .github/wor
 testEach("#811 (3): an identity NEITHER read answers is refused -- the 403 is named, and the refusal is #3254's", [
   {
     name: "POSITIVE CONTROL: the leads login, read through the SAME fallback, is still refused",
-    viewer: LEADS,
+    login: LEADS,
     says: [{ pattern: /#1756 Ruling item 7/ }],
   },
   {
     name: "the viewer throws",
-    viewer: () => { throw new Error("HTTP 502"); },
+    failures: [ACCESS_403, "the GraphQL `viewer` read: HTTP 502"],
     says: [
       { pattern: /could not say who is opening it/ },
       { pattern: /Resource not accessible by integration \(HTTP 403\)/, message: "the first failure's own words, not just `Command failed`" },
+      { pattern: /the GraphQL `viewer` read: HTTP 502/, message: "and the second's" },
     ],
   },
   {
     name: "the viewer answers nothing",
-    viewer: () => "\n",
+    failures: [ACCESS_403, "the GraphQL `viewer` read answered no login"],
     says: [
       { pattern: /could not say who is opening it/ },
       { pattern: /Resource not accessible by integration \(HTTP 403\)/, message: "the first failure's own words, not just `Command failed`" },
+      { pattern: /the GraphQL `viewer` read answered no login/, message: "and the second's" },
     ],
   },
-], (c: { viewer: string | (() => string); says: { pattern: RegExp; message?: string }[] }) => {
-  const { gh } = fakeGh({ user: refuses403, viewer: c.viewer });
-  const out = drivePrOpen([WORKFLOW], () => loginThrough(gh));
+], (c: { login?: string; failures?: string[]; says: { pattern: RegExp; message?: string }[] }) => {
+  if (c.login !== undefined) asLogin(c.login);
+  else unreadable(...(c.failures ?? []));
+  const out = drivePrOpen([WORKFLOW], () => loginThrough(NO_PROGRAM));
   assert.equal(out.code, EXIT_NOTHING_SENT);
   assert.deepEqual(out.sent, []);
   for (const s of c.says) assert.match(out.said, s.pattern, s.message);
 });
 
-test("#811 (4): a user token pays ONE call -- `api user` answering means the viewer is never asked, and an empty answer is no login", () => {
-  const user = fakeGh({ user: ` ${WORKERS}\n`, viewer: () => { throw new Error("must not be asked"); } });
-  assert.equal(loginThrough(user.gh), WORKERS);
-  assert.deepEqual(user.asked, ["user"]);
-  const empty = fakeGh({ user: "", viewer: BOT });
-  assert.equal(loginThrough(empty.gh), BOT, "an empty `api user` answer is a failure, so the viewer is asked");
+test("#811 (4): the login the code host says is the login `loginThrough` answers, and the role is not asked when it says one", () => {
+  asLogin(WORKERS);
+  assert.equal(loginThrough(NO_PROGRAM), WORKERS);
+  assert.equal(loginThrough(NO_PROGRAM, "managers"), WORKERS, "a role is the fallback of a login nobody can say, never an override of one");
 });
 
 // --- #816: the managers App's bot login owns `ceo`'s lane; the workers' does not ---
@@ -322,8 +323,8 @@ const MANAGERS_BARE = "a11ign-managers"; // a GraphQL `Bot` author without the s
 
 test("#816 (1): the managers App's login, in each spelling, authoring into .github/workflows/ is refused at pr:open", () => {
   for (const login of [MANAGERS_BOT, MANAGERS_BARE]) {
-    const { gh } = fakeGh({ user: refuses403, viewer: login });
-    const out = drivePrOpen([WORKFLOW], () => loginThrough(gh));
+    asLogin(login);
+    const out = drivePrOpen([WORKFLOW], () => loginThrough(NO_PROGRAM));
     assert.equal(out.code, EXIT_NOTHING_SENT, login);
     assert.deepEqual(out.sent, []);
     assert.match(out.said, /#1756 Ruling item 7/, login);
@@ -362,8 +363,8 @@ test("#796 (1): `app/a11ign-managers` is the owner's login too -- refused by the
 });
 
 test("#796 (2): a login NEITHER read answers, with a role the wrapper declares, is decided by the role -- a manager is refused, a worker is not", () => {
-  const unreadable = () => fakeGh({ user: refuses403, viewer: refuses403 }).gh;
-  const managers = drivePrOpen([WORKFLOW], () => loginThrough(unreadable(), "managers"));
+  unreadable(ACCESS_403, "the GraphQL `viewer` read: gh: Resource not accessible by integration (HTTP 403)");
+  const managers = drivePrOpen([WORKFLOW], () => loginThrough(NO_PROGRAM, "managers"));
   assert.equal(managers.code, EXIT_NOTHING_SENT);
   assert.deepEqual(managers.sent, []);
   assert.match(managers.said, /#1756 Ruling item 7/, "the lane check decided, not the could-not-say refusal");
@@ -371,24 +372,23 @@ test("#796 (2): a login NEITHER read answers, with a role the wrapper declares, 
 
   // POSITIVE CONTROL: the same diff and the same unreadable reads, a role that owns no lane, is not refused for authorship
   for (const role of ["workers", "scheduler", "reviewer"]) {
-    const out = drivePrOpen([WORKFLOW], () => loginThrough(unreadable(), role));
+    const out = drivePrOpen([WORKFLOW], () => loginThrough(NO_PROGRAM, role));
     assert.doesNotMatch(out.said, /Ruling item 7|could not say who is opening it/, role);
   }
 });
 
 test("#796 (3): no role, or a role the wrapper does not declare, is no identity -- unreadable still REFUSES, naming both failures", () => {
   for (const role of [undefined, "", "root", "constructor", "app:managers"]) {
-    const { gh } = fakeGh({ user: refuses403, viewer: refuses403 });
-    assert.throws(() => loginThrough(gh, role), /`gh api user`: .*403.*the GraphQL `viewer` read: .*403/, String(role));
-    const out = drivePrOpen([WORKFLOW], () => loginThrough(fakeGh({ user: refuses403, viewer: refuses403 }).gh, role));
+    unreadable(ACCESS_403, "the GraphQL `viewer` read: gh: Resource not accessible by integration (HTTP 403)");
+    assert.throws(() => loginThrough(NO_PROGRAM, role), /`gh api user`: .*403\); the GraphQL `viewer` read: .*403/, String(role));
+    const out = drivePrOpen([WORKFLOW], () => loginThrough(NO_PROGRAM, role));
     assert.match(out.said, /could not say who is opening it/, String(role));
   }
 });
 
 test("#796 (4): a read that DOES answer outranks the role -- the role is asked only when both reads failed", () => {
-  const { gh, asked } = fakeGh({ user: refuses403, viewer: BOT });
-  assert.equal(loginThrough(gh, "managers"), BOT, "the viewer's login, not the role's");
-  assert.deepEqual(asked, ["user", "viewer"]);
+  asLogin(BOT);
+  assert.equal(loginThrough(NO_PROGRAM, "managers"), BOT, "the viewer's login, not the role's");
 });
 
 test("#796 (5): `app:<role>` owns only the lane its role's App is declared to; an `app:` that names no role owns nothing", () => {

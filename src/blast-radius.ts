@@ -16,6 +16,7 @@ import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } f
 import { claimedRegionsOf, lookupOpenPrFiles, NO_CODE_LEFT_LABEL } from "./row-claim/file-overlap-rule.ts";
 import { BACKLOG_LABEL } from "./project-vocabulary.ts";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** The most files a Region may expand to before the row must be split or declared a sweep. */
 export const BLAST_MAX_FILES = 20;
@@ -206,25 +207,13 @@ export function blastRadiusGate(body: string, reads: BlastReads): BlastVerdict {
   return declaresSweep(body) ? sweepVerdict(radius) : blastRadiusVerdict(radius);
 }
 
-/** GitHub's largest page: a page that comes back shorter than this is the last one. */
-const REST_PAGE_SIZE = 100;
-/** The most pages one REST listing reads: past it the listing throws, so a caller reads it as INCONCLUSIVE rather than as a list that stopped short. */
-const REST_MAX_PAGES = 100;
-
 /**
  * THE OPEN ROWS OR PULL REQUESTS of `repo`, over REST (agent-org#1005): `gh issue list` and `gh pr list` are GraphQL, which the managers App's pool shares
  * with every session on the account, while `gh api repos/...` is the core pool. An issues listing carries pull requests as well, so those entries are dropped.
- * THROWS when a page is not a list or the listing runs past {@link REST_MAX_PAGES}.
+ * THROWS when a page is not a list or the listing runs past the pages it may read. The code host reads it (`openRestListingOf`); this keeps the name its callers import.
  */
 export function openRestListing<T extends object>(run: (args: string[]) => string, repo: string, kind: "issues" | "pulls"): T[] {
-  const rows: T[] = [];
-  for (let page = 1; page <= REST_MAX_PAGES; page++) {
-    const batch: unknown = JSON.parse(run(["api", `repos/${repo}/${kind}?state=open&per_page=${REST_PAGE_SIZE}&page=${page}`]));
-    if (!Array.isArray(batch)) throw new Error(`the open ${kind} of ${repo} did not come back as a list`);
-    rows.push(...(batch as T[]).filter((row) => kind === "pulls" || !("pull_request" in row)));
-    if (batch.length < REST_PAGE_SIZE) return rows;
-  }
-  throw new Error(`the open ${kind} of ${repo} run past ${REST_MAX_PAGES} pages`);
+  return rows().openRestListingOf({ repo, kind, run }) as T[];
 }
 
 /**
@@ -236,14 +225,13 @@ export function openRestListing<T extends object>(run: (args: string[]) => strin
  */
 export function ghBlastReads(run: (cmd: string, args: string[]) => string,
   declaration: { code: readonly { key: string; repo: string; }[]; tracker: readonly { repo: string; }[]; }): BlastReads {
-  const gh = (args: string[]) => run("gh", args);
+  const gh = (args: string[]) => rows().argumentsRunOf(run)(args);
   return {
     treeFiles: (key) => {
       const repo = declaration.code.find((r) => r.key === key)?.repo;
       if (repo === undefined) return null;
       try {
-        const jq = 'if .truncated then error("tree truncated") else .tree[] | select(.type == "blob") | .path end';
-        return gh(["api", `repos/${repo}/git/trees/HEAD?recursive=1`, "--jq", jq]).split("\n").filter(Boolean);
+        return rows().treeFilesOf({ repo, run: gh });
       } catch {
         return null;
       }
@@ -252,8 +240,8 @@ export function ghBlastReads(run: (cmd: string, args: string[]) => string,
       const all: OpenRow[] = [];
       for (const { repo } of declaration.tracker) {
         try {
-          const rows = openRestListing<OpenRow>(gh, repo, "issues");
-          all.push(...rows.map((row) => (repo === declaration.tracker[0].repo ? row : { ...row, repo })));
+          const listed = openRestListing<OpenRow>(gh, repo, "issues");
+          all.push(...listed.map((row) => (repo === declaration.tracker[0].repo ? row : { ...row, repo })));
         } catch {
           return null;
         }

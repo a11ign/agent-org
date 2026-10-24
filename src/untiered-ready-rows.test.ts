@@ -1,4 +1,4 @@
-// no-token: gh -- every read here goes through a fake tracker reader; `ghReadyReader` is only constructed with a fake `run`, so no `gh` call is made.
+// no-token: gh -- every read here goes through a fake tracker reader, or through the fake code host's rows (A11-160, step 9: `ghReadyReader` reads the world a test seeds); no `gh` call is made.
 // a11ign/agent-org#466 (epic a11ign/a11ign#4437, move 4): the retrospective's NUMBER of `ready` rows with no tier decision. Each fixture has its negative control:
 // the label takes a row out, so does a `Tier: sonnet -- <reason>` line in the body or a comment, an EMPTY reason does not, an excluded row is listed apart and not
 // counted, a second tracker is read, and a tracker that cannot be read makes the number `unknown`, never 0.
@@ -13,13 +13,13 @@ import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport, retrospectiveTick, untieredSweepOrder } from "./org-retro.ts";
 import { PROFILES } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
-import { forgetRefusedReads } from "./ticket-port/rows-by-label.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 const NOW = Date.parse("2026-10-09T10:30:00Z");
 
-// the refusal memory of `rows-by-label.ts` is the process's: a read refused for a limit in one case must not stop the next case's read.
-test.beforeEach(() => forgetRefusedReads());
+test.afterEach(() => forgetActivation());
 
 /** A `ready` row with no decision and no excluding label: the shape the count exists for. */
 const BARE = Object.freeze({
@@ -158,25 +158,24 @@ test("the line gives the FIRST TEN numbers and counts the rest", () => {
   assert.doesNotMatch(line, /#110/);
 });
 
-test("`ghReadyReader` asks the tracker for its open `ready` rows with the fields read, as a connection and never a search, and a refusal throws to be named", () => {
-  const asked: string[][] = [];
-  const reader = ghReadyReader({ key: "agent-org", repo: "a11ign/agent-org" }, (args) => {
-    asked.push(args);
-    return connectionOf([BARE]);
-  });
+test("`ghReadyReader` reads the tracker's open `ready` rows with the fields the decision reads (as a connection, which the plugin's tests hold to never be a search), and a refusal throws to be named", () => {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.rows.set(466, fakeRow(world, 466, { title: BARE.title, body: BARE.body, labels: ["ready", "lane:any"], comments: [{ id: 1, body: "claimed", createdAt: "2026-10-09T09:00:00Z" }] }));
+  world.rows.set(467, fakeRow(world, 467, { labels: ["backlog"] }));
+  world.rows.set(468, fakeRow(world, 468, { labels: ["ready"], state: "CLOSED" }));
+  substituteCodeHost(host);
+  const reader = ghReadyReader({ key: "agent-org", repo: "a11ign/agent-org" });
   assert.equal(reader.key, "agent-org");
   const rows = reader.listRows();
-  assert.deepEqual(rows.map((r) => r.number), [466]);
+  assert.deepEqual(rows.map((r) => r.number), [466], "the open `ready` rows only: not a `backlog` row, not a closed one");
   assert.deepEqual(rows[0].labels, [{ name: "ready" }, { name: "lane:any" }], "the labels come back as `gh issue list --json` gave them, which the decision reads");
-  assert.deepEqual(rows[0].comments, [{ body: "claimed" }]);
-  assert.equal(asked.length, 1);
-  assert.ok(!asked[0].includes("--label") && !asked[0].includes("--search"), "#5076: no search-backed list");
-  assert.deepEqual(readsRowsByLabel(asked[0]), { label: "ready", state: "OPEN" });
-  assert.ok(asked[0].includes("owner=a11ign") && asked[0].includes("name=agent-org"), "the repository is named in the variables");
-  const query = asked[0].find((arg) => arg.startsWith("query=")) ?? "";
-  for (const field of ["number", "title", "body", "labels(", "comments("]) assert.ok(query.includes(field), `the read selects ${field}`);
-  const refusing = ghReadyReader({ key: "", repo: "a11ign/a11ign" }, () => { throw new Error("gh: rate limited"); });
-  assert.equal(untieredReadyRows({ trackers: [refusing] }).status, "unknown");
+  assert.deepEqual(rows[0]!.comments!.map((comment) => (typeof comment === "string" ? comment : comment.body)), ["claimed"], "the comments come back with their bodies, which the decision reads");
+  assert.equal(rows[0].title, BARE.title);
+  assert.equal(untieredReadyRows({ trackers: [reader] }).status, "read", "and the decision reads them whole");
+  world.failures.set("readRowsByLabel", new Error("gh: rate limited"));
+  assert.throws(() => reader.listRows(), /rate limited/);
+  assert.equal(untieredReadyRows({ trackers: [ghReadyReader({ key: "", repo: "a11ign/a11ign" })] }).status, "unknown", "a refused read is `unknown`, never 0");
 });
 
 test("the retrospective prints the line, and a refused or unmade read prints `unknown`", () => {

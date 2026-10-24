@@ -1,8 +1,8 @@
-// no-token: gh -- `gh` is a function the test hands in and RECORDS; nothing here reaches GitHub or any account's config.
+// no-token: gh -- the probes are the fake code host's, which RECORDS each ask (A11-160, step 9); nothing here reaches GitHub or any account's config.
 //
 // agent-org#995 (a11ign/a11ign#5043): IN `webhook` MODE THE TICK HANDS THE GATE THE SCOPES THE EVENTS NAMED (`A11Y_TICK_SCOPES_FILE`), AND ADDS A REPOSITORY WHOSE DATED WAIT CAME DUE
 // SINCE THE PREVIOUS TICK TO ITS `changed` SET, WITHOUT A GitHub CALL. Poll mode hands over neither, and a corrupt due-index makes every declared repository due.
-// Every test drives the real `refreshSnapshotOrSay` (and so the real `eventsForTick`) against a scratch state directory, with an injected `gh` that RECORDS each call, so
+// Every test drives the real `refreshSnapshotOrSay` (and so the real `eventsForTick`) against a scratch state directory, with a fake code host that RECORDS each probe, so
 // "no call" is a count of zero and not a claim.
 //
 // POSITIVE CONTROL: a webhook tick whose events name pull request 12 hands the gate that scope in the variable, and the file reads back as exactly that scope. Mutation: drop the
@@ -10,12 +10,14 @@
 // NEGATIVE CONTROL: a poll host, a dead receiver, and a failed write each leave the variable UNSET (a stale value inherited from the parent is removed), and a poll tick writes neither
 // the scopes file nor the time file. Mutation: skip the `delete env[TICK_SCOPES_VARIABLE]` at the top of `refreshSnapshotOrSay` -> red on the poll test.
 
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { refreshTickSnapshot, slugOf, type GhRun } from "../tick-snapshot.ts";
+import { probePaths, refreshTickSnapshot, slugOf } from "../tick-snapshot.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { EVENT_QUEUE_ENTRY, parseHostConfig, type HostConfig } from "../host-config.ts";
 import type { QueueLine } from "../event-receiver.ts";
 import { readTickScopes } from "../tick-scopes.ts";
@@ -39,17 +41,17 @@ const HOME_REPO = "a11ign/a11ign";
 const OTHER = "a11ign/agent-org";
 const REPOS = [HOME_REPO, OTHER];
 const RECONCILE_MINUTES = 20;
-const ok = (tag: string) => `HTTP/2.0 200 OK\r\nEtag: "${tag}"\r\n\r\n[]`;
 const project = { tracker: [{ repo: HOME_REPO }], code: [{ repo: HOME_REPO }, { repo: OTHER }], repo: HOME_REPO } as never;
 
-/** A `gh` that answers 200 with one tag and RECORDS every call. */
+afterEach(() => forgetActivation());
+
+/** The fake code host (installed as the active one) answering 200 with one tag and a body that lists nothing, and RECORDING every probe it is asked (`calls`). */
 const recordingGh = () => {
-  const calls: string[][] = [];
-  const run: GhRun = (args) => {
-    calls.push(args);
-    return { stdout: ok("t1"), status: 0 };
-  };
-  return { run, calls };
+  const host = createFakeCodeHost();
+  const readouts = host.rowsWorld.tail.readouts;
+  for (const path of REPOS.flatMap(probePaths)) readouts.probes.set(path, { status: 200, etag: '"t1"', facts: { newest: null, count: 0 } });
+  substituteCodeHost(host);
+  return { calls: readouts.probeAsks };
 };
 
 const counter = (dir: string, repo: string) => Number(readFileSync(join(dir, "read-cache", "gen", slugOf(repo)), "utf8").trim().split(" ")[0]);
@@ -57,7 +59,8 @@ const counter = (dir: string, repo: string) => Number(readFileSync(join(dir, "re
 /** A cache directory that has had one poll refresh at `T0`, so every repository holds generation 1. */
 function polled() {
   const dir = tmpDir("work-tick-scopes-and-due-cfg-");
-  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run: recordingGh().run, nowMs: T0 });
+  recordingGh();
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 });
   return dir;
 }
 
@@ -83,7 +86,7 @@ function tickAt(fixture: { host: HostConfig; alive: string }, nowMs: number, env
   writeFileSync(fixture.alive, `${new Date(nowMs - heartbeatAgeSeconds * SEC).toISOString()}\n`);
   const gh = recordingGh();
   const said = refreshSnapshotOrSay({ declaration: () => project, configDir, env, host: () => fixture.host, nowMs,
-    refresh: (input) => refreshTickSnapshot({ ...input, nowMs, run: gh.run }) });
+    refresh: (input) => refreshTickSnapshot({ ...input, nowMs }) });
   return { said, calls: gh.calls };
 }
 

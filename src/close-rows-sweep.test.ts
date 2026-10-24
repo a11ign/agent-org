@@ -1,16 +1,19 @@
-// no-token: gh
+// no-token: none -- the code host is the fake one; nothing here reaches GitHub
 //
 // a11ign/agent-org#719 (class `closed-on-merge-not-outcome`; a11ign#4627): THE VERIFY ROW HAS TO BE FILED BY THE PATH A NORMAL MERGE TAKES. `trunk.yml` runs the SWEEP on every
 // push to main and the dispatch path only on a manual dispatch, and `fileVerifyRowsFor` had one caller, on the dispatch path: about 60 merged rows and no verify row.
 //
-// NO NETWORK: `gh` and every effect are fixtures, and the verify effects COUNT their calls, so "files nothing" is zero creates and a stray read would throw. POSITIVE
+// NO NETWORK: the code host is the fake one and every effect is a fixture, and the verify effects COUNT their calls, so "files nothing" is zero creates and a stray read would throw. POSITIVE
 // CONTROLS, NAMED (an emptiness assertion points at where its population is): `LIVE` is the non-empty population every "files nothing" case is the negative of, and case 8
 // walks the tree for the closing paths and requires BOTH known ones to be found before it asserts anything about them. Mutations are in the PR's `.acceptance/` file.
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { closeOnePr, sweepExit, EXIT } from "./close-rows-sweep.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { verifyMarker, type VerifyEffects, type VerifyPlan } from "./verify-row.ts";
 
 const MERGED = "2026-10-10T18:00:00Z";
@@ -23,24 +26,23 @@ const PLAIN_BODY = bodyWith("1. The tests pass.\n2. The README names the flag.")
 type Node = { number: number; state: "OPEN" | "CLOSED"; title: string; body: string };
 const node = (over: Partial<Node> & { number: number }): Node => ({ state: "OPEN", title: `Row ${over.number}`, body: LIVE_BODY, ...over });
 
-/** A fake `gh` for one merged PR declaring `nodes`; a `closeFails` row's `issue close` throws. Every close is recorded. */
-function fakeGh(nodes: Node[], { mergedAt = MERGED as string | null, closeFails = [] as number[] } = {}) {
-  const closed: number[] = [];
-  const gh_ = (args: string[]) => {
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ mergedAt, mergeCommit: { oid: "abc1234" }, closingIssuesReferences: { nodes: nodes.map((n) => ({
-        number: n.number, state: n.state, title: n.title, body: n.body, milestone: { title: "Out of release" }, parent: { number: 3900 },
-        labels: { nodes: [{ name: "lane:any" }, { name: "priority" }] }, timelineItems: { nodes: [] } })) } });
-    }
-    if (args[0] === "issue" && args[1] === "close") {
-      const n = Number(args[2]);
-      if (closeFails.includes(n)) throw new Error("HTTP 502");
-      closed.push(n);
-      return "";
-    }
-    throw new Error(`fake gh was asked something it does not know: ${args.join(" ")}`);
-  };
-  return { gh_, closed };
+afterEach(() => forgetActivation());
+
+/** The fake code host for one merged PR declaring `nodes`: the rows are the world's, and a `closeFails` row's close is refused. Every close the world is asked for is recorded in its calls. */
+function fakeWorld(nodes: Node[], { mergedAt = MERGED as string | null, closeFails = [] as number[] } = {}) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = "o/r";
+  for (const n of nodes) {
+    world.rows.set(n.number, fakeRow(world, n.number, { title: n.title, body: n.body, state: n.state, labels: ["lane:any", "priority"], milestone: { number: 1, title: "Out of release", description: null, dueOn: null } }));
+    world.tail.closing.parents.set(n.number, 3900);
+  }
+  world.pulls.set(900, { number: 900, body: "", headRefName: "agent/x", labels: [], isDraft: false, armed: false, merged: true, mergedAt, createdAt: MERGED, comments: [],
+    closes: nodes.map((n) => ({ number: n.number, labels: [] })) });
+  world.tail.closing.mergeShas.set(900, "abc1234");
+  for (const n of closeFails) world.tail.closing.closeRefusals.set(n, new Error("HTTP 502"));
+  substituteCodeHost(host);
+  return world;
 }
 
 function recorder(over: Partial<VerifyEffects> = {}) {
@@ -57,14 +59,15 @@ function recorder(over: Partial<VerifyEffects> = {}) {
   return { calls, plans, effects };
 }
 
-/** Runs `closeOnePr` for PR 900 with nothing live: the strip and the settle are fixtures, the verify effects are the recorder's, and what it printed comes back. */
-function sweep(nodes: Node[], effects: VerifyEffects, opts: Parameters<typeof fakeGh>[1] = {}) {
+/** Runs `closeOnePr` for PR 900 with nothing live: the strip and the settle are fixtures, the verify effects are the recorder's, and what it printed comes back with the rows the world was asked to close. */
+function sweep(nodes: Node[], effects: VerifyEffects, opts: Parameters<typeof fakeWorld>[1] = {}) {
   const said: string[] = [];
   const log = console.log;
   console.log = (...parts: unknown[]) => { said.push(parts.join(" ")); };
   try {
-    const { gh_, closed } = fakeGh(nodes, opts);
-    const result = closeOnePr(900, "o/r", { gh_, strip: () => {}, settle: () => ({ settled: true, refused: [] }), verify: effects });
+    const world = fakeWorld(nodes, opts);
+    const result = closeOnePr(900, "o/r", { strip: () => {}, settle: () => ({ settled: true, refused: [] }), verify: effects });
+    const closed = world.calls.filter((c) => c.startsWith("closeCompletedRow #")).map((c) => Number(c.slice("closeCompletedRow #".length)));
     return { result, said, closed };
   } finally {
     console.log = log;
@@ -146,9 +149,11 @@ const SELF = fileURLToPath(import.meta.url);
 /** A file that closes a row and is NOT driven by a merge, with the reason: nothing here has a build to verify. */
 const NOT_FROM_A_MERGE: Record<string, string> = {
   "plugins/github/rows/wake-rows.ts": "the GitHub plugin's write (A11-160 moved it out of `wake/merge-queue-wait.ts`) that closes a row whose question was ANSWERED (`answeredComment`), not one a pull request merged",
+  "plugins/github/rows/closing-rows.ts": "the GitHub plugin's `closeCompletedRow` (A11-160 moved it out of `close-rows-for-merged-pr.ts` and `close-rows-sweep.ts`): the write itself, which the two close paths ask and which files nothing; they call `fileVerifyRowsFor` themselves",
   "plugins/github/rows/close-row.ts": "the GitHub plugin's write (A11-160 moved it out of `src/ticket-port/`) behind `worker-state.ts`'s close of a `Claimed-nothing:` row on the worker's own reading (`done <row> --met`), which names each Done-when item and the comment holding it; no pull request merged",
 };
-const CLOSES_A_ROW = /\[\s*"issue",\s*"close"/;
+/** A file that writes the close itself (the plugin's `["issue", "close"` argument list) or asks the code host for it (`rows().closeCompletedRow(`): the close paths are the second kind since A11-160. */
+const CLOSES_A_ROW = /\[\s*"issue",\s*"close"|rows\(\)\.closeCompletedRow\(/;
 const CALLS_THE_VERIFY_ROW = /(?<!function )fileVerifyRowsFor\(/;
 
 function sourceFiles(dir: URL): string[] {

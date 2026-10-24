@@ -1,4 +1,4 @@
-// no-token: gh -- `unpark-satisfied.ts` reaches GitHub only through the `UnparkIo` it is given; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4050)
+// no-token: gh -- `unpark-satisfied.ts` reaches GitHub only through the `UnparkIo` it is given or the code host's rows; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4050)
 // a11ign/a11ign#4050: a parked row whose EVERY condition is true is un-parked on the tick, to `ready` or to `backlog` + `answer:product-manager`.
 //
 // THE POSITIVE CONTROL for every "writes nothing" below is the first test: the SAME harness (`world`, `run`) un-parks a row there, so an empty `calls` is a reading of a wired pass and not of
@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { boardTruthAudit, QUESTIONS } from "./board-truth-audit.ts";
 import { PARKED_LABEL } from "./work-gate/vocabulary.ts";
 import { MUTEX_LABELS } from "./ready-label-audit.ts";
@@ -16,8 +16,14 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import * as unpark from "./unpark-satisfied.ts";
 import { COMMENT_MARKER, NOT_PICKABLE_BESIDE_READY, PARKED, commentFor, githubIo, ineligibility, mergedClosersOf, readSatisfaction, reportUnpark, unparkSatisfied, unparkingWaits } from "./unpark-satisfied.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { REPO } from "./project-identity.ts";
 import { budgetOf, meteredRun } from "./gh-conditional.ts";
 import { BUDGET_DEFER_MS, BUDGET_REFUSAL, DEFERRED_FILE, fileDeferral, type Deferral } from "./unpark-satisfied.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-11T00:05:00Z");
 const PASSED = "2026-10-11T00:00:00Z";
@@ -244,13 +250,22 @@ test("pin: the labels that block a ready row are the audit's own, one by one", (
   assert.equal(ineligibilityOf(["lane:any"]), null, "and a row with none of them passes it");
 });
 
-test("the merged-closer read: only MERGED pull requests count, and a refused or malformed answer throws rather than reading as none", () => {
-  const answer = (nodes: any) => () => JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
-  assert.deepEqual(mergedClosersOf(5, answer([{ number: 9, state: "MERGED", mergedAt: "2026-10-01T00:00:00Z" }, { number: 10, state: "OPEN", mergedAt: null }, { number: 11, state: "CLOSED", mergedAt: null }])),
-    [{ number: 9, mergedAt: "2026-10-01T00:00:00Z" }]);
-  assert.deepEqual(mergedClosersOf(5, answer([])), [], "none is a reading when the shape is right");
-  assert.throws(() => mergedClosersOf(5, () => "{}"), /#5 could not be read/);
-  assert.throws(() => mergedClosersOf(5, () => { throw new Error("HTTP 502"); }), /HTTP 502/);
+test("the merged-closer read: only MERGED pull requests count, and a refused read throws rather than reading as none (how the answer is parsed is the plugin's test)", () => {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  world.rows.set(5, fakeRow(world, 5, { labels: ["ready"] }));
+  const pull = (number: number, merged: boolean, closedAt: string | null = null) => ({ number, body: "", headRefName: `agent/${number}`, labels: [], isDraft: false, armed: false, merged, mergedAt: merged ? "2026-10-01T00:00:00Z" : null, closedAt, createdAt: "2026-09-30T00:00:00Z", comments: [], closes: [{ number: 5, labels: [] }] });
+  world.pulls.set(9, pull(9, true));
+  world.pulls.set(10, pull(10, false));
+  world.pulls.set(11, pull(11, false, "2026-10-02T00:00:00Z"));
+  substituteCodeHost(host);
+  const run = () => { throw new Error("the fake acts on its own state: no run is made"); };
+  assert.deepEqual(mergedClosersOf(5, run), [{ number: 9, mergedAt: "2026-10-01T00:00:00Z" }]);
+  world.pulls.delete(9);
+  assert.deepEqual(mergedClosersOf(5, run), [], "none is a reading when nothing merged: the open and the closed-unmerged pull requests do not count");
+  world.failures.set("mergedClosersOf", new Error("HTTP 502"));
+  assert.throws(() => mergedClosersOf(5, run), /HTTP 502/);
 });
 
 // --- a11ign/a11ign#4202: THE PROMOTION RUNS FROM A LINKED WORKTREE THE TICK OWNS ---
@@ -367,7 +382,8 @@ const memoryDeferral = (): Deferral & { held: Map<number, number> } => {
 /** An io whose first read goes through the gate's real meter at `cap` points, so the refusal is the text `gh-conditional.ts` really throws; `asked` counts the reads attempted. */
 const meteredWorld = (cap: number) => {
   const w = world({ rows: { 40: ["parked"] } });
-  const metered = githubIo(meteredRun(() => JSON.stringify({ labels: [{ name: "parked" }], state: "OPEN" }), budgetOf({ cap })));
+  // The meter is the gate's policy and rides on the `run` the un-park is handed, so this read goes through the GitHub plugin's own operation (a through-run code host): the meter refuses before any `gh` is run.
+  const metered = githubIo(meteredRun(() => { throw new Error("the meter refuses before this run is reached"); }, budgetOf({ cap })));
   let asked = 0;
   const io: import("./unpark-satisfied.ts").UnparkIo = { ...w.io, readLabels: (n) => { asked += 1; return metered.readLabels(n); } };
   return { io, asked: () => asked, w };

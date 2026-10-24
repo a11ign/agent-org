@@ -57,6 +57,7 @@ import { ANSWER_PREFIX, BACKLOG_LABEL, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } fro
 import { REPO } from "./project-identity.ts";
 import { templateFieldsReason } from "./row-claim/template-fields-rule.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** The label `work-gate.ts` exports as `PARKED_LABEL`; restated because that file imports this one. `unpark-satisfied.test.ts` pins the two equal. */
 export const PARKED = "parked";
@@ -293,25 +294,21 @@ export function reportUnpark(result: UnparkResult, log: (line: string) => void) 
  */
 export function githubIo(run: (args: string[]) => string, { worktree = tickWorktree, repo = REPO }: { worktree?: () => TickWorktree; repo?: string; } = {}): UnparkIo {
   return {
-    readLabels: (number) => {
-      const read = JSON.parse(run(["issue", "view", String(number), "--repo", repo, "--json", "labels,state"]));
-      return { labels: (read.labels ?? []).map((l: any) => String(l.name)), state: String(read.state) };
-    },
-    setLabels: (number, labels) => { run(["api", "--method", "PUT", `repos/${repo}/issues/${number}/labels`, ...labels.flatMap((l) => ["-f", `labels[]=${l}`])]); },
+    readLabels: (number) => rows().rowLabelsAndStateOf({ repo, number, run }),
+    setLabels: (number, labels) => { rows().setRowLabels({ repo, number, labels, run }); },
     // `row-file --promote` acts only on the home tracker, so a row of another one is routed to `product-manager` with that reason rather than promoted from the wrong tracker.
     promote: (number) => (repo === REPO ? promoteViaModule(number, worktree) : { ok: false, refusal: `\`row-file --promote\` acts only on ${REPO}, the home tracker, so ${repo}#${number} cannot be promoted by the tick` }),
     mergedClosers: (number) => mergedClosersOf(number, run, repo),
     // The close time only dates a line of the comment, so a read that fails says "not dated" there; it is not a reason to leave a row parked.
     closedAt: (number) => {
       try {
-        const at = Date.parse(run(["api", `repos/${repo}/issues/${number}`, "--jq", ".closed_at"]).trim());
-        return Number.isFinite(at) ? at : null;
+        return rows().closedAtOf({ repo, number, run });
       } catch (cause) {
         process.stderr.write(`unpark-satisfied: could not date the close of #${number} (${cause instanceof Error ? cause.message.split("\n")[0] : cause}); the comment says "not dated"\n`);
         return null;
       }
     },
-    comment: (number, body) => { run(["issue", "comment", String(number), "--repo", repo, "--body", body]); },
+    comment: (number, body) => { rows().commentOnIssue({ repo, issue: number, body, run }); },
   };
 }
 
@@ -321,11 +318,7 @@ export function githubIo(run: (args: string[]) => string, { worktree = tickWorkt
  * @param {number} number @param {(args: string[]) => string} run @param {string} [repo] the row's own repository @returns {{ number: number, mergedAt: string }[]}
  */
 export function mergedClosersOf(number: number, run: (args: string[]) => string, repo: string = REPO): { number: number; mergedAt: string; }[] {
-  const [owner, name] = repo.split("/");
-  const query = `{ repository(owner: "${owner}", name: "${name}") { issue(number: ${number}) { closedByPullRequestsReferences(first: 20) { nodes { number state mergedAt } } } } }`;
-  const nodes = JSON.parse(run(["api", "graphql", "-f", `query=${query}`]))?.data?.repository?.issue?.closedByPullRequestsReferences?.nodes;
-  if (!Array.isArray(nodes)) throw new Error(`the closing pull requests of #${number} could not be read (an answer with no \`nodes\`)`);
-  return nodes.filter((n: any) => n?.state === "MERGED" && n?.mergedAt).map((n: any) => ({ number: Number(n.number), mergedAt: String(n.mergedAt) }));
+  return rows().mergedClosersOf({ repo, number, run });
 }
 
 export type GitExec = (args: string[], cwd: string) => { status: number | null, output: string };

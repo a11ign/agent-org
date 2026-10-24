@@ -5,7 +5,7 @@
  * checks that replace the row's: the Region, the `Refs`/`Closes` declaration, the owner, the draft policy and the changeset, and that a create in a
  * ticket run is sent once, with nothing armed and nothing labelled. The last test is the GitHub-row path, which must not change.
  */
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +21,12 @@ import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesRepo
 import { READY_FILE } from "./worker-files.ts";
 import { CI_BODY_REPORTS } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { main, runFromCli, EXIT_NOTHING_SENT, sendToGitHub } from "../pr-open.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const KEY = "A11-74";
 const BRANCH = "admin/a11-74-propen-works-in-ticket-mode-it-reads-the-ticket-through-the";
@@ -66,8 +72,8 @@ test("A11-74: a ticket run's pull request is checked and sent once, its checks p
   const r = open(["--body", BODY, "--title", "fix: the thing"]);
   assert.equal(r.code, 0, r.refused);
   assert.equal(r.sent.length, 1, "one create, and nothing after it");
-  assert.deepEqual(r.sent[0], ["pr", "create", "--body", BODY, "--title", "fix: the thing"], "the create is sent as given: pr:open adds no flag");
-  assert.ok(r.sent.every((argv) => argv[1] === "create"), "no pr merge (arming) and no pr edit (a session label)");
+  assert.deepEqual(r.sent[0], ["fake-pull-write", "create", "--body", BODY, "--title", "fix: the thing"], "the create is sent as given: pr:open adds no flag");
+  assert.ok(r.sent.every((argv) => argv[0] === "fake-pull-write"), "no arm and no session label step follows the create");
   assert.match(r.said, /CLOSES: A11-74 -- `Closes` completes it when the pull request merges/);
   assert.match(r.said, /REGION: 1 changed path\(s\) against A11-74's Region .* 1 inside/);
   assert.match(r.said, /CHANGESET: not checked -- this repository has no \.changeset\/config\.json/);
@@ -251,7 +257,7 @@ test("A11-74: tickets.drafts false opens a create ready and refuses --draft; dra
   const ready = ticket({ readyRun: true });
   const bare = open(["--body", BODY, "--title", "t"], { ticket: ready });
   assert.equal(bare.code, 0, bare.refused);
-  assert.deepEqual(bare.sent[0], ["pr", "create", "--body", BODY, "--title", "t"], "ready: no --draft is added");
+  assert.deepEqual(bare.sent[0], ["fake-pull-write", "create", "--body", BODY, "--title", "t"], "ready: no --draft is added");
 
   const draftOnReady = open(["--draft", "--body", BODY, "--title", "t"], { ticket: ready });
   assert.equal(draftOnReady.code, EXIT_NOTHING_SENT);
@@ -464,6 +470,6 @@ test("A11-74 control: a GitHub-row create with Closes #N still reads its row's R
     branchHead: () => "abc1234", out: () => {}, err: () => {},
   });
   assert.equal(code, 0);
-  assert.ok(sent.some((argv) => argv.slice(0, 3).join(" ") === "pr merge --auto" && argv.includes("agent/x")), "the ready row create is armed to merge");
-  assert.ok(sent.some((argv) => argv.slice(0, 2).join(" ") === "pr edit" && argv.includes("session:ceo")), "and labelled with its session");
+  assert.ok(sent.some((argv) => argv[0] === "fake-arm" && argv.includes("agent/x")), "the ready row create is armed to merge");
+  assert.ok(sent.some((argv) => argv[0] === "fake-label" && argv.includes("session:ceo")), "and labelled with its session");
 });

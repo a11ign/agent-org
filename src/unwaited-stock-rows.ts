@@ -18,10 +18,11 @@
 // whole reading `unknown` and NAMES the read; it does not drop the row, because a dropped row is the org's idleness reported as health by an absence.
 //
 // A LEAF: relative imports of leaves only, like `org-retro.ts`, which imports it and runs before any install.
-import { execFileSync } from "node:child_process";
 import { waitingOn } from "./waiting-condition.ts";
 import { parseWaits, namedDoneWhens } from "./wait-condition.ts";
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** The `parked` state label; `project-vocabulary.ts` declares `backlog` and `work-gate.ts` (not a leaf) the other. */
 const PARKED_LABEL = "parked";
@@ -151,20 +152,21 @@ export function unwaitedLines(stock: UnwaitedStock | null | undefined): string[]
   return [`- ${label}: ${stock.count}: ${each.join("; ")}`];
 }
 
-/** @param {string[]} args @returns {string} */
-function gh(args: string[]): string {
-  return execFileSync("gh", args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"], timeout: READ_TIMEOUT_MS });
-}
+/** The code host's own runner with this read's bound and buffer, its stderr kept to the failure (A11-160, step 9). */
+const ghRead = (): RowsRun => rows().runnerWith({ timeoutMs: READ_TIMEOUT_MS, maxBuffer: MAX_BUFFER, echo: false });
 
 /**
  * THE REAL READER, for `repo` (the tracker): one issue list carrying the edges, and per candidate row the timeline projected to the three fields read, so a
  * comment's body never crosses the pipe. A failure throws; `unwaitedStockRows` names it.
- * @param {string} repo `owner/name` @param {(args: string[]) => string} [run] @returns {TrackerReader}
+ * @param {string} repo `owner/name` @returns {TrackerReader}
  */
-export function ghTrackerReader(repo: string, run: (args: string[]) => string = gh): TrackerReader {
+export function ghTrackerReader(repo: string): TrackerReader {
   return {
-    listRows: () => JSON.parse(run(["issue", "list", "--repo", repo, "--state", "open", "--limit", String(ROW_LIST_LIMIT), "--json", "number,title,body,labels,blockedBy"])),
-    timeline: (number) => run(["api", `repos/${repo}/issues/${number}/timeline`, "--paginate", "--jq", ".[] | {event, created_at, label: (.label // null)}"])
-      .split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line)),
+    listRows: () => {
+      const listed = rows().issueListingOf({ repo, state: "open", limit: ROW_LIST_LIMIT, fields: ["number", "title", "body", "labels", "blockedBy"], what: "open issues", run: ghRead() });
+      if ("unreadable" in listed) throw new Error(listed.unreadable);
+      return listed.rows as StockRow[];
+    },
+    timeline: (number) => rows().stockTimelineEventsOf({ repo, number, run: ghRead() }),
   };
 }

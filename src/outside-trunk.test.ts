@@ -1,16 +1,21 @@
-// no-token: gh -- nothing here calls `gh` or git; every read, every child and the state are injected
+// no-token: none -- nothing here calls `gh` or git; every read, every child and the state are injected, and the close sweep runs on the fake code host
 //
 // agent-org#1576: THE OUTSIDE HOME OF TRUNK, shipped OFF. EVERY CLAIM HAS ITS NEGATIVE CONTROL: the run that does something beside the run that does nothing (off, paced, answered), and
-// the second actor beside the first. `closeOnePr` is the REAL one over a fake `gh` that remembers what it closed, so "finds the work done and does nothing" is read from the sweep
+// the second actor beside the first. `closeOnePr` is the REAL one over the fake code host's world, which remembers what it closed, so "finds the work done and does nothing" is read from the sweep
 // the job also runs, not from a stand-in. Mutations are in the PR's `.acceptance/` file.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { closeOnePr } from "./close-rows-sweep.ts";
 import { COMMANDS } from "./commands.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { recordRouteOutcomesOnHost } from "./work-gate/route-outcome-pass.ts";
 import { INTERVAL_MS, MAX_SHAS_PER_RUN, OUTSIDE_TRUNK_SWITCH, STATE_PATH_ENV, commitChecks, exitCodeOf, liveDeps, outsideTrunk, outsideTrunkOn, windowMinutes, type Check, type Outcome, type OutsideTrunkDeps, type OutsideTrunkState } from "./outside-trunk.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = 10_000_000_000;
 const ON = { [OUTSIDE_TRUNK_SWITCH]: true };
@@ -73,31 +78,30 @@ test("3. THE SECOND ACTOR DOES NOTHING TWICE: the same commits asked again run t
 });
 
 test("4. THE SWEEP IS THE REAL ONE: a row it closed is found closed by the next actor, which closes nothing", () => {
-  const closes: number[] = [];
-  const open = new Set([4630]);
-  const gh_ = (args: string[]): string => {
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ mergedAt: "2026-10-10T18:00:00Z", mergeCommit: { oid: "abc1234" }, closingIssuesReferences: { nodes: [{ number: 4630, state: open.has(4630) ? "OPEN" : "CLOSED", title: "Row 4630",
-        body: "## Region\n\nsrc/foo.ts\n\n## Done-when\n\n1. The tests pass.\n2. The README names the flag.\n", milestone: { title: "Out of release" }, parent: { number: 3900 },
-        labels: { nodes: [{ name: "lane:any" }] }, timelineItems: { nodes: [] } }] } });
-    }
-    if (args[0] === "issue" && args[1] === "close") { closes.push(Number(args[2])); open.delete(Number(args[2])); return ""; }
-    throw new Error(`fake gh was asked something it does not know: ${args.join(" ")}`);
-  };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = "o/r";
+  world.rows.set(4630, fakeRow(world, 4630, { title: "Row 4630", labels: ["lane:any"], milestone: { number: 1, title: "Out of release", description: null, dueOn: null },
+    body: "## Region\n\nsrc/foo.ts\n\n## Done-when\n\n1. The tests pass.\n2. The README names the flag.\n" }));
+  world.tail.closing.parents.set(4630, 3900);
+  world.pulls.set(900, { number: 900, body: "", headRefName: "agent/x", labels: [], isDraft: false, armed: false, merged: true, mergedAt: "2026-10-10T18:00:00Z", createdAt: "2026-10-10T18:00:00Z", comments: [], closes: [{ number: 4630, labels: [] }] });
+  world.tail.closing.mergeShas.set(900, "abc1234");
+  substituteCodeHost(host);
+  const closes = (): number[] => world.calls.filter((call) => call.startsWith("closeCompletedRow #")).map((call) => Number(call.slice("closeCompletedRow #".length)));
   const verify = { findExisting: () => null, create: () => { throw new Error("a verify row was filed"); }, blockBy: () => {}, addSubIssue: () => {}, board: () => null };
   const actor = () => {
     const log = console.log;
     console.log = () => {};
     try {
-      return closeOnePr(900, "o/r", { gh_, strip: () => {}, settle: () => ({ settled: true, refused: [] }), verify });
+      return closeOnePr(900, "o/r", { strip: () => {}, settle: () => ({ settled: true, refused: [] }), verify });
     } finally {
       console.log = log;
     }
   };
   assert.deepEqual(actor(), { failed: [], unsettled: [], skipped: [] });
-  assert.deepEqual(closes, [4630], "CONTROL: the first actor closed the row");
+  assert.deepEqual(closes(), [4630], "CONTROL: the first actor closed the row");
   assert.deepEqual(actor(), { failed: [], unsettled: [], skipped: [] });
-  assert.deepEqual(closes, [4630], "the second actor found it closed and closed nothing");
+  assert.deepEqual(closes(), [4630], "the second actor found it closed and closed nothing");
 });
 
 test("5. PACING: a second run inside the interval does nothing, one at the interval runs, and --force ignores it", () => {

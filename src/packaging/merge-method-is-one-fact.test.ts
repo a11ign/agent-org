@@ -24,7 +24,7 @@
  * search you would run to check whether this guard was needed.
  *
  * PORTED from a11ign/a11ign `packages/lab/src/packaging/` at 95cb57e33 (a11ign/a11ign#3106), where it walked this tool's source as part of
- * a larger population; it now walks `src/` here, and the sweep finds FIVE sites in four files (`pr-hold.ts` arms and disarms).
+ * a larger population; it now walks `src/` here, and the sweep finds FIVE sites in four files (the hold's operations arm and disarm).
  *
  * So: the call sites are swept out of the source rather than listed here, because a fifth added next
  * month is the case a hand-written list cannot cover -- and a fifth is exactly what happened to
@@ -61,9 +61,9 @@ test("the sweep FINDS the call sites -- a floor, because an empty population pas
   assert.ok(sites.length >= 5,
     `expected at least the five known gh pr merge call sites, found ${sites.length}. If the call shape `
     + "changed, this regex now sweeps an empty population and every assertion below passes vacuously.");
-  // Five sites in four files: `pr-hold.ts` holds the arm AND the disarm. The arm of `arm-pr` and of the sweep is ONE operation of the code host (`armPullAuto`), the merge queue's merge another, and the disarm of a red leg a third.
+  // Five sites in four files: the hold's operations (`plugins/github/rows/pr-hold-calls.ts`, A11-160 step 9) hold the arm AND the disarm. The arm of `arm-pr` and of the sweep is ONE operation of the code host (`armPullAuto`), the merge queue's merge another, and the disarm of a red leg a third.
   const files = sites.map((s) => s.file);
-  for (const expected of ["plugins/github/rows/arming.ts", "plugins/github/rows/merge-guard-reads.ts", "plugins/github/rows/auto-merge-disarm.ts", "src/pr-hold.ts"]) {
+  for (const expected of ["plugins/github/rows/arming.ts", "plugins/github/rows/merge-guard-reads.ts", "plugins/github/rows/auto-merge-disarm.ts", "plugins/github/rows/pr-hold-calls.ts"]) {
     assert.ok(files.includes(expected), `${expected} carries a gh pr merge call and the sweep must reach it`);
   }
 });
@@ -83,7 +83,7 @@ test("every call site that ARMS or MERGES names --merge explicitly, rather than 
 
 test("--disable-auto is exempt, and deliberately so -- it names no method because it removes one", () => {
   const disarms = realSites().filter(isDisarm);
-  assert.deepEqual(disarms.map((d) => d.file).sort(), ["plugins/github/rows/auto-merge-disarm.ts", "src/pr-hold.ts"], "pr-hold.ts and the code host's disarm of a red leg hold the only disarms");
+  assert.deepEqual(disarms.map((d) => d.file).sort(), ["plugins/github/rows/auto-merge-disarm.ts", "plugins/github/rows/pr-hold-calls.ts"], "the hold's disarm (the code host's `disarmHeldPull`) and the code host's disarm of a red leg hold the only disarms");
   assert.ok(!/"--merge"|"--squash"/.test(disarms[0].args),
     "a disarm takes no merge method; requiring one here would be the guard firing on the honest use");
 });

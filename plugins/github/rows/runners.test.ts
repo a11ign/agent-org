@@ -157,3 +157,13 @@ test("REAL SEAMS: a child that printed more than its buffer is reported as out o
     gh.done();
   }
 });
+
+test("a runner that names no bound passes none on, so the process's own default of ten minutes applies (A11-160, step 9)", () => {
+  const { called, deps } = injected({ status: 0, stdout: "answer", stderr: "" });
+  runnerWith(deps, {})(["api", "graphql"]);
+  assert.equal(called[0]!.options.timeoutMs, undefined, "no bound is named, so none is passed on");
+  // The default is `realExec`'s, not the plugin's 30 s for its own reads: a caller that had no bound (the settle's population read) is cut at ten minutes.
+  const source = readFileSync(new URL("../../../src/plugins/real-seams.ts", import.meta.url), "utf8");
+  assert.match(source, /const DEFAULT_EXEC_MS = 600_000;/);
+  assert.match(source, /options\.timeoutMs \?\? DEFAULT_EXEC_MS/);
+});

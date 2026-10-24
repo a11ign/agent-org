@@ -39,10 +39,11 @@
 //   0  main's tip already has check runs -- nothing to do, or the sweep was successfully triggered
 //   1  the trigger call failed
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
-import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
 export const EXIT = { DONE: 0, COULD_NOT_TRIGGER: 1, CANNOT_ASK: 2 };
 
@@ -55,8 +56,43 @@ export function needsGateSweep(checkRunCount: number): boolean {
   return checkRunCount === 0;
 }
 
-/** @param {string[]} args */
-const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
+/** The code host's own runner (A11-160, step 9): `gh` as this process's account, with what it prints on stderr let through, as `execFileSync` let it. */
+const run: RowsRun = (args) => rows().runnerWith({})(args);
+
+/** Where the sweep says what it did and what it could not: the process's own stdout and stderr, and a test's lines. */
+export type SweepSay = { out: (line: string) => void; err: (line: string) => void };
+
+/**
+ * One sweep of `repo`'s trunk, and the exit code it ends with: read the tip of `main` and its check runs, and dispatch `trunk.yml` when the tip carries none. Exported so the two actors of #1577 (the project's own
+ * clock and the outside home's) can be driven against one world; `main` is this over the process.
+ */
+export function sweepTrunk(repo: string, say: SweepSay): number {
+  let sha, count;
+  try {
+    sha = rows().mainShaOf({ repo, run });
+    count = rows().checkRunTotalOf({ repo, sha, run });
+  } catch (cause) {
+    say.err(`CANNOT ASK: reading main's tip or its check runs failed -- `
+      + `${cause instanceof Error ? cause.message : cause}`);
+    return EXIT.CANNOT_ASK;
+  }
+
+  if (!needsGateSweep(count)) {
+    say.out(`TRUNK-SWEEP: main's tip (${sha}) already carries ${count} check run(s) -- nothing to do.`);
+    return EXIT.DONE;
+  }
+
+  say.out(`TRUNK-SWEEP: main's tip (${sha}) carries ZERO check runs -- triggering trunk.yml.`);
+  try {
+    rows().dispatchWorkflow({ repo, workflow: "trunk.yml", run });
+  } catch (cause) {
+    say.err(`TRUNK-SWEEP: could not trigger trunk.yml -- `
+      + `${cause instanceof Error ? cause.message : cause}`);
+    return EXIT.COULD_NOT_TRIGGER;
+  }
+  say.out("TRUNK-SWEEP: triggered.");
+  return EXIT.DONE;
+}
 
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/trunk-sweep.ts" });
@@ -67,31 +103,7 @@ function main() {
     process.exit(EXIT.CANNOT_ASK);
   }
 
-  let sha, count;
-  try {
-    sha = gh(["api", `repos/${repo}/commits/main`, "--jq", ".sha"]);
-    count = Number(gh(["api", `repos/${repo}/commits/${sha}/check-runs`, "--jq", ".total_count"]));
-  } catch (cause) {
-    console.error(`CANNOT ASK: reading main's tip or its check runs failed -- `
-      + `${cause instanceof Error ? cause.message : cause}`);
-    process.exit(EXIT.CANNOT_ASK);
-  }
-
-  if (!needsGateSweep(count)) {
-    console.log(`TRUNK-SWEEP: main's tip (${sha}) already carries ${count} check run(s) -- nothing to do.`);
-    process.exit(EXIT.DONE);
-  }
-
-  console.log(`TRUNK-SWEEP: main's tip (${sha}) carries ZERO check runs -- triggering trunk.yml.`);
-  try {
-    gh(["workflow", "run", "trunk.yml", "--repo", repo]);
-  } catch (cause) {
-    console.error(`TRUNK-SWEEP: could not trigger trunk.yml -- `
-      + `${cause instanceof Error ? cause.message : cause}`);
-    process.exit(EXIT.COULD_NOT_TRIGGER);
-  }
-  console.log("TRUNK-SWEEP: triggered.");
-  process.exit(EXIT.DONE);
+  process.exit(sweepTrunk(repo, { out: (line) => console.log(line), err: (line) => console.error(line) }));
 }
 
 // The entry guard `merge-guard.ts`/`auto-arm-sweep.ts` use.

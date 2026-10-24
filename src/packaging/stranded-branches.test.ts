@@ -1,26 +1,38 @@
-// no-token: defaultRun
+// no-token: none
 //
-// #1409: every `gh` the CLI calls reaches a stub this file writes first on PATH, and every in-process test injects
-// `run`. `stranded-branches.ts`'s `defaultRun`, the function that spawns a real `gh`, is never reached here.
+// #1409: no `gh` is reached here. What the tool asks of GitHub is a named operation of the code host's rows (A11-160, step 9) and every case runs on the fake code host's world (pull requests it is given); the
+// reads of git are injected through `run`, or are the real ones over a disposable repository. What the argument lists say and how the pages are read is `plugins/github/rows/pullwork-rows.test.ts`.
 /**
  * `packages/agent-org/src/stranded-branches.ts` finds a pushed branch that has NEVER had a PR of any state and still
  * carries commits `origin/main` lacks -- see that file's own header for the incident
  * (`agent/ssh-key-defaults`, a finished security fix, pushed and invisible for eleven hours) and why the
  * obvious `git rev-list --count` check is defeated by squash merges on the wider population.
  */
-import { test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, execFileSync as rawExecFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync } from "node:fs";
+import { execFileSync, execFileSync as rawExecFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import {
   fetchPushedBranches, fetchAllPRHeadRefs, fetchOpenPRs, branchesWithNoPR, aheadCount, strandedCandidates,
   PR_LIST_LIMIT, PR_PAGE_SIZE, MAX_PR_PAGES, decideForPR, staleClosureComment, sweepPullRequests, prForDecision,
   EXIT, main as strandedMain } from "../stranded-branches.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
+
+/** The fake code host in place, with its world: the pull requests the cases below seed are what the tool's reads of GitHub answer. */
+let host = createFakeCodeHost();
+beforeEach(() => { host = createFakeCodeHost(); substituteCodeHost(host); });
+afterEach(() => forgetActivation());
+const world = () => host.rowsWorld;
+/** Seeds `count` pull requests, oldest first, each from `agent/x<offset + i>`; `over` is laid on each. */
+function seedPulls(count: number, offset = 0, over: (index: number) => Parameters<typeof fakePull>[2] = () => ({})) {
+  for (let i = 0; i < count; i += 1) fakePull(world(), offset + i + 1, { headRefName: `agent/x${offset + i}`, createdAt: new Date(Date.UTC(2026, 8, 1) + (offset + i) * 1000).toISOString(), ...over(offset + i) });
+}
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
@@ -148,29 +160,10 @@ test("MUTATION: git itself failing is a thrown error, never an empty (= nothing-
 
 // --- fetchAllPRHeadRefs: the vacuity guard, mirroring fetchLabels/fetchOpenIssues exactly ---
 
-/** A `run` that serves the given pages in order and records the argv it was asked for. */
-function pagedRun(pages: Array<Array<{ ref: string }> | string>) {
-  const seen: string[][] = [];
-  const run = (_cmd: string, args: string[]) => {
-    seen.push(args);
-    const page = pages[seen.length - 1] ?? [];
-    return typeof page === "string" ? page : JSON.stringify(page);
-  };
-  return { run, seen };
-}
-function refPage(n: number, offset = 0) {
-  return Array.from({ length: n }, (_, i) => ({ ref: `agent/x${offset + i}` }));
-}
-function jsonRun(response: string) {
-  return () => response;
-}
-function throwingRun(message: string) {
-  return () => { throw new Error(message); };
-}
-
-test("fetchAllPRHeadRefs parses a well-formed gh response into a Set", () => {
-  const { run } = pagedRun([[{ ref: "agent/x" }, { ref: "lead/y" }]]);
-  const { refs, calls, prs } = fetchAllPRHeadRefs({ run });
+test("fetchAllPRHeadRefs reads the head refs of the pull requests the code host holds into a Set", () => {
+  fakePull(world(), 1, { headRefName: "agent/x" });
+  fakePull(world(), 2, { headRefName: "lead/y" });
+  const { refs, calls, prs } = fetchAllPRHeadRefs();
   assert.ok(refs.has("agent/x"));
   assert.ok(refs.has("lead/y"));
   assert.equal(refs.size, 2);
@@ -178,11 +171,20 @@ test("fetchAllPRHeadRefs parses a well-formed gh response into a Set", () => {
   assert.equal(prs, 2);
 });
 
+test("a pull request in ANY state has a head ref: open, merged and closed alike are the branch's PR", () => {
+  fakePull(world(), 1, { headRefName: "agent/open" });
+  fakePull(world(), 2, { headRefName: "agent/merged", merged: true, mergedAt: "2026-09-09T10:00:00Z" });
+  fakePull(world(), 3, { headRefName: "agent/closed", closedAt: "2026-09-09T11:00:00Z" });
+  assert.deepEqual([...fetchAllPRHeadRefs().refs].sort(), ["agent/closed", "agent/merged", "agent/open"]);
+});
+
 /** Measured live at 402 PRs / 399 refs: reporting the Set's size as a PR count is a real number about
  * the quantity NEXT TO the one named. */
 test("ROWS AND REFS ARE DIFFERENT NUMBERS -- a branch reused across two PRs is two rows, one ref", () => {
-  const { run } = pagedRun([[{ ref: "agent/x" }, { ref: "agent/x" }, { ref: "lead/y" }]]);
-  const { refs, prs } = fetchAllPRHeadRefs({ run });
+  fakePull(world(), 1, { headRefName: "agent/x" });
+  fakePull(world(), 2, { headRefName: "agent/x" });
+  fakePull(world(), 3, { headRefName: "lead/y" });
+  const { refs, prs } = fetchAllPRHeadRefs();
   assert.equal(prs, 3, "PRs counted as rows");
   assert.equal(refs.size, 2, "head refs collapsed");
 });
@@ -191,77 +193,62 @@ test("ROWS AND REFS ARE DIFFERENT NUMBERS -- a branch reused across two PRs is t
  * THE REASON THIS FILE CHANGED. The 400-PR cap fired for real on 2026-09-09 at 402 PRs and the audit
  * could not run. A bigger number moves the cliff; walking to the end removes it. The assertion that
  * matters is that a page which comes back FULL is followed by another request — the failure this
- * replaces was precisely a full response read as a complete one.
+ * replaces was precisely a full response read as a complete one. (That the pages are REST and ASCENDING
+ * is the code host's, `plugins/github/rows/pullwork-rows.test.ts`.)
  */
 test("PAGINATES TO THE END: a full page is followed by another request, and a short page ends the walk", () => {
-  const { run, seen } = pagedRun([refPage(PR_PAGE_SIZE), refPage(PR_PAGE_SIZE, 100), refPage(2, 200)]);
-  const { refs, calls } = fetchAllPRHeadRefs({ run });
+  seedPulls(2 * PR_PAGE_SIZE + 2);
+  const { refs, calls } = fetchAllPRHeadRefs();
   assert.equal(refs.size, 202, "402-PR-shaped walk: two full pages and a short one");
   assert.equal(calls, 3);
-  assert.deepEqual(seen.map((args) => args[0]), ["api", "api", "api"],
-    "REST (core), never `gh pr list` (GraphQL) -- the listing was the heaviest consumer in an 816-call pass");
-  assert.ok(seen.every((args) => /sort=created&direction=asc/.test(args[1] ?? "")),
-    "ASCENDING: newest-first paging shifts every later page when a PR is opened mid-walk, so an entry is "
-    + "silently seen twice or not at all");
-  // `[&]page=` and not `page=`: the bare form matched `per_page=100` first and this assertion read
-  // ["100","100","100"] -- the page number checked against its own NEIGHBOUR in the query string.
-  assert.deepEqual(seen.map((args) => /[&?]page=(\d+)/.exec(args[1] ?? "")?.[1]), ["1", "2", "3"]);
 });
 
 test("CONTROL: an exactly-full LAST page costs one more call and terminates, rather than being guessed at", () => {
-  const { run, seen } = pagedRun([refPage(PR_PAGE_SIZE), []]);
-  const { refs, calls } = fetchAllPRHeadRefs({ run });
+  seedPulls(PR_PAGE_SIZE);
+  const { refs, calls } = fetchAllPRHeadRefs();
   assert.equal(refs.size, PR_PAGE_SIZE);
   assert.equal(calls, 2, "asking again costs one call and answers definitely; guessing costs the audit");
-  assert.equal(seen.length, 2);
 });
 
 test("MUTATION (#321, moved not deleted): a walk still receiving full pages at the runaway bound REFUSES", () => {
-  const { run } = pagedRun(Array.from({ length: MAX_PR_PAGES + 5 }, (_, i) => refPage(PR_PAGE_SIZE, i * 100)));
-  assert.throws(() => fetchAllPRHeadRefs({ run }),
+  seedPulls(MAX_PR_PAGES * PR_PAGE_SIZE + 500);
+  assert.throws(() => fetchAllPRHeadRefs(),
     /still receiving full pages after \d+ of \d+ -- refusing to guess/);
 });
 
-test("MUTATION: gh itself failing is a thrown error, never an empty Set -- that would OVER-report every pushed branch as stranded", () => {
-  const run = throwingRun("gh: authentication required");
-  assert.throws(() => fetchAllPRHeadRefs({ run }), /could not list PRs/);
+test("MUTATION: the code host failing is a thrown error, never an empty Set -- that would OVER-report every pushed branch as stranded", () => {
+  world().failures.set("pullHeadRefsPageOf", new Error("gh: authentication required"));
+  assert.throws(() => fetchAllPRHeadRefs(), /could not list PRs/);
 });
 
 test("MUTATION: a page failing PART WAY THROUGH the walk is refused, never the pages already collected", () => {
-  let call = 0;
-  const run = () => {
-    call += 1;
-    if (call === 1) return JSON.stringify(refPage(PR_PAGE_SIZE));
-    throw new Error("gh: HTTP 403 rate limit exceeded");
-  };
-  assert.throws(() => fetchAllPRHeadRefs({ run }), /page 2.*refusing to guess/s,
+  seedPulls(PR_PAGE_SIZE + 1);
+  let asked = 0;
+  const base = host.rows!;
+  substituteCodeHost({ ...host, rows: { ...base, pullHeadRefsPageOf: (request) => {
+    asked += 1;
+    if (asked === 2) throw new Error("gh: HTTP 403 rate limit exceeded");
+    return base.pullHeadRefsPageOf(request);
+  } } });
+  assert.throws(() => fetchAllPRHeadRefs(), /page 2.*refusing to guess/s,
     "a partial walk is CANNOT-ASK; returning page 1's refs would manufacture stranded branches from "
     + "every PR on the pages never read");
 });
 
-test("MUTATION: non-JSON output is a thrown error, never a silent empty Set", () => {
-  const run = jsonRun("not json at all");
-  assert.throws(() => fetchAllPRHeadRefs({ run }), /was not JSON/);
-});
-
-test("MUTATION: a non-array response is refused rather than read as zero PRs", () => {
-  const run = jsonRun(JSON.stringify({ not: "an array" }));
-  assert.throws(() => fetchAllPRHeadRefs({ run }), /was not an array/);
-});
-
 /**
- * The request PROJECTS to `{ref: .head.ref}` rather than to a bare line, so that a PR whose head ref is
- * missing arrives as JSON `null` and can be refused. Projected to lines it would arrive as the four
- * characters `null`, indistinguishable from a branch actually named that.
+ * Whether an answer is JSON, a list, and a list of entries with a head ref is the code host's to read (`pullHeadRefsPageOf`, held in the plugin's tests, where a `null` ref arrives and is refused rather than
+ * read as a branch named 'null'). What THIS tool does with the words the code host refuses in is to throw them under its own name: never a page read as empty, which would read every pushed branch as stranded.
  */
-test("MUTATION: a PR entry with no head ref is refused, not read as a branch named 'null'", () => {
-  const run = jsonRun(JSON.stringify([{ ref: null }]));
-  assert.throws(() => fetchAllPRHeadRefs({ run }), /entry 0 on page 1 has no head ref/);
+test("MUTATION: a page the code host cannot read is a thrown error carrying its words, never a silent empty Set", () => {
+  seedPulls(3);
+  for (const words of ["gh's PR list (page 1) was not JSON -- refusing to guess. First 200 chars: not json at all", "gh's PR list (page 1) was not an array -- refusing to guess. Got: {}", "PR entry 0 on page 1 has no head ref -- refusing to guess. Got: {\"ref\":null}"]) {
+    world().tail.pullwork.unreadablePages.set(1, words);
+    assert.throws(() => fetchAllPRHeadRefs(), (error: Error) => error.message === `stranded-branches: ${words}`);
+  }
 });
 
 test("CONTROL: genuinely zero PRs anywhere is accepted as a real, empty Set", () => {
-  const run = jsonRun(JSON.stringify([]));
-  const { refs, calls } = fetchAllPRHeadRefs({ run });
+  const { refs, calls } = fetchAllPRHeadRefs();
   assert.equal(refs.size, 0);
   assert.equal(calls, 1);
 });
@@ -272,15 +259,20 @@ test("CONTROL: genuinely zero PRs anywhere is accepted as a real, empty Set", ()
  * listing to pagination would have taken the guard out of the file entirely.
  */
 test("MUTATION (#321): fetchOpenPRs landing EXACTLY at the limit is refused, not read as 'a lot of open PRs'", () => {
-  const atCap = Array.from({ length: PR_LIST_LIMIT }, (_, i) => ({ number: i, headRefName: `agent/x${i}` }));
-  const run = jsonRun(JSON.stringify(atCap));
-  assert.throws(() => fetchOpenPRs({ run }), /exactly \d+ OPEN PRs.*cannot tell whether/s);
+  seedPulls(PR_LIST_LIMIT);
+  assert.throws(() => fetchOpenPRs(), /exactly \d+ OPEN PRs.*cannot tell whether/s);
 });
 
 test("CONTROL: one open PR short of the limit is a real, trustworthy count -- the guard must not fire early", () => {
-  const almost = Array.from({ length: PR_LIST_LIMIT - 1 }, (_, i) => ({ number: i, headRefName: `agent/x${i}` }));
-  const run = jsonRun(JSON.stringify(almost));
-  assert.equal(fetchOpenPRs({ run }).length, PR_LIST_LIMIT - 1);
+  seedPulls(PR_LIST_LIMIT - 1);
+  assert.equal(fetchOpenPRs().length, PR_LIST_LIMIT - 1);
+});
+
+test("fetchOpenPRs lists only the OPEN pull requests: a merged and a closed one are not swept", () => {
+  fakePull(world(), 1, { headRefName: "agent/open" });
+  fakePull(world(), 2, { headRefName: "agent/merged", merged: true, mergedAt: "2026-09-09T10:00:00Z" });
+  fakePull(world(), 3, { headRefName: "agent/closed", closedAt: "2026-09-09T11:00:00Z" });
+  assert.deepEqual(fetchOpenPRs().map((pr) => pr.headRefName), ["agent/open"]);
 });
 
 // --- branchesWithNoPR: pure ---
@@ -348,54 +340,49 @@ test("THE TWO-STAGE FILTER: a squash-merged branch is excluded by stage 1, befor
   } finally { cleanup(root, bareRoot); }
 });
 
-// --- The real CLI, end to end, with NO road to GitHub (#1409) ---
+// --- The CLI, end to end, with NO road to GitHub (#1409) ---
 //
 // It ran `node packages/agent-org/src/stranded-branches.ts` in this checkout and accepted ANY of its three exit codes, so its PR
 // listing paged the live pulls API on every local run (worker-capture's census on #1275) -- and with no token it
-// still passed, on exit 2. Now the CLI runs inside the fixture repo above, so its `git` reads that repo's own
-// refs, and every `gh` it calls reaches a stub first on PATH that logs its argv. Each documented exit code is
+// still passed, on exit 2. Now the CLI's `main` runs in-process inside the fixture repo above, so its `git` reads that repo's own
+// refs, and what it asks of GitHub is the fake code host's: the pull requests it is given. Each documented exit code is
 // driven and asserted EXACTLY, which the live version could not do.
 //
 // WHAT THIS CANNOT CATCH: the real pulls API's answer -- its paging and its `head.ref` field. The page walk and
-// its refusals are driven through an injected `run` above; the live read is the audit itself,
+// its refusals are driven above and in `plugins/github/rows/pullwork-rows.test.ts`; the live read is the audit itself,
 // `npm run branches:stranded`, which no local test runs.
 
 const SCRIPT = fileURLToPath(new URL("../stranded-branches.ts", import.meta.url));
-const PAGE_ONE = `api repos/${REPO}/pulls?state=all&per_page=${PR_PAGE_SIZE}&sort=created&direction=asc&page=1 `
-  + "--jq [.[] | {ref: .head.ref}]";
 
-/** The real CLI in `cwd`, with a `gh` first on PATH that logs its argv and prints `json` or fails. */
-function runCliWithStubGh(cwd: string, answer: { json: string } | { fail: string }) {
-  const stubDir = realpathSync(mkdtempSync(join(tmpdir(), "a11y-stranded-gh-")));
-  const log = join(stubDir, "argv.log");
-  const reply = "json" in answer ? `printf '%s' '${answer.json}'` : `echo '${answer.fail}' >&2; exit 1`;
-  writeFileSync(join(stubDir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${reply}\n`);
-  chmodSync(join(stubDir, "gh"), 0o755);
-  try {
-    const result = spawnSync(process.execPath, [SCRIPT], { cwd, encoding: "utf8",
-      env: { ...process.env, PATH: `${stubDir}${delimiter}${process.env.PATH ?? ""}` } });
-    const calls = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
-    return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls };
-  } finally {
-    rmSync(stubDir, { recursive: true, force: true });
-  }
+/** `main` over the fixture repo's git, with what it printed on each stream and the pages of pull requests it asked the code host for. */
+function runCli(cwd: string) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const pages: number[] = [];
+  const base = host.rows!;
+  substituteCodeHost({ ...host, rows: { ...base, pullHeadRefsPageOf: (request) => { pages.push(request.page); return base.pullHeadRefsPageOf(request); } } });
+  const run = (cmd: string, args: string[]) => rawExecFileSync(cmd, args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
+  const status = strandedMain([], { run, out: (line) => { out.push(line); }, err: (line) => { err.push(line); } });
+  return { status, stdout: out.join(""), stderr: err.join(""), pages };
 }
 
-test("the real CLI exits 2, CANNOT ASK, when `gh` cannot list PRs -- never a clean sweep over an unread board", () => {
+test("the CLI exits 2, CANNOT ASK, when the code host cannot list PRs -- never a clean sweep over an unread board", () => {
   const { root, bareRoot } = buildFixtureRepo();
   try {
-    const cli = runCliWithStubGh(root, { fail: "stub: no GitHub here" });
-    assert.deepEqual(cli.calls, [PAGE_ONE], "the positive control: the CLI's one `gh` call reached the stub, not GitHub");
+    world().failures.set("pullHeadRefsPageOf", new Error("stub: no GitHub here"));
+    const cli = runCli(root);
     assert.equal(cli.status, 2, cli.stderr);
     assert.match(cli.stderr, /COULD NOT AUDIT: stranded-branches: could not list PRs .*\(page 1\)/);
+    assert.match(cli.stderr, /stub: no GitHub here/, "with the code host's own words");
   } finally { cleanup(root, bareRoot); }
 });
 
-test("the real CLI exits 1 and NAMES the one branch that is ahead of main with no PR ever opened", () => {
+test("the CLI exits 1 and NAMES the one branch that is ahead of main with no PR ever opened", () => {
   const { root, bareRoot, strandedBranch, emptyBranch, squashBranch } = buildFixtureRepo();
   try {
-    const cli = runCliWithStubGh(root, { json: `[{"ref":"${squashBranch}"}]` });
-    assert.deepEqual(cli.calls, [PAGE_ONE], "one short page is the end of the walk");
+    fakePull(world(), 1, { headRefName: squashBranch, merged: true, mergedAt: "2026-09-09T10:00:00Z" });
+    const cli = runCli(root);
+    assert.deepEqual(cli.pages, [1], "one short page is the end of the walk");
     assert.equal(cli.status, 1, cli.stderr);
     assert.match(cli.stdout, /PR listing: 1 PR\(s\), 1 distinct head ref\(s\), over 1 REST call\(s\)/);
     assert.match(cli.stdout, new RegExp(`^CANDIDATE  ${strandedBranch}  \\+1 commit\\(s\\) ahead of main`, "m"));
@@ -404,11 +391,13 @@ test("the real CLI exits 1 and NAMES the one branch that is ahead of main with n
   } finally { cleanup(root, bareRoot); }
 });
 
-test("the real CLI exits 0 when every pushed branch has a PR or nothing main lacks", () => {
+test("the CLI exits 0 when every pushed branch has a PR or nothing main lacks", () => {
   const { root, bareRoot, strandedBranch, squashBranch } = buildFixtureRepo();
   try {
-    const cli = runCliWithStubGh(root, { json: `[{"ref":"${squashBranch}"},{"ref":"${strandedBranch}"}]` });
-    assert.deepEqual(cli.calls, [PAGE_ONE]);
+    fakePull(world(), 1, { headRefName: squashBranch, merged: true, mergedAt: "2026-09-09T10:00:00Z" });
+    fakePull(world(), 2, { headRefName: strandedBranch });
+    const cli = runCli(root);
+    assert.deepEqual(cli.pages, [1]);
     assert.equal(cli.status, 0, cli.stderr);
     assert.match(cli.stdout, /^OK {2}3 pushed branch\(es\) examined, none are stranded-branch candidates/m);
   } finally { cleanup(root, bareRoot); }
@@ -472,37 +461,30 @@ test("THE CLOSURE COMMENT SAYS STALE, NAMES THE BRANCH, AND SAYS IT IS KEPT", ()
   assert.doesNotMatch(comment, /reject(ed|ing) (this|the) work/i);
 });
 
+/** Two stale open pull requests (10 hours old at the sweep's clock, nothing waiting on them) in the code host's world. */
+const SWEEP_NOW = new Date("2026-09-08T10:00:00Z");
+const seedStale = (numbers: number[]) => numbers.forEach((number) => fakePull(world(), number, { headRefName: `agent/old-${number}`, createdAt: "2026-09-08T00:00:00Z", mergeStateStatus: "DIRTY" }));
+
 test("THE SWEEP IS DRY BY DEFAULT — closing is a thing somebody types", () => {
   // `corpus-prune-orphans.mjs` (#195) set this shape and it matters more here: a scheduled job that
   // forgot a flag must not close pull requests. Without `--close` this names what it WOULD close and
   // touches nothing.
-  const calls: string[][] = [];
-  const run = (_cmd: string, args: string[]) => {
-    calls.push(args);
-    return JSON.stringify([{ number: 9, headRefName: "agent/old", createdAt: "2026-09-08T00:00:00Z",
-      isDraft: false, labels: [], mergeStateStatus: "DIRTY" }]);
-  };
-  const closing = sweepPullRequests({ now: new Date("2026-09-08T10:00:00Z"), run });
+  seedStale([9]);
+  const closing = sweepPullRequests({ now: SWEEP_NOW });
   assert.equal(closing.length, 1, "a 10h-old PR nothing is waiting on is past the line");
-  assert.equal(calls.length, 1, "dry by default: one `gh pr list`, and no close and no comment");
-  assert.ok(!calls.some((a) => a.includes("close")), "nothing may be closed without --close");
+  assert.deepEqual(world().calls, [], "dry by default: one listing, and no close and no comment");
+  assert.equal(world().pulls.get(9)?.closedAt ?? null, null, "nothing may be closed without --close");
+  assert.deepEqual(world().pulls.get(9)?.comments, []);
 });
 
-test("WITH --close IT COMMENTS FIRST, CLOSES SECOND, AND NEVER DELETES THE BRANCH", () => {
-  const calls: string[][] = [];
-  const run = (_cmd: string, args: string[]) => {
-    calls.push(args);
-    return JSON.stringify([{ number: 9, headRefName: "agent/old", createdAt: "2026-09-08T00:00:00Z",
-      isDraft: false, labels: [], mergeStateStatus: "DIRTY" }]);
-  };
-  sweepPullRequests({ now: new Date("2026-09-08T10:00:00Z"), close: true, run });
-  const verbs = calls.map((a) => a[1]);
-  assert.deepEqual(verbs, ["list", "comment", "close"],
+test("WITH --close IT COMMENTS FIRST, CLOSES SECOND, AND LEAVES THE BRANCH TO THE PLUGIN'S `pr close` (no --delete-branch: plugins/github/rows/pullwork-rows.test.ts)", () => {
+  seedStale([9]);
+  sweepPullRequests({ now: SWEEP_NOW, close: true });
+  assert.deepEqual(world().calls, ["commentOnCheckoutPull #9", "closeCheckoutPull #9"],
     "the comment must land BEFORE the close, or a reader finds a closed PR with no explanation");
-  // THE SAFETY PROPERTY IS AN ABSENT FLAG, which is invisible in review unless something asserts it.
-  // #172's branch was kept and its work re-derived from it; a sweep that deleted would have destroyed it.
-  assert.ok(!calls.some((a) => a.includes("--delete-branch")),
-    "the branch must survive: `gh pr close` without --delete-branch is the whole safety property");
+  const stale = prForDecision({ number: 9, headRefName: "agent/old-9", createdAt: "2026-09-08T00:00:00Z", isDraft: false, labels: [], mergeStateStatus: "DIRTY" }, SWEEP_NOW);
+  assert.deepEqual(world().pulls.get(9)?.comments, [staleClosureComment(stale, decideForPR(stale, { maxAgeHours: 4 }).why)], "the comment says it is stale, why, and that the branch is kept");
+  assert.notEqual(world().pulls.get(9)?.closedAt ?? null, null, "and the pull request is closed");
 });
 
 test("checksGreen is NOT read from statusCheckRollup — that field unions superseded runs", () => {
@@ -583,27 +565,29 @@ test("the fixture says which rows are RECORDED and which are CONSTRUCTED", () =>
 //
 // The closure comment and the close were two unguarded calls in a loop, so a throw on either escaped `main` and Node
 // exited 1, this script's CANDIDATE(S), with PRs already commented on or closed. Driven through `main` in-process
-// with `run` injected: a PATH stub for `--close` would turn a missed stub into a real `gh pr close`.
+// over the fake code host: a write the case names is refused (`onWrite`), every write is recorded as it is attempted.
 
 const FIRST_PR = 9;
 const SECOND_PR = 10;
-const stalePr = (number: number) => ({ number, headRefName: `agent/old-${number}`, createdAt: "2026-09-08T00:00:00Z",
-  isDraft: false, labels: [], mergeStateStatus: "DIRTY" });
 
-/** `main --close` over two stale PRs; the one `gh` call that throws is named `"<verb> <number>"`, or none. */
+/** `main --close` over two stale PRs; the one call that throws is named `"<verb> <number>"` (`list`, `comment 9`, `close 10`), or none. */
 function driveClose(failAt: string | null) {
+  host = createFakeCodeHost();
+  substituteCodeHost(host);
+  seedStale([FIRST_PR, SECOND_PR]);
   const calls: string[] = [];
   const errs: string[] = [];
   let code: number | undefined;
   let thrown: unknown = null;
-  const run = (cmd: string, args: string[]) => {
-    const call = args[1] === "list" ? "list" : `${args[1]} ${args[2]}`;
+  if (failAt === "list") world().failures.set("openPullsForSweep", new Error("Command failed: gh pr list"));
+  calls.push("list");
+  world().tail.pullwork.onWrite = (line) => {
+    const call = line.replace("commentOnCheckoutPull #", "comment ").replace("closeCheckoutPull #", "close ");
     calls.push(call);
-    if (call === failAt) throw new Error(`Command failed: ${cmd} pr ${call}`);
-    return args[1] === "list" ? JSON.stringify([stalePr(FIRST_PR), stalePr(SECOND_PR)]) : "";
+    if (call === failAt) throw new Error(`Command failed: gh pr ${call}`);
   };
   try {
-    code = strandedMain(["--close"], { run, out: () => {}, err: (l: string) => { errs.push(l); } });
+    code = strandedMain(["--close"], { out: () => {}, err: (l: string) => { errs.push(l); } });
   } catch (error) {
     thrown = error;
   }
@@ -621,7 +605,7 @@ test("#1480 ACCEPTANCE: a close that FAILS after its comment landed exits LANDED
   assert.match(r.errs[0], /Closed with a comment, branch kept: #9\./, "it names the PR that closed");
   assert.match(r.errs[0], /#10 has its closure comment but is still OPEN\. Run only `gh pr close 10`/,
     "and the one command that finishes the job without a second comment");
-  assert.match(r.errs[0], /Command failed: gh pr close 10/, "with the spawn's own message");
+  assert.match(r.errs[0], /Command failed: gh pr close 10/, "with the failure's own message");
 });
 
 test("#1480: a COMMENT that fails after an earlier close exits LANDED_THEN_FAILED and says re-running --close is safe", () => {

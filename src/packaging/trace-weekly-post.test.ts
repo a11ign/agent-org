@@ -1,6 +1,6 @@
 // no-token: gh -- `gh` and `agent-org` are fake executables on a PATH this file builds; the real script runs under bash against them and nothing reaches GitHub or the host
 /**
- * a11ign/a11ign#3627: the weekly token-efficiency post (`host/trace-weekly-post.sh`, `trace-weekly.{service,timer}.in`).
+ * a11ign/a11ign#3627: the weekly token-efficiency post (`plugins/github/host/trace-weekly-post.sh`, `host/trace-weekly.{service,timer}.in`).
  *
  * The script is run for real, under bash, with a fake `gh` that records every comment it is asked to post and a fake `agent-org` that prints a
  * fixture report. The report lines that matter (`WEEK ...`, the GitHub footer) are COPIED from a real `trace -- --aggregate` run of 2026-10-05, so
@@ -17,7 +17,9 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // Resolved by path and NOT imported from `host-units.ts`: that import would charge this file `History: full` (work-gate.test.ts, #2174). The tool-form test is in host-units.test.ts for that reason.
 const SHIPPED_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
-const SCRIPT = join(SHIPPED_DIR, "trace-weekly-post.sh");
+// The script runs `gh`, so it is the GitHub plugin's (A11-160, step 9); the clock and the service stay in `host/`.
+const PLUGIN_HOST_DIR = fileURLToPath(new URL("../../plugins/github/host/", import.meta.url));
+const SCRIPT = join(PLUGIN_HOST_DIR, "trace-weekly-post.sh");
 const COMMENT_LIMIT = 65_536; // GitHub's limit on a comment, in characters
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const CLOCK = (name: string) => readFileSync(join(SHIPPED_DIR, name), "utf8");
@@ -230,7 +232,7 @@ test("#3627: the timer fires Mondays at 07:30 London, catches up when asleep, an
 test("#3627: the service is a oneshot that runs the script as the org's account, and nothing but the timer starts it", () => {
   const service = CLOCK("trace-weekly.service.in");
   assert.match(service, /^Type=oneshot$/m);
-  assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/trace-weekly-post\.sh$/m);
+  assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/plugins\/github\/host\/trace-weekly-post\.sh$/m);
   assert.match(service, /^Environment=GH_CONFIG_DIR=@@workersDir@@\/gh$/m, "the workers account, never the person's");
   assert.match(service, /^TimeoutStartSec=\d+$/m, "a hung run fails rather than holding next Monday's slot");
   assert.doesNotMatch(service, /^\[Install\]/m, "an [Install] would run it at every boot");

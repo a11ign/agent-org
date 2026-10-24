@@ -13,6 +13,7 @@ import { decide, recordOutcome, type DecisionDeps, type Question } from "./decis
 import { regionEntries } from "./engineer-route.ts";
 import { splitRegionEntry } from "./region-paths.ts";
 import type { Gh } from "./ci-failure-class.ts";
+import { rows } from "./plugins/rows.ts";
 
 export const DEPTHS = Object.freeze(["light", "normal", "full"] as const);
 export type Depth = (typeof DEPTHS)[number];
@@ -112,10 +113,11 @@ const regionPaths = (body: string): string[] => regionEntries(body).map((entry) 
  * were not all read could hide the one gate-bearing path that makes it `full`, and the provider must never be asked to lighten a review it has seen part of.
  */
 export function readDepthState({ repo, number }: { repo: string; number: number }, gh: Gh): DepthState | null {
-  const pull = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}`]));
-  if (Number(pull.changed_files) > FILES_PAGE) return null;
-  const files: { filename: string }[] = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}/files?per_page=${FILES_PAGE}`]));
-  const closed = [...String(pull.body ?? "").matchAll(CLOSES)].map((match) => `${match[1] ?? repo}/issues/${match[2]}`);
-  const closesPaths = [...new Set(closed)].flatMap((row) => regionPaths(String(JSON.parse(gh(["api", `repos/${row}`])).body ?? "")));
-  return { paths: files.map((file) => file.filename), added: Number(pull.additions), removed: Number(pull.deletions), title: String(pull.title ?? ""), closesPaths };
+  const code = rows();
+  const pull = code.pullDepthFactsOf({ repo, number, run: gh });
+  if (pull.changedFiles > FILES_PAGE) return null;
+  const files = code.pullFilenamesPageOf({ repo, number, perPage: FILES_PAGE, run: gh });
+  const closed = new Map([...pull.body.matchAll(CLOSES)].map((match) => [`${match[1] ?? repo}/issues/${match[2]}`, { repo: match[1] ?? repo, number: match[2] }]));
+  const closesPaths = [...closed.values()].flatMap((row) => regionPaths(code.restRowBodyOf({ repo: row.repo, number: row.number, run: gh })));
+  return { paths: files, added: pull.additions, removed: pull.deletions, title: pull.title, closesPaths };
 }

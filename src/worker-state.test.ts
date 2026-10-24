@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh`, `git` or `herdr` is run; the rows, pull requests, listing and clock are fixtures, `gh` is a recording seam, and the only files written are in temporary directories (a11ign/agent-org#460)
+// no-token: gh -- no `gh`, `git` or `herdr` is run; the rows, pull requests, listing and clock are fixtures, the rows `blocked` writes are the fake code host's, and the only files written are in temporary directories (a11ign/agent-org#460)
 // #460: A WORKER'S TURN ENDS WITH A DECLARED STATE, AND AN IDLE WORKER WITHOUT A FRESH ONE IS STALLED.
 //
 // `agent-org worker:state <state>` is the one command; the gate reads what it wrote with no model. Four things are shown here, each beside its twin:
@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
@@ -27,6 +27,40 @@ import {
   type Declaration, type RowComment, type RowFact, type RowLook, type DoneWhenReading, type DeclarationReading,
 } from "./worker-state.ts";
 import { MANAGER_SEATS } from "./decided-by.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./host-config.ts";
+
+afterEach(() => forgetActivation());
+
+/** What `blocked` writes goes to the code host, whose fake acts on its own state: the executor handed to `applyBlocked` is never run. */
+const NO_RUN = (): string => {
+  throw new Error("the fake acts on its own state: no run is made");
+};
+
+/** One operation `applyBlocked` asked of the code host, without the executor it was handed. */
+type Asked = { op: string; [field: string]: unknown };
+
+/**
+ * The fake code host, installed, whose own repository is `repo` and which holds the open rows `rows` (number to the labels it carries), and the writes `blocked` asks of it, in order. `asked` records an
+ * operation when it is CALLED, so a write the code host refused is recorded too.
+ */
+function writableHost(repo: string, rows: Record<number, string[]> = { 12: [], 460: [] }) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = repo;
+  for (const [number, labels] of Object.entries(rows)) world.rows.set(Number(number), fakeRow(world, Number(number), { labels }));
+  const asked: Asked[] = [];
+  const operations = host.rows as unknown as Record<string, (request: { run?: unknown }) => unknown>;
+  for (const op of ["ensureTriageLabel", "addLabelToRowIn", "commentOnIssue"]) {
+    const real = operations[op];
+    operations[op] = ({ run: _run, ...request }) => { asked.push({ op, ...request }); return real({ ...request, run: NO_RUN }); };
+  }
+  substituteCodeHost(host);
+  return { world, asked };
+}
+const opsOf = (asked: Asked[]): string[] => asked.map(({ op }) => op);
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-10T09:00:00Z");
@@ -318,28 +352,23 @@ test("a declaration older than the worker's last turn, or made before its claim,
 // --- 3. `blocked` applies the label, and the excuse ends when it is removed -----------------------------------------------
 
 test("`blocked` APPLIES the answer label and posts the reason; the excuse stands while the label does and ends when it is removed", () => {
-  const labels = new Set<string>();
-  const calls: string[][] = [];
-  const gh = (args: string[]): string => {
-    calls.push(args);
-    const flag = args.indexOf("--add-label");
-    if (flag >= 0) labels.add(args[flag + 1]);
-    return "";
-  };
+  const { world, asked } = writableHost("a11ign/agent-org");
+  const row = world.rows.get(460)!;
   const parsed = parse("blocked", "460", "the", "spelling", "is", "ambiguous");
   assert.ok("declaration" in parsed);
-  const { lines } = applyBlocked(parsed.declaration, { gh, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) });
+  const { lines } = applyBlocked(parsed.declaration, { gh: NO_RUN, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) });
   const wanted = `${ANSWER_PREFIX}${DEFAULT_ANSWERER}`;
-  assert.deepEqual([...labels], [wanted], "the label the gate reads as `answer:<session>`");
-  assert.deepEqual(calls.map((c) => c.slice(0, 2).join(" ")), ["label create", "issue edit", "issue comment"], "the label exists before it is applied, and the reason is posted");
-  assert.ok(calls[2].join(" ").includes("the spelling is ambiguous"), "the comment is the reason");
+  assert.deepEqual(row.labels, [wanted], "the label the gate reads as `answer:<session>`");
+  assert.deepEqual(world.labelsCreated, [wanted], "the label exists in the repository (the fake refuses to apply one that does not)");
+  assert.deepEqual(opsOf(asked), ["ensureTriageLabel", "addLabelToRowIn", "commentOnIssue"], "the label exists before it is applied, and the reason is posted");
+  assert.ok(row.comments.at(-1)?.body.includes("the spelling is ambiguous"), "the comment is the reason");
   assert.match(lines.join("\n"), new RegExp(wanted));
 
   const dir = dirOf(parsed.declaration, 5);
-  const withLabel = { row: rowOf(460, "worker-9", [...labels]), stateDir: dir };
+  const withLabel = { row: rowOf(460, "worker-9", [...row.labels]), stateDir: dir };
   assert.deepEqual(nudgedAt(withLabel), [], "the row carries the label: an answer is owed, and the worker is not stalled");
-  labels.delete(wanted);
-  const removed = { row: rowOf(460, "worker-9", [...labels]), stateDir: dir };
+  row.labels = row.labels.filter((label) => label !== wanted);
+  const removed = { row: rowOf(460, "worker-9", [...row.labels]), stateDir: dir };
   assert.equal(nudgedAt(removed)[0], M, "the same declaration with the label removed: the excuse ended with it");
   const order = tickAt(M, removed, { 460: { session: "worker-9", idleSince: T0 } })[0];
   assert.match(order.prompt, /NO LONGER TRUE/);
@@ -348,10 +377,12 @@ test("`blocked` APPLIES the answer label and posts the reason; the excuse stands
 test("`blocked` whose label GitHub refused writes NOTHING: the exit is 2 and the row is not read as blocked", async () => {
   const dir = scratch("refused-label");
   try {
-    const gh = (): string => { throw Object.assign(new Error("HTTP 403"), { stderr: "HTTP 403: forbidden\n" }); };
+    const { world } = writableHost("a11ign/agent-org");
+    world.failures.set("ensureTriageLabel", Object.assign(new Error("HTTP 403"), { stderr: "HTTP 403: forbidden\n" }));
     const parsed = parse("blocked", "460", "why");
     assert.ok("declaration" in parsed);
-    assert.throws(() => applyBlocked(parsed.declaration, { gh, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) }), /403/);
+    assert.throws(() => applyBlocked(parsed.declaration, { gh: NO_RUN, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) }), /403/);
+    assert.deepEqual([world.rows.get(460)!.labels, world.rows.get(460)!.comments], [[], []], "and nothing was labelled or posted on the row");
     assert.deepEqual(readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.size, 0, "`main` writes only after the label stood, so nothing is on disk");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -374,21 +405,20 @@ const blockedComment = (session: string, reason: string, createdAt: string, id: 
 const seatComment = (seat: string, createdAt: string, id: number, text = "Ruled: wait for the spelling."): RowComment => ({
   id: `IC_${id}`, url: row460(`#issuecomment-${id}`), createdAt, body: `${text}\n\n<!-- decided-by: ${seat} run: 4f2a -->`,
 });
-/** A second `blocked` declaration by `SESSION_460` for `reason`, read against the row's `comments` the way `main` reads them: what it wrote through `gh`, and what it printed. */
-function redeclare(reason: string, comments: RowComment[]): { calls: string[][]; lines: string[] } {
-  const calls: string[][] = [];
+/** A second `blocked` declaration by `SESSION_460` for `reason`, read against the row's `comments` the way `main` reads them: what it asked the code host to write, and what it printed. */
+function redeclare(reason: string, comments: RowComment[]): { written: string[]; lines: string[] } {
+  const { asked } = writableHost("a11ign/agent-org");
   const parsed = parseDeclaration(["blocked", "460", ...reason.split(" ")], { session: SESSION_460, now: T0 });
   assert.ok("declaration" in parsed, JSON.stringify(parsed));
   const resolved = resolveBlockedRow(parsed.declaration, { trackers: TRACKERS, look: byNumber({ "a11ign/agent-org#460": { state: "OPEN", labels: [], comments } }), sessionLabel: `${SESSION_PREFIX}${SESSION_460}` });
   assert.ok("declaration" in resolved, JSON.stringify(resolved));
-  const { lines } = applyBlocked(resolved.declaration, { gh: fakeGh(calls), tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]), comments: resolved.comments });
-  return { calls, lines };
+  const { lines } = applyBlocked(resolved.declaration, { gh: NO_RUN, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]), comments: resolved.comments });
+  return { written: opsOf(asked), lines };
 }
-const labelled = (calls: string[][]): string[] => calls.map((c) => c.slice(0, 2).join(" "));
 
 test("POSITIVE CONTROL: a second `blocked` for a reason a manager has ruled on since the worker's own BLOCKED comment writes NO label and NO comment, and names the ruling", () => {
-  const { calls, lines } = redeclare(REASON, [blockedComment(SESSION_460, REASON, OWN_AT, 1), seatComment("product-manager", RULED_AT, 2)]);
-  assert.deepEqual(calls, [], "nothing is written: a ruling is not answered by a repeat, and the label is the contract");
+  const { written, lines } = redeclare(REASON, [blockedComment(SESSION_460, REASON, OWN_AT, 1), seatComment("product-manager", RULED_AT, 2)]);
+  assert.deepEqual(written, [], "nothing is written: a ruling is not answered by a repeat, and the label is the contract");
   assert.equal(lines.length, 1, "one line is printed");
   assert.ok(lines[0].includes(row460("#issuecomment-2")), "the line names the ruling's comment");
   assert.ok(lines[0].includes(RULED_AT), "and the time it was given");
@@ -397,12 +427,12 @@ test("POSITIVE CONTROL: a second `blocked` for a reason a manager has ruled on s
 test("NEGATIVE CONTROLS: the ruling stops ONLY the repeat it answers: a different reason, a ruling older than the BLOCKED comment, a worker's own later comment, and no BLOCKED of this session are each labelled and commented as before", () => {
   const own = blockedComment(SESSION_460, REASON, OWN_AT, 1);
   const ruled = seatComment("product-manager", RULED_AT, 2);
-  const three = ["label create", "issue edit", "issue comment"];
-  assert.deepEqual(labelled(redeclare("which label is it?", [own, ruled]).calls), three, "a DIFFERENT reason is declared as today");
-  assert.deepEqual(labelled(redeclare(REASON, [seatComment("product-manager", "2026-10-15T15:00:00Z", 3), own]).calls), three, "a ruling OLDER than the last BLOCKED comment answers nothing new");
-  assert.deepEqual(labelled(redeclare(REASON, [own, seatComment("worker-agent-org-9", RULED_AT, 4, "quoting nobody")]).calls), three, "a comment by a WORKER is no ruling");
-  assert.deepEqual(labelled(redeclare(REASON, [blockedComment("worker-agent-org-9", REASON, OWN_AT, 5), ruled]).calls), three, "another session's BLOCKED for the same reason is not this worker's own");
-  assert.deepEqual(labelled(redeclare(REASON, [ruled]).calls), three, "with no BLOCKED comment of its own there is nothing the ruling could answer");
+  const three = ["ensureTriageLabel", "addLabelToRowIn", "commentOnIssue"];
+  assert.deepEqual(redeclare("which label is it?", [own, ruled]).written, three, "a DIFFERENT reason is declared as today");
+  assert.deepEqual(redeclare(REASON, [seatComment("product-manager", "2026-10-15T15:00:00Z", 3), own]).written, three, "a ruling OLDER than the last BLOCKED comment answers nothing new");
+  assert.deepEqual(redeclare(REASON, [own, seatComment("worker-agent-org-9", RULED_AT, 4, "quoting nobody")]).written, three, "a comment by a WORKER is no ruling");
+  assert.deepEqual(redeclare(REASON, [blockedComment("worker-agent-org-9", REASON, OWN_AT, 5), ruled]).written, three, "another session's BLOCKED for the same reason is not this worker's own");
+  assert.deepEqual(redeclare(REASON, [ruled]).written, three, "with no BLOCKED comment of its own there is nothing the ruling could answer");
 });
 
 test("`rulingOn` takes every manager seat's marker as a ruling, and the newest manager comment decides (twin: a newer comment by another seat is still the manager's)", () => {
@@ -508,14 +538,15 @@ test("a bare number that is a row in two trackers is read from the CLAIM: the on
 });
 
 test("POSITIVE CONTROL: the version this replaces wrote the first tracker's row, closed, which is the row the product-manager was woken on", () => {
-  const calls: string[][] = [];
-  applyBlocked(blockedOn("460"), { gh: (args) => (calls.push(args), ""), tracker: TRACKERS[0].repo, answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) });
-  assert.ok(calls.some((args) => args[0] === "issue" && args.includes("a11ign/a11ign")), "the old call targeted a11ign/a11ign#460");
-  const calls2: string[][] = [];
+  const first = writableHost(TRACKERS[0].repo);
+  applyBlocked(blockedOn("460"), { gh: NO_RUN, tracker: TRACKERS[0].repo, answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) });
+  assert.ok(first.asked.some(({ repo }) => repo === "a11ign/a11ign"), "the old call targeted a11ign/a11ign#460");
+  const second = writableHost("a11ign/agent-org");
   const result = resolve("460", BOTH);
   assert.ok("declaration" in result);
-  applyBlocked(result.declaration, { gh: (args) => (calls2.push(args), ""), tracker: result.declaration.repo as string, answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) });
-  assert.ok(calls2.length === 3 && calls2.every((args) => args.includes("a11ign/agent-org") && !args.includes("a11ign/a11ign")), JSON.stringify(calls2));
+  applyBlocked(result.declaration, { gh: NO_RUN, tracker: result.declaration.repo as string, answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]) });
+  assert.ok(second.asked.length === 3 && second.asked.every(({ repo }) => repo === "a11ign/agent-org"), JSON.stringify(second.asked));
+  assert.deepEqual(first.world.rows.get(460)!.labels, [`${ANSWER_PREFIX}${DEFAULT_ANSWERER}`], "and the row it labelled is the first tracker's");
 });
 
 test("a bare number in two trackers with NEITHER carrying the claim label is REFUSED, naming both (twin: the keyed spelling resolves)", () => {
@@ -560,11 +591,6 @@ const waitingOn = (row: string, on: string): Declaration => {
 };
 const resolveOn = (row: string, on: string, table: Record<string, RowFact>) =>
   resolveBlockedRow(waitingOn(row, on), { trackers: TRACKERS, look: byNumber(table), sessionLabel: `${SESSION_PREFIX}worker-agent-org-12` });
-/** A `gh` fixture: every call is recorded and answered with nothing. The edge is NOT a `gh` call here: the ticket port writes it (see `fakeWriter`). */
-const fakeGh = (calls: string[][]) => (args: string[]): string => {
-  calls.push(args);
-  return "";
-};
 /** A port writer fixture: each edge is recorded, and `failing` makes it throw as GitHub refusing the write does. The real writer is `githubTicketAdapter`, tested in `ticket-port.test.ts`. */
 const fakeWriter = (edges: { ref: ItemRef; blocker: ItemRef }[], failing = false): BlockerWriter => ({
   addBlocker(ref, blocker) {
@@ -576,37 +602,38 @@ const fakeWriter = (edges: { ref: ItemRef; blocker: ItemRef }[], failing = false
 const WRITTEN_EDGE = { ref: { tracker: TRACKER, scope: "a11ign/agent-org", id: 12 }, blocker: { tracker: TRACKER, scope: "a11ign/agent-org", id: 7 } };
 
 test("POSITIVE CONTROL: `blocked 12 --on 7` with 7 open writes the native edge and posts the reason, and makes NO label call", () => {
-  const calls: string[][] = [];
+  const { asked } = writableHost("a11ign/agent-org");
   const edges: { ref: ItemRef; blocker: ItemRef }[] = [];
   const result = resolveOn("12", "7", ON_OPEN);
   assert.ok("declaration" in result, JSON.stringify(result));
   assert.equal(result.declaration.onRepo, "a11ign/agent-org", "the row it waits on is resolved, and its repository is kept");
-  const { lines, declaration } = applyBlocked(result.declaration, { gh: fakeGh(calls), tracker: result.declaration.repo as string, answerPrefix: ANSWER_PREFIX, writer: fakeWriter(edges) });
+  const { lines, declaration } = applyBlocked(result.declaration, { gh: NO_RUN, tracker: result.declaration.repo as string, answerPrefix: ANSWER_PREFIX, writer: fakeWriter(edges) });
   assert.deepEqual(edges, [WRITTEN_EDGE], "the native edge is written through the port: 12 is blocked by 7, each in the repository it is in");
-  assert.equal(calls.length, 1, "the reason is the only `gh` call: the edge is the port's write, and worker-state.ts names no edge call");
-  assert.deepEqual(calls[0].slice(0, 2), ["issue", "comment"], "the reason is posted");
-  assert.ok(calls[0].join(" ").includes("the decision") && calls[0].join(" ").includes("a11ign/agent-org#7"), "the comment is the reason, and names what it waits on");
-  assert.ok(!calls.some((args) => args[0] === "label" || args.includes("--add-label")), "NO label call: nobody is owed an answer when the edge is the answer");
+  assert.deepEqual(opsOf(asked), ["commentOnIssue"], "the reason is the only write asked of the code host: the edge is the port's write, and worker-state.ts names no edge call");
+  const body = String(asked[0].body);
+  assert.ok(body.includes("the decision") && body.includes("a11ign/agent-org#7"), "the comment is the reason, and names what it waits on");
+  assert.deepEqual(asked.filter(({ op }) => op !== "commentOnIssue"), [], "NO label call: nobody is owed an answer when the edge is the answer");
   assert.equal(declaration.to, undefined, "nothing on disk owes an answer");
   assert.equal(declaration.on, 7);
   assert.match(lines.join("\n"), /native edge, no label/);
 });
 
-test("NEGATIVE CONTROL: `blocked 12` with NO `--on` keeps the label and the comment, with the calls pinned as literals", () => {
-  const calls: string[][] = [];
+test("NEGATIVE CONTROL: `blocked 12` with NO `--on` keeps the label and the comment, with the writes pinned as the requests they are", () => {
+  const { asked, world } = writableHost("a11ign/agent-org");
   const parsed = parseDeclaration(["blocked", "12", "which", "label", "is", "it?"], { session: "worker-agent-org-12", now: T0 });
   assert.ok("declaration" in parsed);
   const resolved = resolveBlockedRow(parsed.declaration, { trackers: TRACKERS, look: byNumber(ON_OPEN), sessionLabel: `${SESSION_PREFIX}worker-agent-org-12` });
   assert.ok("declaration" in resolved, JSON.stringify(resolved));
   const edges: { ref: ItemRef; blocker: ItemRef }[] = [];
-  const { declaration } = applyBlocked(resolved.declaration, { gh: fakeGh(calls), tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter(edges) });
+  const { declaration } = applyBlocked(resolved.declaration, { gh: NO_RUN, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter(edges) });
   const label = `${ANSWER_PREFIX}${DEFAULT_ANSWERER}`;
-  assert.deepEqual(calls, [
-    ["label", "create", label, "--repo", "a11ign/agent-org", "--force", "--description", "a session owes this row an answer"],
-    ["issue", "edit", "12", "--repo", "a11ign/agent-org", "--add-label", label],
-    ["issue", "comment", "12", "--repo", "a11ign/agent-org", "--body",
-      `BLOCKED (\`worker-agent-org-12\`, declared with \`worker:state\`): which label is it?\n\nOwed by \`${DEFAULT_ANSWERER}\`; the row carries \`${label}\`.`],
-  ], "the label is created, applied, and the reason posted, with the calls pinned as literals");
+  const body = `BLOCKED (\`worker-agent-org-12\`, declared with \`worker:state\`): which label is it?\n\nOwed by \`${DEFAULT_ANSWERER}\`; the row carries \`${label}\`.`;
+  assert.deepEqual(asked, [
+    { op: "ensureTriageLabel", repo: "a11ign/agent-org", label, description: "a session owes this row an answer" },
+    { op: "addLabelToRowIn", repo: "a11ign/agent-org", number: 12, label },
+    { op: "commentOnIssue", repo: "a11ign/agent-org", issue: "12", body },
+  ], "the label is created, applied, and the reason posted, with the requests pinned as literals (the argument lists they become are the plugin's tests')");
+  assert.deepEqual([world.rows.get(12)!.labels, world.rows.get(12)!.comments.map((comment) => comment.body)], [[label], [body]], "and they landed on the row");
   assert.deepEqual(edges, [], "and no edge is written: without `--on` the port is never asked");
   assert.equal(declaration.to, DEFAULT_ANSWERER);
   assert.equal(declaration.on, undefined);
@@ -629,19 +656,19 @@ test("NEGATIVE CONTROL: a failed edge write FALLS BACK to the label, so the work
   const label = `${ANSWER_PREFIX}${DEFAULT_ANSWERER}`;
   const result = resolveOn("12", "7", ON_OPEN);
   assert.ok("declaration" in result);
-  const refusedCalls: string[][] = [];
+  const refused = writableHost("a11ign/agent-org");
   const refusedEdges: { ref: ItemRef; blocker: ItemRef }[] = [];
-  const edgeRefused = applyBlocked(result.declaration, { gh: fakeGh(refusedCalls), tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter(refusedEdges, true) });
+  const edgeRefused = applyBlocked(result.declaration, { gh: NO_RUN, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter(refusedEdges, true) });
   assert.deepEqual(refusedEdges, [], "the edge was attempted and refused, so none is recorded");
-  assert.ok(refusedCalls.some((args) => args[0] === "issue" && args[1] === "edit" && args.includes(label)), "the label is applied after the edge is refused");
+  assert.deepEqual(refused.world.rows.get(12)!.labels, [label], "the label is applied after the edge is refused");
   assert.equal(edgeRefused.declaration.to, DEFAULT_ANSWERER, "the declaration on disk is the labelled one, owed by the default answerer");
   assert.equal(edgeRefused.declaration.on, undefined, "and it carries no edge the gate would read as a block nobody answers");
   assert.match(edgeRefused.lines.join("\n"), /could not write the blockedBy edge on #7 of a11ign\/agent-org .*labelled instead/);
 
-  const edgeOk: string[][] = [];
+  const edgeOk = writableHost("a11ign/agent-org");
   const okEdges: { ref: ItemRef; blocker: ItemRef }[] = [];
-  const ok = applyBlocked(result.declaration, { gh: fakeGh(edgeOk), tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter(okEdges) });
-  assert.ok(!edgeOk.some((args) => args.includes(label)), "twin: when the edge is written, no label is applied");
+  const ok = applyBlocked(result.declaration, { gh: NO_RUN, tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter(okEdges) });
+  assert.deepEqual(edgeOk.world.rows.get(12)!.labels, [], "twin: when the edge is written, no label is applied");
   assert.deepEqual(okEdges, [WRITTEN_EDGE], "twin: and the edge is the one written");
   assert.equal(ok.declaration.on, 7);
 });
@@ -676,19 +703,21 @@ test("no row of that number, and a row that could not be read, are REFUSED by na
   const refusal = refusalNamed(throwing);
   assert.equal(refusal?.refused, "unreadable-row");
   assert.ok(refusal?.why.includes("HTTP 502"), refusal?.why);
-  const noComments = resolveBlockedRow(blockedOn("460"), { trackers: TRACKERS, look: ghRowLook(() => '{"state":"OPEN","labels":[]}'), sessionLabel: CLAIM_LABEL });
-  assert.equal(refusalNamed(noComments)?.refused, "unreadable-row", "a reply with no comments field refuses the row: no ruling could be read, so nothing is labelled");
+  const { world } = writableHost("a11ign/agent-org");
+  world.failures.set("rowWithCommentsOf", new Error("gh issue view of #460 of a11ign/a11ign carried no comments field, so no ruling can be read"));
+  const noComments = resolveBlockedRow(blockedOn("460"), { trackers: TRACKERS, look: ghRowLook(NO_RUN), sessionLabel: CLAIM_LABEL });
+  assert.equal(refusalNamed(noComments)?.refused, "unreadable-row", "a row the code host could not read in full (no comments field: no ruling could be read) refuses the row, so nothing is labelled");
 });
 
-test("`ghRowLook`: an issue read as its state, labels, comments and body in ONE call, no such issue as null, and any other failure thrown", () => {
-  const answering = (reply: string | Error) => (): string => { if (reply instanceof Error) throw reply; return reply; };
-  const commented = '{"state":"CLOSED","body":"B","labels":[{"name":"x"}],"comments":[{"id":"IC_1","url":"u","body":"b","createdAt":"t","author":{"login":"a"}}]}';
-  assert.deepEqual(ghRowLook(answering(commented))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"], comments: [{ id: "IC_1", url: "u", body: "b", createdAt: "t" }], body: "B" });
-  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[],"comments":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [], comments: [], body: "" });
-  assert.throws(() => ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), /no comments field/, "a reply with no comments field THROWS: no comments would read as no ruling, which fails open");
-  const missing = Object.assign(new Error("gh failed"), { stderr: "GraphQL: Could not resolve to an Issue with the number of 9999." });
-  assert.equal(ghRowLook(answering(missing))("a11ign/a11ign", 9999), null);
-  assert.throws(() => ghRowLook(answering(Object.assign(new Error("gh failed"), { stderr: "HTTP 502" })))("a11ign/a11ign", 460), /gh failed/);
+test("`ghRowLook` asks the code host for the row (state, labels, comments, body): a row it holds as the look reads it, no such issue as null, and any other refusal thrown", () => {
+  const { world } = writableHost("a11ign/a11ign", {});
+  world.rows.set(460, fakeRow(world, 460, { state: "CLOSED", labels: ["x"], body: "B", comments: [{ id: 41, body: "b", createdAt: "2026-10-10T08:00:00Z" }] }));
+  world.rows.set(461, fakeRow(world, 461));
+  assert.deepEqual(ghRowLook(NO_RUN)("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"], comments: [{ id: "41", url: "https://github.com/a11ign/a11ign/issues/460#issuecomment-41", body: "b", createdAt: "2026-10-10T08:00:00Z" }], body: "B" });
+  assert.deepEqual(ghRowLook(NO_RUN)("a11ign/a11ign", 461), { state: "OPEN", labels: [], comments: [], body: "" });
+  assert.equal(ghRowLook(NO_RUN)("a11ign/a11ign", 9999), null, "no such issue");
+  world.failures.set("rowWithCommentsOf", new Error("HTTP 502"));
+  assert.throws(() => ghRowLook(NO_RUN)("a11ign/a11ign", 460), /HTTP 502/);
 });
 
 test("a `blocked` declaration for the row of ANOTHER repository does not excuse this claim (twin: its own repository does)", () => {
@@ -817,4 +846,44 @@ test("the detector's other conditions each hold it back: the row is not in progr
   assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(70)] }), { now: T0 }), null, "a note from before the claim is an earlier claim's");
   assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(16, "looks good")] }), { now: T0 }), null, "a note that says nothing of verified is not a reading");
   assert.ok(verifiedCloseOrder(closeFacts({ comments: [noteAt(16, "Done-when items 1 and 2 met")] }), { now: T0 }), "the Done-when reading counts too");
+});
+
+// --- A11-160, step 9: THE CODE HOST IS ASKED FOR WHEN A CALL IS MADE, NOT WHEN A DECLARATION STARTS ---------------------------------------------------------------
+
+/** A code host whose `rows` are read through a counter, and which has none: asking for them is the thing counted. Installed; the state directory is a shadow copy the test makes, so nothing real is written. */
+function countingHost(): { loads: () => number; dir: string; restore: () => void } {
+  const dir = scratch("lazy-host");
+  writeFileSync(join(dir, SHADOW_COPY_MARKER), "");
+  const prior = process.env[SHADOW_STATE_DIR_ENV];
+  process.env[SHADOW_STATE_DIR_ENV] = dir;
+  const host = createFakeCodeHost();
+  let loads = 0;
+  const countRowsAsked = (): undefined => { loads += 1; return undefined; };
+  Object.defineProperty(host, "rows", { get: countRowsAsked });
+  substituteCodeHost(host);
+  return { loads: () => loads, dir, restore: () => { if (prior === undefined) delete process.env[SHADOW_STATE_DIR_ENV]; else process.env[SHADOW_STATE_DIR_ENV] = prior; rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test("`main` writes a declaration that reads nothing of GitHub on a code host that has no rows, and never asks the host for them", async () => {
+  const { loads, dir, restore } = countingHost();
+  try {
+    const out = await runMain(["waiting-ci", "123", "--session=worker-9"]);
+    assert.equal(out.code, 0, `declared: ${out.stderr}`);
+    assert.equal(loads(), 0, "the code host's rows were not asked for: a declaration that makes no GitHub call must not need the host to load");
+    assert.equal(readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.size, 1, "and the declaration is on disk");
+  } finally {
+    restore();
+  }
+});
+
+test("`main` asks the code host for its rows the moment a declaration needs GitHub: `blocked` reads its row, and says so by name when the host has none", async () => {
+  const { loads, dir, restore } = countingHost();
+  try {
+    const out = await runMain(["blocked", "460", "why", "--session=worker-9"]);
+    assert.ok(loads() >= 1, "the row was read through the code host, so its rows were asked for");
+    assert.equal(out.code === 0, false, "and a host with no rows is not a declaration");
+    assert.equal(readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.size ?? 0, 0, "nothing is on disk");
+  } finally {
+    restore();
+  }
 });

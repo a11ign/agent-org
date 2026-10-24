@@ -1,20 +1,22 @@
-// no-token: gh -- `gh` is a function the test hands in and RECORDS; nothing here reaches GitHub or any account's config.
+// no-token: gh -- the probes are the fake code host's, which RECORDS each ask (A11-160, step 9); nothing here reaches GitHub or any account's config.
 //
 // agent-org#981 (a11ign/a11ign#5043): IN `webhook` MODE THE TICK'S SNAPSHOT IS MOVED BY THE EVENT QUEUE, SO A QUIET TICK MAKES NO GITHUB CALL, AND A DEAD RECEIVER FALLS BACK TO THE PROBES.
-// Every test drives the real `refreshTickSnapshot` (and, where the host declaration matters, the real `refreshSnapshotOrSay`) against a scratch directory with an injected `run` that
-// records each call it is given, so "no call" is a count of zero and not a claim.
+// Every test drives the real `refreshTickSnapshot` (and, where the host declaration matters, the real `refreshSnapshotOrSay`) against a scratch directory with a fake code host that
+// records each probe it is asked, so "no call" is a count of zero and not a claim.
 //
 // POSITIVE CONTROL: the poll path (no `events`) runs two probes per repository and moves a generation when a probe says changed; every "makes no call" below is only worth anything because
 // the same refresh, handed no `events` (or an unhealthy receiver), DOES call.
 // NEGATIVE CONTROL: a healthy receiver with nothing named makes zero calls and keeps every counter, and the same setup with a stale or absent heartbeat runs the probes and says
 // `EVENTS UNHEALTHY`; the cursor test pins what is NOT acked (a write that threw) beside the same events acked once the write held.
 
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_UNCHANGED_SECONDS, probePaths, refreshTickSnapshot, slugOf, type GhRun } from "./tick-snapshot.ts";
+import { MAX_UNCHANGED_SECONDS, probePaths, refreshTickSnapshot, slugOf } from "./tick-snapshot.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 import { EVENT_QUEUE_ENTRY, parseHostConfig } from "./host-config.ts";
 import type { QueueLine } from "./event-receiver.ts";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
@@ -37,16 +39,16 @@ const OTHER = "a11ign/agent-org";
 const REPOS = [HOME_REPO, OTHER];
 const RECONCILE_MINUTES = 20;
 const RECONCILE_SECONDS = RECONCILE_MINUTES * 60;
-const ok = (tag: string) => `HTTP/2.0 200 OK\r\nEtag: "${tag}"\r\n\r\n[]`;
 
-/** A `gh` that answers 200 with a tag per path and RECORDS every call. */
+afterEach(() => forgetActivation());
+
+/** The fake code host (installed as the active one) answering 200 with a tag per path and a body that lists nothing, and RECORDING every probe it is asked (`calls`: the path and the held tag sent). */
 const recordingGh = (tag = "t1") => {
-  const calls: string[][] = [];
-  const run: GhRun = (args) => {
-    calls.push(args);
-    return { stdout: ok(tag), status: 0 };
-  };
-  return { run, calls };
+  const host = createFakeCodeHost();
+  const readouts = host.rowsWorld.tail.readouts;
+  for (const path of REPOS.flatMap(probePaths)) readouts.probes.set(path, { status: 200, etag: `"${tag}"`, facts: { newest: null, count: 0 } });
+  substituteCodeHost(host);
+  return { calls: readouts.probeAsks };
 };
 
 const generation = (dir: string, repo: string) => readFileSync(join(dir, "read-cache", "gen", slugOf(repo)), "utf8").trim();
@@ -57,8 +59,8 @@ const heldTags = (dir: string) => JSON.parse(readFileSync(join(dir, "read-cache"
 /** A cache directory that has had one poll refresh at `T0`, so every repository holds a generation (counter 1) and tags. Returns the directory. */
 function polled() {
   const dir = tmpDir("tick-snapshot-events-cfg-");
-  const { run } = recordingGh();
-  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 });
+  recordingGh();
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 });
   return dir;
 }
 const healthy = (changed: string[] = [], reconcileEverySeconds = RECONCILE_SECONDS) => ({ changed: new Set(changed), healthy: true, reconcileEverySeconds });
@@ -67,12 +69,12 @@ test("POSITIVE CONTROL: with no `events` the poll path runs two probes per repos
   const dir = polled();
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [1, 1]);
   const same = recordingGh("t1");
-  const quiet = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run: same.run, nowMs: T0 + 10 * SEC });
+  const quiet = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + 10 * SEC });
   assert.equal(same.calls.length, 2 * REPOS.length, "two probes per declared repository, whatever the answer");
-  assert.deepEqual(same.calls.map((args) => args[args.length - 1]).sort(), REPOS.flatMap(probePaths).sort());
+  assert.deepEqual(same.calls.map((ask) => ask.path).sort(), REPOS.flatMap(probePaths).sort());
   assert.deepEqual(quiet, [`${HOME_REPO}: unchanged (200 same tag, 200 same tag) generation 1`, `${OTHER}: unchanged (200 same tag, 200 same tag) generation 1`]);
   const moved = recordingGh("t2");
-  const lines = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run: moved.run, nowMs: T0 + 20 * SEC });
+  const lines = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + 20 * SEC });
   assert.equal(moved.calls.length, 4);
   assert.match(lines[0], /CHANGED \(200 new tag, 200 new tag\) generation 2$/);
   assert.equal(counter(dir, OTHER), 2);
@@ -81,8 +83,8 @@ test("POSITIVE CONTROL: with no `events` the poll path runs two probes per repos
 test("NEGATIVE CONTROL: a healthy receiver with nothing named makes ZERO gh calls, keeps every counter and tag, and still moves verified-at", () => {
   const dir = polled();
   const tagsBefore = heldTags(dir);
-  const { run, calls } = recordingGh("would-be-new");
-  const lines = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + 60 * SEC, events: healthy() });
+  const { calls } = recordingGh("would-be-new");
+  const lines = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + 60 * SEC, events: healthy() });
   assert.deepEqual(calls, [], "a quiet tick in webhook mode asks GitHub nothing");
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [1, 1], "no event, so no generation moves: the cache keeps serving");
   assert.deepEqual([verified(dir, HOME_REPO), verified(dir, OTHER)], [(T0 + 60 * SEC) / SEC, (T0 + 60 * SEC) / SEC], "the live receiver vouches for the repositories, so verified-at moves");
@@ -93,8 +95,8 @@ test("NEGATIVE CONTROL: a healthy receiver with nothing named makes ZERO gh call
 
 test("an event moves `bumpedAt` and leaves `factsReadAt` where the content was last read: the event does not re-read anything (agent-org#1431)", () => {
   const dir = polled();
-  const { run } = recordingGh();
-  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + 30 * SEC, events: healthy([OTHER]) });
+  recordingGh();
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + 30 * SEC, events: healthy([OTHER]) });
   assert.equal(heldTags(dir)[OTHER].bumpedAt, (T0 + 30 * SEC) / SEC, "the event moved the window");
   assert.equal(heldTags(dir)[OTHER].factsReadAt, T0 / SEC, "the content was read at the poll, and the event after it did not read it again");
   assert.equal(heldTags(dir)[HOME_REPO].factsReadAt, T0 / SEC, "a repository no event named keeps its read time too");
@@ -102,34 +104,34 @@ test("an event moves `bumpedAt` and leaves `factsReadAt` where the content was l
 
 test("an event for one repository bumps only that repository's generation, and the repository is matched without regard to case", () => {
   const dir = polled();
-  const { run, calls } = recordingGh();
-  const lines = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + 30 * SEC, events: healthy([OTHER]) });
+  const { calls } = recordingGh();
+  const lines = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + 30 * SEC, events: healthy([OTHER]) });
   assert.deepEqual(calls, []);
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [1, 2], "only the named repository moved");
   assert.equal(generation(dir, "").split(" ")[0], "1", "the home repository was not named, so its `default` entry did not move");
   assert.deepEqual(lines, [`${HOME_REPO}: unchanged (no event) generation 1`, `${OTHER}: CHANGED (event) generation 2`]);
-  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + 40 * SEC, events: healthy(["A11IGN/A11IGN"]) });
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + 40 * SEC, events: healthy(["A11IGN/A11IGN"]) });
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [2, 2], "GitHub's spelling of full_name is not the declaration's: still the same repository");
   assert.equal(generation(dir, "").split(" ")[0], "2");
-  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + 50 * SEC, events: healthy(["someone/else"]) });
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + 50 * SEC, events: healthy(["someone/else"]) });
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [2, 2], "an undeclared repository moves nothing");
 });
 
 test("`due` uses the reconcile interval in place of MAX_UNCHANGED_SECONDS while events answer, and an unhealthy tick still uses MAX_UNCHANGED_SECONDS", () => {
   assert.ok(RECONCILE_SECONDS > MAX_UNCHANGED_SECONDS, "the test only separates the two intervals if the reconcile one is the longer");
   const dir = polled();
-  const { run, calls } = recordingGh();
-  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + MAX_UNCHANGED_SECONDS * SEC + SEC, events: healthy() });
+  const { calls } = recordingGh();
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + MAX_UNCHANGED_SECONDS * SEC + SEC, events: healthy() });
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [1, 1], "past MAX_UNCHANGED_SECONDS but inside the reconcile interval: not re-read");
-  const justBefore = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + (RECONCILE_SECONDS - 1) * SEC, events: healthy() });
+  const justBefore = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + (RECONCILE_SECONDS - 1) * SEC, events: healthy() });
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [1, 1]);
   assert.ok(justBefore.every((line) => !line.includes("re-read due")));
-  const due = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + RECONCILE_SECONDS * SEC, events: healthy() });
+  const due = refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + RECONCILE_SECONDS * SEC, events: healthy() });
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [2, 2], "the reconcile interval is up: every repository is re-read");
   assert.match(due[0], /CHANGED \(no event; re-read due\) generation 2$/);
   assert.equal(calls.length, 4, "and the reconcile is the one place a probe runs while events answer: the pair, once per repository (agent-org#982, the drift check)");
   const dead = recordingGh();
-  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run: dead.run, nowMs: T0 + (RECONCILE_SECONDS + MAX_UNCHANGED_SECONDS) * SEC, events: { ...healthy(), healthy: false } });
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0 + (RECONCILE_SECONDS + MAX_UNCHANGED_SECONDS) * SEC, events: { ...healthy(), healthy: false } });
   assert.equal(dead.calls.length, 4, "an unhealthy receiver is the poll path, which asks");
   assert.deepEqual([counter(dir, HOME_REPO), counter(dir, OTHER)], [3, 3], "and re-reads on MAX_UNCHANGED_SECONDS as it always did");
 });
@@ -137,7 +139,7 @@ test("`due` uses the reconcile interval in place of MAX_UNCHANGED_SECONDS while 
 test("a reconcile interval that is not a positive number is refused rather than never re-reading", () => {
   const dir = polled();
   for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-    assert.throws(() => refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run: recordingGh().run, nowMs: T0, events: healthy([], bad) }), /reconcileEverySeconds/);
+    assert.throws(() => refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, nowMs: T0, events: healthy([], bad) }), /reconcileEverySeconds/);
   }
 });
 
@@ -185,7 +187,7 @@ test("a stale heartbeat runs the probes and says EVENTS UNHEALTHY; the same queu
   beat(fixture.alive, T0 - 400 * SEC);
   const dead = recordingGh("t1");
   const deadSaid = refreshSnapshotOrSay({ declaration: () => project, configDir: cfg, env, host: () => fixture.host, nowMs: T0 + 30 * SEC,
-    refresh: (input) => refreshTickSnapshot({ ...input, run: dead.run }) });
+    refresh: (input) => refreshTickSnapshot(input) });
   assert.equal(dead.calls.length, 4, "the probes ran: a dead receiver costs the old polling");
   assert.match(deadSaid, /^SNAPSHOT 2 repositories, 0 changed; EVENTS UNHEALTHY \(heartbeat 430s\), probes run$/);
   assert.equal(env.A11Y_TICK_SNAPSHOT, "1", "the probes ran, so there is a snapshot to believe");
@@ -194,7 +196,7 @@ test("a stale heartbeat runs the probes and says EVENTS UNHEALTHY; the same queu
   append(fixture.queue, entry({ deliveryId: "d-2", repo: HOME_REPO, receivedAt: new Date(T0 + 20 * SEC).toISOString() }));
   const live = recordingGh("t1");
   const liveSaid = refreshSnapshotOrSay({ declaration: () => project, configDir: cfg, env, host: () => fixture.host, nowMs: T0 + 40 * SEC,
-    refresh: (input) => refreshTickSnapshot({ ...input, run: live.run }) });
+    refresh: (input) => refreshTickSnapshot(input) });
   assert.deepEqual(live.calls, [], "a live receiver: the snapshot step made no gh call");
   assert.match(liveSaid, /^SNAPSHOT 2 repositories, 1 changed \(a11ign\/a11ign\); EVENTS 1 event, oldest event waited 20s$/);
 });
@@ -205,7 +207,7 @@ test("the log line carries the event count and the oldest event's wait, or `no e
   const env: NodeJS.ProcessEnv = {};
   beat(fixture.alive, T0 + 10 * SEC);
   const say = () => refreshSnapshotOrSay({ declaration: () => project, configDir: cfg, env, host: () => fixture.host, nowMs: T0 + 30 * SEC,
-    refresh: (input) => refreshTickSnapshot({ ...input, run: recordingGh().run }) });
+    refresh: (input) => (recordingGh(), refreshTickSnapshot(input)) });
   assert.match(say(), /^SNAPSHOT 2 repositories, 0 changed; EVENTS no events$/);
   append(fixture.queue,
     entry({ deliveryId: "d-1", receivedAt: new Date(T0 + 5 * SEC).toISOString() }),
@@ -233,7 +235,7 @@ test("the cursor is acked after the generations are written, and not when the wr
   const cfg = polled();
   const said = refreshSnapshotOrSay({ declaration: () => project, configDir: cfg, env, host: () => fixture.host, nowMs: T0 + 30 * SEC,
     refresh: (input) => {
-      const lines = refreshTickSnapshot({ ...input, run: recordingGh().run });
+      const lines = (recordingGh(), refreshTickSnapshot(input));
       seenDuringRefresh.push(existsSync(fixture.cursor) ? readFileSync(fixture.cursor, "utf8") : null);
       return lines;
     } });
@@ -250,7 +252,7 @@ test("an ack that fails leaves the snapshot standing and says the events are rea
   mkdirSync(`${fixture.cursor}.tmp`); // ackThrough writes `<cursor>.tmp` and a directory is there instead
   const env: NodeJS.ProcessEnv = {};
   const said = refreshSnapshotOrSay({ declaration: () => project, configDir: polled(), env, host: () => fixture.host, nowMs: T0 + 30 * SEC,
-    refresh: (input) => refreshTickSnapshot({ ...input, run: recordingGh().run }) });
+    refresh: (input) => (recordingGh(), refreshTickSnapshot(input)) });
   assert.equal(env.A11Y_TICK_SNAPSHOT, "1", "the generations were written, so the snapshot is good");
   assert.match(said, /EVENTS 1 event, oldest event waited 30s; EVENTS cursor not moved \(.+\): the events are read again next tick$/);
 });

@@ -1,4 +1,5 @@
 import { poolDiagnosis, refusalPoolLine } from "../../api-pool.ts";
+import { graphqlPoolProbe } from "../../ticket-port/graphql-pool-probe.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../../project-vocabulary.ts";
 import { diskHeadroom, MIN_FREE_FRACTION } from "../../disk-headroom.ts";
 import { openRowState, stalledOrder, workingClaims } from "../orders.ts";
@@ -156,7 +157,7 @@ export function deadMansSwitch({ orders, drain, performed = 0, openRows, agents 
  * whatever this host happens to have installed.
  */
 export function cannotAskReport({ run, identity }: { run: (args: string[]) => string; identity: import("../../gh-identity.ts").DeclaredAccount; }): string {
-  const diagnosis = poolDiagnosis({ run });
+  const diagnosis = poolDiagnosis({ run, probe: graphqlPoolProbe() });
   return "CANNOT ASK: neither the pull-request list nor the Ready rows could be read. "
     + "Nothing was examined -- this is NOT a quiet queue, and no session has been woken.\n"
     + `${refusalPoolLine({ ...diagnosis, login: diagnosis.login ?? identity.login })}\n`;

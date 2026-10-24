@@ -1,4 +1,4 @@
-// no-token: gh -- every `git`, `row-claim` and `herdr` call here is an injected seam (the claim's `exec`, the pane's `run`, the row's `run`/`post`); nothing imported reaches the real one
+// no-token: gh -- every `git`, `row-claim` and `herdr` call here is an injected seam (the claim's `exec`, the pane's `run`), and the row the refusal is written on is the fake code host's; nothing imported reaches the real one
 /**
  * agent-org#1169: A REBUILT WORKTREE IS NOT HANDED TO ITS WORKER UNTIL `typescript` RESOLVES FROM IT, behind `worktree.rebuildCheck` (shipped OFF).
  *
@@ -6,7 +6,7 @@
  * tree's `node_modules` link resolves nothing: the fake host reports `node_modules/typescript/package.json` absent, which is what `existsSync` says through a
  * dangling link. The last real-filesystem case below makes that link on disk and asks the same question of it.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +29,11 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 const { deliver, HOST_REPOS } = await import("./wake/fyi-queue.ts");
 const { spawnClaimer, rebuildCheckOn, worktreeToolchainReason, sayToolchainRefusal, REBUILD_CHECK_SWITCH } = await import("./wake/release-line-and-seats.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
+const { forgetActivation, substituteCodeHost } = await import("./plugins/active.ts");
+const { createFakeCodeHost } = await import("./plugins/fakes/code-host.ts");
+const { fakeRow } = await import("./plugins/fakes/code-host-rows.ts");
+
+afterEach(() => forgetActivation());
 /** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */
 const ORDINARY_ROW = () => ({ labels: [], body: "", title: "" });
 type ToolchainGate = import("./wake/pull-request-spawn-orders.ts").ToolchainGate;
@@ -150,25 +155,28 @@ test("#1169 POSITIVE CONTROL: with typescript resolved from the claimed tree, th
 });
 
 test("#1169 the refusal is written on the row once for its cause, and not again on the next tick", () => {
-  const posted: string[][] = [];
-  let comments = "";
-  const write = sayToolchainRefusal({
-    run: () => comments,
-    post: (args) => { posted.push(args); return ""; },
-    warn: (line) => { throw new Error(line); },
-  });
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.rows.set(ROW, fakeRow(world, ROW, { labels: ["ready"] }));
+  substituteCodeHost(host);
+  // `run` and `post` are the executors' own, which the fake code host never starts: the row is read and written in its world.
+  const noGh = (args: string[]): string => { throw new Error(`the fake code host acts on its own state: no gh is run for ${args.join(" ")}`); };
+  const write = sayToolchainRefusal({ run: noGh, post: noGh, warn: (line) => { throw new Error(line); } });
   const reason = "`typescript` does not resolve from /x/node_modules";
+  const comments = () => world.rows.get(ROW)!.comments.map((comment) => comment.body);
 
   write(ORDER, reason);
-  assert.equal(posted.length, 1, "the first refusal is written");
-  assert.deepEqual(posted[0].slice(0, 3), ["issue", "comment", String(ROW)]);
-  assert.match(posted[0][4], /^<!-- worktree-not-ready:1169:[0-9a-f]{8} -->\n/, "the body opens with the marker");
-  assert.match(posted[0][4], /NOT started this tick: its worktree is not ready for a worker\.\*\* `typescript` does not resolve/);
+  assert.equal(comments().length, 1, "the first refusal is written");
+  assert.match(comments()[0], /^<!-- worktree-not-ready:1169:[0-9a-f]{8} -->\n/, "the body opens with the marker");
+  assert.match(comments()[0], /NOT started this tick: its worktree is not ready for a worker\.\*\* `typescript` does not resolve/);
 
   // THE NEXT TICK FINDS THE MARKER ON THE ROW: the cause is written once.
-  comments = `${JSON.stringify([1, "bot", "2026-10-12T00:00:00Z", true])}\n`;
   write(ORDER, reason);
-  assert.equal(posted.length, 1, "no second comment for the same cause");
+  assert.equal(comments().length, 1, "no second comment for the same cause");
+
+  // POSITIVE CONTROL: the marker is the cause's, so another cause is written.
+  write(ORDER, "`typescript` does not resolve from /y/node_modules");
+  assert.equal(comments().length, 2, "a different cause is written");
 });
 
 test("#1169 a real `node_modules` link that resolves nothing is named on disk; a tree with typescript, or with no package.json, is not refused", () => {

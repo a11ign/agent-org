@@ -52,6 +52,8 @@
 import { execFileSync } from "node:child_process";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { outsideArmOn } from "./arm-pr.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -189,8 +191,8 @@ function runGitForReal(args: string[]) {
   }
 }
 
-/** @param {string[]} args */
-const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
+/** The code host's own runner (A11-160, step 9): `gh` as this process's account, its stderr let through and its answer trimmed, as `execFileSync` gave it. */
+const gh: RowsRun = (args) => rows().runnerWith({})(args).trim();
 
 export type CheckRun = { name?: string, conclusion?: string | null, completedAt?: string | null, startedAt?: string | null, detailsUrl?: string | null };
 export type QueuedPr = { number: number, headRefOid: string, autoMergeRequest?: { enabledAt: string } | null, statusCheckRollup?: CheckRun[], isDraft?: boolean };
@@ -408,8 +410,7 @@ function main() {
 
   let prs;
   try {
-    prs = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "open", "--base", "main", "--limit", "100",
-      "--json", "number,headRefOid,autoMergeRequest,statusCheckRollup,isDraft"]));
+    prs = rows().openMainPullRollupsOf({ repo, run: gh });
   } catch (cause) {
     console.error(`CANNOT ASK: listing open PRs failed -- ${cause instanceof Error ? cause.message : cause}`);
     process.exit(EXIT.CANNOT_ASK);

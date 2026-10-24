@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` call is an injected `run`; nothing here reaches the network (#4603)
+// no-token: gh -- the claim and the filing run on the FAKE code host (the filing is handed a `run` that refuses to run anything); nothing here reaches the network (#4603)
 /**
  * #4603: THE SWEEP PROTOCOL -- a declared freeze window for a repo-wide mechanical change, a 60-minute CI box that releases the lock on overrun, and follow-ups filed only
  * after the merge (lock-gridlock fix 2 of 4, epic #4437). The incident: a11ign#4389 (110 `.mjs` renamed) opened a 100-file pull request with red CI and its holder then filed
@@ -7,10 +7,10 @@
  * POSITIVE CONTROLS, NAMED: every emptiness below is read against a refusal in the SAME test that differs in ONE fact -- a claim on a Region that shares no file, a sweep at 59
  * minutes beside the one at 61, a session that does not hold the sweep beside the one that does, a row that is not a sweep beside the one that is.
  *
- * THE CLAIM IS THE REAL ONE: `sessionEligibilityReason` over a `gh` mock, so the wiring in `row-claim.ts` is what is under test, not only the pure rule. Times there are relative to
+ * THE CLAIM IS THE REAL ONE: `sessionEligibilityReason` over the fake code host's rows (A11-160, step 9: the sweep's reads and the row writes are the code host's), so the wiring in `row-claim.ts` is what is under test, not only the pure rule. Times there are relative to
  * the real clock with minutes to spare either side of every threshold; the exact boundaries are pinned on the pure `sweepWindowState`, whose clock is an argument.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,7 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { noProgram, seedFiledRow } from "./packaging/fixtures/filing-world.test.support.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (`claimed-region-overlap.test.ts`'s shape): the host file is set FIRST and the tool imported AFTER it, so the acceptance command as
 // written -- no `$AGENT_ORG_HOST` -- runs. `stateDir` is declared so the overrun's ledger line lands in the scratch directory and never in the host's own.
@@ -50,8 +53,6 @@ const { FAILURE_LEDGER_FILE, SWEEP_WINDOW_RELEASED_KIND } = await import("./fail
 
 const MIN = 60_000;
 const TRACKER = "a11ign/a11ign";
-// The name the injected `run` mock is keyed on: no process is spawned, so this is not a `gh` spawn and the `no-token` header holds.
-const INJECTED_GH = "gh";
 const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };
 const SWEEP = 4389;
 const ASKER = 5000;
@@ -107,25 +108,41 @@ const sweepPr = (minutesAgo: number, files = ["src/a.ts"]) => ({
   files: files.map((path) => ({ path })), labels: [],
 });
 
-/** One `gh` mock routed by subcommand shape; it RECORDS the writes (`issue comment`) so a row write can be counted. */
-function ghFor({ sweeps, comments, prs = [], asker = ["agent-org:src/b.ts"] }: {
-  sweeps: ReturnType<typeof listed>[]; comments: unknown[]; prs?: unknown[]; asker?: string[];
+afterEach(() => forgetActivation());
+
+/** The pull request the world holds for what the sweep's pull request is: open, naming the row it closes, with the files it changes. */
+const pullOf = (pr: ReturnType<typeof sweepPr>) => ({ number: pr.number, body: pr.body, headRefName: pr.headRefName, labels: [] as string[], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: pr.created_at,
+  comments: [] as string[], files: pr.files.map((file) => file.path) });
+
+/**
+ * The fake code host the claim runs on: the sweep rows (claimed, with the comments the claim record is read from), the asker's row with the Region it asks for, and the open pull requests. It RECORDS the writes
+ * the code host was asked for (`written`: the bodies of the comments posted on any row since), so a row write can be counted.
+ */
+function claimWorld({ sweeps, comments, prs = [], asker = ["agent-org:src/b.ts"] }: {
+  sweeps: ReturnType<typeof listed>[]; comments: { body: string; createdAt: string; author?: { login: string } }[]; prs?: ReturnType<typeof sweepPr>[]; asker?: string[];
 }) {
-  const written: string[][] = [];
-  const run = (_cmd: string, args: string[]): string => {
-    if (args[0] === "issue" && args[1] === "comment") { written.push(args); return ""; }
-    if (args[0] === "issue" && args[1] === "view") {
-      if (args.includes("comments")) return JSON.stringify({ comments });
-      return JSON.stringify({ number: ASKER, title: "A row", body: plainBody(...asker), labels: [], blockedBy: { nodes: [] } });
-    }
-    if (readsRowsByLabel(args) !== null) return connectionOf(sweeps);
-    if (args[0] === "api" && args[1]?.includes("/pulls?")) return JSON.stringify(prs);
-    if (args[0] === "pr" && args[1] === "list") return JSON.stringify(prs);
-    return "[]";
-  };
-  return { run, written };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = TRACKER;
+  world.rows.set(ASKER, fakeRow(world, ASKER, { title: "A row", body: plainBody(...asker) }));
+  for (const sweep of sweeps) {
+    world.rows.set(sweep.number, fakeRow(world, sweep.number, { body: sweep.body, labels: sweep.labels.map((label) => label.name),
+      comments: comments.map((comment, i) => ({ id: i + 1, body: comment.body, createdAt: comment.createdAt, author: comment.author?.login })) }));
+  }
+  // The sweep's pull request is the CODE repository's (`AGENT_ORG`): the claim reads its files there, and the sweep's own read lists the open pull requests of the world.
+  const codeRepoPulls = new Map<number, ReturnType<typeof pullOf>>();
+  for (const pr of prs) {
+    const pull = pullOf(pr);
+    world.pulls.set(pr.number, pull);
+    codeRepoPulls.set(pr.number, pull);
+  }
+  world.rules.otherRepos.set(AGENT_ORG.repo, codeRepoPulls);
+  const before = new Map([...world.rows].map(([number, row]) => [number, row.comments.length]));
+  substituteCodeHost(host);
+  const written = { get all(): string[] { return [...world.rows].flatMap(([number, row]) => row.comments.slice(before.get(number) ?? 0).map((comment) => comment.body)); } };
+  return { world, written };
 }
-const claimFor = (run: ReturnType<typeof ghFor>["run"]) => sessionEligibilityReason(ASKER, "worker-5000", { ghRun: (args) => run(INJECTED_GH, args), repo: TRACKER, repos: [AGENT_ORG] });
+const claimFor = () => sessionEligibilityReason(ASKER, "worker-5000", { repo: TRACKER, repos: [AGENT_ORG] });
 const ledger = () => { try { return readFileSync(join(STATE_DIR, FAILURE_LEDGER_FILE), "utf8"); } catch { return ""; } };
 
 const sweepRow = listed(SWEEP, rowBody("agent-org:src/"), "worker-4389");
@@ -133,68 +150,64 @@ const sweepRow = listed(SWEEP, rowBody("agent-org:src/"), "worker-4389");
 // --- (1) THE CLAIM RULE refuses inside a declared window ---------------------------------------------------------------------------
 
 test("(1) a claim INSIDE a declared window is refused, naming the sweep row and the minutes left -- though the sweep's pull request touches none of the asker's files", () => {
-  const { run } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [sweepPr(30)] });
-  const reason = claimFor(run) ?? "";
+  claimWorld({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [sweepPr(30)] });
+  const reason = claimFor() ?? "";
   assert.match(reason, /overlaps the Region of #4389, a declared SWEEP/);
   assert.match(reason, /30 minutes left/);
   assert.match(reason, /merge or stand down/);
 });
 
 test("(1) CONTROL: the same sweep, a claim on a Region that shares no file with it, is not refused", () => {
-  const { run } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [sweepPr(30)], asker: ["agent-org:docs/other.md"] });
-  assert.equal(claimFor(run), null);
+  claimWorld({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [sweepPr(30)], asker: ["agent-org:docs/other.md"] });
+  assert.equal(claimFor(), null);
 });
 
 test("(1) CONTROL: the same Region held by a row that DECLARES NO SWEEP is not frozen by this rule (only B4's, which a pull request that misses the file does not trigger)", () => {
-  const { run } = ghFor({ sweeps: [listed(SWEEP, plainBody("agent-org:src/"), "worker-4389")], comments: [claimRecord(90)], prs: [sweepPr(30)] });
-  assert.equal(claimFor(run), null);
+  claimWorld({ sweeps: [listed(SWEEP, plainBody("agent-org:src/"), "worker-4389")], comments: [claimRecord(90)], prs: [sweepPr(30)] });
+  assert.equal(claimFor(), null);
 });
 
 test("(1) a sweep at 59 minutes of CI still refuses", () => {
-  const { run } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(120)], prs: [sweepPr(59)] });
-  assert.match(claimFor(run) ?? "", /#4389, a declared SWEEP/);
+  claimWorld({ sweeps: [sweepRow], comments: [claimRecord(120)], prs: [sweepPr(59)] });
+  assert.match(claimFor() ?? "", /#4389, a declared SWEEP/);
 });
 
 test("(1) `check` predicts the claim: the same refusal through `reportB4`, and it writes nothing", () => {
-  const { run, written } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [sweepPr(30)] });
+  const { written } = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [sweepPr(30)] });
   const say = (sweeps?: () => ReturnType<typeof readSweepWindows>) => {
     const out: string[] = [];
     reportB4(ASKER, { write: (t: string) => out.push(t), mine: () => ["agent-org:src/b.ts"], others: () => [], claimed: () => [], repo: TRACKER, ...(sweeps === undefined ? {} : { sweeps }) });
     return out.join("");
   };
-  const read = () => readSweepWindows({ run: (args) => run(INJECTED_GH, args), repo: TRACKER, repos: [AGENT_ORG] });
+  const read = () => readSweepWindows({ repo: TRACKER, repos: [AGENT_ORG] });
   assert.match(say(read), /B4 REFUSES THIS CLAIM: overlaps the Region of #4389, a declared SWEEP/);
-  assert.deepEqual(written, [], "check is read-only");
+  assert.deepEqual(written.all, [], "check is read-only");
   assert.match(say(() => null), /B4 REFUSES THIS CLAIM: .*INCONCLUSIVE/, "an unread sweep list is said, never silence");
   assert.match(say(() => []), /no row already claimed holds any file/, "control: the same check with no sweep claimed is clear");
-  assert.match(say(), /no row already claimed holds any file/, "and a check that injects `claimed` reads no sweep of its own, so it never reaches `gh`");
+  assert.match(say(), /no row already claimed holds any file/, "and a check that injects `claimed` reads no sweep of its own, so it never reaches the code host");
 });
 
 test("(1) a sweep that could not be read refuses as INCONCLUSIVE, never as clear", () => {
-  const run = (_cmd: string, args: string[]) => {
-    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ number: ASKER, body: plainBody("agent-org:src/b.ts"), labels: [], blockedBy: { nodes: [] } });
-    if (readsRowsByLabel(args) !== null) return connectionOf([sweepRow]);
-    return "[]"; // no comments on the sweep: it has no claim record, so its window has no start
-  };
-  assert.match(claimFor(run) ?? "", /INCONCLUSIVE/);
+  claimWorld({ sweeps: [sweepRow], comments: [] }); // no comments on the sweep: it has no claim record, so its window has no start
+  assert.match(claimFor() ?? "", /INCONCLUSIVE/);
 });
 
 // --- (2) OVERRUN: released by construction, recorded once, the holder told -----------------------------------------------------------
 
 test("(2) a sweep that OVERRAN is RELEASED: the claim is no longer refused, the overrun is recorded ONCE and the holder is told to revert or split", () => {
-  const { run, written } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(200)], prs: [sweepPr(61)] });
-  assert.equal(claimFor(run), null, "past the box the freeze stops refusing");
+  const { written } = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(200)], prs: [sweepPr(61)] });
+  assert.equal(claimFor(), null, "past the box the freeze stops refusing");
   assert.equal(ledger().split("\n").filter((line) => line.startsWith(`${SWEEP_WINDOW_RELEASED_KIND}\t`)).length, 1, `the overrun is on the ledger once:\n${ledger()}`);
   assert.match(ledger(), new RegExp(`${SWEEP_WINDOW_RELEASED_KIND}\\t\\d+\\t${TRACKER}#${SWEEP}\\n`));
   assert.equal(ledger().split("\n").filter((line) => line.startsWith(`${SWEEP_OVERRUN_KIND}\t`)).length, 0, "a released overrun is no sweep-overrun line (agent-org#1314)");
-  assert.equal(written.length, 1, "and told once");
-  assert.match(String(written[0].at(-1)), new RegExp(OVERRUN_ADVICE));
-  assert.match(String(written[0].at(-1)), /revert or split; do not hold the lock/);
+  assert.equal(written.all.length, 1, "and told once");
+  assert.match(written.all[0], new RegExp(OVERRUN_ADVICE));
+  assert.match(written.all[0], /revert or split; do not hold the lock/);
 
   // a second claim, with the holder's notice now on the row: nothing is written again, and the ledger dedupes the same ref.
-  const second = ghFor({ sweeps: [sweepRow], comments: [claimRecord(200), { body: `${OVERRUN_MARKER}\nnotice`, createdAt: new Date().toISOString() }], prs: [sweepPr(61)] });
-  assert.equal(claimFor(second.run), null);
-  assert.deepEqual(second.written, [], "the marker on the row keeps the notice to one");
+  const second = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(200), { body: `${OVERRUN_MARKER}\nnotice`, createdAt: new Date().toISOString() }], prs: [sweepPr(61)] });
+  assert.equal(claimFor(), null);
+  assert.deepEqual(second.written.all, [], "the marker on the row keeps the notice to one");
   assert.equal(ledger().split("\n").filter((line) => line.startsWith(`${SWEEP_WINDOW_RELEASED_KIND}\t`)).length, 1, "still one line");
 });
 
@@ -208,19 +221,19 @@ test("(2) the pure rule agrees: the same sweep refuses at 59 minutes and release
 // --- (3) STALLED: a row write, once ---------------------------------------------------------------------------------------------
 
 test("(3) a sweep with NO pull request 15 minutes after its claim is reported as stalled on the row, once, and its freeze still holds", () => {
-  const { run, written } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(16)], prs: [] });
-  assert.match(claimFor(run) ?? "", /#4389, a declared SWEEP .*freeze window is stalled/);
-  assert.equal(written.length, 1);
-  assert.match(String(written[0].at(-1)), /STALLED/);
-  const again = ghFor({ sweeps: [sweepRow], comments: [claimRecord(16), { body: `${STALLED_MARKER}\nx`, createdAt: new Date().toISOString() }], prs: [] });
-  assert.match(claimFor(again.run) ?? "", /stalled/);
-  assert.deepEqual(again.written, [], "reported once");
+  const { written } = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(16)], prs: [] });
+  assert.match(claimFor() ?? "", /#4389, a declared SWEEP .*freeze window is stalled/);
+  assert.equal(written.all.length, 1);
+  assert.match(written.all[0], /STALLED/);
+  const again = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(16), { body: `${STALLED_MARKER}\nx`, createdAt: new Date().toISOString() }], prs: [] });
+  assert.match(claimFor() ?? "", /stalled/);
+  assert.deepEqual(again.written.all, [], "reported once");
 });
 
 test("(3) CONTROL: at 14 minutes with no pull request the sweep is open and nothing is reported", () => {
-  const { run, written } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(14)], prs: [] });
-  assert.match(claimFor(run) ?? "", /freeze window is open/);
-  assert.deepEqual(written, []);
+  const { written } = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(14)], prs: [] });
+  assert.match(claimFor() ?? "", /freeze window is open/);
+  assert.deepEqual(written.all, []);
 });
 
 test("(3) a report that cannot be written is one stderr line and never stops the claim that asked", () => {
@@ -245,19 +258,15 @@ test("(4) the pure filing rule refuses the sweep's holder a row overlapping the 
 
 const FILING_BODY = (region: string) => `${plainBody(region)}\n## Acceptance\n\n\`\`\`\nnpx tsx --test x\n\`\`\`\n\n## Open-check\n\n\`\`\`\ngh issue view 735 --json state\n\`\`\`\n`;
 
-/** `run` for a whole filing, with the sweep held by `worker-4389` and its pull request opened `prMinutesAgo` ago. */
-function filingRun(prMinutesAgo: number, body: string) {
-  return (_cmd: string, args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return connectionOf([sweepRow]);
-    if (args[0] === "api" && args[1]?.includes("/pulls?")) return JSON.stringify([sweepPr(prMinutesAgo)]);
-    if (args[0] === "api" && args[1]?.includes("/issues?")) return "[]";
-    if (args[0] === "api") return "src/a.ts\nsrc/follow-up.ts";
-    if (args[0] === "issue" && args[1] === "view" && args.includes("comments")) return JSON.stringify({ comments: [claimRecord(200)] });
-    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([sweepPr(prMinutesAgo)]);
-    if (args[0] === "issue" && args[1] === "list") return "[]"; // the filing's duplicate-title read and blast-radius read: no open row has it
-    if (args.includes("milestone")) return "CI reset";
-    return args.includes("body") ? body : "";
-  };
+/**
+ * The fake code host a whole filing runs on, with the sweep held by `worker-4389` and its pull request opened `prMinutesAgo` ago (the claim's world), the code repository's tree (the files the Region names), and row #900,
+ * the one `spawnGh` answers, reading back as `body`.
+ */
+function filingWorld(prMinutesAgo: number, body: string) {
+  const { world } = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(200)], prs: [sweepPr(prMinutesAgo)] });
+  world.tail.readouts.trees.set(AGENT_ORG.repo, ["src/a.ts", "src/follow-up.ts"]);
+  seedFiledRow(world, body);
+  return world;
 }
 
 function fileThroughCreateIssue({ session, region, prMinutesAgo }: { session: string; region: string; prMinutesAgo: number }) {
@@ -267,9 +276,10 @@ function fileThroughCreateIssue({ session, region, prMinutesAgo }: { session: st
   process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
   try {
     const body = FILING_BODY(region);
+    filingWorld(prMinutesAgo, `${body}\nFiled-by: ${session}\n`);
     const code = createIssue(["--title", "a follow-up", "--body", body, `--session=${session}`, "--milestone", "CI reset"], {
       spawnGh: (argv) => { created.push(argv); return "https://github.com/a11ign/a11ign/issues/900"; },
-      run: filingRun(prMinutesAgo, `${body}\nFiled-by: ${session}\n`), loadLanesConfig: () => ({ lanes: [] }),
+      run: noProgram, loadLanesConfig: () => ({ lanes: [] }),
       ensureLabels: () => {}, fetchBoardStatus: () => "Backlog", fetchLabels: () => ({ number: 900, title: "", labels: ["backlog", "lane:any"] }),
       moveStatus: () => ({ moved: true as const }),
     });
@@ -293,16 +303,21 @@ test("(4) WIRING: `row-file` refuses the holder of a claimed sweep a follow-up i
 });
 
 test("(4) a read that fails refuses the filing as INCONCLUSIVE, never as clear", () => {
-  assert.equal(readSweepWindows({ run: () => { throw new Error("HTTP 502"); }, repo: TRACKER, repos: [AGENT_ORG] }), null);
+  const { world } = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(90)] });
+  world.failures.set("readClaimedRows", new Error("HTTP 502"));
+  assert.equal(readSweepWindows({ repo: TRACKER, repos: [AGENT_ORG] }), null);
+  world.failures.delete("readClaimedRows");
+  assert.equal(readSweepWindows({ repo: TRACKER, repos: [AGENT_ORG] })?.length, 1, "control: the same sweep reads once the host answers");
+  world.failures.set("commentsOfRowIn", new Error("HTTP 502"));
+  assert.equal(readSweepWindows({ repo: TRACKER, repos: [AGENT_ORG] }), null, "and so does a claim record that could not be read");
 });
 
-// agent-org#1005: the open pull requests are read over REST, the core pool, never `gh pr list`, which spends the GraphQL pool the managers App shares.
-test("(5) the open pull requests are read as `gh api repos/<code>/pulls`, never `gh pr list` -- the pull request's opening time still starts the box", () => {
+// agent-org#1005: the open pull requests are read over REST, the core pool, never `gh pr list`, which spends the GraphQL pool the managers App shares. THE ARGUMENT LIST is the plugin's to hold
+// (`plugins/github/rows/misc-rows.test.ts`, `openRestListingOf`); what is held here is that the pull request's opening time still starts the box, whatever the listing is read as.
+test("(5) the open pull requests are read as the REST listing of the code repository -- the pull request's opening time still starts the box", () => {
   const pr = sweepPr(30);
-  const { run } = ghFor({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [pr] });
-  const argvs: string[][] = [];
-  const sweeps = readSweepWindows({ run: (args) => { argvs.push(args); return run(INJECTED_GH, args); }, repo: TRACKER, repos: [AGENT_ORG] });
-  assert.deepEqual(argvs.filter((args) => args[0] === "pr" && args[1] === "list" && args.includes(AGENT_ORG.repo)), [], "no `gh pr list` read of the code repository");
-  assert.ok(argvs.some((args) => args[0] === "api" && args[1] === `repos/${AGENT_ORG.repo}/pulls?state=open&per_page=100&page=1`), "the REST pulls listing is read, paged from the first page");
-  assert.equal(sweeps?.[0]?.prOpenedAt, Math.max(Date.parse(pr.created_at), sweeps?.[0]?.claimedAt ?? 0), "the field the box counts from is still `created_at`, read from the REST listing");
+  const { world } = claimWorld({ sweeps: [sweepRow], comments: [claimRecord(90)], prs: [pr] });
+  const sweeps = readSweepWindows({ repo: TRACKER, repos: [AGENT_ORG] });
+  assert.ok(world.calls.includes("openRestListingOf pulls"), `the REST listing of pull requests is read: ${world.calls.join(", ")}`);
+  assert.equal(sweeps?.[0]?.prOpenedAt, Math.max(Date.parse(pr.created_at), sweeps?.[0]?.claimedAt ?? 0), "the field the box counts from is still `created_at`, read from the listing");
 });

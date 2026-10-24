@@ -1,8 +1,12 @@
-// #1166: a red check's class is read from its FAILING ASSERTIONS, and a same-head re-fail reaches the owner. A fake `gh` stub and a fake decision state only: no network, no real key, no corpus.
-// no-token: gh -- every `fakeGh` here is a stub that answers the reads `readCiFailure` makes; nothing reaches the real `gh`
+// #1166: a red check's class is read from its FAILING ASSERTIONS, and a same-head re-fail reaches the owner. The fake code host and a fake decision state only: no network, no real key, no corpus.
+// no-token: gh -- every `redCheck` here seeds the fake code host with the red check `readCiFailure` reads (A11-160, step 9); nothing reaches the real `gh`
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { CI_CLASS, classifyCiFailure, readCiFailure, rateLimitOrLostRunner, routeFor } from "./ci-failure-class.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const SHA = "abcdef12".padEnd(40, "0");
 const NOW = Date.parse("2026-10-12T12:00:00Z");
@@ -12,19 +16,15 @@ const OFF = { assertionsOnly: false };
 // no provider declared: the class is the rule's, and nothing is asked or printed
 const NO_PROVIDER = { host: {}, switches: {}, diagnostic: () => {} };
 
-/** A `fakeGh` that answers the reads `readCiFailure` makes for one red check whose job log is `log`, on run attempt `attempt`. */
-function fakeGh(log: string, attempt = 1) {
-  return (args: string[]): string => {
-    const path = args[1];
-    if (path.endsWith("/pulls/77")) return JSON.stringify({ head: { sha: SHA, ref: "agent/x-77" } });
-    if (path.includes(`/commits/${SHA}/check-runs`)) {
-      return JSON.stringify({ check_runs: [{ name: "ts", conclusion: "failure", details_url: "https://github.com/o/r/actions/runs/555/job/666" }] });
-    }
-    if (path.endsWith("/actions/runs/555")) return JSON.stringify({ name: "CI", run_attempt: attempt });
-    if (path.endsWith("/actions/jobs/666/logs")) return log;
-    if (path.includes("/actions/runs?")) return JSON.stringify({ workflow_runs: [] });
-    throw new Error(`unexpected fakeGh ${args.join(" ")}`);
-  };
+/**
+ * The fake code host in place with one red check, #77 of o/r at `SHA`, whose job log is `log` and whose workflow run is on `attempt`. What `readCiFailure` reads of GitHub is this. The runner it is handed is the one
+ * the live tool hands the code host: the fake acts on its world and never calls it.
+ */
+function redCheck(log: string, attempt = 1) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.tail.classes.failingChecksOf.set("o/r#77", { headSha: SHA, read: { branch: "agent/x-77", workflow: "CI", runAttempt: attempt, log } });
+  substituteCodeHost(host);
+  return (): string => { throw new Error("the fake code host runs nothing"); };
 }
 
 // A passing test that prints rate-limit and 502 text, and one assertion that fails in the same job.
@@ -36,17 +36,17 @@ const LOST_RUNNER_LOG = "Current runner version: '2.329.0'\n##[error]The runner 
 
 test("the flag is shipped ON, so the failing assertions are read by default and the explicit OFF is today's whole-log read", () => {
   assert.equal(CI_CLASS.assertionsOnly, true);
-  assert.equal(readCiFailure(PR, fakeGh(RED_TEST_LOG), NOW)!.rateLimitOrRunnerLost, false, "no flag passed: the printed rate limit is the passing test's output, not the cause");
-  assert.equal(readCiFailure(PR, fakeGh(RED_TEST_LOG), NOW, OFF)!.rateLimitOrRunnerLost, true, "the explicit OFF reads the whole log, as before");
+  assert.equal(readCiFailure(PR, redCheck(RED_TEST_LOG), NOW)!.rateLimitOrRunnerLost, false, "no flag passed: the printed rate limit is the passing test's output, not the cause");
+  assert.equal(readCiFailure(PR, redCheck(RED_TEST_LOG), NOW, OFF)!.rateLimitOrRunnerLost, true, "the explicit OFF reads the whole log, as before");
 });
 
 test("a passing test's rate-limit text beside a failing assertion is the test's output: infrastructure before the flag, own-defect after it, routed to the owner", async () => {
-  const before = readCiFailure(PR, fakeGh(RED_TEST_LOG), NOW, OFF)!;
+  const before = readCiFailure(PR, redCheck(RED_TEST_LOG), NOW, OFF)!;
   assert.equal(before.rateLimitOrRunnerLost, true, "OFF reads the whole log: the printed rate limit is read as the runner's");
   const wrong = await classifyCiFailure(before, NO_PROVIDER);
   assert.deepEqual([wrong.klass, wrong.route], ["infrastructure", "rerun-after-reset"]);
 
-  const after = readCiFailure(PR, fakeGh(RED_TEST_LOG), NOW, ON)!;
+  const after = readCiFailure(PR, redCheck(RED_TEST_LOG), NOW, ON)!;
   assert.equal(after.rateLimitOrRunnerLost, false, "ON reads only the failing assertion lines, which name no rate limit");
   const decision = await classifyCiFailure(after, NO_PROVIDER);
   assert.deepEqual([decision.klass, decision.route, decision.via], ["own-defect", "owner", "none"]);
@@ -54,7 +54,7 @@ test("a passing test's rate-limit text beside a failing assertion is the test's 
 
 test("a same-head re-fail that fails the same way reaches the owner with the assertion, on its first run and its second", async () => {
   for (const attempt of [1, 2]) {
-    const failure = readCiFailure(PR, fakeGh(RED_TEST_LOG, attempt), NOW, ON)!;
+    const failure = readCiFailure(PR, redCheck(RED_TEST_LOG, attempt), NOW, ON)!;
     assert.equal(failure.rerunAlready, attempt > 1);
     assert.ok(failure.errorLines.some((line) => line.includes("AssertionError [ERR_ASSERTION]: expected 'quiet', got 'backlog'")), "the assertion is what the owner is sent");
     const decision = await classifyCiFailure(failure, NO_PROVIDER);
@@ -64,7 +64,7 @@ test("a same-head re-fail that fails the same way reaches the owner with the ass
 });
 
 test("a runner lost before any assertion ran is still infrastructure, with the flag ON", async () => {
-  const failure = readCiFailure(PR, fakeGh(LOST_RUNNER_LOG), NOW, ON)!;
+  const failure = readCiFailure(PR, redCheck(LOST_RUNNER_LOG), NOW, ON)!;
   assert.equal(failure.rateLimitOrRunnerLost, true);
   const decision = await classifyCiFailure(failure, NO_PROVIDER);
   assert.deepEqual([decision.klass, decision.route], ["infrastructure", "rerun-after-reset"]);

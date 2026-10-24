@@ -1,12 +1,12 @@
 // no-token: none -- reads two JSON files and the source tree; nothing here reaches gh or herdr
 /**
- * (agent-org#826, Phase 0b of a11ign/a11ign#4505; A11-160) A FILE OUTSIDE `plugins/github/` MAY NOT GAIN A `gh` CALL, AND THE FILES THAT HOLD ONE TODAY ARE A BASELINE THAT ONLY GOES DOWN.
+ * (agent-org#826, Phase 0b of a11ign/a11ign#4505; A11-160) NO FILE OUTSIDE `plugins/github/` MAY CALL `gh`: THE BASELINE OF FILES THAT DID IS EMPTY (A11-160, step 9), AND A FILE THAT GAINS A CALL IS REFUSED BY NAME.
  *
  * A11-160 MOVES EVERY `gh` CALL INTO `plugins/github` (Decision 2 of A11-157: core depends only on the contracts), step by step, and this ratchet is how each step is held. `plugins/github/` is
  * exempt, by path, because it is where a `gh` call is meant to be. `src/ticket-port/` WAS EXEMPT while it held the row mode adapter and what only row mode imported; step 4 moved those into the plugin
  * (behind the code host's `rows`), so the directory is a port of types and delegates and holds no call, and a call there is refused like any other. The scan is WIDER than it was
  * (`gh-call-inventory.ts`): `src/`, `scripts/` and `plugins/`, and every shell script of `host/`, `src/` and `plugins/`. The files that scan newly sees are in the baseline at the count they hold,
- * which is not a new call and is held there: the last step of A11-160 empties `files`, and the rule becomes "no file outside `plugins/github/` calls gh".
+ * which is not a new call and was held there; the last step of A11-160 emptied `files`, and the rule is now "no file outside `plugins/github/` calls gh".
  *
  * THE RULE HELD IS THE LAST SENTENCE OF `ceo`'s ADR 0046 RULING (item 4, with decision 5's adapter): "the rule is new code only, held by agent-org#485's inventory and the detector
  * filed after #484". This is that detector. New GitHub-specific code goes through the ticket port or the code-host port, never into a file that is not the adapter.
@@ -120,10 +120,17 @@ test("the committed baseline admits today's tree: the real inventory yields no o
   // scan was widened to read: a script, and a shell script.
   const plugin = Object.keys(inventory.files).filter((file) => file.startsWith(PLUGIN_DIRECTORY));
   assert.ok(plugin.length > 0 && plugin.some((file) => inventory.files[file]!.spawns > 0), `${PLUGIN_DIRECTORY} is not in the inventory with a spawn: the scan does not see the plugin, so its exemption exempts nothing`);
-  assert.ok(Object.keys(inventory.files).some((file) => file.startsWith("scripts/")), "no file of scripts/ is in the inventory: the scan does not read it");
   assert.ok(Object.keys(inventory.files).some((file) => /\.sh$/.test(file)), "no shell script is in the inventory: the scan does not read them");
   assert.ok((inventory.files["plugins/github/wrapper/gh"]?.spawns ?? 0) > 0, "the routing wrapper (a shell script with no extension, the GitHub plugin's since A11-160) is not in the inventory with a spawn: the scan does not read a plugin's shell scripts, so its exemption exempts nothing");
   for (const file of Object.keys(baseline.files)) assert.ok(!isExempt(file), `${file} is in the baseline though its directory is exempt`);
+});
+
+test("THE LAST STEP OF A11-160: the baseline holds no file, and every call the inventory finds is the plugin's", () => {
+  const root = judgedRoot();
+  const baseline: Baseline = JSON.parse(readFileSync(join(root, BASELINE_PATH), "utf8"));
+  assert.deepEqual(baseline.files, {}, "the baseline lists a file: no file outside `plugins/github/` may call gh, so there is nothing to allow");
+  const outside = Object.keys(buildInventory(root).files).filter((file) => !isExempt(file));
+  assert.deepEqual(outside, [], `these files outside ${PLUGIN_DIRECTORY} spawn gh or hold a gh call shape:\n${outside.join("\n")}\n${WHERE_NEW_CODE_GOES}`);
 });
 
 test("the plugin is in the real inventory with the adapter it moved there, and neither it nor the ticket port is in the baseline: the exemption is by path and the port holds no call", () => {

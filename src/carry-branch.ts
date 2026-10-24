@@ -60,11 +60,22 @@ import { recordRemoval } from "./worktree-removal.ts"; // #2827
 // header for why: this needs `node_modules` and a completed build, and this file has neither guarantee.
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
 const defaultRun: (cmd: string, args: string[], opts?: { cwd?: string; }) => string = (cmd, args, opts = {}): string => {
   assertNoLeakInArgv(cmd, args); // #1053: guarded in the SPAWN HELPER, not per call site
   return execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
 };
+
+/** What `execFileSync` let a program print before it cut it off (1 MiB), which the note has always been held to. */
+const EXEC_FILE_BUFFER = 1024 * 1024;
+
+/**
+ * The code host's program, run as this tool always ran it: with the git variables of a hook taken off (`sandboxGitEnv`), behind the leak guard (#1053: guarded in the RUNNER, so every call is covered), and with what
+ * the program says on stderr let through, as `execFileSync` let it. A11-160: the process is the code host's.
+ */
+const codeHostRun = (): RowsRun => rows().runnerWith({ withoutGitEnv: true, maxBuffer: EXEC_FILE_BUFFER, guard: (args) => assertNoLeakInArgv(rows().command, [...args]) });
 
 /** #1477: the exit codes this file's header documents, by name. */
 export const EXIT = Object.freeze({ CARRIED: 0, NOT_CARRIED: 1, USAGE: 2, CARRIED_NOT_NOTED: 3 });
@@ -210,24 +221,22 @@ export function carryBranch(repoRoot: string, branch: string, { run = defaultRun
  * @param {string} branch
  * @param {string} carrier this session's own name
  * @param {string} reason why the carry happened -- the escalation window, named
- * @param {{ run?: typeof defaultRun }} [deps]
+ * @param {{ gh?: RowsRun }} [deps] the code host's program as this tool runs it (the git variables of a hook taken off, the leak guard); absent: made when it is first needed
  * @returns {{ commented: true, prNumber: number } | { commented: false, reason: string }}
  */
-export function noteCarryOnPr(branch: string, carrier: string, reason: string, { run = defaultRun }: { run?: typeof defaultRun; } = {}): { commented: true; prNumber: number; } | { commented: false; reason: string; } {
-  let found: unknown;
+export function noteCarryOnPr(branch: string, carrier: string, reason: string, { gh }: { gh?: RowsRun; } = {}): { commented: true; prNumber: number; } | { commented: false; reason: string; } {
+  // Made inside each guarded step: a code host that cannot be reached is a lookup that failed, reported as one, and never a throw after the push landed.
+  let prNumber: number | null;
   try {
-    found = JSON.parse(run("gh", ["pr", "list", "--repo", REPO, "--head", branch, "--state", "open",
-      "--json", "number"]));
+    prNumber = rows().openPullNumberOfBranch({ repo: REPO, branch, run: gh ?? codeHostRun() });
   } catch (error) {
     return { commented: false, reason: `could not look up the open PR for ${branch} -- ${errMsg(error)}` };
   }
-  if (!Array.isArray(found) || found.length === 0) {
+  if (prNumber === null) {
     return { commented: false, reason: `no open PR found for ${branch} -- nothing to comment on` };
   }
-  const prNumber = (found[0] as { number: number }).number;
   try {
-    run("gh", ["pr", "comment", String(prNumber), "--repo", REPO, "--body",
-      `Carried by \`${carrier}\` from a detached checkout: ${reason}`]);
+    rows().commentOnPull({ repo: REPO, number: prNumber, body: `Carried by \`${carrier}\` from a detached checkout: ${reason}`, run: gh ?? codeHostRun() });
   } catch (error) {
     // #1477: GUARDED, BECAUSE THIS RUNS AFTER THE PUSH LANDED. Unguarded, its throw escaped `main` and Node
     // exited 1, which this script's header defines as NOT CARRIED. Reported, never thrown, like the lookup above.
@@ -292,7 +301,7 @@ export function carryMain(argv: string[], { run = defaultRun, stamp = stampWorkt
     return EXIT.NOT_CARRIED;
   }
   out(`CARRIED -- ${branch} merged with origin/main and pushed.\n${result.diffstat}\n`);
-  const note = noteCarryOnPr(branch, carrier, reason, { run });
+  const note = noteCarryOnPr(branch, carrier, reason);
   if (note.commented) {
     out(`Noted on PR #${note.prNumber}.\n`);
     return EXIT.CARRIED;

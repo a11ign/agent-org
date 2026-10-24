@@ -74,6 +74,8 @@ import { APP_ROLE_LANE_OWNER, laneAuthorshipRefusal, loadLanes, reviewOnlyPathsI
 import { declarationRefusal } from "./hand-fix-ledger.ts";
 import { referencesInReason } from "./merged-row-open-incident.ts";
 import { openPullsOf } from "./ticket-port/open-pulls.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 import { gh as ghRead } from "./board-data.ts";
 import { VERIFY_STATE, readVerifyStamp, verifyRefusalLine } from "./verify-stamp.ts";
 import { QUEUED_EXIT, attachFollowUps } from "./gh-ledger.ts";
@@ -544,10 +546,10 @@ export function sendFailureLine({ mode, branch, head, message }: { mode: string;
 function labelStepsAfterCreate(mode: string, rest: string[], { owner, labelExists, branch }: { owner: string | null; labelExists?: (name: string, repo?: string) => boolean; branch: string | null; }): string[][] {
   const steps: string[][] = [];
   for (const args of labelAfterCreate(mode, rest, owner, branch)) {
-    const name = args[args.length - 1];
-    const repo = flagAfter(args, "--repo"); // the same repository `ensureLabel` asks and creates in
+    const name = `${SESSION_PREFIX}${owner}`;
+    const repo = flagAfter(rest, "--repo"); // the same repository `ensureLabel` asks and creates in
     if (labelExists !== undefined && !labelExists(name, ...(repo === null ? [] : [repo]))) {
-      steps.push(["label", "create", name, "--description", "The session that owns the pull request (pr:open)", ...(repo === null ? [] : ["--repo", repo])]);
+      steps.push(rows().labelCreateArgs({ name, description: SESSION_LABEL_DESCRIPTION, repo }));
     }
     steps.push(args);
   }
@@ -659,7 +661,7 @@ export function sendToGitHub(mode: string, rest: string[],
     return branchRead.value;
   };
   try {
-    run(["pr", mode, ...rest]);
+    run(rows().pullWriteArgs(mode, rest));
   } catch (error) {
     if ((error as { status?: number })?.status === EXIT_QUEUED) {
       const steps = mode === "create" ? [...(arm ? armAfterCreate(mode, rest, branch()) : []), ...labelStepsAfterCreate(mode, rest, { owner: owner(), labelExists, branch: branch() })] : [];
@@ -709,12 +711,12 @@ function labelCreatedPr(mode: string, rest: string[], { run, err, owner, labelEx
     }) {
   for (const args of labelAfterCreate(mode, rest, owner, branch)) {
     try {
-      ensureLabel(args[args.length - 1], { run, labelExists, repo: flagAfter(args, "--repo") });
+      ensureLabel(`${SESSION_PREFIX}${owner}`, { run, labelExists, repo: flagAfter(rest, "--repo") });
       run(args);
     } catch (error) {
       err(`pr-open: the PR was created but labelling it failed -- ${messageOf(error)}\n`
         + `  It carries no \`${SESSION_PREFIX}*\` label, so a red check on it wakes product-manager rather than its `
-        + `author. Apply it by hand: \`gh pr edit <n> --add-label ${args[args.length - 1]}\`.\n`);
+        + `author. Apply it by hand: \`gh pr edit <n> --add-label ${SESSION_PREFIX}${owner}\`.\n`);
     }
   }
 }
@@ -730,8 +732,11 @@ function labelCreatedPr(mode: string, rest: string[], { run, err, owner, labelEx
  */
 function ensureLabel(name: string, { run, labelExists, repo = null }: { run: (args: string[]) => void; labelExists?: (name: string, repo?: string) => boolean; repo?: string | null; }) {
   if (labelExists === undefined || labelExists(name, ...(repo === null ? [] : [repo]))) return;
-  run(["label", "create", name, "--description", "The session that owns the pull request (pr:open)", ...(repo === null ? [] : ["--repo", repo])]);
+  run(rows().labelCreateArgs({ name, description: SESSION_LABEL_DESCRIPTION, repo }));
 }
+
+/** What a session label made by pr-open says it is for. */
+const SESSION_LABEL_DESCRIPTION = "The session that owns the pull request (pr:open)";
 
 /**
  * #3639: THE ROW A PULL REQUEST NAMES CARRIES ITS OWNER, for a tree nobody stamped.
@@ -824,7 +829,8 @@ export const PR_OPEN_ENV = "A11Y_PR_OPEN";
  */
 export const defaultGh = (args: string[]) => {
   rmSync(QUEUED_TO, { force: true });
-  execFileSync("gh", args, { stdio: "inherit", env: { ...process.env, [PR_OPEN_ENV]: "1", A11Y_GH_QUEUED_TO: QUEUED_TO } });
+  // A11-160: the code host starts `gh` -- with this terminal for its streams, no bound on it, and the two variables the wrapper reads set on the child alone.
+  rows().runnerWith({ inherit: true, env: { [PR_OPEN_ENV]: "1", A11Y_GH_QUEUED_TO: QUEUED_TO } })(args);
 };
 /** (#4898) WHERE `plugins/github/wrapper/gh` LEAVES THE QUEUE ENTRY IT HELD: `<queue dir> TAB <id> TAB <reset epoch>`, written only for a call it queued. */
 const QUEUED_TO = join(tmpdir(), `pr-open-queued-${process.pid}`);
@@ -839,14 +845,19 @@ export function readQueuedEntry(path: string = QUEUED_TO): { dir: string; id: st
     return null; // no file is "not held", which the caller words; there is nothing to guess at
   }
 }
+/** What `execFileSync` let a program print before it cut it off (1 MiB), which every read here has been held to. */
+const EXEC_FILE_BUFFER = 1024 * 1024;
+/** The code host's program for a read whose stderr went through to this process's own, as `execFileSync` let it (A11-160: the process is the code host's). */
+const readerRun = (): RowsRun => rows().runnerWith({ maxBuffer: EXEC_FILE_BUFFER });
+/** The same for a read whose stderr was piped (`stdio` named): it is kept to the failure. */
+const quietRun = (): RowsRun => rows().runnerWith({ maxBuffer: EXEC_FILE_BUFFER, echo: false });
 /**
  * PR N's head, over REST (`gh api`, the core pool) rather than `gh pr view --json` (GraphQL, the pool that runs out).
  * @param {string} repo
  * @param {string} number
  * @returns {{ ref: string, oid: string } | null}
  */
-const defaultPrHead = (repo: string, number: string): { ref: string; oid: string; } | null => JSON.parse(execFileSync("gh",
-  ["api", `repos/${repo}/pulls/${number}`, "--jq", "{ref: .head.ref, oid: .head.sha}"], { encoding: "utf8" }));
+const defaultPrHead = (repo: string, number: string): { ref: string; oid: string; } | null => rows().pullHeadForOpening({ repo, number, run: readerRun() });
 /**
  * Row N's body, over REST like `defaultPrHead` (the core pool, not the GraphQL one that runs out), as the caller. It is
  * a sibling of `run` and not a use of it: `run` is `stdio: "inherit"` and returns nothing, so it cannot hand a body back.
@@ -855,29 +866,21 @@ const defaultPrHead = (repo: string, number: string): { ref: string; oid: string
  * @param {string} [repo]
  * @returns {string}
  */
-const defaultRowBody = (number: number, repo: string = REPO): string =>
-  execFileSync("gh", ["api", `repos/${repo}/issues/${number}`, "--jq", ".body"], { encoding: "utf8" });
+const defaultRowBody = (number: number, repo: string = REPO): string => rows().rowBodyForOpening({ repo, number, run: readerRun() });
 /**
  * #3639: a row's labels over REST like `defaultRowBody`. `repo` is always qualified by `rowOwnerLabel`'s caller.
  * @param {number} number @param {string} repo
  * @returns {string[]}
  */
-const defaultRowLabels = (number: number, repo: string): string[] => JSON.parse(execFileSync("gh",
-  ["api", `repos/${repo}/issues/${number}`, "--jq", "[.labels[].name]"], { encoding: "utf8" }));
+const defaultRowLabels = (number: number, repo: string): string[] => rows().restLabelNamesOf({ repo, number, run: readerRun() });
 /**
  * #3639: whether THIS repository has the label, over REST. A 404 is "no"; anything else THROWS, because "could not ask" and
  * "absent" are different states and creating a label on the strength of the second would hide an auth or network fault.
  * @param {string} name
  * @returns {boolean}
  */
-function defaultLabelExists(name: string, repo: string = "{owner}/{repo}"): boolean {
-  try {
-    execFileSync("gh", ["api", `repos/${repo}/labels/${encodeURIComponent(name)}`, "--silent"], { stdio: "pipe" });
-    return true;
-  } catch (error) {
-    if (/HTTP 404|Not Found/i.test(`${(error as {stderr?: unknown}).stderr ?? ""}`)) return false;
-    throw error;
-  }
+function defaultLabelExists(name: string, repo?: string): boolean {
+  return rows().labelExistsForOpening({ name, repo, run: quietRun() });
 }
 /** #3215: the stamp of the tree `pr-open` runs from, read against the body being sent. @param {string} body */
 const defaultVerifyStamp = (body: string) => readVerifyStamp({ dir: defaultGit(["rev-parse", "--show-toplevel"]), body });
@@ -1258,20 +1261,7 @@ function regionRepository(body: string, { rowBody, rootFiles, code = homeProject
  * @param {string} repo @param {string} branch
  * @returns {string | null}
  */
-const defaultBranchHead = (repo: string, branch: string): string | null => {
-  try {
-    const path = branch.split("/").map(encodeURIComponent).join("/");
-    return execFileSync("gh", ["api", `repos/${repo}/branches/${path}`, "--jq", ".commit.sha"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim() || null;
-  } catch (error) {
-    const said = `${(error as { stderr?: unknown }).stderr ?? ""}${messageOf(error)}`;
-    if (/HTTP 404|Not Found/i.test(said)) return null;
-    throw error;
-  }
-};
-
-/** `gh`'s own failure line: its stderr when it said one, else the error's first line. @param {unknown} error */
-const ghFailureLine = (error: unknown) =>
-  `${(error as { stderr?: unknown }).stderr ?? ""}`.trim().split("\n")[0] || messageOf(error).split("\n")[0];
+const defaultBranchHead = (repo: string, branch: string): string | null => rows().branchHeadForOpening({ repo, branch, run: quietRun() });
 
 /**
  * #811: THE LOGIN `gh` WILL AUTHOR THE PULL REQUEST AS, FROM `gh api user` AND, WHERE THAT IS REFUSED, FROM THE GRAPHQL VIEWER.
@@ -1295,26 +1285,14 @@ const ghFailureLine = (error: unknown) =>
  * @returns {string}
  */
 export function loginThrough(gh: (args: string[]) => string, role?: string): string {
-  const reads: [string, string[]][] = [
-    ["`gh api user`", ["api", "user", "--jq", ".login"]],
-    ["the GraphQL `viewer` read", ["api", "graphql", "-f", "query={ viewer { login } }", "--jq", ".data.viewer.login"]],
-  ];
-  const failures: string[] = [];
-  for (const [name, args] of reads) {
-    try {
-      const login = gh(args).trim();
-      if (login) return login;
-      failures.push(`${name} answered no login`);
-    } catch (error) {
-      failures.push(`${name}: ${ghFailureLine(error)}`);
-    }
-  }
+  const found = rows().authoringLoginOf({ run: gh });
+  if ("login" in found) return found.login;
   if (role && Object.hasOwn(APP_ROLE_LANE_OWNER, role)) return `app:${role}`;
-  throw new Error(failures.join("; "));
+  throw new Error(found.failures.join("; "));
 }
 
 /** The login `gh` will author the pull request as -- `gh pr create` runs under the same account (or App) and `GH_CONFIG_DIR`. */
-const defaultLogin = () => loginThrough((args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }), process.env.AGENT_ORG_GH_ROLE);
+const defaultLogin = () => loginThrough((args) => quietRun()(args), process.env.AGENT_ORG_GH_ROLE);
 
 /**
  * #3254, #1756 RULING ITEM 7: A REVIEW-ONLY LANE'S OWNER DOES NOT OPEN A PULL REQUEST INTO IT -- refused before
@@ -1510,8 +1488,7 @@ export function machineryRefusal(diff: import("./acceptance-commands/acceptance-
  */
 export function armAfterCreate(mode: string, rest: string[], branch: string | null = null): string[][] {
   if (mode !== "create" || rest.includes("--draft")) return [];
-  const selector = selectorOf(rest, branch);
-  return selector === null ? [] : [["pr", "merge", "--auto", "--merge", ...selector, ...repoFlagOf(rest)]];
+  return rows().armArgsAfterCreate({ rest, branch });
 }
 
 /**
@@ -1551,35 +1528,7 @@ export function armAfterCreate(mode: string, rest: string[], branch: string | nu
 export function labelAfterCreate(mode: string, rest: string[], owner: string | null, branch: string | null = null): string[][] {
   if (mode !== "create" || owner === null) return [];
   if (!isLiveSession(owner)) return [];
-  const selector = selectorOf(rest, branch);
-  return selector === null ? [] : [["pr", "edit", ...selector, ...repoFlagOf(rest), "--add-label", `${SESSION_PREFIX}${owner}`]];
-}
-
-/**
- * agent-org#753: `--repo <repo>` when the call was made for one, else nothing -- the arm and the label of a pull request opened in another
- * repository are aimed there too, because `gh pr merge <branch>` and `gh pr edit <branch>` otherwise look in the checkout's own.
- * @param {string[]} rest
- * @returns {string[]}
- */
-function repoFlagOf(rest: string[]): string[] {
-  const repo = flagAfter(rest, "--repo");
-  return repo === null ? [] : ["--repo", repo];
-}
-
-/**
- * agent-org#952: the selector the arm and the label name the pull request by, after a create. `--head` when it was passed. Otherwise the
- * tree's own branch, but only with `--repo`: gh refuses `--repo` with no selector ("argument required when using the --repo flag"), which left
- * the PR unarmed and unlabelled, and without `--repo` gh reads the checkout's branch itself. `null` when `--repo` is given and no branch is known,
- * so the step is not sent at all rather than sent in the form gh refuses.
- * @param {string[]} rest
- * @param {string | null} branch
- * @returns {string[] | null}
- */
-function selectorOf(rest: string[], branch: string | null): string[] | null {
-  const head = flagAfter(rest, "--head");
-  if (head) return [head];
-  if (repoFlagOf(rest).length === 0) return [];
-  return branch === null ? null : [branch];
+  return rows().labelArgsAfterCreate({ rest, branch, label: `${SESSION_PREFIX}${owner}` });
 }
 
 /**

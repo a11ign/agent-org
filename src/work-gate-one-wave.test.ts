@@ -1,4 +1,4 @@
-// no-token: gh -- `gh` is never reached: every read is handed a fake `run`, and the batch is a fake that notes what it was handed.
+// no-token: gh -- `gh` is never reached: the code host is the in-memory one, every read is handed a fake `run` that notes the call it is asked, and the batch is a fake that notes what it was handed.
 /**
  * a11ign/a11ign#3566, slice 6: THE TRACKER LANES AND THE OTHER REPOSITORIES' LISTS GO OUT AS ONE WAVE, NOT ONE WAVE EACH.
  *
@@ -12,30 +12,51 @@
  *     ask more refused questions), and no longer asks either on its own.
  *
  * THE POPULATION IS THE DECLARATION'S: one list per other declared code repository, so a third repository is covered the day it is declared.
+ *
+ * THE WAVE IS CORE'S POLICY, SO NOTHING HERE IS GITHUB'S WIRE FORMAT (A11-160, step 9): the code host is the in-memory one, whose reads act on its world and ignore the `run` they are handed. A read that goes
+ * through `run` by design is made to say so, as a stand-in call (`fake-rows <read> <label>` for a tracker's lists, `fake-open-pull-list` for a repository's), so the wave can be counted without a single `gh` argument list.
  */
-import { test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { readLanesAfterOutageCheck, readOtherScopes } from "./work-gate.ts";
 import { readTrackerLanes } from "./work-gate/tick.ts";
 import { scopesOf } from "./work-gate/vocabulary.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 
 type Lane = ReturnType<typeof readOtherScopes>[number];
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null };
 
 const OTHER_CODE = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "" && scope.code !== null);
-const isTrackerCall = ({ args }: Call) => args[0] === "issue" || args[0] === "label";
-const isRepositoryCall = ({ args, repo }: Call) => args[0] === "pr" && repo !== undefined;
+const TRACKER_CALL = "fake-rows";
+const REPOSITORY_CALL = "fake-open-pull-list";
+const isTrackerCall = ({ args }: Call) => args[0] === TRACKER_CALL;
+const isRepositoryCall = ({ args, repo }: Call) => args[0] === REPOSITORY_CALL && repo !== undefined;
 
-/** What `gh` answers per call: a pull request named for its repository, so a lane that reads another repository's answer is visible. */
+/** The code host the gate asks: its lists of a tracker's rows are made to go through the `run` they are handed, as the stand-in call `fake-rows <read> <label>`, and answer from its (empty) world. */
+function hostReadingThroughRun() {
+  const host = createFakeCodeHost();
+  const rows = host.rows as unknown as Record<string, (request: { label?: string; run: (args: string[]) => string }) => unknown>;
+  for (const read of ["readRowsByLabel", "openRowsOf"]) {
+    const ownRead = rows[read];
+    rows[read] = (request) => {
+      request.run([TRACKER_CALL, read, request.label ?? ""]);
+      return ownRead(request);
+    };
+  }
+  return host;
+}
+
+beforeEach(() => substituteCodeHost(hostReadingThroughRun()));
+afterEach(() => forgetActivation());
+
+/** What the run answers per call: a pull request named for its repository, so a lane that reads another repository's answer is visible; a tracker's list asks and is answered by the world. */
 function answerOf({ args, repo }: Call): string {
-  if (args[0] === "pr") return JSON.stringify([{ number: (repo ?? "primary").length, isDraft: false, headRefOid: "abc", statusCheckRollup: [],
+  if (args[0] === REPOSITORY_CALL) return JSON.stringify([{ number: (repo ?? "primary").length, isDraft: false, headRefOid: "abc", statusCheckRollup: [],
     author: { login: "x" }, comments: [], labels: [], files: [], changedFiles: 0, body: "", reviewDecision: "" }]);
-  // #5050: a label list is a GraphQL connection now; an empty one, as the plain `issue list` answers `[]`
-  if (readsRowsByLabel(args) !== null) return connectionOf([]);
   return "[]";
 }
 
@@ -85,7 +106,7 @@ test("what the readers return is what they returned asked one after the other", 
 test("a refused repository is that lane's null beside the answers of the others and of the tracker (#1286)", () => {
   const [refused] = OTHER_CODE;
   const { otherScopes, ...tracker } = readLanesAfterOutageCheck(sequentialRun([]),
-    fakeBatch([], (call) => call.repo !== undefined && call.args[0] === "pr" && call.repo.endsWith(refused.code!.repo.split("/")[1])));
+    fakeBatch([], (call) => call.repo !== undefined && call.args[0] === REPOSITORY_CALL && call.repo.endsWith(refused.code!.repo.split("/")[1])));
   const refusedLane = (otherScopes as Lane[]).find(({ scope }) => scope.key === refused.key)!;
   assert.equal(refusedLane.read.prs, null, "the refused lane says so");
   assert.ok((otherScopes as Lane[]).filter(({ scope }) => scope.key !== refused.key && scope.code !== null).every(({ read }) => Array.isArray(read.prs)), "the others are read");

@@ -23,6 +23,7 @@ import { pathToFileURL } from "node:url";
 // outside its own package (#2658, ADR 0040 decision 4) -- these are its own copies, in `lib/`.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
+import { rows } from "./plugins/rows.ts";
 
 export type GrepTask = { kind: "grep", pattern: string, paths: string[], flags?: string[] };
 export type ReadTask = { kind: "read", path: string, offset?: number, limit?: number };
@@ -79,12 +80,13 @@ export function runRead(task: ReadTask, { cwd, readFile }: { cwd: string; readFi
 /**
  * One `gh` call, run exactly as given -- the caller supplies its own `--jq`, matching engineer.md's "No
  * raw `gh` JSON where a projection answers"; this neither adds one nor refuses its absence, because not
- * every `gh` call is a JSON projection.
- * @param {GhTask} task @param {{ cwd: string, run: typeof defaultRun }} ctx @returns {Result}
+ * every `gh` call is a JSON projection. THE PROCESS IS THE CODE HOST'S (A11-160, step 9): the arguments are the caller's and cannot be a named operation of what core asks, so this asks the code host for a runner
+ * with the policy it has always run under (the directory the survey was aimed at, the cap on what `gh` may print) and applies no guard, because it has never refused an argument list.
+ * @param {GhTask} task @param {{ cwd: string }} ctx @returns {Result}
  */
-export function runGh(task: GhTask, { cwd, run }: { cwd: string; run: typeof defaultRun; }): Result {
+export function runGh(task: GhTask, { cwd }: { cwd: string; }): Result {
   try {
-    const output = run("gh", task.args, { cwd, encoding: "utf8", maxBuffer: MAX_GH_OUTPUT_BYTES });
+    const output = rows().runnerWith({ cwd, maxBuffer: MAX_GH_OUTPUT_BYTES })(task.args);
     return { task, ok: true, output };
   } catch (cause) {
     return { task, ok: false, error: firstLine(cause) };
@@ -94,6 +96,7 @@ export function runGh(task: GhTask, { cwd, run }: { cwd: string; run: typeof def
 /**
  * Every task, run and returned TOGETHER -- one call answering what would otherwise be N. An unrecognised
  * kind is refused as its OWN task, never thrown: one bad entry in a batch must not discard the rest.
+ * `run` starts `git`; a `gh` task goes to the code host's runner, which a test substitutes with the code host.
  * @param {Task[]} tasks @param {{ cwd: string, run?: typeof defaultRun, readFile?: typeof readFileSync }} ctx
  * @returns {Result[]}
  */
@@ -101,7 +104,7 @@ export function survey(tasks: Task[], { cwd, run = defaultRun, readFile = readFi
   return tasks.map((task) => {
     if (task.kind === "grep") return runGrep(task, { cwd, run });
     if (task.kind === "read") return runRead(task, { cwd, readFile });
-    if (task.kind === "gh") return runGh(task, { cwd, run });
+    if (task.kind === "gh") return runGh(task, { cwd });
     return { task, ok: false, error: `unknown task kind ${JSON.stringify((task as any).kind)}` };
   });
 }

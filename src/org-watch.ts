@@ -17,17 +17,18 @@
 // being duplicated and the choice was free. `product-manager` moved the Region to the title instead, which
 // is the right direction: this is the org's clock that also renders the weekly table, not a metrics script
 // that also watches. A stale Region is amended, never built to.
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** Exit codes are the contract: 0 nothing needs attention, 1 something does, 2 could not ask. */
 export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
 
-/** @param {string[]} args */
-const defaultRun = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
+/** The code host's own runner (A11-160, step 9): `gh` as this process's account, its stderr let through and its answer trimmed, as `execFileSync` gave it. */
+const defaultRun: RowsRun = (args) => rows().runnerWith({})(args).trim();
 
 // #1154: how far main's tip may lead the newest run before the run list is treated as STOPPED rather than
 // quiet.
@@ -164,24 +165,6 @@ export function renderTable(figures: Record<string, ReturnType<typeof figure>>):
 }
 
 /**
- * THE COUNT IS `total_count`, NOT THE PAGE. `actions/runs?per_page=1` returns `total_count` for the whole
- * query; counting the returned items counts the page size, which is 1. Named because this project has
- * already reported a page size as a population.
- * @param {string} path an `actions/runs` query, without the leading `repos/<repo>/`
- * @param {{ repo: string, run?: typeof defaultRun }} deps
- * @returns {number | null} `null` when the read failed -- never 0, which is a real answer
- */
-export function totalCount(path: string, { repo, run = defaultRun }: { repo: string; run?: typeof defaultRun; }): number | null {
-  try {
-    const total = JSON.parse(run(["api", `repos/${repo}/${path}`])).total_count;
-    return typeof total === "number" ? total : null;
-  } catch (cause) {
-    void cause;
-    return null;
-  }
-}
-
-/**
  * HOW STALE IS THIS RUN LIST, measured against a source the workflow cannot freeze -- `null` when unknown.
  *
  * #1154. The comparison is main's own TIP COMMIT, not a clock. A threshold on age alone cries wolf on a
@@ -215,8 +198,7 @@ export function runsHaveStopped({ newestRunAt, mainTipAt, lagHours = STOPPED_AFT
  */
 function mainTipCommittedAt(repo: string, run: typeof defaultRun): string | null {
   try {
-    const at = run(["api", `repos/${repo}/commits/main`, "--jq", ".commit.committer.date"]);
-    return typeof at === "string" && at.trim() !== "" ? at.trim() : null;
+    return rows().mainTipDateOf({ repo, run });
   } catch {
     return null;
   }
@@ -317,8 +299,7 @@ export function mainColour({ repo, workflow = "trunk", now = new Date(), run = d
 } {
   let runs: { conclusion: string | null; created_at: string; databaseId?: number; id?: number; }[];
   try {
-    runs = JSON.parse(run(["api",
-      `repos/${repo}/actions/workflows/${workflow}.yml/runs?branch=main&per_page=${RUNS_PAGE_SIZE}`])).workflow_runs ?? [];
+    runs = rows().workflowRunsOnMain({ repo, workflow: `${workflow}.yml`, perPage: RUNS_PAGE_SIZE, run });
   } catch (cause) {
     // #912: AN UNREADABLE MAIN IS NOT A GREEN ONE, AND MUST NOT RETURN THE SAME OBJECT.
     //
@@ -401,7 +382,7 @@ export function mainColour({ repo, workflow = "trunk", now = new Date(), run = d
  */
 export function firstFailingAssertion(runId: number, { repo, run = defaultRun }: { repo: string; run?: typeof defaultRun; }): string | null {
   try {
-    const log = run(["run", "view", String(runId), "--repo", repo, "--log-failed"]);
+    const log = rows().failedLogOfRun(repo, runId, run);
     const line = log.split("\n").find((l) => /\bnot ok [0-9]+ - /.test(l));
     return line ? line.slice(line.indexOf("not ok")).trim() : null;
   } catch (cause) {

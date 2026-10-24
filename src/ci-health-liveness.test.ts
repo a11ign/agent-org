@@ -1,5 +1,5 @@
-// no-token: GRACE_HOURS -- every `gh` call in this file is an injected fake or a thrown error; the live reads are run by hand and pasted on the pull request
-// a11ign/a11ign#3659: did ci-health.yml's Monday comment arrive? Pure cases over injected run and comment lists, no network, and one
+// no-token: GRACE_HOURS -- every read in this file is the fake code host's (A11-160, step 9); the live reads are run by hand and pasted on the pull request
+// a11ign/a11ign#3659: did ci-health.yml's Monday comment arrive? Pure cases over the fake code host's workflows and comments, no network, and one
 // read-only look at the project's own script.
 //
 // POSITIVE CONTROLS (the vacuity failure from both sides): every "no order" assertion has a twin that DOES order, so `ciHealthOrders` is
@@ -9,12 +9,15 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import {
   GRACE_HOURS, VERDICT, ciHealthLiveness, ciHealthOrders, declarationFrom, headingForRun, latestSlot, readCiHealth, readingLine, slotFromWorkflow,
 } from "./ci-health-liveness.ts";
 import * as everyTracker from "./ci-health-liveness.ts"; // the readers #4080 adds, by namespace so a run without them fails each test and not the file's import
 import { homeHostConfig } from "./host-config.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRowsWorld } from "./plugins/fakes/code-host-rows.ts";
 
 const MONDAY_SLOT = { minute: 43, hour: 6, weekday: 1 };
 const SLOT_AT = "2026-10-05T06:43:00.000Z";
@@ -24,6 +27,33 @@ const SCHEDULE_RUN = { id: 37_200_000_001, event: "schedule", created_at: "2026-
 const DISPATCH_RUN = { id: 37_124_395_988, event: "workflow_dispatch", created_at: "2026-10-03T12:54:25Z", conclusion: "success" };
 const COMMENT = `${HEADING}\n\nWindow: runs of \`ci.yml\` created from 2026-09-28T00:00:00Z to 2026-10-05T00:00:00Z`;
 const AFTER_GRACE = new Date("2026-10-05T14:00:00Z");
+const WORKFLOW_PATH = ".github/workflows/ci-health.yml";
+const CRON_TEXT = 'on:\n  schedule:\n    - cron: "43 6 * * 1"\n  workflow_dispatch:\n';
+const RATE_LIMIT = new Error("HTTP 403: API rate limit exceeded");
+
+afterEach(() => forgetActivation());
+
+/** The fake code host the reads ask: nothing is held, so every read is a refusal until a test seeds a repository. */
+function codeHost(): FakeRowsWorld {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+
+/**
+ * Seeds `repo` as a tracker with the CI-health workflow, its file, the runs a schedule started and the report issue's comments. `comments` are posted at the given times (ISO); the report issue is row 928.
+ * A repository a test does not seed has no workflow, as a tracker without one does (HTTP 404).
+ */
+function seedTracker(world: FakeRowsWorld, repo: string, { runs = [] as object[], comments = [] as [string, string][], workflow = "ci-health.yml" } = {}): void {
+  world.tail.readouts.workflows.set(`${repo}/${workflow}`, { path: WORKFLOW_PATH, state: "active", scheduledRuns: runs as never });
+  world.tail.readouts.files.set(`${repo}:${WORKFLOW_PATH}`, CRON_TEXT);
+  world.foreignRows.set(`${repo}#928`, fakeRow(world, 928, { comments: comments.map(([body, createdAt], id) => ({ id, body, createdAt })) }));
+}
+
+/** Every read of `repo` is refused with a rate limit, as a repository the account has no budget left for. */
+function refuseRepository(world: FakeRowsWorld, repo: string): void {
+  for (const operation of ["workflowDefinitionOf", "rawFileTextOf", "scheduledRunsOf", "reportCommentBodiesOf"]) world.failures.set(`${operation} ${repo}`, RATE_LIMIT);
+}
 
 /** @param {Partial<Parameters<typeof ciHealthLiveness>[0]>} over */
 const read = (over: Partial<Parameters<typeof ciHealthLiveness>[0]>) => ciHealthLiveness({ now: AFTER_GRACE, slot: MONDAY_SLOT, runs: [], comments: [], workflowState: "active", ...over });
@@ -114,29 +144,39 @@ test("CANNOT TELL names the lookup that failed, and a null list inside the grace
   assert.match(reading.detail, /schedule` runs/);
 });
 
-test("a rate limit (every gh call throws) reads CANNOT TELL, end to end through the reads", () => {
-  const limited = () => { throw new Error("HTTP 403: API rate limit exceeded"); };
-  const reading = readCiHealth({ declared: { repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 } }, AFTER_GRACE, { gh: limited });
+test("a rate limit (every read is refused) reads CANNOT TELL, end to end through the reads", () => {
+  const world = codeHost();
+  refuseRepository(world, "a11ign/a11ign");
+  const reading = readCiHealth({ declared: { repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 } }, AFTER_GRACE);
   assert.equal(reading.verdict, VERDICT.CANNOT_TELL);
   assert.match(reading.detail, /rate limit exceeded/);
   assert.deepEqual(ciHealthOrders(reading), []);
 });
 
-test("the reads ask GitHub for schedule runs and for comments since the slot, and the verdict follows their answers", () => {
-  const calls: string[][] = [];
-  const gh = (args: string[]) => {
-    calls.push(args);
-    const url = args.find((a) => a.startsWith("repos/")) ?? "";
-    if (url.includes("/contents/")) return 'on:\n  schedule:\n    - cron: "43 6 * * 1"\n  workflow_dispatch:\n';
-    if (url.endsWith("/actions/workflows/ci-health.yml")) return JSON.stringify({ state: "active", path: ".github/workflows/ci-health.yml" });
-    if (url.includes("/runs?")) return JSON.stringify({ workflow_runs: [SCHEDULE_RUN] });
-    if (url.includes("/comments?")) return JSON.stringify([[{ body: COMMENT }]]);
-    throw new Error(`unexpected ${url}`);
-  };
-  const reading = readCiHealth({ declared: { repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 } }, AFTER_GRACE, { gh });
+// WHAT IS ASKED of GitHub (the paths, `event=schedule`, `since=` in the comments' query) is the plugin's: `plugins/github/rows/readouts-rows.test.ts`. Here the reads are the code host's, and the verdict follows what they answer.
+test("the reads ask the code host for the workflow, its schedule runs and the comments since the slot, and the verdict follows their answers", () => {
+  const world = codeHost();
+  seedTracker(world, "a11ign/a11ign", { runs: [SCHEDULE_RUN], comments: [[COMMENT, "2026-10-05T07:30:00Z"]] });
+  const reading = readCiHealth({ declared: { repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 } }, AFTER_GRACE);
   assert.equal(reading.verdict, VERDICT.PRESENT);
-  assert.ok(calls.some((a) => a.some((x) => x.includes("/runs?event=schedule"))));
-  assert.ok(calls.some((a) => a.some((x) => x.includes("issues/928/comments") && x.includes("since=2026-10-05T06:43:00Z"))));
+  assert.deepEqual(world.calls, ["workflowDefinitionOf a11ign/a11ign ci-health.yml", `rawFileTextOf a11ign/a11ign ${WORKFLOW_PATH}`, "scheduledRunsOf a11ign/a11ign ci-health.yml", "reportCommentBodiesOf a11ign/a11ign#928"]);
+});
+
+test("the comments are asked for SINCE the slot: last week's report does not stand in for this week's", () => {
+  const world = codeHost();
+  seedTracker(world, "a11ign/a11ign", { runs: [SCHEDULE_RUN], comments: [[COMMENT, "2026-10-04T07:30:00Z"]] });
+  const reading = readCiHealth({ declared: { repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 } }, AFTER_GRACE);
+  assert.equal(reading.verdict, VERDICT.NO_COMMENT, "the one comment is older than the 06:43 slot, so the read does not return it");
+});
+
+test("a read the code host refuses is named in the reading, and the others are still made", () => {
+  const world = codeHost();
+  seedTracker(world, "a11ign/a11ign", { runs: [SCHEDULE_RUN], comments: [[COMMENT, "2026-10-05T07:30:00Z"]] });
+  world.failures.set("scheduledRunsOf", new Error("HTTP 502: bad gateway"));
+  const reading = readCiHealth({ declared: { repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 } }, AFTER_GRACE);
+  assert.equal(reading.verdict, VERDICT.CANNOT_TELL);
+  assert.match(reading.detail, /the workflow's `schedule` runs \(HTTP 502: bad gateway\)/);
+  assert.ok(world.calls.includes("reportCommentBodiesOf a11ign/a11ign#928"), "the comments were read although the runs were refused");
 });
 
 test("the cron is read from the workflow file: exactly one plain `m h * * d`, else no slot", () => {
@@ -230,18 +270,15 @@ test("the script pin RAN: under the acceptance command's AGENT_ORG_HOST the proj
 // ---- #4080: every declared tracker is read, not the first -----------------------------------------------------------------------------------
 const TWO_TRACKERS = { tracker: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }], units: { ciHealthWorkflow: "ci-health.yml", ciHealthIssue: 928 } };
 
-/** A `gh` that answers per repository: `answers[repo]` is `"present"`, `"silent"` (no run), or `"refused"` (every call throws). A repository not listed has no workflow, as a tracker without one does. */
-const ghPerRepo = (answers: Record<string, string>) => (args: string[]) => {
-  const url = args.find((a) => a.startsWith("repos/")) ?? "";
-  const mode = answers[url.split("/").slice(1, 3).join("/")];
-  if (mode === undefined) throw new Error(`HTTP 404: Not Found (${url})`);
-  if (mode === "refused") throw new Error("HTTP 403: API rate limit exceeded");
-  if (url.includes("/contents/")) return 'on:\n  schedule:\n    - cron: "43 6 * * 1"\n';
-  if (url.endsWith("/actions/workflows/ci-health.yml")) return JSON.stringify({ state: "active", path: ".github/workflows/ci-health.yml" });
-  if (url.includes("/runs?")) return JSON.stringify({ workflow_runs: mode === "present" ? [SCHEDULE_RUN] : [] });
-  if (url.includes("/comments?")) return JSON.stringify([mode === "present" ? [{ body: COMMENT }] : []]);
-  throw new Error(`unexpected ${url}`);
-};
+/** The fake code host with each tracker seeded as `answers[repo]` says: `"present"`, `"silent"` (no run), or `"refused"` (every read is refused). A repository not listed has no workflow, as a tracker without one does. */
+function hostPerRepo(answers: Record<string, string>): FakeRowsWorld {
+  const world = codeHost();
+  for (const [repo, mode] of Object.entries(answers)) {
+    if (mode === "refused") refuseRepository(world, repo);
+    seedTracker(world, repo, mode === "present" ? { runs: [SCHEDULE_RUN], comments: [[COMMENT, "2026-10-05T07:30:00Z"]] } : {});
+  }
+  return world;
+}
 
 test("#4080: the declaration yields one lookup per tracker, the second tracker's repository among them", () => {
   const result = declarationFrom(JSON.stringify(TWO_TRACKERS));
@@ -251,13 +288,15 @@ test("#4080: the declaration yields one lookup per tracker, the second tracker's
 
 test("#4080: a report that exists ONLY in the second tracker's repository is found there", () => {
   const where = declarationFrom(JSON.stringify(TWO_TRACKERS));
-  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh: ghPerRepo({ "a11ign/a11ign": "silent", "a11ign/agent-org": "present" }) });
+  hostPerRepo({ "a11ign/a11ign": "silent", "a11ign/agent-org": "present" });
+  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE);
   assert.deepEqual(readings.map((r) => [r.repo, r.reading.verdict]), [["a11ign/a11ign", VERDICT.SILENT], ["a11ign/agent-org", VERDICT.PRESENT]]);
 });
 
 test("#4080: the same issue number in both trackers stays two questions, told apart by repository in the line and in the order's key", () => {
   const where = declarationFrom(JSON.stringify(TWO_TRACKERS));
-  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh: ghPerRepo({ "a11ign/a11ign": "silent", "a11ign/agent-org": "silent" }) });
+  hostPerRepo({ "a11ign/a11ign": "silent", "a11ign/agent-org": "silent" });
+  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE);
   const lines = readings.map(({ repo, reading }) => readingLine(reading, repo));
   assert.match(lines[0], /^ci-health liveness \(a11ign\/a11ign\): SILENT/);
   assert.match(lines[1], /^ci-health liveness \(a11ign\/agent-org\): SILENT/);
@@ -267,7 +306,8 @@ test("#4080: the same issue number in both trackers stays two questions, told ap
 
 test("#4080: a lookup refused on the second tracker names that tracker, and the first tracker's reading is still reported", () => {
   const where = declarationFrom(JSON.stringify(TWO_TRACKERS));
-  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh: ghPerRepo({ "a11ign/a11ign": "present", "a11ign/agent-org": "refused" }) });
+  hostPerRepo({ "a11ign/a11ign": "present", "a11ign/agent-org": "refused" });
+  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE);
   assert.equal(readings[0].reading.verdict, VERDICT.PRESENT);
   assert.equal(readings[1].repo, "a11ign/agent-org");
   assert.equal(readings[1].reading.verdict, VERDICT.CANNOT_TELL);
@@ -286,10 +326,10 @@ test("#4080: the exit is the most alarming reading: a finding, then CANNOT TELL,
 
 test("#4080: with ONE declared tracker the reading, the line and the order are the ones they were before", () => {
   const where = declarationFrom(JSON.stringify({ ...TWO_TRACKERS, tracker: [TWO_TRACKERS.tracker[0]] }));
-  const gh = ghPerRepo({ "a11ign/a11ign": "silent" });
-  const all = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh });
+  hostPerRepo({ "a11ign/a11ign": "silent" });
+  const all = everyTracker.readCiHealthAll(where, AFTER_GRACE);
   assert.ok("declared" in where);
-  assert.deepEqual(all.map((r) => r.reading), [readCiHealth({ declared: where.declared[0] }, AFTER_GRACE, { gh })]);
+  assert.deepEqual(all.map((r) => r.reading), [readCiHealth({ declared: where.declared[0] }, AFTER_GRACE)]);
   const single = all[0].reading;
   assert.match(readingLine(single), /^ci-health liveness: SILENT -- slot /, "no repository in the line when there is nothing to tell apart");
   assert.equal(ciHealthOrders(single)[0].causeKey, "product-manager/ci-health-missing/2026-10-05T06:43:00.000Z/silent", "the key is unchanged");

@@ -17,7 +17,8 @@
  */
 import { readFileSync, renameSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "../api-pool.ts";
+import { poolFromHeaders } from "../api-pool.ts";
+import { graphqlPoolProbe } from "../ticket-port/graphql-pool-probe.ts";
 import { machineryFlagOn, type CanaryState } from "../org-health/fleet-build-readings.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "./vocabulary.ts";
@@ -69,7 +70,7 @@ export type Pacing = { paced: boolean; belowFloor: boolean; remaining: number | 
 export function pacingNow(run: (args: string[]) => string): Pacing {
   let remaining: number | null = null;
   try {
-    remaining = poolFromHeaders([...GRAPHQL_POOL_PROBE], run)?.remaining ?? null;
+    remaining = poolFromHeaders([...graphqlPoolProbe()], run)?.remaining ?? null;
   } catch {
     remaining = null;
   }

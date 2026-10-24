@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` call is an injected `run`; nothing here reaches the network (agent-org#1314)
+// no-token: gh -- the code host is the fake's (A11-160, step 9); nothing here reaches the network (agent-org#1314)
 /**
  * agent-org#1314: AN OVERRUN THAT RELEASED ITS SWEEP LOCK IS THE GUARD WORKING, so it is NOT a failure. `reportSweepWindows` writes the released overrun under
  * `sweep-window-released` -- a counter that is no class and no repeat -- and `sweep-overrun` is kept for the failure that follows it: a claim REFUSED on a swept Region after the
@@ -7,7 +7,7 @@
  * POSITIVE AND NEGATIVE CONTROLS, NAMED: the release is read back from a ledger file (`parseFailureLedger`) and through `class-repeat` (`repeatsIn` + `groupByClass`) -- three
  * released overruns make NO `sweep-overrun` group, while the same three lines under `sweep-overrun` make one. The refusal control is the same claim with and without the notice.
  *
- * THE CLAIM IS THE REAL ONE: `sessionEligibilityReason` over a `gh` mock, as in `sweep-window.test.ts`, so the refusal text is the one `row-claim` prints.
+ * THE CLAIM IS THE REAL ONE: `sessionEligibilityReason` over the fake code host's rows, as in `sweep-window.test.ts`, so the refusal text is the one `row-claim` prints.
  */
 import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 // THE PROJECT IS A RECORDED ONE, as in `sweep-window.test.ts`: the host file is set FIRST and the tool imported AFTER it.
 const SCRATCH = mkdtempSync(join(tmpdir(), "sweep-window-overrun-kind-"));
@@ -41,8 +42,6 @@ process.chdir(PROJECT);
 const { OVERRUN_MARKER, SWEEP_OVERRUN_KIND, readSweepWindows, recordOverrunRefusal, reportSweepWindows } = await import("./sweep-window.ts");
 const { claimRow, sessionEligibilityReason } = await import("./row-claim.ts");
 const { forgetActivation, substituteCodeHost } = await import("./plugins/active.ts");
-const { fakePluginDeps } = await import("./plugins/fakes/deps.ts");
-const { createCodeHost } = await import("../plugins/github/code-host.ts");
 const { FAILURE_LEDGER_FILE, SWEEP_WINDOW_RELEASED_KIND, parseFailureLedger, repeatsIn } = await import("./failure-ledger.ts");
 const { groupByClass } = await import("./class-repeat.ts");
 const { stateEntryPath } = await import("./host-config.ts");
@@ -102,70 +101,65 @@ test("(1) three released overruns make NO sweep-overrun group in class-repeat, w
 
 const rowBody = (...files: string[]) => `## Region\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n\nSweep: one rename, or concurrent edits conflict\n`;
 const plainBody = (...files: string[]) => `## Region\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n`;
-const listed = (number: number, body: string, session: string) => ({
-  number, labels: [{ name: "in-progress" }, { name: `session:${session}` }], body, blockedBy: { nodes: [] },
-});
 const claimRecord = (minutesAgo: number, session = "worker-4389") => ({
   body: `<!-- row-claim: claim record -->\n**Claim record** -- claimed by \`${session}\`.`, createdAt: new Date(NOW - minutesAgo * MIN).toISOString(), author: { login: "a11ign-ai-workers" },
 });
 
-/** One `gh` mock: the sweep row, its comments, and the asker's Region. No pull request, so the sweep's Region is counted by its claim, as B4 does. */
-function ghFor({ comments, asker = ["agent-org:src/b.ts"] }: { comments: unknown[]; asker?: string[] }) {
-  const sweeps = [listed(SWEEP, rowBody("agent-org:src/"), "worker-4389")];
-  return (_cmd: string, args: string[]): string => {
-    if (args[0] === "issue" && args[1] === "comment") return "";
-    if (args[0] === "issue" && args[1] === "view") {
-      if (args.includes("comments")) return JSON.stringify({ comments });
-      return JSON.stringify({ number: ASKER, title: "A row", body: plainBody(...asker), labels: [], blockedBy: { nodes: [] } });
-    }
-    if (readsRowsByLabel(args) !== null) return connectionOf(sweeps);
-    if (args[0] === "api" && args[1]?.includes("/pulls?")) return "[]";
-    return "[]";
-  };
+/** The fake code host a claim reads: the sweep row, its comments, and the asker's Region. No pull request, so the sweep's Region is counted by its claim, as B4 does. */
+function claimWorld({ comments, asker = ["agent-org:src/b.ts"] }: { comments: { body: string; createdAt: string; author?: { login: string } }[]; asker?: string[] }) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = TRACKER;
+  world.rows.set(ASKER, fakeRow(world, ASKER, { title: "A row", body: plainBody(...asker) }));
+  world.rows.set(SWEEP, fakeRow(world, SWEEP, { body: rowBody("agent-org:src/"), labels: ["in-progress", "session:worker-4389"],
+    comments: comments.map((comment, i) => ({ id: i + 1, body: comment.body, createdAt: comment.createdAt, author: comment.author?.login })) }));
+  substituteCodeHost(host);
+  return world;
 }
-const claimFor = (run: ReturnType<typeof ghFor>) => sessionEligibilityReason(ASKER, "worker-5000", { ghRun: (args) => run(INJECTED_GH, args), repo: TRACKER, repos: [AGENT_ORG] });
-// The name the injected `run` mock is keyed on: no process is spawned, so this is not a `gh` spawn and the `no-token` header holds.
-const INJECTED_GH = "gh";
-// THE READS THE RECORDER MAKES, as `row-claim` makes them: the `gh` mock behind a one-argument `run`, so a conclusive read is what the control reads.
-const readsOf = (run: ReturnType<typeof ghFor>) => ({ run: (args: string[]) => run(INJECTED_GH, args), repo: TRACKER, repos: [AGENT_ORG] });
+const claimFor = () => sessionEligibilityReason(ASKER, "worker-5000", { repo: TRACKER, repos: [AGENT_ORG] });
+// THE READS THE RECORDER MAKES, as `row-claim` makes them: the code host is the fake's, so a conclusive read is what the control reads.
+const reads = { repo: TRACKER, repos: [AGENT_ORG] };
 
 test("(2) POSITIVE CONTROL: a claim REFUSED on the swept Region after the overrun notice writes ONE sweep-overrun line, ref = the refused row", () => {
-  const run = ghFor({ comments: [claimRecord(200), { body: `${OVERRUN_MARKER}\nnotice`, createdAt: new Date(NOW - 1 * MIN).toISOString() }] });
-  const reason = claimFor(run);
+  claimWorld({ comments: [claimRecord(200), { body: `${OVERRUN_MARKER}\nnotice`, createdAt: new Date(NOW - 1 * MIN).toISOString() }] });
+  const reason = claimFor();
   assert.ok(reason !== null, "the released area still refuses the claim by B4");
   assert.match(reason, new RegExp(`overlaps the Region of #${SWEEP}`));
 
-  assert.equal(readSweepWindows(readsOf(run))?.[0]?.reported.overrun, true, "control: the read is conclusive and the notice is on the row");
+  assert.equal(readSweepWindows(reads)?.[0]?.reported.overrun, true, "control: the read is conclusive and the notice is on the row");
   const path = ledgerPath();
-  recordOverrunRefusal(reason, { issueNumber: ASKER, reads: readsOf(run), io: { logPath: () => path, report: () => {} } });
+  recordOverrunRefusal(reason, { issueNumber: ASKER, reads: reads, io: { logPath: () => path, report: () => {} } });
   const text = readBack(path);
   assert.equal(linesOf(text, SWEEP_OVERRUN_KIND).length, 1, `one failure:\n${text}`);
   assert.match(text, new RegExp(`^${SWEEP_OVERRUN_KIND}\\t\\d+\\t${TRACKER}#${ASKER}\\n$`), "ref is the REFUSED row, not the sweep");
 });
 
 test("(2) NEGATIVE CONTROL: the same refusal with NO overrun notice on the sweep's row writes nothing", () => {
-  const run = ghFor({ comments: [claimRecord(200)] });
-  const reason = claimFor(run);
+  const world = claimWorld({ comments: [claimRecord(200)] });
+  const reason = claimFor();
+  // The claim reports the overrun it finds on the row, as it does for a real one (a `claim` call is not read-only); the control is the row as the REFUSAL found it, without that notice.
+  world.rows.get(SWEEP)!.comments.length = 1;
   assert.ok(reason !== null, "the refusal is the same");
-  assert.equal(readSweepWindows(readsOf(run))?.[0]?.reported.overrun, false, "control: the read is conclusive and NO notice is on the row");
+  assert.equal(readSweepWindows(reads)?.[0]?.reported.overrun, false, "control: the read is conclusive and NO notice is on the row");
   const path = ledgerPath();
-  recordOverrunRefusal(reason, { issueNumber: ASKER, reads: readsOf(run), io: { logPath: () => path, report: () => {} } });
+  recordOverrunRefusal(reason, { issueNumber: ASKER, reads: reads, io: { logPath: () => path, report: () => {} } });
   assert.equal(readBack(path), "", "no notice, no failure: the sweep was not yet reported as released");
 });
 
 test("(2) NEGATIVE CONTROL: a refusal that names no swept row writes nothing, whatever the notice says", () => {
   const path = ledgerPath();
-  const run = ghFor({ comments: [claimRecord(200), { body: OVERRUN_MARKER, createdAt: new Date(NOW).toISOString() }] });
-  assert.equal(readSweepWindows(readsOf(run))?.length, 1, "control: the sweep is there and read, so the name is what refuses");
-  recordOverrunRefusal("overlaps the Region of #77, a row already claimed", { issueNumber: ASKER, reads: readsOf(run), io: { logPath: () => path, report: () => {} } });
+  claimWorld({ comments: [claimRecord(200), { body: OVERRUN_MARKER, createdAt: new Date(NOW).toISOString() }] });
+  assert.equal(readSweepWindows(reads)?.length, 1, "control: the sweep is there and read, so the name is what refuses");
+  recordOverrunRefusal("overlaps the Region of #77, a row already claimed", { issueNumber: ASKER, reads: reads, io: { logPath: () => path, report: () => {} } });
   assert.equal(readBack(path), "", "#77 is not a sweep on the board");
 });
 
 test("(2) a read that throws records nothing and never throws into the claim that asked", () => {
   const path = ledgerPath();
   const lines: string[] = [];
-  const broken = () => { throw new Error("gh is down"); };
-  recordOverrunRefusal("overlaps the Region of #4389, a declared SWEEP", { issueNumber: ASKER, reads: { run: broken, repo: TRACKER, repos: [AGENT_ORG] }, io: { logPath: () => path, report: (line) => void lines.push(line) } });
+  const world = claimWorld({ comments: [claimRecord(200), { body: OVERRUN_MARKER, createdAt: new Date(NOW).toISOString() }] });
+  world.failures.set("readClaimedRows", new Error("the code host is down"));
+  recordOverrunRefusal("overlaps the Region of #4389, a declared SWEEP", { issueNumber: ASKER, reads, io: { logPath: () => path, report: (line) => void lines.push(line) } });
   assert.equal(readBack(path), "");
   assert.equal(lines.length, 0, "an unread holder is inconclusive: nothing is recorded, and nothing is reported as an error");
 });
@@ -182,47 +176,31 @@ const notice = (minutesAgo: number) => ({ body: `${OVERRUN_MARKER}\nnotice`, cre
 const LEDGER = stateEntryPath(FAILURE_LEDGER_FILE);
 const freshLedger = () => { assert.ok(LEDGER.startsWith(SCRATCH), `the default ledger is the scratch one: ${LEDGER}`); rmSync(LEDGER, { force: true }); };
 
-/** The `gh` a claim reads: the asker's Region and labels, the sweep row and its comments. Writes are no-ops. A chairman asker's label is read as the tracker has it. */
-function claimGh(comments: unknown[], { chairman = false } = {}) {
-  return (_cmd: string, args: string[]): string => {
-    if (args[0] === "issue" && args[1] === "comment") return "";
-    if (args[0] === "issue" && args[1] === "view") {
-      if (args.includes("comments")) return JSON.stringify({ comments });
-      return JSON.stringify({ number: ASKER, title: "A row", body: plainBody("agent-org:src/b.ts") + TEMPLATE, state: "OPEN", labels: [{ name: "ready" }], blockedBy: { nodes: [] } });
-    }
-    const byLabel = readsRowsByLabel(args);
-    if (byLabel?.label === "priority:chairman") return connectionOf(chairman ? [{ number: ASKER, labels: [{ name: "priority:chairman" }] }] : []);
-    if (byLabel?.label === "in-progress") return connectionOf([{ number: SWEEP, labels: [{ name: "in-progress" }, { name: "session:worker-4389" }], body: rowBody("agent-org:src/"), blockedBy: { nodes: [] } }]);
-    if (args[0] === "api" && args[1] === `repos/${TRACKER}/issues/${ASKER}`) return JSON.stringify({ number: ASKER, title: "A row", labels: [{ name: "ready" }], state: "open" });
-    if (args[0] === "api" && args[1] === `repos/${TRACKER}/issues/${ASKER}/events`) return chairman ? `${CHAIRMAN_LOGINS[0]}\n` : "[]";
-    return "[]";
-  };
-}
 /**
- * A11-160, step 7: a claim's `gh` is the code host's, and the sweep's reads (`sweep-window.ts`, another step's) still go through the `run` the claim hands them. So the code host here is the GitHub plugin over an `exec`
- * that answers from the mock, and the claim's own `run` is for `git` alone.
+ * The world a claim reads: the asker's Region and labels, the sweep row and its comments. A chairman asker carries the label, put there by the chairman. The code host is the fake (A11-160, step 9): the claim's own `run`
+ * is for `git` alone, and a claim that reaches `gh` through it is a defect this test names.
  */
-function viaGithub(mock: (cmd: string, args: string[]) => string): (cmd: string) => string {
-  substituteCodeHost(createCodeHost(fakePluginDeps({ exec: (_file, args) => {
-    try {
-      return { status: 0, stdout: mock(INJECTED_GH, [...args]), stderr: "" };
-    } catch (error) {
-      const failed = error as { status?: number; stdout?: string; stderr?: string };
-      return { status: failed.status ?? 1, stdout: failed.stdout ?? "", stderr: failed.stderr ?? "" };
-    }
-  } })));
-  return (cmd) => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+function claimGhWorld(comments: { body: string; createdAt: string; author?: { login: string } }[], { chairman = false } = {}) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = TRACKER;
+  world.rows.set(ASKER, fakeRow(world, ASKER, { title: "A row", body: plainBody("agent-org:src/b.ts") + TEMPLATE, labels: chairman ? ["ready", "priority:chairman"] : ["ready"] }));
+  world.rows.set(SWEEP, fakeRow(world, SWEEP, { body: rowBody("agent-org:src/"), labels: ["in-progress", "session:worker-4389"],
+    comments: comments.map((comment, i) => ({ id: i + 1, body: comment.body, createdAt: comment.createdAt, author: comment.author?.login })) }));
+  if (chairman) world.gate.events.set(ASKER, [{ event: "labeled", label: "priority:chairman", actor: CHAIRMAN_LOGINS[0], at: live(600) }]);
+  substituteCodeHost(host);
+  return { world, run: (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); } };
 }
 afterEach(() => forgetActivation());
 
-const claimLive = (comments: unknown[], chairman = false) => claimRow(ASKER, `worker-${ASKER}`, {
-  run: viaGithub(claimGh(comments, { chairman })) as never, moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
+const claimLive = (comments: { body: string; createdAt: string; author?: { login: string } }[], { chairman = false, noticeRefused = false } = {}) => claimRow(ASKER, `worker-${ASKER}`, {
+  run: ((held) => { if (noticeRefused) held.world.failures.set("commentOnIssue", new Error("HTTP 502")); return held.run; })(claimGhWorld(comments, { chairman })) as never, moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
   tracker: { key: "", repo: TRACKER },
 } as never) as { claimed: boolean; reason?: string };
 /** The claim on the swept Region, on a cleared default ledger: its verdict, and the ledger text it left. */
-function claimOnSweep(comments: unknown[]) {
+function claimOnSweep(comments: { body: string; createdAt: string; author?: { login: string } }[], noticeRefused = false) {
   freshLedger();
-  const result = claimLive(comments);
+  const result = claimLive(comments, { noticeRefused });
   return { result, text: readBack(LEDGER) };
 }
 
@@ -235,17 +213,18 @@ test("(3) THROUGH claimRow: a claim REFUSED on the swept Region after the overru
 });
 
 test("(3) CONTROL: the same refused claim with NO overrun notice on the sweep writes no ledger line", () => {
-  const { result, text } = claimOnSweep([liveClaim(200)]);
+  const { result, text } = claimOnSweep([liveClaim(200)], true);
   assert.equal(result.claimed, false, "the refusal is the same");
   assert.match(result.reason ?? "", new RegExp(`overlaps the Region of #${SWEEP}`));
-  // The claim reports the overrun it finds (one release, the holder told once); the refusal that follows has no notice to name, so it is no failure.
+  // The claim reports the overrun it finds (one release, and the holder is told); here the notice cannot be WRITTEN (the code host refuses the comment, which the claim reports and goes on past), so the refusal that
+  // follows has no notice to name, and it is no failure. Were the notice written, the refusal after it would be the failure the first case holds.
   assert.equal(linesOf(text, SWEEP_OVERRUN_KIND).length, 0, `no notice, no failure:\n${text}`);
   assert.equal(linesOf(text, SWEEP_WINDOW_RELEASED_KIND).length, 1, `the claim's own release, once:\n${text}`);
 });
 
 test("(3) CONTROL: a chairman row that B4 yields past the same notified holder is claimed and writes no sweep-overrun line", () => {
   freshLedger();
-  const result = claimLive([liveClaim(200), notice(1)], true);
+  const result = claimLive([liveClaim(200), notice(1)], { chairman: true });
   assert.equal(result.claimed, true, "the chairman's yield lets the claim past");
   assert.equal(readBack(LEDGER), "", "a yielded claim is no refusal, so the final verdict writes nothing");
 });

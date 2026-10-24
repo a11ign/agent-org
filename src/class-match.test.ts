@@ -1,15 +1,20 @@
 // #4633: which known failure class is an incident? A fake `fetch`, a fake `readKey`, a fixture index and a temp directory only: no network, no real key, no corpus.
-// no-token: gh -- nothing here calls `gh`; every dependency is injected
+// no-token: gh -- nothing here calls `gh`; every dependency is injected, and the tracker is the fake code host (A11-160, step 9)
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { classifyChildArgv, classifyIncident, labelUnclassedRows, liveClassRepeatIo, liveMatchIo, parseClassifyArgv, parseFailureClasses, readClassRepeat, type FailureClass, type MatchIo, type UnclassedRow } from "./class-repeat.ts";
 import { classOfKind, FLAT_CLASS_LIMIT, incidentState, matchFailureClass, NONE_OF_THESE, NO_GUARD, recordLabelOutcome, type Incident } from "./class-match.ts";
 import { decisionLogPathFrom, type DecisionDeps } from "./decision-provider.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { freshState } from "./triage-provider.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRowsWorld } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const FAKE_KEY = "tsk-FAKE-0123456789-do-not-print";
 const KEY_PATH = "/fake/typesafe/key";
@@ -279,36 +284,44 @@ test("replay of the 2026-10-09 copy-drift rows: the kind rule groups none of the
 // ---- the production path: the gate's tick lists and remembers, a child asks and labels ----
 
 const CLASS_INDEX = JSON.stringify({ classes: [{ id: "copy-drift", name: "the copy-drift failure", guard: null }] });
-const listing = (rows: { number: number; title?: string; labels?: string[]; state?: string; pr?: boolean }[]) => JSON.stringify(rows.map((r) => ({
-  number: r.number, state: r.state ?? "closed", closed_at: "2026-10-09T10:00:00Z", pull_request: r.pr ?? false, title: r.title ?? `row ${r.number}`, labels: r.labels ?? ["defect"],
-})));
+type Listed = { number: number; title?: string; labels?: string[]; state?: string; pr?: boolean };
 
-/** A fake `gh`: answers the one listing it is given and records every other call. */
-function fakeGh(rows: string) {
-  const writes: string[][] = [];
-  const reads: string[][] = [];
-  const run = (args: string[]): string => {
-    if (args[0] === "api") { reads.push(args); return rows; }
-    writes.push(args);
-    return "";
-  };
-  return { run, writes, reads };
+/** The runner the live tool hands the code host's operations. The fake acts on its world and never calls it. */
+const NO_GH = (): string => { throw new Error("the fake code host runs nothing"); };
+
+/**
+ * The fake code host in place with `rows` as the rows of its world: closed ones (an `open` one is open) closed at the same time, so the tracker lists them in the order given. A pull request is not a row of the
+ * tracker's world, so one is left out: that the code host drops it from the listing is the plugin's (`plugins/github/rows/class-row-reads.test.ts`).
+ */
+function tracker(rows: Listed[]): FakeRowsWorld {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { rowsWorld: world } = host;
+  world.repo = "o/r";
+  for (const r of rows.filter((row) => row.pr !== true)) {
+    const open = r.state === "open";
+    world.rows.set(r.number, fakeRow(world, r.number, { title: r.title ?? `row ${r.number}`, labels: r.labels ?? ["defect"], state: open ? "OPEN" : "CLOSED", closedAt: open ? null : "2026-10-09T10:00:00Z" }));
+  }
+  return world;
 }
 
-function tick(rows: Parameters<typeof listing>[0], opts: { match?: Partial<MatchIo>; asked?: object; now?: number } = {}) {
+/** The listings of closed rows the code host was asked for. */
+const listingsRead = (world: FakeRowsWorld): string[] => world.calls.filter((call) => call.startsWith("closedClassRowsOf") || call.startsWith("closedRowsTitledOf"));
+
+function tick(rows: Listed[], opts: { match?: Partial<MatchIo>; asked?: object; now?: number } = {}) {
   const dir = tmpDir("class-match-tick-");
   const statePath = join(dir, "asked.json");
   if (opts.asked !== undefined) writeFileSync(statePath, JSON.stringify(opts.asked));
-  const gh = fakeGh(listing(rows));
+  const world = tracker(rows);
   const asks: { repo: string; rows: UnclassedRow[] }[] = [];
   const outcomes: [number, boolean][] = [];
   const match: MatchIo = { statePath, ask: (repo, rs) => asks.push({ repo, rows: rs }), outcome: (row, kept) => outcomes.push([row, kept]), ...opts.match };
   const logs: string[] = [];
-  const read = () => readClassRepeat(gh.run, "o/r", {
+  const read = () => readClassRepeat(NO_GH, "o/r", {
     root: dir, read: (p) => (p.endsWith("failure-classes.json") ? CLASS_INDEX : readFileSync(p, "utf8")), now: opts.now ?? Date.parse("2026-10-09T10:30:00Z"), match, log: (l) => logs.push(l),
   });
   const memory = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {});
-  return { gh, asks, outcomes, read, memory, logs, statePath };
+  return { world, asks, outcomes, read, memory, logs, statePath };
 }
 
 test("the tick asks about a closed, unlabelled defect row once: it is remembered before anything is asked, and the next tick asks nobody", () => {
@@ -331,9 +344,9 @@ test("the tick asks about at most three rows, newest first, and takes the rest o
 test("a caller that gives no match io reads no listing and asks nobody, so a host without the provider is as it was", () => {
   const asks: unknown[] = [];
   const reads = (match?: MatchIo): number => {
-    const gh = fakeGh("[]");
-    readClassRepeat(gh.run, "o/r", { root: "/nowhere", read: () => CLASS_INDEX, now: 0, log: () => {}, ...(match === undefined ? {} : { match }) });
-    return gh.reads.length;
+    const world = tracker([]);
+    readClassRepeat(NO_GH, "o/r", { root: "/nowhere", read: () => CLASS_INDEX, now: 0, log: () => {}, ...(match === undefined ? {} : { match }) });
+    return listingsRead(world).length;
   };
   const without = reads();
   const withMatch = reads({ statePath: join(tmpDir("class-match-off-"), "asked.json"), ask: (...a) => asks.push(a), outcome: () => {} });
@@ -343,13 +356,20 @@ test("a caller that gives no match io reads no listing and asks nobody, so a hos
 
 test("a refused or malformed listing is logged, nothing is remembered and nothing is asked", () => {
   const t = tick([{ number: 10 }], { match: {} });
-  // the match listing is the one that projects a title and no close time: the closed-row listing projects both (#570), so "title" alone no longer names it
-  const matchListing = (args: string[]) => args.some((a) => String(a).includes("title") && !String(a).includes("closed_at"));
-  const bad = readClassRepeat((args) => { if (matchListing(args)) throw new Error("HTTP 403 rate limited"); return "[]"; }, "o/r", {
+  // the match listing is the one that lists the titles of the closed rows: the closed-row listing of the class rows is read first and is not refused here
+  t.world.tail.classes.onClosedRowsRead = (listing) => { if (listing === "titled-rows") throw new Error("HTTP 403 rate limited"); };
+  const bad = readClassRepeat(NO_GH, "o/r", {
     root: "/nowhere", read: () => CLASS_INDEX, match: { statePath: t.statePath, ask: () => assert.fail("asked"), outcome: () => {} }, log: (l) => t.logs.push(l),
   });
   assert.ok("index" in bad);
   assert.match(t.logs.join(""), /failed \(HTTP 403 rate limited\)/);
+  assert.deepEqual(t.memory(), {});
+  // and a listing that is not a list of rows is logged as such, and nothing is asked or remembered either
+  t.world.tail.classes.onClosedRowsRead = null;
+  t.world.tail.classes.notAListing = ["titled-rows"];
+  t.logs.length = 0;
+  readClassRepeat(NO_GH, "o/r", { root: "/nowhere", read: () => CLASS_INDEX, match: { statePath: t.statePath, ask: () => assert.fail("asked"), outcome: () => {} }, log: (l) => t.logs.push(l) });
+  assert.match(t.logs.join(""), /could not be read as a listing/);
   assert.deepEqual(t.memory(), {});
 });
 
@@ -365,38 +385,43 @@ test("an applied label is `removed` the tick a human takes it off, `kept` after 
 
 test("the child applies the label the provider names, creating it first, and writes nothing for none-of-these", async () => {
   const r = rig({ triage: JEV, reply: [{ body: choice("copy-drift", 0.95) }, { body: choice(NONE_OF_THESE, 0.95) }] });
-  const gh = fakeGh("[]");
+  const world = tracker([{ number: 10, title: "copies drifted" }, { number: 11, title: "a red PR" }]);
   const dir = tmpDir("class-match-child-");
   const statePath = join(dir, "asked.json");
   const index = parseFailureClasses(CLASS_INDEX)!;
-  const applied = await labelUnclassedRows([{ number: 10, title: "copies drifted" }, { number: 11, title: "a red PR" }], { run: gh.run, repo: "o/r", index, deps: r.deps, statePath, now: () => 5 });
+  const applied = await labelUnclassedRows([{ number: 10, title: "copies drifted" }, { number: 11, title: "a red PR" }], { run: NO_GH, repo: "o/r", index, deps: r.deps, statePath, now: () => 5 });
   assert.deepEqual(applied, { 10: "class:copy-drift", 11: null });
-  assert.deepEqual(gh.writes.map((w) => w.slice(0, 3).join(" ")), ["label create class:copy-drift", "issue edit 10"]);
-  assert.deepEqual(gh.writes[1], ["issue", "edit", "10", "--repo", "o/r", "--add-label", "class:copy-drift"]);
+  assert.deepEqual(world.labelsCreated, ["class:copy-drift"], "the label is made sure of first, and only for the row that was matched");
+  assert.deepEqual([world.rows.get(10)!.labels, world.rows.get(11)!.labels], [["defect", "class:copy-drift"], ["defect"]], "and put on that row alone");
   assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { 10: { at: 5, label: "class:copy-drift" }, 11: { at: 5, label: null } });
   assert.deepEqual(r.log().map((l) => l.id), ["row-10", "row-11"]);
 });
 
 test("the child with no provider labels nothing and a refused label call does not stop the next row", async () => {
   const none = rig();
-  const gh = fakeGh("[]");
+  const world = tracker([{ number: 10, title: "copies drifted" }, { number: 11 }]);
   const index = parseFailureClasses(CLASS_INDEX)!;
   const statePath = join(tmpDir("class-match-child-"), "asked.json");
-  assert.deepEqual(await labelUnclassedRows([{ number: 10, title: "copies drifted" }], { run: gh.run, repo: "o/r", index, deps: none.deps, statePath }), { 10: null });
-  assert.deepEqual(gh.writes, []);
+  assert.deepEqual(await labelUnclassedRows([{ number: 10, title: "copies drifted" }], { run: NO_GH, repo: "o/r", index, deps: none.deps, statePath }), { 10: null });
+  assert.deepEqual([world.labelsCreated, world.rows.get(10)!.labels], [[], ["defect"]], "no provider, no label made and none put on");
 
   const refusing = rig({ triage: JEV });
   const lines: string[] = [];
-  const run = (args: string[]): string => { if (args[0] === "issue" && args[2] === "10") throw new Error("HTTP 422"); return ""; };
-  const applied = await labelUnclassedRows([{ number: 10, title: "a" }, { number: 11, title: "b" }], { run, repo: "o/r", index, deps: refusing.deps, statePath, log: (l) => lines.push(l) });
+  // the write is refused for row #10 only: the fake refuses by operation name, so the refusal is lifted once row #10's has been made
+  world.failures.set("addLabelToRowIn", new Error("HTTP 422"));
+  const first = await labelUnclassedRows([{ number: 10, title: "a" }], { run: NO_GH, repo: "o/r", index, deps: refusing.deps, statePath, log: (l) => lines.push(l) });
+  world.failures.delete("addLabelToRowIn");
+  const second = await labelUnclassedRows([{ number: 11, title: "b" }], { run: NO_GH, repo: "o/r", index, deps: refusing.deps, statePath, log: (l) => lines.push(l) });
+  const applied = { ...first, ...second };
   assert.deepEqual(applied, { 10: null, 11: "class:copy-drift" });
+  assert.deepEqual([world.rows.get(10)!.labels, world.rows.get(11)!.labels], [["defect"], ["defect", "class:copy-drift"]], "the refused row got no label, and the next row was labelled all the same");
   assert.match(lines.join(""), /could not label #10 as class:copy-drift \(HTTP 422\)/);
 });
 
 test("the whole path, on the 2026-10-09 rows: the tick queues three at a time, the child labels the six copy-drift rows and not #4607", async () => {
   const rows = COPY_DRIFT_ROWS.map(([number, title]) => ({ number, title }));
   const dir = tmpDir("class-match-e2e-");
-  const gh = fakeGh(listing(rows));
+  const world = tracker(rows);
   const answering = (async (_u: string, init: any) => {
     const title: string = JSON.parse(init.body).state.title;
     return { ok: true, status: 200, json: async () => choice(/cop(y|ies)/.test(title) ? "copy-drift" : NONE_OF_THESE, 0.95) };
@@ -407,12 +432,12 @@ test("the whole path, on the 2026-10-09 rows: the tick queues three at a time, t
   const labelled: number[] = [];
   const match: MatchIo = {
     statePath, outcome: () => {},
-    ask: (repo, batch) => { void labelUnclassedRows(batch, { run: gh.run, repo, index, deps, statePath, now: () => 1 }).then((a) => labelled.push(...Object.entries(a).filter(([, l]) => l !== null).map(([n]) => Number(n)))); },
+    ask: (repo, batch) => { void labelUnclassedRows(batch, { run: NO_GH, repo, index, deps, statePath, now: () => 1 }).then((a) => labelled.push(...Object.entries(a).filter(([, l]) => l !== null).map(([n]) => Number(n)))); },
   };
-  const read = () => readClassRepeat(gh.run, "o/r", { root: dir, read: () => CLASS_INDEX, match, log: () => {}, now: 0 });
+  const read = () => readClassRepeat(NO_GH, "o/r", { root: dir, read: () => CLASS_INDEX, match, log: () => {}, now: 0 });
   for (let i = 0; i < 4; i += 1) { read(); await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setTimeout(resolve, 20)); }
   assert.deepEqual(labelled.sort(), [4370, 4371, 4515, 4557, 4569, 4582]);
-  const edited = gh.writes.filter((w) => w[0] === "issue").map((w) => Number(w[2])).sort();
+  const edited = [...world.rows.values()].filter((row) => row.labels.includes("class:copy-drift")).map((row) => row.number).sort();
   assert.deepEqual(edited, labelled);
   assert.ok(!edited.includes(4607));
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(statePath, "utf8"))).map(Number).sort(), [...COPY_DRIFT_ROWS.map(([n]) => n)].sort());

@@ -9,10 +9,22 @@ import { roleBriefPath } from "../project-roles.ts";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 
 /**
- * Where the TOOL keeps the units and scripts it ships: four unit templates (each a service and a timer; the fourth, the shadow window's, is #2867), the
- * board-report dispatcher and the `gh` routing wrapper (#2620, child 3f of #69).
+ * Where the TOOL keeps the units and scripts it ships: the unit templates (each a service and a timer, #2620, child 3f of #69). The `gh` routing wrapper and the scripts that run `gh` (the board-report dispatcher and the
+ * two reports' posts) are the GitHub plugin's since A11-160: see {@link PLUGIN_HOST_DIR}.
  */
 export const SHIPPED_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
+
+/**
+ * Where the GitHub plugin keeps the scripts it ships beside the units (A11-160, step 9): the board dispatcher and the two reports' posts run `gh`, so they are the plugin's, and the units that start them name them there
+ * (`ExecStart=/usr/bin/bash plugins/github/host/<script>`). A script is not copied anywhere, as it never was: the tree copy IS the program. The `.service.in` and `.timer.in` of those units stay in {@link SHIPPED_DIR}.
+ */
+export const PLUGIN_HOST_DIR = fileURLToPath(new URL("../../plugins/github/host/", import.meta.url));
+
+/** The scripts of {@link PLUGIN_HOST_DIR}, by name: the host directory no longer holds them, and `shippedHostScripts` reads both. */
+export const PLUGIN_HOST_SCRIPTS: readonly string[] = Object.freeze(["board-report-dispatch.sh", "manager-spend-post.sh", "trace-weekly-post.sh"]);
+
+/** The directory that holds shipped script `name` when the units are read from `dir`: the plugin's for its scripts, `dir` itself for a directory a test stands in for the tool's. */
+export const shippedScriptDir = (dir: string, name: string): string => (dir === SHIPPED_DIR && PLUGIN_HOST_SCRIPTS.includes(name) ? PLUGIN_HOST_DIR : dir);
 
 /**
  * The checkout every shipped unit names as its `WorkingDirectory`, so an `ExecStart` path resolves. It is the PROJECT's (`HOME_CHECKOUT`), not
@@ -41,7 +53,7 @@ export const PROJECT_UNITS_DIR = join(REPO_ROOT, ".agent-org/units");
 
 /** The tool's own entries in `SHIPPED_DIR`. A template is named without its prefix; the project supplies that. */
 export const TOOL_ENTRIES = Object.freeze([
-  "board-report-dispatch.sh", "board-report.service.in", "board-report.timer.in",
+  "board-report.service.in", "board-report.timer.in",
   "work-tick.service.in", "work-tick.timer.in", "worktree-prune.service.in", "worktree-prune.timer.in",
   // #2867: the shadow window's own pair, installed BESIDE the work-tick unit and sharing none of its text.
   "shadow-window.service.in", "shadow-window.timer.in",
@@ -52,9 +64,9 @@ export const TOOL_ENTRIES = Object.freeze([
   // #3532: the `agent-org` launcher, COPIED to `binDir` like `gh` (`agentOrgLauncher`) and not a unit.
   "agent-org",
   // a11ign/a11ign#3627: the weekly token-efficiency report's pair and the script it runs, beside the board dispatcher's and shaped like them.
-  "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
+  "trace-weekly.service.in", "trace-weekly.timer.in",
   // a11ign/a11ign#4505 (Move 2/3), agent-org#912: the daily manager-spend reading's pair and the script it runs, beside the weekly report's and shaped like it.
-  "manager-spend-post.service.in", "manager-spend-post.timer.in", "manager-spend-post.sh",
+  "manager-spend-post.service.in", "manager-spend-post.timer.in",
   // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.ts`, which decides whether a head has moved; the timer is only a clock.
   "trace-publish.service.in", "trace-publish.timer.in",
   // a11ign/agent-org#1159: the trace pages' server, a long-running sibling of the publisher (`LONG_RUNNING_TEMPLATES`): the tailnet's proxy mount points at its loopback port.
@@ -346,18 +358,18 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
     [/^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m, "ExecStart=%h/.local/bin/node src/prune-worktrees.ts --apply $CHECKOUT"],
   ],
   "board-report.service.in": [
-    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
-      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/board-report-dispatch.sh"],
+    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/plugins\/github\/host\/board-report-dispatch\.sh$/m,
+      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash plugins/github/host/board-report-dispatch.sh"],
   ],
   // THE WEEKLY TOKEN-EFFICIENCY POST (a11ign/a11ign#3627): the same two lines as the board dispatcher, for the same reason (the script reads `$AGENT_ORG_PROJECT`).
   "trace-weekly.service.in": [
-    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/trace-weekly-post\.sh$/m,
-      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/trace-weekly-post.sh"],
+    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/plugins\/github\/host\/trace-weekly-post\.sh$/m,
+      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash plugins/github/host/trace-weekly-post.sh"],
   ],
   // THE DAILY MANAGER-SPEND POST (a11ign/a11ign#4505, agent-org#912): the same two lines as the weekly report's, for the same reason (the script reads `$AGENT_ORG_PROJECT`).
   "manager-spend-post.service.in": [
-    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/manager-spend-post\.sh$/m,
-      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/manager-spend-post.sh"],
+    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/plugins\/github\/host\/manager-spend-post\.sh$/m,
+      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash plugins/github/host/manager-spend-post.sh"],
   ],
   // THE /TMP FIXTURE JANITOR (a11ign/a11ign#3849): run from the tool's checkout, like the prune above it.
   "tmp-prune.service.in": [
@@ -565,19 +577,22 @@ export function binDirectory({ host }: ShippedDeps = {}) {
 }
 
 /**
- * The programs this repository ships beside its units, sorted.
+ * The programs this repository ships beside its units, sorted: the host directory's, and (for the tool's own directory) the GitHub plugin's `host/`, where the scripts that run `gh` are (A11-160, step 9).
  *
  * `.sh` AND NOT "everything that is not a unit", so a README in that directory is still not a finding --
  * the property `shippedUnits`'s own test already pins one level up.
  * @param {string} [dir] @param {{ read?: typeof readdirSync }} [deps]
  * @returns {string[]}
  */
-export function shippedHostScripts(dir: string = SHIPPED_DIR, { read = readdirSync }: { read?: typeof readdirSync; } = {}): string[] {
-  try {
-    return read(dir).map(String).filter((n) => n.endsWith(".sh")).sort();
-  } catch {
-    return [];
-  }
+export function shippedHostScripts(dir: string = SHIPPED_DIR, { read = readdirSync, pluginDir = dir === SHIPPED_DIR ? PLUGIN_HOST_DIR : null }: { read?: typeof readdirSync; pluginDir?: string | null; } = {}): string[] {
+  const scriptsIn = (where: string): string[] => {
+    try {
+      return read(where).map(String).filter((n) => n.endsWith(".sh"));
+    } catch {
+      return [];
+    }
+  };
+  return [...new Set([...scriptsIn(dir), ...(pluginDir === null ? [] : scriptsIn(pluginDir))])].sort();
 }
 
 // --- #1974: WHICH ACCOUNT A UNIT SPENDS, DECLARED RATHER THAN INHERITED ------------------------------

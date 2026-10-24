@@ -17,7 +17,6 @@
 //
 // #4750's LINE IS COPIED HERE, AND SAYS SO. `provider-low-confidence.ts` is that row's module and is not merged; its two numbers (more than 30% under the floor on at least 20 decisions) are
 // {@link LOW_CONFIDENCE_LINE} below, and when that module lands this file should import its constants rather than carry a second copy.
-import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -27,6 +26,8 @@ import type { MessagingOn } from "./messaging/config.ts";
 import { createLedger } from "./messaging/ledger.ts";
 import { AUDIENCE } from "./messaging/provider-contract.ts";
 import { confidenceReading, DEFAULT_WINDOW_MS, type ConfidenceReading } from "./provider-confidence.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** The epic the reading is posted on while no messaging is configured. */
 export const TRACKER_EPIC = 4627;
@@ -45,14 +46,13 @@ const DAY_LENGTH = 10;
 const MINUTE_LENGTH = 16;
 const EMPTY_READING = "no provider decisions in the window";
 const NOTHING_ASKED = "Told, not asked: nothing here needs an answer.";
-const COMMENT_ID = /issuecomment-(\d+)/;
 const GH_TIMEOUT_MS = 60_000;
 
 export type Destination = "channel" | "chairman-chat" | "tracker-comment";
 export type MessengerConfig = NonNullable<Parameters<typeof createMessenger>[0]["config"]>;
 export type Delivery =
   | { via: "messenger"; provider: Parameters<typeof createMessenger>[0]["provider"]; ledger: ReturnType<typeof createLedger>; config?: MessengerConfig }
-  | { via: "tracker"; repo: string; run: (args: string[]) => string };
+  | { via: "tracker"; repo: string; run: RowsRun };
 export type PostInput = { reading: ConfidenceReading; providerDeclared: boolean; delivery: Delivery; now: number };
 export type PostResult =
   | { posted: true; destination: Destination; ref: string; key: string; text: string }
@@ -119,11 +119,8 @@ const markerFor = (day: string): string => `<!-- decision-confidence-post: ${day
 function postToTracker({ delivery, text, day }: { delivery: Extract<Delivery, { via: "tracker" }>; text: string; day: string }): PostResult {
   const { repo, run } = delivery;
   const marker = markerFor(day);
-  const path = `repos/${repo}/issues/${TRACKER_EPIC}/comments?per_page=100&since=${day}T00:00:00Z`;
-  const present = run(["api", "--paginate", path, "--jq", `.[] | select(.body | startswith("${marker}")) | .id`]).trim();
-  if (present !== "") return { posted: false, why: "already-posted" };
-  const printed = run(["issue", "comment", String(TRACKER_EPIC), "--repo", repo, "--body", `${marker}\n${text}`]).trim();
-  return { posted: true, destination: "tracker-comment", ref: COMMENT_ID.exec(printed)?.[1] ?? printed, key: marker, text };
+  const posted = rows().postMarkedIssueComment({ repo, issue: TRACKER_EPIC, marker, day, text, run });
+  return posted.posted ? { posted: true, destination: "tracker-comment", ref: posted.ref, key: marker, text } : { posted: false, why: "already-posted" };
 }
 
 /** THE POST: nothing without a provider; otherwise one announcement for the UTC day of `now`, wherever the delivery sends it. */
@@ -198,7 +195,7 @@ async function deliveryFromHost(now: number): Promise<Delivery> {
     throw error;
   }
   if (!config.enabled) {
-    return { via: "tracker", repo: trackerRepo(HOME_CHECKOUT), run: (args) => execFileSync("gh", args, { encoding: "utf8", timeout: GH_TIMEOUT_MS }) };
+    return { via: "tracker", repo: trackerRepo(HOME_CHECKOUT), run: (args) => rows().runnerWith({ timeoutMs: GH_TIMEOUT_MS })(args) };
   }
   return messengerDelivery({ config, now });
 }

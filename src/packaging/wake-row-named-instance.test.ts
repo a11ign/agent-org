@@ -12,7 +12,7 @@
  * that does nothing: the taken-address cases each run beside the SAME call with the address free (which spawns),
  * and the counter-named case runs beside a spawn in the same tick that does start a row-named instance.
  */
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +29,12 @@ import { isLiveSession, familyNumber, unknownSessionLabels } from "../arm-pr.ts"
 import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
 import { labelAfterCreate } from "../pr-open.ts";
 import { startedPanes } from "./started-pane.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -114,7 +120,7 @@ test("#2469 ACCEPTANCE (5b): every reader of a family name gives the same answer
   assert.ok(String(laneReason(["ready", `lane:${big}`], "worker-5")).includes(`${big}'s lane`), "laneReason reserves the row for it");
   assert.equal(runnerReason(["ready", `runner:${big}`], big), null, "runnerReason compares strings and reads no roster");
   assert.deepEqual(labelAfterCreate("create", ["--head", "agent/x-2407"], big),
-    [["pr", "edit", "agent/x-2407", "--add-label", `session:${big}`]], "pr-open labels a PR from its tree");
+    [["fake-label", `session:${big}`, "", "--head", "agent/x-2407"]], "pr-open labels a PR from its tree (the label step the code host builds for `session:<name>`; its real argument list is plugins/github/rows/pullwork-rows.test.ts)");
   assert.equal(isSpareRole(big), true, "isSpareRole: the router's pool and row-claim's second-row refusal");
   assert.deepEqual(withSpareInstances([], agents({ "worker-9": "idle", [big]: "idle", "worker-10": "idle" })),
     ["worker-9", "worker-10", big], "withSpareInstances orders NUMERICALLY, so a four-digit name sorts last, not first");

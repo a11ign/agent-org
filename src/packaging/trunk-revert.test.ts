@@ -1,5 +1,5 @@
-// no-token: gh -- this file drives `trunkRedOrders`, `attributionOf`, `readTrunkRed` (through an injected
-// `run`, never the real `gh`) and `decide`, all with fixture data; `readTrunkRed`'s default `gh` is never reached.
+// no-token: gh -- this file drives `trunkRedOrders`, `attributionOf`, `readTrunkRed` (over the fake code host's
+// world, never the real `gh`) and `decide`, all with fixture data; `readTrunkRed`'s default `gh` is never reached.
 /**
  * A RED `main` WAKES A FIXER, AND NOTHING REVERTS ANYTHING -- #2356, the chairman's ruling of 2026-09-24:
  * THE ORG ALWAYS FIXES FORWARD.
@@ -22,17 +22,22 @@
  * a gate on action: 13 of 19 PRs read red on one bad commit and none was at fault (#316), and a parent
  * measured green sixty-one minutes earlier failed a wall-clock assertion when asked again (#616).
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { attributionOf, failingTestsFromJobLog, newestVerdictRun, readTrunkRed, recheckFromAnnotations,
+import { attributionOf, failingTestsFromJobLog, newestVerdictRun, PRIMARY_TRUNK, readTrunkRed, recheckFromAnnotations,
   trunkRedOrders, RED_TRUNK_POLICY, RECHECK_JOB, RECHECK_ANNOTATION_TITLE }
   from "../trunk-red.ts";
 import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { routeWithFallback } from "../wake/exit-and-limits.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { trunkRunsKey } from "../plugins/fakes/code-host-queue.ts";
+
+afterEach(() => forgetActivation());
 
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -190,31 +195,45 @@ test("newestVerdictRun looks THROUGH a cancelled or running run, so neither hide
   assert.equal(newestVerdictRun(null), null);
 });
 
-/** A `gh` stand-in answering by the shape of the request, recording every call. */
-function fakeGh(state: { runs: unknown; jobs?: unknown; annotations?: unknown; log?: string; pulls?: unknown }) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    const text = args.join(" ");
-    if (text.includes("/actions/workflows/trunk.yml/runs")) return JSON.stringify(state.runs);
-    if (/\/actions\/runs\/\d+\/jobs/.test(text)) return JSON.stringify(state.jobs ?? { jobs: [] });
-    if (text.includes("/annotations")) return JSON.stringify(state.annotations ?? []);
-    if (args[0] === "run" && args[1] === "view") return state.log ?? "";
-    if (text.includes("/pulls")) return JSON.stringify(state.pulls ?? []);
-    throw new Error(`unexpected gh call: ${text}`);
+/** What `readTrunkRed` is handed as its `run`: the fake code host acts on its own state, so a read that reached it would be a read that bypassed the code host. */
+const NO_RUN = (): string => {
+  throw new Error("the fake code host acts on its own state: no run is made");
+};
+
+/**
+ * The fake code host's world for one reading of the primary's trunk: the runs of `trunk.yml` on `main`, the jobs of each run, the annotations of the recheck job (seeded under its id, so a read by any other id
+ * finds none), the failed log of each run and the pull request the head came from. `refuse` names the reads that answer a 403: the runs, or everything beside them.
+ */
+function fakeGh(state: { runs: { workflow_runs: { id: number; head_sha: string; [field: string]: unknown }[] }; jobs?: { jobs: { id: number; name: string; conclusion: string }[] }; annotations?: unknown[]; log?: string;
+  pulls?: { number: number; title: string; labels: { name: string }[] }[]; refuse?: "runs" | "side-reads" }) {
+  const host = createFakeCodeHost();
+  const { ci, tail } = host.rowsWorld;
+  const refusal = new Error("HTTP 403");
+  tail.queue.trunkRuns.set(trunkRunsKey(PRIMARY_TRUNK.repo, "trunk.yml", null), state.refuse === "runs" ? refusal : state.runs.workflow_runs);
+  for (const run of state.runs.workflow_runs) {
+    ci.jobs.set(String(run.id), state.refuse === "side-reads" ? refusal : state.jobs?.jobs ?? []);
+    if (state.log !== undefined) ci.logs.set(String(run.id), state.log);
+    const pull = state.pulls?.[0];
+    tail.queue.originPulls.set(run.head_sha, state.refuse === "side-reads" ? refusal : pull === undefined ? null : { number: pull.number, title: pull.title, labels: pull.labels.map((label) => label.name) });
+  }
+  const recheck = state.jobs?.jobs.find((job) => job.name === RECHECK_JOB);
+  if (recheck !== undefined) tail.queue.annotations.set(String(recheck.id), state.annotations ?? []);
+  const read = () => {
+    substituteCodeHost(host);
+    return readTrunkRed(NO_RUN);
   };
-  return { run, calls };
+  return { read, calls: host.rowsWorld.calls };
 }
 
 test("a HEALTHY main costs exactly ONE call, and reports nothing", () => {
   const gh = fakeGh({ runs: { workflow_runs: [{ id: 1, head_sha: SHA, status: "completed", conclusion: "success",
     html_url: RUN_URL, created_at: "2026-09-24T01:00:00Z" }] } });
-  assert.equal(readTrunkRed(gh.run), null);
+  assert.equal(gh.read(), null);
   assert.equal(gh.calls.length, 1, "GH_READS counts this as the one unconditional read");
 });
 
 test("a refused read is undefined, never a red and never a green: the gate does not invent an order from nothing", () => {
-  const refused = readTrunkRed(() => { throw new Error("HTTP 403"); });
+  const refused = fakeGh({ runs: { workflow_runs: [{ id: 1, head_sha: SHA }] }, refuse: "runs" }).read();
   assert.equal(refused, undefined, "not `null`, which says main was read and is not red (agent-org#674)");
   assert.deepEqual(trunkRedOrders(refused), []);
 });
@@ -231,7 +250,7 @@ test("END TO END with a fake gh: a red run yields the order, with the failing te
       + "trunkBuildTest / run\tUNKNOWN STEP\t2026-09-13T16:14:53.1610523Z # fail 1\n",
     pulls: [{ number: 2372, title: "a change that broke the quickstart", labels: [{ name: "session:worker-tooling" }] }],
   });
-  const found = readTrunkRed(gh.run);
+  const found = gh.read();
   assert.ok(found, "a failure on main's newest verdict run is a red");
   assert.deepEqual(found.failingTests, [TEST]);
   assert.equal(found.recheck, "pass");
@@ -240,16 +259,12 @@ test("END TO END with a fake gh: a red run yields the order, with the failing te
   assert.equal(o.session, "worker-tooling");
   assert.ok(o.prompt.includes(TEST) && o.prompt.includes(RUN_URL) && o.prompt.includes("#2372"));
   // The recheck job's annotations are read by the JOB'S id -- an Actions job id is its check-run id.
-  assert.ok(gh.calls.some((c) => c.join(" ").includes("check-runs/503/annotations")));
+  assert.ok(gh.calls.includes(`annotationsOfCheckRun ${PRIMARY_TRUNK.repo} 503`));
 });
 
 test("a failed side-read degrades ONE fact and still sends the order: a red main with no test named is still red", () => {
-  const gh = fakeGh({ runs: { workflow_runs: [{ id: 77, head_sha: SHA, status: "completed", conclusion: "failure",
-    html_url: RUN_URL, created_at: "2026-09-24T02:00:00Z" }] } });
-  const found = readTrunkRed((args) => {
-    if (args[0] === "api" && args.join(" ").includes("/workflows/trunk.yml/runs")) return gh.run(args);
-    throw new Error("HTTP 403");
-  });
+  const found = fakeGh({ runs: { workflow_runs: [{ id: 77, head_sha: SHA, status: "completed", conclusion: "failure",
+    html_url: RUN_URL, created_at: "2026-09-24T02:00:00Z" }] }, refuse: "side-reads" }).read();
   assert.ok(found);
   assert.equal(found.recheck, "unknown", "unreadable is unknown, never the pass that would blame the merge");
   assert.equal(found.originPr, null);

@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { holdDecision } from "../pr-hold.ts";
 import { armVerdict, disarmVerdict, REARM_LABEL } from "../pr-hold-state.ts";
+import { holdOverFake, type HoldPull, type HoldRepoSpec } from "../plugins/fakes/pr-hold-cli.test.support.ts";
 
 test("an unheld PR is taken, and says it was unheld", () => {
   const d = holdDecision({ holders: [], session: "worker-capture", steal: false });
@@ -226,15 +227,112 @@ test("#822's two writes are verified the SAME WAY -- the source proves the marke
     + "consequence, and a message naming only the failed write does not tell the operator that");
 });
 
-// --- #1481: THROUGH THE REAL CLI, with a stateful stub `gh` first on PATH. A --steal that removed another
-// session's hold and then failed to add its own exited 1 -- REFUSED, "nothing done" -- measured at 8244cf0f.
-// The stub keeps the PR's labels in a state file, so each test reads what actually LANDED, not what was said. ---
+// --- #1481: THROUGH THE REAL CLI, over the fake code host. A --steal that removed another session's hold and then failed to add its own exited 1 -- REFUSED, "nothing done" -- measured at 8244cf0f.
+// The fake keeps the PR's labels, so each test reads what actually LANDED, not what was said. A11-160 (step 9): the command runs as a process (`pr-hold.ts` ends in `main()`), and the code host it asks is the
+// fake's (`holdOverFake`), seeded with the pull request and told which write to refuse; nothing here answers GitHub's text for a `gh` command. How GitHub words an answer and which argument list a write is are
+// `plugins/github/rows/pullwork-rows.test.ts`, and two cases stay over a `gh` on PATH at the end of this file: the command end to end through the real plugin.
 
 const PR_HOLD_CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
-const EXECUTABLE = 0o755;
 // The exit code pr-hold.ts header documents for DISPLACED_NOT_HELD.
 const DISPLACED_NOT_HELD_EXIT = 3;
 const PR = "9001";
+const FIRST = "a11ign/a11ign";
+const PROJECT = { first: FIRST, keyed: {} };
+const LABEL_WRITE = `editHeldPullLabel #${PR}`;
+
+/** The label writes the command asked of the code host, in order, as `add hold:x` / `remove hold:x`. */
+const labelWrites = (asked: string[]) => asked.flatMap((call) => /^editHeldPullLabel (add|remove) (\S+)/.exec(call)?.slice(1).join(" ") ?? []);
+
+/** Runs `pr-hold.ts` for PR 9001 over the fake code host holding `pull` (and what else `repository` says), with `argv` after the number. */
+function holdOver(pull: HoldPull, repository: HoldRepoSpec, ...argv: string[]) {
+  const run = holdOverFake(PROJECT, { home: FIRST, repos: { [FIRST]: { ...repository, pulls: { [PR]: pull } } } }, PR, ...argv);
+  const held = run.repos[FIRST];
+  return { ...run, labels: held.pulls[PR].labels, comments: held.pulls[PR].comments, repoLabels: held.repoLabels };
+}
+
+test("#1481 ACCEPTANCE: a --steal removes the other hold, then the ADD fails -- exit 3 naming the removed label, never 1", () => {
+  const r = holdOver({ labels: ["hold:dispatcher", "lane:any"] }, { refuse: { [`${LABEL_WRITE} add hold:worker-judge`]: "simulated: API rate limit already exceeded" } },
+    "--session=worker-judge", "--steal");
+  assert.equal(r.status, DISPLACED_NOT_HELD_EXIT, `a failure after a landed removal must be DISPLACED_NOT_HELD; got ${r.status}: ${r.stderr}`);
+  assert.match(r.stdout, /#9001: STEALING from dispatcher/);
+  assert.match(r.stderr, /^#9001: DISPLACED BUT NOT HELD \(exit 3\) -- removed hold:dispatcher; /m);
+  assert.match(r.stderr, /hold:worker-judge was NOT added: [\s\S]*simulated: API rate limit already exceeded/);
+  assert.deepEqual(r.labels, ["lane:any"], "the removal LANDED and the add did not -- read from the world's state");
+  assert.deepEqual(labelWrites(r.asked), ["remove hold:dispatcher", "add hold:worker-judge"], "the removal precedes the failing add, and nothing else is written");
+});
+
+test("#1481: a steal from TWO holders whose second removal fails -- exit 3 naming only the removal that landed", () => {
+  const r = holdOver({ labels: ["hold:dispatcher", "hold:worker-capture"] }, { refuse: { [`${LABEL_WRITE} remove hold:worker-capture`]: "simulated: removing hold:worker-capture failed" } },
+    "--session=worker-judge", "--steal");
+  assert.equal(r.status, DISPLACED_NOT_HELD_EXIT, r.stderr);
+  assert.match(r.stderr, /-- removed hold:dispatcher; the next label write failed, so hold:worker-judge was NOT added/);
+  assert.doesNotMatch(r.stderr, /removed hold:dispatcher, hold:worker-capture/);
+  assert.deepEqual(r.labels, ["hold:worker-capture"]);
+});
+
+test("#1481 CONTROL: the FIRST removal fails -- nothing landed, so it exits 1 as before, with no DISPLACED report", () => {
+  const r = holdOver({ labels: ["hold:dispatcher"] }, { refuse: { [`${LABEL_WRITE} remove hold:dispatcher`]: "simulated: removing hold:dispatcher failed" } },
+    "--session=worker-judge", "--steal");
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.stderr, /DISPLACED BUT NOT HELD/);
+  assert.deepEqual(r.labels, ["hold:dispatcher"], "nothing was written");
+  assert.deepEqual(labelWrites(r.asked), ["remove hold:dispatcher"], "the add is never reached");
+});
+
+test("#1481 CONTROL: every write succeeds -- exit 0, and the PR is held by this session alone", () => {
+  const r = holdOver({ labels: ["hold:dispatcher"] }, {}, "--session=worker-judge", "--steal");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.labels, ["hold:worker-judge"]);
+  assert.match(r.stdout, /#9001 is now held by worker-judge, and dispatcher no longer holds it/);
+});
+
+test("#2996: a take records WHY as a marker comment, `--until` as a readable `Waiting-for:` line and no `--until` as an honest 'no condition' note", () => {
+  const until = holdOver({}, {}, "--session=ceo", "--until=closed #2867");
+  assert.equal(until.status, 0, until.stderr);
+  assert.equal(until.comments.length, 1);
+  assert.match(until.comments[0], /^<!-- pr-hold-until -->\nHeld by `ceo`\.\nWaiting-for: closed #2867$/);
+  const none = holdOver({}, {}, "--session=ceo");
+  assert.equal(none.status, 0, none.stderr);
+  assert.match(none.comments[0], /No condition was named/);
+  assert.doesNotMatch(none.comments[0], /Waiting-for:/, "a hold with no reason must not inherit one");
+});
+
+test("#1481: the header documents exit 3, DISPLACED_NOT_HELD", () => {
+  const header = readFileSync(PR_HOLD_CLI, "utf8").split("import ")[0];
+  assert.match(header, /^ \*\s+3\s+DISPLACED_NOT_HELD -- a --steal REMOVED another session's hold/m);
+});
+
+// --- #3862: the FIRST hold by a session adds a label the repository does not have yet. `gh pr edit --add-label`
+// answers `'hold:<session>' not found` and the take died with a Node stack, so every new session created its
+// label by hand. The world's `repoLabels` is what makes "not found" happen: an add of a label it lacks is refused unless the caller asked for the label to be made. ---
+
+test("#3862 ACCEPTANCE: the first hold by a session ASKS for its label to be made, with the description the hand-made ones carry, and holds the PR", () => {
+  const r = holdOver({}, { repoLabels: ["lane:any"] }, "--session=worker-new");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.labels, ["hold:worker-new"], "read from the world's state: the label LANDED on the PR");
+  assert.deepEqual(r.repoLabels, ["lane:any", "hold:worker-new"], "and the repository holds it now: the add was made with a description to make it with");
+  assert.ok(r.asked.includes(`editHeldPullLabel add hold:worker-new (made with "This PR is HELD by worker-new and must not merge.") ${FIRST}#${PR}`), JSON.stringify(r.asked));
+});
+
+test("#3862 CONTROL: a label that already exists is held with, and the repository's labels are as they were", () => {
+  const r = holdOver({}, { repoLabels: ["hold:worker-old"] }, "--session=worker-old");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.repoLabels, ["hold:worker-old"]);
+  assert.deepEqual(r.labels, ["hold:worker-old"]);
+});
+
+test("#3862: a refusal of the add is raised, exit 1 `REFUSED-nothing-done`, and nothing is made or held", () => {
+  const r = holdOver({}, { repoLabels: [], refuse: { [`${LABEL_WRITE} add hold:worker-new`]: "simulated: API rate limit already exceeded" } }, "--session=worker-new");
+  assert.equal(r.status, 1, "REFUSED-nothing-done, as before");
+  assert.match(r.stderr, /simulated: API rate limit already exceeded/);
+  assert.deepEqual(r.repoLabels, [], "a rate limit is not a missing label");
+  assert.deepEqual(r.labels, []);
+});
+
+// --- the command END TO END through the real plugin, over a `gh` first on PATH that keeps the PR's labels in a state file (a process stub is the only way to test a CLI against the program it starts) ---
+
+const EXECUTABLE = 0o755;
+
 
 /** The stub: `pr view --json labels` reads the state; `pr edit` writes it, or exits 1 where the state says to. */
 const STUB_GH = `#!/usr/bin/env node
@@ -302,11 +400,9 @@ function withStubbedHold(state: HoldStubState, ...argv: string[]) {
   }
 }
 
-test("#1481 ACCEPTANCE: a --steal removes the other hold, then the ADD fails -- exit 3 naming the removed label, never 1", () => {
-  const r = withStubbedHold({ labels: ["hold:dispatcher", "lane:any"], failAdd: true },
-    "--session=worker-judge", "--steal");
+test("END TO END (#1481): over `gh`, a --steal removes the other hold, then the ADD fails -- exit 3, the removal landed, and the argument lists were the plugin's", () => {
+  const r = withStubbedHold({ labels: ["hold:dispatcher", "lane:any"], failAdd: true }, "--session=worker-judge", "--steal");
   assert.equal(r.status, DISPLACED_NOT_HELD_EXIT, `a failure after a landed removal must be DISPLACED_NOT_HELD; got ${r.status}: ${r.stderr}`);
-  assert.match(r.stdout, /#9001: STEALING from dispatcher/);
   assert.match(r.stderr, /^#9001: DISPLACED BUT NOT HELD \(exit 3\) -- removed hold:dispatcher; /m);
   assert.match(r.stderr, /hold:worker-judge was NOT added: [\s\S]*simulated: API rate limit already exceeded/);
   assert.deepEqual(r.labels, ["lane:any"], "the removal LANDED and the add did not -- read from the stub's state");
@@ -315,92 +411,13 @@ test("#1481 ACCEPTANCE: a --steal removes the other hold, then the ADD fails -- 
   assert.ok(removeAt >= 0 && addAt > removeAt, `the removal must precede the failing add: ${JSON.stringify(r.calls)}`);
 });
 
-test("#1481: a steal from TWO holders whose second removal fails -- exit 3 naming only the removal that landed", () => {
-  const r = withStubbedHold({ labels: ["hold:dispatcher", "hold:worker-capture"], failRemoveOf: "hold:worker-capture" },
-    "--session=worker-judge", "--steal");
-  assert.equal(r.status, DISPLACED_NOT_HELD_EXIT, r.stderr);
-  assert.match(r.stderr, /-- removed hold:dispatcher; the next label write failed, so hold:worker-judge was NOT added/);
-  assert.doesNotMatch(r.stderr, /removed hold:dispatcher, hold:worker-capture/);
-  assert.deepEqual(r.labels, ["hold:worker-capture"]);
-});
-
-test("#1481 CONTROL: the FIRST removal fails -- nothing landed, so it exits 1 as before, with no DISPLACED report", () => {
-  const r = withStubbedHold({ labels: ["hold:dispatcher"], failRemoveOf: "hold:dispatcher" },
-    "--session=worker-judge", "--steal");
-  assert.equal(r.status, 1);
-  assert.doesNotMatch(r.stderr, /DISPLACED BUT NOT HELD/);
-  assert.deepEqual(r.labels, ["hold:dispatcher"], "nothing was written");
-  assert.ok(!r.calls.some((c) => c.includes("--add-label")), JSON.stringify(r.calls));
-});
-
-test("#1481 CONTROL: every write succeeds -- exit 0, and the PR is held by this session alone", () => {
-  const r = withStubbedHold({ labels: ["hold:dispatcher"] }, "--session=worker-judge", "--steal");
-  assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(r.labels, ["hold:worker-judge"]);
-  assert.match(r.stdout, /#9001 is now held by worker-judge, and dispatcher no longer holds it/);
-});
-
-test("#2996: a take records WHY as a marker comment, `--until` as a readable `Waiting-for:` line and no `--until` as an honest 'no condition' note", () => {
-  const until = withStubbedHold({ labels: [] }, "--session=ceo", "--until=closed #2867");
-  assert.equal(until.status, 0, until.stderr);
-  assert.equal(until.comments.length, 1);
-  assert.match(until.comments[0], /^<!-- pr-hold-until -->\nHeld by `ceo`\.\nWaiting-for: closed #2867$/);
-  const none = withStubbedHold({ labels: [] }, "--session=ceo");
-  assert.equal(none.status, 0, none.stderr);
-  assert.match(none.comments[0], /No condition was named/);
-  assert.doesNotMatch(none.comments[0], /Waiting-for:/, "a hold with no reason must not inherit one");
-});
-
-test("#1481: the header documents exit 3, DISPLACED_NOT_HELD", () => {
-  const header = readFileSync(PR_HOLD_CLI, "utf8").split("import ")[0];
-  assert.match(header, /^ \*\s+3\s+DISPLACED_NOT_HELD -- a --steal REMOVED another session's hold/m);
-});
-
-// --- #3862: the FIRST hold by a session adds a label the repository does not have yet. `gh pr edit --add-label`
-// answers `'hold:<session>' not found` and the take died with a Node stack, so every new session created its
-// label by hand. The stub's `repoLabels` is what makes "not found" happen. ---
-
-const createCalls = (calls: string[]) => calls.filter((c) => c.startsWith("label create"));
-
-test("#3862 ACCEPTANCE: the first hold by a session CREATES its label, with the description the hand-made ones carry, and holds the PR", () => {
+test("END TO END (#3862): over `gh`, the first hold by a session CREATES its label, with the description the hand-made ones carry, and holds the PR", () => {
   const r = withStubbedHold({ labels: [], repoLabels: ["lane:any"] }, "--session=worker-new");
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.labels, ["hold:worker-new"], "read from the stub's state: the label LANDED on the PR");
-  assert.equal(createCalls(r.calls).length, 1, JSON.stringify(r.calls));
-  assert.match(createCalls(r.calls)[0], /^label create hold:worker-new .*--repo \S+/, "the repository is named, not inferred from a cwd");
+  const created = r.calls.filter((c) => c.startsWith("label create"));
+  assert.equal(created.length, 1, JSON.stringify(r.calls));
+  assert.match(created[0], /^label create hold:worker-new .*--repo \S+/, "the repository is named, not inferred from a cwd");
   assert.equal(r.descriptions["hold:worker-new"], "This PR is HELD by worker-new and must not merge.");
   assert.deepEqual(r.repoLabels, ["lane:any", "hold:worker-new"]);
-});
-
-test("#3862: the SECOND take by the same session does not create the label again", () => {
-  const first = withStubbedHold({ labels: [], repoLabels: [] }, "--session=worker-new");
-  assert.equal(first.status, 0, first.stderr);
-  const released = withStubbedHold({ labels: first.labels, repoLabels: first.repoLabels }, "--session=worker-new", "--release");
-  assert.equal(released.status, 0, released.stderr);
-  const second = withStubbedHold({ labels: released.labels, repoLabels: released.repoLabels }, "--session=worker-new");
-  assert.equal(second.status, 0, second.stderr);
-  assert.deepEqual(second.labels, ["hold:worker-new"]);
-  assert.deepEqual(createCalls(second.calls), [], "the label exists, so nothing is created");
-});
-
-test("#3862 CONTROL: a label that already exists is added with no create call", () => {
-  const r = withStubbedHold({ labels: [], repoLabels: ["hold:worker-old"] }, "--session=worker-old");
-  assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(createCalls(r.calls), []);
-});
-
-test("#3862: a `gh` failure that is NOT 'not found' is still raised, and nothing is created", () => {
-  const r = withStubbedHold({ labels: [], repoLabels: [], failAdd: true }, "--session=worker-new");
-  assert.equal(r.status, 1, "REFUSED-nothing-done, as before");
-  assert.match(r.stderr, /simulated: API rate limit already exceeded/);
-  assert.deepEqual(createCalls(r.calls), [], "a rate limit is not a missing label");
-  assert.deepEqual(r.labels, []);
-});
-
-test("#3862: a create that FAILS is raised, and the add is not retried into a second 'not found'", () => {
-  const r = withStubbedHold({ labels: [], repoLabels: [], failCreate: true }, "--session=worker-new");
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /simulated: label create is forbidden/);
-  assert.equal(r.calls.filter((c) => c.includes("--add-label hold:worker-new")).length, 1, JSON.stringify(r.calls));
-  assert.deepEqual(r.labels, []);
 });

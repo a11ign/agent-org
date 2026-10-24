@@ -267,18 +267,15 @@ test("the workflow reads the flag BEFORE it mints, mints only when it is on, sco
 test("agent-org#1627: `arm-pr` under the pass judges authorship from the lanes the caller passed, not from the home checkout's file", () => {
   const LEADS = "a11ign-ai-leads";
   const PIPELINE: Lane = { lane: "the pipeline", owner: "ceo", branchPrefixes: ["ceo/"], paths: [".github/workflows/"], why: "trunk health", reviewOnly: true };
-  // The one read that proves authorship was judged: the changed-file list is read only when the author owns a review-only lane (`authorshipVerdict`, which has not moved and so is handed a `run`).
+  // The one read that proves authorship was judged: the changed-file list is read only when the author owns a review-only lane (`authorshipVerdict`, which asks the code host).
   const drive = (lanes?: { lanes: Lane[]; } | null) => {
     const w = world([OPEN]);
     w.pull(7).author = LEADS;
-    let filesRead = false;
-    const run = (args: string[]): string => {
-      if (args[0] === "api" && args[2]?.endsWith("/files")) { filesRead = true; return ".github/workflows/ci.yml\n"; }
-      throw new Error(`unexpected gh ${args.join(" ")}`);
-    };
+    w.rowsWorld.tail.readouts.pulls.set(`${REPO}#7`, { title: "", body: "", additions: 0, deletions: 0, files: [".github/workflows/ci.yml"] });
+    const run = (args: string[]): string => { throw new Error(`unexpected gh ${args.join(" ")}`); };
     const lines: string[] = [];
     const result = outsideArmPass({ repo: REPO, switchesPath: on, run, log: (l) => lines.push(l), ...(lanes === undefined ? {} : { lanes }) });
-    return { result, lines: lines.join("\n"), filesRead };
+    return { result, lines: lines.join("\n"), filesRead: w.rowsWorld.calls.some((call) => call.startsWith("pullFilenamesOf")) };
   };
   const home = loadLanes();
   assert.ok(ownsReviewOnlyLane(LEADS, home), "PRECONDITION: the home checkout's file makes this author a lane owner, so the passed lanes below DIFFER from it");

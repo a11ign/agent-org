@@ -61,7 +61,6 @@
 // the same `fileVerifyRowsFor` the dispatch path does, for the rows it closed AND the rows it found closed, off the build rows the one lookup already carries.
 //
 //   node packages/agent-org/src/close-rows-sweep.ts [--window=<minutes>]
-import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 // RELATIVE, never the package specifier -- this job runs with `actions/checkout` and nothing else, the
@@ -74,6 +73,8 @@ import { closurePlan, planClosesNone, stripClaimLabels, closeRowsExit, LIVE_SETT
 import type { BuildRow, VerifyEffects } from "./verify-row.ts";
 import { settleClosedStatus } from "./settle-closed-status.ts";
 import { readMergedPullRequests } from "./ticket-port/rows-since.ts"; // #5076: the merged list is a connection, never a search
+// A11-160: the code host runs `gh`; this file asks it for the operations below and keeps the policy (what a refusal means, which rows are ours to close).
+import { rows } from "./plugins/rows.ts";
 
 export type Refusal = import("./settle-closed-status.ts").Refusal;
 export type SettleOutcome = import("./settle-closed-status.ts").SettleOutcome;
@@ -81,23 +82,19 @@ export type SettleOutcome = import("./settle-closed-status.ts").SettleOutcome;
 export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
 export const DEFAULT_WINDOW_MINUTES = 45;
 
-/** @param {string[]} args */
-const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
-
-/** The sweep's one GraphQL read, so the PR lookup and the `Closes: none` row lookup (a11ign/agent-org#750) are ONE `gh` call site, not two (gh-call-baseline.json only goes down). */
-const graphqlRead = (gh_: (args: string[]) => string, query: string, jq: string): string => gh_(["api", "graphql", "-f", `query=${query}`, "--jq", jq]);
+/** The code host's own runner for every call this file makes; each answer is trimmed, as the spawn this replaced trimmed it. @param {string[]} args */
+const gh = (args: string[]) => rows().runnerWith({})(args).trim();
 
 /**
  * Every PR merged into `main` within the last `windowMinutes`, from GitHub's own list of merged pull requests (a connection read, #5076: `--search merged:>=` was a
- * GitHub SEARCH, whose allowance the installation spent) -- never inferred from a commit range. `gh_` is injectable so this is testable without a live repo.
+ * GitHub SEARCH, whose allowance the installation spent) -- never inferred from a commit range.
  * @param {string} repo
  * @param {number} windowMinutes
- * @param {(args: string[]) => string} [gh_]
  * @returns {{ number: number }[]}
  */
-export function mergedPrsInWindow(repo: string, windowMinutes: number, gh_: (args: string[]) => string = gh): { number: number; }[] {
+export function mergedPrsInWindow(repo: string, windowMinutes: number): { number: number; }[] {
   const since = new Date(Date.now() - windowMinutes * 60_000).toISOString();
-  return readMergedPullRequests({ repo, select: "number", run: gh_, base: "main", window: { since } }).map((pr) => ({ number: Number(pr.number) }));
+  return readMergedPullRequests({ repo, select: "number", run: gh, base: "main", window: { since } }).map((pr) => ({ number: Number(pr.number) }));
 }
 
 /** #1175: the merged-PR read is tried this many times in all when GitHub answers a transient 5xx. One 502 on that read failed `trunk`'s `closeRows` job, and that read red as a red `main`. */
@@ -167,40 +164,22 @@ export type SweepOutcome = { failed: number[]; unsettled: Refusal[]; skipped: nu
  * The merged pull request's closing references, read in one GraphQL lookup, and the build rows of its verify row, kept in `builds`: a row whose title was not returned is `null`,
  * which is "could not read", never "no reading". Throws when the lookup fails; {@link closeOnePr} says so.
  */
-function readClosingRows(number: number, repo: string, gh_: (args: string[]) => string) {
-  const [owner, name] = repo.split("/");
+function readClosingRows(number: number, repo: string) {
   const builds = new Map<number, BuildRow | null>();
-  // `labels(first:20){nodes{name}}` added for #754, same reason as the immediate path's identical
-  // change in close-rows-for-merged-pr.ts: one lookup carries both what to close and what to strip.
+  // The labels of each row travel with the lookup (#754): one lookup carries both what to close and what to strip, as the immediate path's identical lookup does.
   // #1877: `mergedAt` and each issue's last `ReopenedEvent` -- see close-rows-for-merged-pr.ts's
   // `closurePlan` for what this backs (the sweep drives the identical, imported decision).
-  const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
-    + `mergedAt headRefName body mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
-    + `title body milestone{title} parent{number} `
-    + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
-    + `... on ReopenedEvent{createdAt}}}}}}}}`;
-  const pr = JSON.parse(graphqlRead(gh_, query, ".data.repository.pullRequest"));
-  const nodes: {
-      number: number; state: string; labels: { nodes: { name: string; }[]; };
-      timelineItems: { nodes: { createdAt: string; }[]; };
-      title?: string; body?: string | null; milestone?: { title: string; } | null; parent?: { number: number; } | null;
-  }[] = pr.closingIssuesReferences.nodes;
-  const issues = nodes.map((i) => ({
-    number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
-    reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
-  }));
+  const pr = rows().closingRowsOfMergedPull({ repo, number, run: gh });
+  const issues = pr.rows.map(({ number: row, state, labels, reopenedAt }) => ({ number: row, state, labels, reopenedAt }));
   // The build rows of the verify row, off the lookup that already ran: a row whose title was not returned is `null`, which is "could not read", never "no reading".
-  for (const i of nodes) {
-    builds.set(i.number, typeof i.title !== "string" ? null : { number: i.number, title: i.title, body: i.body ?? "",
-      labels: (i.labels?.nodes ?? []).map((l) => l.name), milestone: i.milestone?.title ?? null, parent: i.parent?.number ?? null });
-  }
+  for (const row of pr.rows) builds.set(row.number, row.build);
   return {
     issues,
     builds,
-    sha: pr.mergeCommit?.oid ?? "unknown",
-    prMergedAt: pr.mergedAt ?? null,
-    headRefName: pr.headRefName ?? null,
-    prBody: pr.body ?? "",
+    sha: pr.mergeSha ?? "unknown",
+    prMergedAt: pr.mergedAt,
+    headRefName: pr.headRefName,
+    prBody: pr.body,
   };
 }
 
@@ -209,20 +188,20 @@ function readClosingRows(number: number, repo: string, gh_: (args: string[]) => 
  * repo's ESLint budget, and EXPORTED with its effects injected so its Status half is driven by a test (#1299).
  * @param {number} number
  * @param {string} repo
- * @param {{ gh_?: (args: string[]) => string, strip?: typeof stripClaimLabels,
+ * @param {{ strip?: typeof stripClaimLabels,
  *   settle?: (n: number) => SettleOutcome, verify?: VerifyEffects }} [deps] `verify` is the verify row's effects (a11ign/agent-org#719)
  * @returns {{ failed: number[], unsettled: Refusal[], skipped: number[], lost?: number[] }} rows that could not be closed, the
  *   refusal for each closed row whose Status did not move, rows left alone because they were reopened
  *   after this PR merged (#1877) -- all empty on success -- and, only when there are some, the closed builds whose verify row could not be filed
  */
-export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = stripClaimLabels,
+export function closeOnePr(number: number, repo: string, { strip = stripClaimLabels,
   settle = (n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS), verify }: {
-        gh_?: (args: string[]) => string; strip?: typeof stripClaimLabels;
+        strip?: typeof stripClaimLabels;
         settle?: (n: number) => SettleOutcome; verify?: VerifyEffects;
     } = {}): SweepOutcome {
   let read: ReturnType<typeof readClosingRows>;
   try {
-    read = readClosingRows(number, repo, gh_);
+    read = readClosingRows(number, repo);
   } catch (cause) {
     console.log(`SWEEP: #${number} CANNOT ASK -- ${cause instanceof Error ? cause.message : cause}`);
     return { failed: [number], unsettled: [], skipped: [] };
@@ -233,7 +212,7 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
   let leftover: { number: number; reason: string; } | undefined;
   const unreadable: number[] = [];
   if (none) {
-    const own = closesNoneOwnRowPlan({ number, repo, prMergedAt, headRefName, prBody }, gh_, builds);
+    const own = closesNoneOwnRowPlan({ number, repo, prMergedAt, headRefName, prBody }, builds);
     if (own === null) {
       console.log(`SWEEP: #${number} declared NO closing references.`);
       return { failed: [], unsettled: [], skipped: [] };
@@ -263,7 +242,7 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
       + `If the work did not land, reopen and say so on the row: \`git show ${sha}\` is what actually `
       + "merged.";
     try {
-      gh_(["issue", "close", String(n), "--repo", repo, "--comment", sentence, "--reason", "completed"]);
+      rows().closeCompletedRow({ repo, row: n, comment: sentence, run: gh });
       console.log(`SWEEP: #${n} CLOSED (PR #${number}, merge ${sha}) -- the immediate trigger missed this.`);
     } catch (cause) {
       console.log(`SWEEP: #${n} COULD NOT CLOSE -- ${cause instanceof Error ? cause.message : cause}`);
@@ -282,24 +261,19 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
 }
 
 /**
- * a11ign/agent-org#750: THE SWEEP'S READING OF A `Closes: none` THAT NAMES THE PR'S OWN ROW. Reads the row the branch names through `gh_` (state, labels, last `ReopenedEvent`, and
+ * a11ign/agent-org#750: THE SWEEP'S READING OF A `Closes: none` THAT NAMES THE PR'S OWN ROW. Reads the row the branch names through the code host (state, labels, last `ReopenedEvent`, and
  * the fields of its build row, kept in `builds` for the verify row) and weighs it with the dispatch path's own `planClosesNone`. `null` when the PR names no row of its own, or
  * names one nobody holds (open, no claim label: logged, left alone).
  * @returns {{ plan: ReturnType<typeof closurePlan>, leftover: { number: number, reason: string }, unreadable: number[] } | null}
  */
 function closesNoneOwnRowPlan({ number, repo, prMergedAt, headRefName, prBody }: { number: number; repo: string; prMergedAt: string | null; headRefName: string | null; prBody: string; },
-  gh_: (args: string[]) => string, builds: Map<number, BuildRow | null>): { plan: ReturnType<typeof closurePlan>; leftover: { number: number; reason: string; }; unreadable: number[]; } | null {
-  const [owner, name] = repo.split("/");
+  builds: Map<number, BuildRow | null>): { plan: ReturnType<typeof closurePlan>; leftover: { number: number; reason: string; }; unreadable: number[]; } | null {
   const lookupRow = (n: number) => {
-    const query = `{repository(owner:"${owner}",name:"${name}"){issue(number:${n}){number state title body milestone{title} parent{number} `
-      + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{... on ReopenedEvent{createdAt}}}}}}`;
     try {
-      const issue = JSON.parse(graphqlRead(gh_, query, ".data.repository.issue"));
-      if (issue === null) return null;
-      const labels: string[] = (issue.labels?.nodes ?? []).map((l: { name: string; }) => l.name);
-      builds.set(issue.number, typeof issue.title !== "string" ? null : { number: issue.number, title: issue.title, body: issue.body ?? "", labels,
-        milestone: issue.milestone?.title ?? null, parent: issue.parent?.number ?? null });
-      return { number: issue.number as number, state: issue.state as string, labels, reopenedAt: (issue.timelineItems?.nodes?.[0]?.createdAt ?? null) as string | null };
+      const read = rows().declaredBuildRowOf({ repo, number: n, run: gh });
+      if (read === null) return null;
+      builds.set(read.row.number, read.build);
+      return read.row;
     } catch (cause) {
       console.log(`SWEEP: could not read declared #${n} -- ${cause instanceof Error ? cause.message : cause}`);
       return null;

@@ -8,14 +8,18 @@
  * by the timeout still wakes `ceo` once, read by the NEXT tick from the start marker it left. The control comes first (a 60 s tick writes nothing), then
  * 181 s is one edit and no order, a refused write is a state the next tick retries, and a dead tick's marker still says it once and is cleared.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HEARTBEAT_COMMENT_ID, writeHeartbeat } from "./work-tick.ts";
+import { HEARTBEAT_COMMENT_ID, heartbeatCommentBody, writeHeartbeat } from "./work-tick.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
 import { SIGNALS } from "./org-health/thresholds.ts";
 import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
 import { tickRecordReading, tickWallReading } from "./org-health/claim-and-tick-readings.ts";
@@ -26,6 +30,8 @@ import { TICK_KILLED, TICK_MARKER_FILE, TICK_OVERRAN, TICK_RECORD_FILE, TICK_REC
   deliverTickOrders, isSlowTick, killedTickOrders, parseCostLines, percentile, readKilledTick, readMarker, readTickRecordState, recordSlowTick, renderTickRecord,
   slowThresholdSeconds, standingRowFor, tickHealthLine, tickHealthOf, tickMarkerPath, tickRecordOf, tickRecordTargetFrom, tickRecordUnwrittenLine, tickWallIsHigh,
   overranWakesOf, TICK_RECORD_ROW_TITLE, tickRecordRowBody, phaseMarker, writeStartMarker, type CostLine, type RecordIo } from "./work-tick-health.ts";
+
+afterEach(() => forgetActivation());
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.ts");
@@ -464,32 +470,40 @@ test("#3567, through the tick: a tick whose gate CRASHES clears its marker too, 
 
 // --- THE HEARTBEAT IS WRITTEN TO EVERY DECLARED TRACKER (a11ign/a11ign#4080, row 2 of #4056) ---------------------------------------------------------
 
-/** `writeHeartbeat` over fake trackers and a fake `gh`: every call it makes, and every line it says on stderr. `refuse` names a repository whose writes `gh` refuses. */
+/** `writeHeartbeat` over fake trackers and the fake code host: every write it makes, and every line it says on stderr. `refuse` names a repository whose writes the code host refuses. */
 function heartbeatTo(trackers: { key: string; repo: string }[], refuse: string[] = []) {
-  const calls: string[] = [];
+  const host = createFakeCodeHost();
+  // The standing comment is a comment of the code host (id `HEARTBEAT_COMMENT_ID`): the tick edits it, never creates it.
+  const standing = fakeRow(host.rowsWorld, 1);
+  standing.comments.push({ id: HEARTBEAT_COMMENT_ID, body: "the standing comment", createdAt: new Date(host.rowsWorld.now()).toISOString() });
+  host.rowsWorld.rows.set(1, standing);
+  for (const repo of refuse) {
+    for (const operation of ["writeHeartbeatVariable", "editComment"]) host.rowsWorld.failures.set(`${operation} ${repo}`, Object.assign(new Error("boom"), { stderr: "gh: HTTP 403" }));
+  }
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
   const said: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string) => { said.push(String(chunk)); return true; }) as typeof process.stderr.write;
   try {
-    writeHeartbeat(1_700_000_000_000, (_file: string, args: string[]) => {
-      calls.push(args[2] + " " + args[3]);
-      if (refuse.some((repo) => args[3].includes(`repos/${repo}/`))) throw Object.assign(new Error("boom"), { stderr: Buffer.from("gh: HTTP 403") });
-      return "";
-    }, () => trackers);
+    writeHeartbeat(1_700_000_000_000, () => trackers);
   } finally {
     process.stderr.write = write;
   }
-  return { calls, said };
+  const calls = watched.calls.filter(({ op }) => op === "writeHeartbeatVariable" || op === "editComment").map(({ op, request }) => `${op} ${request.repo}`);
+  return { calls, said, audit: host.rowsWorld.tail.audit, standingBody: standing.comments[0]!.body };
 }
 const HOME = { key: "", repo: "a11ign/a11ign" };
 const ORG = { key: "agent-org", repo: "a11ign/agent-org" };
-const variableOf = (repo: string) => `PATCH repos/${repo}/actions/variables/GATE_LAST_TICK`;
-const commentOf = (repo: string) => `PATCH repos/${repo}/issues/comments/${HEARTBEAT_COMMENT_ID}`;
+const variableOf = (repo: string) => `writeHeartbeatVariable ${repo}`;
+const commentOf = (repo: string) => `editComment ${repo}`;
 
 test("#4080 CONTROL: with ONE declared tracker the heartbeat is the two writes it always was, the variable then the standing comment, both to that repository", () => {
-  const { calls, said } = heartbeatTo([HOME]);
+  const { calls, said, audit, standingBody } = heartbeatTo([HOME]);
   assert.deepEqual(calls, [variableOf(HOME.repo), commentOf(HOME.repo)]);
   assert.deepEqual(said, []);
+  assert.equal(audit.variables.get(`${HOME.repo}/GATE_LAST_TICK`), "1700000000000", "the variable holds the completion's own epoch milliseconds");
+  assert.equal(standingBody, heartbeatCommentBody(1_700_000_000_000), "and the standing comment its body");
 });
 
 test("#4080: with TWO declared trackers the variable is written to BOTH repositories, and the standing comment to the first only (its id is an object of that repository)", () => {

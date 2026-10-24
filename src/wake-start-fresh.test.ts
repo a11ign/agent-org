@@ -7,7 +7,7 @@
  * with an EMPTY idle pool, as `wake-spawn-load-gate.test.ts` does, and the controls come first: the same order WITHOUT the flag is refused
  * for each pace limit, so a start with the flag is the flag's doing and not what the fixture always does.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { deliver as settlingDeliver } from "./wake/fyi-queue.ts";
 import { parseOrders } from "./wake/seat-reset.ts";
@@ -16,6 +16,12 @@ import { sayClaimRefusal, spawnClaimability } from "./wake/release-line-and-seat
 import { startsFresh, type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { testEach } from "./lib/test-each.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRowPull, type FakeRowsWorld } from "./plugins/fakes/code-host-rows.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
+
+afterEach(() => forgetActivation());
 
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: () => {} });
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -132,53 +138,44 @@ test("#4524: the field survives the gate-to-wake hand-off (`parseOrders`)", () =
 //
 // Measured 2026-10-09 20:36-20:42Z: #4629 carried `priority:chairman`, four ticks said `UNDELIVERED ... #4629 would be refused at the claim by the file-overlap
 // check (B4): overlaps #545 in a11ign/agent-org`, and the journal was the only place that was said -- the chairman read it as plain orders served first.
-// These drive the REAL spawner path (`deliver` -> `targetFor` -> `spawnWorker` -> `whyNoSpawn` -> `spawnClaimability`) with a GitHub that is a seam, so what is
-// asserted is what reaches `gh issue comment`, not what a helper returned.
+// These drive the REAL spawner path (`deliver` -> `targetFor` -> `spawnWorker` -> `whyNoSpawn` -> `spawnClaimability`) over the fake code host (A11-160, step 9), so what is
+// asserted is the comment the row ends up holding, not what a helper returned.
 
 const REPOS = [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }];
 const WAKE_TS = "agent-org:src/wake.ts";
 const CHAIRMAN_ROW = 4524;
 
 type OpenPr = { number: number; repo: string; files: string[]; };
-type Github = { run: (args: string[]) => string; post: (args: string[]) => string; comments: Map<number, string[]>; posted: () => string[]; };
+type Github = { world: FakeRowsWorld; host: ReturnType<typeof createFakeCodeHost>; posted: () => string[]; commentedRows: () => number[]; queueReads: number[]; };
 
-/** A fixture GitHub: each row's Region, the open PRs (and which are queued), and the comments written so far -- one list per row, read back by `gh api`. */
+/**
+ * The fake code host in place, seeded with what the claim's checks read (A11-160, step 9): each row's Region (as the row's body), the open pull requests of each code repository (and which are in the
+ * merge queue), and the comments written so far, which are the rows' own comments. A row an order names must exist, as it does on GitHub; the home repository is the first tracker's.
+ */
 function github({ regions, prs, queued = [] }: { regions: Record<number, string[]>; prs: OpenPr[]; queued?: number[]; }): Github {
-  const comments = new Map<number, string[]>();
-  const writes: string[] = [];
-  const run = (args: string[]): string => {
-    const [verb, noun] = args;
-    if (verb === "issue" && noun === "view") return issueView(args, regions);
-    if (verb === "pr" && noun === "list") return JSON.stringify(prs.filter((pr) => pr.repo === args[args.indexOf("--repo") + 1]).map((pr) => (
-      { number: pr.number, changedFiles: pr.files.length, files: pr.files.map((path) => ({ path })), body: "", labels: [], headRefName: `agent/pr-${pr.number}` })));
-    if (verb === "api" && args.includes("graphql")) return String(queued.some((n) => args.join(" ").includes(`pullRequest(number:${n})`)));
-    if (verb === "api") return commentLines(args, comments);
-    throw new Error(`unexpected gh call: ${args.join(" ")}`);
-  };
-  const post = (args: string[]): string => {
-    assert.deepEqual(args.slice(0, 2), ["issue", "comment"], "the only write is a row comment");
-    const row = Number(args[2]);
-    comments.set(row, [...(comments.get(row) ?? []), args[args.indexOf("--body") + 1]]);
-    writes.push(`${row}: ${args[args.indexOf("--body") + 1]}`);
-    return "";
-  };
-  return { run, post, comments, posted: () => writes };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = homeProjectDeclaration().repo;
+  for (const [row, files] of Object.entries(regions)) {
+    world.rows.set(Number(row), fakeRow(world, Number(row), { body: `## Region\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n\n## Acceptance\n` }));
+  }
+  for (const { number, repo, files } of prs) {
+    const open = world.rules.otherRepos.get(repo) ?? new Map<number, FakeRowPull>();
+    open.set(number, { number, body: "", headRefName: `agent/pr-${number}`, labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: new Date(world.now()).toISOString(), comments: [], files });
+    world.rules.otherRepos.set(repo, open);
+  }
+  world.queue.entries = queued.map((pull, position) => ({ state: "QUEUED", enqueuedAt: new Date(world.now()).toISOString(), position, headSha: null, pull, pullId: null }));
+  // The merge queue is asked about by pull request number: the numbers it was asked about are what a test reads back.
+  const queueReads: number[] = [];
+  const rowsOf = host.rows as NonNullable<typeof host.rows>;
+  const asked = rowsOf.isPullQueued;
+  rowsOf.isPullQueued = (request) => { queueReads.push(request.number); return asked(request); };
+  substituteCodeHost(host);
+  const comments = () => [...world.rows.values()].flatMap((row) => row.comments.map((comment) => ({ row: row.number, body: comment.body })));
+  return { world, host, queueReads, posted: () => comments().map(({ row, body }) => `${row}: ${body}`), commentedRows: () => [...new Set(comments().map(({ row }) => row))] };
 }
 
-function issueView(args: string[], regions: Record<number, string[]>): string {
-  if (args.includes("blockedBy")) return JSON.stringify({ blockedBy: { nodes: [] } });
-  const files = regions[Number(args[2])] ?? [];
-  return JSON.stringify({ body: `## Region\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n\n## Acceptance\n` });
-}
-
-/** `gh api repos/{owner}/{repo}/issues/N/comments --jq '.[] | [id, login, at, (.body | contains(<marker>))] | @json'`, answered from the fixture's list. */
-function commentLines(args: string[], comments: Map<number, string[]>): string {
-  const row = Number(/issues\/(\d+)\/comments/.exec(args.join(" "))?.[1]);
-  const marker = JSON.parse(/contains\((".*")\)/.exec(args[args.length - 1])?.[1] ?? "null") as string;
-  return (comments.get(row) ?? []).map((body, i) => JSON.stringify([i + 1, "a11ign-ai-workers", "2026-10-09T21:00:00Z", body.includes(marker)])).join("\n");
-}
-
-const claimable = (gh: Github) => spawnClaimability({ run: gh.run, post: gh.post, repos: REPOS, warn: () => {} });
+const claimable = () => spawnClaimability({ repos: REPOS, warn: () => {} });
 const WAKE_PR: OpenPr = { number: 545, repo: "a11ign/agent-org", files: ["src/wake.ts"] };
 const asChairman = orderFor(CHAIRMAN_ROW, { startFresh: true });
 
@@ -187,11 +184,11 @@ test("#4524 MIXED BATCH: a chairman row B4 refuses is NOT skipped silently -- it
   const herdr = recordingHerdr();
   // 4570 is a PLAIN row on the same file: it is asked BEFORE 4563 spends the tick's one allowance, so its refusal is the claim's and not the allowance's.
   const batch = [asChairman, orderFor(4570), orderFor(4563), orderFor(4443), orderFor(4644)];
-  const got = deliver(batch, BUSY, [], { run: herdr.run, claimable: claimable(gh) });
+  const got = deliver(batch, BUSY, [], { run: herdr.run, claimable: claimable() });
 
   const chairmanLine = got.refused.find((line) => line.startsWith(`engineers/ready-row-unclaimed/${CHAIRMAN_ROW}:`));
   assert.match(chairmanLine ?? "", /#4524 would be refused at the claim by the file-overlap check \(B4\): overlaps #545 in a11ign\/agent-org/);
-  assert.deepEqual([...gh.comments.keys()], [CHAIRMAN_ROW], "ONLY the chairman row is written to: a plain row's refusal stays a journal line");
+  assert.deepEqual(gh.commentedRows(), [CHAIRMAN_ROW], "ONLY the chairman row is written to: a plain row's refusal stays a journal line");
   assert.match(gh.posted()[0], /^4524: <!-- chairman-row-hold:4524:B4:#545 in a11ign\/agent-org -->\n\*\*This `priority:chairman` row was NOT started this tick/);
   assert.match(gh.posted()[0], /overlaps #545 in a11ign\/agent-org/);
   assert.equal(gh.posted().length, 1);
@@ -202,7 +199,7 @@ test("#4524 MIXED BATCH: a chairman row B4 refuses is NOT skipped silently -- it
 
 test("#4524: the same refusal is written ONCE, however many ticks repeat it", () => {
   const gh = github({ prs: [WAKE_PR], regions: { [CHAIRMAN_ROW]: [WAKE_TS] } });
-  for (let tick = 0; tick < 3; tick++) deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable(gh) });
+  for (let tick = 0; tick < 3; tick++) deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable() });
 
   assert.equal(gh.posted().length, 1);
 });
@@ -210,7 +207,7 @@ test("#4524: the same refusal is written ONCE, however many ticks repeat it", ()
 test("#4524: a PR IN THE MERGE QUEUE is a WAIT that names it -- written once, DEFERRED not UNDELIVERED, and the tick after it merges starts the row", () => {
   const regions = { [CHAIRMAN_ROW]: [WAKE_TS] };
   const queued = github({ prs: [WAKE_PR], regions, queued: [545] });
-  const first = deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable(queued) });
+  const first = deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable() });
 
   assert.match(first.refused[0], /; no spawn: #4524 waits for #545 in a11ign\/agent-org, which is in the merge queue: B4 /);
   assert.doesNotMatch(first.refused[0], /would be refused/, "a wait is not worded as a refusal");
@@ -220,22 +217,22 @@ test("#4524: a PR IN THE MERGE QUEUE is a WAIT that names it -- written once, DE
   assert.deepEqual(report.undelivered, []);
   assert.equal(report.summary, null, "a wait in the merge queue does not make the tick exit ATTENTION");
 
-  deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable(queued) });
+  deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable() });
   assert.equal(queued.posted().length, 1, "the next tick, still queued, writes nothing more");
 
   // The PR left the queue by MERGING: it is no longer open, B4 clears, and the row starts -- nothing is reported as a refusal.
-  const merged = github({ prs: [], regions });
-  merged.comments.set(CHAIRMAN_ROW, queued.comments.get(CHAIRMAN_ROW) ?? []);
+  for (const pull of queued.world.rules.otherRepos.get("a11ign/agent-org")?.values() ?? []) Object.assign(pull, { merged: true, mergedAt: new Date(queued.world.now()).toISOString() });
+  queued.world.queue.entries = [];
   const herdr = recordingHerdr();
-  const after = deliver([asChairman], BUSY, [], { run: herdr.run, claimable: claimable(merged) });
+  const after = deliver([asChairman], BUSY, [], { run: herdr.run, claimable: claimable() });
   assert.deepEqual(after.refused, []);
   assert.match(after.sent[0], /^worker-4524 <- engineers\/ready-row-unclaimed\/4524 \(STARTED /);
-  assert.deepEqual(merged.posted(), []);
+  assert.equal(queued.posted().length, 1, "nothing is written once it starts: the one comment is still the only one");
 });
 
 test("#4524 CONTROL: the same overlap with the PR NOT in the queue is a refusal -- UNDELIVERED, and counted", () => {
   const gh = github({ prs: [WAKE_PR], regions: { [CHAIRMAN_ROW]: [WAKE_TS] }, queued: [] });
-  const got = deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable(gh) });
+  const got = deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: claimable() });
   const report = refusalReport(got.refused, () => new Map());
 
   assert.equal(report.undelivered.length, 1);
@@ -245,19 +242,18 @@ test("#4524 CONTROL: the same overlap with the PR NOT in the queue is a refusal 
 
 test("#4524: a plain row is never written to, and the merge queue is not even read for it", () => {
   const gh = github({ prs: [WAKE_PR], regions: { 4570: [WAKE_TS] }, queued: [545] });
-  const reads: string[] = [];
-  const run = (args: string[]) => { reads.push(args.join(" ")); return gh.run(args); };
-  const got = deliver([orderFor(4570)], BUSY, [], { run: recordingHerdr().run, claimable: spawnClaimability({ run, post: gh.post, repos: REPOS, warn: () => {} }) });
+  const got = deliver([orderFor(4570)], BUSY, [], { run: recordingHerdr().run, claimable: claimable() });
 
   assert.match(got.refused[0], /4570 would be refused at the claim by the file-overlap check \(B4\)/);
   assert.deepEqual(gh.posted(), []);
-  assert.equal(reads.filter((r) => r.includes("graphql")).length, 0);
+  assert.deepEqual(gh.queueReads, [], "the merge queue is not read");
 });
 
 test("#4524: a row write that fails is SAID and does not change the claim's answer", () => {
   const gh = github({ prs: [WAKE_PR], regions: { [CHAIRMAN_ROW]: [WAKE_TS] } });
   const said: string[] = [];
-  const failing = spawnClaimability({ run: gh.run, post: () => { throw new Error("HTTP 502"); }, repos: REPOS, warn: (line) => said.push(line) });
+  gh.world.failures.set("commentOnRow", new Error("HTTP 502"));
+  const failing = spawnClaimability({ repos: REPOS, warn: (line) => said.push(line) });
   const got = deliver([asChairman], BUSY, [], { run: recordingHerdr().run, claimable: failing });
 
   assert.match(got.refused[0], /file-overlap check \(B4\)/);
@@ -291,9 +287,9 @@ test("#4524 MIXED BATCH, EVERY ENGINEER HOLDING A ROW: the chairman row is the f
 
 test("#4524: a chairman row the CLAIM refuses is written on the row, once -- the refusal names the row it overlaps", () => {
   const gh = github({ prs: [], regions: { 4764: ["agent-org:src/engineer-route.ts"] } });
-  const claimRefused = sayClaimRefusal({ run: gh.run, post: gh.post, warn: () => {} });
-  let got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimable: claimable(gh), claimer: claimRefusing(HELD_BY_4738), claimRefused });
-  for (let tick = 0; tick < 2; tick++) got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimable: claimable(gh), claimer: claimRefusing(HELD_BY_4738), claimRefused });
+  const claimRefused = sayClaimRefusal({ warn: () => {} });
+  let got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimable: claimable(), claimer: claimRefusing(HELD_BY_4738), claimRefused });
+  for (let tick = 0; tick < 2; tick++) got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimable: claimable(), claimer: claimRefusing(HELD_BY_4738), claimRefused });
 
   assert.match(got.refused[0], /no spawn: the claim of 4764 as worker-4764 did not hold \(NOT CLAIMED: overlaps the Region of #4738/);
   assert.equal(gh.posted().length, 1, "the same cause, three ticks, one comment");
@@ -302,8 +298,8 @@ test("#4524: a chairman row the CLAIM refuses is written on the row, once -- the
 });
 
 test("#4524 CONTROL: the same claim refusal of a PLAIN row writes nothing, and a different cause on the chairman row is a second comment", () => {
-  const gh = github({ prs: [], regions: {} });
-  const claimRefused = sayClaimRefusal({ run: gh.run, post: gh.post, warn: () => {} });
+  const gh = github({ prs: [], regions: { 4764: [] } });
+  const claimRefused = sayClaimRefusal({ warn: () => {} });
   deliver([orderFor(4564)], BUSY, [], { run: recordingHerdr().run, claimer: claimRefusing(HELD_BY_4738), claimRefused });
   assert.deepEqual(gh.posted(), [], "a plain row's refusal stays a journal line");
 
@@ -313,9 +309,10 @@ test("#4524 CONTROL: the same claim refusal of a PLAIN row writes nothing, and a
 });
 
 test("#4524: a claim refusal that cannot be written is SAID, and the refusal still stands", () => {
-  const gh = github({ prs: [], regions: {} });
+  const gh = github({ prs: [], regions: { 4764: [] } });
   const said: string[] = [];
-  const claimRefused = sayClaimRefusal({ run: gh.run, post: () => { throw new Error("HTTP 502"); }, warn: (line) => said.push(line) });
+  gh.world.failures.set("commentOnRow", new Error("HTTP 502"));
+  const claimRefused = sayClaimRefusal({ warn: (line) => said.push(line) });
   const got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimer: claimRefusing(HELD_BY_4738), claimRefused });
 
   assert.match(got.refused[0], /did not hold/);

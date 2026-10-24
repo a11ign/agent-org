@@ -16,8 +16,8 @@
  * elsewhere today, caught here by `git-spawn-classification.test.ts`'s own discovery before this file
  * ever shipped.
  */
-// no-token: gh -- every `pruneWorktrees` call passes its own `claim`, and the tests of `claimRefusal` hand it a stub `gh`; proven by running this file with `gh` shimmed to exit 4.
-import { test } from "node:test";
+// no-token: gh -- every `pruneWorktrees` call passes its own `claim`, and the tests of `claimRefusal` read the rows of the fake code host; proven by running this file with `gh` shimmed to exit 4.
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync, readFileSync } from "node:fs";
@@ -37,6 +37,12 @@ import {
 } from "../worktree-removal.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { testEach } from "../lib/test-each.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
+
+afterEach(() => forgetActivation());
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host: a fixture branch
 // named `agent/delivered-1948` would otherwise read the real #1948 over `gh`, and every removal would land in the real log.
@@ -1186,20 +1192,32 @@ test("#2012: a tree whose ignorable paths could NOT be cleared is DIRTY, never r
 // journal could neither convict nor clear it. The fixture is #2020's: `wt-delivered` (row 1948) removes, and `wt-unstamped`
 // (row 1908) is the tree whose `.a11y-owner` a claim's re-creation lost -- the exact shape #2020's check cannot see. ---
 
-/** A `gh issue view` answering from a table: rows 1908 and 1948 by default carry whatever the test says. */
-const ghRows = (rows: Record<number, string[]>) => (args: string[]) => {
-  const labels = rows[Number(args[2])];
-  if (labels === undefined) throw new Error("gh: row not found");
-  return JSON.stringify({ state: "OPEN", labels: labels.map((name) => ({ name })) });
-};
+/**
+ * The fake code host, installed, holding the home tracker's rows by number (a row the table does not hold is a row the read cannot find, which is how a refused read looks to the caller). The code host's
+ * executor is never run, so the claim and the closed-row check are called with none; `asked` is which rows each read was asked about, in order.
+ */
+function seededRows(rows: Record<number, { state?: string; labels: string[] }>) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = homeProjectDeclaration().tracker.find((tracker) => tracker.key === "")?.repo ?? world.repo;
+  for (const [number, { state = "OPEN", labels }] of Object.entries(rows)) world.rows.set(Number(number), fakeRow(world, Number(number), { state: state as "OPEN" | "CLOSED", labels }));
+  const asked: number[] = [];
+  const operations = host.rows as unknown as Record<"rowStateAndLabelsOf" | "rowStateOf", (request: { number: number }) => unknown>;
+  for (const name of ["rowStateAndLabelsOf", "rowStateOf"] as const) {
+    const read = operations[name];
+    operations[name] = (request) => { asked.push(request.number); return read(request); };
+  }
+  substituteCodeHost(host);
+  return { asked };
+}
 const logLines = (file: string) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 test("#2782 DONE-WHEN 3: an UNSTAMPED tree whose row still carries a session label is REFUSED, and the delivered tree beside it is still removed", () => {
   const { root, delivered, unstamped } = buildHeldFixture();
   const log = join(root, "..", `removal-${Date.now()}.log`);
   try {
-    const gh = ghRows({ 1908: ["in-progress", "session:worker-1908"], 1948: [] });
-    const report = pruneWorktrees(root, { now: LONG_AFTER(), claim: (tree) => claimRefusal(tree, { gh }),
+    seededRows({ 1908: { labels: ["in-progress", "session:worker-1908"] }, 1948: { labels: [] } });
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), claim: (tree) => claimRefusal(tree),
       record: (line) => recordRemoval(line, { env: { [REMOVAL_LOG_ENV]: log } }) });
     assert.ok(report.held.some((r) => r.path === unstamped && /still carries session:worker-1908/.test(r.reason)),
       "the row's claim is the source of truth: #2020's owner-file check answered `unstamped`, which it reads as nobody's");
@@ -1213,8 +1231,8 @@ test("#2782 DONE-WHEN 3: an UNSTAMPED tree whose row still carries a session lab
 test("#2782: a row the prune could not READ refuses the tree -- it never reads as unclaimed", () => {
   const { root, delivered } = buildHeldFixture();
   try {
-    const gh = ghRows({ 1908: [] });
-    const report = pruneWorktrees(root, { now: LONG_AFTER(), claim: (tree) => claimRefusal(tree, { gh }) });
+    seededRows({ 1908: { labels: [] } });
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), claim: (tree) => claimRefusal(tree) });
     assert.ok(report.held.some((r) => r.path === delivered && /claim could not be read/.test(r.reason)));
     assert.ok(existsSync(delivered));
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -1252,8 +1270,8 @@ test("#2782: the DRY RUN reads the same claim and writes no removal line", () =>
   const { root, unstamped } = buildHeldFixture();
   try {
     const lines: unknown[] = [];
-    const gh = ghRows({ 1908: ["session:worker-1908"], 1948: [] });
-    const report = pruneWorktrees(root, { now: LONG_AFTER(), dryRun: true, claim: (tree) => claimRefusal(tree, { gh }),
+    seededRows({ 1908: { labels: ["session:worker-1908"] }, 1948: { labels: [] } });
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), dryRun: true, claim: (tree) => claimRefusal(tree),
       record: (line) => { lines.push(line); } });
     assert.ok(report.held.some((r) => r.path === unstamped), "the listing is the tool's own answer, claim included");
     assert.deepEqual(lines, [], "nothing was removed, so nothing is logged as removed");
@@ -1264,19 +1282,6 @@ test("#2782: the DRY RUN reads the same claim and writes no removal line", () =>
 // own: a new test file importing `agent-org/src` moves `agent-org-extraction.test.ts`'s decision-4 count, which is #2623's to amend. THE
 // HALF THAT MATTERS IS THE NEGATIVE ONE -- a claim that refuses everything is `stop pruning` wearing a better name, so each refusal
 // sits beside a case that must NOT refuse. ---
-
-/** A `gh issue view <n>` that answers from a table, and records which rows it was asked about. */
-function fakeRowsGh(rows: Record<number, { state?: string; labels: string[] }>) {
-  const asked: number[] = [];
-  const gh = (args: string[]) => {
-    const row = Number(args[2]);
-    asked.push(row);
-    const found = rows[row];
-    if (found === undefined) throw new Error(`gh issue view ${row} exited 1: not found`);
-    return JSON.stringify({ state: found.state ?? "OPEN", labels: found.labels.map((name) => ({ name })) });
-  };
-  return { gh, asked };
-}
 
 const scratchDir = () => mkdtempSync(join(tmpdir(), "worktree-removal-"));
 
@@ -1292,56 +1297,56 @@ test("rowCandidates reads the row off every spelling this repo has used, and off
 });
 
 test("#3850: rowsClosed is true only when EVERY row the tree names is CLOSED, whatever labels the closed row kept", () => {
-  const closed = fakeRowsGh({ 20: { state: "CLOSED", labels: ["session:worker-20"] }, 21: { state: "CLOSED", labels: [] } });
-  assert.deepEqual(rowsClosed({ path: "/r/wt-20", branch: null }, { gh: closed.gh }), { closed: true },
+  const closed = seededRows({ 20: { state: "CLOSED", labels: ["session:worker-20"] }, 21: { state: "CLOSED", labels: [] } });
+  assert.deepEqual(rowsClosed({ path: "/r/wt-20", branch: null }), { closed: true },
     "a closed row's leftover session label is the debris this release exists for");
-  assert.deepEqual(rowsClosed({ path: "/r/wt-20", branch: "agent/other-21" }, { gh: closed.gh }), { closed: true });
+  assert.deepEqual(rowsClosed({ path: "/r/wt-20", branch: "agent/other-21" }), { closed: true });
   assert.deepEqual(closed.asked.sort(), [20, 20, 21], "and each row is read");
 });
 
 test("#3850: rowsClosed is FALSE for an open row, a row that cannot be read, and a tree that names no row", () => {
-  const rows = fakeRowsGh({ 30: { state: "CLOSED", labels: [] }, 31: { labels: [] } });
-  const open = rowsClosed({ path: "/r/wt-30", branch: "agent/other-31" }, { gh: rows.gh });
+  seededRows({ 30: { state: "CLOSED", labels: [] }, 31: { labels: [] } });
+  const open = rowsClosed({ path: "/r/wt-30", branch: "agent/other-31" });
   assert.equal(open.closed, false);
   assert.match((open as { reason: string }).reason, /row #31 is open/, "one open row among closed ones keeps the tree");
-  const unreadable = rowsClosed({ path: "/r/wt-32", branch: null }, { gh: rows.gh });
+  const unreadable = rowsClosed({ path: "/r/wt-32", branch: null });
   assert.equal(unreadable.closed, false);
   assert.match((unreadable as { reason: string }).reason, /row #32 could not be read/, "could not ask is never closed");
-  const none = fakeRowsGh({});
-  const standing = rowsClosed({ path: "/r/role-engineer", branch: "dispatcher/merge" }, { gh: none.gh });
+  const none = seededRows({});
+  const standing = rowsClosed({ path: "/r/role-engineer", branch: "dispatcher/merge" });
   assert.equal(standing.closed, false);
   assert.match((standing as { reason: string }).reason, /names no row/);
   assert.deepEqual(none.asked, [], "a tree naming no row costs no API call");
 });
 
 test("claimRefusal REFUSES a tree whose open row carries a session label -- the copy in .a11y-owner is not consulted", () => {
-  const { gh, asked } = fakeRowsGh({ 2623: { labels: ["in-progress", "session:worker-2623"] } });
-  const refusal = claimRefusal({ path: "/r/wt-2623", branch: null }, { gh });
+  const { asked } = seededRows({ 2623: { labels: ["in-progress", "session:worker-2623"] } });
+  const refusal = claimRefusal({ path: "/r/wt-2623", branch: null });
   assert.equal(refusal.refused, true);
   assert.match((refusal as { reason: string }).reason, /row #2623, which still carries session:worker-2623/);
   assert.deepEqual(asked, [2623]);
 });
 
 test("claimRefusal does NOT refuse an unclaimed row, a CLOSED row that kept debris labels, or the session removing its own tree", () => {
-  const open = fakeRowsGh({ 10: { labels: ["ready"] } });
-  assert.deepEqual(claimRefusal({ path: "/r/wt-10", branch: null }, { gh: open.gh }), { refused: false });
-  const closed = fakeRowsGh({ 11: { state: "CLOSED", labels: ["session:worker-11"] } });
-  assert.deepEqual(claimRefusal({ path: "/r/wt-11", branch: null }, { gh: closed.gh }), { refused: false },
+  seededRows({ 10: { labels: ["ready"] } });
+  assert.deepEqual(claimRefusal({ path: "/r/wt-10", branch: null }), { refused: false });
+  seededRows({ 11: { state: "CLOSED", labels: ["session:worker-11"] } });
+  assert.deepEqual(claimRefusal({ path: "/r/wt-11", branch: null }), { refused: false },
     "a closed row's leftover label is debris (ready-label-audit says so); refusing on it would leak every finished tree");
-  const own = fakeRowsGh({ 12: { labels: ["session:worker-12"] } });
-  assert.deepEqual(claimRefusal({ path: "/r/wt-12", branch: null }, { gh: own.gh, except: "worker-12" }), { refused: false });
-  const other = fakeRowsGh({ 12: { labels: ["session:worker-99"] } });
-  assert.equal(claimRefusal({ path: "/r/wt-12", branch: null }, { gh: other.gh, except: "worker-12" }).refused, true,
+  seededRows({ 12: { labels: ["session:worker-12"] } });
+  assert.deepEqual(claimRefusal({ path: "/r/wt-12", branch: null }, { except: "worker-12" }), { refused: false });
+  seededRows({ 12: { labels: ["session:worker-99"] } });
+  assert.equal(claimRefusal({ path: "/r/wt-12", branch: null }, { except: "worker-12" }).refused, true,
     "`except` names ONE session; somebody else's claim on the same row still refuses");
 });
 
 test("claimRefusal: a row it could not READ is refused, never read as unclaimed -- and a tree naming no row asks nothing", () => {
-  const { gh } = fakeRowsGh({});
-  const refusal = claimRefusal({ path: "/r/wt-404", branch: null }, { gh });
+  seededRows({});
+  const refusal = claimRefusal({ path: "/r/wt-404", branch: null });
   assert.equal(refusal.refused, true);
   assert.match((refusal as { reason: string }).reason, /claim could not be read.*unanswered question/s);
-  const none = fakeRowsGh({});
-  assert.deepEqual(claimRefusal({ path: "/r/role-x", branch: null }, { gh: none.gh }), { refused: false });
+  const none = seededRows({});
+  assert.deepEqual(claimRefusal({ path: "/r/role-x", branch: null }), { refused: false });
   assert.deepEqual(none.asked, [], "a standing tree spends no API call");
 });
 

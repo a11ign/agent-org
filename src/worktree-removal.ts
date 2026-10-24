@@ -13,12 +13,12 @@
 //      the source of truth; `.a11y-owner` is the COPY that a claim's re-creation can lose (#2020 reads only
 //      that copy, which is what this closes).
 
-import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { worktreeOwner } from "./worktree-owner.ts";
 import { homeProjectDeclaration, type Tracker } from "./project-config.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** The log's default home, beside the other host state (`claim-stalls.json`, `kept-claims.json`, `salvage/`). */
 const DEFAULT_LOG = `${process.env.HOME}/.cache/a11ign/worktree-removals`;
@@ -82,17 +82,21 @@ export function rowCandidates({ path, branch }: { path: string; branch?: string 
   return [...new Set(found.filter((n) => n !== undefined).map(Number))];
 }
 
-/**
- * A LITERAL `spawnSync("gh", ...)`, on purpose: `host-units.ts`'s `SPAWNS_GH` reads the quoted name, and a spawn it cannot read is a unit that spends an API pool while the guard reports it clean (the prune unit does, since #2782).
- */
+/** One `gh` argument list in, its text out, throwing as the command fails: the removers' reads go through one of these. */
 export type Gh = (args: string[]) => string;
 /**
+ * The code host's runner (A11-160, step 9: the process is the code host's now, and the prune unit spends its API pool through it as before). What `gh` printed on stderr is kept to the failure's message and is not let
+ * through to this process's own, and a failure reads as it always did here: the command's first three words, its status, and what it said.
  * @type {Gh}
  */
 export const defaultGh: Gh = (args) => {
-  const ran = spawnSync("gh", args, { encoding: "utf8" });
-  if (ran.status !== 0) throw new Error(`gh ${args.slice(0, 3).join(" ")} exited ${ran.status}: ${(ran.stderr ?? "").trim()}`);
-  return ran.stdout;
+  try {
+    return rows().runnerWith({ echo: false })(args);
+  } catch (cause) {
+    const failed = cause as { status?: number | null; stderr?: string };
+    if (failed.status === undefined) throw cause; // not a command that failed (the code host has no rows): said as it is
+    throw new Error(`gh ${args.slice(0, 3).join(" ")} exited ${failed.status}: ${(failed.stderr ?? "").trim()}`);
+  }
 };
 
 /**
@@ -114,9 +118,9 @@ export function treeRepo(tree: { path: string; }, trackers: readonly Tracker[]):
  * @param {number} row @param {string} repo @param {Gh} gh @returns {string[]}
  */
 function sessionsHolding(row: number, repo: string, gh: Gh): string[] {
-  const read = JSON.parse(gh(["issue", "view", String(row), "--repo", repo, "--json", "state,labels"]));
+  const read = rows().rowStateAndLabelsOf({ repo, number: row, run: gh });
   if (read.state === "CLOSED") return [];
-  return read.labels.map((l: { name: string; }) => l.name)
+  return read.labels
     .filter((name: string) => name.startsWith(SESSION_PREFIX))
     .map((name: string) => name.slice(SESSION_PREFIX.length));
 }
@@ -134,11 +138,11 @@ function sessionsHolding(row: number, repo: string, gh: Gh): string[] {
  * @returns {{ refused: false } | { refused: true, reason: string }}
  */
 export function claimRefusal(tree: { path: string; branch?: string | null; }, { gh = defaultGh, except, trackers = homeProjectDeclaration().tracker }: { gh?: Gh; except?: string; trackers?: readonly Tracker[]; } = {}): { refused: false; } | { refused: true; reason: string; } {
-  const rows = rowCandidates(tree);
-  if (rows.length === 0) return { refused: false };
+  const candidates = rowCandidates(tree);
+  if (candidates.length === 0) return { refused: false };
   const home = treeRepo(tree, trackers);
   if ("undetermined" in home) return { refused: true, reason: `${home.undetermined} -- refusing to remove a tree on an unanswered question (#1216)` };
-  for (const row of rows) {
+  for (const row of candidates) {
     let held: string[];
     try {
       held = sessionsHolding(row, home.repo, gh);
@@ -165,13 +169,13 @@ export function claimRefusal(tree: { path: string; branch?: string | null; }, { 
  * @returns {{ closed: true } | { closed: false, reason: string }}
  */
 export function rowsClosed(tree: { path: string; branch?: string | null; }, { gh = defaultGh, trackers = homeProjectDeclaration().tracker }: { gh?: Gh; trackers?: readonly Tracker[]; } = {}): { closed: true; } | { closed: false; reason: string; } {
-  const rows = rowCandidates(tree);
-  if (rows.length === 0) return { closed: false, reason: `${tree.path} names no row, so no closed row releases it (#3850)` };
+  const candidates = rowCandidates(tree);
+  if (candidates.length === 0) return { closed: false, reason: `${tree.path} names no row, so no closed row releases it (#3850)` };
   const home = treeRepo(tree, trackers);
   if ("undetermined" in home) return { closed: false, reason: `${home.undetermined} -- not treated as closed (#3850, #1216)` };
-  for (const row of rows) {
+  for (const row of candidates) {
     try {
-      const { state } = JSON.parse(gh(["issue", "view", String(row), "--repo", home.repo, "--json", "state"]));
+      const state = rows().rowStateOf({ number: row, repo: home.repo, run: gh });
       if (state !== "CLOSED") return { closed: false, reason: `row #${row} is ${String(state).toLowerCase()}, so the stamp is not stale (#3850)` };
     } catch (cause) {
       return { closed: false, reason: `row #${row} could not be read (${(cause as Error).message}) -- not treated as closed (#3850)` };

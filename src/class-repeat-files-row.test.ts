@@ -1,15 +1,14 @@
-// no-token: gh -- every `gh` call in this file is an injected fake tracker and every `row-file` call an injected fake filer; nothing is filed (a11ign/a11ign#4451)
+// no-token: gh -- every read of the tracker in this file is the fake code host's (A11-160, step 9) and every `row-file` call an injected fake filer; nothing is filed (a11ign/a11ign#4451)
 // #4451 (move 1b of #4437): a second occurrence of a failure class FILES THE CLASS ROW by itself, once per class, and a refused filing keeps the order to `ceo`.
 //
-// THE FAKES ARE STRICT, as `class-repeat.test.ts` makes its tracker: the filer RECORDS its argv and the tracker REFUSES a call it was not built for, so a reader that drifts to another
-// endpoint is red. Every "files nothing" case has a twin that DOES file over the same facts with one thing changed (the memory file, a ref, the guard), so a filer that never files
+// THE FAKES ARE STRICT, as `class-repeat.test.ts` makes its tracker: the filer RECORDS its argv and the tracker is the fake code host's world, which answers only what the code host is asked. Every "files nothing" case has a twin that DOES file over the same facts with one thing changed (the memory file, a ref, the guard), so a filer that never files
 // turns the twin red and one that always files turns the case red. The mutations, both directions, are pasted in the pull request.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import {
   CLASS_REPEAT_WINDOW_MS, CLASS_ROW_MILESTONE, FAILURE_CLASSES_PATH, classRowArgv, groupByClass, guardChangedCommand, liveClassRepeatIo, readClassRepeat,
   type ClassRepeatFact,
@@ -17,6 +16,11 @@ import {
 import { orgHealthOrders, classRepeatReadings } from "./org-health/fleet-build-readings.ts";
 import { bodyFromArgv, fileRefusalReason } from "./row-file/issue-body-and-region-checks.ts";
 import { kindRefusal } from "./row-file/title-kind-and-label-refusals.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-09T09:00:00Z");
 const MINUTE = 60_000;
@@ -29,27 +33,20 @@ const INDEX = JSON.stringify({ classes: [
   { id: "main-red", name: "main is red", guard: null, guardNote: "an event kind" },
 ] });
 
-const closed = (number: number, labels: string[], agoMs: number) => ({ number, state: "closed", closed_at: new Date(NOW - agoMs).toISOString(), pull_request: false, labels });
+const closed = (number: number, labels: string[], agoMs: number): Partial<FakeRow> => ({ number, state: "CLOSED", closedAt: new Date(NOW - agoMs).toISOString(), labels });
 const TWO_IN_X = [closed(10, ["class:x"], 5 * MINUTE), closed(11, ["class:x"], MINUTE)];
 
-/** A tracker that answers the issue listing as `class-repeat.test.ts`'s does, and records `label create`; it refuses anything else. */
-function tracker(issues: object[], { labelFails = "" }: { labelFails?: string } = {}) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "label") {
-      if (labelFails) throw new Error(labelFails);
-      assert.deepEqual(args.slice(0, 2), ["label", "create"]);
-      return "";
-    }
-    assert.equal(args[0], "api");
-    const param = (name: string) => args.flatMap((a, i) => (args[i - 1] === "-f" && a.startsWith(`${name}=`) ? [a.slice(name.length + 1)] : []))[0];
-    let rows = issues;
-    if (param("state")) rows = rows.filter((r) => (r as any).state === param("state"));
-    if (param("labels")) rows = rows.filter((r) => (r as any).labels.includes(param("labels")));
-    return JSON.stringify(rows.slice(0, Number(param("per_page"))));
-  };
-  return { run, calls };
+/** The runner the live tool hands the code host's operations. The fake acts on its world and never calls it. */
+const NO_GH = (): string => { throw new Error("the fake code host runs nothing"); };
+
+/** The fake code host in place with `issues` as the rows of its world. `world.labelsCreated` is the labels it was asked to make sure of; `labelFails` makes that refuse. */
+function tracker(issues: Partial<FakeRow>[], { labelFails = "" }: { labelFails?: string } = {}) {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { rowsWorld: world } = host;
+  for (const issue of issues) world.rows.set(issue.number!, fakeRow(world, issue.number!, issue));
+  if (labelFails) world.failures.set("ensureTriageLabel", new Error(labelFails));
+  return { run: NO_GH, world };
 }
 
 /** A filer that records what it was given and answers like `row-file` (the new row's URL on its last line), or throws what a refusal throws. */
@@ -67,7 +64,7 @@ const ledgerText = (...lines: [string, number, string][]): string => lines.map((
 
 /** One tick's read: a private state directory per call site, so the memory is the test's to keep or throw away. */
 function tick({ issues = TWO_IN_X, ledger, state, fileRow, now = NOW, index = INDEX, labelFails }: {
-  issues?: object[]; ledger?: string | Error; state: string; fileRow?: (argv: string[]) => string; now?: number; index?: string; labelFails?: string;
+  issues?: Partial<FakeRow>[]; ledger?: string | Error; state: string; fileRow?: (argv: string[]) => string; now?: number; index?: string; labelFails?: string;
 }) {
   const t = tracker(issues, { labelFails });
   const logs: string[] = [];
@@ -75,7 +72,7 @@ function tick({ issues = TWO_IN_X, ledger, state, fileRow, now = NOW, index = IN
   const fact = readClassRepeat(t.run, REPO, {
     root: "/project", read: () => index, now, ledgerPath: LEDGER, readLedger, ...(fileRow ? { fileRow } : {}), statePath: join(state, "filed.json"), log: (line) => logs.push(line),
   });
-  return { fact, logs, calls: t.calls, readings: classRepeatReadings({ now, classRepeat: fact }) };
+  return { fact, logs, world: t.world, readings: classRepeatReadings({ now, classRepeat: fact }) };
 }
 
 /** Every directory a case makes, removed when the file ends: the run refuses a test file that leaves something in its private TMPDIR. */
@@ -89,7 +86,7 @@ const filingsOf = (fact: ClassRepeatFact) => ("unreadable" in fact ? undefined :
 test("a class with two closed instances files ONE row naming both, with the kind and the milestone and NOT the class label (#570)", () => {
   const state = freshState();
   const { fileRow, argvs } = filer();
-  const { fact, calls, readings } = tick({ state, fileRow });
+  const { fact, world, readings } = tick({ state, fileRow });
   assert.equal(argvs.length, 1, "exactly one row is filed");
   const argv = argvs[0];
   const after = (flag: string) => argv[argv.indexOf(flag) + 1];
@@ -99,7 +96,7 @@ test("a class with two closed instances files ONE row naming both, with the kind
   assert.ok(argv.includes("--session=work-gate"));
   const body = after("--body");
   for (const linked of ["#10", "#11", "`x`", "the x failure", "the x detector in CI"]) assert.ok(body.includes(linked), `the body names ${linked}`);
-  assert.ok(calls.some((c) => c[0] === "label" && c.includes("class:x") && c.includes(REPO)), "the class label is still made sure of, for the rows that ARE occurrences and are labelled by hand");
+  assert.deepEqual(world.labelsCreated, ["class:x"], "the class label is still made sure of, for the rows that ARE occurrences and are labelled by hand");
   assert.deepEqual(filingsOf(fact), { x: { filed: "#4500", covers: "11" } });
   assert.deepEqual(orders(readings), [], "a class that has its row is not also offered to ceo");
   assert.match(readings[0].detail, /class `x` repeated and was filed as #4500/);

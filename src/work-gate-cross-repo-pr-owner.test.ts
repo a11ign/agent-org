@@ -7,7 +7,7 @@
  * held the rows; `scopeTick` never ran the owner ladder at all. EVERY "falls back to ceo" assertion below is read against the
  * same fixture with ONE thing changed (the positive control for it): the first test of each group.
  */
-import { test, after, afterEach } from "node:test";
+import { test, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +20,9 @@ import { sendToGitHub, unstampableRefusal, main as prOpen, EXIT_NOTHING_SENT } f
 import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
 import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
 
 // agent-org#519: the body is no longer an acceptance source, so the diff ADDS this file and `readFile` returns the text the body meant to carry.
 const withAcceptanceFile = (body: string) => ({
@@ -228,12 +231,12 @@ test("(11) pr:open: a create with no nameable owner is REFUSED before anything i
   assert.equal(sent.length, 0, "nothing reached gh");
   assert.match(err.join(""), /pr-open: REFUSED -- no session could be named/);
   assert.equal(open("ceo"), 0);
-  assert.deepEqual(sent.map((a) => a.slice(0, 2).join(" ")), ["pr create", "label create", "pr edit"], "the label is created in the repository the PR is opened in, then stamped");
+  assert.deepEqual(sent.map((a) => a.slice(0, 2).join(" ")), ["fake-pull-write create", "fake-label-create session:ceo", "fake-label session:ceo"], "the label is created in the repository the PR is opened in, then stamped (the steps the code host builds; their real argument lists are plugins/github/rows/pullwork-rows.test.ts)");
   assert.ok(sent[2].includes("session:ceo"));
 });
 
 test("(12) sendToGitHub is unchanged for a stamped create: the label step still runs after the arm", () => {
   const ran: string[][] = [];
   assert.equal(sendToGitHub("create", ["--draft"], { run: (a) => { ran.push(a); }, git: () => "", err: () => {}, owner: () => "ceo", labelExists: () => true }), 0);
-  assert.deepEqual(ran.map((a) => a[1]), ["create", "edit"]);
+  assert.deepEqual(ran.map((a) => a[0]), ["fake-pull-write", "fake-label"], "the create, then the label step (a draft is not armed)");
 });

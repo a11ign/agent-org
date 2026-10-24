@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's optional `rows` group, version 1.11 -- row mode's GitHub operations (A11-160, steps 4 to 8)
+// module: the code host contract's optional `rows` group, version 1.12 -- row mode's GitHub operations (A11-160, steps 4 to 9)
 //
 // A TYPE FILE: it imports nothing at run time. ROW MODE USES GITHUB AS ITS TRACKER (rows are issues, `TicketPort` is implemented over them), its queue (project items and labels) and its code host, and a plugin
 // serves one concern, so row mode's operations are an OPTIONAL member group of the code host contract rather than a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
@@ -13,6 +13,8 @@
 // 1.8 (step 5): the callers that arm, guard and queue a merge moved (`arm-pr`, `auto-arm-sweep`, `merge-guard`, `merge-queue`, `pr-armed-state`), and what they asked of GitHub is a named operation now. `run` is OPTIONAL on
 // them and on the arming operations of 1.7 they use: a caller that has not moved hands its own, and one that has hands none, so the code host runs `gh` itself (`ownRun` is the plugin's, for the callers still to move).
 //
+// 1.12 (step 9): the last callers moved, in seven sections of their own files (`code-host-rows-pullwork.ts`, `-audit`, `-closing`, `-classes`, `-queue`, `-readouts`, `-plumbing`), which `CodeHostRows` extends.
+//
 // 1.11 (step 8): the board's reads and posts, the health and retro readings, the DORA reader, the trace's reads and the chairman's watch and answers moved (see the sections at the end of the group). A caller that RUNS `gh` itself and keeps
 // its own policy (a bound, a buffer, a directory, a refusal of some argument lists) asks the code host for a runner with that policy (`runnerWith`, `asyncRunnerWith`): the process is the code host's.
 //
@@ -23,6 +25,13 @@
 import type { Pool as PoolReading } from "../../api-pool.ts";
 import type { AnsweringRun, AsyncRowsRun, BlockerRead, BranchedPullState, ClosingPullRead, CommandRun, CrossReferencingPull, LabelEvent, LabelEventRead, MarkedComment, MilestoneRead, OpenPullFiles, OpenPullReview, PullCommit, PullState, RestCommentsRead, RestRow, RestRowRead, RoadmapFieldRead, RoadmapItemRead, RowFacts, RowShapeFacts, RunAnswer, RunnerRequest, TierFacts } from "./code-host-rows-facts.ts";
 import type { ApiBudget, BlockerWriter, OpenItemsReader, PortEvent, TicketPort } from "../../ticket-port/port.ts";
+import type { RowsPullwork } from "./code-host-rows-pullwork.ts";
+import type { RowsAudit } from "./code-host-rows-audit.ts";
+import type { RowsClosing } from "./code-host-rows-closing.ts";
+import type { RowsClasses } from "./code-host-rows-classes.ts";
+import type { RowsQueue } from "./code-host-rows-queue.ts";
+import type { RowsReadouts } from "./code-host-rows-readouts.ts";
+import type { RowsPlumbing } from "./code-host-rows-plumbing.ts";
 
 /** One `gh` command line in, its text out, throwing as the command fails. The caller's: see the head of this file. */
 export type RowsRun = (args: string[]) => string;
@@ -43,8 +52,6 @@ export type RowsHelpers = RowsReadHelpers & RowsProjectHelpers;
 export type RowsReadHelpers = Readonly<{
   claimLabel: string;
   pool: Readonly<{
-    /** The GraphQL pool's probe, as arguments. */
-    probe: readonly string[];
     fromResponse(raw: string | null): PoolReading | null;
     rawResponse(args: readonly string[], run: RowsRun): string | null;
     fromRateLimitField(data: any): ApiBudget | null;
@@ -262,7 +269,7 @@ export type ClosedLabelledRow = { number: number; title: string; state: string; 
  * Row mode's GitHub operations (contract 1.7). Each is the function `src/ticket-port/<file>.ts` held, with its file named in its comment; `src/ticket-port/` keeps a delegating copy of each so a caller's import
  * does not change, and the delegates call the activated code host's `rows`.
  */
-export interface CodeHostRows {
+export interface CodeHostRows extends RowsPullwork, RowsAudit, RowsClosing, RowsClasses, RowsQueue, RowsReadouts, RowsPlumbing {
   /**
    * How the operations act. `through-run`: on the `run` their caller hands them, which carries the caller's policy (the GitHub plugin's, until the callers move into it). `on-its-own-state`: on
    * the host's own state, ignoring `run`, which is what a fake does. The contract suite asks a refused `run` of the first and has nothing to refuse in the second.
@@ -291,6 +298,7 @@ export interface CodeHostRows {
   postRowComment(request: { repo: string; row: number; body: string; run: RowsRun }): void;
   /** Files a new row in `repo` with `labels` and answers its number; a create that prints no row URL is thrown. */
   createRow(request: { repo: string; title: string; labels: string[]; body: string; run: RowsRun }): number;
+  /** Replaces the body of comment `id` of `repo` (any comment of a row) with `body`. THROWS when the write is refused. From `approved-unqueued.ts` (the day's reading), `work-tick.ts` (the tick's record and its standing heartbeat comment) and `tracker-comment.ts` (a tracker comment's replacement). */
   editComment(request: { repo: string; id: number; body: string; run: RowsRun }): void;
   reviewsOf(request: { repo: string; number: number; run: RowsRun }): RestReview[];
   /** The most recently updated `window` merged pull requests of `repo`, each with its approving reviews and merge-queue entries, in one GraphQL read. */

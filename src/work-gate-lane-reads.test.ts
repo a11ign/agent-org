@@ -16,13 +16,19 @@
  *     no longer asked, so the fake refuses one;
  *   - the wiring: `main` calls both waves, because a helper nothing calls is the most recorded shape here.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readOpenRowFollowUps } from "./work-gate.ts";
 import { readTrackerLanes } from "./work-gate/tick.ts";
 import { closedAnswerConnection, connectionOfSelected, readsClosedAnswerRows, readsRecentlyClosed, readsRowsByLabel, recentlyClosedConnection } from "./packaging/rows-by-label-fixtures.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 import { testEach } from "./lib/test-each.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRowsWorld } from "./plugins/fakes/code-host-rows.ts";
+import { askingRunFirst, standIn } from "./plugins/fakes/waves.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };
@@ -84,19 +90,122 @@ function shape({ args }: Call): string {
   return args.slice(0, 2).join(" ");
 }
 
-test("POSITIVE CONTROL: the one-at-a-time wave 2 reads backlog, chairman and open in today's order, so the assertions below compare something", () => {
+// --- THE WAVES ON THE FAKE CODE HOST (A11-160, step 9) ----------------------------------------------------------------------------------------------------------------------------------------------------
+// The lanes below are the fake code host's rows; each operation the gate reads a lane with makes ONE stand-in call to the `run` it is handed (`waves.test.support.ts`), so what is pinned is the executor's: which calls
+// the gate's readers make, in what order, which go out together in a batch and which do not, and what a refusal does to a lane. How a GitHub answer is read, and how the open list is folded into the label lists
+// (which is made of GitHub's own argument lists), is pinned by the cases further down, over stubbed answers.
+
+/** The stand-in call each operation of a lane makes: its name and what it is about. */
+const LANE_CALLS = {
+  readRowsByLabel: (request: { label: string; state: string }) => standIn("readRowsByLabel", request.label, request.state),
+  openRowsOf: () => standIn("openRowsOf"),
+  labelNamesWithPrefix: (request: { prefix: string }) => standIn("labelNamesWithPrefix", request.prefix),
+  closedRowsCarryingLabels: (request: { kind: string }) => standIn("closedRowsCarryingLabels", request.kind),
+  recentlyClosedRowsOf: () => standIn("recentlyClosedRowsOf"),
+};
+
+/** The fake code host in place with the open rows `numbers` (`ready`; `claimed` ones are `in-progress` and blocked by the closed row #9). */
+function lanesWorld({ claimed = false }: { claimed?: boolean } = {}): FakeRowsWorld {
+  const host = askingRunFirst(createFakeCodeHost(), LANE_CALLS);
+  const world = host.rowsWorld;
+  world.rows.set(41, fakeRow(world, 41, { title: "open row", labels: ["ready"], createdAt: "2026-10-06T05:00:00Z" }));
+  if (claimed) {
+    world.rows.set(42, fakeRow(world, 42, { title: "claimed", labels: ["in-progress", "session:worker-42"], blockedBy: [9], createdAt: "2026-10-06T05:00:00Z" }));
+    world.rows.set(9, fakeRow(world, 9, { state: "CLOSED", closedAt: "2026-10-06T04:00:00Z", labels: [] }));
+    world.labelsCreated.push("answer:product-manager"); // the repository has an answer label, so the closed rows that carry it are read
+  }
+  substituteCodeHost(host);
+  return world;
+}
+
+/** The `run` a test hands the gate: one call at a time, noted, refusing the calls `refuse` names the way `execFileSync` throws, answering `[]` (a stand-in call has nothing to answer). */
+function standInRun(seen: Call[], refuse: string[] = []) {
+  return (args: string[], repo?: string) => {
+    seen.push({ args, repo });
+    if (refuse.some((word) => args.includes(word))) return refused();
+    return "[]";
+  };
+}
+
+/** A batch that notes every call it was handed, one entry per BATCH, and fails the calls `refuse` names. */
+function standInBatch(batches: Call[][], refuse: string[] = []) {
+  return (calls: Call[]): Answer[] => {
+    batches.push(calls);
+    return calls.map((call) => (refuse.some((word) => call.args.includes(word)) ? { failed: true as const, stdout: "", stderr: "HTTP 502", status: 1 } : { stdout: "[]" }));
+  };
+}
+
+const named = ({ args }: Call): string => args.join(" ");
+
+test("wave 2 on the fake: the one-at-a-time read asks backlog, chairman and open in today's order, and a run handed in is not batched", () => {
+  lanesWorld();
   const seen: Call[] = [];
-  const lanes = readTrackerLanes(sequentialRun(seen) as never);
-  assert.deepEqual(seen.map(shape), ["rows labelled backlog", "rows labelled needs:chairman", "issue list"]);
-  assert.deepEqual(lanes.openRowsRead, OPEN_ROWS, "the open rows came from the open list, not from another lane's answer");
+  const lanes = readTrackerLanes(standInRun(seen) as never);
+  assert.deepEqual(seen.map(named), ["fake:readRowsByLabel backlog OPEN", "fake:readRowsByLabel needs:chairman OPEN", "fake:openRowsOf"], "each lane once, with no rehearsal pass");
+  assert.deepEqual(lanes.openRowsRead?.map((row: { number: number }) => row.number), [41], "the open rows came from the open list");
   assert.deepEqual(lanes.chairmanBlocked, []);
 });
 
-test("CONTROL: a run handed in is not batched -- its calls arrive one at a time, with no rehearsal pass", () => {
+test("wave 2 on the fake: the three lanes arrive in ONE batch and nothing is left to read one at a time; the lanes are the one-at-a-time read's", () => {
+  lanesWorld();
+  const batches: Call[][] = [];
   const seen: Call[] = [];
-  readTrackerLanes(sequentialRun(seen) as never);
-  assert.equal(seen.length, 3, "each lane once");
+  const together = readTrackerLanes(standInRun(seen) as never, standInBatch(batches));
+  assert.equal(batches.length, 1, "one batch, not one per lane");
+  assert.deepEqual(batches[0].map(named), ["fake:readRowsByLabel backlog OPEN", "fake:readRowsByLabel needs:chairman OPEN", "fake:openRowsOf"]);
+  assert.deepEqual(seen, []);
+  assert.deepEqual(together, readTrackerLanes(standInRun([]) as never));
 });
+
+test("wave 2 on the fake: a refusal in ANY one lane is that lane's null, beside the other lanes' answers", () => {
+  lanesWorld();
+  const lanes = [["promotableRows", "backlog"], ["chairmanBlocked", "needs:chairman"], ["openRowsRead", "fake:openRowsOf"]] as const;
+  for (const [lane, word] of lanes) {
+    const together = readTrackerLanes(standInRun([], [word]) as never, standInBatch([], [word])) as Record<string, unknown>;
+    assert.equal(together[lane], null, `${lane}: refused is null, never []`);
+    for (const [other] of lanes.filter(([name]) => name !== lane)) assert.notEqual(together[other], null, `${other} keeps its answer beside ${lane}'s refusal`);
+    assert.deepEqual(together, readTrackerLanes(standInRun([], [word]) as never), `${lane}: the one-at-a-time read says the same`);
+  }
+});
+
+test("wave 3 on the fake: a claimed row with a cleared blocker asks comments, the closed-answer label list (and the reads it leads to) and the closings, all in ONE batch", () => {
+  lanesWorld({ claimed: true });
+  const batches: Call[][] = [];
+  const seen: Call[] = [];
+  const together = readOpenRowFollowUps(CLAIMED_ROWS, standInRun(seen) as never, standInBatch(batches));
+  assert.equal(batches.length, 1);
+  // the fake's label list is the world's, so the rehearsal foresees the closed-answer reads and they ride the batch; that they FOLLOW the label list when its answer is only known after the batch is the stubbed case below
+  assert.deepEqual(batches[0].map(named).sort(), ["fake:closedRowsCarryingLabels issues", "fake:closedRowsCarryingLabels pullRequests", "fake:labelNamesWithPrefix answer:", "fake:readRowsByLabel in-progress OPEN", "fake:recentlyClosedRowsOf"].sort());
+  assert.deepEqual(together.claimedComments?.map((row: { number: number }) => row.number), [42]);
+  assert.ok(together.closings instanceof Map && together.closings.get(9) !== undefined, "the closings are the closings read, keyed by row");
+  assert.deepEqual(seen, [], "and nothing is left to read one at a time");
+  assert.deepEqual(together, readOpenRowFollowUps(CLAIMED_ROWS, standInRun([]) as never), "the same follow-ups");
+});
+
+test("THE CONDITIONAL READS STAY CONDITIONAL, on the fake: a tracker with nothing claimed asks for no more than it did", () => {
+  lanesWorld();
+  const batches: Call[][] = [];
+  const seen: Call[] = [];
+  const together = readOpenRowFollowUps(QUIET, standInRun(seen) as never, standInBatch(batches));
+  const before: Call[] = [];
+  const oneByOne = readOpenRowFollowUps(QUIET, standInRun(before) as never);
+  assert.equal(together.claimedComments, null, "not asked, as before");
+  assert.equal(together.closings, null);
+  assert.deepEqual(batches, [], "one call is not a batch: it costs a spawn and saves nothing");
+  assert.deepEqual(seen.map(named), before.map(named), "the same calls, none added, none dropped");
+  assert.deepEqual(together, oneByOne);
+});
+
+test("a refusal in wave 3 is that read's null, beside the others' answers, on the fake", () => {
+  lanesWorld({ claimed: true });
+  const batches: Call[][] = [];
+  const together = readOpenRowFollowUps(CLAIMED_ROWS, standInRun([]) as never, standInBatch(batches, ["in-progress"]));
+  assert.equal(together.claimedComments, null, "refused is null");
+  assert.ok(together.closings instanceof Map, "the closings were still read");
+  assert.deepEqual(together, readOpenRowFollowUps(CLAIMED_ROWS, standInRun([], ["in-progress"]) as never));
+});
+
+// --- WHAT NEEDS GITHUB'S OWN ANSWERS: the open list folded into the label lists (#4899). The fold is made of the argument lists of `gh issue list` and of the by-label connection read, so these cases stay over stubbed answers ---
 
 test("wave 2: open arrives alone in the batch and backlog and needs:chairman are made from it; the lanes are what the one-at-a-time read returned (#4899)", () => {
   const BACKLOG_ROW = { ...OPEN_ROWS[0], number: 43, title: "backlog row", labels: [{ name: "backlog" }] };
@@ -182,37 +291,15 @@ test("a chairman row's events are NOT foreseen by the batch: they run one at a t
   assert.deepEqual(together.chairmanBlocked?.map((row: { number: number, chairmanReadRefused?: boolean }) => [row.number, row.chairmanReadRefused]), [[7, true]]);
 });
 
-test("wave 3: a claimed row with a cleared blocker asks comments, the closed-answer label list and the closings, all in ONE batch", () => {
-  const batches: Call[][] = [];
-  const seen: Call[] = [];
-  const together = readOpenRowFollowUps(CLAIMED_ROWS, sequentialRun(seen) as never, fakeBatch(batches));
-  assert.equal(batches.length, 1);
-  assert.deepEqual(batches[0].map(shape).sort(), ["rows labelled in-progress", "recently closed", "label list"].sort());
+test("wave 3: the closed-answer reads FOLLOW the label list when its answer is only known after the first batch, so they run one at a time while the comments, the label list and the closings go in ONE batch", () => {
+  const asked = { batches: [] as Call[][], seen: [] as Call[] };
+  const together = readOpenRowFollowUps(CLAIMED_ROWS, sequentialRun(asked.seen) as never, fakeBatch(asked.batches));
+  assert.equal(asked.batches.length, 1);
+  assert.deepEqual(asked.batches[0].map(shape).sort(), ["rows labelled in-progress", "recently closed", "label list"].sort());
   assert.deepEqual(together.claimedComments, [{ number: 42, comments: [] }]);
   assert.ok(together.closings instanceof Map && together.closings.get(9) !== undefined, "the closings are the closings read, keyed by row");
-  assert.deepEqual(seen.map(shape), ["closed issues", "closed pullRequests"], "the closed-answer reads follow the label list, so they run one at a time, as they did");
+  assert.deepEqual(asked.seen.map(shape), ["closed issues", "closed pullRequests"], "the closed-answer reads follow the label list, so they run one at a time, as they did");
   assert.deepEqual(together, readOpenRowFollowUps(CLAIMED_ROWS, sequentialRun([]) as never), "the same follow-ups");
-});
-
-test("THE CONDITIONAL READS STAY CONDITIONAL: a tracker with nothing claimed asks for no more than it did", () => {
-  const batches: Call[][] = [];
-  const seen: Call[] = [];
-  const together = readOpenRowFollowUps(QUIET, sequentialRun(seen) as never, fakeBatch(batches));
-  const before: Call[] = [];
-  const oneByOne = readOpenRowFollowUps(QUIET, sequentialRun(before) as never);
-  assert.equal(together.claimedComments, null, "not asked, as before");
-  assert.equal(together.closings, null);
-  assert.deepEqual(batches, [], "one call is not a batch: it costs a spawn and saves nothing");
-  assert.deepEqual(seen.map(shape), before.map(shape), "the same calls, none added, none dropped");
-  assert.deepEqual(together, oneByOne);
-});
-
-test("a refusal in wave 3 is that read's null, beside the others' answers", () => {
-  const batches: Call[][] = [];
-  const together = readOpenRowFollowUps(CLAIMED_ROWS, sequentialRun([]) as never, fakeBatch(batches, { refuse: ["in-progress"] }));
-  assert.equal(together.claimedComments, null, "refused is null");
-  assert.ok(together.closings instanceof Map, "the closings were still read");
-  assert.deepEqual(together, readOpenRowFollowUps(CLAIMED_ROWS, sequentialRun([], { refuse: ["in-progress"] }) as never));
 });
 
 test("THE WIRING: main reads the tracker lanes and the follow-ups through the two waves, and no longer one by one", () => {

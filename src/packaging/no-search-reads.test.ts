@@ -1,5 +1,5 @@
-// no-token: GH_READS -- #5050. Importing anything from `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: every reader is
-// handed an injected `run` that answers from a fake, and the source guard reads files and spawns nothing.
+// no-token: GH_READS -- #5050. Importing anything from `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: every reader answers from the fake code host's rows
+// (or, in the two fold cases, from an injected `run`), and the source guard reads files and spawns nothing.
 /**
  * #5039: NO SEARCH-BACKED READ ON THE CLAIM PATH. #5050: NOR IN THE GATE, AND ONE REFUSAL IS ASKED ONCE PER TICK.
  *
@@ -12,24 +12,27 @@
  * calls in the 14:00Z hour, read from the workers' call ledger, 889 of them the gate's). Its label lists are now the same connection read; the closed rows owing an answer are
  * aliased connections; the newest-updated closed rows are `issues(orderBy: UPDATED_AT)`. `queue-table.ts` and `work-tick.ts` list nothing with a flag, and are walked all the same.
  *
+ * A11-160 (step 9): WHAT GITHUB IS ASKED AND HOW ITS ANSWER IS READ ARE THE PLUGIN'S. The cases that fed a `run` that refused any search argv and answered GitHub's GraphQL connections moved to the plugin's tests
+ * (`plugins/github/rows/rows-by-label.test.ts` for the claim's and the gate's by-label, closed and recently-closed reads and the refusal memory they share, `plugins/github/rows/rows-since-windows.test.ts` for the windows),
+ * where the stubbed answers are fed to the real operations. What stays here is what CORE decides from the rows the code host gives it, held over the fake code host's rows, and the source guards.
+ *
  * Claims, each with a case that can fail:
- *   1. BEHAVIOUR: `lookupClaimedRegions` answers through a `run` that REFUSES any argv carrying `--label` or `--search` (POSITIVE CONTROL: the same
- *      fake answers the non-search read), and a read that fails is `null`, never `[]` (NEGATIVE CONTROL);
- *   2. A read refused for a limit is asked ONCE in a tick, and the line it leaves names WHICH resource;
+ *   1. BEHAVIOUR: `lookupClaimedRegions` answers from the code host's rows, and a read that fails is `null`, never `[]` (NEGATIVE CONTROL);
+ *   2. A read refused for a limit is asked ONCE in a tick, and the line it leaves names WHICH resource (the plugin's: `rows-by-label.test.ts`);
  *   3. SOURCE: no file on the claim path builds a `issue list` / `pr list` argv carrying `--label` or `--search`; the guard SEES a fixture that
  *      does and passes one that does not;
- *   4. (#5050) EVERY LIST THE GATE READS answers through a `run` that refuses any search argv (POSITIVE CONTROL: the same fake answers the connection), and a read the
- *      limit refused is NOT asked again by ANY other list read of the tick, whichever kind;
+ *   4. (#5050) EVERY LIST THE GATE READS answers from the code host's rows, and one that fails is `null` (the plugin's half: every one answers a `run` that refuses any search argv, and a read the
+ *      limit refused is NOT asked again by ANY other list read of the tick, whichever kind);
  *   5. (#5050) SOURCE, widened: the gate's own files (`work-gate.ts`, `queue-table.ts`, `work-tick.ts`, `work-gate/`) are walked by the same guard.
  *   6. (#5074) SOURCE, widened again: the two other MEASURED spenders, `wake.ts` (the tick's three lists, run in-process) and `row-file.ts` (the filing's duplicate-title
  *      check), are walked, and each still lists something (a plain list), so the walk reads a file that lists. Their behaviour is pinned in
  *      `stuck-row-reask-filed.test.ts` (a search argv is refused there) and `row-file-board.test.ts`.
  *   7. (#5076) SOURCE, widened a third time, and BEHAVIOUR: the twelve other readers of the table in #5074 are walked, each reads through `ticket-port/rows-by-label.ts` or
- *      `rows-since.ts` (a marker that is tested in BOTH directions), and the new `rows-since.ts` reader answers a `run` that refuses every search argv, pages to the
- *      first row before its window, REFUSES a window longer than its pages, and sits under the one refusal memory.
+ *      `rows-since.ts` (a marker that is tested in BOTH directions), and the readers of a window and of a label answer from the code host's rows. (That the window reader answers a `run` that
+ *      refuses every search argv, pages to the first row before its window, REFUSES a window longer than its pages and sits under the one refusal memory is the plugin's: `rows-since-windows.test.ts`.)
  */
 import { moduleSource } from "../lib/source-text-reads.ts";
-import { test, beforeEach } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -42,104 +45,54 @@ import { readClosedAnswerRows } from "../work-gate/causes/rows-answers.ts";
 import { readClosedClaimLabelRows } from "../work-gate/causes/rows-claims-closed.ts";
 import { readRecentlyClosed } from "../work-gate/causes/rows-blocker-cleared.ts";
 import { readTrackerLanes } from "../work-gate/tick.ts";
-import { forgetRefusedReads, readClaimedRows, readRowsByLabel } from "../ticket-port/rows-by-label.ts";
-import { foldPage, readMergedPullRequests, readRowsSince, sincePageSize, WindowCutShort, type SinceRead } from "../ticket-port/rows-since.ts";
-import { mergedPrsInWindow } from "../close-rows-sweep.ts";
 import { fetchReadyIssueNumbers } from "../board-snapshot.ts";
 import { ghReadyReader } from "../untiered-ready-rows.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
+import { mergedPrsInWindow } from "../close-rows-sweep.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { readClosedRows } from "../trace/haiku-tier-report.ts";
 import { readMergedSince } from "../org-retro/retro-window-and-journal-patterns.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
-import { closedAnswerConnection, connectionOf, readsClosedAnswerRows, readsRecentlyClosed, readsRowsByLabel, readsRowsSince, recentlyClosedConnection,
-  sinceAnswer } from "./rows-by-label-fixtures.ts";
-
-beforeEach(() => forgetRefusedReads());
+import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 
 const TRACKER = "a11ign/a11ign";
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LIMIT_TEXT = "GraphQL: API rate limit already exceeded for installation ID 170075049";
 
-const claimed = (number: number, file: string, labels: string[] = ["in-progress"]) => ({
-  number, labels, body: `## Region\n\n\`\`\`\n${file}\n\`\`\`\n`, blockedBy: { nodes: [{ number: number + 1 }] },
-});
-const ROOT = new Set(["src"]);
-
-/** The fake of the incident: any argv that is a search is refused in the words the installation was refused in; the connection answers. */
-function searchRefusingRun(rows: ReturnType<typeof claimed>[]) {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (args.includes("--label") || args.includes("--search")) throw new Error(LIMIT_TEXT);
-    if (readsRowsByLabel(args)?.label === "in-progress") return connectionOf(rows);
-    throw new Error(`unexpected call: ${args.join(" ")}`);
-  };
-  return { run, calls };
+/** The fake code host holding `rows` as the tracker's rows (a held row is open and `in-progress`, with a Region block and a blocker), installed for the case. */
+function trackerHolding(...held: { number: number; file: string; labels?: string[] }[]) {
+  const host = createFakeCodeHost();
+  for (const { number, file, labels = ["in-progress"] } of held) {
+    host.rowsWorld.rows.set(number, fakeRow(host.rowsWorld, number, { labels, body: `## Region\n\n\`\`\`\n${file}\n\`\`\`\n`, blockedBy: [number + 1] }));
+  }
+  substituteCodeHost(host);
+  return host.rowsWorld;
 }
+const ROOT = new Set(["src"]);
+afterEach(() => forgetActivation());
 
-// --- 1. behaviour ---------------------------------------------------------------------------------------------------------------------
+// --- 1. behaviour: what the claim and the gate DECIDE from the rows the code host gives them ------------------------------------------------------
 
-test("POSITIVE CONTROL: with every `--label` and `--search` argv refused, the claim still reads who holds what -- and the fake DOES refuse a search", () => {
-  const { run, calls } = searchRefusingRun([claimed(5032, "src/work-gate.ts"), claimed(948, "src/queue-table.ts")]);
-  assert.throws(() => run(["issue", "list", "--label", "in-progress"]), /rate limit already exceeded/, "the control: the fake is a refusing one, so a pass below is not a fake that accepts anything");
-  calls.length = 0;
-  const regions = lookupClaimedRegions({ run, repo: TRACKER, rootFiles: ROOT });
+test("POSITIVE CONTROL: the claim reads who holds what from the code host's rows -- the file each holds and what blocks it (that the read is no search is the plugin's: rows-by-label.test.ts)", () => {
+  trackerHolding({ number: 5032, file: "src/work-gate.ts" }, { number: 948, file: "src/queue-table.ts" }, { number: 77, file: "src/other.ts", labels: ["ready"] });
+  const regions = lookupClaimedRegions({ repo: TRACKER, rootFiles: ROOT });
   assert.deepEqual(regions, [
     { number: 5032, files: ["src/work-gate.ts"], blockedBy: [5033] },
     { number: 948, files: ["src/queue-table.ts"], blockedBy: [949] },
-  ]);
-  assert.equal(calls.length, 1, "one read, and it is not a search");
-  assert.ok(!calls[0].includes("--label") && !calls[0].includes("--search"));
-  assert.ok(calls[0].includes("label=in-progress"), "the label is a variable of the connection, not a filter flag");
+  ], "the rows that hold a claim, and not the one that is only ready");
 });
 
-test("NEGATIVE CONTROL: a read that fails is `null`, never `[]` -- a refusal, a bad payload, and a list that is not the whole population", () => {
-  assert.equal(lookupClaimedRegions({ run: () => { throw new Error(LIMIT_TEXT); }, repo: TRACKER, rootFiles: ROOT }), null);
-  forgetRefusedReads();
-  assert.equal(lookupClaimedRegions({ run: () => { throw new Error("gh: 502"); }, repo: TRACKER, rootFiles: ROOT }), null);
-  assert.equal(lookupClaimedRegions({ run: () => "not json", repo: TRACKER, rootFiles: ROOT }), null);
-  assert.equal(lookupClaimedRegions({ run: () => JSON.stringify({ errors: [{ message: "Could not resolve to a Repository" }] }), repo: TRACKER, rootFiles: ROOT }), null);
-  assert.equal(lookupClaimedRegions({ run: () => connectionOf([claimed(1, "src/a.ts")], { hasNextPage: true }), repo: TRACKER, rootFiles: ROOT }), null,
-    "a next page that is never read is a list cut short");
-  assert.deepEqual(lookupClaimedRegions({ run: () => connectionOf([]), repo: TRACKER, rootFiles: ROOT }), [],
-    "control: nobody holding a file IS `[]` when the read succeeded -- the two answers are different values");
-});
-
-test("the rows come back in the shape `gh issue list --json` gave, across pages, so no comparison had to change", () => {
-  const pages = [connectionOf([claimed(1, "src/a.ts")], { hasNextPage: true }), connectionOf([claimed(2, "src/b.ts", ["in-progress", "session:worker-2"])])];
-  const rows = readClaimedRows({ run: () => pages.shift() as string, repo: TRACKER });
-  assert.deepEqual(rows.map((row) => row.number), [1, 2]);
-  assert.deepEqual(rows[1].labels, [{ name: "in-progress" }, { name: "session:worker-2" }]);
-  assert.deepEqual(rows[0].blockedBy, { nodes: [{ number: 2 }] });
-});
-
-// --- 2. a limit-refused read is asked once, and says which resource -----------------------------------------------------------------------
-
-test("a read refused for a limit is asked ONCE in a tick, and the line names the resource it came from", () => {
-  const calls: string[][] = [];
-  const lines: string[] = [];
-  const probe = "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 3948\r\nX-Ratelimit-Resource: graphql\r\n\r\n{}";
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (readsRowsByLabel(args) !== null) throw new Error(LIMIT_TEXT);
-    return probe; // the one follow-up read of the GraphQL pool, whose headers name the pool that answered
-  };
-  const first = readClaimedRows.bind(null, { run, repo: TRACKER, log: (line: string) => lines.push(line) });
-  assert.throws(() => first(), /rate limit already exceeded/);
-  assert.throws(() => first(), /not asked again this tick/);
-  assert.throws(() => first(), /not asked again this tick/);
-  assert.equal(calls.filter((args) => readsRowsByLabel(args) !== null).length, 1, "the refused read went to GitHub once; the second and third asks did not");
-  assert.equal(lines.length, 1, "and said so once");
-  assert.match(lines[0], /3948 of 5000 left/, "it names the pool it read, with the count");
-  assert.match(lines[0], /a secondary limit: the installation was refused while its pool reads 3948 of 5000 left/, "and that an installation refused while its pool reads healthy is a secondary limit (#1523)");
-  assert.match(lines[0], /installation ID 170075049/, "and keeps the one identifier the refusal carried");
-});
-
-test("a refusal that is not a limit is not remembered: the next ask goes to GitHub again", () => {
-  let asked = 0;
-  const run = (): string => { asked += 1; throw new Error("gh: 502"); };
-  assert.equal(lookupClaimedRegions({ run, repo: TRACKER, rootFiles: ROOT }), null);
-  assert.equal(lookupClaimedRegions({ run, repo: TRACKER, rootFiles: ROOT }), null);
-  assert.equal(asked, 2);
+test("NEGATIVE CONTROL: a read that fails is `null`, never `[]` -- and a tracker nobody holds a file in is `[]`, a different value", () => {
+  const world = trackerHolding({ number: 1, file: "src/a.ts" });
+  world.failures.set("readClaimedRows", new Error("gh: 502"));
+  assert.equal(lookupClaimedRegions({ repo: TRACKER, rootFiles: ROOT }), null, "a refused read is inconclusive");
+  world.failures.set("readClaimedRows", new Error(LIMIT_TEXT));
+  assert.equal(lookupClaimedRegions({ repo: TRACKER, rootFiles: ROOT }), null, "and a refusal for a limit too");
+  world.failures.delete("readClaimedRows");
+  world.rows.clear();
+  assert.deepEqual(lookupClaimedRegions({ repo: TRACKER, rootFiles: ROOT }), [], "control: nobody holding a file IS `[]` when the read succeeded -- the two answers are different values");
 });
 
 // --- 3. the source guard ------------------------------------------------------------------------------------------------------------
@@ -231,105 +184,48 @@ test("POSITIVE CONTROL (source): the guard sees a fixture that lists with `--lab
 
 // --- 4. the gate's lists, behaviour -------------------------------------------------------------------------------------------------
 
-/** The gate's readers, each with the one call it makes, so a test can drive them all through one fake. */
-const GATE_READS: { name: string; read: (run: (args: string[]) => string) => unknown; }[] = [
-  { name: "readChairmanBlocked", read: (run) => readChairmanBlocked(run) },
-  { name: "readPromotableRows", read: (run) => readPromotableRows(run) },
-  { name: "readReadyRows", read: (run) => readReadyRows(run) },
-  { name: "readClaimedRowComments", read: (run) => readClaimedRowComments(run, TRACKER) },
-  { name: "readClosedClaimLabelRows", read: (run) => readClosedClaimLabelRows((args) => run(args), [undefined]).rows },
-  { name: "readClosedAnswerRows", read: (run) => readClosedAnswerRows(run) },
-  { name: "readRecentlyClosed", read: (run) => readRecentlyClosed(run) },
+/** The `run` a gate reader is handed when the code host acts on its own rows: a call to it would be a call to a `gh` nobody has. */
+const noGh = (args: string[]): string => { throw new Error(`no gh is run here: ${args.join(" ")}`); };
+
+/** The gate's readers, each with the one call it makes, so a test can drive them all through one code host. */
+const GATE_READS: { name: string; read: () => unknown; }[] = [
+  { name: "readChairmanBlocked", read: () => readChairmanBlocked(noGh) },
+  { name: "readPromotableRows", read: () => readPromotableRows(noGh) },
+  { name: "readReadyRows", read: () => readReadyRows(noGh) },
+  { name: "readClaimedRowComments", read: () => readClaimedRowComments(noGh, TRACKER) },
+  { name: "readClosedClaimLabelRows", read: () => readClosedClaimLabelRows((args) => noGh(args), [undefined]).rows },
+  { name: "readClosedAnswerRows", read: () => readClosedAnswerRows(noGh) },
+  { name: "readRecentlyClosed", read: () => readRecentlyClosed(noGh) },
 ];
 
-/** What a gate list read gets from a GitHub whose SEARCH allowance is spent: every `--label`/`--search` argv is refused in the incident's words, a connection answers. */
-function gateGitHub({ failWith }: { failWith?: string; } = {}) {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (failWith !== undefined) throw new Error(failWith);
-    if (args.includes("--label") || args.includes("--search") && args[0] !== "label") throw new Error(LIMIT_TEXT);
-    if (args[0] === "label") return JSON.stringify([{ name: "answer:ceo" }]);
-    if (readsRowsByLabel(args) !== null) return connectionOf([claimed(7, "src/a.ts", ["ready", "backlog", "needs:chairman", "in-progress"])]);
-    if (readsClosedAnswerRows(args) !== null) return closedAnswerConnection([]);
-    if (readsRecentlyClosed(args)) return recentlyClosedConnection([{ number: 3, closedAt: "2026-10-11T10:00:00Z", updatedAt: "2026-10-11T10:00:00Z" }]);
-    throw new Error(`unexpected call: ${args.join(" ")}`);
-  };
-  return { run, calls };
+/** The tracker as the gate reads it: an open row on every lane it lists, and a closed row carrying a claim label and an answer label. */
+function trackerOfTheGate() {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.rows.set(7, fakeRow(world, 7, { labels: ["ready", "backlog", "needs:chairman", "in-progress"] }));
+  world.rows.set(3, fakeRow(world, 3, { state: "CLOSED", closedAt: "2026-10-11T10:00:00Z", labels: ["in-progress", "answer:ceo"] }));
+  substituteCodeHost(host);
+  return world;
 }
 
-test("POSITIVE CONTROL: every list the gate reads answers while every `--label` and `--search` argv is refused -- and the fake DOES refuse one", () => {
-  const { run, calls } = gateGitHub();
-  assert.throws(() => run(["issue", "list", "--label", "ready"]), /rate limit already exceeded/, "the control: a pass below is not a fake that accepts anything");
-  calls.length = 0;
-  for (const { name, read } of GATE_READS) {
-    forgetRefusedReads();
-    const answer = read(run);
-    assert.notEqual(answer, null, `${name} answered through connections`);
-  }
-  assert.ok(calls.length >= GATE_READS.length, "each reader asked");
-  assert.deepEqual(calls.filter((args) => args.includes("--label") || (args.includes("--search") && args[0] !== "label")), [], "and none of them was a search");
+test("POSITIVE CONTROL: every list the gate reads answers from the code host's rows (that none is a search is the plugin's: rows-by-label.test.ts)", () => {
+  trackerOfTheGate();
+  for (const { name, read } of GATE_READS) assert.notEqual(read(), null, `${name} answered`);
+  assert.deepEqual((readReadyRows(noGh) ?? []).map((row) => row.number), [7], "the ready list is the open rows carrying `ready`");
+  assert.deepEqual((readClaimedRowComments(noGh, TRACKER) ?? []).map((row) => row.number), [7], "and the claimed rows' comments are those of the open rows carrying the claim label");
 });
 
 test("NEGATIVE CONTROL: a gate list read that FAILS is `null`, never `[]` -- for every reader", () => {
   for (const { name, read } of GATE_READS) {
-    forgetRefusedReads();
-    const { run } = gateGitHub({ failWith: "gh: 502" });
-    const answer = read(run);
-    assert.ok(answer === null || (Array.isArray(answer) && answer.length === 0 && name === "readClosedAnswerRows") === false, `${name} is not an empty list from a failed read`);
-    assert.equal(answer, null, `${name} answers null for a failed read`);
+    const world = trackerOfTheGate();
+    for (const operation of ["readRowsByLabel", "closedRowsCarryingLabels", "labelNamesWithPrefix", "recentlyClosedRowsOf", "closedClaimedRowsOf"]) world.failures.set(operation, new Error("gh: 502"));
+    assert.equal(read(), null, `${name} answers null for a failed read`);
   }
-});
-
-test("a read refused for a LIMIT is asked ONCE in the tick: no other gate list read -- by label, closed answers or recently closed -- is sent, and the line names the resource", () => {
-  const lines: string[] = [];
-  const probe = "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 3948\r\nX-Ratelimit-Resource: graphql\r\n\r\n{}";
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (args[0] === "api" && args.includes("-i")) return probe;
-    throw new Error(LIMIT_TEXT);
-  };
-  const write = process.stderr.write.bind(process.stderr);
-  process.stderr.write = ((chunk: string) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
-  try {
-    assert.equal(readReadyRows(run), null, "the first read is refused: null");
-    const asked = calls.length;
-    for (const { read } of GATE_READS.filter(({ name }) => name !== "readReadyRows")) read(run);
-    assert.equal(calls.length, asked, "and not one more call was sent by the other six readers");
-  } finally {
-    process.stderr.write = write;
-  }
-  const said = lines.filter((line) => line.startsWith("rows-by-label:"));
-  assert.equal(said.length, 1, "the refusal is said once");
-  assert.match(said[0], /OPEN rows labelled ready/);
-  assert.match(said[0], /3948 of 5000 left/, "and names the pool it read");
-});
-
-test("the closed answer reads are under the SAME memory as the by-label ones: a refused closed read stops the next by-label read of the tick", () => {
-  forgetRefusedReads();
-  let refused = false;
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (args[0] === "label") return JSON.stringify([{ name: "answer:ceo" }]);
-    if (readsClosedAnswerRows(args) !== null) { refused = true; throw new Error(LIMIT_TEXT); }
-    throw new Error("unexpected call after the refusal");
-  };
-  const quiet = process.stderr.write.bind(process.stderr);
-  process.stderr.write = (() => true) as typeof process.stderr.write;
-  try {
-    assert.equal(readClosedAnswerRows(run), null);
-    const asked = calls.length;
-    assert.equal(readChairmanBlocked(run), null, "and the by-label read, which would have thrown `unexpected call`, was never sent");
-    assert.equal(calls.length, asked);
-  } finally {
-    process.stderr.write = quiet;
-  }
-  assert.ok(refused, "control: the closed read was the one that was refused");
 });
 
 // --- the fold, at the edge of one connection page --------------------------------------------------------------------------------------
+// A11-160 (step 9): LEFT ON A STUBBED `run` -- the first wave's fold (`foldIntoOpenRows`, `answerFromOpenRows` in `work-gate/reads/read-memo-and-exit.ts`) is CORE'S EXECUTOR: it reads the by-label call's argument list and
+// re-renders the open list's JSON as the connection's answer, so the case can only be reached by feeding it GitHub's wire format. The fake code host's reads carry no argument list to fold.
 
 /** A backlog row as the open list gives it (`gh issue list --json`). */
 const backlogRow = (number: number) => ({ number, title: `row ${number}`, createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-02T00:00:00Z", body: "", milestone: null,
@@ -375,15 +271,17 @@ const TWELVE = ["ready-label-audit.ts", "untiered-ready-rows.ts", "board-snapsho
   "dora.ts", "org-retro.ts", "provider-low-confidence.ts", "messaging/watch.ts", "trace/haiku-tier-report.ts"];
 
 /** Does this source read rows through one of the two connection readers? A marker, and tested in both directions below. */
-const readsThroughConnections = (source: string): boolean => /from "(?:\.\.?\/)+ticket-port\/rows-(?:by-label|since)\.ts"/.test(source);
+/** A file reads through the connection readers when it imports them, or (since A11-160 moved them into the plugin) asks the code host's rows, whose reads of rows by label and of windows are the connection readers (`plugins/github/rows/rows-by-label.ts`, `rows-since.ts`). */
+const CONNECTION_IMPORT = /from "(?:\.\.?\/)+(?:ticket-port\/rows-(?:by-label|since)|plugins\/rows)\.ts"/;
+const readsThroughConnections = (source: string): boolean => CONNECTION_IMPORT.test(source);
 
 test("POSITIVE CONTROL (source, #5076): the twelve are walked, and each reads through a connection reader -- the marker is tested with the import there and with it removed", () => {
   assert.ok(TWELVE.every((file) => COVERED.includes(file)), "the guard walks all twelve");
   assert.equal(new Set(TWELVE).size, 12, "twelve distinct files: an empty or short list would pass for the wrong reason");
   for (const file of TWELVE) {
     const source = moduleSource(file);
-    assert.ok(readsThroughConnections(source), `${file} reads through ticket-port/rows-by-label.ts or rows-since.ts`);
-    const without = source.replace(/^import .*ticket-port\/rows-(?:by-label|since)\.ts.*$/gm, "");
+    assert.ok(readsThroughConnections(source), `${file} reads through ticket-port/rows-by-label.ts or rows-since.ts, or asks the code host's rows`);
+    const without = source.replace(/^import .*(?:ticket-port\/rows-(?:by-label|since)|plugins\/rows)\.ts.*$/gm, "");
     assert.equal(readsThroughConnections(without), false, `the marker notices the import gone from ${file}: it is not a marker that passes whatever is there`);
   }
 });
@@ -397,97 +295,33 @@ test("NEGATIVE CONTROL (source, #5076): a `--label` or `--search` list added to 
   }
 });
 
-/** A GitHub whose SEARCH allowance is spent: every `--label`/`--search` argv is refused in the incident's words, and the two connection reads answer from `rows`. */
-function searchSpentGitHub(rows: Record<string, unknown>[]) {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (args.includes("--label") || args.includes("--search")) throw new Error(LIMIT_TEXT);
-    if (readsRowsSince(args) !== null) return sinceAnswer(args, rows as never);
-    if (readsRowsByLabel(args) !== null) return connectionOf(rows as never);
-    throw new Error(`unexpected call: ${args.join(" ")}`);
-  };
-  return { run, calls };
-}
 const SINCE_ISO = "2026-10-11T10:00:00.000Z";
 const SINCE_MS = Date.parse(SINCE_ISO);
 const ago = (minutes: number): string => new Date(SINCE_MS + minutes * 60_000).toISOString();
-/** A pull request as a fake writes it: updated at `updated`, merged at `merged` (null for one that was not), into `base`. */
-const pull = (number: number, { merged, updated, base = "main" }: { merged: string | null; updated: string; base?: string; }) =>
-  ({ number, mergedAt: merged, updatedAt: updated, baseRefName: base, labels: [], files: [] });
 
-test("POSITIVE CONTROL: the converted readers answer while every search argv is refused -- and the fake DOES refuse one", () => {
-  const rows = [pull(3, { merged: ago(30), updated: ago(31) }), pull(2, { merged: ago(-90), updated: ago(20) }), pull(1, { merged: ago(-300), updated: ago(-299) })];
-  const { run, calls } = searchSpentGitHub(rows);
-  assert.throws(() => run(["pr", "list", "--search", "merged:>=2026-10-11"]), /rate limit already exceeded/, "the control: a pass below is not a fake that accepts anything");
-  calls.length = 0;
-  const merged = mergedPrsInWindow("a11ign/a11ign", 45, run);
-  assert.ok(Array.isArray(merged), "the sweep's window read answered");
-  assert.ok(calls.length >= 1 && calls.every((args) => !args.includes("--search") && !args.includes("--label")), "and none of its calls was a search");
-  assert.deepEqual(readClosedRows(SINCE_MS, SINCE_MS + 3_600_000, (args) => run(args)).length, 0, "the haiku report's closed rows answered (no closed row in the fake is in range)");
-  assert.equal(readMergedSince("a11ign/a11ign", SINCE_MS, (args) => JSON.parse(run(args)))?.length, 1, "the retrospective's merged list answered: only the row MERGED in the window");
-  assert.deepEqual(fetchReadyIssueNumbers({ run }), [3, 2, 1], "the board snapshot's ready list answered, from the by-label connection");
-  assert.deepEqual(ghReadyReader({ key: "", repo: "a11ign/a11ign" }, run).listRows().map((row) => row.number), [3, 2, 1], "and the untiered count's");
-});
-
-test("a read refused for a limit stops every other window read of the tick, and one that is not a limit does not (the shared refusal memory)", () => {
-  forgetRefusedReads();
-  const lines: string[] = [];
-  const probe = "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 3948\r\nX-Ratelimit-Resource: graphql\r\n\r\n{}";
-  const calls: string[][] = [];
-  const refusing = (args: string[]): string => { calls.push(args); if (args.includes("-i")) return probe; throw new Error(LIMIT_TEXT); };
-  const ask: SinceRead = { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo: TRACKER, select: "number mergedAt", since: SINCE_ISO };
-  assert.throws(() => readRowsSince({ ask, run: refusing, log: (line) => lines.push(line) }), /rate limit already exceeded/);
-  const asked = calls.length;
-  assert.throws(() => readRowsSince({ ask, run: refusing }), /not asked again this tick/);
-  assert.throws(() => readRowsByLabel({ label: "ready", state: "OPEN", select: "number", run: refusing }), /not asked again this tick/, "a by-label read is under the same memory");
-  assert.equal(calls.length, asked, "no call was sent after the refusal");
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /the pullRequests of a11ign\/a11ign \(MERGED\), since 2026-10-11T10:00:00.000Z/, "and the line names what was asked");
-  forgetRefusedReads();
-  assert.throws(() => readRowsSince({ ask, run: () => { throw new Error("gh: 502"); } }), /502/);
-  assert.doesNotThrow(() => readRowsSince({ ask, run: (args) => sinceAnswer(args, []) }), "a refusal that is not a limit is not remembered: the next ask goes through");
-});
-
-test("the window ends at the first row before it, and no page past that is asked", () => {
-  const inside = Array.from({ length: 120 }, (_, i) => pull(1000 - i, { merged: ago(200 - i), updated: ago(200 - i) }));
-  const older = [pull(7, { merged: ago(-500), updated: ago(-500) }), pull(6, { merged: ago(-600), updated: ago(-600) })];
-  const { run, calls } = searchSpentGitHub([...inside, ...older, ...older, ...older]);
-  const rows = readRowsSince({ ask: { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo: TRACKER, select: "number", since: SINCE_ISO }, run });
-  assert.equal(rows.length, 120, "every row of the window, none of the older ones");
-  assert.equal(calls.length, 2, "two pages: the second held the first older row, so a third was never asked");
-  assert.equal(rows.every((row) => Date.parse(row.updatedAt) >= SINCE_MS), true);
-});
-
-test("NEGATIVE CONTROL: a window longer than its pages is REFUSED, never returned in part -- and `newest` is the one that truncates, by its own name", () => {
-  const all = Array.from({ length: 3 * sincePageSize() }, (_, i) => pull(5000 - i, { merged: ago(500 - i), updated: ago(500 - i) }));
-  const { run } = searchSpentGitHub(all);
-  const ask: SinceRead = { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo: TRACKER, select: "number", since: SINCE_ISO };
-  assert.throws(() => readRowsSince({ ask: { ...ask, maxPages: 2 }, run }), (error: Error) => error instanceof WindowCutShort && /may be cut short/.test(error.message));
-  assert.equal(readRowsSince({ ask: { ...ask, maxPages: 3 }, run }).length, 300, "control: three pages hold it, and then it is read whole");
-  assert.equal(readRowsSince({ ask: { kind: "pullRequests", states: ["MERGED"], orderBy: "CREATED_AT", repo: TRACKER, select: "number", newest: 150 }, run }).length, 150, "`newest` stops at its count");
-  assert.throws(() => readRowsSince({ ask: { ...ask, since: undefined as never }, run }), /needs `since` or `newest`/, "and a read bounded by neither is refused");
-  assert.throws(() => readRowsSince({ ask: { ...ask, since: "yesterday-ish" }, run }), /is not a time/);
-  assert.throws(() => foldPage({ ask: { ...ask, maxPages: 1 }, rows: [], page: { nodes: [{ updatedAt: SINCE_ISO }], hasNextPage: true, endCursor: "c" }, pagesRead: 1 }), WindowCutShort);
-});
-
-test("a payload that is not a connection THROWS: `could not read` is never an empty window", () => {
-  const ask: SinceRead = { kind: "issues", states: ["CLOSED"], orderBy: "UPDATED_AT", repo: TRACKER, select: "number closedAt", since: SINCE_ISO };
-  assert.throws(() => readRowsSince({ ask, run: () => JSON.stringify({ errors: [{ message: "Could not resolve to a Repository" }] }) }), /did not come back as a connection: Could not resolve/);
-  forgetRefusedReads();
-  assert.throws(() => readRowsSince({ ask, run: () => "not json" }));
-  assert.deepEqual(readRowsSince({ ask, run: (args) => sinceAnswer(args, []) }), [], "control: an empty window that WAS read is `[]`");
-});
-
-test("merged pull requests are kept by their own `mergedAt` and `base`: a row merely UPDATED in the window, or merged elsewhere, is not a merge in it", () => {
-  const rows = [
-    pull(4, { merged: ago(50), updated: ago(50) }),
-    pull(3, { merged: ago(30), updated: ago(40), base: "release" }),
-    pull(2, { merged: ago(-3000), updated: ago(20) }),
-  ];
-  const { run } = searchSpentGitHub(rows);
-  const got = readMergedPullRequests({ repo: TRACKER, select: "number", run, window: { since: SINCE_ISO }, base: "main" });
-  assert.deepEqual(got.map((row) => row.number), [4], "the one merged into `main` inside the window");
-  assert.deepEqual(readMergedPullRequests({ repo: TRACKER, select: "number", run, window: { since: SINCE_ISO } }).map((row) => row.number), [4, 3],
-    "control: without `base` the release merge is in, and the one merged days ago and commented on today is out");
+test("POSITIVE CONTROL: the readers of a window and of a label answer from the code host's rows (that none is a search is the plugin's: rows-by-label.test.ts, rows-since-windows.test.ts)", () => {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  // Three pull requests: merged inside the retro's window, merged days before it though commented on inside it, and merged before it.
+  const merged = (number: number, mergedAt: string, updatedAt: string) => fakePull(world, number, { merged: true, mergedAt, updatedAt, createdAt: mergedAt });
+  merged(3, ago(30), ago(31));
+  merged(2, ago(-90), ago(20));
+  merged(1, ago(-300), ago(-299));
+  // Three ready rows, and one row closed inside the Haiku report's window.
+  for (const number of [1, 2, 3]) world.rows.set(number, fakeRow(world, number, { labels: ["ready"], comments: [] }));
+  world.rows.set(9, fakeRow(world, 9, { state: "CLOSED", closedAt: ago(10), updatedAt: ago(10), labels: ["tier:haiku"] }));
+  substituteCodeHost(host);
+  try {
+    assert.deepEqual(readClosedRows(SINCE_MS, SINCE_MS + 3_600_000).map((row) => [row.number, row.haiku]), [[9, true]], "the haiku report's closed rows answered: the row closed inside its window");
+    assert.deepEqual(readClosedRows(SINCE_MS + 7_200_000, SINCE_MS + 10_800_000), [], "control: none was closed in a later window");
+    assert.deepEqual((readMergedSince("a11ign/a11ign", SINCE_MS) as { number: number }[]).map((pr) => pr.number), [3], "the retrospective's merged list answered: only the row MERGED in the window");
+    assert.deepEqual(fetchReadyIssueNumbers(), [3, 2, 1], "the board snapshot's ready list answered");
+    assert.deepEqual(ghReadyReader({ key: "", repo: "a11ign/a11ign" }).listRows().map((row) => row.number), [3, 2, 1], "and the untiered count's");
+    // The sweep's window read: a merge inside it, and none before it.
+    const recently = new Date(Date.now() - 10 * 60_000).toISOString();
+    merged(4, recently, recently);
+    assert.deepEqual(mergedPrsInWindow("a11ign/a11ign", 45).map((pr) => pr.number), [4], "the sweep's window read answered");
+  } finally {
+    forgetActivation();
+  }
 });

@@ -13,7 +13,7 @@
  *   - #2408, `packages/agent-org/docs/roles/README.md`, at `a0ffb58a`, the round that refused. Its latest review is
  *     `convinced` (at `16f21156`) and it counts here only because that earlier round refused.
  */
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -21,6 +21,12 @@ import { fileURLToPath } from "node:url";
 import { declaredRegionFiles } from "../region-paths.ts";
 import { main, checkRegion, outsideRegionDeclarations, standingAgainstRegion, REGION_EXEMPT, EXIT_NOTHING_SENT }
   from "../pr-open.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const PR_OPEN_SOURCE = readFileSync(fileURLToPath(new URL("../pr-open.ts", import.meta.url)), "utf8");
 const NO_ROOT_FILES = new Set<string>();
@@ -56,7 +62,7 @@ function drive(argv: string[], { rows, changed, rowBody, origin }: { rows?: Reco
   const err: string[] = [];
   const code = main(argv, {
     // The stamped owner's `--add-label` follow-up (#4386) is not what this suite is about: it asks what the region step let through.
-    run: (args: string[]) => { if (!args.includes("--add-label")) sent.push(args); },
+    run: (args: string[]) => { if (args[0] !== "fake-label") sent.push(args); }, // the owner label step is not what these cases hold (the fake code host names it `fake-label`)
     git: gitFor(changed, origin),
     prHead: () => ({ ref: "agent/x", oid: "deadbeef" }),
     runAcceptance: () => { acceptance += 1; return 0; },
@@ -105,7 +111,7 @@ test("#2417: `edit` is checked as `create` is, so a body edit that adds the line
   const cleared = drive(["edit", "7", "--body", prBody("Closes #2417", `Outside-Region: docs/x.md ${EM} reason\n`)],
     { rows: ROW, changed });
   assert.equal(cleared.code, 0, cleared.err);
-  assert.deepEqual(CREATE_ONLY(cleared.sent), [["pr", "edit"]]);
+  assert.deepEqual(CREATE_ONLY(cleared.sent), [["fake-pull-write", "edit"]]);
 });
 
 // --- done-when 2: the escape clears EXACTLY the path it names -------------------------------------------------
@@ -123,7 +129,7 @@ test("#2417 done-when 2: `Outside-Region: <path> — <reason>` clears exactly th
   { rows: ROW, changed: [...IN_REGION, ...OUT] });
   assert.equal(both.code, 0, both.err);
   assert.match(both.out, /2 cleared by an Outside-Region line/);
-  assert.deepEqual(CREATE_ONLY(both.sent), [["pr", "create"]]);
+  assert.deepEqual(CREATE_ONLY(both.sent), [["fake-pull-write", "create"]]);
 });
 
 const NOT_CLEARING: [string, string][] = [
@@ -154,7 +160,7 @@ test("#2417: a line that names the escape and misses its shape is REPORTED as ig
 test("#2417 done-when 3 (positive control): a diff touching only in-Region paths PASSES, and says what it read", () => {
   const r = drive(create(prBody("Closes #2417")), { rows: ROW, changed: IN_REGION });
   assert.equal(r.code, 0, r.err);
-  assert.deepEqual(CREATE_ONLY(r.sent), [["pr", "create"]], "the create was sent");
+  assert.deepEqual(CREATE_ONLY(r.sent), [["fake-pull-write", "create"]], "the create was sent");
   assert.equal(r.acceptance, 1, "and the Acceptance ran, after the Region check");
   assert.match(r.out, /REGION: 2 changed path\(s\) against #2417's Region.*: 2 inside, 0 exempt, 0 cleared/);
 });

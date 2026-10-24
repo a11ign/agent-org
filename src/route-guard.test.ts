@@ -5,12 +5,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures } from "./failure-ledger.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { createFakeProvider } from "./messaging/fake-provider.ts";
 import { createLedger } from "./messaging/ledger.ts";
-import type { Delivery } from "./decision-confidence-post.ts";
+import { TRACKER_EPIC, type Delivery } from "./decision-confidence-post.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import {
   ROUTE_FIRST_PASS_GAP, ROUTE_FIRST_PASS_GAP_POINTS, TUNING, firstPassByRoute, formatRouteGuard, guardEvents, guardVerdicts, postRouteGuard, providerRoutedRows,
   renderRouteGuardPost, routeShares, routeStartsIn, type Route, type RowResult,
@@ -215,29 +218,41 @@ test("the post asks nothing: no question mark, even from a route text that carri
   assert.match(text, /nothing here needs an answer/);
 });
 
-function fakeGh(present = "") {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    return args[0] === "api" ? present : "https://github.com/a11ign/a11ign/issues/4627#issuecomment-6100000009\n";
-  };
-  return { delivery: { via: "tracker", repo: "a11ign/a11ign", run } as Extract<Delivery, { via: "tracker" }>, calls };
+afterEach(() => forgetActivation());
+
+/**
+ * The fake code host holding the epic the post lands on, and the tracker delivery. The comment is the code host's operation on its rows (A11-160, step 9), so the delivery's own `run` is a program that is never
+ * started: how the comment is looked up and posted, and how GitHub's reference for it is read, are the plugin's test (`plugins/github/rows/pullwork-rows.test.ts`).
+ */
+function epicHost(comments: { body: string; createdAt: string }[] = []) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = "a11ign/a11ign";
+  host.rowsWorld.rows.set(TRACKER_EPIC, fakeRow(host.rowsWorld, TRACKER_EPIC, { comments: comments.map((comment, i) => ({ id: 9000 + i, ...comment })) }));
+  substituteCodeHost(host);
+  const run = (): string => { throw new Error("the post runs on the code host's rows, not on a program of its own"); };
+  return { host, epic: host.rowsWorld.rows.get(TRACKER_EPIC)!, delivery: { via: "tracker", repo: "a11ign/a11ign", run } as Extract<Delivery, { via: "tracker" }> };
 }
 
 test("one post per day on the epic, carrying its own marker; nothing at all without a provider", async () => {
   const text = renderRouteGuardPost(FIXTURE);
-  const gh = fakeGh();
-  const sent = await postRouteGuard({ text, providerDeclared: true, delivery: gh.delivery, now: NOW });
-  assert.ok(sent.posted && sent.destination === "tracker-comment" && sent.ref === "6100000009", JSON.stringify(sent));
-  const body = gh.calls.find((args) => args[0] === "issue")?.[6] ?? "";
+  const { epic, delivery } = epicHost();
+  const sent = await postRouteGuard({ text, providerDeclared: true, delivery, now: NOW });
+  assert.ok(sent.posted && sent.destination === "tracker-comment" && sent.ref === String(epic.comments[0].id), JSON.stringify(sent));
+  assert.equal(epic.comments.length, 1, "one comment on the epic");
+  const body = epic.comments[0].body;
   assert.ok(body.startsWith("<!-- route-guard-post: 2026-10-10 -->\n"), body);
   assert.ok(body.endsWith(text));
-  const present = fakeGh("6100000009\n");
+  const again = await postRouteGuard({ text, providerDeclared: true, delivery, now: NOW + HOUR });
+  assert.deepEqual(again, { posted: false, why: "already-posted" });
+  assert.equal(epic.comments.length, 1, "the day's comment is there, so nothing is posted twice");
+  const present = epicHost([{ body: "<!-- route-guard-post: 2026-10-10 -->\nearlier", createdAt: "2026-10-10T06:00:00Z" }]);
   assert.deepEqual(await postRouteGuard({ text, providerDeclared: true, delivery: present.delivery, now: NOW }), { posted: false, why: "already-posted" });
-  assert.deepEqual(present.calls.map((args) => args[0]), ["api"]);
-  const none = fakeGh();
+  assert.equal(present.epic.comments.length, 1);
+  const none = epicHost();
   assert.deepEqual(await postRouteGuard({ text, providerDeclared: false, delivery: none.delivery, now: NOW }), { posted: false, why: "no-provider" });
-  assert.deepEqual(none.calls, []);
+  assert.deepEqual(none.epic.comments, []);
+  const yesterday = epicHost([{ body: "<!-- route-guard-post: 2026-10-09 -->\nyesterday", createdAt: "2026-10-09T06:00:00Z" }]);
+  assert.ok((await postRouteGuard({ text, providerDeclared: true, delivery: yesterday.delivery, now: NOW })).posted, "yesterday's comment is not today's: the next UTC day posts again");
 });
 
 test("through the messenger the post is one announcement a day, keyed by the day", async () => {

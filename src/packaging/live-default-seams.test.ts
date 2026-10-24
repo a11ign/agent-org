@@ -368,8 +368,10 @@ test("#1401 THE LIVE ASSERTION: no test in the tree calls a live default seam wi
   // The positive control that this can return a finding is the planted fixture test above; the controls that it
   // examined the real population are the named members in the next test. An empty list here is only evidence
   // with both of those green.
-  const { findings, examined } = liveSeamFindings(realTree());
-  assert.ok(examined > 0, "no test call to a live seam was examined -- the walk or the import resolution is broken");
+  // Since step 9 of A11-160 no file outside `plugins/github` spawns `gh` (`gh-call-ratchet.test.ts`), so the real tree holds no live default seam and nothing is examined: an empty population is the end state,
+  // not a broken walk. What shows the walk can still find one is the planted fixture above, and what keeps a seam from coming back is the ratchet.
+  const { findings, live } = liveSeamFindings(realTree());
+  assert.deepEqual(live.map((seam) => `${seam.file} ${seam.fn}`), [], "a live default seam is back in the tree: a `gh` spawn belongs in plugins/github, behind the code host");
   assert.deepEqual(findings, [],
     `these test calls reach a live default seam without injecting it -- each performs a real ${GH} call on every `
     + `local run:\n  ${findings.map((f) => `${f.test}:${f.line} -> ${f.fn} (${f.via})`).join("\n  ")}`);
@@ -379,9 +381,6 @@ test("#1401 POPULATION CONTROL: named seams from the enumeration are classified 
   const { live, seams } = liveSeamFindings(realTree());
   const isLive = (file: string, fn: string) => live.some((s) => s.file === file && s.fn === fn);
   const expectedLive: Array<[string, string, string]> = [
-    ["src/stranded-branches.ts", "sweepPullRequests", "a destructured run the function calls with gh"],
-    ["src/stranded-branches.ts", "fetchAllPRHeadRefs", "live only through the undefaulted fetchPRHeadRefPage"],
-    ["src/ready-label-audit.ts", "reportReleaseDrift", "a non-injectable alias"],
   ];
   for (const [file, fn, why] of expectedLive) assert.ok(isLive(file, fn), `${file} ${fn} should be live: ${why}`);
   assert.ok(seams.some((s) => s.file === "src/prune-worktrees.ts" && s.fn === "pruneWorktrees" && !s.live),

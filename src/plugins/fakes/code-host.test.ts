@@ -24,7 +24,7 @@ function seeded() {
 
 /**
  * The checks of the optional `rows` group that need a `run` to refuse: the fake's rows act on its own state and ignore `run`, so they are skipped with their reason and never counted as passed (contract 1.11).
- * The other two checks of the group run on the fake's rows and pass.
+ * The other four checks of the group run on the fake's rows and pass.
  */
 const ROWS_CHECKS = [
   "a read the rows could not make answers null or throws, never an empty answer", "a write the rows could not make throws, so no caller reads it as done",
@@ -37,8 +37,10 @@ const ROWS_CHECKS = [
   "a read the rows could not make for the other claim and row files throws or answers null, never an empty answer", "a write the rows could not make for the other claim and row files throws, so no caller reads it as done",
   "a read the rows could not make for the board, the health and retro readings, the DORA reader and the trace throws, never an empty answer", "a write the rows could not make for the board throws, so no caller reads it as done",
   "an async read or write the rows could not make rejects, so no caller reads it as done",
+  "a read the rows could not make for opening a pull request throws, never an empty answer", "a read the rows could not make for a hold answers null, never nobody holds it", "a read the rows could not make for the branch tools and the Stop hook throws, never an empty listing", "a write the rows could not make for a hold, the sweep and the daily post throws, so no caller reads it as done", "a read the rows could not make for the audit, the retro's stock count and the un-park throws, never an empty answer", "a write the rows could not make for the tick's heartbeat throws, so no caller reads it as done", "a read the rows could not make for the close of a merged pull request throws, never an empty answer", "a read the rows could not make for the checks on a row's claim throws, never an empty answer", "a write the rows could not make for the close of a merged pull request throws, so no caller reads it as done", "a read the rows could not make for the classes section throws, never an empty answer", "a write the rows could not make for the classes section throws, so no caller reads it as done", "an answer that is JSON and not a comment is never a comment's body", "a read the rows could not make for the trunk, the queue table and the red-trunk reading throws, never an empty answer", "a write the rows could not make for the trunk sweep throws, so no caller reads it as done", "a read the rows could not make for the read-only reporters throws, never an empty answer", "a read the rows could not make for the tool-version agreement, the host check and the review eval throws, never an empty answer",
 ];
 const ROWS_PASSED = ["the rows are the operations row mode asks of the code host", "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect",
+  "the repository and job a check's details address names are read without asking the code host", "the GraphQL pool's probe is a list of arguments the caller sends through a runner of its own",
   "the rows' rules for arming answer as the callers that arm and guard expect"];
 
 test("the fake code host passes the code host contract suite, and the checks that ran are the ones asserted", async () => {

@@ -21,6 +21,7 @@ import { HOME_CHECKOUT } from "./project-config.ts";
 import { persistentRoles } from "./project-roles.ts";
 import { stateEntryPath } from "./host-config.ts";
 import { hostExposure } from "./plugins/host-exposure.ts";
+import { rows } from "./plugins/rows.ts";
 
 export type Finding = { unit: string, problem: string, detail: string };
 export type RebootRecord = { at: number, from: string, to: string, row?: number, readBackAt?: number };
@@ -309,9 +310,9 @@ function realRun(argv: string[]): string {
   return execFileSync(command, args, { encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] });
 }
 
-/** @param {number} row @param {string} body */
+/** The read-back goes on the row that asked, the body on standard input and the program run in the project's checkout, which is what aims it at the project's repository (A11-160, step 9: the code host starts it). @param {number} row @param {string} body */
 function postToRow(row: number, body: string) {
-  execFileSync("gh", ["issue", "comment", String(row), "--body-file", "-"], { input: body, cwd: HOME_CHECKOUT, encoding: "utf8", timeout: 60_000 });
+  rows().commentOnCheckoutRowByInput({ number: row, body, cwd: HOME_CHECKOUT, timeoutMs: 60_000 });
 }
 
 /** @param {string[]} flags @param {string} name @returns {string | undefined} */

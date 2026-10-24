@@ -41,7 +41,6 @@
 // while each run read `success`. So a repository's newest verdict run is asked for its jobs even when green, and the order names the leg.
 // WHAT THIS DOES NOT DO: escalate a stuck agent-org red to `answer:ceo`. `stuckRowOf` reads a `pr-<n>` subject as a row of the PRIMARY, and
 // labelling a11ign's #56 for agent-org's would be wrong, so a keyed subject (`pr-agent-org#56`) names no row and is reported, not labelled.
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stateEntryPath } from "./host-config.ts";
@@ -49,6 +48,8 @@ import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.ts";
 import { READY_LABEL } from "./claim-labels.ts";
 import { REPO } from "./project-identity.ts";
 import { subjectRef } from "./review-attribution.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 // #2619 (child 3d of #69): the `session:` prefix, moved to the project's declared vocabulary.
 import { LANE_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 
@@ -109,9 +110,9 @@ function refusalStatus(error: any): number | null {
  * `gh`, with ITS STDERR CAPTURED (agent-org#693): inherited, its own `gh: Not Found (HTTP 404)` reached the tick's journal for a call whose answer this file
  * handles. A refusal that is not a 404 still writes what `gh` said, so a 403 or a 5xx is as audible as it was; the 404 is the caller's to say, once.
  */
-const defaultRun = (args: string[]) => {
+const defaultRun: RowsRun = (args) => {
   try {
-    return execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: "pipe" });
+    return rows().runnerWith({ maxBuffer: 32 * 1024 * 1024, echo: false })(args);
   } catch (error: any) {
     if (refusalStatus(error) !== 404 && error?.stderr) process.stderr.write(String(error.stderr));
     throw error;
@@ -276,7 +277,7 @@ export function failingTestsFromJobLog(logFailedOutput: string, jobName: string)
  *   originPr: { number: number, title: string, session: string | null } | null,
  *   repo?: string, repoKey?: string, event?: string, leg?: string } | null | undefined}
  */
-export function readTrunkRed(run: (args: string[]) => string = defaultRun, source: TrunkSource = PRIMARY_TRUNK, options: TrunkReadOptions = {}): {
+export function readTrunkRed(run: RowsRun = defaultRun, source: TrunkSource = PRIMARY_TRUNK, options: TrunkReadOptions = {}): {
     runId: number; url: string; sha: string; failedJobs: string[]; failingTests: string[] | null;
     recheck: "pass" | "fail" | "unknown"; parentFailingTests: string[] | null;
     originPr: { number: number; title: string; session: string | null; } | null;
@@ -289,32 +290,31 @@ export function readTrunkRed(run: (args: string[]) => string = defaultRun, sourc
   // A REPOSITORY FOUND TO HAVE NO SUCH WORKFLOW IS NOT ASKED AGAIN UNTIL THE MARKER IS A DAY OLD: the call can never succeed, and nothing is said either (agent-org#693).
   if (marker?.state === "absent" && now - marker.at < NO_WORKFLOW_RECHECK_EVERY_MS) return null;
   const filters = source.eventFilters.length === 0 ? [null] : source.eventFilters;
-  const answers: any[] = [];
+  /** The run list each read carried, `null` for an answer that carried none (the workflow exists or the answer is not about a workflow). */
+  const answers: (any[] | null)[] = [];
   for (const filter of filters) {
     try {
-      answers.push(JSON.parse(run(["api", "--method", "GET", `repos/${repo}/actions/workflows/${source.workflow}/runs`,
-        "-f", "branch=main", ...(filter === null ? [] : ["-f", filter]), "-f", "per_page=10"])));
+      answers.push(rows().trunkRunsOf({ repo, workflow: source.workflow, eventFilter: filter, run }));
     } catch (error) {
       // A 404 on the RUNS read says the repository has no such workflow; every other failure (403, 5xx, a timeout, a body that does not parse) is a refused read.
+      // The other filters would answer the same 404, and a refused read is refused whole.
       return refusalStatus(error) === 404 ? noSuchWorkflow(source, marker, { markerPath, now, report }) : undefined;
     }
-    // The other filters would answer the same 404, and a refused read is refused whole.
-    if (answers[answers.length - 1] === null) return undefined;
   }
-  // A body that carries `workflow_runs` is the workflow existing, runs or none: that is what a later 404 is told from.
-  if (marker?.state !== "present" && answers.some((a) => Array.isArray(a?.workflow_runs))) writeMarker(markerPath, { state: "present", at: now }, report);
-  const newest = newestVerdictRun({ workflow_runs: answers.flatMap((a) => a?.workflow_runs ?? []) });
+  // An answer that carries a run list is the workflow existing, runs or none: that is what a later 404 is told from.
+  if (marker?.state !== "present" && answers.some((a) => a !== null)) writeMarker(markerPath, { state: "present", at: now }, report);
+  const newest = newestVerdictRun({ workflow_runs: answers.flatMap((a) => a ?? []) });
   if (newest === null) return undefined;
   const runRed = newest.conclusion === "failure";
   if (!runRed && !source.crossRepoLeg) return null;
 
-  const jobsBody = tryParse(() => run(["api", `repos/${repo}/actions/runs/${newest.id}/jobs?per_page=100`]));
-  const jobs = Array.isArray(jobsBody?.jobs) ? jobsBody.jobs : [];
+  const jobsRead = tryRead(() => rows().jobsOfRun(repo, newest.id, run) as any[]);
+  const jobs = jobsRead ?? [];
   const failedJobs = jobs.filter((j: any) => j.conclusion === "failure").map((j: any) => String(j.name));
   // A GREEN RUN WITH A RED LEG IS RED `main`: `continue-on-error` keeps the run and `gate` green, and the leg's own conclusion is where the red is.
   const leg = runRed ? undefined : failedJobs.find((name: string) => CROSS_REPO_LEG.test(name));
   // A GREEN RUN WHOSE JOBS WERE NOT READ IS UNREAD, NOT GREEN: the leg is only visible there. (A red run whose jobs were not read is still red, with no job named.)
-  if (!runRed && leg === undefined) return Array.isArray(jobsBody?.jobs) ? null : undefined;
+  if (!runRed && leg === undefined) return jobsRead !== null ? null : undefined;
   const recheck = recheckOf(run, source, jobs);
   const failingTests = failedJobs.includes(source.testJob) ? readFailingTests(run, source, newest.id) : null;
   const facts = { runId: newest.id, url: newest.html_url, sha: newest.head_sha, failedJobs, failingTests,
@@ -343,16 +343,16 @@ function noSuchWorkflow(source: TrunkSource, marker: WorkflowMarker | null, { ma
 }
 
 /** @param {(args: string[]) => string} run @param {TrunkSource} source @param {any[]} jobs */
-function recheckOf(run: (args: string[]) => string, source: TrunkSource, jobs: any[]) {
+function recheckOf(run: RowsRun, source: TrunkSource, jobs: any[]) {
   const job = source.recheckJob === null ? undefined : jobs.find((j) => j.name === source.recheckJob);
-  const annotations = job ? tryParse(() => run(["api", `repos/${source.repo}/check-runs/${job.id}/annotations`])) : null;
-  return recheckFromAnnotations(Array.isArray(annotations) ? annotations : null);
+  const annotations = job ? tryRead(() => rows().annotationsOfCheckRun({ repo: source.repo, checkRunId: job.id, run })) : null;
+  return recheckFromAnnotations(annotations);
 }
 
-/** @param {() => string} read @returns {any} the parsed body, or `null` when the read or the parse failed */
-function tryParse(read: () => string): any {
+/** @template T @param {() => T} read @returns {T | null} what the read answered, or `null` when it was refused or its answer was not the shape asked for */
+function tryRead<T>(read: () => T): T | null {
   try {
-    return JSON.parse(read());
+    return read();
   } catch {
     // A refusal is reported by the caller as a fact it does not have, never as an empty answer.
     return null;
@@ -360,9 +360,9 @@ function tryParse(read: () => string): any {
 }
 
 /** @param {(args: string[]) => string} run @param {TrunkSource} source @param {number} runId @returns {string[] | null} */
-function readFailingTests(run: (args: string[]) => string, source: TrunkSource, runId: number): string[] | null {
+function readFailingTests(run: RowsRun, source: TrunkSource, runId: number): string[] | null {
   try {
-    return failingTestsFromJobLog(run(["run", "view", String(runId), "--repo", source.repo, "--log-failed"]), source.testJob);
+    return failingTestsFromJobLog(rows().failedLogOfRun(source.repo, runId, run), source.testJob);
   } catch {
     return null;
   }
@@ -374,13 +374,11 @@ function readFailingTests(run: (args: string[]) => string, source: TrunkSource, 
  * @param {(args: string[]) => string} run @param {string} repo @param {string} sha
  * @returns {{ number: number, title: string, session: string | null } | null}
  */
-function readOriginPr(run: (args: string[]) => string, repo: string, sha: string): { number: number; title: string; session: string | null; } | null {
-  const pulls = tryParse(() => run(["api", `repos/${repo}/commits/${sha}/pulls`]));
-  if (!Array.isArray(pulls) || pulls.length === 0) return null;
-  const labels = (pulls[0].labels ?? []).map((l: { name: string; }) => String(l.name));
-  const session = labels.find((n: string) => n.startsWith(SESSION_PREFIX));
-  return { number: pulls[0].number, title: String(pulls[0].title ?? ""),
-    session: session ? session.slice(SESSION_PREFIX.length) : null };
+function readOriginPr(run: RowsRun, repo: string, sha: string): { number: number; title: string; session: string | null; } | null {
+  const pull = tryRead(() => rows().originPullOfCommit({ repo, sha, run }));
+  if (pull === null) return null;
+  const session = pull.labels.find((n: string) => n.startsWith(SESSION_PREFIX));
+  return { number: pull.number, title: pull.title, session: session ? session.slice(SESSION_PREFIX.length) : null };
 }
 
 /**

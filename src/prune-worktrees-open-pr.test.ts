@@ -1,4 +1,4 @@
-// no-token: gh -- every open-PR listing here is injected (`openPulls` or `listOpenPulls({ gh })`), and the one place the real `gh` could run is `defaultGh` in worktree-removal.ts, which no test calls; proven by running this file with `gh` shimmed to exit 4.
+// no-token: none -- every open-PR listing here is the fake code host's (seeded in memory); nothing spawns `gh`. What GitHub's answer to the listing looks like, and the argument list that asks for it, are `plugins/github/rows/open-pull-heads.test.ts`.
 /**
  * a11ign/agent-org#1167: AN OPEN PR OF A TREE'S BRANCH, OR OF ITS SESSION'S LABEL, HOLDS THE TREE -- BEHIND `prune.holdOpenPr`.
  *
@@ -8,16 +8,21 @@
  *
  * Every tree is a real git worktree under one disposable base made here and removed in `after`; none of them can reach this checkout.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testEach } from "./lib/test-each.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakePull } from "./plugins/fakes/code-host-pulls.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
 
 const BASE = realpathSync(mkdtempSync(join(tmpdir(), "prune-open-pr-")));
 after(() => { rmSync(BASE, { recursive: true, force: true }); });
+afterEach(() => forgetActivation());
 
 /** The smallest declaration the tool's modules read at import: a project of nobody's, so nothing here is a11ign's (`prune-worktrees-closed-row.test.ts`'s). */
 const DECLARATION = {
@@ -49,6 +54,7 @@ const HOST = (() => {
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
 const { pruneWorktrees, formatAppliedReport, listOpenPulls, openPrHoldOn, OPEN_PR_HOLD_FLAG, PULL_LIST_LIMIT, CLOSED_ROW_RELEASE_AGE_MS } =
   await import("./prune-worktrees.ts");
+const { REPO } = await import("./project-identity.ts");
 const { stampWorktree } = await import("./worktree-owner.ts");
 const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
 const { sandboxGitEnv } = await import("./lib/git-env.ts");
@@ -58,10 +64,24 @@ process.env[REMOVAL_LOG_ENV] = join(BASE, "worktree-removals");
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 const NOBODY_CLAIMS = () => ({ refused: false as const });
-const NEVER_LISTED = () => { assert.fail("the flag is OFF, so GitHub must not be asked for the open PRs"); };
-/** A listing that answers from fixed rows, the shape `gh pr list --json` returns. */
-const LISTING = (rows: { number: number, url: string, headRefName: string, labels?: { name: string; }[] }[]) =>
-  () => listOpenPulls({ gh: () => JSON.stringify(rows) });
+type OpenPull = { number: number, headRefName: string, labels?: string[] };
+
+/**
+ * The fake code host, installed, whose repository has these open pull requests (the head branch and the label names each carries), or cannot list them (`unread` is the reason it gives). `listed()` is how many
+ * times the prune asked it for the listing, and `asked` is what it was asked: the repository, and the cap on the listing.
+ */
+function openPullsOf(pulls: OpenPull[], unread: string | null = null) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  for (const { number, headRefName, labels = [] } of pulls) fakePull(world, number, { headRefName, labels });
+  world.unreadOpenPulls = unread;
+  const asked: { repo: string, limit: number }[] = [];
+  const { rows } = host;
+  const read = rows!.readOpenPullHeads;
+  const watched = watchedRows({ ...host, rows: { ...rows!, readOpenPullHeads: (repo, run, limit) => { asked.push({ repo, limit }); return read(repo, run, limit); } } });
+  substituteCodeHost(watched.host);
+  return { asked, listed: () => watched.calls.filter((call) => call.op === "readOpenPullHeads").length };
+}
 /** Idle past the release age, standing in for time passing: a tree this new reads as active otherwise. */
 const IDLE_PAST_AGE = () => Date.now() + CLOSED_ROW_RELEASE_AGE_MS + 60_000;
 
@@ -107,34 +127,39 @@ function deliveredStampedTree(primary: { root: string, tip: string }, name: stri
   return { path, branch };
 }
 
-test("#1167: with the flag ON, a clean pushed tree whose branch has an open PR is KEPT, and the report names the PR", () => {
+/** A clean pushed tree called `name`, a code host whose open pull requests are `pulls` of its branch, and the prune run over the tree with `holdOpenPr` as given (omitted is the shipped default). */
+function pruneOfPushedTree(name: string, pulls: (branch: string) => OpenPull[], holdOpenPr?: boolean) {
   const primary = buildPrimary();
-  const { path, branch } = pushedTree(primary, "wt-1167-a");
-  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true,
-    openPulls: LISTING([{ number: 1201, url: "https://example.invalid/pull/1201", headRefName: branch }]) });
+  const { path, branch } = pushedTree(primary, name);
+  const { listed } = openPullsOf(pulls(branch));
+  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, ...(holdOpenPr === undefined ? {} : { holdOpenPr }) });
+  return { path, branch, report, listed };
+}
+
+test("#1167: with the flag ON, a clean pushed tree whose branch has an open PR is KEPT, and the report names the PR", () => {
+  const { path, branch, report, listed } = pruneOfPushedTree("wt-1167-a", (head) => [{ number: 1201, headRefName: head }], true);
+  assert.equal(listed(), 1, "the code host was asked for the open pull requests");
   assert.deepEqual(report.removed, []);
   assert.deepEqual(report.held.map((r) => r.path), [path]);
   assert.match(report.held[0].reason, /open pull request #1201/);
   assert.match(report.held[0].reason, new RegExp(`has head branch ${branch}`));
   assert.ok(existsSync(path), "the held tree must still be on disk");
   // The log line is the report's line: it names the PR, so the hold can be read from the output.
-  assert.match(formatAppliedReport(report), /open pull request #1201 \(https:\/\/example\.invalid\/pull\/1201\)/);
+  assert.match(formatAppliedReport(report), /open pull request #1201 \(https:\/\/github\.com\/fake\/pull\/1201\)/);
 });
 
 test("#1167 OFF: the same clean pushed tree with an open PR is REMOVED, and GitHub is never asked (today's prune)", () => {
-  const primary = buildPrimary();
-  const { path } = pushedTree(primary, "wt-1167-b");
-  const omitted = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, openPulls: NEVER_LISTED });
-  assert.deepEqual(omitted.removed.map((r) => r.path), [path]);
+  const { path, report, listed } = pruneOfPushedTree("wt-1167-b", (head) => [{ number: 1201, headRefName: head }]);
+  assert.deepEqual(report.removed.map((r) => r.path), [path]);
   assert.ok(!existsSync(path), "with the flag omitted the tree must really be gone");
+  assert.equal(listed(), 0, "the flag is OFF, so the code host must not be asked for the open PRs");
 });
 
 test("#1167 OFF: an explicit `holdOpenPr: false` is the same as omitting it -- removed, and no listing is read", () => {
-  const primary = buildPrimary();
-  const { path } = pushedTree(primary, "wt-1167-c");
-  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: false, openPulls: NEVER_LISTED });
+  const { path, report, listed } = pruneOfPushedTree("wt-1167-c", (head) => [{ number: 1201, headRefName: head }], false);
   assert.deepEqual(report.removed.map((r) => r.path), [path]);
   assert.deepEqual(report.held, []);
+  assert.equal(listed(), 0, "the flag is OFF, so the code host must not be asked for the open PRs");
 });
 
 type Primary = ReturnType<typeof buildPrimary>;
@@ -144,8 +169,7 @@ type Report = ReturnType<typeof pruneWorktrees>;
 testEach("#1167: an open-PR listing the hold cannot use keeps the tree, and says why", [
   {
     name: "#1167: a listing that FAILS keeps every removable tree and says so -- nothing is removed on an unknown",
-    arrange: (primary: Primary) => pushedTree(primary, "wt-1167-d").path,
-    openPulls: () => listOpenPulls({ gh: () => { throw new Error("HTTP 502: bad gateway"); } }),
+    arrange: (primary: Primary) => { openPullsOf([], "the open pull request listing failed: HTTP 502: bad gateway"); return pushedTree(primary, "wt-1167-d").path; },
     check: (report: Report, path: string) => {
       assert.match(report.held[0].reason, /could not be listed/);
       assert.match(report.held[0].reason, /HTTP 502: bad gateway/);
@@ -153,9 +177,18 @@ testEach("#1167: an open-PR listing the hold cannot use keeps the tree, and says
     },
   },
   {
+    name: "#1167: a listing that returns something other than a list also keeps everything",
+    arrange: (primary: Primary) => { openPullsOf([], "the open pull request listing did not return a list"); return pushedTree(primary, "wt-1167-e").path; },
+    check: (report: Report) => {
+      assert.match(report.held[0].reason, /did not return a list/);
+    },
+  },
+  {
     name: "#1167: a stamped tree whose session label is on an open PR is kept, though its own work is on main",
-    arrange: (primary: Primary) => deliveredStampedTree(primary, "wt-1167-f", "worker-1167-f").path,
-    openPulls: LISTING([{ number: 1202, url: "https://example.invalid/pull/1202", headRefName: "feature/other", labels: [{ name: "session:worker-1167-f" }] }]),
+    arrange: (primary: Primary) => {
+      openPullsOf([{ number: 1202, headRefName: "feature/other", labels: ["session:worker-1167-f"] }]);
+      return deliveredStampedTree(primary, "wt-1167-f", "worker-1167-f").path;
+    },
     check: (report: Report) => {
       assert.match(report.held[0].reason, /open pull request #1202/);
       assert.match(report.held[0].reason, /carries session:worker-1167-f/);
@@ -164,29 +197,15 @@ testEach("#1167: an open-PR listing the hold cannot use keeps the tree, and says
 ], (c) => {
   const primary = buildPrimary();
   const path = c.arrange(primary);
-  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true, openPulls: c.openPulls });
+  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true });
   assert.deepEqual(report.removed, []);
   assert.deepEqual(report.held.map((r) => r.path), [path]);
   c.check(report, path);
 });
 
-test("#1167: a listing that returns something other than a list also keeps everything", () => {
-  const primary = buildPrimary();
-  const { path } = pushedTree(primary, "wt-1167-e");
-  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true,
-    openPulls: () => listOpenPulls({ gh: () => '{"message":"Not Found"}' }) });
-  assert.deepEqual(report.removed, []);
-  assert.deepEqual(report.held.map((r) => r.path), [path]);
-  assert.match(report.held[0].reason, /did not return a list/);
-});
-
 test("#1167 NEGATIVE: the flag ON with open PRs that name neither the branch nor the session removes the tree", () => {
-  const primary = buildPrimary();
-  const { path } = pushedTree(primary, "wt-1167-g");
-  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true,
-    openPulls: LISTING([
-      { number: 1203, url: "https://example.invalid/pull/1203", headRefName: "agent/some-other-tree", labels: [{ name: "session:worker-elsewhere" }] },
-    ]) });
+  const { path, report, listed } = pruneOfPushedTree("wt-1167-g", () => [{ number: 1203, headRefName: "agent/some-other-tree", labels: ["session:worker-elsewhere"] }], true);
+  assert.equal(listed(), 1, "the listing was read, so the removal is the decision and not a flag left off");
   assert.deepEqual(report.held, []);
   assert.deepEqual(report.removed.map((r) => r.path), [path]);
   assert.ok(!existsSync(path));
@@ -196,39 +215,23 @@ test("#1167: the listing is read ONCE per run, not once per tree", () => {
   const primary = buildPrimary();
   pushedTree(primary, "wt-1167-h1");
   pushedTree(primary, "wt-1167-h2");
-  let reads = 0;
-  pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true,
-    openPulls: () => { reads += 1; return { read: true, pulls: [] }; } });
-  assert.equal(reads, 1);
+  const { listed } = openPullsOf([]);
+  pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true });
+  assert.equal(listed(), 1);
 });
 
-test("listOpenPulls asks gh for open PRs of this repo, capped at the limit, with the fields the hold reads", () => {
-  let seen: string[] = [];
-  const listing = listOpenPulls({ gh: (args) => { seen = args; return "[]"; } });
-  assert.deepEqual(listing, { read: true, pulls: [] });
-  assert.deepEqual(seen.slice(0, 2), ["pr", "list"]);
-  assert.ok(seen.includes("--repo"));
-  assert.equal(seen[seen.indexOf("--state") + 1], "open");
-  assert.equal(seen[seen.indexOf("--limit") + 1], String(PULL_LIST_LIMIT));
-  assert.ok(seen[seen.indexOf("--json") + 1].split(",").includes("headRefName"));
-  assert.ok(seen[seen.indexOf("--json") + 1].split(",").includes("labels"));
+// A11-160, step 9: how GitHub's answer to the listing is parsed (its fields, the labels flattened to names, a full page refused, a failed call read as unreadable) and the argument list that asks for it are
+// `plugins/github/rows/open-pull-heads.test.ts`. What is core's is the repository it asks about and the cap it puts on the listing.
+test("listOpenPulls asks the code host for the open PRs of this repo, capped at the limit, and answers what it read", () => {
+  const { asked } = openPullsOf([{ number: 7, headRefName: "h", labels: ["session:x", "lane:y"] }]);
+  const listing = listOpenPulls();
+  assert.deepEqual(listing, { read: true, pulls: [{ number: 7, url: "https://github.com/fake/pull/7", headRefName: "h", labels: ["session:x", "lane:y"] }] });
+  assert.deepEqual(asked, [{ repo: REPO, limit: PULL_LIST_LIMIT }]);
 });
 
-test("listOpenPulls flattens each PR's labels to their names", () => {
-  const listing = listOpenPulls({ gh: () => JSON.stringify([{ number: 7, url: "u", headRefName: "h", labels: [{ name: "session:x" }, { name: "lane:y" }] }]) });
-  assert.deepEqual(listing, { read: true, pulls: [{ number: 7, url: "u", headRefName: "h", labels: ["session:x", "lane:y"] }] });
-});
-
-test("listOpenPulls refuses a listing that fills the limit, since a full page may be short", () => {
-  const rows = Array.from({ length: PULL_LIST_LIMIT }, (_, i) => ({ number: i + 1, url: "u", headRefName: `b${i}` }));
-  const listing = listOpenPulls({ gh: () => JSON.stringify(rows) });
-  assert.equal(listing.read, false);
-  assert.match((listing as { reason: string }).reason, /or more open pull requests/);
-});
-
-test("listOpenPulls reports a failed gh call as unreadable, with its message", () => {
-  const listing = listOpenPulls({ gh: () => { throw new Error("gh: authentication required\nmore"); } });
-  assert.deepEqual(listing, { read: false, reason: "the open pull request listing failed: gh: authentication required" });
+test("listOpenPulls answers a listing the code host could not read as unreadable, with its reason, and never as an empty list", () => {
+  openPullsOf([], "the open pull request listing failed: gh: authentication required");
+  assert.deepEqual(listOpenPulls(), { read: false, reason: "the open pull request listing failed: gh: authentication required" });
 });
 
 test(`${OPEN_PR_HOLD_FLAG}: ON only when the canary state says so; absent or unreadable state is OFF`, async () => {

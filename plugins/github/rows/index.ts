@@ -24,6 +24,7 @@ import { closeRowWithComment } from "./close-row.ts";
 import { commentsSince } from "./comments-since.ts";
 import { conditionalGetArgs, pullViewArgs } from "./conditional-reads.ts";
 import { CORE_POOL_PROBE } from "./core-pool-probe.ts";
+import { GRAPHQL_POOL_PROBE } from "./graphql-pool-probe.ts";
 import { addedFilesTextOf, branchRefTextOf, defaultBranchFileTextOf, fileAtTextOf, pullTextOf } from "./deliberate-refusal-reads.ts";
 import { commentOnIssue } from "./issue-comment.ts";
 import { openIncidentsOf } from "./open-incidents.ts";
@@ -50,6 +51,13 @@ import { boardRows } from "./board-rows.ts";
 import { doraRows } from "./dora-rows.ts";
 import { healthRows } from "./health-rows.ts";
 import { commentOnRowByInput, conditionalGetOf, traceRows } from "./trace-rows.ts";
+import { pullworkRowsOf } from "./pullwork-rows.ts";
+import { auditRowsOf } from "./audit-rows.ts";
+import { closingRowsOf } from "./closing-rows.ts";
+import { classesRowsOf } from "./classes-rows.ts";
+import { queueRowsOf } from "./queue-rows.ts";
+import { readoutsRowsOf } from "./readouts-rows.ts";
+import { plumbingRowsOf } from "./plumbing-rows.ts";
 
 /** The values of the rows, and the operations that read the project's declaration: what core hands over as `helpers`, asked when an operation needs it. */
 function projectRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "acts" | "tracker" | "sincePageSize" | "projectItemsPage" | "openItemsQuery" | "corePoolProbe" | "ticketAdapter" | "boardFiledRow" | "isIssueOnBoard" | "boardItemOf"> {
@@ -119,7 +127,7 @@ const NO_BATCH = (): never => {
 
 
 /** The operations a moved caller reaches without a `run` of its own, and the 1.7 ones among them that took one. */
-function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows> | keyof typeof gateRows | keyof typeof wakeRows | keyof typeof claimRows | keyof typeof filingRows | keyof typeof rulesRows | keyof ReturnType<typeof miscRowsOf> | keyof ReturnType<typeof policyRunners> | keyof typeof messagingRows | keyof typeof traceRows | keyof typeof healthRows | keyof typeof doraRows | keyof typeof boardRows | "gateRun" | "runTogether" | "ownRunWithin" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
+function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows> | keyof typeof gateRows | keyof typeof wakeRows | keyof typeof claimRows | keyof typeof filingRows | keyof typeof rulesRows | keyof ReturnType<typeof miscRowsOf> | keyof ReturnType<typeof policyRunners> | keyof typeof messagingRows | keyof typeof traceRows | keyof typeof healthRows | keyof typeof doraRows | keyof typeof boardRows | keyof ReturnType<typeof pullworkRowsOf> | keyof ReturnType<typeof auditRowsOf> | keyof ReturnType<typeof closingRowsOf> | keyof ReturnType<typeof classesRowsOf> | keyof ReturnType<typeof queueRowsOf> | keyof ReturnType<typeof readoutsRowsOf> | keyof ReturnType<typeof plumbingRowsOf> | "gateRun" | "runTogether" | "ownRunWithin" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
   return {
     ownRun: own,
     armedQueryArgs, armedFromApi, armedReason, ejectionQueryArgs, queueEjectionOf, openBlockersOf, settledReason, dequeueByHandCommand, openPullRequestsQueryArgs,
@@ -128,7 +136,7 @@ function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): 
     addLabelsToPull: withOwnRun(addLabelsToPull, own), readPullForArming: withOwnRun(readPullForArming, own), pullStateOf: withOwnRun(pullStateOf, own), armPullAuto: withOwnRun(armPullAuto, own),
     armMergeOf: (request, seams) => armMergeOf({ ...request, run: request.run ?? own }, seams), trunkRunsPage: withOwnRun(trunkRunsPage, own),
     readQueueSeat: withOwnRun(readQueueSeat, own), jumpToFront: withOwnRun(jumpToFront, own),
-    graphqlPoolOf: (run = own) => helpers().pool.fromResponse(helpers().pool.rawResponse(helpers().pool.probe, run)),
+    graphqlPoolOf: (run = own) => helpers().pool.fromResponse(helpers().pool.rawResponse(GRAPHQL_POOL_PROBE, run)),
     readOpenPullNodes: withOwnRun(readOpenPullNodes, own), isMergedPull: withOwnRun(isMergedPull, own), isArmedPull: withOwnRun(isArmedPull, own), readSweepFacts: withOwnRun(readSweepFacts, own),
     isCrossRepositoryPull: withOwnRun(isCrossRepositoryPull, own), readOutsideArmListed: withOwnRun(readOutsideArmListed, own),
     requiredContextsOf: withOwnRun(requiredContextsOf, own), checkRunsOfCommit: withOwnRun(checkRunsOfCommit, own), mainTipDateOf: withOwnRun(mainTipDateOf, own), behindByOf: withOwnRun(behindByOf, own),
@@ -172,5 +180,5 @@ function policyRunners(runners: RowsRunners): Pick<CodeHostRows, "command" | "ru
 
 /** The GitHub code host's `rows`. `helpers` is what core owns of row mode, asked when an operation needs it; `runners` are the plugin's own, for the operations whose caller hands none. */
 export function createRows(helpers: () => RowsHelpers, runners: RowsRunners = NO_RUNNERS): CodeHostRows {
-  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners), ...gateRows, ...gateRowsOf(helpers, runners), ...wakeRows, ...wakeRunnersOf(runners), ...claimRows, ...filingRows, ...rulesRows, ...miscRowsOf(runners.own), ...policyRunners(runners), ...messagingRows, ...traceRows, ...healthRows, ...doraRows, ...boardRows };
+  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners), ...gateRows, ...gateRowsOf(helpers, runners), ...wakeRows, ...wakeRunnersOf(runners), ...claimRows, ...filingRows, ...rulesRows, ...miscRowsOf(runners.own), ...policyRunners(runners), ...messagingRows, ...traceRows, ...healthRows, ...doraRows, ...boardRows, ...pullworkRowsOf(runners, helpers), ...auditRowsOf(runners, helpers), ...closingRowsOf(runners, helpers), ...classesRowsOf(runners, helpers), ...queueRowsOf(runners, helpers), ...readoutsRowsOf(runners, helpers), ...plumbingRowsOf(runners, helpers) };
 }

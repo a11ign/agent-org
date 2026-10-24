@@ -87,6 +87,10 @@ test("creating a row, commenting, editing a comment, closing a row and boarding 
   assert.equal(first?.body, "marker one");
   rows.editComment({ repo: SCOPE, id: first!.id, body: "marker two", run: refused });
   assert.equal(rows.keyedCommentsOf({ repo: SCOPE, row: number, marker: "marker two", since: "2000-01-01T00:00:00Z", run: refused }).length, 1);
+  world.failures.set(`editComment ${SCOPE}`, new Error("HTTP 403"));
+  assert.throws(() => rows.editComment({ repo: SCOPE, id: first!.id, body: "marker three", run: refused }), /HTTP 403/, "an edit refused on one repository alone");
+  assert.throws(() => rows.editComment({ repo: "o/other", id: 424242, body: "x", run: refused }), /holds no comment 424242/, "a comment the world does not hold is not edited");
+  world.failures.delete(`editComment ${SCOPE}`);
   assert.equal(rows.commentsSince({ repo: SCOPE, since: 0, run: () => null })?.length, 2, "every comment of the repository since the time");
   assert.equal(rows.isIssueOnBoard(number, { read: refused }), false);
   rows.boardFiledRow({ repo: SCOPE, number, owner: "o", projectNumber: 1, status: "Ready", labels: ["ready"], run: refused });
@@ -119,6 +123,9 @@ test("pull requests: the fields asked, the open heads, arming, readiness, the ch
   assert.deepEqual(rows.openPullBodiesOf(SCOPE, refused), [{ number: 7, body: "Closes #1" }]);
   assert.deepEqual(rows.readOpenPullHeads(SCOPE, refused, 10), { read: true, pulls: [{ number: 7, url: "https://github.com/fake/pull/7", headRefName: "agent/row-1", labels: [] }] });
   assert.equal(rows.readOpenPullHeads(SCOPE, refused, 1).read, false, "a list that fills its limit may be cut short, so it is no reading");
+  world.unreadOpenPulls = "the open pull request listing failed: HTTP 502: bad gateway";
+  assert.deepEqual(rows.readOpenPullHeads(SCOPE, refused, 10), { read: false, reason: "the open pull request listing failed: HTTP 502: bad gateway" }, "a listing the world cannot give is its reason, never an empty list");
+  world.unreadOpenPulls = null;
   assert.equal(rows.pullRequestFieldsOf({ repo: SCOPE, number: 99, fields: "number", run: refused }), null, "a pull request it holds none of cannot be read");
   rows.readyPullRequest({ number: 7, repo: SCOPE, run: refused });
   assert.equal(world.pulls.get(7)!.isDraft, false);

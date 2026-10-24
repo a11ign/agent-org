@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { LANES_FILE_PATH } from "./project-vocabulary.ts";
+import { rows } from "./plugins/rows.ts";
 
 const REPO = HOME_CHECKOUT;
 
@@ -179,8 +180,7 @@ export function authorshipVerdict({ number, repo, author, run, lanes = loadLanes
     }): { kind: "clear"; } | { kind: "refused" | "cannot-ask"; why: string; } {
   if (!ownsReviewOnlyLane(author, lanes)) return { kind: "clear" };
   try {
-    const files = run(["api", "--paginate", `repos/${repo}/pulls/${number}/files`, "--jq", ".[].filename"])
-      .split("\n").filter(Boolean);
+    const files = rows().pullFilenamesOf({ repo, number, run });
     const why = laneAuthorshipRefusal({ author, files, lanes });
     return why === null ? { kind: "clear" } : { kind: "refused", why };
   } catch (cause) {

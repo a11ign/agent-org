@@ -14,7 +14,7 @@
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { checkBody, main, standingAgainstRegion, EXIT_NOTHING_SENT } from "./pr-open.ts";
@@ -22,6 +22,12 @@ import { runCiBodyReports } from "./acceptance-commands/acceptance-report-and-cl
 import { BODY_EXEMPT_AUTHORS, acceptanceFileForBranch, isAcceptancePath, isBodyExemptAuthor, resolveAcceptanceSource, sectionsTextOf, sourceLine } from "./acceptance-file.ts";
 import { isOwned } from "./owned-path-signoff.ts";
 import { fileOverlapReason } from "./row-claim/file-overlap-rule.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const CLOSES = "Closes: none -- a test body";
 const PASSING = 'node -e "process.exit(0)"';

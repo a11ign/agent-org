@@ -2,7 +2,7 @@ An installation refusal for a rate limit, while the GraphQL pool probe reads hea
 
 "Positive probe" is read as `remaining > 0`. A probe that reads 0 of 5000 left falls through to the old wording, since a spent pool is not a healthy pool.
 
-Acceptance: `node --test src/rows-by-label-secondary-line.test.ts` (4 tests). (a) an installation refusal with a probe at 4560 of 5000 says "a secondary limit" and the count, and not "which the message does not name"; (b) an unreadable probe keeps the UNREADABLE wording; (c) an account refusal with a healthy probe keeps the old wording; (d) a refused read is not asked again in the same tick, and is asked on the next tick after `forgetRefusedReads`.
+Acceptance: `node --test plugins/github/rows/rows-by-label-refusal.test.ts` (moved there by A11-160, step 9). (a) an installation refusal with a probe at 4560 of 5000 says "a secondary limit" and the count, and not "which the message does not name"; (b) an unreadable probe keeps the UNREADABLE wording; (c) an account refusal with a healthy probe keeps the old wording; (d) a refused read is not asked again in the same tick, and is asked on the next tick after `forgetRefusedReads`.
 
 Mutation: with `src/ticket-port/rows-by-label.ts` backed up, changed by one exact string, and restored by `cp` and proven byte-identical with `cmp` after each case. Each row is the number of failing tests, then the tests named:
 - M1, the new branch never fires (`probe.remaining > 0` changed to `probe.remaining < 0`): 1 (a).

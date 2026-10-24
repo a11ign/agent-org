@@ -39,12 +39,12 @@
 //   3  one or more Statuses did not move. NAMED, never counted.
 //
 //   node packages/agent-org/src/settle-closed-rows.ts
-import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
-import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal,
-  closedRowsPageQuery, closedRowsPageFromRead, floorReadRefusal } from "./settle-closed-status.ts";
+import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal, floorReadRefusal } from "./settle-closed-status.ts";
+// A11-160: the code host reads the closed rows page by page; this file walks the pages and decides what an unreadable one means.
+import { rows } from "./plugins/rows.ts";
 // The repository this pass reads, from the one place that names it.
 import { REPO } from "./project-identity.ts";
 // The token-carrying halves, imported HERE (an entry point) and injected, so the decision module stays
@@ -70,9 +70,6 @@ export const LOG_PREFIX = "SETTLE-BOARD";
  */
 const CLOSED_ROWS_MAX_PAGES = 50;
 
-/** @param {string[]} args */
-const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
-
 /**
  * The floor's independent population: every CLOSED row GitHub itself reports as an item on THIS Project,
  * walked page by page over `repository.issues(states: CLOSED)` -- narrowed to this Project PER ISSUE,
@@ -80,20 +77,18 @@ const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).tr
  * what `projectItems` means. `gh api graphql`, never `gh pr list`: this pass's population must not depend
  * on any PR existing, which is the whole of #2081.
  *
- * `closedRowsPageQuery` and `closedRowsPageFromRead` are pure and carry the reasoning, the measurement and
- * the per-page contract; this function is the walk between them, and it is the only thing here that spends
- * a token.
+ * The code host's `closedRowPageOf` carries the query, the reasoning, the measurement and the per-page contract
+ * (a page it cannot read to the end THROWS); this function is the walk over its pages, and it is the only thing
+ * here that spends a token.
  *
- * @param {(args: string[]) => string} [gh_]
  * @returns {number[]}
  */
-export function closedRowsOnProject(gh_: (args: string[]) => string = gh): number[] {
+export function closedRowsOnProject(): number[] {
   const [owner, name] = REPO.split("/");
   const numbers: number[] = [];
   let after: string | null = null;
   for (let page = 0; page < CLOSED_ROWS_MAX_PAGES; page++) {
-    const raw = gh_(closedRowsPageQuery({ owner, name, after }));
-    const result = closedRowsPageFromRead(raw, PROJECT_NUMBER);
+    const result = rows().closedRowPageOf({ owner, name, after, projectNumber: PROJECT_NUMBER, run: rows().runnerWith({}) });
     numbers.push(...result.numbers);
     if (!result.hasNextPage) return numbers;
     if (!result.endCursor || result.endCursor === after) {

@@ -4,7 +4,7 @@
 // EVERY REFUSAL HAS ITS ACCEPTING TWIN differing by ONE fact, so a check that always refuses is red in the twin and one that never refuses is red in the first.
 // `defectBody` is the control for every "refused" below: the same body with a well-formed line is accepted, so a refusal is the line's doing and not the fixture's.
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, test, beforeEach } from "node:test";
 import { CI_BODY_REPORTS, rowLabelsFromEnv, runCiBodyReports } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { DEFECT_LABEL, classLinesIn, defectClassReport } from "./defect-class-line.ts";
 import { main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";
@@ -15,6 +15,9 @@ import { REPO } from "./project-identity.ts";
 import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
 import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
 
 afterEach(() => forgetActivation());
 
@@ -75,7 +78,7 @@ test("the same body is ACCEPTED with `Class: none -- <reason>` and with `Class: 
   for (const line of [NONE, GOOD]) {
     const opened = openPr(bodyWith(line));
     assert.equal(opened.code, 0, `${line}: ${opened.said}`);
-    assert.ok(opened.sent.some((a) => a[0] === "pr" && a[1] === "create"), "the PR was created");
+    assert.ok(opened.sent.some((a) => a[0] === "fake-pull-write" && a[1] === "create"), "the PR was created");
     assert.equal(ciParse(bodyWith(line)).ok, true, line);
   }
 });

@@ -7,6 +7,8 @@
 import type { ChangeRef, CodeHost, WrapperInputs } from "../contracts/code-host.ts";
 import type { CodeHostRows } from "../contracts/code-host-rows.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
+import { refused, throws, withRows, withRunRows, type Subject } from "./rows-support.ts";
+import { TAIL_CHECKS, TAIL_OPERATIONS } from "./rows-tail.ts";
 
 /**
  * What the caller has seeded: an open pull request, its repository, one the host has none of, the account the host acts as, and optionally a change for the port's reads, the inputs a wrapper is asked about
@@ -19,10 +21,9 @@ export type CodeHostProbe = Readonly<{
   /** A head a claim may be written on: the repository, the head, and the environment the claim is written with. Writing one is not undone, so a caller seeds a head it can discard. */
   claim?: Readonly<{ repository: string; head: string; environment: Readonly<Record<string, string>> }>;
 }>;
-type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
 /** The operations of the optional `rows` group (contract 1.11), as a function each; the other members are values. */
-const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
+const BASE_ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
   "boardFiledRow", "briefChairmanOnPull", "headOfChange", "checkRunsOfHead", "workflowRunsOf", "jobsOfRun", "failedLogOfRun", "stateOfRow", "redRunOfHead", "rerunFailedJobsOf", "closeRowWithComment", "commentsSince", "conditionalGetArgs",
   "pullViewArgs", "pullTextOf", "branchRefTextOf", "addedFilesTextOf", "fileAtTextOf", "defaultBranchFileTextOf", "commentOnIssue", "openIncidentsOf", "readOpenPullHeads", "openPullBodiesOf", "outsideArmListArgs", "readyPullRequest",
   "ensureTriageLabel", "isIssueOnBoard", "boardItemOf", "pullRequestFieldsOf", "queueEntriesOf", "mergeGroupRunCountOf", "dequeuePullRequestOf", "jobLogOf", "closedIncidentsOf", "createIncident", "closeIncident",
@@ -52,6 +53,9 @@ const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", 
   "windowRowsTextOf", "editionCommentCountOf", "commentBodiesOfIssue", "workflowRunListOf", "workflowCreatedAtOf", "boardItemsPageOf", "touchedItemTextOf", "roadmapFactsOf", "commentAuthorOf", "headedCommentIdsText",
   "orgCommentsSinceOf", "issuesSinceOf", "labeledEventsOfRow",
 ] as const satisfies readonly (keyof CodeHostRows)[];
+
+/** Every operation of the group, the last sections' (A11-160, step 9) among them. */
+const ROWS_OPERATIONS: readonly string[] = [...BASE_ROWS_OPERATIONS, ...TAIL_OPERATIONS];
 
 const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
@@ -146,30 +150,6 @@ const withCheck = (reason: string, run: (subject: Subject & { check: NonNullable
 
 const withClaim = (reason: string, run: (subject: Subject & { claim: NonNullable<CodeHostProbe["claim"]> }) => unknown): Conditional<Subject> => ({
   applies: ({ probe }) => probe.claim !== undefined, reason: `the probe names no head to claim, so ${reason}`, run: (subject) => run({ ...subject, claim: subject.probe.claim! }),
-});
-
-/** A `run` the host refuses: every call throws, as `gh` does for a call it cannot make. */
-const refused = (): string => {
-  throw new Error("HTTP 502: the host refused the call");
-};
-
-/** Whether `call` throws: a read that could not be made must not answer an empty list, and a write that could not be made must not read as done. */
-function throws(call: () => unknown): boolean {
-  try {
-    call();
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-/** Rows whose operations act on the `run` their caller hands them (`acts: "through-run"`): only those have a refused `run` to answer. */
-const withRunRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
-  applies: ({ host }) => host.rows?.acts === "through-run", reason: `the code host has no rows that act through the caller's run (contract 1.10), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
-});
-
-const withRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
-  applies: ({ host }) => host.rows !== undefined, reason: `the code host has no rows, which are optional (contract 1.10), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
 });
 
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
@@ -414,6 +394,7 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     const ruined = await rows.removeLabelAsync({ repo, number: 1, label: "x", run: () => Promise.reject(Object.assign(new Error("Command failed"), { stderr: "gh: Label does not exist (HTTP 404)" })) }).then(() => true, () => false);
     expect(ruined, "removeLabelAsync must resolve when the label is already absent, and only then");
   }),
+  ...TAIL_CHECKS,
   "the rows' rules for arming answer as the callers that arm and guard expect": withRows("no rule is asked", ({ rows }) => {
     expect(!rows.armedFromApi(null) && !rows.armedFromApi({}) && rows.armedFromApi({ merged: true }) && rows.armedFromApi({ autoMergeRequest: { enabledAt: "t" } }) && rows.armedFromApi({ mergeQueueEntry: { state: "QUEUED" } }),
       "a pull request is armed when it merged, auto-merges or sits in the merge queue, and nobody has armed one that is none of those");

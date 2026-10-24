@@ -142,7 +142,7 @@ test("every non-test file that spawns the command is listed, and the reading is 
   const root = judgedRoot();
   const inventory = buildInventory(root);
   const found = filesSpawningGh(root);
-  assert.ok(found.length > 20, `the independent reader found ${found.length} files: a reader that finds none proves nothing`);
+  assert.ok(found.length >= 3, `the independent reader found ${found.length} files: a reader that finds none proves nothing (since step 9 of A11-160 the files that spawn the command are the GitHub plugin's)`);
   assert.deepEqual(missingFromInventory(root, inventory), []);
   // The other direction, so the inventory cannot quietly grow files the independent reader would not call spawners: a file that is listed with
   // spawn sites must be one it found too. (Shape-only files, `spawns: 0`, call through an injected runner and are not in this population.)

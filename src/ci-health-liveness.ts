@@ -48,12 +48,12 @@
 // `product-manager` amends it in. This module also does not fix a schedule that did not fire, and does not read any other
 // workflow's liveness.
 import { readFileSync, realpathSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { homeHostConfig } from "./host-config.ts";
 import { READY_LABEL } from "./claim-labels.ts";
+import { rows } from "./plugins/rows.ts";
 
 export const VERDICT = Object.freeze({
   PRESENT: "PRESENT",
@@ -200,9 +200,8 @@ export function ciHealthOrders(reading: Reading, repo: string = ""): { session: 
 
 // ---- the reads -------------------------------------------------------------------------------------------
 
-export type Gh = (args: string[]) => string;
-
-const defaultGh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * PAGE_SIZE * 1024 });
+/** `gh`, as this reading runs it: stdin ignored, a buffer for 32 pages of `PAGE_SIZE` KiB, and what it prints on stderr kept to the failure's message. The code host starts the program, when a read first needs it. */
+const gh = (args: string[]): string => rows().runnerWith({ maxBuffer: 32 * PAGE_SIZE * 1024, echo: false })(args);
 
 /**
  * One lookup, whose failure is RECORDED and never read as empty: a thrown call or an unparseable answer is `{ value: null, why }`.
@@ -220,19 +219,18 @@ function attempt<T>(what: string, read: () => T): { value: T | null; why: string
 /**
  * Everything the verdict needs, read from GitHub. `gh api` spends the CORE pool, so the account that runs this must be named by
  * the caller (`gh-api-budget.md`); this reads no other pool.
- * @param {Declared} declared @param {Date} now @param {{ gh?: Gh }} [deps]
+ * @param {Declared} declared @param {Date} now
  */
-export function readFacts({ repo, workflow, issue }: Declared, now: Date, { gh = defaultGh }: { gh?: Gh; } = {}) {
-  const meta = attempt("the workflow's state", () => JSON.parse(gh(["api", `repos/${repo}/actions/workflows/${workflow}`])));
-  const text = attempt("the workflow file (cron)", () => gh(["api", `repos/${repo}/contents/${meta.value?.path ?? `.github/workflows/${workflow}`}`, "-H", "Accept: application/vnd.github.raw"]));
+export function readFacts({ repo, workflow, issue }: Declared, now: Date) {
+  const meta = attempt("the workflow's state", () => rows().workflowDefinitionOf({ repo, workflow, run: gh }));
+  const text = attempt("the workflow file (cron)", () => rows().rawFileTextOf({ repo, path: meta.value?.path ?? `.github/workflows/${workflow}`, run: gh }));
   const slot = text.value === null ? null : slotFromWorkflow(text.value);
   const since = slot === null ? null : latestSlot(now, slot).toISOString().replace(".000", "");
-  const runs = attempt("the workflow's `schedule` runs", () => JSON.parse(gh(["api",
-    `repos/${repo}/actions/workflows/${workflow}/runs?event=schedule&per_page=${PAGE_SIZE}`])).workflow_runs);
-  const comments = attempt("the report issue's comments", () => JSON.parse(gh(["api", "--paginate", "--slurp",
-    `repos/${repo}/issues/${issue}/comments?per_page=${PAGE_SIZE}${since ? `&since=${since}` : ""}`])).flat().map((c: { body: string; }) => c.body));
+  const runs = attempt("the workflow's `schedule` runs", () => rows().scheduledRunsOf({ repo, workflow, perPage: PAGE_SIZE, run: gh }));
+  const comments = attempt("the report issue's comments", () => rows().reportCommentBodiesOf({ repo, issue, perPage: PAGE_SIZE, since, run: gh }));
   return {
-    slot, runs: runs.value, comments: comments.value, workflowState: meta.value?.state ?? null,
+    // An answer with no `workflow_runs` is `undefined` here, as GitHub's own field read it before the code host did: the verdict meets it as it came.
+    slot, runs: runs.value as Run[] | null, comments: comments.value, workflowState: meta.value?.state ?? null,
     unread: [meta, text, runs, comments].flatMap((r) => (r.why ? [r.why] : [])),
   };
 }
@@ -257,24 +255,24 @@ export function declarationFrom(text: string): { declared: Declared[]; } | { ref
 
 /**
  * The whole reading: declared or flagged facts in, one `Reading` out. Never throws for a failed lookup.
- * @param {{ declared: Declared } | { refusal: string }} where @param {Date} now @param {{ gh?: Gh }} [deps] @returns {Reading}
+ * @param {{ declared: Declared } | { refusal: string }} where @param {Date} now @returns {Reading}
  */
-export function readCiHealth(where: { declared: Declared; } | { refusal: string; }, now: Date, deps?: { gh?: Gh; }): Reading {
+export function readCiHealth(where: { declared: Declared; } | { refusal: string; }, now: Date): Reading {
   if ("refusal" in where) return cannotTell([where.refusal]);
-  return ciHealthLiveness({ now, ...readFacts(where.declared, now, deps) });
+  return ciHealthLiveness({ now, ...readFacts(where.declared, now) });
 }
 
 /**
  * One reading per declared tracker (#4080), in declaration order. A tracker whose lookup fails is CANNOT TELL for THAT tracker, and the others are read all the same:
  * a refusal on one repository is never allowed to hide another's verdict.
- * @param {{ declared: Declared[] } | { refusal: string }} where @param {Date} now @param {{ gh?: Gh }} [deps]
+ * @param {{ declared: Declared[] } | { refusal: string }} where @param {Date} now
  * @returns {{ repo: string, reading: Reading }[]} `repo` is `""` for a refusal, which belongs to no tracker
  */
-export function readCiHealthAll(where: { declared: Declared[]; } | { refusal: string; }, now: Date, deps?: { gh?: Gh; }): { repo: string; reading: Reading; }[] {
-  if ("refusal" in where) return [{ repo: "", reading: readCiHealth(where, now, deps) }];
+export function readCiHealthAll(where: { declared: Declared[]; } | { refusal: string; }, now: Date): { repo: string; reading: Reading; }[] {
+  if ("refusal" in where) return [{ repo: "", reading: readCiHealth(where, now) }];
   return where.declared.map((declared) => {
     try {
-      return { repo: declared.repo, reading: readCiHealth({ declared }, now, deps) };
+      return { repo: declared.repo, reading: readCiHealth({ declared }, now) };
     } catch (cause) {
       return { repo: declared.repo, reading: cannotTell([`the lookup in ${declared.repo} (${cause instanceof Error ? cause.message.split("\n")[0] : String(cause)})`]) };
     }

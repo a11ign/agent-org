@@ -51,6 +51,7 @@ import { persistentEntries } from "./project-roles.ts";
 import { kernelFindings } from "./host-kernel.ts";
 import { TEMPLATE_SUFFIX, homeHostConfig, readUnitsDeclaration } from "./host-config.ts";
 import { activateCodeHost } from "./plugins/activate-host.ts";
+import { rows } from "./plugins/rows.ts";
 import { HOST_DATA_ENTRIES, HOST_VARIABLE, INSTALLED_DIR, PROJECT_UNITS_DIR, REPO_ROOT, SHIPPED_DIR, TOOL_ENTRIES, execCommands, isUnit, namesIn, packageScripts, programCandidates, shippedContext, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type ShippedDeps, type UnitsDeclaration, unitPrefix } from "./host-units/shipped-unit-texts-and-declarations.ts";
 import { ROW_REVIEW_SKILL_FILES, ROW_REVIEW_SKILL_SOURCE, hostIdentityInstall, hostNotes, readSeats, readSessionModels, reviewerDoorDrift, reviewerDoorInstall, tickAppRoleSilent, tickRerenderGhWrapper, toolVersionNotes, type SeatDeps, type SessionModelDeps, writeOwnedFile } from "./host-units/gh-wrapper-and-notes.ts";
 import { codexTrustDrift, defaultGit, defaultSystemctl, endedOnPurpose, hostIdentityDrift, humanLoginOnHost, identityDrift, orphanedUnits, readToolVersionAgreement, remedy, supersededHostScripts, systemdUserAvailable, toolVersionFindings, type Finding, type InstalledCopyState, type WindowEnd, unitDrift, unitState } from "./host-units/host-drift-findings-and-notes.ts";
@@ -752,8 +753,7 @@ export function modelEffortDrift({ settingsPath = `${process.env.HOME ?? ""}/.cl
  */
 function readRowLabels(row: number): string[] | null {
   try {
-    const out = execFileSync("gh", ["api", `repos/${REPO}/issues/${row}`, "--jq", "[.labels[].name]"], { encoding: "utf8", timeout: 30_000 });
-    return JSON.parse(out);
+    return rows().restLabelNamesOf({ repo: REPO, number: row, run: rows().runnerWith({ timeoutMs: 30_000 }) });
   } catch {
     return null;  // unreadable is not "unlabelled": the caller does not take a tier from it, and judges the worker as any other
   }

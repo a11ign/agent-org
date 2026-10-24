@@ -28,7 +28,6 @@
 //
 // THE POST rides the announcement path of `decision-confidence-post.ts` (a11ign/a11ign#4742, #4755): told, never asked, one per UTC day, nothing at all without a provider. Its delivery code is
 // copied below, and says so, because that file is outside this row's Region.
-import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -40,6 +39,7 @@ import { CONFIDENCE_CONFIG, POST_KIND, TRACKER_EPIC, type Delivery, type PostRes
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { parseWindow } from "./provider-confidence.ts";
+import { rows } from "./plugins/rows.ts";
 
 export const ROUTES = Object.freeze(["haiku/high", "sonnet/medium", "sonnet/high"] as const);
 export type Route = (typeof ROUTES)[number];
@@ -249,11 +249,8 @@ async function postThroughMessenger({ delivery, key, text, now }: { delivery: Ex
 function postToTracker({ delivery, text, day }: { delivery: Extract<Delivery, { via: "tracker" }>; text: string; day: string }): PostResult {
   const { repo, run } = delivery;
   const marker = markerFor(day);
-  const path = `repos/${repo}/issues/${TRACKER_EPIC}/comments?per_page=100&since=${day}T00:00:00Z`;
-  const present = run(["api", "--paginate", path, "--jq", `.[] | select(.body | startswith("${marker}")) | .id`]).trim();
-  if (present !== "") return { posted: false, why: "already-posted" };
-  const printed = run(["issue", "comment", String(TRACKER_EPIC), "--repo", repo, "--body", `${marker}\n${text}`]).trim();
-  return { posted: true, destination: "tracker-comment", ref: /issuecomment-(\d+)/.exec(printed)?.[1] ?? printed, key: marker, text };
+  const posted = rows().postMarkedIssueComment({ repo, issue: TRACKER_EPIC, marker, day, text, run });
+  return posted.posted ? { posted: true, destination: "tracker-comment", ref: posted.ref, key: marker, text } : { posted: false, why: "already-posted" };
 }
 
 /** THE POST: nothing without a provider; otherwise one announcement for the UTC day of `now`, wherever the delivery sends it. */
@@ -270,6 +267,8 @@ export async function postRouteGuard({ text, providerDeclared, delivery, now }: 
 // `--post` posts the day's announcement. Everything the host knows is imported when it is needed, so the readings above and their test refuse on no machine for want of `AGENT_ORG_HOST`.
 const EXIT = { OK: 0, NOT_SENT: 1, CANNOT: 2 };
 const GH_TIMEOUT_MS = 60_000;
+/** What `execFileSync` let a program print before it cut it off (1 MiB), which the post has always been held to. */
+const EXEC_FILE_BUFFER = 1024 * 1024;
 
 function cannot(message: string): never {
   process.stderr.write(`CANNOT READ: ${message}\n`);
@@ -328,7 +327,7 @@ async function deliveryFromHost(now: number): Promise<Delivery> {
     if (error instanceof MessagingConfigRefusal) return cannot(error.message);
     throw error;
   }
-  if (!config.enabled) return { via: "tracker", repo: trackerRepo(HOME_CHECKOUT), run: (args) => execFileSync("gh", args, { encoding: "utf8", timeout: GH_TIMEOUT_MS }) };
+  if (!config.enabled) return { via: "tracker", repo: trackerRepo(HOME_CHECKOUT), run: rows().runnerWith({ timeoutMs: GH_TIMEOUT_MS, maxBuffer: EXEC_FILE_BUFFER }) };
   const { SecretFileRefusal } = await import("./messaging/secret.ts");
   const { messagingProvider } = await import("./messaging/plugin.ts");
   try {

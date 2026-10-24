@@ -12,7 +12,7 @@
  *
  * THE POPULATION IS THE DECLARATION'S: one list per other declared code repository, so a third repository is covered the day it is declared.
  */
-import { after, test } from "node:test";
+import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,7 +25,27 @@ import { readElsewherePrs } from "./work-gate/reads.ts";
 import { readOtherScopes } from "./work-gate.ts";
 import { readScopeTrunkRed } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { scopesOf } from "./work-gate/vocabulary.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { askingRunFirst, standIn } from "./plugins/fakes/waves.test.support.ts";
+import { trunkRunsKey } from "./plugins/fakes/code-host-queue.ts";
+import { trunkOfCodeRepository } from "./trunk-red.ts";
+
+// The reads are the fake code host's (A11-160, step 9): the open list is asked with the arguments the code host builds (the fake's are a stand-in, `fake-open-pull-list`), the merged lists and the trunk's runs
+// make one stand-in call each to the `run` they are handed (`waves.test.support.ts`), and every other read is the world's own. What this file counts and orders is the executor's: which calls go out together,
+// aimed where, and what a refusal does to a lane.
+let host = createFakeCodeHost();
+beforeEach(() => {
+  host = askingRunFirst(createFakeCodeHost(), { newestMergedPulls: () => standIn("newestMergedPulls"), trunkRunsOf: (request) => standIn("trunkRunsOf", request.repo, request.workflow, request.eventFilter) });
+  // each repository's workflow exists and has no run yet: an answer, which is what the rehearsal's empty answer stands for (a repository the world holds no workflow of answers 404, is marked as having none and is not asked again)
+  for (const { key, code } of OTHER_CODE) {
+    const source = trunkOfCodeRepository(key, code!.repo);
+    for (const filter of source.eventFilters.length === 0 ? [null] : source.eventFilters) host.rowsWorld.tail.queue.trunkRuns.set(trunkRunsKey(code!.repo, source.workflow, filter), []);
+  }
+  substituteCodeHost(host);
+});
+afterEach(() => forgetActivation());
+const OPEN_LIST = "fake-open-pull-list";
 
 // agent-org#1147: THE STATE DIRECTORY IS THIS FILE'S OWN. `readTrunkRed` keeps a repository's "has no such workflow" marker in the host's state directory and does not ask
 // again for a day, so on a host that had met one 404 the `main` read below made 14 calls where this file counts 16, and the test passed in CI and nowhere the host had run.
@@ -47,14 +67,13 @@ const OTHER_CODE = OTHERS.filter((scope) => scope.code !== null);
 const prOf = (repo: string) => ({ number: repo.length, isDraft: false, headRefOid: "abc", statusCheckRollup: [], author: { login: "x" }, comments: [], labels: [],
   files: [], changedFiles: 0, body: "", reviewDecision: "" });
 
-/** What `gh` answers per call: a pull request named for its repository, so a lane that reads another repository's answer is visible. */
+/** What the runner answers per call: the open list is one pull request named for its repository, so a lane that reads another repository's answer is visible; anything else is empty. */
 function answerOf({ args, repo }: Call): string {
-  if (args[0] === "pr") return JSON.stringify([prOf(repo ?? "primary")]);
-  // #5050: a label list is a GraphQL connection now; an empty one, as the plain `issue list` answers `[]`
-  if (readsRowsByLabel(args) !== null) return connectionOf([]);
+  if (args[0] === OPEN_LIST) return JSON.stringify([prOf(repo ?? "primary")]);
   return "[]";
 }
-const failingRepo = (repo: string) => (call: Call) => call.repo === repo && call.args[0] === "pr";
+const OTHER_READ = "fake:other";
+const failingRepo = (repo: string) => (call: Call) => call.repo === repo && call.args[0] === OPEN_LIST;
 
 /** The `run` the gate hands its readers: one call at a time, noted, and refusing the calls `refuse` names the way `execFileSync` throws. */
 function sequentialRun(seen: Call[], refuse: (call: Call) => boolean = () => false) {
@@ -90,19 +109,19 @@ test("CONTROL: a run handed in is not batched -- its calls arrive one at a time,
 
 test("CONTROL: a plain run makes ONE pass over the reader -- no rehearsal runs it a second time", () => {
   let passes = 0;
-  readWithFirstWaveTogether((run) => { passes += 1; return [run(["pr", "list"], "a"), run(["pr", "list"], "b")]; }, sequentialRun([]));
+  readWithFirstWaveTogether((run) => { passes += 1; return [run([OPEN_LIST], "a"), run([OPEN_LIST], "b")]; }, sequentialRun([]));
   assert.equal(passes, 1);
 });
 
 test("a refused call replays as the throw `execFileSync` made: its status, stderr and message reach the reader", () => {
   const seen: unknown[] = [];
   readWithFirstWaveTogether((run) => {
-    try { return run(["pr", "list"], "a") + run(["issue", "list"], "b"); } catch (err) { seen.push(err); return ""; }
+    try { return run([OPEN_LIST], "a") + run([OTHER_READ], "b"); } catch (err) { seen.push(err); return ""; }
   }, sequentialRun([]), fakeBatch([], failingRepo("a")));
   const thrown = seen[0] as Error & { status: number, stderr: string };
   assert.equal(thrown.status, 1);
   assert.equal(thrown.stderr, "refused");
-  assert.match(thrown.message, /^Command failed: gh pr list/);
+  assert.match(thrown.message, /^Command failed: gh fake-open-pull-list/);
 });
 
 test("the first reads of every other repository arrive in ONE batch, and the lanes are what the one-at-a-time read returned", () => {
@@ -113,20 +132,19 @@ test("the first reads of every other repository arrive in ONE batch, and the lan
   const batched = readOtherScopes(sequentialRun(through), fakeBatch(batches));
   assert.equal(batches.length, 1, "ONE batch");
   assert.deepEqual(through, [], "and nothing the rehearsal named reached the run on its own");
-  // #4899: a tracker's label lists are made from its open list, so they are not asked (none, where the declaration names no other tracker); #5050: they are by-label connection reads
-  const folded = seen.filter((call) => readsRowsByLabel(call.args) !== null);
-  assert.equal(batches[0].length, seen.length - folded.length, "every call the one-at-a-time read made went in it, but the label lists its open list answers");
-  assert.deepEqual(batches[0].filter((call) => call.args[0] === "pr").map((call) => call.repo).sort(), OTHER_CODE.map((scope) => scope.code!.repo).sort(),
+  assert.equal(batches[0].length, seen.length, "every call the one-at-a-time read made went in it");
+  assert.deepEqual(batches[0].filter((call) => call.args[0] === OPEN_LIST).map((call) => call.repo).sort(), OTHER_CODE.map((scope) => scope.code!.repo).sort(),
     "an open list per other code repository, each aimed at its own");
   assert.deepEqual(batched, sequential);
 });
 
 test("the merged lists of the other repositories go out together too, and the result is the one-at-a-time result", () => {
+  host.rowsWorld.pulls.set(77, { number: 77, body: "", headRefName: "agent/x", labels: [], isDraft: false, armed: false, merged: true, mergedAt: "2026-10-01T00:00:00Z", createdAt: "2026-10-01T00:00:00Z", comments: [] });
   const sequential = readElsewherePrs(undefined, sequentialRun([]));
   const batches: Call[][] = [];
   const batched = readElsewherePrs(undefined, sequentialRun([]), [], fakeBatch(batches));
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].filter((call) => call.args.includes("merged")).length, OTHER_CODE.length);
+  assert.equal(batches[0].filter((call) => call.args[0] === "fake:newestMergedPulls").length, OTHER_CODE.length);
   assert.ok(sequential !== undefined && sequential.merged !== null && sequential.merged.length > 0, "the control: the answer is not empty, so equality says something");
   assert.deepEqual(batched, sequential);
 });
@@ -136,7 +154,7 @@ test("each other repository's `main` is asked in the same wave -- the rehearsal'
   const read = (run: (args: string[], repo?: string) => string) => OTHERS.map((scope) => readScopeTrunkRed(scope, run));
   const batched = readWithFirstWaveTogether(read, sequentialRun([]), fakeBatch(batches));
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].filter((call) => call.args.some((arg) => arg.includes("/actions/workflows/"))).length, OTHER_CODE.length * 2, "a push read and a schedule read each (agent-org#539)");
+  assert.equal(batches[0].filter((call) => call.args[0] === "fake:trunkRunsOf").length, OTHER_CODE.length * 2, "a push read and a schedule read each (agent-org#539)");
   assert.deepEqual(batched, read(sequentialRun([])));
 });
 
@@ -152,25 +170,25 @@ test("a refusal in one repository is that lane's null, beside the others' answer
 test("a call the rehearsal did not foresee runs on its own, and an answer is handed out ONCE", () => {
   const through: Call[] = [];
   const batches: Call[][] = [];
-  const asked = ["pr", "issue"].map((kind) => ({ args: [kind, "list"], repo: kind }));
+  const asked = [OPEN_LIST, OTHER_READ].map((kind) => ({ args: [kind], repo: kind }));
   // `later` is asked only after a non-empty answer, as the widened page is after a full first one: the rehearsal's `[]` never reaches it.
   const read = (run: (args: string[], repo?: string) => string) => {
     const first = asked.map(({ args, repo }) => run(args, repo));
-    return [...first, run(["pr", "list"], "pr"), first[0] === "[]" ? "[]" : run(["api", "later"], "pr")];
+    return [...first, run([OPEN_LIST], asked[0].repo), first[0] === "[]" ? "[]" : run(["fake:later"], asked[0].repo)];
   };
   const answers = readWithFirstWaveTogether(read, sequentialRun(through), fakeBatch(batches));
   assert.equal(batches[0].length, 2);
-  assert.deepEqual(through.map((call) => call.args.join(" ")), ["pr list", "api later"], "the repeat and the unforeseen call are new reads and reach the run");
+  assert.deepEqual(through.map((call) => call.args.join(" ")), [OPEN_LIST, "fake:later"], "the repeat and the unforeseen call are new reads and reach the run");
   assert.deepEqual(answers, [answerOf(asked[0]), answerOf(asked[1]), answerOf(asked[0]), "[]"]);
 });
 
 test("a batch that fails, or a reader that throws on the rehearsal, falls back to one at a time and SAYS so", () => {
   const notes: string[] = [];
-  const read = (run: (args: string[], repo?: string) => string) => [run(["pr", "list"], "a"), run(["pr", "list"], "b")];
+  const read = (run: (args: string[], repo?: string) => string) => [run([OPEN_LIST], "a"), run([OPEN_LIST], "b")];
   const brokenBatch = () => { throw new Error("no node"); };
   assert.deepEqual(readWithFirstWaveTogether(read, sequentialRun([]), brokenBatch, (line) => notes.push(line)), read(sequentialRun([])));
   assert.match(notes[0], /could not be batched.*no node/);
-  const fussy = (run: (args: string[], repo?: string) => string) => { if (run(["pr", "list"], "a") === "[]") throw new Error("empty is not allowed"); return "read"; };
+  const fussy = (run: (args: string[], repo?: string) => string) => { if (run([OPEN_LIST], "a") === "[]") throw new Error("empty is not allowed"); return "read"; };
   const batches: Call[][] = [];
   assert.equal(readWithFirstWaveTogether(fussy, (args, repo) => answerOf({ args, repo }), fakeBatch(batches), (line) => notes.push(line)), "read");
   assert.equal(batches.length, 0, "no batch went out for a rehearsal that failed");
@@ -178,6 +196,7 @@ test("a batch that fails, or a reader that throws on the rehearsal, falls back t
 });
 
 test("`runBatch` starts its calls together, answers in order, aims by GH_REPO, and reports a failure with its status and stderr", () => {
+  forgetActivation(); // a process test: the batch is the GitHub plugin's, over a stub `gh` that only logs and counts
   const dir = mkdtempSync(join(tmpdir(), "batch-"));
   try {
     const log = join(dir, "log");

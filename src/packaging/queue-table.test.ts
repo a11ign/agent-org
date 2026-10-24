@@ -15,17 +15,37 @@
 // the same module these tests import from, which is why a closure walk reaches them, but nothing here
 // ever calls the real ones. #1405: that was not true of the budget line -- `render()` read it live through
 // `apiBudget()`, two `gh` calls per render and 24 per run. `collect()` reads it now, and `render()` is handed it.
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { loadavg, tmpdir } from "node:os";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
   fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders, requiredContexts,
-  openPRs, armedState, queueEntries, renderOpenPRs, QUEUE_QUERY }
+  openPRs, armedState, queueEntries, renderOpenPRs }
   from "../queue-table.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { FakeRowPull } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
+
+/**
+ * THE FAKE CODE HOST, INSTALLED (A11-160, step 9): the table reads GitHub through the code host's named operations, so a test seeds the world (open pull requests, the merge queue, a head's check runs, the
+ * budget) and installs it. The argument lists those reads send, and the way the plugin reads GitHub's answers, are `plugins/github/rows/queue-rows.test.ts`'s.
+ */
+function tableWorld() {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+
+/** What `apiBudget` is handed as its `run`: the fake code host acts on its own state, so a read that reached it would be a read that bypassed the code host. */
+const NO_RUN = (): string => {
+  throw new Error("the fake code host acts on its own state: no run is made");
+};
 
 const NOW = new Date("2026-09-09T08:00:00Z");
 /** A host with room, so tests about OTHER sections are not decided by section 5. */
@@ -776,45 +796,21 @@ test("MUTATION: the words are not decoration -- swapping used and remaining chan
 // --- #1405: the budget is READ by `collect()` and HANDED to `render()`. Drawing a table calls no `gh`: it
 // used to make two live calls per render, 24 per run of this file, spending the pools the line reports. ---
 
-/** A `gh api ... -i` response: the rate-limit headers, a blank line, then the body. */
-const headers = (remaining: number, limit = 5000) =>
-  `HTTP/2.0 200 OK\nX-Ratelimit-Limit: ${limit}\nX-Ratelimit-Remaining: ${remaining}\n\n{}`;
-
-test("#1405 apiBudget reads both pools through the injected run, with the argv the live call used", () => {
-  const argv: string[][] = [];
-  const budget = apiBudget({ run: (args: string[]) => {
-    argv.push(args);
-    return headers(args[1] === "graphql" ? 4990 : 4000);
-  } });
-  assert.deepEqual(argv, [
-    ["api", "repos/a11ign/a11ign", "-i", "--jq", ".name"],
-    ["api", "graphql", "-f", "query=query { viewer { login } }", "-i"],
-  ], "one call per pool, each of its own kind -- core through REST, graphql through GraphQL");
-  // `resource` and `resetAt` joined the shape in #2003, when `poolFromHeaders` moved to `api-pool.ts` so
-  // `work-gate.ts`'s refusal could name WHICH pool refused and WHEN it comes back in absolute terms. This
-  // fixture sends neither header, so both read `null` -- which is the honest answer and not a zero.
-  assert.deepEqual(budget, {
+// The argument lists of the two budget reads (one call per pool, each of its own kind: core through REST, graphql through GraphQL), the reading of the headers off the FAILED call of an exhausted pool (gh exits non-zero
+// on the 403 and puts the response on the error's `stdout`), and a pool that could not be read being `null`, never a zero, are `plugins/github/rows/queue-rows.test.ts`'s: they are how GitHub's answer is read.
+test("#1405 apiBudget is what the code host reads of the two pools, and null when it reads neither -- never a zero", () => {
+  const world = tableWorld();
+  const reading = {
     core: { remaining: 4000, limit: 5000, used: 1000, resetInMinutes: null, resource: null, resetAt: null },
-    graphql: { remaining: 4990, limit: 5000, used: 10, resetInMinutes: null, resource: null, resetAt: null },
-  });
-});
-
-test("#1405 an EXHAUSTED pool is read off the failed call's stdout -- gh exits non-zero on the 403, and the "
-  + "headers are still there", () => {
-  const budget = apiBudget({ run: (args: string[]) => {
-    if (args[1] !== "graphql") return headers(4000);
-    throw Object.assign(new Error("gh: HTTP 403"), { stdout: headers(0) });
-  } });
-  assert.equal(budget?.graphql?.remaining, 0, "0 remaining, not UNREADABLE: the outage this line exists to report");
-  assert.equal(budget?.graphql?.used, 5000);
-});
-
-test("#1405 a call that fails with no headers is UNREADABLE, and both failing is null -- never a zero", () => {
-  const fail = (): never => { throw Object.assign(new Error("gh: could not connect"), { stdout: "" }); };
-  assert.equal(apiBudget({ run: fail }), null);
-  const oneOnly = apiBudget({ run: (args: string[]) => (args[1] === "graphql" ? fail() : headers(4000)) });
-  assert.equal(oneOnly?.graphql, null);
-  assert.equal(oneOnly?.core?.remaining, 4000, "the positive control: the readable pool beside it is still read");
+    graphql: { remaining: 0, limit: 5000, used: 5000, resetInMinutes: null, resource: null, resetAt: null },
+  };
+  world.tail.queue.budget = reading;
+  assert.deepEqual(apiBudget({ run: NO_RUN }), reading, "0 remaining is an answer: the outage this line exists to report");
+  world.tail.queue.budget = { ...reading, graphql: null };
+  assert.equal(apiBudget({ run: NO_RUN })?.graphql, null, "a pool that could not be read is UNREADABLE");
+  assert.equal(apiBudget({ run: NO_RUN })?.core?.remaining, 4000, "the positive control: the readable pool beside it is still read");
+  world.tail.queue.budget = null;
+  assert.equal(apiBudget({ run: NO_RUN }), null);
 });
 
 test("#1405 apiBudget with no run is REFUSED by name -- a defaulted run is two live gh calls", () => {
@@ -936,80 +932,17 @@ test("section 6 reports a real branch census when collect() supplies one", () =>
   assert.match(text, /NO PREFIX\s+origin/);
 });
 
-/**
- * A `gh` ON `PATH` THAT PLAYS A NON-ADMIN CREDENTIAL (#2331): every `branches/main/protection*` path is a
- * 404, exactly as GitHub answers `a11ign-ai-workers` (`permissions.admin: false`), and `branches/main`
- * answers with `body`. It logs every request, so a test can assert the ADMIN endpoint was never asked for
- * rather than merely that the answer came out right -- a site that tried the admin path first and fell
- * back would pass the second and fail the first.
- */
-function withNonAdminGh<T>(body: object, fn: (requests: () => string[]) => T, rules: unknown = []): T {
-  const dir = mkdtempSync(join(tmpdir(), "a11y-2331-"));
-  const log = join(dir, "requests.log");
-  writeFileSync(join(dir, "body.json"), JSON.stringify(body));
-  // #5020: `rules/branches/main` is its own endpoint and answers `rules` -- no rule at all by default.
-  writeFileSync(join(dir, "rules.json"), JSON.stringify(rules));
-  writeFileSync(join(dir, "gh"), `#!/bin/sh
-echo "$*" >> "${log}"
-case "$*" in
-  *branches/main/protection*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
-  *rules/branches/main*) cat "${dir}/rules.json" ;;
-  *branches/main) cat "${dir}/body.json" ;;
-  *) echo "unexpected gh call: $*" >&2; exit 2 ;;
-esac
-`);
-  chmodSync(join(dir, "gh"), 0o755);
-  const realPath = process.env.PATH;
-  process.env.PATH = `${dir}:${realPath ?? ""}`;
-  try {
-    return fn(() => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []));
-  } finally {
-    process.env.PATH = realPath;
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-/** `branches/main` as measured 2026-09-24 for `a11ign-ai-workers`. */
-const PROTECTED_WITH_GATE = { name: "main", protected: true,
-  protection: { enabled: true, required_status_checks: { contexts: ["gate"], enforcement_level: "everyone" } } };
-/** The POSITIVE CONTROL's body: protected, but no list to read -- what a default would paper over. */
-const PROTECTED_WITHOUT_LIST = { name: "main", protected: true, protection: { enabled: true } };
-
-test("requiredContexts reads the required checks with the ADMIN endpoint answering 404 -- #2331", () => {
-  withNonAdminGh(PROTECTED_WITH_GATE, (requests) => {
-    assert.deepEqual(requiredContexts(), ["gate"]);
-    assert.ok(requests().length > 0, "the read reached the fake `gh` at all");
-    assert.ok(requests().every((r) => !r.includes("branches/main/protection")),
-      `no request may name the admin-only endpoint; saw ${JSON.stringify(requests())}`);
-  });
-});
-
-test("requiredContexts: a protected branch showing no list is null (prints unknown), not a default -- #2331's control", () => {
-  withNonAdminGh(PROTECTED_WITHOUT_LIST, () => {
-    assert.equal(requiredContexts(), null);
-  });
-});
-
-/** #5020: classic protection deleted (`protection.enabled: false`, no contexts) and the rulesets carrying the list. */
-const CLASSIC_DELETED = { name: "main", protected: true, protection: { enabled: false, required_status_checks: { contexts: [] } } };
-const RULESET_REQUIRING_GATE = [
-  { type: "deletion", ruleset_id: 23681721 },
-  { type: "required_status_checks", ruleset_id: 23681721,
-    parameters: { required_status_checks: [{ context: "gate", integration_id: 15368 }] } },
-  { type: "merge_queue", ruleset_id: 23681721 },
-];
-
-test("requiredContexts reads the RULESETS when classic protection is gone -- #5020", () => {
-  withNonAdminGh(CLASSIC_DELETED, (requests) => {
-    assert.deepEqual(requiredContexts(), ["gate"]);
-    assert.ok(requests().some((r) => r.includes("rules/branches/main")), "the ruleset endpoint was asked");
-  }, RULESET_REQUIRING_GATE);
-});
-
-test("requiredContexts: no ruleset rule and no classic list is null (prints unknown) -- #5020's control", () => {
-  withNonAdminGh(CLASSIC_DELETED, () => {
-    assert.equal(requiredContexts(), null, "the classic `contexts: []` must not read as 'nothing is required'");
-  });
+// How the required checks are READ -- through `branches/main` and the rulesets, never the admin-only protection endpoint a non-admin credential is refused with a 404 (#2331), the rulesets when classic protection is gone
+// (#5020), and a protected branch with no list or no rule at all being unknown, never a default -- is the plugin's (`plugins/github/rows/required-contexts.test.ts`, whose cases these four were: they drove the reader
+// through a `gh` first on PATH). What the table does with the answer is below.
+test("requiredContexts is the list the code host reads, and null (printed as unknown) when it reads none -- not a default", () => {
+  const world = tableWorld();
+  world.gate.requiredChecks = ["gate"];
+  assert.deepEqual(requiredContexts(), ["gate"]);
+  world.gate.requiredChecks = null;
+  assert.equal(requiredContexts(), null);
+  world.gate.requiredChecks = [];
+  assert.equal(requiredContexts(), null, "the classic `contexts: []` must not read as 'nothing is required'");
 });
 
 // #2245: `armed` was `Boolean(pr.auto_merge)`, and REST has no merge-queue field, so a pull request at the
@@ -1063,63 +996,62 @@ test("#2245 a queued PR held by a person is the FAILURE state HELD+ARMED, not pl
   assert.match(armedLine([pr({ number: 2239, holders: ["ceo"], ...state })]), /HELD\+ARMED\(ceo\)/);
 });
 
+/** An open pull request in the world, as the listing carries it: #2239 on `agent/x-2239`, not armed, with nothing running. */
+function openPull(world: ReturnType<typeof tableWorld>, over: Partial<FakeRowPull> = {}): FakeRowPull {
+  const pull: FakeRowPull = { number: 2239, body: "", headRefName: "agent/x-2239", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-09-23T21:03:00Z", updatedAt: "2026-09-23T21:03:00Z",
+    comments: [], headRefOid: "b".repeat(40), ...over };
+  world.pulls.set(pull.number, pull);
+  return pull;
+}
+/** The observed shape (#2239 at 2026-09-23T21:03:26Z): the pull request's auto-merge is off, and the queue says position 1. */
+const queuedAtFront = (pull: FakeRowPull) => ({ state: "AWAITING_CHECKS", enqueuedAt: "2026-09-23T21:03:26Z", position: 1, headSha: pull.headRefOid ?? null, pull: pull.number, pullId: `PR_${pull.number}` });
+
 test("#2245 openPRs asks the QUEUE as well as the REST list, and reads a queued PR as armed", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[1] === "graphql") return JSON.stringify([queuedNode]);
-    return /check-runs/.test(args[1]) ? "" : JSON.stringify([restPr()]);
-  };
-  const rows = openPRs({ run })!;
-  assert.equal(calls.filter((a) => a[1] === "graphql").length, 1,
-    "ONE bulk GraphQL call for the whole list -- not a call per pull request");
-  assert.ok(calls.some((a) => a[0] === "api" && /repos\/.+\/pulls\?state=open/.test(a[1])), "the REST list");
-  const graphql = calls.find((a) => a[1] === "graphql")!;
-  assert.ok(graphql.includes(`query=${QUEUE_QUERY}`), "the query it sends is the exported one");
-  assert.match(QUEUE_QUERY, /mergeQueueEntry/, "and that query carries the queue field");
+  const world = tableWorld();
+  world.queue.entries = [queuedAtFront(openPull(world))];
+  const rows = openPRs()!;
+  assert.equal(world.calls.filter((call) => call === "pullQueueStatesOf").length, 1,
+    "ONE bulk queue call for the whole list -- not a call per pull request");
+  assert.ok(world.calls.includes("openPullRowsOf"), "the REST list");
   assert.equal(rows[0].armed, true);
   assert.deepEqual(rows[0].queue, { state: "AWAITING_CHECKS", position: 1 });
 });
 
 test("#2245 a FAILING queue call leaves openPRs answering from REST, with armed unknown for the unarmed", () => {
-  const run = (args: string[]) => {
-    if (args[1] === "graphql") throw new Error("GraphQL pool exhausted");
-    if (/check-runs/.test(args[1])) return "";
-    return JSON.stringify([restPr(), restPr({ number: 3, auto_merge: { merge_method: "merge" } })]);
-  };
-  const rows = openPRs({ run })!;
+  const world = tableWorld();
+  openPull(world);
+  openPull(world, { number: 3, headRefName: "agent/y-3", headRefOid: "c".repeat(40), armed: true });
+  world.failures.set("pullQueueStatesOf", new Error("GraphQL pool exhausted"));
+  const rows = openPRs()!;
   assert.deepEqual(rows.map((r: { armed: boolean | null }) => r.armed), [null, true]);
-  assert.equal(queueEntries(run), null, "an unreadable queue is null, never an empty map");
+  assert.equal(queueEntries(), null, "an unreadable queue is null, never an empty map");
 });
 
 test("#2245 a failing REST list is still `null` -- the queue call does not paper over it", () => {
-  const run = (args: string[]) => {
-    if (args[1] !== "graphql") throw new Error("REST down");
-    return JSON.stringify([queuedNode]);
-  };
-  assert.equal(openPRs({ run }), null);
+  const world = tableWorld();
+  world.queue.entries = [queuedAtFront(openPull(world))];
+  world.failures.set("openPullRowsOf", new Error("REST down"));
+  assert.equal(openPRs(), null);
 });
 
 // ---------------------------------------------------------------------------------------------------
 // #2981: THE TABLE'S `red` AND `absorbed` ARE DECIDED BY red-pr.ts, THROUGH THE REAL openPRs READ.
 // ---------------------------------------------------------------------------------------------------
 
-/** What `checksOnSha`'s `--jq` prints: REST check runs, one JSON object a line, `conclusion` LOWER-CASE. */
+/** The check runs of a head the code host reads: REST check runs, `conclusion` LOWER-CASE. */
 const checkRuns = (...runs: [string, string][]) =>
-  runs.map(([name, conclusion]) => JSON.stringify({ name, conclusion, completedAt: "2026-10-02T08:00:00Z" })).join("\n");
+  runs.map(([name, conclusion], id) => ({ id, name, status: "completed", conclusion, completedAt: "2026-10-02T08:00:00Z" }));
 /** `openPRs` over one PR carrying `labels` whose head has `runs`, returning its row at `behind` commits behind. */
 function tableRow(labels: string[], runs: [string, string][], behind = 5) {
-  const run = (args: string[]) => {
-    if (args[1] === "graphql") return JSON.stringify([plainNode(2239)]);
-    if (/check-runs/.test(args[1])) return checkRuns(...runs);
-    return JSON.stringify([restPr({ labels: labels.map((name) => ({ name })) })]);
-  };
-  return prRow(openPRs({ run })![0], behind, NOW);
+  const world = tableWorld();
+  openPull(world, { labels, checkRuns: checkRuns(...runs) });
+  return prRow(openPRs()![0], behind, NOW);
 }
 const HOLD_ONLY: [string, string][] = [["deliberateRefusals", "failure"], ["gate", "failure"], ["check", "success"]];
 
 test("#2981 a HELD PR whose only red is the hold's own two jobs carries no `red` and is NOT absorbed", () => {
   const row = tableRow(["hold:ceo"], HOLD_ONLY);
+  assert.deepEqual(row.holders, ["hold:ceo"], "the hold is read off the same listing as the rest of the row");
   assert.deepEqual(row.red, [], "deliberateRefusals and gate fail BY DESIGN on a hold (#2883, #2954)");
   assert.equal(row.absorbed, false, "behind and held is a decision somebody made, not a red its owner is fixing");
 });
@@ -1138,12 +1070,10 @@ test("#2981 POSITIVE CONTROL: the same two jobs on an UNHELD PR are a breakage, 
 });
 
 test("#2981 an unreadable check list stays `null` through the adapter, never an empty list of reds", () => {
-  const run = (args: string[]) => {
-    if (args[1] === "graphql") return JSON.stringify([plainNode(2239)]);
-    if (/check-runs/.test(args[1])) throw new Error("check-runs refused");
-    return JSON.stringify([restPr({ labels: [{ name: "hold:ceo" }] })]);
-  };
-  assert.equal(openPRs({ run })![0].redChecks, null);
+  const world = tableWorld();
+  const pull = openPull(world, { labels: ["hold:ceo"] });
+  world.tail.queue.checks.set(pull.headRefOid!, new Error("check-runs refused"));
+  assert.equal(openPRs()![0].redChecks, null);
 });
 
 test("#2981 a running, skipped or cancelled check is not red for the table either", () => {

@@ -13,7 +13,7 @@
  *   escalation for a healthy session DOES go to gh ("... a healthy session's stuck cause"), and the tick DOES wake
  *   a healthy session and write its ledger line ("THE TICK ... a healthy").
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -27,6 +27,9 @@ import { deliverHandoffs as settlingDeliverHandoffs } from "../wake/session-endi
 import { escalateStuck } from "../wake/merge-queue-wait.ts";
 import { deliveryCounts } from "../wake/seat-reset.ts";
 import { poolEngineerReason } from "../wake/ci-class-and-spares.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing. A per-row instance's order reads the instance's own transcripts to decide `/compact` (#2688), and the default root
@@ -289,35 +292,48 @@ test("an AUTHORED order to a limited session stays queued, and lands once the se
 
 // --- the escalation -----------------------------------------------------------------------------------------------
 
+afterEach(() => forgetActivation());
+
+/** A fake code host that holds the stuck row, installed as the active one: the escalation's label lands on the world's row, and `run` is the executor's, which the fake never starts. */
+function hostHolding(...numbers: number[]) {
+  const host = createFakeCodeHost();
+  for (const number of numbers) host.rowsWorld.rows.set(number, fakeRow(host.rowsWorld, number));
+  substituteCodeHost(host);
+  const run = (args: string[]): string => { throw new Error(`the fake code host acts on its own state: no gh is run for ${args.join(" ")}`); };
+  return { world: host.rowsWorld, run };
+}
+
 test("escalateStuck does not label a row whose session is out of allowance, and says so on the log, not on the row", () => {
   const stuck = [`${CAUSE}: delivered 6 times and the cause is still true`];
-  const gh: string[][] = [];
-  const ghRun = (args: string[]) => { gh.push(args); return ""; };
+  const { world, run } = hostHolding(2253);
   const log: string[] = [];
   const recorded: string[] = [];
   const memory = (unavailable: (l: string) => string | null) => ({ unavailable, record: (k: string) => { recorded.push(k); } });
-  const labelled = escalateStuck(stuck, ghRun, (l) => log.push(l),
+  const labelled = escalateStuck(stuck, run, (l) => log.push(l),
     memory((l) => (l === "worker-capture" ? `"${l}" is out of usage allowance until 07:00` : null)));
   assert.deepEqual(labelled, []);
-  assert.equal(gh.length, 0, "no `gh issue edit`");
+  assert.deepEqual(world.rows.get(2253)!.labels, [], "no `answer:ceo` on the row");
   assert.equal(recorded.length, 0, "and no memory of having escalated, so it can escalate once the session is back");
   assert.match(log.join(""), /^NOT ESCALATED #2253 \(worker-capture\/verdict-not-convinced\/pr-2253\/a308b8b6\) -- "worker-capture" is out of usage allowance until 07:00; a session that cannot answer is not a stuck row\n$/);
 
-  const healthy = escalateStuck(stuck, ghRun, () => {}, memory(() => null));
+  const healthy = escalateStuck(stuck, run, () => {}, memory(() => null));
   assert.deepEqual(healthy, [2253], "POSITIVE CONTROL: a healthy session's stuck cause is still escalated");
-  assert.deepEqual(gh, [["issue", "edit", "2253", "--add-label", "answer:ceo"]]);
+  assert.deepEqual(world.rows.get(2253)!.labels, ["answer:ceo"]);
   assert.deepEqual(recorded, [CAUSE]);
 });
 
 test("a stuck cause addressed to the POOL is not asked about", () => {
   const asked: string[] = [];
-  const labelled = escalateStuck(["engineers/ready-row-unclaimed/1433: x"], () => "", () => {},
+  const { world, run } = hostHolding(1433);
+  const labelled = escalateStuck(["engineers/ready-row-unclaimed/1433: x"], run, () => {},
     { unavailable: (l) => { asked.push(l); return "never"; } });
   assert.equal(asked.length, 0, "`engineers` is not a session");
   assert.deepEqual(labelled, [], "and a row-less cause is skipped as before (the key names no row)");
-  const pooled = escalateStuck(["engineers/ready-row-unclaimed/row-1433: x"], () => "", () => {}, { unavailable: (l) => { asked.push(l); return "never"; } });
+  assert.deepEqual(world.rows.get(1433)!.labels, [], "nothing was labelled");
+  const pooled = escalateStuck(["engineers/ready-row-unclaimed/row-1433: x"], run, () => {}, { unavailable: (l) => { asked.push(l); return "never"; } });
   assert.equal(asked.length, 0, "even when it names a row");
   assert.deepEqual(pooled, [1433], "the pool cause escalates as it always did");
+  assert.deepEqual(world.rows.get(1433)!.labels, ["answer:ceo"], "and the row carries the label");
 });
 
 // --- THE TICK ITSELF, RUN AS A PROCESS ----------------------------------------------------------------------------

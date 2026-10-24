@@ -12,7 +12,7 @@
  * beside a reader that accepts everything: each reader below is also asked for a name INSIDE no family
  * (`worker-3`, below `from`; `worker-09`, a second spelling; `worker-capture-9`, another prefix) and must refuse it.
  */
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +39,10 @@ import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.ts";
 import { REPO } from "../project-identity.ts";
 import { startedPanes } from "./started-pane.ts";
 import { moduleSource } from "../lib/source-text-reads.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing: a per-row instance's order reads its own transcripts to decide `/compact` (#2688), and the default root is the
@@ -244,7 +248,7 @@ test("#2403 ACCEPTANCE (2), reader 4 -- runnerReason compares the label to the a
 test("#2403: pr-open labels a PR opened from a family member's tree, and not one from a non-member's", () => {
   const args = ["--head", "agent/x-2403"];
   assert.deepEqual(labelAfterCreate("create", args, "worker-9"),
-    [["pr", "edit", "agent/x-2403", "--add-label", "session:worker-9"]]);
+    [["fake-label", "session:worker-9", "", "--head", "agent/x-2403"]], "the label step the code host builds for `session:<name>` (its real argument list is plugins/github/rows/pullwork-rows.test.ts)");
   assert.deepEqual(labelAfterCreate("create", args, "worker-3"), []);
 });
 

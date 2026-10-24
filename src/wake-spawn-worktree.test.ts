@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh`, `herdr`, `git` and `row-claim` call here is an injected seam (the claim's `exec`, the pane's `run`); nothing imported reaches the real one
+// no-token: gh -- every `herdr`, `git` and `row-claim` call here is an injected seam (the claim's `exec`, the pane's `run`), and the tracker is the fake code host; nothing imported reaches the real one
 /**
  * #2405: A SPAWNED ENGINEER STARTS IN ITS ROW'S WORKTREE, BECAUSE THE SPAWNER CLAIMED THE ROW BEFORE ANY PANE EXISTED.
  *
@@ -11,7 +11,7 @@
  * fixture with ONE thing changed, and each asserts the row is UNCLAIMED again against the fake board -- which the
  * success case shows is not simply always true.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +51,10 @@ const { familyMember, isLiveSession } = await import("./arm-pr.ts");
 const { claimNames } = await import("./row-claim.ts");
 const { homeProjectDeclaration } = await import("./project-config.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
+const { createFakeCodeHost } = await import("./plugins/fakes/code-host.ts");
+const { fakeRow } = await import("./plugins/fakes/code-host-rows.ts");
+const { forgetActivation, substituteCodeHost } = await import("./plugins/active.ts");
+afterEach(() => forgetActivation());
 /** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */
 const ORDINARY_ROW = () => ({ labels: [], body: "", title: "" });
 
@@ -367,42 +371,42 @@ test("#4685 (c) NEGATIVE CONTROL: agent-org#481 and the first tracker's #481 are
 });
 
 test("#4685 (d) ACCEPTANCE: a keyed row is checked against ITS tracker's blockedBy edge, and the refusal names that repository", () => {
-  const edges: Record<string, string> = {};
-  const calls: string[] = [];
-  const run = (args: string[]): string => {
-    const repo = args[args.indexOf("--repo") + 1];
-    calls.push(`${args[0]} ${args[1]} ${args[2]} ${repo}`);
-    if (args[0] === "issue" && args[args.indexOf("--json") + 1] === "blockedBy") {
-      const edge = edges[`${repo}#${args[2]}`];
-      return JSON.stringify({ blockedBy: { nodes: edge === undefined ? [] : [{ number: 600, state: edge }] } });
-    }
-    if (args[0] === "issue") return JSON.stringify({ body: "no region here\n" });
-    throw new Error(`unexpected gh call: ${args.join(" ")}`);
-  };
-  const check = spawnClaimability({ run, warn: () => {} });
+  // The fake code host holds the first tracker's rows as its own and agent-org's as foreign ones, each with its own `blockedBy` edge (A11-160, step 9).
   const FIRST = homeProjectDeclaration().tracker.find((t) => t.key === "")?.repo ?? "";
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = FIRST;
+  const mine = fakeRow(world, 481, { body: "no region here\n" });
+  const keyedRow = fakeRow(world, 481, { body: "no region here\n" });
+  world.rows.set(481, mine);
+  world.foreignRows.set(`${AGENT_ORG_REPO}#481`, keyedRow);
+  substituteCodeHost(host);
+  const check = spawnClaimability({ warn: () => {} });
+  const calls = world.calls;
   assert.notEqual(FIRST, AGENT_ORG_REPO, "POSITIVE CONTROL: the two trackers are two repositories, or the cases below could not tell them apart");
 
-  edges[`${AGENT_ORG_REPO}#481`] = "OPEN";
+  keyedRow.blockedBy = [600];
   const refused = check({ causeKey: KEYED.causeKey });
   assert.match(String(refused), /agent-org#481 in a11ign\/agent-org would be refused at the claim by the `blockedBy` check \(#1886\): blocked by still-open #600/);
-  assert.ok(calls.includes(`issue view 481 ${AGENT_ORG_REPO}`), calls.join(" | "));
-  assert.equal(calls.includes(`issue view 481 ${FIRST}`), false, "the first tracker's row 481 was never read for the keyed order");
+  assert.ok(calls.includes(`blockedByOf ${AGENT_ORG_REPO}#481`), calls.join(" | "));
+  assert.deepEqual(calls.filter((call) => call.includes(FIRST)), [], "the first tracker's row 481 was never read for the keyed order");
 
   // The first tracker's row 481 has an open edge and agent-org's has none: the keyed order is NOT refused for it.
-  delete edges[`${AGENT_ORG_REPO}#481`];
-  edges[`${FIRST}#481`] = "OPEN";
+  keyedRow.blockedBy = [];
+  mine.blockedBy = [600];
   assert.equal(check({ causeKey: KEYED.causeKey }), null);
+  assert.deepEqual(calls.filter((call) => call.includes(FIRST)), [], "and still, the keyed order read only agent-org's row");
   assert.match(String(check({ causeKey: PRIMARY_ORDER.causeKey.replace("4568", "481") })), /#481 would be refused at the claim by the `blockedBy` check/,
     "and the same twin DOES refuse the first tracker's own order, so the reading above was not a check that never fires");
 });
 
 test("#4685 an order naming a key the project does not declare is refused by name, never read as the first tracker's row", () => {
-  const read: string[] = [];
-  const check = spawnClaimability({ run: (args) => { read.push(args.join(" ")); return "{}"; }, warn: () => {} });
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const check = spawnClaimability({ warn: () => {} });
   const why = check({ causeKey: "engineers/ready-row-unclaimed/nowhere#481" });
   assert.match(String(why), /declares no tracker with that key/);
-  assert.deepEqual(read, [], "nothing was asked of any repository");
+  assert.deepEqual(host.rowsWorld.calls, [], "nothing was asked of any repository");
   const named = spawnableRole({ ...KEYED, causeKey: "engineers/ready-row-unclaimed/nowhere#481" }, heldBy(STANDING), STANDING);
   assert.match((named as { refusal: string }).refusal, /names no row a spare could be named for/);
 });

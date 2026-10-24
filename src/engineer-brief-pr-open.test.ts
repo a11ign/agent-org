@@ -9,12 +9,18 @@
  * THE FIXTURE BRIEF IS THE POSITIVE CONTROL: `briefOpensPrThroughPrOpen` must return true for a brief that
  * does say it, or the assertion on the real brief would pass or fail for a reason that is not the sentence.
  */
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { labelAfterCreate, ownerOfPr, rowOwnerLabel, sendToGitHub } from "./pr-open.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const BRIEF = join(HOME_CHECKOUT, ".agent-org/roles/engineer.md");
 
@@ -66,13 +72,13 @@ test("#3639 POSITIVE CONTROL: a stamped tree labels from its stamp and never rea
     { mode: "create", body: BODY_CLOSING("#1"), rest: [], err: () => {} });
   assert.equal(owner(), "product-manager");
   assert.deepEqual(reads, []);
-  assert.deepEqual(labelAfterCreate("create", [], owner()), [["pr", "edit", "--add-label", "session:product-manager"]]);
+  assert.deepEqual(labelAfterCreate("create", [], owner()), [["fake-label", "session:product-manager", ""]]);
 });
 
 test("#3639 an unstamped tree + a row naming one owner -> that owner's label", () => {
   assert.equal(rowOwnerLabel(BODY_CLOSING("#1"), [], rowLabels), "ceo");
   const owner = ownerOfPr({ owner: () => null, rowLabels }, { mode: "create", body: BODY_CLOSING("#1"), rest: [], err: () => {} });
-  assert.deepEqual(labelAfterCreate("create", [], owner()), [["pr", "edit", "--add-label", "session:ceo"]]);
+  assert.deepEqual(labelAfterCreate("create", [], owner()), [["fake-label", "session:ceo", ""]]);
 });
 
 test("#3639 the same owner on two rows is still one owner; a row named only in the title counts", () => {
@@ -111,8 +117,8 @@ test("#3639 a label the repository lacks is CREATED before it is added; one it h
       owner: () => "ceo", labelExists: exists });
     return ran.map((a) => a.slice(0, 2).join(" "));
   };
-  assert.deepEqual(send(() => false), ["pr create", "label create", "pr edit"]);
-  assert.deepEqual(send(() => true), ["pr create", "pr edit"]);
+  assert.deepEqual(send(() => false), ["fake-pull-write create", "fake-label-create session:ceo", "fake-label session:ceo"]);
+  assert.deepEqual(send(() => true), ["fake-pull-write create", "fake-label session:ceo"]);
 });
 
 test("#3639 a failure to ask or to create is reported, never swallowed, and the create is not retried", () => {
@@ -121,6 +127,6 @@ test("#3639 a failure to ask or to create is reported, never swallowed, and the 
   const code = sendToGitHub("create", ["--draft"], { run: (a) => { ran.push(a); }, git: () => "", err: (l) => { seen.push(l); },
     owner: () => "ceo", labelExists: () => { throw new Error("HTTP 401"); } });
   assert.equal(code, 0);
-  assert.match(seen.join(""), /labelling it failed -- HTTP 401[\s\S]*--add-label session:ceo/);
+  assert.match(seen.join(""), /labelling it failed -- HTTP 401[\s\S]*Apply it by hand: `gh pr edit <n> --add-label session:ceo`/);
   assert.deepEqual(ran.map((a) => a[1]), ["create"]);
 });

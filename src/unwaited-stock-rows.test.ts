@@ -1,4 +1,4 @@
-// no-token: gh -- every read here goes through a fake tracker reader; `ghTrackerReader` is only constructed with a fake `run`, so no `gh` call is made.
+// no-token: gh -- every read here goes through a fake tracker reader, or through the fake code host's rows (A11-160, step 9: `ghTrackerReader` reads the world a test seeds); no `gh` call is made.
 // #4175: the retrospective's NUMBER of backlog or parked rows with no wait that moves them. Each wait takes the fixture out, each of its lapsed forms
 // does not, the age is the stock label's and a comment does not move it, and a refused read is `unknown` and names itself.
 import test from "node:test";
@@ -6,6 +6,11 @@ import assert from "node:assert/strict";
 import { unwaitedStockRows, unwaitedLines, ghTrackerReader, UNWAITED_AFTER_MS, ROW_LIST_LIMIT } from "./unwaited-stock-rows.ts";
 import { buildReport, NUMBERS, undeclaredDirections } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport } from "./org-retro.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+test.afterEach(() => forgetActivation());
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse("2026-10-08T18:00:00Z");
@@ -212,16 +217,37 @@ test("NUMBERS carries the new id with a declared direction, and the retrospectiv
   assert.equal(buildReport({ ...reads, unwaited: null }, NOW).numbers.unwaitedStockRows, null);
 });
 
-test("the real reader asks the tracker for the edges in the one list and projects the timeline, with no gh call here", () => {
-  const calls: any[] = [];
-  const run = (args: any) => {
-    calls.push(args);
-    return args[0] === "issue" ? JSON.stringify([ROW_4122])
-      : `${JSON.stringify({ event: "labeled", created_at: ago(30), label: { name: "backlog" } })}\n\n`;
-  };
-  const stock = unwaitedStockRows({ reader: ghTrackerReader("a11ign/a11ign", run), now: NOW });
-  assert.deepEqual(numbersOf(stock), [4122]);
-  assert.deepEqual(calls[0].slice(0, 5), ["issue", "list", "--repo", "a11ign/a11ign", "--state"]);
-  assert.match(calls[0].join(" "), /--json number,title,body,labels,blockedBy/);
-  assert.match(calls[1].join(" "), /^api repos\/a11ign\/a11ign\/issues\/4122\/timeline --paginate --jq /);
+test("the real reader reads the tracker's open rows with their edges and the timeline of a candidate, from the code host's world", () => {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = "a11ign/a11ign";
+  world.rows.set(4122, fakeRow(world, 4122, { title: ROW_4122.title, body: ROW_4122.body, labels: ROW_4122.labels.map((l) => l.name), blockedBy: [] }));
+  world.rows.set(4123, fakeRow(world, 4123, { labels: ["ready"], state: "CLOSED" }));
+  world.gate.events.set(4122, [{ event: "labeled", label: "backlog", actor: null, at: ago(30) }]);
+  substituteCodeHost(host);
+  const reader = ghTrackerReader("a11ign/a11ign");
+  const stock = unwaitedStockRows({ reader, now: NOW });
+  assert.deepEqual(numbersOf(stock), [4122], "the open row with no wait, aged from its stock label's event; the closed row is not in the list");
+  assert.deepEqual(reader.listRows().map((row) => [row.number, row.blockedBy]), [[4122, { totalCount: 0, nodes: [] }]], "the edges come in the one list");
+  assert.deepEqual(reader.timeline(4122), [{ event: "labeled", created_at: ago(30), label: { name: "backlog" } }]);
+});
+
+test("the real reader's refusals are named, and edges the list could not read make the reading `unknown`, never a row with none", () => {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = "a11ign/a11ign";
+  world.rows.set(4122, fakeRow(world, 4122, { labels: ["backlog"], blockedBy: [] }));
+  world.gate.events.set(4122, [{ event: "labeled", label: "backlog", actor: null, at: ago(30) }]);
+  substituteCodeHost(host);
+  const reader = ghTrackerReader("a11ign/a11ign");
+  assert.deepEqual(numbersOf(unwaitedStockRows({ reader, now: NOW })), [4122], "CONTROL: the same world, unrefused, counts the row");
+  world.rows.get(4122)!.blockedByUnread = true;
+  assert.deepEqual((unwaitedStockRows({ reader, now: NOW }) as any).reads, ["the blocked-by edges of #4122"]);
+  world.rows.get(4122)!.blockedByUnread = false;
+  world.gate.events.set(4122, new Error("HTTP 502"));
+  assert.match((unwaitedStockRows({ reader, now: NOW }) as any).reads[0], /^the timeline of #4122 \(HTTP 502\)$/);
+  world.gate.events.set(4122, []);
+  assert.match((unwaitedStockRows({ reader, now: NOW }) as any).reads[0], /^the timeline of #4122 \(no `labeled` event/);
+  world.failures.set("issueListingOf", new Error("HTTP 503"));
+  assert.deepEqual((unwaitedStockRows({ reader, now: NOW }) as any).reads, ["the open-row list (HTTP 503)"]);
 });

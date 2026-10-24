@@ -11,7 +11,7 @@ import type { FakeRow, FakeRowPull, FakeRowsWorld } from "./code-host-rows.ts";
 
 /** What the chairman's watch and answers read beyond the world's rows and pull requests. */
 export type FakeMessaging = {
-  /** The REST documents by exact path, query string included (`repos/o/n/issues/7/comments?per_page=100&page=2`): what `restGetAsync` answers for a path, FIRST, before the world's own rows, pull requests, runs and releases. */
+  /** The REST documents by exact path, query string included (`repos/o/n/issues/7/comments?per_page=100&page=2`): what `restGetAsync` answers for a path, FIRST, before the world's own rows, pull requests, runs and releases. A value that is an `Error` is THROWN for that path alone (the world's `failures` refuse the whole operation). */
   rest: Map<string, unknown>;
   /** The workflow runs by id, as `repos/o/n/actions/runs/<id>` reads them: a run still going has a null conclusion. A run the world holds none of is a 404. */
   runs: Map<number, { status: string; conclusion: string | null }>;
@@ -84,7 +84,11 @@ const commentDocument = (repo: string, row: FakeRow, comment: FakeRow["comments"
  * a row, a pull request, a run or the latest release the world holds. What it holds none of is GitHub's 404.
  */
 function restDocumentOf(world: FakeRowsWorld, path: string): unknown {
-  if (world.reports.messaging.rest.has(path)) return world.reports.messaging.rest.get(path);
+  if (world.reports.messaging.rest.has(path)) {
+    const seeded = world.reports.messaging.rest.get(path);
+    if (seeded instanceof Error) throw seeded; // a path a test seeds with an `Error` is a read GitHub refuses (HTTP 502), for that path alone
+    return seeded;
+  }
   const [route, query = ""] = path.split("?");
   const params = new URLSearchParams(query);
   let match: RegExpExecArray | null;

@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is a fake first on PATH that keeps its state in a JSON file, and no test lets the real one run.
+// no-token: none -- the decisions are pure, and the take runs the real CLI over the fake code host in a child process with no `gh` on its PATH.
 /**
  * A HOLD THAT WAITS FOR A ROW NOBODY IS WORKING NEVER ENDS, SO THE TAKE REFUSES IT, AND A HOLD ALREADY IN FORCE IS AN INCIDENT AFTER 15 MINUTES (#4661, class
  * `hold-on-idle-row`, chairman).
@@ -9,25 +9,18 @@
  *
  * THE POSITIVE CONTROLS are the non-empty cases every refusal is read against: the same hold on the same row IS taken once the row carries `in-progress`, a
  * `session:` label or an open pull request, and the same line with `manual` is taken. Without them "nothing was written" passes for a command that writes
- * nothing anywhere. The CLI half drives the real `pr-hold.ts` against a fake `gh` and reads its call log, because "the label call is never reached" is a
- * claim about calls, which a unit test of the decision cannot make.
+ * nothing anywhere. The CLI half drives the real `pr-hold.ts` over the fake code host (A11-160, step 9) and reads the operations it asked, because "the label call is
+ * never reached" is a claim about calls, which a unit test of the decision cannot make.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { holdTargetIdleReason, idleHoldIncident, IDLE_HOLD_MINUTES, IDLE_HOLD_CLASS } from "../pr-hold-state.ts";
 import type { HoldTarget, PullRequestRef } from "../pr-hold-state.ts";
 import { parseWaits, WAIT_MARKER } from "../wait-condition.ts";
-import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.ts";
+import { holdOverFake } from "../plugins/fakes/pr-hold-cli.test.support.ts";
 
-const EXECUTABLE = 0o755;
 const FIRST = "a11ign/a11ign";
 const KEYED = "a11ign/agent-org";
-const CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const MINUTE = 60_000;
 const NOW = Date.parse("2026-10-09T22:00:00Z");
 
@@ -105,81 +98,35 @@ test("not an incident: no hold in force, a hold with no date, a claimed target, 
   assert.equal(idleHoldIncident(heldSince(60), justReleased, { now: NOW, ...inForce }), null, "the clock starts at the target's last change, never earlier than the hold");
 });
 
-// --- the take: the real CLI against a fake `gh` ----------------------------------------------------------------------------------------------
+// --- the take: the real CLI over the fake code host ----------------------------------------------------------------------------------------
 
-type FakeRow = { state: string, labels: string[], closedBy: { number: number, repo: string }[] };
-type FakeState = { pr: { labels: string[], comments: string[], armed: boolean }, rows: Record<string, FakeRow>, calls: string[][] };
+/** What the code host holds of the row the hold waits on: its state and labels, and the pull requests of agent-org that close it (by number: the same row, `a11ign/a11ign#4524`). */
+type TargetRow = { state?: "OPEN" | "CLOSED", labels: string[], closedBy?: number[] };
 
-/** Answers `pr-hold.ts`'s calls for ONE pull request (agent-org#550) and `issue view` for the rows in `rows`; a row it does not hold fails the way a missing one does. */
-const FAKE_GH = `#!/usr/bin/env node
-const fs = require("node:fs");
-const file = process.env.FAKE_GH_STATE;
-const state = JSON.parse(fs.readFileSync(file, "utf8"));
-const args = process.argv.slice(2);
-const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
-state.calls.push(args);
-const save = () => fs.writeFileSync(file, JSON.stringify(state));
-const json = flag("--json");
-if (args[0] === "issue" && args[1] === "view") {
-  const row = state.rows[flag("--repo") + "#" + args[2]];
-  if (!row) { save(); process.stderr.write("fake gh: no such issue: " + args.join(" ")); process.exit(1); }
-  process.stdout.write(JSON.stringify({ state: row.state, labels: row.labels.map((name) => ({ name })),
-    closedByPullRequestsReferences: row.closedBy.map((c) => ({ number: c.number, repository: { name: c.repo.split("/")[1], owner: { login: c.repo.split("/")[0] } } })) }));
-} else if (args[0] === "pr" && args[1] === "view") {
-  const pr = state.pr;
-  process.stdout.write(JSON.stringify(json === "labels" ? { labels: pr.labels.map((name) => ({ name })) }
-    : json === "comments" ? { comments: pr.comments.map((body) => ({ body })) }
-    : { autoMergeRequest: pr.armed ? { enabledAt: "now" } : null, state: "OPEN" }));
-} else if (args[0] === "pr" && args[1] === "edit") {
-  if (args.includes("--remove-label")) state.pr.labels = state.pr.labels.filter((l) => l !== flag("--remove-label"));
-  if (args.includes("--add-label")) state.pr.labels.push(flag("--add-label"));
-} else if (args[0] === "pr" && args[1] === "comment") {
-  state.pr.comments.push(flag("--body"));
-} else if (args[0] === "pr" && args[1] === "merge") {
-  state.pr.armed = args.includes("--auto");
-} else { save(); process.stderr.write("fake gh: unexpected " + args.join(" ")); process.exit(1); }
-save();
-`;
-
-/** The host's own declaration with `tracker` and `code` replaced, so the key `agent-org` is declared exactly as the first repository is. */
-function fixtureProject(dir: string): string {
-  mkdirSync(join(dir, ".agent-org"), { recursive: true });
-  const own = JSON.parse(readFileSync(join(HOME_CHECKOUT, PROJECT_DECLARATION_PATH), "utf8")) as Record<string, unknown>;
-  writeFileSync(join(dir, PROJECT_DECLARATION_PATH), JSON.stringify({ ...own, tracker: [{ key: "", repo: FIRST, board: { owner: "a11ign", number: 1 } }],
-    code: [{ key: "", repo: FIRST }, { key: "agent-org", repo: KEYED }] }));
-  const host = join(dir, ".agent-org", "host.json");
-  writeFileSync(host, JSON.stringify({ schema: 1, home: dir, binDir: dir, primary: "fx", tool: dir, projects: [{ id: "fx", checkout: dir }] }));
-  return host;
-}
-
+const PROJECT = { first: FIRST, keyed: { "agent-org": KEYED } };
 const AGENT_ORG_550 = "550";
 const UNTIL_4524 = `closed ${FIRST}#4524`;
 
-/** Takes a hold on agent-org#550 with the fake first on PATH; returns what the command said, the PR afterwards and every `gh` call it made. */
-function take(rows: Record<string, FakeRow>, ...argv: string[]) {
-  const dir = mkdtempSync(join(tmpdir(), "pr-hold-4661-"));
-  try {
-    const state = join(dir, "state.json");
-    const fresh: FakeState = { pr: { labels: [], comments: [], armed: true }, rows, calls: [] };
-    writeFileSync(state, JSON.stringify(fresh));
-    writeFileSync(join(dir, "gh"), FAKE_GH);
-    chmodSync(join(dir, "gh"), EXECUTABLE);
-    const args = [AGENT_ORG_550, "--repo-key=agent-org", "--session=ceo", ...argv];
-    const result = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8",
-      env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir, FAKE_GH_STATE: state, AGENT_ORG_HOST: fixtureProject(dir) } });
-    const after = JSON.parse(readFileSync(state, "utf8")) as FakeState;
-    return { status: result.status, stdout: result.stdout, stderr: result.stderr, pr: after.pr, calls: after.calls.map((c) => c.join(" ")) };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+/**
+ * Takes a hold on agent-org#550 over the fake code host, which holds that pull request (armed, unlabelled), the rows in `rows` (by `repo#n`, `n` for agent-org's own) and the open pull requests that close the
+ * first repository's #4524; every row it does not hold is one it cannot read. Returns what the command said, the pull request afterwards and every operation of the code host it asked.
+ */
+function take(rows: Record<string, TargetRow>, ...argv: string[]) {
+  const closing = Object.fromEntries(Object.values(rows).flatMap((row) => row.closedBy ?? []).map((number) => [number, { closes: [`${FIRST}#4524`] }]));
+  const run = holdOverFake(PROJECT, { home: KEYED, repos: { [KEYED]: {
+    pulls: { [AGENT_ORG_550]: { armed: true }, ...closing },
+    rows: Object.fromEntries(Object.entries(rows).map(([key, row]) => [key, { state: row.state, labels: row.labels }])),
+  } } }, AGENT_ORG_550, "--repo-key=agent-org", "--session=ceo", ...argv);
+  const held = run.repos[KEYED];
+  return { ...run, pr: held.pulls[Number(AGENT_ORG_550)], written: held.written };
 }
 
-const row = (labels: string[], closedBy: FakeRow["closedBy"] = [], state = "OPEN"): Record<string, FakeRow> => ({ [`${FIRST}#4524`]: { state, labels, closedBy } });
-const WRITES = /^pr (edit|comment|merge) /;
+const row = (labels: string[], closedBy: number[] = [], state: "OPEN" | "CLOSED" = "OPEN"): Record<string, TargetRow> => ({ [`${FIRST}#4524`]: { state, labels, closedBy } });
+const rowReads = (asked: string[]) => asked.filter((call) => call.startsWith("holdTargetRowOf"));
 
 test("REFUSED: `--until=closed #4524` on an open, unclaimed row with no pull request exits 1, names the way out, and makes no write at all", () => {
   const refused = take(row(["ready", "lane:any"]), `--until=${UNTIL_4524}`);
-  assert.equal(refused.status, 1, `${refused.stderr}\n${refused.calls.join("\n")}`);
+  assert.equal(refused.status, 1, `${refused.stderr}\n${refused.asked.join("\n")}`);
   assert.match(refused.stderr, /^REFUSING --until="closed a11ign\/a11ign#4524": a11ign\/a11ign#4524 is OPEN, nobody holds it/m);
   assert.match(refused.stderr, /no open pull request closes it/);
   assert.match(refused.stderr, /Nothing was written\. Merge agent-org#550 and let the row rebase/);
@@ -187,15 +134,15 @@ test("REFUSED: `--until=closed #4524` on an open, unclaimed row with no pull req
   assert.deepEqual(refused.pr.labels, [], "no hold label");
   assert.deepEqual(refused.pr.comments, [], "no marker comment");
   assert.equal(refused.pr.armed, true, "and it was not disarmed");
-  assert.deepEqual(refused.calls.filter((c) => WRITES.test(c)), [], "the label call is never reached: no edit, comment or merge");
-  assert.deepEqual(refused.calls, [`issue view 4524 --repo ${FIRST} --json state,labels,closedByPullRequestsReferences,body,comments`], "the one read the decision needs, and nothing after it");
+  assert.deepEqual(refused.written, [], "the label call is never reached: no edit, comment or merge");
+  assert.deepEqual(refused.asked, [`holdTargetRowOf ${FIRST}#4524`], "the one read the decision needs, and nothing after it");
 });
 
 test("CONTROL: the same hold is TAKEN when the row carries `in-progress`, or a `session:` label, or has an open pull request that closes it", () => {
   for (const [name, facts] of [
     ["in-progress", row(["in-progress", "started"])],
     ["a session label", row(["session:worker-4524"])],
-    ["an open closing pull request", row(["ready"], [{ number: 518, repo: KEYED }])],
+    ["an open closing pull request", row(["ready"], [518])],
   ] as const) {
     const taken = take(facts, `--until=${UNTIL_4524}`);
     assert.equal(taken.status, 0, `${name}: ${taken.stderr}`);
@@ -209,7 +156,7 @@ test("CONTROL: a `manual` hold and a `merged` hold are not refused by this rule,
     const taken = take(row(["ready"]), `--until=${until}`);
     assert.equal(taken.status, 0, `${until}: ${taken.stderr}`);
     assert.deepEqual(taken.pr.labels, ["hold:ceo", "rearm-on-release"]);
-    assert.deepEqual(taken.calls.filter((c) => c.startsWith("issue ")), [], `${until}: nothing about a claimant was asked`);
+    assert.deepEqual(rowReads(taken.asked), [], `${until}: nothing about a claimant was asked`);
   }
 });
 
@@ -221,13 +168,13 @@ test("a target that cannot be read is NOT refused: the hold is taken as asked, w
 });
 
 test("a bare `#4524` names the held pull request's OWN repository, and is read there", () => {
-  const taken = take({ [`${KEYED}#4524`]: { state: "OPEN", labels: ["ready"], closedBy: [] } }, "--until=closed #4524");
+  const taken = take({ "4524": { labels: ["ready"] } }, "--until=closed #4524");
   assert.equal(taken.status, 1, taken.stderr);
   assert.match(taken.stderr, /a11ign\/agent-org#4524 is OPEN, nobody holds it/);
-  assert.ok(taken.calls[0].includes(`--repo ${KEYED}`), taken.calls[0]);
+  assert.equal(rowReads(taken.asked)[0], `holdTargetRowOf ${KEYED}#4524`);
 });
 
 test("a release is untouched: it does not read a row", () => {
   const released = take(row(["ready"]), "--release", `--until=${UNTIL_4524}`);
-  assert.deepEqual(released.calls.filter((c) => c.startsWith("issue ")), [], "a release does not ask who is working the target");
+  assert.deepEqual(rowReads(released.asked), [], "a release does not ask who is working the target");
 });

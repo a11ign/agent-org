@@ -1,4 +1,4 @@
-// no-token: gh -- every input is injected (the lint's three machine questions, Jev's answer, the comment list); no lookup reaches GitHub.
+// no-token: gh -- every input is injected (the lint's three machine questions, Jev's answer, the comment list) or is the fake code host's rows; no lookup reaches GitHub.
 /**
  * THE SPEC LINT (a11ign#5117, the Haiku push): a spec at promotion is refused for vague or oversized content, Jev WARNS on ambiguity, and a worker's
  * "underspecified" stop is counted by FIELD in the daily retro.
@@ -9,7 +9,7 @@
  * Every refusal has a twin: the same fixture with the one fault repaired is clean. A rule that fires always cannot pass its twin, and a rule that never
  * fires cannot pass its refusal. The mutations run against this file are listed in the pull request, one per rule.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +24,11 @@ import { buildReport, readAll } from "./org-retro/journal-stats-and-verdicts.ts"
 import { readUnderspecified } from "./org-retro/retro-window-and-journal-patterns.ts";
 import { renderReport } from "./org-retro.ts";
 import { testEach } from "./lib/test-each.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 // --- fixtures -----------------------------------------------------------------------------------------------------------------
 
@@ -410,15 +415,18 @@ test("the retro prints \"Underspecified stops by field\" on its next run, `unkno
 
 test("the live read asks each declared tracker for its comments once, and ONE refused list makes the whole reading `null`", () => {
   const declaration = { repo: "a11ign/a11ign", tracker: [{ repo: "a11ign/a11ign" }, { repo: "a11ign/agent-org" }] } as unknown as Parameters<typeof readUnderspecified>[0]["declaration"];
-  const asked: string[] = [];
-  const reading = readUnderspecified({ now: NOW, declaration, read: (args) => {
-    asked.push(args.join(" "));
-    return [[comment("Underspecified: run")]];
-  } });
-  assert.deepEqual(reading, { status: "read", total: 2, byField: { run: 2 }, overLimit: [] });
-  assert.equal(asked.length, 2);
-  assert.ok(asked[0].startsWith("api --paginate --slurp repos/a11ign/a11ign/issues/comments?since=2026-10-10T18:00:00.000Z"));
-  assert.equal(readUnderspecified({ now: NOW, declaration, read: (args) => (args.join(" ").includes("agent-org") ? null : []) }), null);
+  // A11-160 (step 9): the comments are the code host's, read from the fake's rows. The window's start (24 hours before `now`) is what the code host is asked for, so a stop said before it is not counted and one inside it is.
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  const said = (id: number, body: string, createdAt: string) => ({ id, body, createdAt });
+  world.rows.set(6001, fakeRow(world, 6001, { comments: [said(1, "Underspecified: run", "2026-10-11T12:00:00Z"), said(2, "Underspecified: files", "2026-10-10T17:00:00Z")] }));
+  substituteCodeHost(host);
+  assert.deepEqual(readUnderspecified({ now: NOW, declaration }), { status: "read", total: 2, byField: { run: 2 }, overLimit: [] }, "the one stop inside the window, said on the one row, counted once per tracker");
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("commentsSince")), ["commentsSince a11ign/a11ign", "commentsSince a11ign/agent-org"], "each declared tracker was asked once");
+  world.failures.set("commentsSince a11ign/agent-org", new Error("HTTP 502"));
+  assert.equal(readUnderspecified({ now: NOW, declaration }), null, "one tracker's list refused is `unknown`, never a count of the other's");
+  world.failures.delete("commentsSince a11ign/agent-org");
+  assert.notEqual(readUnderspecified({ now: NOW, declaration }), null, "CONTROL: with the list back, the reading is made");
 });
 
 test("`readAll` carries the read into the report's inputs through its seam", () => {

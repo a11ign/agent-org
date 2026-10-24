@@ -1,6 +1,5 @@
-// no-token: gh -- every `gh` task here runs through an INJECTED `run`; survey.ts's own default `run`
-// (which really would spawn `gh`) is exercised only by tasks of kind `grep`/`read`, which reach `git`, in a
-// throwaway repository this test creates and deletes.
+// no-token: gh -- every `gh` task here runs through the code host's runner, which the test substitutes; survey.ts's own default `run`
+// is exercised only by tasks of kind `grep`/`read`, which reach `git`, in a throwaway repository this test creates and deletes.
 /**
  * #2690: BATCH SEVERAL SMALL grep/read/gh CHECKS INTO ONE CALL -- engineer.md's "batch related small
  * checks into one command rather than several" habit, given a tool to reach for.
@@ -21,6 +20,8 @@ import { fileURLToPath } from "node:url";
 
 import { survey, render, DEFAULT_READ_LIMIT } from "../survey.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 // The tool's own CLI, found from this file and not through the project's checkout, where `packages/agent-org` is the old frozen copy.
 const SURVEY_CLI = fileURLToPath(new URL("../survey.ts", import.meta.url));
@@ -58,30 +59,40 @@ const execRun = (cmd: string, args: string[], opts: Parameters<typeof execFileSy
 
 test("#2690: a batch of grep + read + gh returns the same content the three would separately, in one call", () => {
   const root = fixtureRepo(FILES);
+  // A11-160 (step 9): a `gh` task is run by the code host's runner, asked for with the directory the survey was aimed at and the cap on what `gh` may print. The fake code host has no program, so the test hands it a runner.
+  const host = createFakeCodeHost();
+  const asked: unknown[] = [];
+  const ran: string[][] = [];
+  substituteCodeHost({ ...host, rows: { ...host.rows!, runnerWith: (request) => { asked.push(request); return (args) => { ran.push([...args]); return '{"state":"OPEN"}'; }; } } });
   try {
-    let ghCalls = 0;
-    const run = (cmd: string, args: string[], opts: Parameters<typeof execFileSync>[2]): string => {
-      if (cmd === "gh") {
-        ghCalls += 1;
-        assert.deepEqual(args, ["issue", "view", "1", "--json", "state"]);
-        return '{"state":"OPEN"}';
-      }
-      return execFileSync(cmd, args, opts) as string;
-    };
     const results = survey([
       { kind: "grep", pattern: "TARGET", paths: ["a.txt"] },
       { kind: "read", path: "b.txt", offset: 5, limit: 3 },
       { kind: "gh", args: ["issue", "view", "1", "--json", "state"] },
-    ], { cwd: root, run });
+    ], { cwd: root, run: execRun });
     assert.equal(results.length, 3, "one result per task, in the order given");
-    assert.equal(ghCalls, 1, "the gh task runs exactly once -- batching must not repeat a call");
+    assert.deepEqual(ran, [["issue", "view", "1", "--json", "state"]], "the gh task runs exactly once, with the arguments exactly as given -- batching must not repeat a call");
+    assert.deepEqual(asked, [{ cwd: root, maxBuffer: 8 * 1024 * 1024 }], "from the directory the survey was aimed at, and `gh`'s output capped at 8 MiB");
     assert.ok(results[0].ok && results[0].output.includes("TARGET here"),
       "grep: the same line a lone `git grep -n` would answer");
     assert.deepEqual(results[1].ok && results[1].output.split("\n"), ["5\tline 5", "6\tline 6", "7\tline 7"],
       "read: the same three lines a lone `Read` with offset=5 limit=3 would answer");
     assert.equal(results[2].ok && results[2].output, '{"state":"OPEN"}', "gh: passed through exactly as given");
   } finally {
+    forgetActivation();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("#2690: a `gh` task the code host refuses is that task's named failure (the first line of why), and the rest of the batch is answered", () => {
+  const host = createFakeCodeHost();
+  substituteCodeHost({ ...host, rows: { ...host.rows!, runnerWith: () => () => { throw new Error("Command failed: gh issue view 99\nHTTP 404: Not Found"); } } });
+  try {
+    const results = survey([{ kind: "gh", args: ["issue", "view", "99"] }, { kind: "read", path: "x" }], { cwd: "/", run: execRun, readFile: (() => "hello\n") as never });
+    assert.deepEqual(results[0], { task: { kind: "gh", args: ["issue", "view", "99"] }, ok: false, error: "Command failed: gh issue view 99" });
+    assert.equal(results[1].ok, true, "one task's failure must not discard the other's answer");
+  } finally {
+    forgetActivation();
   }
 });
 
