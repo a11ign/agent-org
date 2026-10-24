@@ -12,6 +12,7 @@ import { isParked, publishable, rebaseNote, runStatus, terminalLink, waitNote } 
 import { checkNote, promptNote, reasonOf } from "./board-view/run-reason.ts";
 import { declineMessage } from "./safety-prompt.ts";
 import { ASK_USER, DANGEROUS_RM } from "./safety-prompt-fixture.ts";
+import { MAIN_RM, SUBAGENT_RM } from "./safety-prompt-fixture.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
@@ -584,6 +585,53 @@ test("A11-174: a run on the dangerous-rm prompt is answered esc, never enter or 
   screen.text = "";
   await pool.tick();
   assert.deepEqual([keysSent(h.calls).length, promptsSent(h.calls).length], [1, 1], "a pane that has moved on is sent nothing more");
+});
+
+const RM_COMMAND = 'S=/tmp/scratch/cap; cd "$S/x" && rm -rf *';
+const RM_WARNING = "Dangerous rm operation on statically-unresolvable target: /tmp/scratch/cap/*";
+
+/** NBF-1 blocked on `pane`, one pass later: the one key sent, and the one message told (A11-209). */
+async function declinedOn(pane: string) {
+  const made = await blockedOn(pane);
+  await made.pool.tick();
+  assert.deepEqual(keysSent(made.h.calls), [SEND_KEYS("t-nbf-1", "esc")], "the one key is esc, as for the main agent");
+  assert.equal(promptsSent(made.h.calls).length, 1, "one message");
+  return { entry: made.entry, message: promptsSent(made.h.calls)[0][5] };
+}
+
+test("A11-209: a run on a general-purpose subagent's prompt is answered esc, told once which subagent ran which command and to name a guarded path, and the card says the subagent", async () => {
+  const { entry, message } = await declinedOn(SUBAGENT_RM);
+  assert.equal(message, declineMessage({ command: RM_COMMAND, warning: RM_WARNING, agent: "general-purpose" }));
+  for (const part of ["`general-purpose` subagent", RM_COMMAND, "statically-unresolvable target", "${VAR:?}", "never a bare * after cd"]) assert.ok(message.includes(part), part);
+  assert.deepEqual(entry("NBF-1").declined, { command: RM_COMMAND, warning: RM_WARNING, agent: "general-purpose", at: 100, count: 1, told: true });
+  assert.notEqual(entry("NBF-1").waiting, true, "the run is not waiting on a person");
+  assert.equal(promptNote(entry("NBF-1")), `A safety prompt from the general-purpose subagent was declined automatically: ${RM_COMMAND}`);
+});
+
+test("A11-209: a main agent's prompt in the same Claude Code version is declined with no subagent in its message, record or card", async () => {
+  const { entry, message } = await declinedOn(MAIN_RM);
+  assert.equal(message, declineMessage({ command: RM_COMMAND, warning: RM_WARNING }));
+  assert.ok(!message.includes("subagent"));
+  assert.deepEqual(entry("NBF-1").declined, { command: RM_COMMAND, warning: RM_WARNING, at: 100, count: 1, told: true });
+  assert.equal(promptNote(entry("NBF-1")), `A safety prompt was declined automatically: ${RM_COMMAND}`);
+});
+
+test("A11-209: a subagent's prompt counts toward the run's bound together with the main agent's", async () => {
+  const { pool, status, entry, h, screen } = await blockedOn(SUBAGENT_RM);
+  await pool.tick();
+  /** The agent works on, then blocks on `pane`; one pass reads it. */
+  const blockOn = async (pane: string) => {
+    for (const [state, text] of [["working", ""], ["blocked", pane]] as const) {
+      status.set(herdrName("NBF-1"), state);
+      screen.text = text;
+      await pool.tick();
+    }
+  };
+  await blockOn(MAIN_RM);
+  await blockOn(SUBAGENT_RM);
+  assert.equal(entry("NBF-1").declined?.count, 3);
+  await blockOn(SUBAGENT_RM);
+  assert.deepEqual([keysSent(h.calls).length, entry("NBF-1").waiting, entry("NBF-1").declined?.count], [3, true, 3], "the fourth is left for a person");
 });
 
 test("A11-174: an unrecognised dialog is not answered: no key and no message are sent, the run is waiting, and its first line is recorded", async () => {

@@ -137,8 +137,8 @@ const CHECKS_NOT_STARTED = `When no check has started on your head commit, run \
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
 
-/** What an unattended run does with a command Claude Code would stop to ask a person about (A11-174): the pool answers that prompt No, so the command is written to raise none. */
-const STALLING_COMMANDS = "## Commands that stall an unattended run\n\nClaude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`.";
+/** What an unattended run does with a command Claude Code would stop to ask a person about (A11-174, A11-209): the pool answers that prompt No, whether the main agent or one of its subagents raised it, so the command is written to raise none. */
+const STALLING_COMMANDS = "## Commands that stall an unattended run\n\nClaude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`. The subagents you start inherit these rules, so tell them. Every delete names an explicit path guarded with `${VAR:?}`, never a bare `*` after `cd`.";
 
 /**
  * What a planner does with a ticket that is only a parent: an epic whose work is all in the tickets under it is not work for one run, so its plan

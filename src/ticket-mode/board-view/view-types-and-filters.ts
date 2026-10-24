@@ -22,8 +22,8 @@ export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string; url?: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
   /** What the first line of the dialog a waiting run sits on says, when the pool could read one (A11-174). */
   prompt?: string;
-  /** A Claude Code safety prompt the pool answered No to on this run, and the command it asked about (A11-174). */
-  declined?: Readonly<{ command: string }>;
+  /** A Claude Code safety prompt the pool answered No to on this run, the command it asked about (A11-174) and the subagent that raised it, absent for the main agent (A11-209). */
+  declined?: Readonly<{ command: string; agent?: string }>;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Why the plan of a queued run could not be downloaded, which holds it back (A11-125). */
