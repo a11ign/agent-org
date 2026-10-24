@@ -221,6 +221,44 @@ jobs:
       - name: npm run lint -- eslint over src/ and scripts/, with the Clean Code plugin's rules
         run: npm run lint
 
+  # THE UI (A11-188): `ui/` is a private package of its own, Astro with React islands, built to static files and not a workspace member (the layout check above refuses a `pnpm-workspace.yaml`),
+  # so it installs from its own lockfile. It runs on the same three events as `lint` and `typecheck`, because `gate` waits for a check reporting on `merge_group`. The steps are the UI's typecheck
+  # (`astro check` and `tsc`), its build, and its tests: the components, the dev proxy and the page checks, which serve the build in Chromium and take the placeholder page's screenshots at 1440px and
+  # 390px (they fail on horizontal overflow). The UI's LINT is not here: the root `lint` script covers `ui/`, so the `lint` job runs it.
+  # Chromium is the build `playwright-core` names, which `ui/test/package.test.ts` holds to the root's version; `--with-deps` adds the system libraries the runner lacks.
+  # ASTRO_TELEMETRY_DISABLED: the build reports nothing to a third party.
+  ui:
+    runs-on: ubuntu-latest
+    env:
+      PNPM_VERSION: 10.34.5
+      ASTRO_TELEMETRY_DISABLED: 1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Install the UI from its own lockfile
+        run: pnpm --dir ui install --frozen-lockfile --ignore-scripts
+      - name: Chromium, the build playwright-core is pinned to, with its system libraries
+        run: pnpm --dir ui exec playwright-core install --with-deps chromium
+      - name: pnpm ui:typecheck -- astro check and tsc --noEmit
+        run: pnpm ui:typecheck
+      - name: pnpm ui:build -- static files in ui/dist
+        run: pnpm ui:build
+      - name: pnpm ui:test -- components, dev proxy and page checks, with the placeholder's screenshots
+        run: pnpm ui:test
+      # The screenshots the page checks took, kept with the run so a reviewer can see them without a checkout.
+      - name: The placeholder page's screenshots, archived
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-screenshots
+          path: ui/screenshots/*.png
+          if-no-files-found: warn
+
   # A PULL REQUEST THAT CHANGES `src/` MUST CARRY A CHANGESET OR A `no-release:` LINE (a11ign/a11ign#4084, adoption row #4129 of the shared check #4127). screenreader-worker#25 and #26 merged
   # shipped code with no changeset and nothing released them; this repository's per-merge release releases a changeset, so a change with none is invisible to it. The decision lives in
   # a11ign/toolchain's `changeset-required.yml`, pinned by FULL SHA (Dependabot's `github-actions` entry moves the pin); this job only names the paths.
@@ -329,18 +367,18 @@ jobs:
   # `if: always() && !cancelled()` IS THE POINT, not decoration: with the default `success()` a failing `typecheck` SKIPS `gate`, and a skipped required check counts as passing, so a type
   # error would merge. The same form as a11ign/a11ign's own `gate`. Unlike that one, `skipped` is accepted in ONE place: `changeset` on a `push`, where it carries an `if:` that is
   # false by design (a push has no pull request; a11ign/a11ign#4139). Everywhere else a skip means a job that did not run for a reason nobody wrote, so on `pull_request` and
-  # `merge_group` the only green is `success` from all five, and `suite`, `typecheck` and `lint` must be `success` on a push too.
+  # `merge_group` the only green is `success` from all six, and `suite`, `typecheck`, `lint` and `ui` must be `success` on a push too.
   gate:
-    needs: [suite, typecheck, lint, changeset, release-dry-run]
+    needs: [suite, typecheck, lint, ui, changeset, release-dry-run]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
-      - name: The suite, the typecheck, the lint, the changeset check and the release dry run all succeeded
+      - name: The suite, the typecheck, the lint, the UI, the changeset check and the release dry run all succeeded
         env:
           EVENT: ${{ github.event_name }}
         run: |
           changeset="${{ needs.changeset.result }}"
           if [ "$EVENT" = "push" ] && [ "$changeset" = "skipped" ]; then changeset="success"; fi
-          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}" "${{ needs.lint.result }}" "$changeset" "${{ needs.release-dry-run.result }}"; do
+          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}" "${{ needs.lint.result }}" "${{ needs.ui.result }}" "$changeset" "${{ needs.release-dry-run.result }}"; do
             [ "$result" = "success" ] || { echo "::error::a job reported '$result', not success"; exit 1; }
           done

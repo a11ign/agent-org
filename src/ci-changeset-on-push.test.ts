@@ -50,7 +50,7 @@ function gate(event: any, results: any) {
   return { ok: ran.status === 0, output: ran.stdout + ran.stderr };
 }
 
-const allSuccess = { suite: "success", typecheck: "success", lint: "success", changeset: "success", "release-dry-run": "success" };
+const allSuccess = { suite: "success", typecheck: "success", lint: "success", ui: "success", changeset: "success", "release-dry-run": "success" };
 
 test("a push to main does not evaluate the changeset check: the changeset job's condition is false on push and true on the other two events", () => {
   assert.equal(changesetRuns("push"), false);
@@ -59,7 +59,7 @@ test("a push to main does not evaluate the changeset check: the changeset job's 
 });
 
 test("gate needs the changeset job, so a skip on push is read by gate and not lost", () => {
-  assert.deepEqual([...ci.jobs.gate.needs].sort(), ["changeset", "lint", "release-dry-run", "suite", "typecheck"]);
+  assert.deepEqual([...ci.jobs.gate.needs].sort(), ["changeset", "lint", "release-dry-run", "suite", "typecheck", "ui"]);
 });
 
 test("gate accepts a skipped changeset on a push, and ONLY on a push", () => {
@@ -81,9 +81,9 @@ test("gate rejects a failed or cancelled changeset on every event, push included
   }
 });
 
-test("gate rejects a skipped, failed or cancelled suite, typecheck, lint and release dry run on every event, push included", () => {
+test("gate rejects a skipped, failed or cancelled suite, typecheck, lint, ui and release dry run on every event, push included", () => {
   for (const event of EVENTS) {
-    for (const job of ["suite", "typecheck", "lint", "release-dry-run"]) {
+    for (const job of ["suite", "typecheck", "lint", "ui", "release-dry-run"]) {
       for (const result of RESULTS.filter((candidate) => candidate !== "success")) {
         assert.equal(gate(event, { ...allSuccess, [job]: result }).ok, false, `${event} / ${job} ${result}`);
       }
@@ -95,6 +95,7 @@ test("on a push, a failed suite still fails gate beside a skipped changeset (the
   assert.equal(gate("push", { ...allSuccess, suite: "failure", changeset: "skipped" }).ok, false);
   assert.equal(gate("push", { ...allSuccess, typecheck: "failure", changeset: "skipped" }).ok, false);
   assert.equal(gate("push", { ...allSuccess, lint: "failure", changeset: "skipped" }).ok, false);
+  assert.equal(gate("push", { ...allSuccess, ui: "failure", changeset: "skipped" }).ok, false);
 });
 
 test("ci.yml still triggers on the three events this test covers", () => {

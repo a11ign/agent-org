@@ -56,8 +56,8 @@ function gateProblems(ci: Workflow): string[] {
   return problems;
 }
 
-/** The lint script: the scope `eslint.config.ts` covers, with `plugins/` (A11-158), which holds no `.ts` file until the first bundled agent-org plugin lands, so an unmatched pattern is no error. */
-const LINT_SCRIPT = "eslint --no-error-on-unmatched-pattern src scripts plugins";
+/** The lint script: the scope `eslint.config.ts` covers, with `plugins/` (A11-158), which holds no `.ts` file until the first bundled agent-org plugin lands, so an unmatched pattern is no error, and `ui/` (A11-188), the UI package's `.ts`, `.tsx` and `.astro`. */
+const LINT_SCRIPT = "eslint --no-error-on-unmatched-pattern src scripts plugins ui";
 
 /** The three packages are pinned EXACT (no `^`, no `~`), and the lint script runs the scope `eslint.config.ts` covers. */
 function pinProblems(pins: Pins): string[] {

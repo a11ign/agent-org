@@ -5,6 +5,7 @@
 // This is a .ts file because a new .js file is script source to the mjs ratchet, and the repository's new code is TypeScript. ESLint loads it through `jiti`, pinned beside it.
 import tseslint from "typescript-eslint";
 import cleanCode from "@george2f/eslint-plugin-clean-code";
+import astro from "eslint-plugin-astro";
 
 const recommended = {
   "clean-code/max-arguments": "warn",
@@ -31,20 +32,34 @@ const adopted = {
   "clean-code/no-duplication": "error", // A11-113: a block of 4 statements that repeats an earlier block of its file by shape is a copy to extract (G5); repeated test cases are one table through testEach, and an import list, which the shape match reads as a copy, is disabled line by line with its reason
 };
 
+// The rules every source block takes, `.ts`, `.tsx` and `.astro` alike.
+const cleanCodeRules = {
+  ...recommended,
+  ...adopted,
+  "max-lines-per-function": ["error", { max: 70, skipComments: true, skipBlankLines: true }], // A11-115: a function over 70 code lines does more than one thing; comments and blank lines are not counted, because the policy is comment-dense
+};
+
 export default [
-  { ignores: ["node_modules/**"] },
+  // The UI package's build and its generated types are not source (A11-188).
+  { ignores: ["node_modules/**", "ui/dist/**", "ui/.astro/**"] },
+  // A11-188: the UI package's `.astro` files, through eslint-plugin-astro's parser (its `recommended` config sets the parser and the Astro rules). The Clean Code rules are added to the
+  // `.astro` file itself, whose frontmatter this parser reads, and the `<script>` of a page reaches the `.ts` block below as a virtual `.ts` file.
+  // The last entry of `recommended` names no `files`, so it is scoped here: the Astro rules judge `.astro` files and no `.ts` file.
+  ...astro.configs["flat/recommended"].map((entry) => ({ ...entry, files: entry.files ?? ["**/*.astro"] })),
   {
-    files: ["**/*.ts"],
+    files: ["**/*.astro"],
+    plugins: { "clean-code": cleanCode },
+    rules: cleanCodeRules,
+  },
+  {
+    // A11-188: `.tsx` is the UI package's React islands; it takes the same rules and the same parser as `.ts`.
+    files: ["**/*.ts", "**/*.tsx"],
     languageOptions: { parser: tseslint.parser },
     plugins: { "clean-code": cleanCode },
-    rules: {
-      ...recommended,
-      ...adopted,
-      "max-lines-per-function": ["error", { max: 70, skipComments: true, skipBlankLines: true }], // A11-115: a function over 70 code lines does more than one thing; comments and blank lines are not counted, because the policy is comment-dense
-    },
+    rules: cleanCodeRules,
   },
   // A test helper's boolean is the fixture's variant, which the rule cannot tell from a mode switch, and splitting it would double each fixture.
-  { files: ["**/*.test.ts"], rules: { "clean-code/no-flag-arguments": "off" } },
+  { files: ["**/*.test.ts", "**/*.test.tsx"], rules: { "clean-code/no-flag-arguments": "off" } },
   // A COPY of packages/guards' walk-scope.ts: copies-drifted (src/org-health/sweep-readings.ts) reads any change to its body as drift, so its one
   // condition stays as the original writes it. The fix belongs in the original, in a11ign, as a follow-up.
   { files: ["src/lib/walk-scope.ts"], rules: { "clean-code/encapsulate-conditionals": "off" } },

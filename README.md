@@ -697,6 +697,28 @@ refused (`erasableSyntaxOnly`), and a relative import names the `.ts` file.
 runs from a checkout outside `node_modules`, which is what `host/agent-org` and the `AGENT_ORG_TOOL` clone are; a copy a package manager installs under `node_modules` can
 be read but not run.
 
+## The board UI package (`ui/`)
+
+`ui/` is the board UI's foundation (A11-188, part of A11-187): **Astro with React islands**, strict TypeScript, built to **static files** (`output: "static"`, `base: "/next"`) with no adapter and no server of its own. The instance's server stays the only server, and serving the build is a later ticket's. Nothing of `src/ticket-mode/ui.html` is ported: its one page here is a placeholder that proves the build, a React island, the two self-hosted fonts (Inter and JetBrains Mono, bundled from Fontsource, nothing fetched from another origin) and the screenshot.
+
+`ui/` is a private package of its own, **not a pnpm workspace member** (the layout check refuses a `pnpm-workspace.yaml`), with its own `ui/pnpm-lock.yaml`. `package.json`'s `files` does not ship it and `pnpm install --prod` never installs its dependencies, so a machine needs none of them (an install unpacks the tag's source, `ui/` included, and ignores it; shipping the built UI is A11-191's).
+
+To work on it, from the repository root:
+
+```sh
+pnpm --dir ui install          # once, and after a change to ui/package.json
+pnpm ui:dev                    # the dev server, http://localhost:4321/next/
+pnpm ui:build                  # static files in ui/dist
+pnpm ui:typecheck              # astro check (the .astro files) and tsc --noEmit (every .ts and .tsx)
+pnpm ui:test                   # rstest: the components, the dev proxy, and the page checks over ui/dist
+```
+
+**The dev server proxies `/api/*` to this machine's instance**, so a page can be built against live data. It runs the checkout's own `ticket:remote-info`, which reads the host file (`$AGENT_ORG_HOST`, else the default) and the board key, and passes each call on to `http://127.0.0.1:<port>` with the key in `x-ticket-token`. The key is held in the dev server's memory only: it is never written to a file, a URL, a log line or a response. With no instance or no key the dev server still starts, and a call to `/api/*` answers 502 with `ticket:remote-info`'s own error, which names the remedy (`agent-org ticket:serve` makes the key). Start the instance and call again: no restart is needed.
+
+**The page checks need a build and a browser.** They serve `ui/dist/` with `astro preview` and drive Chromium through `playwright-core`, which `ui/` pins to the root's exact version, the build `onboard` and `doctor` install. They refuse to start, saying so, until `pnpm ui:build` has run. The screenshot helper captures a route at 1440px and at 390px wide, writes full-page PNGs named `<route>-<W>x<H>.png` (A11-151's `captureName`) to `ui/screenshots/` (ignored by git), and fails on horizontal overflow, naming the route, the width, `scrollWidth` and `clientWidth`.
+
+Lint covers `ui/`: `npm run lint` reads `.ts`, `.tsx` and `.astro` with the same Clean Code rules, and CI's `ui` job runs the typecheck, the build and the tests.
+
 ## Releases
 
 **A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and nothing is published to a registry. **A tag is
