@@ -663,7 +663,7 @@ test("A11-199: a manual brief lists each choice the person made as a requirement
   says(brief, [
     /Manual placement:\n- Project: Board \(the project of the ticket, by its name\)\n- Priority: low, number 4 \(the ticket's priority number\)\n\nThese are requirements\. Use them as given: you set each one on the ticket you file\. Each of the five not listed here is yours to choose from the request\./,
   ]);
-  assert.doesNotMatch(brief, /Auto placement|- Repository:|- Goal:|- Parent:/, "an unset choice is not a requirement");
+  assert.doesNotMatch(brief, /Auto placement:|- Repository:|- Goal:|- Parent:/, "an unset choice is not a requirement");
   const all = placedBrief("manual", { project: "Board", repo: "nbl-ui-netbox", goal: "Speed", priority: "none", parent: "A11-12" });
   assert.match(all, /- Priority: none, number 0 /, "No priority is a choice, and is the number 0");
   assert.doesNotMatch(all, /Each of the five not listed here/, "with all five named, none is left to choose");
@@ -676,6 +676,10 @@ test("A11-199: a manual brief with none of the five set says so, and leaves each
 test("A11-135: the team is the parent's, else the team the Pick view lists, and with neither the run ends needs-human", () => {
   assert.match(briefIn("quick", "A11"), /the team of the parent ticket the form names, else `A11`, the team the Pick view lists/);
   assert.match(briefIn("quick", null), /else none: when the form names no parent and no team is set here, end needs-human/);
+});
+
+test("A11-199: the team bullet says a parent the writer chooses under Auto sets the team too", () => {
+  assert.match(briefIn("quick", "A11"), /the team of the parent ticket the form names, else `A11`, the team the Pick view lists\. A parent you choose yourself under Auto placement takes its team in the same way\./);
 });
 
 test("A11-135: the brief keeps the duplicate check under Possible duplicates, and reads the tracker with read-only tools", () => {

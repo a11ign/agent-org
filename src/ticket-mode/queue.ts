@@ -102,8 +102,8 @@ type LegacyRun = Omit<WriterRun, "tickets" | "phase" | "placement"> & Readonly<{
  * resume. PURE.
  */
 export function writerAsRead(run: LegacyRun): WriterRun {
-  const { drafts = [], tickets: filed = [], rejected: _rejected, ...read } = run;
-  const rest = { ...read, placement: run.placement ?? placementOf(run.form) };
+  const { drafts = [], tickets: filed = [], rejected: _rejected, placement = placementOf(run.form), ...others } = run;
+  const rest = { ...others, placement };
   const tickets: WriterTicket[] = [...filed, ...drafts.flatMap(({ status, created }) => (status === "created" && created !== undefined
     ? [{ key: created.key, url: created.url, inPick: created.inPick !== false }] : []))];
   if (drafts.some(({ status }) => status === "pending" || status === "discarded")) {

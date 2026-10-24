@@ -182,7 +182,7 @@ function writerForm(body: Json, settings: TicketSettings): Readonly<Record<strin
   const text = (name: string): string | undefined => {
     if (body[name] === undefined || body[name] === "") return undefined;
     if (typeof body[name] !== "string") throw new Error(`${name} must be text`);
-    return String(body[name]).trim();
+    return String(body[name]).trim() || undefined;
   };
   const repo = text("repo");
   if (repo !== undefined && !(repo in settings.clones)) throw new Error(`repo must be one of ${Object.keys(settings.clones).join(", ")}, not ${repo}`);

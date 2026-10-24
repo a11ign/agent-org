@@ -831,6 +831,12 @@ test("A11-199: a body that names no placement is read as its choices imply, so a
   assert.equal((await placedBy({ priority: "none" })).placement, "manual", "ui.html always sends a priority, even 'No priority', and that is a choice");
 });
 
+test("A11-199: a choice that is only spaces is not set, so an auto request naming one is not refused for it and a manual one leaves it to the writer", async () => {
+  assert.deepEqual(await placedBy({ placement: "auto", project: "   ", goal: " " }), { placement: "auto", form: {}, mode: "quick" });
+  assert.deepEqual(await placedBy({ placement: "manual", project: "  ", priority: "low" }), { placement: "manual", form: { priority: "low" }, mode: "quick" });
+  assert.equal((await placedBy({ goal: "  " })).placement, "auto", "and with no placement it implies none");
+});
+
 test("A11-199: a placement that is not auto or manual is refused, and so is an auto request that names a choice", async () => {
   const b = board(4747, WRITER, {}, creating());
   await assert.rejects(b.api("POST", "/api/writer", { request: "a", placement: "random" }), /placement must be "auto" or "manual"/);

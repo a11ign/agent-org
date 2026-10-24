@@ -4636,7 +4636,7 @@ test("A11-199: a manual request is placed as given, end to end with the writer s
     /- Priority: low, number 4 /,
     /Each of the five not listed here is yours to choose from the request\./,
   ]) assert.match(brief, pattern);
-  assert.doesNotMatch(brief, /Auto placement|- Goal:|- Parent:/, "only what the person chose is a requirement");
+  assert.doesNotMatch(brief, /Auto placement:|- Goal:|- Parent:/, "only what the person chose is a requirement");
   assert.deepEqual(run().tickets, [{ key: "NBF-1", url: "https://linear.app/x/NBF-1", inPick: true, title: "Show the requests", priority: 4, project: "Board" }],
     "the Done row's title, priority and project are what the tracker holds");
   assert.deepEqual([run().phase, run().failure], ["finished", undefined]);

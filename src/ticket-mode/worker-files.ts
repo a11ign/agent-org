@@ -1102,7 +1102,7 @@ ${STALLING_COMMANDS}
 
 ## The ticket
 
-- **Team:** the team of the parent ticket the form names, else ${pickTeam === null ? "none: when the form names no parent and no team is set here, end needs-human, since no team is known" : `\`${pickTeam}\`, the team the Pick view lists`}. The skill's Step 6 takes the team from this brief, and asks nobody.
+- **Team:** the team of the parent ticket the form names, else ${pickTeam === null ? "none: when the form names no parent and no team is set here, end needs-human, since no team is known" : `\`${pickTeam}\`, the team the Pick view lists`}. A parent you choose yourself under Auto placement takes its team in the same way. The skill's Step 6 takes the team from this brief, and asks nobody.
 - **Title, description, labels, project and goal:** the skill's Steps 5, 7 and 8, as written. The description ends with \`**Repository:** <repo>\`: the form's repository or, when it names none, the one of the repositories below that holds the work, if one clearly does.
 - **Priority:** the number of the form's priority when it names one, else the priority the request warrants, as one of these numbers: ${priorityChoices(writing.priorities)}.
 - **Relations:** \`parentId\`, \`blockedBy\` and \`relatedTo\` are set on the ticket you create. Never set \`blocks\`: it writes a relation on another ticket.
