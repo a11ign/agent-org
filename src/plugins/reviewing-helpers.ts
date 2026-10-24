@@ -5,6 +5,7 @@
 // `work-gate/pr-orders.ts`, `project-config.ts`, the door path and `host-config.ts`), and `reviewing-gate.ts` hands its loader over. A board adds its collaborators and the functions the atomic reviewer called directly
 // before it moved (the seat names, the herdr listing, the claim protocol, the verdict reader), as the modules' own. They are held to `ReviewerBoard`'s signatures where they are assigned below.
 import { readAgents, ORG_SESSION, firstLine } from "../herdr-agents.ts";
+import { readDialogLines } from "../pane-dialog-read.ts";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { headMatches, reviewVerdict } from "../review-verdict.ts";
 import { REVIEW_LEASE_MS, claimHead, othersSeenIn, releasedDescriptionOf } from "../ticket-port/review-claim.ts";
@@ -25,7 +26,7 @@ export const reviewingHelpers = (collaborators: BoardCollaborators): ReviewerHel
       ...collaborators,
       seen,
       attribution: { reviewerInstance, reviewerSeat },
-      herdr: { ORG_SESSION, firstLine, readAgents },
+      herdr: { ORG_SESSION, firstLine, readAgents, readDialogLines },
       claims: { REVIEW_LEASE_MS, claimHead, othersSeenIn, releasedDescriptionOf },
       verdict: { headMatches, reviewVerdict },
     }),

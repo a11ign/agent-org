@@ -20,6 +20,8 @@ import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
 import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
 import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
+import { isReviewerDialogNote, reviewerDialogNote } from "./board-view/reviewer-dialog-note.ts";
+import { recordReviewerDialog } from "./queue/queue-reviewer-dialog.ts";
 import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
@@ -493,7 +495,10 @@ export function watchFeedback(ctx: PoolContext): void {
     if (resumeUnwatched(ctx, entry, readable, checks)) queued = true;
   }
   // After every run's round was decided: a run that was handed a round has left `finished`, and a note does not change what the loop above decided for the run.
-  for (const key of recorded) flagStaleBlock(ctx, key);
+  for (const key of recorded) {
+    flagStaleBlock(ctx, key);
+    flagReviewerDialog(ctx, key);
+  }
   if (queued) void tick(ctx);
 }
 
@@ -535,13 +540,14 @@ function followUpdatesFromMain(ctx: PoolContext, entry: Entry, readable: readonl
 }
 
 /**
- * Clear the stale-block note (A11-213) of a finished run that has no pull request left open, or whose ticket the tracker settled: the watch below reads only runs with an open pull request, so a pull
+ * Clear the stale-block note (A11-213) and the reviewer-dialog note (A11-221) of a finished run that has no pull request left open, or whose ticket the tracker settled: the watch below reads only runs with an open pull request, so a pull
  * request merged or closed since the note was set would leave it on the card. The status is already Completed or Cancelled; this keeps the card from quoting a block that is gone.
  */
 function clearOverStaleBlocks(ctx: PoolContext): void {
   for (const entry of ctx.store.get().entries) {
-    const over = entry.phase === "finished" && isStaleBlockNote(entry.handedBack) && (openPulls(entry).length === 0 || SETTLED.has(entry.trackerState ?? ""));
-    if (over) update(ctx, (queue) => recordStaleBlock(queue, entry.ticket.key, null));
+    const over = entry.phase === "finished" && (openPulls(entry).length === 0 || SETTLED.has(entry.trackerState ?? ""));
+    if (over && isStaleBlockNote(entry.handedBack)) update(ctx, (queue) => recordStaleBlock(queue, entry.ticket.key, null));
+    if (over && isReviewerDialogNote(entry.handedBack)) update(ctx, (queue) => recordReviewerDialog(queue, entry.ticket.key, null));
   }
 }
 
@@ -554,6 +560,20 @@ function flagStaleBlock(ctx: PoolContext, key: string): void {
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   if (entry === undefined) return;
   const next = recordStaleBlock(store.get(), key, staleBlockNote(entry, now()));
+  if (next.entries.find((e) => e.ticket.key === key)?.handedBack !== entry.handedBack) update(ctx, () => next);
+}
+
+/**
+ * Flag a finished run whose open pull request has a reviewer stopped on a dialog the board cannot answer (A11-221): the note becomes its `handedBack`, so the board reads Needs you and quotes the dialog's first line, and it goes
+ * again at the first look that finds no dialog on any of the run's open pull requests. A pull request the pool has not read yet (a restart) leaves the note as it is. Written only when it changes.
+ */
+function flagReviewerDialog(ctx: PoolContext, key: string): void {
+  const { pullReads, store } = ctx;
+  const entry = store.get().entries.find((e) => e.ticket.key === key);
+  if (entry === undefined) return;
+  const note = reviewerDialogNote(entry, pullReads);
+  if (note === null && openPulls(entry).some(({ url }) => !pullReads.has(url))) return;
+  const next = recordReviewerDialog(store.get(), key, note);
   if (next.entries.find((e) => e.ticket.key === key)?.handedBack !== entry.handedBack) update(ctx, () => next);
 }
 

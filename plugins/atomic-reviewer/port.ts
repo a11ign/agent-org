@@ -11,16 +11,20 @@ import { join } from "node:path";
 import type { ListedAgent } from "../../src/herdr-agents.ts";
 import type { DoorRun } from "../../src/review-trust.ts";
 import type { CodeHost, ReviewState } from "../../src/plugins/contracts/code-host.ts";
-import type { CloseAnswer, PromptAnswer, RepostAnswer, RetireAnswer, ReviewBrief, ReviewerPort, ReviewerRef, ReviewerSettled } from "../../src/plugins/contracts/reviewer.ts";
+import type { CloseAnswer, PromptAnswer, RepostAnswer, RetireAnswer, ReviewBrief, ReviewerDialog, ReviewerPort, ReviewerRef, ReviewerSettled } from "../../src/plugins/contracts/reviewer.ts";
 import type { ReviewerBoard, ReviewerGate, ReviewerHelpers } from "../../src/plugins/manifest.ts";
 import type { Ensured } from "./codex-trust.ts";
 import { reviewWords, rereviewWords } from "./prompt.ts";
+import { answerDialog, readPaneDialog } from "./reviewer-dialog.ts";
 
 /** The cause the reviewer is started for: the gate's `draft-awaiting-verdict`, the one a ready pull request is reviewed under. */
 export const REVIEW_CAUSE = "draft-awaiting-verdict";
 
 /** The statuses herdr shows for a reviewer whose turn is over: idle or done, or no agent at all (its process exited). */
 const ENDED_STATUSES: readonly string[] = ["idle", "done", "unknown"];
+
+/** The status herdr shows for a reviewer waiting on a dialog (A11-221). */
+const BLOCKED_STATUS = "blocked";
 
 /** The door's exits a repost cannot cure: 2 (a malformed call), 3 (a second review at an equal patch) and 5 (the head moved). */
 const FINAL_DOOR_EXITS: readonly number[] = [2, 3, 5];
@@ -123,8 +127,8 @@ export function clonedSeatOf(repository: string, { owner, clones, codes }: { own
  */
 type Seat = { label: string; number: number; key: string; repository?: string; clone?: string };
 
-/** What the port reads of the board and the gate, as one record: `board` is the board's collaborators, and `gate` the gate's modules, each asked when it is used. */
-type Context = Readonly<{ helpers: ReviewerHelpers; seams: Seams }>;
+/** What the port reads of the board and the gate, as one record: `board` is the board's collaborators, and `gate` the gate's modules, each asked when it is used. `trustAnswers` counts the trust dialogs answered for each seat's head (`unblock`). */
+type Context = Readonly<{ helpers: ReviewerHelpers; seams: Seams; trustAnswers: Map<string, number> }>;
 
 const boardOf = ({ helpers }: Context) => helpers.board();
 const gateOf = ({ helpers }: Context): ReviewerGate => helpers.gate();
@@ -219,7 +223,7 @@ const nowOf = (context: Context): number => (context.seams.now ?? Date.now)();
  * starts a reviewer again only for a head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
 export function atomicReviewerPort(helpers: ReviewerHelpers, seams: Seams = {}): ReviewerPort {
-  const context: Context = { helpers, seams };
+  const context: Context = { helpers, seams, trustAnswers: new Map() };
   return {
     live: (ref) => liveReviewer(context, ref),
     start: (ref, brief) => startReviewer(context, ref, brief),
@@ -230,6 +234,7 @@ export function atomicReviewerPort(helpers: ReviewerHelpers, seams: Seams = {}):
     },
     repostVerdict: (ref, file) => repostReviewerVerdict(context, ref, file),
     reprompt: (ref, brief) => repromptReviewer(context, ref, brief),
+    unblock: (ref) => unblockReviewer(context, ref),
     close: (ref) => closeReviewer(context, ref),
     retire: (pr) => retireReviewer(context, pr),
     listedPulls: () => listedPullUrls(context),
@@ -453,6 +458,43 @@ function settledReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerS
   return holders.every((agent) => ENDED_STATUSES.includes(agent.status)) ? "ended" : "working";
 }
 
+/**
+ * Looks at the pane of a seat's reviewer when herdr lists it `blocked` (A11-221, contract 1.6), and answers Codex's trust dialog for a repository the host file names (`answerDialog`). Any other dialog is `stuck`, with its
+ * first line, and nothing is pressed. Null when the reviewer is not blocked (its pane is left unread), the pane cannot be read, or it shows no dialog.
+ */
+function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerDialog | null {
+  const seat = seatOf(context, pr);
+  const board = boardOf(context);
+  if ("refusal" in seat || board.heads.get(seat.label) !== head) return null;
+  if (!listedOf(context)?.some((agent) => agent.label === seat.label && agent.status === BLOCKED_STATUS)) return null;
+  let pane: string;
+  try {
+    pane = board.run(["--session", board.session, "agent", "read", seat.label, "--source", "visible"]);
+  } catch {
+    return null;
+  }
+  const seen = readPaneDialog(pane, board.herdr.readDialogLines);
+  if (seen === null) return null;
+  const key = `${seat.label}@${head}`;
+  const answers = context.trustAnswers.get(key) ?? 0;
+  const codex = context.seams.codexTrust;
+  const answer = answerDialog({ seen, answers,
+    ensure: (root) => codex?.ensure(root) ?? { kind: "not-host", root, reason: "no Codex trust is wired" },
+    press: () => pressEnter(board, seat.label) });
+  if ("answered" in answer) context.trustAnswers.set(key, answers + 1);
+  return answer;
+}
+
+/** Sends `enter` to the seat's agent, which answers the dialog's selected option: whether herdr took it. */
+function pressEnter(board: ReviewerBoard, label: string): boolean {
+  try {
+    board.run(["--session", board.session, "agent", "send-keys", label, "enter"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function repostReviewerVerdict(context: Context, { pr, head }: ReviewerRef, file: string): RepostAnswer {
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return { refusal: seat.refusal, final: true };
@@ -578,5 +620,6 @@ export function portWhereGateLoads(port: ReviewerPort, refusal: () => string | n
     verdictFileOf: (ref) => (loads() ? port.verdictFileOf(ref) : null),
     repostVerdict: (ref, file) => (loads() ? port.repostVerdict(ref, file) : { refusal: refused(ref.pr), final: true }),
     reprompt: (ref, brief) => (loads() ? port.reprompt(ref, brief) : { refusal: refused(ref.pr) }),
+    unblock: (ref) => (loads() ? port.unblock?.(ref) ?? null : null),
   };
 }

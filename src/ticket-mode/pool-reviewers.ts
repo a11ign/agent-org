@@ -32,7 +32,7 @@ import { decisionsOf } from "./ticket-decisions.ts";
 import { partialStepOf } from "./board-view/plan-steps.ts";
 import { planStepSection } from "./pool-ticket-text.ts";
 import type { Reply, Review } from "../plugins/contracts/code-host.ts";
-import type { ReviewBodyLine, ReviewBrief } from "../plugins/contracts/reviewer.ts";
+import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef } from "../plugins/contracts/reviewer.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -338,6 +338,31 @@ function forgetMendedClaimProblems(ctx: PoolContext): void {
 }
 
 /**
+ * The dialog the head's reviewer is stopped on and the port could not answer (A11-221, contract 1.6): its first line, or null while the reviewer shows none (a reviewer of 1.5, which has no `unblock`, never does). A dialog the
+ * port answered is logged. One it left is logged once per dialog, and kept on the pull request's read until a look finds none.
+ */
+function stoppedDialog(ctx: PoolContext, reviewer: ReviewerPort, url: string, ref: ReviewerRef): string | null {
+  let seen: ReviewerDialog | null | undefined;
+  try {
+    seen = reviewer.unblock?.(ref);
+  } catch (err) {
+    log(`${url}: the reviewer's dialog could not be looked at (${messageOf(err)})`);
+    return null;
+  }
+  if (seen === null || seen === undefined) return null;
+  if ("answered" in seen) {
+    log(`${url}: answered the reviewer's dialog at ${ref.head.slice(0, 8)}: "${seen.answered}"`);
+    return null;
+  }
+  const said = `${url}@${ref.head}#dialog:${seen.stuck}`;
+  if (!ctx.refusedHeads.has(said)) {
+    ctx.refusedHeads.add(said);
+    log(`${url}: the reviewer stopped on a dialog it cannot answer: "${seen.stuck}"; a person answers it in herdr`);
+  }
+  return seen.stuck;
+}
+
+/**
  * One open pull request at its current head, as the pool looks at it (A11-119): a posted verdict is remembered, a reviewer that ended without one is looked
  * at (`unpostedVerdict`), a head whose checks have settled green gets its reviewer once (`startFor`), and a posted verdict closes its reviewer. What it
  * read is kept for the board (`pullReads`). Returns the state read and the verdict not posted, or null when GitHub did not say, which the caller says.
@@ -368,9 +393,12 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const tookOver = tookOverOf(started, pullReads.get(url), head);
   const reviewing = reviewer.live(ref);
   const unclaimed = unclaimedNoteOf(started, reviewing ? ctx.reviewerMemory.unclaimed.get(key) : undefined);
+  // A reviewer started for this head, with no review posted on it yet, may be stopped on a dialog (A11-221).
+  const dialog = reviewing && !posted && reviewerStarted.has(key) ? stoppedDialog(ctx, reviewer, url, ref) : null;
   const read: PullRead = {
     head, settled: state.settled, reviewing, verdict: reviewWordAt(state.reviews, head),
     earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }), ...(unclaimed === undefined ? {} : { unclaimed }),
+    ...(dialog === null ? {} : { dialog }),
     ...(reviewing && reviewerRereviewed.has(key) && reviewVerdict(state.reviews, head) === "not-convinced" ? { rereview: true } : {}),
   };
   pullReads.set(url, read);
