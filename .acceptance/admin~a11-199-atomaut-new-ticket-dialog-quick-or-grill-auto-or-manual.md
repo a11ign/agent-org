@@ -4,11 +4,11 @@ Step 1 of 2 of the Atomaut New ticket dialog: placement in the writer API and th
 
 ## What it checks
 
-The server checks cover Auto, Manual, an absent placement, a bad placement and Auto naming a choice (each refused with its sentence, queuing nothing). The brief checks cover the Auto and Manual text and the Priority and Repository lines. The pool checks queue a Manual request, start its run with the agent stubbed, read the brief the run is given, and read the filed ticket back with its title, priority and project. The queue checks read a run stored with no placement by the inference.
+The brief checks cover the Auto and Manual text and the Priority, Repository and Team lines. The queue checks read a run stored with no placement by the inference, and the board-view checks cover the body the form sends. The server and pool checks (Auto, Manual, an absent or bad placement, Auto naming a choice, and a Manual request started with the agent stubbed and its filed ticket read back) need the project's history, which the acceptance job lacks; they run in CI's `suite` job.
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/server.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/writer.test.ts plugins/linear/writing.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/writer.test.ts plugins/linear/writing.test.ts
 ```
 
 Consumer-declaration: none -- no option is added to a project declaration.
