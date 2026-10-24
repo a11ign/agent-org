@@ -275,8 +275,8 @@ const SWEPT_REPO_PULL_3 = `https://github.com/${SWEPT_REPO}/pull/3`;
 
 /** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
 async function approvedRun(tickets: Record<string, unknown> = {},
-  { transcript = true, gh, reviewerPort, tracker }: { transcript?: boolean; gh?: World; reviewerPort?: ReviewerPort; tracker?: TicketSource } = {}) {
-  const ctx = setup(1, ["NBF-1"], tickets, { gh, reviewerPort, source: tracker });
+  { transcript = true, gh, reviewerPort, tracker, now }: { transcript?: boolean; gh?: World; reviewerPort?: ReviewerPort; tracker?: TicketSource; now?: () => number } = {}) {
+  const ctx = setup(1, ["NBF-1"], tickets, { gh, reviewerPort, source: tracker, now });
   const { pool, status, settings, root, store } = ctx;
   await pool.tick();
   status.set(herdrName("NBF-1"), "idle");
@@ -2475,15 +2475,15 @@ const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], 
 const GATE_GREEN = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" };
 
 /** NBF-1 Ready to merge at 100, its review run ended, watched with `gh`. */
-async function readyRun(gh: World, tickets: Record<string, unknown> = {}, reviewerPort?: ReviewerPort) {
+async function readyRun(gh: World, tickets: Record<string, unknown> = {}, reviewerPort?: ReviewerPort, now: () => number = () => 100) {
   await loadReviewerGate();
-  const ctx = await approvedRun(tickets, { gh, reviewerPort });
+  const ctx = await approvedRun(tickets, { gh, reviewerPort, now });
   ctx.status.set(herdrName("NBF-1"), "idle");
   writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
   await ctx.pool.tick();
   ctx.status.delete(herdrName("NBF-1"));
   // The round ended `reviewed`; whether GitHub would merge is what a watch reads next (A11-179), so until then the run waits on a read of its pull requests.
-  assert.deepEqual([ctx.entry("NBF-1").outcome?.kind, runStatus(ctx.entry("NBF-1")), ctx.entry("NBF-1").finishedAt], ["reviewed", "awaiting-review", 100]);
+  assert.deepEqual([ctx.entry("NBF-1").outcome?.kind, runStatus(ctx.entry("NBF-1")), ctx.entry("NBF-1").finishedAt], ["reviewed", "awaiting-review", now()]);
   return ctx;
 }
 /** The pull request read as ready to merge at its head (A11-179): approved there, with no required check red or running, as a watch of a green, approved one records it. */
@@ -3765,7 +3765,7 @@ test("A11-119: a head with a posted review, or one ticket:review started, is not
   assert.deepEqual(starts, [], "a head with an approval is not started");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
   pulls[1] = feedbackPull({ head: "h2" });
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, [], "a head ticket:review started is not started again");
 });
@@ -3881,12 +3881,16 @@ function rereviewer() {
   return { port, starts, closes, reposts, prompts, control, end: () => { control.turn = "ended"; } };
 }
 
-/** A swept pool whose queue holds NBF-1 with `description` and `sweptPr` as its pull request: the run the reviewer's Done-when is read from. */
+/** The clock of the swept pools, in milliseconds: after the replies the tests post, and moved on by a test that posts later ones (a start's look is stamped with it, A11-235). */
+const sweptClock = { ms: 25 * 60_000 };
+
+/** A swept pool whose queue holds NBF-1 with `description` and `sweptPr` as its pull request: the finished run the reviewer's Done-when is read from. */
 async function sweptWithTicket(port: ReviewerPort, pulls: Record<number, unknown>, description = TWO_PART_TICKET) {
   await loadReviewerGate();
-  const ctx = setup(1, ["NBF-1"], REVIEWING, { gh: ghFor(pulls), reviewerPort: port });
+  sweptClock.ms = 25 * 60_000;
+  const ctx = setup(1, ["NBF-1"], REVIEWING, { gh: ghFor(pulls), reviewerPort: port, now: () => sweptClock.ms });
   const queue = ctx.store.get();
-  ctx.store.set({ ...queue, entries: [{ ...queue.entries[0], ticket: { ...queue.entries[0].ticket, description }, outcome: { kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: sweptPr }] } as Outcome }] });
+  ctx.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", ticket: { ...queue.entries[0].ticket, description }, outcome: { kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: sweptPr }] } as Outcome }] });
   return ctx;
 }
 
@@ -3922,7 +3926,7 @@ test("A11-156: a reply to the reviewer's block with no new commit starts one re-
   assert.equal(starts.length, 1, "a second reply, after a restart, starts nothing more");
 });
 
-test("A11-156: a head is re-reviewed by reply once, whatever is posted after, and the record is kept across a restart", async () => {
+test("A11-156, A11-235: a head is re-reviewed by reply once, and again only by a reply posted after its last look; the look is kept across a restart", async () => {
   const { port, starts, end, control } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
   const ctx = await sweptWithTicket(port, pulls);
@@ -3933,10 +3937,15 @@ test("A11-156: a head is re-reviewed by reply once, whatever is posted after, an
   ctx.pool.reviewNewHeads();
   assert.equal(control.open, false, "closed once its turn ended");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1", "and the board reads the standing block");
-  pulls[1] = feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20), replyAt("worker-bot", 50, "I disagree, again")] });
   ctx.pool.reviewNewHeads();
   ctx.restart().reviewNewHeads();
-  assert.equal(starts.length, 1, "a second reply, before or after a restart, starts no second re-review of h1");
+  assert.equal(starts.length, 1, "the reply it was started for is not new again, before or after a restart: the head is not re-reviewed by the same reply twice");
+  sweptClock.ms = 55 * 60_000;
+  pulls[1] = feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20), replyAt("worker-bot", 50, "I disagree, again")] });
+  ctx.restart().reviewNewHeads();
+  assert.equal(starts.length, 2, "a reply posted after the last look is something new, and is read after a restart");
+  assert.deepEqual(starts[1].brief?.rereview?.replies.map(({ text }) => text), ["I disagree, again"], "and only it is quoted");
+  assert.equal(ctx.store.get().entries[0].rounds, 2, "each re-review is one of the run's rounds");
 });
 
 test("A11-156: an unconvinced re-review is not read as a lost verdict: no repost, no `verdict not posted` line, no prompt, and the board reads changes requested", async () => {
@@ -3944,7 +3953,7 @@ test("A11-156: an unconvinced re-review is not read as a lost verdict: no repost
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
   const ctx = await sweptWithTicket(port, pulls);
   // The first reviewer started this head in an earlier sweep, so the pool holds it as started.
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
   const logged = await captureStderr(async () => {
     ctx.pool.reviewNewHeads();
     end();
@@ -4062,11 +4071,11 @@ test("A11-156: a long thread quotes the newest ten replies; a code host that rea
   assert.equal(logged.filter((line) => line.includes("the code host does not read replies")).length, 1);
 });
 
-test("A11-156: a reply to a watched run's block starts the re-review from the watch too, and a re-review that stays unconvinced asks the worker for no new round", async () => {
+test("A11-156, A11-235: a reply to a watched run's block starts the re-review from the watch too, once its round has ended and as one of the run's rounds, and a re-review that stays unconvinced asks the worker for no new round", async () => {
   const { port, starts, end } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()] }) };
-  const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${approvedPr.url}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map() });
+  const ctx = await readyRun(ghFor(pulls), REVIEWING, port, () => 25 * 60_000);
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${approvedPr.url}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
   await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the block asks the worker for one round");
   await finishRound(ctx);
@@ -4076,7 +4085,7 @@ test("A11-156: a reply to a watched run's block starts the re-review from the wa
   end();
   await watchRound(ctx.pool);
   await watchRound(ctx.pool);
-  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 1], "a re-review that stays unconvinced asks for no second round");
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 2], "a re-review that stays unconvinced asks the worker for no new round, and is the one round it counts as");
 });
 
 test("A11-156: the pool forgets a merged pull request's re-review record, and a record the file holds is not brought back", async () => {
@@ -5778,7 +5787,7 @@ test("A11-161: switched back on, the reviewer resumes on the next head: one revi
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }), 2: feedbackPull({ head: "h2" }), 3: feedbackPull({ head: "h3" }) };
   await loadReviewerGate();
   const made = setup(1, [], REVIEWING, { gh: ghFor(pulls), reviewerPort: fake });
-  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
   const restarted = made.restart();
   restarted.reviewNewHeads();
   assert.deepEqual(fake.started.map(({ pr, head }) => `${pr}@${head}`).sort(), [`${sweptPr}@h1`, `${SWEPT_REPO_PULL_2}@h2`], "one for each head, and none for the head the memory says was started");
@@ -7147,9 +7156,10 @@ const PLAN_ROWS = [
 /** A swept pool whose run NBF-1 holds `sweptPr` and `description`, with `plan` downloaded into its ticket folder as the pool downloads a plan (a file named like an attached one). */
 async function sweptWithPlan(port: ReviewerPort, pulls: Record<number, unknown>, plan: string | null) {
   await loadReviewerGate();
-  const ctx = setup(1, ["NBF-1"], { ...REVIEWING, plan: "-plan-[^/]*\\.md$" }, { gh: ghFor(pulls), reviewerPort: port });
+  sweptClock.ms = 25 * 60_000;
+  const ctx = setup(1, ["NBF-1"], { ...REVIEWING, plan: "-plan-[^/]*\\.md$" }, { gh: ghFor(pulls), reviewerPort: port, now: () => sweptClock.ms });
   const queue = ctx.store.get();
-  ctx.store.set({ ...queue, entries: [{ ...queue.entries[0], ticket: { ...queue.entries[0].ticket, description: TWO_PART_TICKET }, outcome: { kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: sweptPr }] } as Outcome }] });
+  ctx.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", ticket: { ...queue.entries[0].ticket, description: TWO_PART_TICKET }, outcome: { kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: sweptPr }] } as Outcome }] });
   if (plan !== null) {
     const dir = join(ticketDir(ctx.settings, "NBF-1"), "paths");
     mkdirSync(dir, { recursive: true });
