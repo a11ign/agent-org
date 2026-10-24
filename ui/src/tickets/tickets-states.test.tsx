@@ -111,3 +111,13 @@ describe("the paused, error and unreachable states", () => {
     expect(keysShown()).toEqual(["A11-1", "A11-2", "A11-3"]);
   });
 });
+
+describe("the queue not being read yet", () => {
+  it("keeps the skeleton until it has, so no ticket already on the queue can be picked meanwhile", async () => {
+    render(<ShellProvider fetchWith={standFetch({ ...standOf(), holdQueue: true })}><ShellFrame page="tickets"><TicketsPage /></ShellFrame></ShellProvider>);
+    expect(await screen.findByRole("status", { name: "Loading tickets" })).toBeTruthy();
+    await new Promise((done) => setTimeout(done, 100));
+    expect(screen.getByRole("status", { name: "Loading tickets" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Expand Backlog" })).toBeNull();
+  });
+});

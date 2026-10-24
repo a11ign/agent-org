@@ -6,7 +6,9 @@ export type BatchState = Readonly<{
   override: BatchOverride;
   planFirst: boolean;
   setOverride: Dispatch<SetStateAction<BatchOverride>>;
-  setPlanFirst: (next: boolean) => void;
+  setPlanFirst: Dispatch<SetStateAction<boolean>>;
+  /** Puts the batch back on the default: its own model and effort dropped, and Plan first ticked. */
+  reset: () => void;
 }>;
 
 /** The tickets ticked for the next Queue, by key. */
@@ -31,5 +33,9 @@ export function useSelection(): Selection {
 export function useBatch(): BatchState {
   const [override, setOverride] = useState<BatchOverride>({});
   const [planFirst, setPlanFirst] = useState(true);
-  return { override, planFirst, setOverride, setPlanFirst };
+  const reset = useCallback(() => {
+    setOverride({});
+    setPlanFirst(true);
+  }, []);
+  return { override, planFirst, setOverride, setPlanFirst, reset };
 }

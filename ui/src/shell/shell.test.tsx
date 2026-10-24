@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { config, HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type Stand } from "../../test/fixtures.ts";
+import { HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type Stand } from "../../test/fixtures.ts";
 import { TicketsPage } from "../tickets/TicketsPage.tsx";
 import { Placeholder } from "./Placeholder.tsx";
 import type { Page } from "./routes.ts";

@@ -49,11 +49,12 @@ export type ListView = Readonly<{ sections: readonly Section[]; source: SegmentS
 export function useList(state: FilterState): ListView {
   const shell = useShell();
   const { config, allTickets, projectTickets, scope, project } = shell;
-  const kept = shownTickets(projectTickets, allTickets, state.filters, planPatternOf(config));
+  const inScope = shell.tickets.data ?? [];
+  const kept = shownTickets(projectTickets, inScope, state.filters, planPatternOf(config));
   const projectOfAll = project === null ? allTickets : inProject(allTickets, project);
   const source: SegmentSource | null = config === null ? null : { ofProject: projectOfAll, all: allTickets, scope, config, held: shell.held, scopesRead: shell.scopesRead };
   return {
     sections: sectionsOf(projectTickets, kept, shell.contextParents), source,
-    showsOwner: config?.viewer !== undefined && showsOwner(scope), menus: state.menus(projectTickets, allTickets, planPatternOf(config)),
+    showsOwner: config?.viewer !== undefined && showsOwner(scope), menus: state.menus(projectTickets, inScope, planPatternOf(config)),
   };
 }

@@ -52,6 +52,8 @@ export type Stand = Readonly<{
   connections?: readonly ViewConnection[]; refusal?: string | null; connectionsFail?: boolean; instances?: Readonly<Record<string, InstanceAnswers>>; fallback?: InstanceAnswers;
   /** Leaves every call to an instance unanswered, as one that is slow to answer does, while the connections are read. */
   holdInstance?: boolean;
+  /** Leaves only the queue unanswered, as a slow queue read does. */
+  holdQueue?: boolean;
 }>;
 // `fallback` answers for any instance `instances` does not name, and for the root `/api/...` of a page with no connections.
 
@@ -119,6 +121,7 @@ export function standFetch(stand: Stand): Fetch & Readonly<{ paths: string[]; re
     paths.push(path);
     requests.push({ ...request, path });
     if (stand.holdInstance === true && path !== "/api/connections") return new Promise<Response>(() => undefined);
+    if (stand.holdQueue === true && path.endsWith("/api/queue") && request.method === "GET") return new Promise<Response>(() => undefined);
     const answer = answerFor(stand, path, request);
     return answer === null ? new Response(JSON.stringify({ error: `no route ${path}` }), { status: 404 }) : new Response(answer.body, { status: answer.status, headers: { "Content-Type": "application/json" } });
   };

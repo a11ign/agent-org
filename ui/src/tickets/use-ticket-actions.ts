@@ -4,6 +4,7 @@ import type { TicketView } from "../api/types.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
 import { lookAtWriterRun, openTerminalWhenReady } from "./terminal.ts";
 import { planPatternOf, type QueueOptions } from "./tickets-model.ts";
+import type { QueueNow } from "./use-queue-now.ts";
 import type { BatchState, Selection } from "./use-queue-state.ts";
 
 /** What the page's buttons do, and what they last said. */
@@ -26,18 +27,22 @@ export function childrenSentence(key: string, queued: readonly string[], note: s
   return note === null || note === "" ? sentence : `${sentence} Note: ${note}.`;
 }
 
+/** What the actions read and change: the selection, the next batch, what its options come to, and how the page learns of the queue an answer gives. */
+export type ActionInputs = Readonly<{ selection: Selection; batch: BatchState; options: QueueOptions; learn: QueueNow["learn"] }>;
+
 /**
  * Queue, Queue its children and Grill, as `ui.html` does them. A refused action is the server's sentence, shown in the page's banner; an accepted one refreshes the queue poll, so
- * the rows and the Runs badge update at once. Queue clears the selection, and the batch's own choice unless it changed while the request was out.
+ * the rows and the Runs badge update at once, and the queue the server answered with is kept until the poll has caught up (`useQueueNow`). Queue clears the selection, and puts the batch
+ * back on the default unless it was changed while the request was out.
  */
-export function useTicketActions(selection: Selection, batch: BatchState, options: QueueOptions): TicketActions {
+export function useTicketActions({ selection, batch, options, learn }: ActionInputs): TicketActions {
   const { client, config, connection, queue } = useShell();
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const queueSelected = async () => {
-    const sent = batch.override;
+    const [sent, sentPlan] = [batch.override, batch.planFirst];
     setBusy(true);
     const answer = await client.enqueue([...selection.selected], options.batch);
     setBusy(false);
@@ -45,6 +50,8 @@ export function useTicketActions(selection: Selection, batch: BatchState, option
     setRefusal(null);
     selection.clear();
     batch.setOverride((before) => (before === sent ? {} : before));
+    batch.setPlanFirst((before) => (before === sentPlan ? true : before));
+    learn(answer.data);
     queue.refresh();
   };
 
@@ -56,6 +63,7 @@ export function useTicketActions(selection: Selection, batch: BatchState, option
     if (!answer.ok) return setRefusal(answer.refusal);
     setRefusal(null);
     setNotice(childrenSentence(ticket.key, answer.data.keys, answer.data.note));
+    learn(answer.data.queue);
     queue.refresh();
   };
 

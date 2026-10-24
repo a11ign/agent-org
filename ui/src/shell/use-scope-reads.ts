@@ -15,19 +15,22 @@ export type ScopeReads = Readonly<{
   reading: string | null;
   /** The scopes read so far. */
   read: ReadonlySet<string>;
-  /** The server's sentence for the last scope that could not be read, or null. */
-  refusal: string | null;
+  /** The scope that could not be read last and the server's sentence for it, or null. */
+  refusal: Readonly<{ scope: string; sentence: string }> | null;
   /** Reads the tickets of `scope`, a page at a time, when this instance reads scopes on demand and does not hold them yet. */
   readScope: (scope: string) => void;
 }>;
 
-/** Reads the pages of `scope` one after another, handing each to `onPage`. Resolves to the server's sentence when a page is refused, and to null when the last one has been read. */
-async function readPages(client: Client, scope: string, onPage: (tickets: readonly TicketView[]) => void): Promise<string | null> {
+/**
+ * Reads the pages of `scope` one after another, handing each to `onPage`, which answers whether to go on (it does not once the page that asked has gone). Resolves to the server's
+ * sentence when a page is refused, and to null when the last one has been read or the reading was stopped.
+ */
+async function readPages(client: Client, scope: string, onPage: (tickets: readonly TicketView[]) => boolean): Promise<string | null> {
   let after: string | null = null;
   do {
     const page = await client.ticketsPage(scope, after);
     if (!page.ok) return page.refusal;
-    onPage(page.data.tickets);
+    if (!onPage(page.data.tickets)) return null;
     after = typeof page.data.next === "string" ? page.data.next : null;
   } while (after !== null);
   return null;
@@ -44,7 +47,7 @@ export function useScopeReads(client: Client, { listed, onDemand }: Readonly<{ l
   const [held, setHeld] = useState<People | null>(null);
   const [reading, setReading] = useState<string | null>(null);
   const [read, setRead] = useState<ReadonlySet<string>>(new Set());
-  const [refusal, setRefusal] = useState<string | null>(null);
+  const [refusal, setRefusal] = useState<ScopeReads["refusal"]>(null);
   const mounted = useRef(true);
   const busy = useRef<string | null>(null);
   const done = useRef<ReadonlySet<string>>(new Set());
@@ -77,14 +80,17 @@ export function useScopeReads(client: Client, { listed, onDemand }: Readonly<{ l
     setReading(want);
     setRefusal(null);
     void (async () => {
-      const failure = await readPages(client, want, (tickets) => mounted.current && setExtra((before) => [...before, ...tickets]));
+      const failure = await readPages(client, want, (tickets) => {
+        if (mounted.current) setExtra((before) => [...before, ...tickets]);
+        return mounted.current;
+      });
       if (!mounted.current) return;
       if (failure === null) {
         done.current = new Set([...done.current, want]);
         setRead(done.current);
         await readParents();
       } else {
-        setRefusal(failure);
+        setRefusal({ scope: want, sentence: failure });
       }
       busy.current = null;
       if (mounted.current) setReading(null);

@@ -10,6 +10,7 @@ import { TicketsHeader } from "./TicketsHeader.tsx";
 import { TicketsSkeleton } from "./TicketsSkeleton.tsx";
 import { countText, queueOptionsOf, type QueueOptions } from "./tickets-model.ts";
 import { useFolding } from "./use-folding.ts";
+import { useQueueNow } from "./use-queue-now.ts";
 import { useBatch, useSelection } from "./use-queue-state.ts";
 import { useTicketActions } from "./use-ticket-actions.ts";
 import { useFilters, useList } from "./use-tickets-page.ts";
@@ -25,8 +26,9 @@ function usePage(shell: ShellValue) {
   const batch = useBatch();
   const selected = shell.allTickets.filter(({ key }) => selection.selected.has(key));
   const options = shell.config === null ? NO_OPTIONS : queueOptionsOf(shell.config, selected, batch);
-  const actions = useTicketActions(selection, batch, options);
-  return { filters, list, folding, selection, batch, options, actions };
+  const { queue, learn } = useQueueNow();
+  const actions = useTicketActions({ selection, batch, options, learn });
+  return { filters, list, folding, selection, batch, options, actions, queue };
 }
 
 type Page = ReturnType<typeof usePage>;
@@ -41,9 +43,9 @@ function grillReasonOf(shell: ShellValue): string | null {
 function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
   const { list, folding, selection, actions, batch, options } = page;
   const context = {
-    open: folding.open, toggleSection: folding.toggleSection, queue: shell.queue.data,
+    open: folding.open, toggleSection: folding.toggleSection, queue: page.queue,
     row: {
-      queue: shell.queue.data, selected: selection.selected, openParents: folding.openParents, showsOwner: list.showsOwner, grillReason: grillReasonOf(shell),
+      queue: page.queue, selected: selection.selected, openParents: folding.openParents, showsOwner: list.showsOwner, grillReason: grillReasonOf(shell),
       pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill,
     },
   };
@@ -51,7 +53,7 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
     <>
       <Sections sections={list.sections} context={context} />
       {selection.selected.size > 0 && shell.config !== null ? (
-        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy} onClear={selection.clear} onQueue={actions.queueSelected} />
+        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
       ) : null}
     </>
   );
@@ -60,7 +62,8 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
 /** The list by the tickets read's state: its skeleton, its empty panel, or its sections. */
 function ListByState({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
   const { state } = shell.tickets;
-  if (state === "loading") return <TicketsSkeleton />;
+  // The queue says which tickets are already on it, so nothing is offered to be picked until it has been read.
+  if (state === "loading" || (shell.queue.data === null && shell.queue.state === "loading")) return <TicketsSkeleton />;
   if (state === "empty") return <EmptyPanelView list={page.list} writer={shell.config?.writer !== false} />;
   return shell.tickets.data === null ? null : <Listing page={page} shell={shell} />;
 }

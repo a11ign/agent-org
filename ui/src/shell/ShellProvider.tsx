@@ -122,7 +122,7 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const scope = scopeOf(config.data, scopeChoice);
 
   const tickets = {
-    ...ticketsView(ticketsRead, config, { scope: scopeChoice, extra: reads.extra, reading: reads.reading, refusal: reads.refusal }),
+    ...ticketsView(ticketsRead, config, { scope: scopeChoice, extra: reads.extra, reading: reads.reading, refusal: reads.refusal?.scope === scope ? reads.refusal.sentence : null }),
     refresh: () => {
       ticketsRead.refresh();
       config.refresh();

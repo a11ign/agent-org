@@ -1,5 +1,8 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { OTHER, queueingConfig, ticket, type InstanceAnswers } from "../../test/fixtures.ts";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { OTHER, queueingConfig, standFetch, ticket, type InstanceAnswers } from "../../test/fixtures.ts";
+import { ShellFrame } from "../shell/ShellFrame.tsx";
+import { ShellProvider } from "../shell/ShellProvider.tsx";
+import { TicketsPage } from "./TicketsPage.tsx";
 import { answers, keysShown, openPage, pageOn, standOf, textOf } from "./tickets-harness.tsx";
 
 describe("the Assignee group", () => {
@@ -130,6 +133,58 @@ describe("closing a menu, and the sidebar's goal", () => {
   it("applies the goal the sidebar chooses", async () => {
     await openPage(standOf(answers(MENU_TICKETS)));
     fireEvent.click(within(screen.getByRole("complementary", { name: "Atomaut" })).getByRole("button", { name: /^Fleet/ }));
+    expect(keysShown()).toEqual(["A11-1"]);
+  });
+});
+
+describe("what a remembered label choice does when only another scope has the label", () => {
+  it("filters nothing, as it does on ui.html, so the list is not emptied behind a chip nobody sees", async () => {
+    localStorage.setItem("ticket-mode.labels", JSON.stringify([JSON.stringify(["Area", "Foo"])]));
+    await openPage(standOf(answers([ticket({ key: "A11-1" }), ticket({ key: "A11-2", assignee: OTHER, labels: [{ name: "Foo", group: "Area" }] })])));
+    expect(keysShown()).toEqual(["A11-1"]);
+    expect(screen.queryByRole("button", { name: /^Area/ })).toBeNull();
+  });
+});
+
+describe("reading another scope's pages", () => {
+  const instance = (more: InstanceAnswers = {}): InstanceAnswers => answers([ticket({ key: "A11-1" })], {
+    config: queueingConfig({ scopes: true } as never), pages: { anyone: [{ tickets: [ticket({ key: "A11-2", assignee: OTHER })], next: "1" }, { tickets: [ticket({ key: "A11-3", assignee: OTHER })], next: null }] as never }, ...more,
+  });
+  const anyone = () => fireEvent.click(within(screen.getByRole("group", { name: "Assignee" })).getByRole("button", { name: "Anyone" }));
+
+  it("stops asking for pages once the page has gone, so a switch of instance does not keep reading the old one", async () => {
+    const inner = standFetch(standOf(instance()));
+    let leave: () => void = () => undefined;
+    const fetching = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const answer = inner(input, init);
+      if (String(input).includes("assignee=anyone") && !String(input).includes("after=")) void answer.then(() => leave());
+      return answer;
+    }) as typeof fetch;
+    const view = render(<ShellProvider fetchWith={fetching}><ShellFrame page="tickets"><TicketsPage /></ShellFrame></ShellProvider>);
+    leave = () => view.unmount();
+    await screen.findByRole("group", { name: "Assignee" });
+    anyone();
+    await waitFor(() => expect(inner.paths.some((path) => path.includes("assignee=anyone"))).toBe(true));
+    await new Promise((done) => setTimeout(done, 100));
+    expect(inner.paths.filter((path) => path.includes("after=1"))).toEqual([]);
+  });
+
+  it("says it is still reading while the pages arrive", async () => {
+    const inner = standFetch(standOf(instance()));
+    const fetching = ((input: RequestInfo | URL, init?: RequestInit) => (String(input).includes("after=1") ? new Promise<Response>(() => undefined) : inner(input, init))) as typeof fetch;
+    render(<ShellProvider fetchWith={fetching}><ShellFrame page="tickets"><TicketsPage /></ShellFrame></ShellProvider>);
+    await screen.findByRole("group", { name: "Assignee" });
+    expect(screen.queryByText("Loading…")).toBeNull();
+    anyone();
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+  });
+
+  it("drops a refusal of one scope when another is shown, so Retry is never asked to mend a scope that is not shown", async () => {
+    await openPage(standOf(instance({ pagesFail: { status: 500, error: "tracker refused the page" } })));
+    fireEvent.click(within(screen.getByRole("group", { name: "Assignee" })).getByRole("button", { name: "Unassigned" }));
+    expect(textOf(await screen.findByRole("alert"))).toContain("tracker refused the page");
+    fireEvent.click(within(screen.getByRole("group", { name: "Assignee" })).getByRole("button", { name: /^Mine/ }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(keysShown()).toEqual(["A11-1"]);
   });
 });

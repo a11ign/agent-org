@@ -107,6 +107,10 @@
   line-height: var(--line-height-body);
 }
 
+.filter-note {
+  color: var(--color-text-muted);
+}
+
 .segments {
   display: flex;
   flex-wrap: wrap;

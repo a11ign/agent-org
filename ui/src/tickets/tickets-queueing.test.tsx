@@ -3,7 +3,7 @@ import { standFetch, ticket, type InstanceAnswers } from "../../test/fixtures.ts
 import type { QueueView } from "../api/types.ts";
 import { ShellFrame } from "../shell/ShellFrame.tsx";
 import { ShellProvider } from "../shell/ShellProvider.tsx";
-import { answers, BACKLOG, bar, openPage, posts, standOf, textOf, tick } from "./tickets-harness.tsx";
+import { answers, BACKLOG, bar, openPage, posts, standOf, textOf, tick, rowOf } from "./tickets-harness.tsx";
 import { TicketsPage } from "./TicketsPage.tsx";
 
 const queued: QueueView = { entries: [{ ticket: { key: "A11-1" }, phase: "queued" }], paused: false } as unknown as QueueView;
@@ -150,5 +150,38 @@ describe("a queue the server refuses, and one still out", () => {
     await waitFor(() => expect((within(bar()).getByRole("button", { name: "Queue 1 ticket" }) as HTMLButtonElement).disabled).toBe(true));
     await act(async () => release());
     await waitFor(() => expect(screen.queryByRole("region", { name: "Queue selected tickets" })).toBeNull());
+  });
+});
+
+describe("what the page knows right after a Queue", () => {
+  it("keeps a ticket the server just queued off the checkboxes while the queue poll's answer is still the old one", async () => {
+    await openPage(standWith());
+    tick("A11-1");
+    fireEvent.click(within(bar()).getByRole("button", { name: "Queue 1 ticket" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Queue selected tickets" })).toBeNull());
+    expect(within(rowOf("A11-1")).getByText("On the queue: queued")).toBeTruthy();
+    expect((within(rowOf("A11-1")).getByLabelText("Select A11-1") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("puts the batch back on the default after a Queue, Plan first included, so nothing hidden rides on the next one", async () => {
+    await openPage(standWith());
+    tick("A11-2");
+    fireEvent.click(cog());
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Run options" })).getByLabelText(/^Plan first/));
+    expect(screen.getByText("Custom · No plan · sonnet/high")).toBeTruthy();
+    fireEvent.click(within(bar()).getByRole("button", { name: "Queue 1 ticket" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Queue selected tickets" })).toBeNull());
+    tick("A11-3");
+    expect(screen.queryByText(/^Custom/)).toBeNull();
+  });
+
+  it("puts the batch back on the default when the selection is cleared", async () => {
+    await openPage(standWith());
+    tick("A11-1");
+    fireEvent.click(cog());
+    fireEvent.change(within(screen.getByRole("dialog", { name: "Run options" })).getByLabelText("Model"), { target: { value: "opus" } });
+    fireEvent.click(within(bar()).getByRole("button", { name: "Clear" }));
+    tick("A11-1");
+    expect(screen.queryByText(/^Custom/)).toBeNull();
   });
 });
