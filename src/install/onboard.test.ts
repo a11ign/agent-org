@@ -509,7 +509,7 @@ function greenDoctor(home: string): DoctorDeps {
       return { status: null, stdout: "", stderr: "cannot start" };
     },
     mode: () => 0o600, serviceState: () => "running", answers: async () => true, healthy: async () => true, unitProblem: () => null,
-    pnpmVersion: () => "10.34.5",
+    pnpmVersion: () => ({ version: "10.34.5", via: "npm exec" as const }),
     probe: async () => 200,
     hostPlace: async () => ({ kind: "no-project" }), platform: "linux",
     herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }),

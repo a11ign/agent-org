@@ -4,11 +4,22 @@ An AI agent organisation as a tool: rows, claims, the board, the merge queue and
 
 ## Install
 
-Install the newest release with one command. It needs Node 24 or newer and git, and it uses no `sudo`:
+Install the newest release with one command. It uses no `sudo`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/a11ign/agent-org/main/install.sh | bash
 ```
+
+**Prerequisites:**
+
+- git;
+- tar;
+- Node 24 or newer;
+- one way to run pnpm 10.34.5: the corepack beside `node`, a `corepack` on `PATH`, or else `npm exec`, which every npm has. You never need a global pnpm.
+
+The installer checks all of these before it changes anything, and lists every one that is missing with the command that fixes it for your platform (Homebrew, nvm, fnm, or a download from nodejs.org). It prints a header, one line per step, then whether agent-org is installed and the next commands. When its output is not a terminal, the last line is `agent-org install OK: ...` or `agent-org install FAILED: ...`, and a failure says what was changed (usually nothing). `--verbose` also shows where it keeps the mirror, the version folders and the `current` link.
+
+**Homebrew note:** Homebrew's `node` formula, like every Node from 25 on, ships no corepack. The installer then runs pnpm through `npm exec`, and says so on the dependencies line. `brew install corepack` (or `npm install -g corepack`) adds corepack if you want it. Reinstalling Node is not a fix for this.
 
 The installer keeps a bare mirror of the repository in `~/.agent-org/tool/repo.git` (`$AGENT_ORG_HOME/tool` when that is set), builds the newest release tag
 into a folder of its own, `tool/versions/<tag>`, with the release's dependencies, points `tool/current` at it, and writes the `agent-org` launcher into

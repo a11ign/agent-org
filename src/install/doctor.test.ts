@@ -71,7 +71,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json" }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
     readFile: () => HOST, exec: execOf(), mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
-    pnpmVersion: () => "10.34.5",
+    pnpmVersion: () => ({ version: "10.34.5", via: "npm exec" as const }),
     healthy: async (port) => port === 7318, unitProblem: () => null,
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
@@ -300,13 +300,17 @@ test("a service neither registered nor answering is told to start, and its port 
   assert.match(checks["instance answering"].detail, /nothing answers on http:\/\/127\.0\.0\.1:4800/);
 });
 
-test("doctor checks the pinned pnpm install and update run, and names how to see why it cannot", async () => {
-  assert.equal(byName(await diagnose(deps()))["pnpm"].ok, true);
-  const broken = byName(await diagnose(deps({ pnpmVersion: () => null })))["pnpm"];
-  assert.equal(broken.ok, false);
-  assert.match(broken.detail, /pnpm 10\.34\.5 cannot run through the corepack beside node/);
-  assert.equal(broken.fix?.startsWith("run `corepack pnpm@10.34.5 --version`"), true);
-  assert.equal(byName(await diagnose(deps({ pnpmVersion: () => "12.4.2" })))["pnpm"].ok, false, "another version answering is not the pinned one");
+test("doctor checks the pinned pnpm install and update run, names the runner, and never says to reinstall Node", async () => {
+  const pnpmRow = async (reading: { version: string | null; via: "corepack beside node" | "corepack on PATH" | "npm exec" | null }) => byName(await diagnose(deps({ pnpmVersion: () => reading })))["pnpm"];
+  const ran = await pnpmRow({ version: "10.34.5", via: "npm exec" });
+  assert.deepEqual([ran.ok, ran.detail], [true, "10.34.5 through npm exec, which install and update use"]);
+  const broken = await pnpmRow({ version: null, via: "npm exec" });
+  assert.deepEqual([broken.ok, broken.detail, broken.fix], [false, "pnpm 10.34.5 cannot run through npm exec", "run `npm exec --yes pnpm@10.34.5 -- --version` to see why, or add corepack with `brew install corepack` or `npm install -g corepack`"]);
+  const none = await pnpmRow({ version: null, via: null });
+  assert.deepEqual([none.ok, none.fix], [false, "run `brew install corepack` or `npm install -g corepack`"]);
+  assert.match(none.detail, /there is no corepack beside node or on PATH, and no npm/);
+  for (const check of [broken, none]) assert.doesNotMatch(`${check.detail} ${check.fix}`, /[Rr]einstall/);
+  assert.equal((await pnpmRow({ version: "12.4.2", via: "corepack on PATH" })).ok, false, "another version answering is not the pinned one");
 });
 
 // A11-67: a unit systemd refuses is a failure with systemd's reason, not a "stopped" service.
