@@ -11,6 +11,7 @@ import { boardKey, boardKeyPath } from "./board-key.ts";
 import { browserSessions, browserSessionsPath } from "./browser-sessions.ts";
 import { createConnections, readConnections, type Connection, type ConnectionsRead } from "./connections.ts";
 import { createRemotes, type Runner } from "./remote.ts";
+import { createLastKnown, lastKnownDir } from "./last-known.ts";
 import { httpForward, type Forward } from "./remote-proxy.ts";
 import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
@@ -71,8 +72,8 @@ function sshRunner(fails = false) {
 }
 
 /** The page's service for `list`, in front of this machine's real instance, with ssh connections answered by `forward` or failing. */
-async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal, queue, terminal, lookupFails = false, uiBuilds }: { refusal?: string | null; sshFails?: boolean;
-  mintTerminal?: () => Promise<TerminalMint>; queue?: object; terminal?: string; lookupFails?: boolean; uiBuilds?: readonly string[] } = {}) {
+async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal, queue, terminal, lookupFails = false, uiBuilds, remembering }: { refusal?: string | null; sshFails?: boolean;
+  mintTerminal?: () => Promise<TerminalMint>; queue?: object; terminal?: string; lookupFails?: boolean; uiBuilds?: readonly string[]; remembering?: { stateDir: string; down: { value: boolean } } } = {}) {
   const local = await instance(mintTerminal, { queue, terminal });
   const ssh = sshRunner(sshFails);
   const forwarded: { path: string; key: string; host: string }[] = [];
@@ -83,11 +84,12 @@ async function ui(list: readonly Connection[], { refusal = null, sshFails = fals
     // A lookup the instance cannot answer for is a failed one, which a worker link still redirects past (A11-129).
     if (lookupFails && request.path === "/api/terminal-run") return { status: 500, body: "{}" };
     if ("origin" in target.address) return httpForward(target, request);
+    if (remembering?.down.value) throw new Error("socket hang up");
     forwarded.push({ path: request.path, key: target.key, host: target.host });
     return { status: 200, body: JSON.stringify({ entries: [], max: 1, paused: false }) };
   };
   const sessions = browserSessions(browserSessionsPath(local.stateDir), () => 7);
-  const served = await listen((port) => createUi({ port, key: local.key, sessions, read, connections, forward, uiBuilds }).handle);
+  const served = await listen((port) => createUi({ port, key: local.key, sessions, read, connections, forward, uiBuilds, ...(remembering === undefined ? {} : { lastKnown: createLastKnown(lastKnownDir(remembering.stateDir)) }) }).handle);
   return { ...served, local, ssh, forwarded, close: async () => { await served.close(); await local.close(); } };
 }
 
@@ -225,6 +227,28 @@ test("a paired browser's call to an ssh connection carries that instance's key, 
     assert.equal((await viewed.text()).includes(REMOTE_KEY), false);
     assert.deepEqual(u.forwarded, [{ path: "/api/queue", key: REMOTE_KEY, host: "127.0.0.1:4747" }]);
     assert.equal(u.ssh.ran.flat().join(" ").includes(REMOTE_KEY), false, "the remote's key is on no command line");
+  } finally {
+    await u.close();
+  }
+});
+
+test("A11-195: an SSH connection read once and then not reachable answers 502 with its sentence and the last read, and this machine's own failure carries none", async () => {
+  const down = { value: false };
+  const u = await ui([WORK, PERSONAL], { remembering: { stateDir: tmpDir("ticket-ui-last-known-"), down } });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    const live = await fetch(`${u.base}/c/personal/api/queue`, { headers: { cookie } });
+    assert.equal(live.status, 200);
+    down.value = true;
+    const gone = await fetch(`${u.base}/c/personal/api/queue`, { headers: { cookie } });
+    assert.equal(gone.status, 502);
+    const body = await gone.json() as { error: string; lastKnown: { value: unknown; readAt: string } };
+    assert.equal(body.error, "cannot reach personal's instance over SSH: socket hang up. Is agent-org ticket:serve running there?");
+    assert.deepEqual(body.lastKnown.value, { entries: [], max: 1, paused: false });
+    assert.ok(Number.isFinite(Date.parse(body.lastKnown.readAt)));
+    const unread = await fetch(`${u.base}/c/personal/api/tickets`, { headers: { cookie } });
+    assert.equal(unread.status, 502);
+    assert.equal("lastKnown" in await unread.json(), false, "a path nothing was read from has none");
   } finally {
     await u.close();
   }

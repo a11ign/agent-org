@@ -1,7 +1,7 @@
 import { config, queueOf, ticket, OTHER } from "../../test/fixtures.ts";
 import type { PollView } from "../api/use-poll.ts";
 import type { ConfigView, TicketView } from "../api/types.ts";
-import { ALL_GOALS_ID, contextParentsOf, goalEntries, goalShown, mergedTickets, NO_GOAL_ID, pillOf, runningCount, scopeOf, ticketsInScope, ticketsOfGoal, ticketsView } from "./shell-model.ts";
+import { ALL_GOALS_ID, contextParentsOf, goalEntries, goalShown, mergedTickets, NO_GOAL_ID, pillOf, runningCount, scopeOf, ticketsInScope, ticketsOfGoal, ticketsView, isLive, unreachableOf } from "./shell-model.ts";
 
 describe("pillOf", () => {
   it("is Unreachable · retrying only for an unreachable read", () => {
@@ -10,6 +10,36 @@ describe("pillOf", () => {
 
   it.each(["loading", "ready", "empty", "error"] as const)("is Connected while the read is %s", (state) => {
     expect(pillOf(state)).toEqual({ tone: "connected", label: "Connected" });
+  });
+});
+
+describe("isLive", () => {
+  it("is true only for a read that answered, empty or not", () => {
+    expect((["ready", "empty"] as const).map(isLive)).toEqual([true, true]);
+    expect((["loading", "error", "unreachable", "reconnecting"] as const).map(isLive)).toEqual([false, false, false, false]);
+  });
+});
+
+describe("unreachableOf", () => {
+  const view = (state: PollView<unknown>["state"], refusal: string | null = null) => ({ state, refusal });
+  const ssh = { kind: "ssh" } as const;
+
+  it("is the sentence of the first read that is unreachable, the queue's before the tickets'", () => {
+    expect(unreachableOf(ssh, [view("unreachable", "cannot reach personal: queue"), view("unreachable", "cannot reach personal: tickets")])).toBe("cannot reach personal: queue");
+    expect(unreachableOf(ssh, [view("ready"), view("unreachable", "cannot reach personal: tickets")])).toBe("cannot reach personal: tickets");
+  });
+
+  it("is null while every read answers, or fails some other way", () => {
+    expect(unreachableOf(ssh, [view("ready"), view("loading")])).toBeNull();
+    expect(unreachableOf(ssh, [view("error", "boom"), view("reconnecting", "Failed to fetch")])).toBeNull();
+  });
+
+  it("is null for a local or https connection, and before a connection is chosen, whatever the reads say", () => {
+    for (const connection of [{ kind: "local" }, { kind: "https" }, null] as const) expect(unreachableOf(connection, [view("unreachable", "cannot reach x")])).toBeNull();
+  });
+
+  it("is an empty sentence for an unreachable read that names none", () => {
+    expect(unreachableOf(ssh, [view("unreachable")])).toBe("");
   });
 });
 

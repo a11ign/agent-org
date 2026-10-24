@@ -10,6 +10,7 @@
 import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { via, type Connections, type Target } from "./connections.ts";
+import type { LastKnown } from "./last-known.ts";
 import { redact, Unreachable } from "./remote.ts";
 
 /** A call to pass on: its method, its path from `/api` on with any query, and its JSON body, or null. */
@@ -76,8 +77,12 @@ export const httpForward: Forward = (target, { method, path, body }) => new Prom
 /**
  * A paired browser's call to connection `name`, passed on to its instance: the status and JSON value to answer with. A connection that
  * cannot be reached answers 502 with "cannot reach <name> <how>: <reason>". An instance that refuses the key has it read again next time.
+ *
+ * With `lastKnown`, an SSH connection's page reads (a GET with no query that answered 200) are kept, and a 502 "cannot reach" answer to such a read then carries `lastKnown: { value, readAt }`
+ * beside its `error`, when one was kept for that path, so the page can show what it last saw. The `error` sentence is the same as without it. A local or https connection, a POST,
+ * and an instance that answered something that is not JSON are neither kept nor recalled.
  */
-export async function proxy(connections: Connections, name: string, request: ForwardRequest, forward: Forward = httpForward): Promise<[number, unknown]> {
+export async function proxy(connections: Connections, name: string, request: ForwardRequest, forward: Forward = httpForward, lastKnown?: LastKnown): Promise<[number, unknown]> {
   const connection = connections.get(name);
   if (connection === undefined) return [404, { error: `no connection ${name}` }];
   const how = via(connection);
@@ -85,21 +90,29 @@ export async function proxy(connections: Connections, name: string, request: For
   if (!passedOn(request.method, pathname)) return [403, { error: `${request.method} ${pathname} is not passed on to an instance` }];
   // A remote instance's files are edited on that machine, so nothing this page forwards changes them there.
   if (SETTINGS_EDITS.has(pathname) && connection.kind !== "local") return [403, { error: `${name}'s settings are not changed from here: its files are edited on that machine, and this connection is ${how}` }];
+  // A page of a scope read on demand (`?assignee=&after=`) is a cursor, not a state to come back to: only a read with no query is kept.
+  const remembers = lastKnown !== undefined && connection.kind === "ssh" && request.method === "GET" && !request.path.includes("?");
+  const identity = connection.kind === "ssh" ? connection.ssh : "";
+  /** The 502 for a connection that cannot be reached: its sentence, and the last good answer to this path when one was kept. */
+  const cannotReach = (error: string): [number, unknown] => {
+    const kept = remembers ? lastKnown.recall(name, identity, request.path) : undefined;
+    return [502, kept === undefined ? { error } : { error, lastKnown: kept }];
+  };
   let target: Target;
   try {
     target = await connections.reach(name);
   } catch (err) {
-    return [502, { error: `cannot reach ${name} ${how}: ${err instanceof Unreachable ? err.message : redact(String(err))}` }];
+    return cannotReach(`cannot reach ${name} ${how}: ${err instanceof Unreachable ? err.message : redact(String(err))}`);
   }
   let answer: ForwardAnswer;
   try {
     answer = await forward(target, request);
   } catch (err) {
-    return [502, { error: `cannot reach ${name}'s instance ${how}: ${redact(String((err as Error)?.message ?? err))}. Is agent-org ticket:serve running there?` }];
+    return cannotReach(`cannot reach ${name}'s instance ${how}: ${redact(String((err as Error)?.message ?? err))}. Is agent-org ticket:serve running there?`);
   }
   if (answer.status === 401) {
     connections.forget(name);
-    return [502, { error: `cannot reach ${name} ${how}: its instance refused the key, which is read again on the next request` }];
+    return cannotReach(`cannot reach ${name} ${how}: its instance refused the key, which is read again on the next request`);
   }
   let value: unknown;
   try {
@@ -112,5 +125,6 @@ export async function proxy(connections: Connections, name: string, request: For
     const config = value as Record<string, unknown>;
     value = { ...config, terminal: target.terminal(typeof config.terminal === "string" ? config.terminal : null) };
   }
+  if (remembers && answer.status === 200) lastKnown.remember(name, identity, request.path, value);
   return [answer.status, value];
 }

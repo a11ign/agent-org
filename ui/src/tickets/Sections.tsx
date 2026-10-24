@@ -19,7 +19,7 @@ function SectionHead({ section, open, context }: Readonly<{ section: Section; op
       <button type="button" className="fold-button" aria-label={`${open ? "Collapse" : "Expand"} ${status}`} aria-expanded={open} onClick={() => context.toggleSection(status)}>
         <FoldChevron open={open} />
       </button>
-      <input type="checkbox" aria-label={`Select all shown in ${status}`} checked={all} disabled={pickable.length === 0} onChange={(event) => (event.target.checked ? context.row.pick(pickable) : context.row.unpick(pickable))} />
+      <input type="checkbox" aria-label={`Select all shown in ${status}`} checked={all} disabled={pickable.length === 0 || context.row.paused} onChange={(event) => (event.target.checked ? context.row.pick(pickable) : context.row.unpick(pickable))} />
       <StatusIcon status={status} />
       <span className="section-name">{status}</span>
       <span className="section-count">{total}</span>
@@ -31,7 +31,7 @@ function SectionHead({ section, open, context }: Readonly<{ section: Section; op
 export function SectionView({ section, context }: Readonly<{ section: Section; context: SectionsContext }>) {
   const open = context.open.has(section.status);
   return (
-    <section aria-label={section.status} className="ticket-section">
+    <section aria-label={section.status} className={context.row.paused ? "ticket-section ticket-section-paused" : "ticket-section"}>
       <SectionHead section={section} open={open} context={context} />
       {open ? (
         <>

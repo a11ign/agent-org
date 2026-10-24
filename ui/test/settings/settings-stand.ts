@@ -100,7 +100,7 @@ const queueAfter = (state: SettingsStand): QueueView => ({ entries: state.entrie
 type Reply = { status: number; body: string };
 const reply = (body: unknown, status = 200): Reply => ({ status, body: JSON.stringify(body) });
 const isFailure = (value: unknown): value is Failure => typeof value === "object" && value !== null && "status" in value && "error" in value;
-const answer = (value: unknown): Reply => (isFailure(value) ? reply({ error: value.error }, value.status) : reply(value));
+const answer = (value: unknown): Reply => (isFailure(value) ? reply({ error: value.error, ...(value.lastKnown === undefined ? {} : { lastKnown: value.lastKnown }) }, value.status) : reply(value));
 const refusal = (error: string): Failure => ({ status: 400, error });
 
 /** The answer to a Settings call, or null for a route this stand-in does not know (the shell's stand-in answers it). */

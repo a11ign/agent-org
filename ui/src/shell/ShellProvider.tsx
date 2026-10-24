@@ -8,7 +8,8 @@ import type { Fetch } from "../api/request.ts";
 import type { ConfigView, QueueView, TicketView, ViewConnection } from "../api/types.ts";
 import { usePoll } from "../api/use-poll.ts";
 import type { LifecycleView } from "../lifecycle/Lifecycle.tsx";
-import { ALL_GOALS_ID, contextParentsOf, goalEntries, goalShown, mergedTickets, runningCount, scopeOf, ticketsView, type GoalEntry } from "./shell-model.ts";
+import { ALL_GOALS_ID, contextParentsOf, goalEntries, goalShown, mergedTickets, runningCount, scopeOf, ticketsView, isLive, unreachableOf, type GoalEntry } from "./shell-model.ts";
+import { useReachability } from "./use-reachability.ts";
 import { useScopeReads } from "./use-scope-reads.ts";
 import { browserStorage, CONNECTION_MEMORY, PROJECT_MEMORY, recalled, remembered } from "./storage.ts";
 
@@ -27,6 +28,12 @@ export type ShellValue = Readonly<{
   retryConnections: () => void;
   /** `/api/queue`, polled every 5s: the Runs badge, the connection pill and the Runs and Run detail pages. */
   queue: LifecycleView<QueueView>;
+  /** The backend's sentence while the connection is an SSH remote that cannot be reached (the queue poll, which drives the pill, or the tickets read is `unreachable`), else null. A local connection's failure is never this. */
+  unreachable: string | null;
+  /** True once the connection has been unreachable and is reached again, until the connection is switched. */
+  reconnected: boolean;
+  /** "Check now": reads again at once and starts the backoff over, for the queue and for each read made once that has not answered. When the queue answers, the tickets are read again. */
+  checkNow: () => void;
   /** `/api/config`, read once per connection: null until it has answered. The Tickets page reads what the instance can do from it. */
   config: ConfigView | null;
   /** `/api/tickets`, read once per connection and shown as the chosen Assignee scope: the Tickets count, the projects and the goals, and the Tickets page. */
@@ -64,7 +71,7 @@ const LOADING_VIEW = { state: "loading", data: null, refusal: null, refresh: noo
 /** The shell as it is before anything is read: nothing chosen, everything loading. */
 const LOADING_SHELL: ShellValue = {
   connectionsReady: false, client: createClient(null), connections: [], connection: null, connectionsRefusal: null, switchConnection: noop, retryConnections: noop,
-  queue: LOADING_VIEW, config: null, tickets: LOADING_VIEW, scope: scopeOf(null, null), chooseScope: noop, readingScope: null, scopesRead: new Set(), held: null, allTickets: [], contextParents: [],
+  queue: LOADING_VIEW, unreachable: null, reconnected: false, checkNow: noop, config: null, tickets: LOADING_VIEW, scope: scopeOf(null, null), chooseScope: noop, readingScope: null, scopesRead: new Set(), held: null, allTickets: [], contextParents: [],
   runningRuns: null, ticketCount: null, projects: [], project: null, chooseProject: noop, goals: [], goal: ALL_GOALS_ID, chooseGoal: noop, projectTickets: [],
 };
 
@@ -117,7 +124,8 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const [rememberedProject, setRememberedProject] = useState(() => recalled(storage, PROJECT_MEMORY));
   const [goalChoice, setGoalChoice] = useState(ALL_GOALS_ID);
 
-  const reads = useScopeReads(client, { listed: ticketsRead.data !== null, onDemand: config.data?.scopes === true });
+  // What is read beside the tickets waits for a read that answered: the last known data an unreachable connection shows is not a reason to ask for more of it, and the reads would not be made again on recovery.
+  const reads = useScopeReads(client, { listed: isLive(ticketsRead.state), onDemand: isLive(config.state) && config.data?.scopes === true });
   const [scopeChoice, setScopeChoice] = useState<string | null>(null);
   const scope = scopeOf(config.data, scopeChoice);
 
@@ -129,6 +137,12 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
       reads.readScope(scope);
     },
   };
+  const unreachable = unreachableOf(connection, [queue, ticketsRead, config]);
+  const { reconnected } = useReachability(unreachable, tickets.refresh);
+  const checkNow = () => {
+    queue.refresh();
+    for (const read of [config, ticketsRead]) if (!isLive(read.state)) read.refresh();
+  };
   const allTickets = mergedTickets(ticketsRead.data ?? [], reads.extra);
   const projects = projectCounts(tickets.data ?? []);
   const project = chosenProject(projects, rememberedProject);
@@ -136,7 +150,7 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const goals = goalEntries(projectTickets);
   const value: ShellValue = {
     connectionsReady: true, client, connections: listing.connections, connection, connectionsRefusal: listing.refusal, switchConnection, retryConnections,
-    queue, config: config.data, tickets, scope, held: reads.held, allTickets, readingScope: reads.reading, scopesRead: reads.read,
+    queue, unreachable, reconnected, checkNow, config: config.data, tickets, scope, held: reads.held, allTickets, readingScope: reads.reading, scopesRead: reads.read,
     chooseScope: (next) => {
       setScopeChoice(next);
       reads.readScope(next);

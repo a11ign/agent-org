@@ -1,4 +1,3 @@
-import { UnreachableFrame } from "../lifecycle/UnreachableFrame.tsx";
 import { useShell, type ShellValue } from "../shell/ShellProvider.tsx";
 import { PausedBanner, StatusBanner } from "./Banners.tsx";
 import { EmptyPanelView } from "./EmptyPanelView.tsx";
@@ -7,6 +6,7 @@ import { FilterRow } from "./FilterRow.tsx";
 import { QueueBar } from "./QueueBar.tsx";
 import { Sections } from "./Sections.tsx";
 import { TicketsHeader } from "./TicketsHeader.tsx";
+import { TicketsUnreachable } from "./TicketsUnreachable.tsx";
 import { TicketsSkeleton } from "./TicketsSkeleton.tsx";
 import { countText, queueOptionsOf, type QueueOptions } from "./tickets-model.ts";
 import { useFolding } from "./use-folding.ts";
@@ -46,14 +46,14 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
     open: folding.open, toggleSection: folding.toggleSection, queue: page.queue,
     row: {
       queue: page.queue, selected: selection.selected, openParents: folding.openParents, showsOwner: list.showsOwner, grillReason: grillReasonOf(shell),
-      pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill,
+      pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill, paused: shell.unreachable !== null,
     },
   };
   return (
     <>
       <Sections sections={list.sections} context={context} />
       {selection.selected.size > 0 && shell.config !== null ? (
-        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
+        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy} paused={shell.unreachable !== null} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
       ) : null}
     </>
   );
@@ -81,23 +81,21 @@ function Body({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
   );
 }
 
-/** The page once the connections are read: the header, the failure or unreachable frame, and the body. */
+/** The page once the connections are read: the header, the unreachable frame (or the failure banner), and the body. */
 function TicketsContent() {
   const shell = useShell();
   const page = usePage(shell);
-  const { tickets, connection, config } = shell;
+  const { tickets, connection, config, unreachable } = shell;
   const loaded = tickets.state !== "loading" && page.list.source !== null;
   const header = (
     <TicketsHeader
       count={loaded && page.list.source !== null ? countText(shell.projectTickets.length, page.list.source) : null}
       allOpen={page.folding.allOpen} foldable={page.list.sections.length > 0} onFold={page.folding.foldAll} writer={config?.writer !== false}
+      pausedFor={unreachable === null ? null : (connection?.name ?? "")} lastKnown={unreachable !== null && tickets.data !== null}
     />
   );
   const body = <Body page={page} shell={shell} />;
-  if (tickets.state === "unreachable") {
-    return <>{header}<UnreachableFrame name={connection?.name ?? ""} refusal={tickets.refusal ?? ""}>{body}</UnreachableFrame></>;
-  }
-  return <>{header}<FailureBanner refusal={page.actions.refusal} clearRefusal={page.actions.clearRefusal} />{body}</>;
+  return <>{header}<TicketsUnreachable><FailureBanner refusal={page.actions.refusal} clearRefusal={page.actions.clearRefusal} />{body}</TicketsUnreachable></>;
 }
 
 /** Until the connections are read the page is its header over the board's skeleton, which needs nothing the browser remembers. */
