@@ -1,5 +1,5 @@
 import type { MergedStep } from "./plan-steps.ts";
-import type { PartialOverruled, PullDeclared } from "./pull-declared.ts";
+import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "./pull-declared.ts";
 
 export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
@@ -53,6 +53,10 @@ export type ViewEntry = Readonly<{
   review?: readonly PullRef[];
   /** The run of a batch planner's tickets that its tickets share: one session, one terminal (A11-171). */
   batch?: string;
+  /** The finished run a talk session resumes, which the session replaced on the board: a blocker's talk session is judged by it, not as more work on the ticket (A11-206). */
+  talkFrom?: Omit<ViewEntry, "talkFrom">;
+  /** What each merged pull request of this queued run's blockers declared of its blocker's ticket in its body, by the pull request's address, once the sweep read it (A11-206). */
+  blockersDeclared?: Readonly<Record<string, BlockerPullDeclared>>;
   /** A person opened this run's saved session to talk to its agent: the run is Talking while that session is live or waiting for them (A11-171). */
   talk?: boolean;
   /** What remains of the ticket, when the worker declared its pull requests partial: the run's merge does not finish the ticket (A11-92, A11-168). */

@@ -3,17 +3,18 @@ import { SCAFFOLD_DIRS } from "../../scaffold-dirs.ts";
 import { pullAnswer } from "./pull-answer.ts";
 import { completedEarly, settledByPulls } from "./pull-settled.ts";
 import { isReadyToMerge } from "./pull-readiness.ts";
-import { currentStepOf, currentStepPaths } from "./plan-steps.ts";
+import { currentStepOf, currentStepPaths, stepNamed } from "./plan-steps.ts";
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
  * the queue itself, once its run is completed, which its pull requests merging is enough for. Any blocker also lets go once its pull requests have
  * merged ({@link pullsMerged}), whatever state its ticket is in: a ticket whose pull request said `Refs` stays In Progress after the merge (A11-154).
- * A canceled or duplicate blocker never lets go: the work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
+ * That lets go only a blocker nothing more is coming from ({@link holdReason}): one with a live run holds, whatever its pull requests so far did, and so does one whose merged pull request
+ * declared itself partial (A11-206). A canceled or duplicate blocker never lets go: the work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
  * be stacked on ({@link stackedOn}) does not hold it back.
  */
 export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
-  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(blocker, entries) && stackBaseOf(entry, blocker) === null);
+  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(entry, blocker, entries) && stackBaseOf(entry, blocker) === null);
 }
 
 /** Whether the planner said the run waits for this blocker to merge, rather than stacking on it: its key is in the run's `waitMerged`. */
@@ -37,8 +38,81 @@ function pullsMerged(blocker: ViewBlocker): boolean {
   return states.includes("merged") && !states.includes("open");
 }
 
-/** Whether a blocker is done for a run: {@link isDone}, or its pull requests have merged ({@link pullsMerged}), whatever its ticket's state says. */
-const isDoneFor = (blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean => isDone(blocker, entries) || pullsMerged(blocker);
+/** The words a blocker's live run is described by on a card: where it is, as {@link runStatus} reads its phase and fields. */
+function liveWord(run: Omit<ViewEntry, "talkFrom">): string {
+  if (run.phase === "finished" || run.waiting) return "waiting on a question";
+  if (run.plan) return "planning";
+  if (run.review) return "in a review round";
+  return run.phase === "queued" ? "queued" : "running";
+}
+
+/**
+ * The run of a blocker's ticket that is still at work, or null (A11-206): one queued, starting or running (planning, working, in a review round or waiting on a question), or finished but parked on a question,
+ * whose workspace is still held ({@link isParked}). More of that ticket's work may come from it, whatever its pull requests did so far. A talk session is a person talking to a finished run, not more work on the
+ * ticket, so it is judged by the run it resumed (`talkFrom`). PURE.
+ */
+function liveRunOf(key: string, entries: readonly ViewEntry[]): Omit<ViewEntry, "talkFrom"> | null {
+  for (const entry of entries.filter((e) => e.ticket.key === key)) {
+    const judged = entry.talk === true ? entry.talkFrom : entry;
+    if (judged !== undefined && isAtWork(judged)) return judged;
+  }
+  return null;
+}
+
+/** Whether a run is at work or waits on a question: it has not finished, or it has and its workspace is still held ({@link isParked}). */
+const isAtWork = (run: Omit<ViewEntry, "talkFrom">): boolean => run.phase !== "finished" || isParked(run);
+
+/** The merged pull requests of a blocker. PURE. */
+const mergedPullsOf = (blocker: ViewBlocker): string[] => Object.entries(blocker.pulls ?? {}).filter(([, state]) => state === "merged").map(([url]) => url);
+
+/**
+ * What a blocker's merged pull requests say remains of its ticket, or null when they leave nothing (A11-206). The bodies the run recorded (`blockersDeclared`) say it: some merged pull request declared `Partial:`
+ * and none closed the ticket. Neither the blocker's pull requests nor their declarations carry a merge time, so "the last one declared partial" is read as that; in the sequence the brief gives (partial steps, then the
+ * one that closes) the two agree. The blocker's own finished run on the board says it too, when its worker declared the pull requests partial and they merged, which needs no body read.
+ */
+function partialMergeOf(entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): string | null {
+  const declared = mergedPullsOf(blocker).flatMap((url) => entry.blockersDeclared?.[url] ?? []);
+  if (declared.some(({ kind }) => kind === "closes")) return null;
+  for (const one of declared) if (one.kind === "partial") return one.remains;
+  const run = entries.find((e) => e.ticket.key === blocker.key);
+  return run === undefined ? null : mergedPartialOf(run);
+}
+
+/** What a finished run's worker declared remains of its ticket, once its pull requests have merged (the run then reads Needs you, or the board queues the next step in its place), or null. PURE. */
+const mergedPartialOf = (run: ViewEntry): string | null => (run.phase === "finished" && settledByPulls(run) === "completed" ? (run.partial ?? null) : null);
+
+/** Why a merged blocker holds for a partial merge, as a card says it: the plan step the `Partial:` words name, else that its last merged pull request is partial. PURE. */
+function partialWord(remains: string): string {
+  const step = stepNamed(remains);
+  return step === null ? "its last merged pull request is partial" : `step ${step.step} of ${step.of} merged`;
+}
+
+/** Whether a merged pull request of a blocker has not had its body read for this run yet (A11-206): what it declared is not known. */
+const hasUnread = (entry: ViewEntry, blocker: ViewBlocker): boolean => mergedPullsOf(blocker).some((url) => entry.blockersDeclared?.[url] === undefined);
+
+/**
+ * Why a blocker that is not done holds a run, as a card says it in brackets after the blocker's key, or null when nothing here holds it (A11-206). In this order: a live run holds, whatever its pull requests did so far ({@link liveRunOf});
+ * a merged pull request that declared itself partial holds ({@link partialMergeOf}); a blocker whose run on the board is Completed holds nothing; and a blocker whose pull requests have merged ({@link pullsMerged}) holds while
+ * a body is unread, since it may say `Partial:`. A canceled or duplicate blocker is not held here: a person decides, and the board says so. The tracker's own completion is checked before this. PURE.
+ */
+function holdReason(entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): string | null {
+  if (blocker.state === "canceled" || blocker.state === "duplicate") return null;
+  const live = liveRunOf(blocker.key, entries);
+  if (live !== null) return liveWord(live);
+  const remains = partialMergeOf(entry, blocker, entries);
+  if (remains !== null) return partialWord(remains);
+  if (isDone(blocker, entries) || !pullsMerged(blocker)) return null;
+  return hasUnread(entry, blocker) ? "its merged pull requests are not read yet" : null;
+}
+
+/**
+ * Whether a blocker is done for a run: the tracker completed it, else nothing holds it ({@link holdReason}) and either its run on the queue is Completed ({@link isDone}) or its pull requests have merged ({@link pullsMerged}),
+ * whatever its ticket's state says.
+ */
+function isDoneFor(entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean {
+  if (blocker.state === "completed") return true;
+  return holdReason(entry, blocker, entries) === null && (isDone(blocker, entries) || pullsMerged(blocker));
+}
 
 /** The repository and number of a GitHub pull request, from its URL's `/<owner>/<repo>/pull/<n>`, or null for any other URL. PURE. */
 function parsePull(url: string): Readonly<{ repo: string; number: string }> | null {
@@ -81,7 +155,7 @@ export function stackBaseOf(entry: ViewEntry, blocker: ViewBlocker): StackBase |
 export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): StackBase[] {
   if (entry.phase === "finished") return [];
   return (entry.blockers ?? []).flatMap((blocker) => {
-    const base = isDoneFor(blocker, entries) ? null : stackBaseOf(entry, blocker);
+    const base = isDoneFor(entry, blocker, entries) ? null : stackBaseOf(entry, blocker);
     return base === null ? [] : [base];
   });
 }
@@ -92,9 +166,14 @@ export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): Stac
  */
 export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url, branch }) => (url === null ? `${key} (branch \`${branch}\`, no pull request yet)` : `${key} #${parsePull(url)?.number ?? url}`)).join(", ")}`;
 
-/** Why a run waits for one blocker it cannot stack on, as {@link waitNote} says it: a canceled blocker is a person's decision. A blocker whose pull requests merged holds nothing ({@link isDoneFor}). PURE. */
-function blockerWait(entry: ViewEntry, blocker: ViewBlocker): string {
+/**
+ * Why a run waits for one blocker it cannot stack on, as {@link waitNote} says it: a canceled blocker is a person's decision, and a blocker that holds for its live run, its partial merge or an unread body says which,
+ * such as "Waits for NBF-1 (running)" (A11-206). A blocker whose pull requests merged and are all read holds nothing ({@link isDoneFor}). PURE.
+ */
+function blockerWait(entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): string {
   if (blocker.state === "canceled" || blocker.state === "duplicate") return `${blocker.key} was ${blocker.state === "canceled" ? "canceled" : "marked a duplicate"}: a person decides`;
+  const held = holdReason(entry, blocker, entries);
+  if (held !== null) return `Waits for ${blocker.key} (${held})`;
   if (repoOf(entry) === null) return `Waits for ${blocker.key}: no repository is planned for this ticket, so it cannot stack`;
   return `Waits for ${blocker.key} to push its branch`;
 }
@@ -107,9 +186,12 @@ export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): strin
   const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again on every pass`];
   if (entry.sessionWait !== undefined) plan.push(entry.sessionWait);
   const waits = waitsOn(entry, entries);
-  const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map(({ key }) => key);
+  const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map((blocker) => {
+    const held = holdReason(entry, blocker, entries);
+    return held === null ? blocker.key : `${blocker.key} (${held})`;
+  });
   if (merging.length > 0) return [...plan, `Waits for ${merging.join(", ")} to merge`].join("; ");
-  const reasons = [...plan, ...waits.map((blocker) => blockerWait(entry, blocker))];
+  const reasons = [...plan, ...waits.map((blocker) => blockerWait(entry, blocker, entries))];
   const overlap = overlapWait(entry, entries);
   if (overlap !== null) reasons.push(overlapNote(overlap));
   return reasons.length === 0 ? null : reasons.join("; ");

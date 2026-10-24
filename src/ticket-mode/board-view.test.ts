@@ -597,7 +597,7 @@ test("a blocker with an open pull request in the run's planned repository is sta
   const otherRepo = { key: "NBF-2", state: "started", status: "In Review", branch: "nbf-2", pulls: { [elsewhere]: "open" } };
   const merged = { key: "NBF-3", state: "started", status: "In Review", branch: "nbf-3", pulls: { "https://github.com/acme/nbl-ui-netbox/pull/13": "merged" } };
   const notStarted = { key: "NBF-4", state: "unstarted", status: "Todo", branch: "nbf-4", pulls: {} };
-  const waiting = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable, otherRepo, merged, notStarted] });
+  const waiting = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable, otherRepo, merged, notStarted], blockersDeclared: { "https://github.com/acme/nbl-ui-netbox/pull/13": { kind: "none" } } });
   assert.deepEqual(stackedOn(waiting, [waiting]), [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }]);
   assert.deepEqual(waitsOn(waiting, [waiting]).map((b) => b.key), ["NBF-2", "NBF-4"], "another repository's or no pull request still holds it; NBF-3's merged, so it holds nothing (A11-154)");
   const onlyStackable = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable] });
@@ -628,7 +628,7 @@ test("A11-77: a blocker the planner said to wait on to merge is never stacked on
   assert.deepEqual(waitsOn(waiting, [waiting]).map((b) => b.key), ["NBF-1"]);
   assert.equal(runStatus(waiting, [waiting]), "blocked");
   assert.equal(waitNote(waiting, [waiting]), "Waits for NBF-1 to merge");
-  const landed = { ...waiting, blockers: [{ ...stackable, pulls: { [draft]: "merged" } }] };
+  const landed = { ...waiting, blockers: [{ ...stackable, pulls: { [draft]: "merged" } }], blockersDeclared: { [draft]: { kind: "none" } } } as ViewEntry;
   assert.deepEqual(waitsOn(landed, [landed]), [], "its only pull request merged, though the tracker still has NBF-1 in review");
   assert.equal(runStatus(landed, [landed]), "queued", "the run starts once it has merged");
   assert.deepEqual(stackedOn(landed, [landed]), [], "and starts on the default branch: nothing to stack on, so the brief has no stack section");
@@ -643,7 +643,7 @@ test("A11-77: a blocker the planner said to wait on to merge is never stacked on
   }
   const completed = { ...waiting, blockers: [{ ...stackable, state: "completed" }] };
   assert.equal(runStatus(completed, [completed]), "queued", "a blocker the tracker completed still lets go");
-  const unmarked = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [{ ...stackable, pulls: { [draft]: "merged" } }] });
+  const unmarked = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [{ ...stackable, pulls: { [draft]: "merged" } }], blockersDeclared: { [draft]: { kind: "none" } } });
   assert.deepEqual(waitsOn(unmarked, [unmarked]), [], "marked or not, a merged pull request lets the run go, whatever state its ticket is in (A11-154)");
   const mixed = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", waitMerged: ["NBF-1"],
     blockers: [stackable, { key: "NBF-2", state: "started", status: "In Review", branch: "nbf-2", pulls: { [other]: "open" } }, { ...stackable, key: "NBF-3", branch: "nbf-3", pulls: {} }] });
@@ -722,7 +722,7 @@ test("A11-116: a blocker not pushed, canceled, or in a run with no repository ho
   assert.equal(waitNote(duplicate, [duplicate]), "NBF-1 was marked a duplicate: a person decides");
   const noRepo = waitingFor({ ...stackable, head: "b".repeat(40) }, { projectRepo: null });
   assert.equal(waitNote(noRepo, [noRepo]), "Waits for NBF-1: no repository is planned for this ticket, so it cannot stack");
-  const merged = waitingFor({ ...stackable, pulls: { "https://github.com/acme/agent-org/pull/3": "merged" } });
+  const merged = waitingFor({ ...stackable, pulls: { "https://github.com/acme/agent-org/pull/3": "merged" } }, { blockersDeclared: { "https://github.com/acme/agent-org/pull/3": { kind: "none" } } });
   assert.equal(waitNote(merged, [merged]), null, "its pull requests merged: nothing holds the run, though the tracker has NBF-1 In Progress (A11-154)");
   const marked = waitingFor({ ...stackable, head: "b".repeat(40) }, { waitMerged: ["NBF-1"] });
   assert.deepEqual(stackedOn(marked, [marked]), [], "a blocker the planner said to wait on to merge is never stacked on, pushed or not");
@@ -1278,7 +1278,7 @@ const withOpenPull = (fields: Partial<ViewEntry>): ViewEntry => run({ pullStates
 test("A11-154: a blocker lets go once its pull requests have merged, whatever state its ticket is in, and a canceled one never does", () => {
   const pulls = { "https://github.com/a11ign/agent-org/pull/1800": "merged" };
   const blocker = { key: "A11-144", state: "started", status: "In Progress", pulls };
-  const waiting = (blockers: ViewEntry["blockers"], fields: Partial<ViewEntry> = {}) => run({ ticket: { key: "A11-145" }, phase: "queued", ...fields, blockers });
+  const waiting = (blockers: ViewEntry["blockers"], fields: Partial<ViewEntry> = {}) => run({ ticket: { key: "A11-145" }, phase: "queued", blockersDeclared: { [Object.keys(pulls)[0]]: { kind: "none" } }, ...fields, blockers });
   const started = waiting([blocker]);
   assert.deepEqual(waitsOn(started, [started]), [], "its pull request merged while its ticket is still In Progress (it said Refs)");
   assert.equal(runStatus(started, [started]), "queued");
@@ -1294,6 +1294,127 @@ test("A11-154: a blocker lets go once its pull requests have merged, whatever st
   }
   const stackable = waiting([{ ...blocker, branch: "a11-144-x", head: "b".repeat(40) }], { plannedRepo: "agent-org" });
   assert.deepEqual(stackedOn(stackable, [stackable]), [], "and the run is not stacked on a branch whose work is on the default branch");
+});
+
+const FLEET_PULL = "https://github.com/a11ign/screenreader-fleet/pull/71";
+const CONTROL_PULL = "https://github.com/a11ign/control/pull/130";
+/** A11-183 as the tracker gave it to A11-204 on 2026-10-24: In Progress, one pull request merged, its branch pushed. */
+const A183 = { key: "A11-183", state: "started", status: "In Progress", branch: "a11-183-edge-pin", head: "c".repeat(40), pulls: { [FLEET_PULL]: "merged" } };
+/** A11-204, queued behind A11-183 in the fleet repository, with A11-183's merged pull request read as declaring nothing. */
+const behind183 = (fields: Partial<ViewEntry> = {}, blocker: object = A183) =>
+  run({ ticket: { key: "A11-204" }, phase: "queued", plannedRepo: "screenreader-fleet", blockers: [blocker as never], blockersDeclared: { [FLEET_PULL]: { kind: "none" } }, ...fields });
+const run183 = (fields: Partial<ViewEntry>): ViewEntry => run({ ticket: { key: "A11-183" }, ...fields });
+const heldWords = (dependent: ViewEntry, blocker: ViewEntry): string[] => [runStatus(dependent, [dependent, blocker]), waitNote(dependent, [dependent, blocker]) ?? ""];
+
+test("A11-206: a blocker whose ticket has a live run holds the run, whatever its pull requests so far did, and the card names where the run is", () => {
+  const live: [string, ViewEntry, string][] = [
+    ["running", run183({ phase: "running" }), "running"],
+    ["starting", run183({ phase: "starting" }), "running"],
+    ["queued", run183({ phase: "queued" }), "queued"],
+    ["a planning run", run183({ phase: "running", plan: { model: "opus", effort: "max" } }), "planning"],
+    ["a queued planning run", run183({ phase: "queued", plan: { model: "opus", effort: "max" } }), "planning"],
+    ["a queued review round", run183({ phase: "queued", review: [{ url: FLEET_PULL }] }), "in a review round"],
+    ["a running review round", run183({ phase: "running", review: [{ url: FLEET_PULL }] }), "in a review round"],
+    ["an agent waiting on a dialog", run183({ phase: "running", waiting: true }), "waiting on a question"],
+    ["a run parked on a question", run183({ phase: "finished", workspace: "w1", outcome: { kind: "needs-human", reason: "which?" } }), "waiting on a question"],
+  ];
+  for (const [name, blocker, word] of live) {
+    const dependent = behind183();
+    assert.deepEqual(waitsOn(dependent, [dependent, blocker]).map((b) => b.key), ["A11-183"], `${name}: holds although its only pull request merged`);
+    assert.deepEqual(heldWords(dependent, blocker), ["blocked", `Waits for A11-183 (${word})`], name);
+    assert.deepEqual(stackedOn(dependent, [dependent, blocker]), [], `${name}: a branch whose earlier pull request merged is not stacked on`);
+  }
+});
+
+test("A11-206: a live run holds a blocker that is marked to wait for its merge, and the card says both", () => {
+  const dependent = behind183({ waitMerged: ["A11-183"] });
+  const blocker = run183({ phase: "running" });
+  assert.equal(waitNote(dependent, [dependent, blocker]), "Waits for A11-183 (running) to merge");
+  assert.equal(waitNote(behind183({ waitMerged: ["A11-183"], blockers: [{ ...A183, pulls: { [FLEET_PULL]: "open" } }] }), [blocker]), "Waits for A11-183 (running) to merge", "with its pull request open too");
+});
+
+test("A11-206: a blocker with a live run that has pushed its branch and no pull request is still stacked on, as before", () => {
+  const dependent = behind183({}, { ...A183, pulls: {} });
+  assert.deepEqual(stackedOn(dependent, [dependent, run183({ phase: "running" })]).map((base) => base.key), ["A11-183"]);
+  assert.deepEqual(waitsOn(dependent, [dependent, run183({ phase: "running" })]), []);
+});
+
+test("A11-206: a Talk session is not a live run: it is judged by the finished run it resumes", () => {
+  const finished = run183({ phase: "finished", outcome: { kind: "ready-pr", prs: [{ url: FLEET_PULL }] }, pullStates: { [FLEET_PULL]: "merged" } });
+  const talking = run183({ phase: "running", talk: true, talkFrom: finished });
+  const dependent = behind183();
+  assert.deepEqual(waitsOn(dependent, [dependent, talking]), [], "a Talk session on a finished run whose pull requests merged: released (A11-154)");
+  const queuedTalk = run183({ phase: "queued", talk: true, talkFrom: finished });
+  assert.deepEqual(waitsOn(dependent, [dependent, queuedTalk]), [], "a queued one too");
+  const parkedTalk = run183({ phase: "running", talk: true, talkFrom: { ...finished, workspace: "w1" } });
+  assert.deepEqual(heldWords(dependent, parkedTalk), ["blocked", "Waits for A11-183 (waiting on a question)"], "the run it resumes is parked on a question: that holds");
+  const midRound = run183({ phase: "running", talk: true, talkFrom: run183({ phase: "running" }) });
+  assert.equal(waitsOn(dependent, [dependent, midRound]).length, 1, "a session over a run that is itself live holds");
+});
+
+test("A11-206: a blocker whose merged pull request declared Partial: holds, until a pull request that closes it merges or the ticket is Done", () => {
+  const step = { kind: "partial", remains: "step 1 of 2: the control pull request" } as const;
+  const holdingStep = behind183({ blockersDeclared: { [FLEET_PULL]: step } });
+  assert.deepEqual(waitsOn(holdingStep, [holdingStep]).map((b) => b.key), ["A11-183"], "no live run, the ticket In Progress, one pull request merged and partial");
+  assert.deepEqual(heldWords(holdingStep, run183({ phase: "finished" })), ["blocked", "Waits for A11-183 (step 1 of 2 merged)"]);
+  assert.equal(waitNote(behind183({ blockersDeclared: { [FLEET_PULL]: { kind: "partial", remains: "the control pull request" } } }), []), "Waits for A11-183 (its last merged pull request is partial)", "a Partial: line that names no step");
+  const withClosing = behind183({ blockersDeclared: { [FLEET_PULL]: step, [CONTROL_PULL]: { kind: "closes" } } }, { ...A183, pulls: { [FLEET_PULL]: "merged", [CONTROL_PULL]: "merged" } });
+  assert.deepEqual(waitsOn(withClosing, [withClosing]), [], "a later pull request with the closing keyword merged: released");
+  const done = behind183({ blockersDeclared: { [FLEET_PULL]: step } }, { ...A183, state: "completed" });
+  assert.deepEqual(waitsOn(done, [done]), [], "the ticket is Done: released");
+  const stillOpen = behind183({ blockersDeclared: { [FLEET_PULL]: step } }, { ...A183, branch: undefined, pulls: { [FLEET_PULL]: "merged", [CONTROL_PULL]: "open" } });
+  assert.deepEqual(waitsOn(stillOpen, [stillOpen]).map((b) => b.key), ["A11-183"], "the next step's pull request is open: still holds, as before");
+  const stacked = behind183({ blockersDeclared: { [FLEET_PULL]: step } }, { ...A183, pulls: { [FLEET_PULL]: "merged", [CONTROL_PULL]: "open" } });
+  assert.deepEqual(stackedOn(stacked, [stacked]).map((base) => base.key), ["A11-183"], "and with its branch pushed it is stacked on, as A11-116 has it");
+});
+
+test("A11-206: a blocker's own finished run that declared Partial: and merged holds without any pull request body read, and releases once it closes or its ticket is Done", () => {
+  const stalled = run183({ phase: "finished", partial: "step 1 of 2: the control pull request", outcome: { kind: "ready-pr", prs: [{ url: FLEET_PULL }] }, pullStates: { [FLEET_PULL]: "merged" } });
+  const unread = behind183({ blockersDeclared: undefined });
+  assert.equal(runStatus(stalled), "needs-you", "the board shows that run as Needs you");
+  assert.deepEqual(heldWords(unread, stalled), ["blocked", "Waits for A11-183 (step 1 of 2 merged)"], "before the sweep read a body");
+  const read = behind183();
+  assert.equal(waitsOn(read, [read, stalled]).length, 1, "and when the body read says nothing that overrules it");
+  const { partial: _dropped, ...closed } = stalled;
+  assert.deepEqual(waitsOn(read, [read, closed]), [], "the run's own `Closes` merged: released");
+  const completed = behind183({}, { ...A183, state: "completed" });
+  assert.deepEqual(waitsOn(completed, [completed, stalled]), [], "Done");
+});
+
+test("A11-206: no live run and every pull request merged and read as complete: released even with the ticket In Progress (A11-154 stays)", () => {
+  const dependent = behind183();
+  assert.deepEqual(waitsOn(dependent, [dependent]), [], "a blocker the board holds no run for");
+  assert.equal(runStatus(dependent, [dependent]), "queued");
+  assert.equal(waitNote(dependent, [dependent]), null);
+  const ended = run183({ phase: "finished", outcome: { kind: "ready-pr", prs: [{ url: FLEET_PULL }] }, pullStates: { [FLEET_PULL]: "merged" } });
+  assert.deepEqual(waitsOn(dependent, [dependent, ended]), [], "a blocker whose finished run is Completed");
+  const refs = run183({ phase: "finished", outcome: { kind: "needs-human", reason: "x" }, pullStates: {} });
+  assert.deepEqual(waitsOn(dependent, [dependent, refs]), [], "a finished run that is not parked and whose ticket the tracker left In Progress holds nothing, as before");
+  const withOpen = behind183({}, { ...A183, pulls: { [FLEET_PULL]: "merged", [CONTROL_PULL]: "open" }, branch: undefined });
+  assert.equal(waitsOn(withOpen, [withOpen]).length, 1, "one pull request still open holds it");
+});
+
+test("A11-206: a blocker whose merged pull request is not read yet holds the run, and says so", () => {
+  const unread = behind183({ blockersDeclared: undefined });
+  assert.deepEqual(waitsOn(unread, [unread]).map((b) => b.key), ["A11-183"]);
+  assert.equal(waitNote(unread, [unread]), "Waits for A11-183 (its merged pull requests are not read yet)");
+  const oneRead = behind183({}, { ...A183, pulls: { [FLEET_PULL]: "merged", [CONTROL_PULL]: "merged" } });
+  assert.equal(waitNote(oneRead, [oneRead]), "Waits for A11-183 (its merged pull requests are not read yet)", "every merged pull request has to be read");
+  const done = behind183({ blockersDeclared: undefined }, { ...A183, state: "completed" });
+  assert.deepEqual(waitsOn(done, [done]), [], "a Done blocker needs no read");
+  const ended = run183({ phase: "finished", outcome: { kind: "ready-pr", prs: [{ url: FLEET_PULL }] }, pullStates: { [FLEET_PULL]: "merged" } });
+  assert.deepEqual(waitsOn(unread, [unread, ended]), [], "and a blocker whose own run is Completed needs none either");
+});
+
+test("A11-206: Done releases a blocker that has a live run, and one whose merged pull request declared Partial:", () => {
+  const done = behind183({ blockersDeclared: { [FLEET_PULL]: { kind: "partial", remains: "step 1 of 2" } } }, { ...A183, state: "completed" });
+  assert.deepEqual(waitsOn(done, [done, run183({ phase: "running" })]), [], "Done with a live run on the queue");
+  assert.deepEqual(waitsOn(done, [done]), [], "Done with a partial declaration");
+  for (const state of ["canceled", "duplicate"]) {
+    const gone = behind183({}, { ...A183, state });
+    assert.deepEqual(waitsOn(gone, [gone, run183({ phase: "running" })]).map((b) => b.key), ["A11-183"], `a ${state} blocker never lets go, with a live run too`);
+    assert.equal(waitNote(gone, [gone, run183({ phase: "running" })]), `A11-183 was ${state === "canceled" ? "canceled" : "marked a duplicate"}: a person decides`);
+  }
 });
 
 test("A11-154: Respond is offered on every finished run with an open pull request, whatever its outcome, and on no other", () => {
