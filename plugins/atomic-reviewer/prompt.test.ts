@@ -33,6 +33,31 @@ test("A11-156: a re-review prompt says what it is, lists each reply with its aut
   assert.ok(!words.includes("has settled green checks and no verdict at that head"), "the gate's first-review sentence is not true of a re-review, and is not sent");
 });
 
+test("A11-235: a body-only re-review says the description changed, lists its removed and added lines, tells the reviewer to review the whole diff, and lists no replies", () => {
+  const words = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "https://github.com/o/r/pull/7", roleFile: ".agent-org/roles/reviewer.md", replies: [], doneWhen: DONE_WHEN,
+    body: [{ kind: "removed", text: "none" }, { kind: "added", text: "Outside-Region: src/a.ts — the reason" }] });
+  const order = ["re-review of #7", "no new commit", "the pull request's description has been edited", "Review the whole diff again, not only the answer", "- none\n+ Outside-Region: src/a.ts — the reason", DONE_WHEN, POST_MERGE_RULE, "Corrects review: Review of #7 at `a1b2c3d4`"].map((part) => words.indexOf(part));
+  assert.ok(order.every((at) => at >= 0), `every part is there: ${order}`);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), "in that order");
+  assert.ok(!words.includes("a reply has been posted") && !words.includes("The replies posted since that review"), "no reply is claimed");
+});
+
+test("A11-235: a re-review for a description edit and a reply says both and lists the lines before the replies; a reply alone still says only the reply", () => {
+  const replies = [{ author: "worker-bot", url: "https://github.com/o/r/pull/7#c1", text: "Done: the reason is stated." }];
+  const both = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies, doneWhen: null, body: [{ kind: "added", text: "Outside-Region: src/a.ts — the reason" }] });
+  assert.ok(both.includes("the pull request's description has been edited and a reply has been posted to it"));
+  assert.ok(both.indexOf("+ Outside-Region: src/a.ts") < both.indexOf("- worker-bot (https://github.com/o/r/pull/7#c1):"), "the description's lines come first");
+  const reply = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies, doneWhen: null });
+  assert.ok(reply.includes("a reply has been posted to it") && !reply.includes("description"), "a reply alone does not mention the description");
+  assert.ok(reply.includes("Review the whole diff again, not only the answer"), "and still reviews the whole diff");
+});
+
+test("A11-235: a long run of changed lines is cut with the length said, as a long reply is", () => {
+  const words = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies: [], doneWhen: null, body: [{ kind: "added", text: "y".repeat(5000) }] });
+  assert.match(words, /\[cut: \d+ more characters on the pull request\]/);
+  assert.ok(!words.includes("y".repeat(4001)));
+});
+
 test("A11-156: the line the approval is told to carry is the one the verdict door's names_review looks for: the commit in backticks, after the opener", () => {
   const words = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies: [{ author: "w", url: "u", text: "t" }], doneWhen: null });
   assert.ok(words.includes("Corrects review: Review of #7 at `a1b2c3d4`"));

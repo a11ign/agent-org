@@ -62,6 +62,9 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     // A brief that quotes the ticket's explicit decisions (contract 1.4) is one a reviewer takes too.
     const decided = reviewer.reprompt(probe.ref, { doneWhen: null, decisions: "## Decisions\n\n- Widen the policy, by the chairman's decision." });
     expect("prompted" in decided || "refusal" in decided, "reprompt() with a brief that quotes the ticket's decisions must answer { prompted } or { refusal }");
+    // A re-review brief whose description changed since the last look (contract 1.5) is one a reviewer takes too, with no replies to quote.
+    const answered = reviewer.reprompt(probe.ref, { doneWhen: null, rereview: { replies: [], body: [{ kind: "removed", text: "Out of Region: none" }, { kind: "added", text: "Outside-Region: src/a.ts — the reason" }] } });
+    expect("prompted" in answered || "refusal" in answered, "reprompt() with a re-review brief that carries the description's changed lines must answer { prompted } or { refusal }");
   },
   "close answers closed, gone or busy, or a refusal": ({ reviewer, probe }) => {
     const answer = reviewer.close(probe.ref);

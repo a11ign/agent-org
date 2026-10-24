@@ -9,13 +9,20 @@
 //
 // A REPLY TO A BLOCK GETS ONE RE-REVIEW OF THE SAME HEAD (A11-156). A head with the reviewer's `not convinced` review and no new commit stays blocked, and a worker that answers the review in a comment
 // (correctly, "not a defect in this diff") had nobody reading it. When the worker's own account, or a person the org declares, replies after the block, `rereviewFor` starts the reviewer once more for that head
-// with the replies in its brief, and records it (`reviewerRereviewed`, before the start) so the head is re-reviewed by reply once, whatever is posted after. No commit is needed to get a review.
+// with the replies in its brief, and records it (`reviewerRereviewed`, before the start). No commit is needed to get a review.
+//
+// A FINDING ANSWERED WITHOUT A COMMIT IS RE-REVIEWED WHEN SOMETHING NEW ANSWERS IT (A11-235). A description edit is not a new head, and a worker that fixes a finding by editing the description (and replies, or not) left the head blocked. Each start of the
+// reviewer for a head records a LOOK (`reviewerMemory.looks`): the time and the pull request body it started with. A blocked head is re-reviewed when its body now differs from the last look's, or a trusted reply came after both the block and the last
+// look, and the brief carries the changed lines and the replies. That takes something new each time, and for a pull request a run holds, each re-review is one of the run's rounds (`rereviewRound`), started only once the run's round has ended
+// (`finished`) and while a round is left: a dispute ends at the cap, handed to a person.
 
-import { earlierReviewWord, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
+import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { recordVerdictNotPosted } from "./queue/queue-transitions.ts";
+import { recordVerdictNotPosted, roundsLeft } from "./queue/queue-transitions.ts";
+import { rereviewRound } from "./queue/queue-rereview.ts";
+import { diffLines } from "./board-view/ticket-change.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { AWAITING_PERSON_LINE, claimWarning, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
@@ -24,7 +31,7 @@ import { decisionsOf } from "./ticket-decisions.ts";
 import { partialStepOf } from "./board-view/plan-steps.ts";
 import { planStepSection } from "./pool-ticket-text.ts";
 import type { Reply } from "../plugins/contracts/code-host.ts";
-import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
+import type { ReviewBodyLine, ReviewBrief } from "../plugins/contracts/reviewer.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -98,14 +105,20 @@ const rereviewKey = (key: string): string => `${key}#rereview`;
  */
 type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null; unclaimed?: string }>;
 
+/** The run of the queue that holds the pull request at `url`, or undefined when none does (one a person opened, or a run since removed). */
+const heldBy = (ctx: PoolContext, url: string): Entry | undefined => ctx.store.get().entries.find((entry) => pullsOf(entry).some((pull) => pull.url === url));
+
+/** The pull request body a reviewer reads, as the host gave it; empty when the host gave none. */
+const bodyOf = (state: ReviewState): string => String(state.view.body ?? "");
+
 /**
  * What the pool tells a reviewer of the ticket behind `url` (A11-156): the Done-when of the run that holds the pull request, since the reviewer cannot read the tracker, and the ticket's explicit decisions (A11-213), which bind the reviewer ahead of its general rules. Null when no run holds
  * it (one a person opened, or a run since removed) or its ticket has no such section: the reviewer is then told the pull request is the only copy of the contract it has.
  * A pull request whose body says `Partial: step N of M` also carries the step (A11-175), with the plan's section for it when the run that holds the pull request has a plan file with one, else null.
  */
 export function briefOf(ctx: PoolContext, url: string, state: ReviewState): ReviewBrief {
-  const held = ctx.store.get().entries.find((entry) => pullsOf(entry).some((pull) => pull.url === url));
-  const step = partialStepOf(String(state.view.body ?? ""));
+  const held = heldBy(ctx, url);
+  const step = partialStepOf(bodyOf(state));
   const decisions = decisionsOf(held?.ticket.description);
   return {
     doneWhen: doneWhenOf(held?.ticket.description),
@@ -114,8 +127,8 @@ export function briefOf(ctx: PoolContext, url: string, state: ReviewState): Revi
   };
 }
 
-/** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, and what it is called in a log line. */
-type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => string; says: string; brief: ReviewBrief; adopts: boolean }>;
+/** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, what it is called in a log line, and the pull request body it starts with (its look, A11-235). */
+type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => string; says: string; brief: ReviewBrief; adopts: boolean; body: string }>;
 
 const withUnclaimed = (reason: string | undefined): { unclaimed?: string } => (reason === undefined ? {} : { unclaimed: reason });
 
@@ -129,7 +142,12 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const { refusedHeads, reviewerDropped } = ctx;
   const key = `${url}@${head}`;
   const dropped = kind.droppedKey(key);
+  const { looks } = ctx.reviewerMemory;
+  // A head can be started more than once (a re-review): what an earlier start recorded is put back when this one is refused, so the body it saw is still the one a later look compares with.
+  const recordedBefore = kind.recorded.has(key);
+  const earlierLook = looks.get(key);
   kind.recorded.add(key);
+  looks.set(key, { at: ctx.now(), body: kind.body });
   reviewerDropped.delete(dropped);
   rememberReviewers(ctx);
   const adopted = kind.adopts && reviewer.live({ pr: url, head });
@@ -145,8 +163,12 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
     if (started.tookOver !== undefined) log(`${url}: ${started.tookOver}`);
     return { refusal: null, tookOver: started.tookOver ?? null, ...withUnclaimed(started.unclaimed) };
   }
-  kind.recorded.delete(key);
-  reviewerDropped.add(dropped);
+  if (!recordedBefore) {
+    kind.recorded.delete(key);
+    reviewerDropped.add(dropped);
+  }
+  if (earlierLook === undefined) looks.delete(key);
+  else looks.set(key, earlierLook);
   rememberReviewers(ctx);
   if (!refusedHeads.has(dropped)) {
     refusedHeads.add(dropped);
@@ -157,7 +179,7 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
 
 /** The first review of a head (A11-119): recorded in `reviewerStarted`, under the key `reviewerDropped` has always held it by. */
 function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer {
-  return startWith(ctx, reviewer, url, state.head, { recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url, state), adopts: true });
+  return startWith(ctx, reviewer, url, state.head, { recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url, state), adopts: true, body: bodyOf(state) });
 }
 
 /**
@@ -207,21 +229,64 @@ function repliesAfter(ctx: PoolContext, url: string, key: string, since: number)
 }
 
 /**
- * A RE-REVIEW OF A HEAD THAT STAYS BLOCKED, ASKED BY A REPLY (A11-156): when the reviewer's newest review at the head is its `not convinced`, no reviewer is live for the head, the checks are
- * green, and a reply to the block has been posted since by the board's own account or a person the org declares, the reviewer is started once more for the same head, with the replies in its brief.
- * Once: the head is recorded before the start, and is never re-reviewed by reply again whatever is posted after, so a reply the reviewer still rejects cannot summon it again without new work. A new
- * head is a new first review and has no record. Returns the start's answer, or null when nothing was asked.
+ * The lines of the pull request body that changed since `look`, as the reviewer is told them (A11-235): the old lines that are gone and the new ones, in reading order, with the lines that are blank left out, so a
+ * change of spacing is no answer. Empty when the head has no look (the body it was started with is not known), or the body reads as it did.
+ */
+function bodyChangeSince(look: Look | undefined, state: ReviewState): ReviewBodyLine[] {
+  if (look === undefined) return [];
+  return diffLines(look.body.trim(), bodyOf(state).trim()).flatMap(({ kind, text }): ReviewBodyLine[] => (kind === "same" || text.trim() === "" ? [] : [{ kind, text }]));
+}
+
+/** How the run's hand-back names the block it did not re-review: which head, and how it was answered (`how` is "by editing the description" or "in a reply"). */
+const answeredWords = (url: string, head: string, how: string): string => `${REVIEWER_LOGIN}'s block on ${url} at ${head.slice(0, 8)} was answered ${how}, and the board does not review it again`;
+
+/**
+ * Whether the head's block may be looked at again now: the checks have settled, no reviewer is live for the head, and it was not re-reviewed before looks were kept (such a head has no look to compare with, and
+ * A11-156's one re-review by reply is spent).
+ */
+function rereviewable(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState, look: Look | undefined): boolean {
+  const spent = look === undefined && ctx.reviewerRereviewed.has(`${url}@${state.head}`);
+  return !spent && state.settled && !reviewer.live({ pr: url, head: state.head });
+}
+
+/** Hands the run that holds a block it has no round left to answer to a person (once), instead of starting the reviewer (A11-235). */
+function handBackUnreviewed(ctx: PoolContext, held: Entry, answered: string): void {
+  if (held.handedBack !== undefined) return;
+  log(`${held.ticket.key}: ${answered}; it has no round left, so it is handed to a person`);
+  update(ctx, (queue) => rereviewRound(queue, held.ticket.key, answered));
+}
+
+/**
+ * A RE-REVIEW OF A HEAD THAT STAYS BLOCKED, WHEN SOMETHING NEW ANSWERS THE BLOCK (A11-156, A11-235): when the reviewer's newest review at the head is its `not convinced`, no reviewer is live for the head, and the checks are green,
+ * the reviewer is started once more for the same head if the pull request body now differs from the body of the head's last look, or a reply to the block has been posted since the block AND the last look by the board's own account or a person
+ * the org declares. The brief carries the changed lines and the replies, so the reviewer checks the answer, and it still reads the whole diff. A head with no look (started before looks were kept) is re-reviewed by a reply only, and
+ * never again if it was re-reviewed then. Every start records a look, so a re-review needs something new each time: a reply the reviewer still rejects cannot summon it again without new work.
+ *
+ * For a pull request a run holds, the re-review waits for the end of the run's round (phase `finished`), so the reviewer never reads a body the worker is still editing, and counts as one of the run's rounds
+ * (`rereviewRound`): with none left the run is handed to a person and no reviewer starts. A pull request no run holds has no rounds and no cap. Returns the start's answer, or null when nothing was asked.
  */
 function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer | null {
   const { head } = state;
-  const key = `${url}@${head}`;
   const block = standingBlock(state.reviews, head);
-  const asked = ctx.reviewerRereviewed.has(key) || reviewer.live({ pr: url, head });
-  if (block === null || asked || !state.settled) return null;
-  const replies = repliesAfter(ctx, url, key, block.at);
-  if (replies === null || replies.length === 0 || ctx.codeHost.readPullState(url) !== "OPEN") return null;
-  const brief: ReviewBrief = { ...briefOf(ctx, url, state), rereview: { replies: replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text })) } };
-  return startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false });
+  const look = ctx.reviewerMemory.looks.get(`${url}@${head}`);
+  if (block === null || !rereviewable(ctx, reviewer, url, state, look)) return null;
+  const held = heldBy(ctx, url);
+  if (held !== undefined && held.phase !== "finished") return null;
+  const changed = bodyChangeSince(look, state);
+  const replies = repliesAfter(ctx, url, `${url}@${head}`, Math.max(block.at, look?.at ?? 0));
+  if (replies === null) return null;
+  if (replies.length === 0 && changed.length === 0) return null;
+  if (ctx.codeHost.readPullState(url) !== "OPEN") return null;
+  const answered = answeredWords(url, head, changed.length > 0 ? "by editing the description" : "in a reply");
+  if (held !== undefined && !roundsLeft(held)) {
+    handBackUnreviewed(ctx, held, answered);
+    return null;
+  }
+  const quoted = replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text }));
+  const brief: ReviewBrief = { ...briefOf(ctx, url, state), rereview: { replies: quoted, ...(changed.length === 0 ? {} : { body: changed }) } };
+  const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state) });
+  if (held !== undefined && started.refusal === null) update(ctx, (queue) => rereviewRound(queue, held.ticket.key, answered));
+  return started;
 }
 
 /**
@@ -351,6 +416,8 @@ function adoptRememberedReviewers(ctx: PoolContext): void {
   for (const [instance, at] of reviewerMemory.seen) if (ctx.now() - at >= REVIEW_LEASE_MS) reviewerMemory.seen.delete(instance);
   // Why a start `ticket:review` made has no claim, for the heads still started.
   for (const [key, reason] of memory.unclaimed) if (reviewerStarted.has(key) && !reviewerMemory.unclaimed.has(key)) reviewerMemory.unclaimed.set(key, reason);
+  // Likewise the look of a head `ticket:review` started (A11-235): the pool's own, written at its own starts, is the newer when it has one.
+  for (const [key, look] of memory.looks) if (reviewerStarted.has(key) && !reviewerMemory.looks.has(key)) reviewerMemory.looks.set(key, look);
 }
 
 /**
@@ -446,7 +513,7 @@ export function pullReviewsOf(ctx: PoolContext): Record<string, string> {
 }
 
 /**
- * Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed, re-posts, re-reviewed) and any verdict still awaiting its close.
+ * Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed, re-posts, re-reviewed, looks) and any verdict still awaiting its close.
  */
 function forgetPull(ctx: PoolContext, url: string): void {
   const { closing, reviewerDropped, reviewerReposts, reviewerRereviewed, reviewerResumed, reviewerStarted } = ctx;
@@ -457,6 +524,7 @@ function forgetPull(ctx: PoolContext, url: string): void {
       if (reviewerRereviewed.has(key)) reviewerDropped.add(rereviewKey(key));
       reviewerStarted.delete(key);
       ctx.reviewerMemory.unclaimed.delete(key);
+      ctx.reviewerMemory.looks.delete(key);
       reviewerResumed.delete(key);
       reviewerReposts.delete(key);
       reviewerRereviewed.delete(key);
