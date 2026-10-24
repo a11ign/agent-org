@@ -1,0 +1,1 @@
+Screenshots of the eight Plugins boards of the live canvas, each beside the page of pull request #1868 (a11ign/agent-org). They are not part of agent-org (docs/design/atomaut/README.md keeps no board image in the repository): this branch is only the evidence for that review and is never merged. Delete it when the pull request is merged.
