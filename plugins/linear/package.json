@@ -8,6 +8,7 @@
     "concern": "tracker",
     "contract": "1.7",
     "description": "Linear: where tickets are kept and read.",
+    "setUp": "Linear connected as the tracker",
     "entry": "index.ts",
     "settings": {
       "key": {

@@ -40,6 +40,13 @@ test("a bundled package with an agentOrg field is a plugin, read without importi
   assert.deepEqual(pluginsOfConcern(catalog, "tracker").map(({ name }) => name), ["example", "fake-tracker"]);
 });
 
+test("agentOrg.setUp is the plugin's setup words when present, and is optional", () => {
+  const catalog = catalogOf({ words: manifest({ setUp: "Example connected as the tracker" }), plain: manifest() });
+  assert.equal(pluginNamed(catalog, "words")?.setUp, "Example connected as the tracker");
+  assert.equal(pluginNamed(catalog, "plain")?.setUp, undefined, "a plugin with none is said by its description");
+  assert.equal("setUp" in (pluginNamed(catalog, "plain") ?? {}), false);
+});
+
 test("a package with no agentOrg field is not a plugin and is skipped, and a folder with no package.json too", () => {
   const catalog = catalogOf({ tools: { name: "tools" }, empty: "{}" });
   assert.equal(pluginNamed(catalog, "tools"), undefined);
@@ -60,6 +67,8 @@ test("a malformed manifest is refused by name, with the field, and is a refusal 
     ["concern", { concern: "database" }, /plugin bad: agentOrg\.concern must be one of tracker, codeHost, publisher, reviewer, exposure, messaging, not "database"/],
     ["contract", { contract: "1" }, /agentOrg\.contract must be "<major>\.<minor>"/],
     ["description", { description: "" }, /agentOrg\.description must be a sentence/],
+    ["setUp empty", { setUp: "" }, /agentOrg\.setUp must be a sentence saying what is set up/],
+    ["setUp not text", { setUp: 7 }, /agentOrg\.setUp must be a sentence saying what is set up/],
     ["entry", { entry: "../elsewhere.ts" }, /agentOrg\.entry must be the entry module's path inside the package/],
     ["entry file", { entry: "missing.ts" }, /agentOrg\.entry "missing\.ts" is not a file in the package/],
     ["tooling", { tooling: { connectors: ["mcp__no_anchor"] } }, /agentOrg\.tooling\.connectors must be a list of patterns anchored at "\^mcp__"/],

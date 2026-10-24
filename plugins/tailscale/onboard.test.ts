@@ -27,9 +27,9 @@ test("the plugin onboards in three steps, each with its explanation", () => {
   for (const each of ONBOARD_STEPS) assert.ok(each.explain.length > 0, each.name);
 });
 
-test("onboard says Tailscale is not on PATH, in the words it had, and says nothing when it is", async () => {
+test("onboard says Tailscale is not on PATH, in the words it had, as a step that did not pass (A11-222), and says nothing when it is", async () => {
   const absent = fakePluginDeps({ exec: () => ({ status: null, stdout: "", stderr: "ENOENT" }) });
-  assert.deepEqual(await step("tailscale installed").run({}, stepDeps(absent)), { ok: true, detail: NOT_ON_PATH });
+  assert.deepEqual(await step("tailscale installed").run({}, stepDeps(absent)), { ok: false, detail: NOT_ON_PATH, summary: "Tailscale is not installed" });
   assert.match(NOT_ON_PATH, /^tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run/);
   assert.deepEqual(await step("tailscale installed").run({}, stepDeps(depsOf(freshState()))), { ok: true, detail: "" });
 });
@@ -39,6 +39,7 @@ test("onboard says the operator command when Tailscale refuses this user's serve
   const refusing = fakePluginDeps({ env: { USER: "agent" }, exec: (file, args) => (args[0] === "serve" && args[1] === "status" ? { status: 1, stdout: "", stderr: "Access denied: serve config denied" } : exec(file, args)) });
   const denied = await step("tailscale operator").run({}, stepDeps(refusing));
   assert.equal(denied.ok, false);
+  assert.equal(denied.summary, "Tailscale does not let you change what it serves");
   assert.match(denied.detail, /agent is not the operator of this machine's Tailscale.*run `sudo tailscale set --operator=agent`/);
   assert.deepEqual(await step("tailscale operator").run({}, stepDeps(depsOf(freshState()))), { ok: true, detail: "" });
   assert.deepEqual(await step("tailscale operator").run({}, stepDeps(fakePluginDeps({ exec: () => ({ status: null, stdout: "", stderr: "ENOENT" }) }))), { ok: true, detail: "" }, "no Tailscale: the first step already said so");
@@ -56,6 +57,7 @@ test("the ports step writes the default tailnetPorts when the block names none, 
   state.web[`${NAME}:9443`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } };
   const taken = await step("tailnet ports").run(SETTINGS, stepDeps(depsOf(state)));
   assert.equal(taken.ok, false);
+  assert.equal(taken.summary, "A tailnet port is already taken");
   assert.match(taken.detail, /port 9443 already serves http:\/\/127\.0\.0\.1:9999 on the tailnet/);
   const absent = await step("tailnet ports").run({}, stepDeps(fakePluginDeps({ exec: () => ({ status: null, stdout: "", stderr: "ENOENT" }) })));
   assert.deepEqual(absent, { ok: true, detail: "", settings: { tailnetPorts: { ui: 9443, terminal: 9444 } } }, "defaults are written for a profile whether or not Tailscale is installed yet");

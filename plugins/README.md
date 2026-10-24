@@ -42,6 +42,7 @@ plugins/<name>/
     "concern": "tracker",
     "contract": "1.1",
     "description": "One sentence: what the plugin is for.",
+    "setUp": "Example connected as the tracker",
     "entry": "index.ts",
     "settings": { "key": { "key": "tickets.providers.tracker.key", "...": "a SchemaEntry of src/ticket-mode/config-schema.ts" }, "key.path": { "...": "a part of key, drawn as a row of its own" } },
     "tooling": { "mcpServers": ["example"], "connectors": ["^mcp__example__(get|list)_"], "connectorServers": ["example"], "skills": [], "writer": { "...": "a tracker's TrackerWriting, contract 1.1" } }
@@ -49,7 +50,8 @@ plugins/<name>/
 }
 ```
 
-`"type": "module"` makes Node read the entry's `.ts` as an ES module. `settings` are the plugin's own: the Settings page draws them, in the tracker's section, where they were drawn when they
+`"type": "module"` makes Node read the entry's `.ts` as an ES module. `setUp` is optional: the sentence onboard says once the plugin is set up, as a person reads it (`Linear connected as the tracker`, `Board served on this machine`);
+without it onboard says the `description`, and never the bare name (A11-222). `settings` are the plugin's own: the Settings page draws them, in the tracker's section, where they were drawn when they
 were core's. `tooling.connectors` are the read-only tools a worker may call; `connectorServers` names the servers whose patterns in `tickets.connectors` belong to this plugin's block. A
 tracker's `tooling.writer` is what a new-ticket run files with (tracker contract 1.1): the tools it is granted, what the hook refuses, how a created ticket's key is read back, and the
 priority numbers. It is data and not code because the PreToolUse hook is a process started for every tool call, which must not import a plugin to answer one.
@@ -62,7 +64,9 @@ install command and these, and no Install button.
 **A messaging plugin's settings are keys of the project's `messaging` object** (`project.json`), not of a block under `tickets.providers`: its manifest keys them `messaging.<name>` with `"file": "project.json"`.
 
 **The entry module** exports `create(settings, deps)`, which returns the concern's contract implementation; `doctorChecks(settings, deps)`, which returns doctor rows; and
-`onboardSteps`, the steps onboard runs for it, in order, each given the settings the earlier steps chose, and answering what to say and the settings to write into the plugin's block. It
+`onboardSteps`, the steps onboard runs for it, in order, each given the settings the earlier steps chose, and answering what to say and the settings to write into the plugin's block. A step answers `{ ok, detail, settings?, summary? }`: `summary` (A11-222) is its own line in a person's words
+(`GitHub stacked pull requests ready`), drawn ✓ or ✗ by `ok`, with `detail` beside it under `agent-org onboard --verbose` when it passed and beneath it as the fix when it failed; a step with no `summary` says
+nothing when it passed (its `detail` is for `--verbose`), and when it failed its `detail` is the fix under the plugin's own line. It
 may also export `keep(settings, deps)`, what `agent-org update` keeps true on the machine at every update (the code host keeps its stacking extension present): safe to repeat, no prompt, never
 throws. It imports core with `import type` only: every runtime helper arrives in `deps` (`fetch`; `exec`, which runs a program with an optional `env` laid over this process's, and a `timeoutMs`;
 `readFile`, `mode`, the host's `clones`, the board's `pick` scope, `place` (where the host file says the machine keeps what a code host's wrapper is rendered from, asked only by a code host's doctor rows) and `policy`, which is what core decides about what a code host reports: which check is red, which run of one is newer, and how

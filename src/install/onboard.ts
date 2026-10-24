@@ -57,13 +57,13 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { corePolicy } from "../plugins/policy.ts";
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
-import type { Catalog, PluginDeps, PluginSettings } from "../plugins/manifest.ts";
+import type { Catalog, CatalogPlugin, PluginDeps, PluginSettings, StepResult } from "../plugins/manifest.ts";
 import { readPluginContract, type Contract } from "../ticket-mode/plugin-contract.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
 import { ensureBun } from "./bun.ts";
 import { chromiumProblems, chromiumReport, lacksLibraries, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
-import { DEFAULT_TERMINAL_PORT, herdrConfigDir, PAIRING_STEPS, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
+import { DEFAULT_TERMINAL_PORT, herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
 import { HERDR_INTEGRATIONS, integrationInstallCommand, newestPluginTag, type HerdrIntegration } from "./herdr-upkeep.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
@@ -80,6 +80,7 @@ import { loadedCodeHost } from "../plugins/code-host-slot.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import { pickRepositories, type PickedRepository } from "./onboard-repos.ts";
 import { clackPrompts, PromptCancelled, type Prompts } from "./prompts.ts";
+import { type OnboardOutput, onboardOutput } from "./onboard-output.ts";
 
 export type OnboardOptions = Readonly<{
   repos: readonly string[];
@@ -94,6 +95,8 @@ export type OnboardOptions = Readonly<{
   autoUpdate: boolean;
   /** The channel auto-update follows, written to `<home>/update-channel`; undefined leaves the file as it is. */
   updateChannel: UpdateChannel | undefined;
+  /** Show the internal lines too (`--verbose`): the commands, the plugin names, each service (A11-222). */
+  verbose: boolean;
 }>;
 
 export type OnboardDeps = Readonly<{
@@ -127,6 +130,10 @@ export type OnboardDeps = Readonly<{
   /** Picking from a list, yes or no, and a prefilled line: how a terminal is asked for repositories (A11-186). */
   prompts: Prompts;
   now: () => Date;
+  /** The `fetch` a plugin's steps reach the network with: the Linear step checks the key against Linear (A11-222). */
+  fetch: typeof fetch;
+  /** Draw ✓ and ✗ in colour (A11-222): a terminal is attached and `NO_COLOR` is not set. */
+  color: boolean;
   /** The `bun` this machine has, installed into `~/.bun/bin` when it has none. */
   ensureBun: () => Promise<{ path: string; installed: boolean }>;
   /** The text of herdr's `plugins.json`, or null. */
@@ -147,19 +154,22 @@ export type OnboardDeps = Readonly<{
   chromium: () => ChromiumReport;
   /** Whether this process runs as root, so the system libraries are installed without `sudo` (A11-151). */
   isRoot: () => boolean;
-  /** Start the named services, in order. @returns one line per service */
-  startServices: (names: readonly ServiceName[]) => Promise<string>;
+  /** Start the named services, in order. @returns what became of each */
+  startServices: (names: readonly ServiceName[]) => Promise<ServiceOutcome[]>;
   out: Pick<Console, "log">;
 }>;
 
 export class OnboardRefusal extends Error {}
+
+/** The deps of one run: the injected ones, and the output every step speaks through (A11-222). */
+type Session = OnboardDeps & Readonly<{ say: OnboardOutput }>;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const expandHome = (path: string, home: string) => (path === "~" || path.startsWith("~/") ? join(home, path.slice(1)) : path);
 const firstLine = (result: RunResult) => (result.stderr || result.stdout).trim().split("\n")[0] || `exit ${result.status}`;
 
 /** `name=/path`, or a bare path named after its last directory. REFUSES a relative path and one that is not a directory. */
-function parseRepo(text: string, deps: OnboardDeps): [string, string] {
+function parseRepo(text: string, deps: Session): [string, string] {
   const at = text.indexOf("=");
   const [name, raw] = at > 0 ? [text.slice(0, at), text.slice(at + 1)] : [basename(text.replace(/\/+$/, "")), text];
   const path = expandHome(raw.trim(), deps.home);
@@ -173,20 +183,20 @@ function parseRepo(text: string, deps: OnboardDeps): [string, string] {
  * A profile's repository, as `[name, path]`. A checkout that is not there is cloned as the person's own GitHub login, when the profile names its repository;
  * one that is not there and has no repository to clone is refused by name.
  */
-function repoOfProfile(repo: ProfileRepo, deps: OnboardDeps): [string, string] {
+function repoOfProfile(repo: ProfileRepo, deps: Session): [string, string] {
   const path = resolve(expandHome(repo.path, deps.home));
   if (!isAbsolute(path)) throw new OnboardRefusal(`repos ${repo.name}: the checkout must be an absolute path, or start with ~/`);
   if (!deps.isDirectory(path)) {
     if (repo.remote === undefined) throw new OnboardRefusal(`repos ${repo.name}: ${path} is not a directory, and the profile names no repository to clone it from`);
     const cloned = deps.ghAs({})(repoCloneArgs(repo.remote, path));
     if (cloned.status !== 0) throw new OnboardRefusal(`could not clone ${repo.remote} to ${path}: ${firstLine(cloned)}. Run \`gh auth login\`, then onboard again.`);
-    deps.out.log(`cloned ${repo.remote} to ${path}`);
+    deps.say.done(`${repo.remote}  ${inHome(path, deps.home)}`);
   }
   return [repo.name, path];
 }
 
 /** The host file's text, or null when it does not exist. */
-function readHostText(path: string, deps: OnboardDeps): string | null {
+function readHostText(path: string, deps: Session): string | null {
   try {
     return deps.readFile(path);
   } catch {
@@ -210,7 +220,7 @@ function parseHostText(path: string, text: string): Record<string, unknown> {
  * The host file as an object, moved to the one shape first: an old key is moved into its provider block with a backup beside the file, exactly as
  * `doctor --fix` moves it. A file that would read differently after the move is refused, and nothing is written.
  */
-async function currentHost(path: string, deps: OnboardDeps): Promise<Record<string, unknown>> {
+async function currentHost(path: string, deps: Session): Promise<Record<string, unknown>> {
   const text = readHostText(path, deps);
   if (text === null) return {};
   const parsed = parseHostText(path, text);
@@ -218,7 +228,7 @@ async function currentHost(path: string, deps: OnboardDeps): Promise<Record<stri
   if (fix.kind === "refused") throw new OnboardRefusal(`${path}: ${fix.reason}`);
   if (fix.kind === "nothing") return parsed;
   const backup = writeHostFix(path, text, fix.text, 0o600, deps.now(), (file, body) => deps.writeFile(file, String(body)));
-  deps.out.log(`moved the old keys in ${path} into its provider blocks, and kept the old file at ${backup}:\n  ${describeMoves(fix.moves).join("\n  ")}`);
+  deps.say.done(`Old settings in ${inHome(path, deps.home)} moved into its provider blocks (the old file is kept at ${inHome(backup, deps.home)})`, ...describeMoves(fix.moves));
   return JSON.parse(fix.text) as Record<string, unknown>;
 }
 
@@ -236,7 +246,7 @@ function fill(block: unknown, values: Readonly<Record<string, unknown>>): Record
  * The profile to set up from: read when its file is there, else asked for at a terminal and written there (mode 600), else refused by name. The questions
  * are asked of the repositories `--repo` names, or asked for when none was given.
  */
-async function profileFor(options: OnboardOptions, held: Readonly<Record<string, string>>, deps: OnboardDeps): Promise<Profile> {
+async function profileFor(options: OnboardOptions, held: Readonly<Record<string, string>>, deps: Session): Promise<Profile> {
   const path = profilePathOf(options.profile ?? "", deps.env, deps.home);
   if (deps.exists(path)) {
     try {
@@ -251,32 +261,32 @@ async function profileFor(options: OnboardOptions, held: Readonly<Record<string,
   }
   const profile = await askProfile({ ask: deps.ask }, await profileRepos(options, held, deps), deps.catalog());
   deps.writeFile(path, profileText(profile));
-  deps.out.log(`wrote the answers to ${path}, mode 600: a copy of it sets up another machine, and holds no secret`);
+  deps.say.done(`Answers saved to ${inHome(path, deps.home)}: copy it to set up another machine; it holds no secret`);
   return profile;
 }
 
 /** What the profile records of the repositories: `--repo`'s, else those picked from the folder and the code host (each with its repository, so a copy of the profile clones them), else those named by path. */
-async function profileRepos(options: OnboardOptions, held: Readonly<Record<string, string>>, deps: OnboardDeps): Promise<ProfileRepo[]> {
+async function profileRepos(options: OnboardOptions, held: Readonly<Record<string, string>>, deps: Session): Promise<ProfileRepo[]> {
   const byPath = (repos: readonly string[]): ProfileRepo[] => repos.map((text) => parseRepo(text, deps)).map(([name, path]) => ({ name, path }));
   if (options.repos.length > 0) return byPath(options.repos);
   const picked = await pickedRepositories(held, deps);
-  if (picked !== null) return picked.map(({ name, path, fullName }) => ({ name, remote: fullName, path: pathInHome(path, deps.home) }));
+  if (picked !== null) return picked.map(({ name, path, fullName }) => ({ name, remote: fullName, path: inHome(path, deps.home) }));
   return byPath(await askRepositories(deps));
 }
 
-/** `path` as `~/…` when it is under the home folder, so a profile copied to another machine finds it there. */
-const pathInHome = (path: string, home: string): string => (path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path);
+/** `path` as `~/…` when it is under the home folder, so a profile copied to another machine finds it there, and a line a person reads is short. */
+const inHome = (path: string, home: string): string => (path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path);
 
 /**
  * The repositories a person picks at a terminal (A11-186): the checkouts in the folder onboard runs in, and more from the code host's organisations. `held` is the host file's clones, kept as they are.
  * @returns null when the code host lists no repositories or nothing was found to pick from: the caller asks for paths, as it always did
  * @throws OnboardRefusal when the person stops a prompt
  */
-async function pickedRepositories(held: Readonly<Record<string, string>>, deps: OnboardDeps): Promise<PickedRepository[] | null> {
+async function pickedRepositories(held: Readonly<Record<string, string>>, deps: Session): Promise<PickedRepository[] | null> {
   const repositories = deps.codeHost().repositories;
   if (repositories === undefined) return null;
   try {
-    return await pickRepositories(held, { cwd: deps.cwd, home: deps.home, repositories, prompts: deps.prompts, out: deps.out, isDirectory: deps.isDirectory, exists: deps.exists, readFile: deps.readFile, listDir: deps.listDir });
+    return await pickRepositories(held, { cwd: deps.cwd, home: deps.home, repositories, prompts: deps.prompts, out: deps.say, isDirectory: deps.isDirectory, exists: deps.exists, readFile: deps.readFile, listDir: deps.listDir });
   } catch (error) {
     if (error instanceof PromptCancelled) throw new OnboardRefusal("onboard was stopped at the repositories, and its other steps did not run");
     throw error;
@@ -287,7 +297,7 @@ async function pickedRepositories(held: Readonly<Record<string, string>>, deps: 
  * The host file's clones, for the picker to pre-tick and keep. A host file that is absent holds none; one that exists and cannot be read, is not JSON or is not an object is REFUSED by name, as `currentHost`
  * refuses it, before the person is asked anything: an unreadable file is not an empty one.
  */
-function heldClones(hostFile: string, deps: OnboardDeps): Record<string, string> {
+function heldClones(hostFile: string, deps: Session): Record<string, string> {
   if (!deps.exists(hostFile)) return {};
   let text: string;
   try {
@@ -300,8 +310,8 @@ function heldClones(hostFile: string, deps: OnboardDeps): Record<string, string>
 }
 
 /** The repositories a person names at a terminal, one per line, until an empty line. */
-async function askRepositories(deps: OnboardDeps): Promise<string[]> {
-  deps.out.log("Name the repositories a worker can choose from: one checkout path per line, or name=path. An empty line finishes.");
+async function askRepositories(deps: Session): Promise<string[]> {
+  deps.say.note("Name the repositories a worker can choose from: one checkout path per line, or name=path. An empty line finishes.");
   const repos: string[] = [];
   for (let line = (await deps.ask("Repository: ")).trim(); line !== ""; line = (await deps.ask("Repository: ")).trim()) repos.push(line);
   return repos;
@@ -315,30 +325,49 @@ export function onboardServices({ terminal, autoUpdate }: { terminal: boolean; a
 /** The services onboard REQUIRES: one of these refusing to start fails onboard, and any other is said and passed over. */
 const REQUIRED: readonly ServiceName[] = ["instance", "ui"];
 
-/** Start `names`, in order. @returns one line per service */
-export async function startServices(names: readonly ServiceName[], start: (name: ServiceName) => Promise<Started>): Promise<string> {
-  const lines: string[] = [];
+/** What became of one service onboard started: whether it runs the way it should, the line that says so, and where it is served when it is. */
+export type ServiceOutcome = Readonly<{ name: ServiceName; ok: boolean; line: string; address: string | null }>;
+
+/** Start `names`, in order. @returns what became of each */
+export async function startEach(names: readonly ServiceName[], start: (name: ServiceName) => Promise<Started>): Promise<ServiceOutcome[]> {
+  const outcomes: ServiceOutcome[] = [];
   for (const name of names) {
     try {
       const unit = await start(name);
-      lines.push(`started the ${name} service (${unit.manager} ${unit.id})${unit.address === null ? "" : `, served at ${unit.address}`}`);
+      outcomes.push({ name, ok: true, line: `started the ${name} service (${unit.manager} ${unit.id})${unit.address === null ? "" : `, served at ${unit.address}`}`, address: unit.address });
     } catch (err) {
       if (REQUIRED.includes(name) || !(err instanceof ServiceRefusal)) throw err;
       // A service that started on loopback and that the exposure does not reach is running: its message says so, and is said as it is.
-      lines.push(err instanceof TailnetRefusal ? err.message : `did not start the ${name} service: ${err.message}`);
+      outcomes.push({ name, ok: false, line: err instanceof TailnetRefusal ? err.message : `did not start the ${name} service: ${err.message}`, address: null });
     }
   }
-  return lines.join("\n");
+  return outcomes;
+}
+
+/** Start `names`, in order. @returns one line per service */
+export async function startServices(names: readonly ServiceName[], start: (name: ServiceName) => Promise<Started>): Promise<string> {
+  return (await startEach(names, start)).map(({ line }) => line).join("\n");
+}
+
+/** What a person calls each service. */
+const SERVICE_WORDS: Readonly<Record<ServiceName, string>> = { herdr: "herdr", instance: "queue", ui: "board", terminal: "worker terminal", "auto-update": "auto-update" };
+
+/** Says the services that run in one ✓ line, and each that does not in a ✗ line with what the service said. */
+function sayServices(outcomes: readonly ServiceOutcome[], say: OnboardOutput): void {
+  const running = outcomes.filter(({ ok }) => ok);
+  if (running.length > 0) say.done(`Started: ${running.map(({ name }) => SERVICE_WORDS[name]).join(", ")}`, ...running.map(({ line }) => line));
+  for (const { name, line } of outcomes.filter(({ ok }) => !ok)) say.failed(`The ${SERVICE_WORDS[name]} did not start properly`, line);
 }
 
 /**
  * Install bun and herdr web ui when they are missing. @returns whether the terminal service can run. A step that fails is said, with why,
  * and answers false: the web terminal is a convenience, and an install without it still runs tickets.
  */
-async function setUpTerminal(deps: OnboardDeps): Promise<boolean> {
+async function setUpTerminal(deps: Session): Promise<boolean> {
+  const details: string[] = [];
   try {
     const bun = await deps.ensureBun();
-    if (bun.installed) deps.out.log(`installed bun at ${bun.path}, for the web terminal`);
+    if (bun.installed) details.push(`installed bun at ${bun.path}, for the web terminal`);
     if (pluginRoot(deps.herdrPlugins()) === null) {
       const bunDir = bun.path.slice(0, bun.path.lastIndexOf("/"));
       // At the newest RELEASE tag, never the default branch (A11-184): an install with no `--ref` pinned a commit of it, which nothing then moved. A tag that cannot be read fails this step.
@@ -348,11 +377,12 @@ async function setUpTerminal(deps: OnboardDeps): Promise<boolean> {
       const installed = deps.run("herdr", ["plugin", "install", TERMINAL_PLUGIN, "--ref", tag, "--yes"], { PATH: `${bunDir}:${deps.env.PATH ?? "/usr/bin:/bin"}` });
       if (installed.status !== 0) throw new OnboardRefusal(`\`${command}\` failed: ${firstLine(installed)}`);
       if (pluginRoot(deps.herdrPlugins()) === null) throw new OnboardRefusal(`herdr installed ${TERMINAL_PLUGIN}, but its plugins.json does not list it`);
-      deps.out.log(`installed the herdr plugin ${TERMINAL_PLUGIN} ${tag}, the web terminal`);
+      details.push(`installed the herdr plugin ${TERMINAL_PLUGIN} ${tag}, the web terminal`);
     }
+    deps.say.done("Worker terminal installed", ...details);
     return true;
   } catch (err) {
-    deps.out.log(`the web terminal is not set up: ${(err as Error).message}. The board shows no terminal link until it is; fix that, then run \`agent-org onboard\` again.`);
+    deps.say.failed("Worker terminal not set up", `${(err as Error).message}. The board shows no terminal link until it is; fix that, then run \`agent-org onboard\` again.`);
     return false;
   }
 }
@@ -362,16 +392,22 @@ async function setUpTerminal(deps: OnboardDeps): Promise<boolean> {
  * agent's state and resumes its session, and the board reads agent status from herdr. One line each. A failure is said with its reason and the command to run, and does not fail onboard: `doctor`
  * fails the row until it is installed, as it does for onboard's other optional steps.
  */
-function setUpHerdrIntegrations(deps: OnboardDeps): void {
-  for (const name of HERDR_INTEGRATIONS) deps.out.log(installIntegration(name, deps));
+function setUpHerdrIntegrations(deps: Session): void {
+  const results = HERDR_INTEGRATIONS.map((name) => ({ name, ...installIntegration(name, deps) }));
+  const working = results.filter(({ failure }) => failure === null);
+  if (working.length > 0) deps.say.done(`herdr knows ${working.map(({ name }) => INTEGRATION_WORDS[name]).join(" and ")}`, ...working.map(({ done }) => done));
+  for (const { name, failure } of results) if (failure !== null) deps.say.failed(`herdr does not know ${INTEGRATION_WORDS[name]} yet`, failure);
 }
 
-/** The line that says what installing one integration did: it installed, or why it did not and the command to run. */
-function installIntegration(name: HerdrIntegration, deps: OnboardDeps): string {
+/** What a person calls each agent herdr has an integration for. */
+const INTEGRATION_WORDS: Readonly<Record<HerdrIntegration, string>> = { claude: "Claude", codex: "Codex" };
+
+/** What installing one integration did: the sentence for `--verbose` when it installed, or why it did not and the command to run. */
+function installIntegration(name: HerdrIntegration, deps: Session): Readonly<{ done: string; failure: string | null }> {
   const command = integrationInstallCommand(name);
-  if (deps.which("herdr") === null) return `herdr's ${name} integration did not install: herdr is not on PATH. Install herdr, then run \`${command}\`.`;
+  if (deps.which("herdr") === null) return { done: "", failure: `herdr is not on PATH. Install herdr, then run \`${command}\`.` };
   const result = deps.run("herdr", ["integration", "install", name]);
-  return result.status === 0 ? `installed herdr's ${name} integration` : `herdr's ${name} integration did not install: ${firstLine(result)}. Run \`${command}\`.`;
+  return result.status === 0 ? { done: `installed herdr's ${name} integration`, failure: null } : { done: "", failure: `${firstLine(result)}. Run \`${command}\`.` };
 }
 
 /**
@@ -379,9 +415,10 @@ function installIntegration(name: HerdrIntegration, deps: OnboardDeps): string {
  * installed only when this process is root or `sudo -n` works; otherwise the command is said, as the other steps say theirs, and onboard goes on (A11-151).
  * @returns whether both builds start, which is what sets `tickets.capture`.
  */
-function setUpChromium(deps: OnboardDeps): boolean {
+function setUpChromium(deps: Session): boolean {
+  const notes: string[] = [];
   const browsers = deps.run("node", [PLAYWRIGHT_CLI, "install", "chromium"]);
-  if (browsers.status !== 0) deps.out.log(`the Chromium browsers did not install: ${firstLine(browsers)}`);
+  if (browsers.status !== 0) notes.push(`the Chromium browsers did not install: ${firstLine(browsers)}`);
   let report = deps.chromium();
   if (lacksLibraries(report)) {
     const canInstall = deps.isRoot() || deps.run("sudo", ["-n", "true"]).status === 0;
@@ -389,28 +426,39 @@ function setUpChromium(deps: OnboardDeps): boolean {
       const libraries = deps.isRoot()
         ? deps.run("node", [PLAYWRIGHT_CLI, "install-deps", "chromium"])
         : deps.run("sudo", ["-n", "node", PLAYWRIGHT_CLI, "install-deps", "chromium"]);
-      if (libraries.status !== 0) deps.out.log(`the Chromium libraries did not install: ${firstLine(libraries)}`);
+      if (libraries.status !== 0) notes.push(`the Chromium libraries did not install: ${firstLine(libraries)}`);
       report = deps.chromium();
     }
   }
   const problems = chromiumProblems(report);
-  for (const line of problems) deps.out.log(line);
+  if (problems.length > 0) deps.say.failed("Browsers for page captures are not ready", [...notes, ...problems].join("\n"));
+  else {
+    deps.say.done("Browsers for page captures installed");
+    // The browsers start, so the machine can capture; an install that said otherwise is still worth reading.
+    if (notes.length > 0) deps.say.warning("Installing the browsers reported a problem", notes.join("\n"));
+  }
   return problems.length === 0;
 }
 
 /** The conventions plugin's install, as onboard runs it: from its repository, for every session, and read back (`plugin-install.ts`). */
-function installPlugin(conventions: NonNullable<Profile["conventions"]>, deps: OnboardDeps): ConventionsStep {
+function installPlugin(conventions: NonNullable<Profile["conventions"]>, deps: Session): ConventionsStep {
   return installConventions({ plugin: conventions.plugin, repo: conventions.marketplace }, {
     run: deps.run,
     stateOf: stateOfRecord(deps.home, { read: deps.readFile, exists: deps.exists, record: join(deps.home, ".claude", "plugins", "installed_plugins.json") }),
   }, deps.ghAs({}));
 }
 
+/** Says the conventions plugin's install: ready when it loads for a worker's session, else the last thing it said (what went wrong and what to run) as the fix. */
+function sayConventions(plugin: string, step: ConventionsStep, say: OnboardOutput): void {
+  if (step.installPath === null) say.failed(`The conventions plugin ${plugin} is not installed`, step.lines.at(-1) ?? "");
+  else say.done(`Conventions plugin ready: ${plugin}`, ...step.lines);
+}
+
 /** The contract the plugin declares in its installed manifest, or null when it declares none this reads; a malformed one is said, and not used. */
-function contractOf(installPath: string, deps: OnboardDeps): Contract | null {
+function contractOf(installPath: string, deps: Session): Contract | null {
   const read = readPluginContract(installPath, { read: deps.readFile });
   if (read.kind === "found") return read.contract;
-  if (read.kind === "malformed") deps.out.log(`the plugin's declared contract is malformed, so its skills are not set: ${read.why}`);
+  if (read.kind === "malformed") deps.say.failed("The conventions plugin's skills are not set", `its declared contract is malformed: ${read.why}`);
   return null;
 }
 
@@ -431,7 +479,7 @@ function conventionKeys(plugin: string, contract: Contract | null): Record<strin
 type PlannedBlocks = ReturnType<typeof providerBlocksOf>;
 
 /** The clone map: the profile's repositories, then the `--repo` flags, which override them by name. A checkout a profile names that is missing is cloned. */
-async function clonesOf(options: OnboardOptions, profile: Profile | null, host: Record<string, unknown>, deps: OnboardDeps): Promise<Record<string, string>> {
+async function clonesOf(options: OnboardOptions, profile: Profile | null, host: Record<string, unknown>, deps: Session): Promise<Record<string, string>> {
   const clones: Record<string, string> = isObject(host.clones) ? { ...(host.clones as Record<string, string>) } : {};
   for (const repo of profile?.repos ?? []) {
     const [name, path] = repoOfProfile(repo, deps);
@@ -481,12 +529,12 @@ function providersWith(tickets: Record<string, unknown>, blocks: Record<string, 
 }
 
 /** The host file, its pointer and, when one is given, the update channel: each written whole, and the repositories it offers said. */
-function writeHostFiles({ hostFile, next, updateChannel }: Readonly<{ hostFile: string; next: Record<string, unknown>; updateChannel: UpdateChannel | undefined }>, deps: OnboardDeps) {
+function writeHostFiles({ hostFile, next, updateChannel }: Readonly<{ hostFile: string; next: Record<string, unknown>; updateChannel: UpdateChannel | undefined }>, deps: Session) {
   deps.writeFile(hostFile, `${JSON.stringify(next, null, 2)}\n`);
   deps.writeFile(hostPointerPath(deps.env, deps.home), `${hostFile}\n`);
   if (updateChannel !== undefined) deps.writeFile(updateChannelPath(deps.env, deps.home), `${updateChannel}\n`);
   const names = Object.keys(next.clones as Record<string, string>).sort();
-  deps.out.log(`wrote ${hostFile}: ${names.length} repositories (${names.join(", ")})`);
+  deps.say.done(`Settings written to ${inHome(hostFile, deps.home)} (${names.length === 1 ? "1 repository" : `${names.length} repositories`})`, names.join(", "));
 }
 
 /**
@@ -508,23 +556,49 @@ function plannedProviders({ host, tickets, planned, catalog }: Readonly<{ host: 
   }
 }
 
-/** What onboard says of a plugin the host file already names: it is the concern's, or it is installed and switched off, which onboard leaves as it is. */
+/** What onboard says of a plugin the host file already names, for `--verbose`: it is the concern's, or it is installed and switched off, which onboard leaves as it is. */
 const alreadyWords = (provider: string, label: string, held: BlockReport): string =>
   (held.enabled ? `${provider} is already the ${label}` : `${provider} is already installed as the ${label}, and disabled: onboard leaves it off`);
 
-/**
- * Says one line per plugin onboard installs and enables, before it runs that plugin's steps (A11-163): `installed linear as the tracker`, or that the host file already names it. The plugins
- * are the ones the providers will name once onboard has written the host file: a block the file holds keeps its plugin, and a concern whose choice is `none` has no line.
- */
-function sayInstalls(providers: Providers, existing: Providers["blocks"], deps: OnboardDeps): void {
+/** The sentence under `--verbose` of what onboard did to a block's plugin: it installed it as the concern's, or the host file already names it (A11-163). */
+function installedWords(block: ProviderBlock, providers: Providers, existing: Providers["blocks"]): string {
+  const { provider } = providers.blocks[block];
+  const label = CONCERN_LABEL[CONCERN_OF_BLOCK[block]];
+  const held = existing[block];
+  return held.from === "block" && held.provider === provider ? alreadyWords(provider, label, held) : `installed ${provider} as the ${label}`;
+}
+
+/** What a person reads of a plugin once it is set up: its manifest's `setUp` sentence, else its description, never its bare name. */
+const setUpWords = (plugin: Pick<CatalogPlugin, "setUp" | "description">): string => plugin.setUp ?? plugin.description;
+
+/** Whether the host file names `provider` for the block and has it switched off. */
+const isSwitchedOff = (held: BlockReport, provider: string): boolean => held.from === "block" && held.provider === provider && !held.enabled && provider !== "none";
+
+/** Says each plugin the host file names that is installed and switched off, which onboard leaves off. It is not loaded, so its steps do not run. */
+function sayDisabled(providers: Providers, existing: Providers["blocks"], deps: Session): void {
   for (const block of PROVIDER_BLOCKS) {
     const { provider } = providers.blocks[block];
-    if (provider === "none") continue;
-    const label = CONCERN_LABEL[CONCERN_OF_BLOCK[block]];
-    const held = existing[block];
-    const already = held.from === "block" && held.provider === provider;
-    deps.out.log(already ? alreadyWords(provider, label, held) : `installed ${provider} as the ${label}`);
+    const plugin = deps.catalog().plugins.find(({ name }) => name === provider);
+    if (plugin !== undefined && isSwitchedOff(existing[block], provider)) deps.say.note(`${setUpWords(plugin)}: switched off; onboard leaves it off`);
   }
+}
+
+/**
+ * Says what a plugin's steps came to (A11-222): a step with a `summary` is its own ✓ or ✗ line, one without says nothing when it passed (its detail shows under `--verbose`), and then the plugin's line in setup words: ✓ when every
+ * step passed, else ✗ with the fix of the steps that said none of their own. A failing step that already drew its ✗ is not counted twice.
+ */
+function sayPlugin({ plugin, answers, installed }: Readonly<{ plugin: CatalogPlugin; answers: readonly StepResult[]; installed: string }>, say: OnboardOutput): void {
+  say.detail(installed);
+  for (const answer of answers) {
+    if (answer.summary !== undefined) (answer.ok ? say.done(answer.summary, answer.detail) : say.failed(answer.summary, answer.detail));
+    else if (answer.ok) say.detail(answer.detail);
+  }
+  const failing = answers.filter(({ ok }) => !ok);
+  const words = setUpWords(plugin);
+  if (failing.length === 0) return say.done(words);
+  const unsaid = failing.filter(({ summary }) => summary === undefined);
+  if (unsaid.length === 0) return say.failedAbove(words);
+  say.failed(words, unsaid.map(({ detail }) => detail).filter((detail) => detail !== "").join("\n") || "Run `agent-org doctor` to see what is missing.");
 }
 
 /**
@@ -532,11 +606,12 @@ function sayInstalls(providers: Providers, existing: Providers["blocks"], deps: 
  * step says. @returns the settings the steps chose, by block, for the caller to write. A plugin the loader refuses is refused by name, unless only its `create` threw (a key that is
  * not stored yet): onboard needs its module, not its implementation, and is the step that stores the key.
  */
-async function runPluginSteps({ options, host, tickets, planned, answered, clones }: Readonly<{ options: OnboardOptions; host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; answered: boolean; clones: Readonly<Record<string, string>> }>,
-  deps: OnboardDeps): Promise<Record<string, Record<string, unknown>>> {
+async function runPluginSteps({ options, host, tickets, planned, answered, clones, existing }: Readonly<{ options: OnboardOptions; host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; answered: boolean; clones: Readonly<Record<string, string>>; existing: Providers["blocks"] }>,
+  deps: Session): Promise<Record<string, Record<string, unknown>>> {
   const providers = plannedProviders({ host, tickets, planned, catalog: deps.catalog() });
+  sayDisabled(providers, existing, deps);
   const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.say.note(line), fetch: (input, init) => deps.fetch(input, init),
     exec: deps.exec, execAsync: (file, args, options) => Promise.resolve(deps.exec(file, args, options)), readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy(),
     publishing: publishingHelpers(), reviewing: gateHelpers(), rows: coreRowsHelpers, place: realPlace };
   const result = await deps.loadPlugins(providers, pluginDeps);
@@ -544,38 +619,74 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
   const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));
   if (refused.length > 0) throw new OnboardRefusal(refused.map(({ plugin, concern, why }) => `the ${concern} plugin ${plugin} was refused: ${why}`).join("; "));
   const chosen: Record<string, Record<string, unknown>> = {};
-  for (const { plugin, module } of [...result.loaded, ...result.unbuilt]) {
+  // In block order, so the lines read as the host file's blocks do: the tracker first. A plugin whose `create` threw is in `unbuilt`, and is no later for that.
+  const inBlockOrder = (plugin: CatalogPlugin): number => PROVIDER_BLOCKS.indexOf(blockOf(plugin.concern) as ProviderBlock);
+  for (const { plugin, module } of [...result.loaded, ...result.unbuilt].sort((a, b) => inBlockOrder(a.plugin) - inBlockOrder(b.plugin))) {
     const block = blockOf(plugin.concern);
     if (block === null) continue;
     const stepDeps = { ...pluginDeps, interactive: deps.interactive, answered, ask: deps.ask, askSecret: deps.askHidden, writeFile: deps.writeFile, platform: deps.platform, home: deps.home,
       agentOrgHome: agentOrgHome(deps.env, deps.home), flags: flagsOf(block, options, planned) };
     let current = settingsOfBlock(providers.blocks[block]);
     const set: Record<string, unknown> = {};
+    const answers: StepResult[] = [];
     for (const step of module.onboardSteps) {
       // A step that THROWS refuses onboard by its sentence: it asked for something that cannot be done (a key's path that is not absolute), and nothing is written.
       const answer = await step.run(current, stepDeps).catch((error: unknown) => { throw new OnboardRefusal(error instanceof Error ? error.message : String(error)); });
-      if (answer.detail !== "") deps.out.log(answer.detail);
+      answers.push(answer);
       // A setting a step leaves `undefined` is one it has no opinion on: the block keeps what it holds.
       const decided = Object.fromEntries(Object.entries(answer.settings ?? {}).filter(([, value]) => value !== undefined));
       Object.assign(set, decided);
       current = { ...current, ...decided };
     }
     chosen[block] = set;
+    sayPlugin({ plugin, answers, installed: installedWords(block, providers, existing) }, deps.say);
   }
   return chosen;
 }
 
-/** What onboard does once the host file is written: Codex, the guards, the services, and the doctor's report. */
-async function finishOnboard({ next, options, terminal }: Readonly<{ next: Record<string, unknown>; options: OnboardOptions; terminal: boolean }>, deps: OnboardDeps) {
-  const guards = await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements });
-  for (const line of guards) deps.out.log(line);
-  if (options.start) deps.out.log(await deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })));
-  deps.out.log(report(await deps.diagnose()));
-  deps.out.log(PAIRING_STEPS);
+/** The old workarounds' lines that say one is still in place: they carry what to run. */
+const KEPT_WORKAROUND = /^kept /;
+
+/** Says what retiring the interim guards came to: those retired under one ✓ line, each that stays as a ✗ with the command that retires it. */
+function sayGuards(lines: readonly string[], say: OnboardOutput): void {
+  const retired = lines.filter((line) => !KEPT_WORKAROUND.test(line));
+  if (retired.length > 0) say.done("Old workarounds retired", ...retired);
+  for (const line of lines.filter((each) => KEPT_WORKAROUND.test(each))) say.failed("An old workaround is still in place", line);
+}
+
+/** Says each doctor check that failed (doctor's own rule: a check passes when `ok`), as a ✗ line with its fix. The whole report is for `--verbose`. */
+function sayChecks(checks: readonly Check[], say: OnboardOutput): void {
+  for (const check of checks.filter(({ ok }) => !ok)) say.failed(`${check.name}: ${check.detail}`, check.fix ?? "");
+  // A warning row passes (`ok`) and is worth reading: it is drawn, and does not count against the machine.
+  for (const check of checks.filter(({ ok, warning }) => ok && warning === true)) say.warning(`${check.name}: ${check.detail}`, check.fix ?? "");
+  say.detail(report(checks));
+}
+
+/** The commands to run next, aligned as install.sh's `Next:` block is. */
+function sayNext(board: string | null, say: OnboardOutput): void {
+  const row = (command: string, words: string): string => `  ${command.padEnd(22)}${words}`;
+  say.note("\nNext:");
+  if (board !== null) say.note(row("open the board", board));
+  say.note(row("agent-org ticket:pair", "pair a browser with the board (add --terminal for the worker terminal)"));
+  say.note(row("agent-org doctor", "check everything works"));
+}
+
+/** What onboard does once the host file is written: the guards, the services, doctor's checks, and the ending: whether this machine is set up, and what to run next. */
+async function finishOnboard({ options, terminal }: Readonly<{ options: OnboardOptions; terminal: boolean }>, deps: Session) {
+  sayGuards(await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements }), deps.say);
+  const services = options.start ? await deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })) : [];
+  sayServices(services, deps.say);
+  sayChecks(await deps.diagnose(), deps.say);
+  const problems = deps.say.failures();
+  deps.say.note("");
+  if (problems === 0) deps.say.succeeded("agent-org is set up on this machine.");
+  else deps.say.incomplete(`agent-org is not fully set up: ${problems === 1 ? "1 step above needs" : `${problems} steps above need`} fixing.`);
+  sayNext(services.find(({ name }) => name === "ui")?.address ?? null, deps.say);
 }
 
 /** Write the host file and the notes, install the conventions plugin, and start the services. @returns the host file's path */
-export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promise<string> {
+export async function onboard(options: OnboardOptions, injected: OnboardDeps): Promise<string> {
+  const deps: Session = { ...injected, say: onboardOutput(injected.out, { verbose: options.verbose, color: injected.color }) };
   const hostFile = hostFilePath(deps.env, deps.home, (path) => readHostText(path, deps));
   const profile = options.profile === undefined ? null : await profileFor(options, heldClones(hostFile, deps), deps);
   const host = await currentHost(hostFile, deps);
@@ -584,16 +695,15 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
 
   const existing = resolveProviders(host, deps.catalog()).blocks;
   const planned = profile === null ? null : providerBlocksOf(profile);
-  sayInstalls(plannedProviders({ host, tickets, planned, catalog: deps.catalog() }), existing, deps);
-  const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null, clones }, deps);
+  const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null, clones, existing }, deps);
   const terminal = options.terminal && await setUpTerminal(deps);
   setUpHerdrIntegrations(deps);
   const capture = setUpChromium(deps);
   const plugin = profile?.conventions === undefined ? null : installPlugin(profile.conventions, deps);
-  for (const line of plugin?.lines ?? []) deps.out.log(line);
+  if (plugin !== null) sayConventions(profile?.conventions?.plugin ?? "", plugin, deps.say);
   const contract = plugin?.installPath === null || plugin === null ? null : contractOf(plugin.installPath, deps);
   const notes = profile === null ? null : houseNotes({ env: deps.env, home: deps.home, keys: tickets, exists: deps.exists, read: deps.readFile, profile: profile.notes });
-  for (const line of notes?.lines ?? []) deps.out.log(line);
+  if (notes !== null && notes.lines.length > 0) deps.say.done("House notes ready", ...notes.lines);
   for (const write of notes?.writes ?? []) deps.writeFile(write.path, write.text);
 
   const providers = providersWith(tickets, blocksOf({ planned, terminal }));
@@ -605,7 +715,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   // `tickets.capture` is written only where it is absent, and only as true: a machine whose browsers do not start keeps what the host file says, or nothing.
   const next = { ...host, clones, tickets: fill({ ...tickets, providers }, { pick: planned?.pick, ...pluginKeys, prReview, ...(notes?.keys ?? {}), capture: capture || undefined }) };
   writeHostFiles({ hostFile, next, updateChannel: options.updateChannel }, deps);
-  await finishOnboard({ next, options, terminal }, deps);
+  await finishOnboard({ options, terminal }, deps);
   return hostFile;
 }
 
@@ -644,7 +754,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       options: {
         repo: { type: "string", multiple: true, default: [] }, "linear-keychain": { type: "string" }, "linear-key-file": { type: "string" },
         profile: { type: "string" }, "no-start": { type: "boolean", default: false }, "no-terminal": { type: "boolean", default: false },
-        "no-auto-update": { type: "boolean", default: false }, "update-channel": { type: "string" },
+        "no-auto-update": { type: "boolean", default: false }, "update-channel": { type: "string" }, verbose: { type: "boolean", default: false },
       },
     });
     const channel = values["update-channel"];
@@ -653,7 +763,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     const home = homedir();
     await onboard({
       repos: values.repo, keychain: values["linear-keychain"], keyFile: values["linear-key-file"], profile: values.profile, start: !values["no-start"],
-      terminal: !values["no-terminal"], autoUpdate: !values["no-auto-update"], updateChannel: channel,
+      terminal: !values["no-terminal"], autoUpdate: !values["no-auto-update"], updateChannel: channel, verbose: values.verbose,
     }, {
       env: process.env, home, platform: process.platform, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
       ask, askHidden, exec: realExec, catalog: defaultCatalog, loadPlugins: (providers, pluginDeps) => loadEnabled(providers, defaultCatalog(), pluginDeps),
@@ -661,7 +771,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       exists: (path) => existsSync(path), removeFile: (path) => rmSync(path, { force: true }),
       isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(),
       listDir: (path) => readdirSync(path),
-      cwd: process.cwd(), codeHost: () => loadedCodeHost(process.env), prompts: clackPrompts(), now: () => new Date(),
+      cwd: process.cwd(), codeHost: () => loadedCodeHost(process.env), prompts: clackPrompts(), now: () => new Date(), fetch: (input, init) => fetch(input, init),
+      color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR,
       ensureBun: () => ensureBun({
         home, env: process.env, platform: process.platform, arch: process.arch, exists: existsSync,
         download: async (url) => {
@@ -681,7 +792,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       chromium: () => chromiumReport(),
       isRoot: () => process.getuid?.() === 0,
       // herdr is started the way `agent-org start herdr` starts it: a server that runs outside its unit is refused, and said, never started beside (`--move` moves it, at a quiet moment).
-      startServices: (names) => startServices(names, async (name) => (name === "herdr" ? (await startHerdr({ move: false }, defaultMoveDeps(services))).started : startService(name, services))),
+      startServices: (names) => startEach(names, async (name) => (name === "herdr" ? (await startHerdr({ move: false }, defaultMoveDeps(services))).started : startService(name, services))),
       out: console,
     });
   } catch (err) {

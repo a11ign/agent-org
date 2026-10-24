@@ -38,20 +38,22 @@ test("A11-106: onboard installs the stack extension for the workers' account whe
   const answer = await run(WORKERS, step());
   assert.ok(calls.some(({ command }) => command === "extension install github/gh-stack"), "the extension is installed");
   assert.ok(calls.every(({ env }) => env?.GH_CONFIG_DIR === "/home/agent/workers/gh"), "every call runs as the workers' account");
-  assert.deepEqual(answer, { ok: true, detail: "installed the github/gh-stack extension (v0.2.1), which a worker links a stacked pull request with" });
+  assert.deepEqual(answer, { ok: true, detail: "installed the github/gh-stack extension (v0.2.1), which a worker links a stacked pull request with", summary: "GitHub stacked pull requests ready" },
+    "the line a person reads is the summary; the extension's name and version are the detail, for --verbose");
 });
 
 test("A11-106: onboard does not install the stack extension again where it is listed", async () => {
   const { calls, step } = machine({ status: 0, stdout: "", stderr: "" }, true);
   const answer = await run({}, step());
   assert.deepEqual(calls.map(({ command }) => command), ["extension list"], "a listed extension is not installed again");
-  assert.deepEqual(answer, { ok: true, detail: "the github/gh-stack extension is installed (v0.2.1), which a worker links a stacked pull request with" });
+  assert.deepEqual(answer, { ok: true, detail: "the github/gh-stack extension is installed (v0.2.1), which a worker links a stacked pull request with", summary: "GitHub stacked pull requests ready" });
 });
 
 test("A11-106: a stack extension that fails to install is said with its reason and the command to run, and is not thrown", async () => {
   const { step } = machine({ status: 1, stdout: "", stderr: "could not reach github.com\nmore" });
   const answer = await run(WORKERS, step());
   assert.equal(answer.ok, false);
+  assert.equal(answer.summary, "GitHub stacked pull requests are not set up");
   assert.equal(answer.detail, "could not install the github/gh-stack extension: could not reach github.com. Run `GH_CONFIG_DIR=/home/agent/workers/gh gh extension install github/gh-stack` by hand, then `agent-org doctor`.");
 });
 
@@ -98,7 +100,7 @@ test("A11-145: the reviewer App's key is copied beside the host file, mode 600 b
   const answer = await runKeys({}, deps);
   assert.deepEqual(asked, ["Path to the downloaded private key (.pem) of the reviewer App acme-reviewer, or an empty line to add it later: "]);
   assert.deepEqual(written, { "/home/me/.agent-org/apps/acme-reviewer.pem": KEY_TEXT }, "the key is written where the host file will name it, and nowhere else");
-  assert.deepEqual(answer, { ok: true, detail: "copied the reviewer App's key to /home/me/.agent-org/apps/acme-reviewer.pem, mode 600; its text is not shown",
+  assert.deepEqual(answer, { ok: true, detail: "copied the reviewer App's key to /home/me/.agent-org/apps/acme-reviewer.pem, mode 600; its text is not shown", summary: "Reviewer App key copied",
     settings: { identity: { reviewer: { mode: "github-apps", slug: "acme-reviewer", appId: 4242, installationId: 77, keyPath: "/home/me/.agent-org/apps/acme-reviewer.pem" } } } });
   assert.ok(!JSON.stringify(answer).includes("SECRET-KEY-BYTES"));
 });
@@ -124,7 +126,8 @@ test("A11-145: a reviewer identity whose key is readable is kept, nothing is ask
 
 test("A11-145: with no terminal the step says where the key is missing and how to add it, and asks for nothing", async () => {
   const { deps, asked, written } = person("never asked", undefined, { interactive: false });
-  assert.deepEqual(await runKeys({}, deps), { ok: true, detail: "NO reviewer App key is set for acme-reviewer. Run `agent-org onboard --profile <name>` at a terminal, which asks for the path of the App's downloaded .pem file." });
+  assert.deepEqual(await runKeys({}, deps), { ok: false, summary: "Reviewer App key is not set", detail: "NO reviewer App key is set for acme-reviewer. Run `agent-org onboard --profile <name>` at a terminal, which asks for the path of the App's downloaded .pem file." },
+    "a missing key is a step that did not pass, so it is a ✗ line and not a warning only --verbose shows");
   assert.deepEqual([asked, written], [[], {}]);
 });
 
