@@ -139,6 +139,25 @@ test("A11-238: a pull request the code host cannot read keeps the note it had, a
   assert.deepEqual(requested(host), [`${REPOSITORY}#1872`], "and the pull request that can be read is handed back");
 });
 
+test("A11-238: a base note the sweep no longer makes is cleared even when the stack of that pull request cannot be read", () => {
+  const unreadable = fakePullUrl(REPOSITORY, 1999);
+  const stale = `Needs retarget: ${unreadable} still targets nbf-1-fit, whose pull request merged; retarget failed, and agent-org tries again: gh: HTTP 403`;
+  const { entry, sweep } = world({ run: (urls) => finishedRun([...urls, unreadable], { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD), [unreadable]: ready("d".repeat(40)) }, { retargets: { [unreadable]: stale } }) });
+  sweep();
+  assert.equal(entry().retargets, undefined, "the retarget succeeded and left no note, and the stack merge does not keep a note it did not write");
+});
+
+test("A11-238: a refusal note is the stack merge's to clear, even when the sweep of the bases keeps the previous note of a pull request it cannot read", () => {
+  const stale = `GitHub refused the stack merge of ${BOTTOM}: ${REASON}`;
+  const { host, entry, sweep } = world({
+    run: (urls) => finishedRun(urls, { [BOTTOM]: ready(BOTTOM_HEAD), [ABOVE]: ready(ABOVE_HEAD) }, { retargets: { [BOTTOM]: stale }, blockers: [{ key: "NBF-0", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: {} }] }),
+    codeHost: (fake) => ({ ...fake, sweepRetargets: ({ previous }) => ({ ...previous }) }),
+  });
+  sweep();
+  assert.deepEqual(requested(host), [`${REPOSITORY}#1872`], "the refusal is gone from GitHub (the head moved on), so the pull request is handed back");
+  assert.equal(entry().retargets, undefined, "and the card does not keep the note");
+});
+
 test("A11-238: a note about a pull request's base stands, and its stack merge waits for the base", () => {
   const note = `Needs retarget: ${BOTTOM} still targets nbf-1-fit, whose branch is gone: retarget it by hand`;
   const { host, sweep, entry } = world({

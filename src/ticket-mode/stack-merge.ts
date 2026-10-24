@@ -26,6 +26,9 @@ export type StackMergeStepInput = Readonly<{
 /** What to do for one pull request: ask the arm bot to merge it, and the note the card shows for it (null: nothing to say). */
 export type StackMergeStep = Readonly<{ ask: boolean; note: string | null }>;
 
+const REFUSAL_NOTE_LEAD = "GitHub refused the stack merge of ";
+const HAND_BACK_NOTE_LEAD = "The board could not hand ";
+
 const NOTHING: StackMergeStep = { ask: false, note: null };
 
 /** Whether the pull request is in a stack, still open, and the bottom member that is left: its base is the default branch, so every member below it has merged. PURE. */
@@ -38,7 +41,7 @@ const isOpenBottomMember = ({ stacked, settled, base, defaultBranch }: StackMerg
  */
 export function stackMergeStep({ url, facts, ready, asked, now }: StackMergeStepInput): StackMergeStep {
   if (!isOpenBottomMember(facts) || !ready) return NOTHING;
-  if (facts.refusal !== null && facts.refusal.head === facts.head) return { ask: false, note: `GitHub refused the stack merge of ${url}: ${facts.refusal.reason}` };
+  if (facts.refusal !== null && facts.refusal.head === facts.head) return { ask: false, note: refusalNote(url, facts.refusal.reason) };
   const waiting = asked !== undefined && asked.head === facts.head && now - asked.at < STACK_MERGE_ASK_AGAIN_MS;
   return { ask: !waiting, note: null };
 }
@@ -48,3 +51,12 @@ export function stackMergeRequestOf(url: string): StackMergeRequest | null {
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/.exec(url);
   return match === null ? null : { repo: match[1], number: Number(match[2]) };
 }
+
+/** The note for a pull request GitHub refused the stack merge of. */
+export const refusalNote = (url: string, reason: string): string => `${REFUSAL_NOTE_LEAD}${url}: ${reason}`;
+
+/** The note for a pull request the arm bot could not be asked about. */
+export const handBackNote = (url: string, reason: string): string => `${HAND_BACK_NOTE_LEAD}${url} to the arm bot: ${reason}`;
+
+/** Whether a run's per-pull-request note is one the stack merge wrote, so the sweep of the bases neither keeps nor clears it, and the stack merge keeps no other. PURE. */
+export const isStackMergeNote = (note: string): boolean => note.startsWith(REFUSAL_NOTE_LEAD) || note.startsWith(HAND_BACK_NOTE_LEAD);

@@ -1,7 +1,7 @@
 // no-token: none -- the decider is a pure function over the facts it is handed
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { STACK_MERGE_ASK_AGAIN_MS, stackMergeRequestOf, stackMergeStep, type StackMergeStepInput } from "./stack-merge.ts";
+import { handBackNote, isStackMergeNote, refusalNote, STACK_MERGE_ASK_AGAIN_MS, stackMergeRequestOf, stackMergeStep, type StackMergeStepInput } from "./stack-merge.ts";
 
 const URL = "https://github.com/a11ign/agent-org/pull/1872";
 const HEAD = "a".repeat(40);
@@ -63,4 +63,11 @@ test("A11-238: the request names the repository and number a pull request addres
   assert.deepEqual(stackMergeRequestOf(`${URL}/`), { repo: "a11ign/agent-org", number: 1872 });
   assert.equal(stackMergeRequestOf("https://github.com/a11ign/agent-org/issues/1872"), null);
   assert.equal(stackMergeRequestOf("https://example.com/a11ign/agent-org/pull/1872"), null);
+});
+
+test("A11-238: the notes the stack merge writes are the ones it recognises, and a note about a base is not", () => {
+  assert.equal(handBackNote(URL, "Resource not accessible (HTTP 403)"), `The board could not hand ${URL} to the arm bot: Resource not accessible (HTTP 403)`);
+  assert.equal(isStackMergeNote(refusalNote(URL, "why")), true);
+  assert.equal(isStackMergeNote(handBackNote(URL, "why")), true);
+  assert.equal(isStackMergeNote(`Needs retarget: ${URL} still targets nbf-1-fit, whose branch is gone: retarget it by hand`), false);
 });

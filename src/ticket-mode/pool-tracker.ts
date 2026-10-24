@@ -15,7 +15,7 @@ import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-type
 import { pullLabel } from "./board-view/pull-label.ts";
 import { resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { isPullReadyToMerge } from "./board-view/pull-readiness.ts";
-import { stackMergeRequestOf, stackMergeStep } from "./stack-merge.ts";
+import { handBackNote, isStackMergeNote, stackMergeRequestOf, stackMergeStep } from "./stack-merge.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { recordClosedByBoard } from "./queue.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
@@ -254,7 +254,7 @@ async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
 /**
  * The stacked pull requests on the queue that need something said, asked on the server's own sweep (every `FEEDBACK_MS`), as `releaseReviewers` is (A11-106, A11-238). It is the one writer of a finished run's per-URL notes (`retargets`), so what it
  * records is one map: the stale bases first (`stack-retarget.ts`: a stacked pull request whose base merged is moved to the default branch, over a finished run stacked on a blocker's branch, and only its open pull requests whose base is one of those
- * branches), then the stack merge of every other open pull request ({@link stackMergeNotes}). The default branch of each repository is read once per sweep. The note is recorded when it changes.
+ * branches), then the stack merge of every other open pull request ({@link sweepStackMerges}). The default branch of each repository is read once per sweep. The note is recorded when it changes.
  */
 export function retargetStacked(ctx: PoolContext): void {
   const { codeHost, store } = ctx;
@@ -267,8 +267,10 @@ export function retargetStacked(ctx: PoolContext): void {
     const urls = openPulls(entry).map(({ url }) => url);
     if (urls.length === 0) continue;
     const previous = entry.retargets ?? {};
-    const bases = stacked.size === 0 ? {} : codeHost.sweepRetargets({ urls, previous, stacked, defaults, log });
-    const notes = { ...bases, ...stackMergeNotes(ctx, entry, urls, bases) };
+    // The sweep of the bases keeps the note of a pull request it cannot read, so it is handed only the notes it wrote: one the stack merge wrote is the stack merge's to keep or clear.
+    const baseNotesBefore = Object.fromEntries(Object.entries(previous).filter(([, note]) => !isStackMergeNote(note)));
+    const bases = stacked.size === 0 ? {} : codeHost.sweepRetargets({ urls, previous: baseNotesBefore, stacked, defaults, log });
+    const notes = { ...bases, ...sweepStackMerges(ctx, entry, urls, bases) };
     const next = Object.keys(notes).length === 0 ? undefined : notes;
     if (JSON.stringify(next ?? {}) !== JSON.stringify(previous)) update(ctx, (queue) => recordRetargets(queue, entry.ticket.key, next));
   }
@@ -279,7 +281,7 @@ export function retargetStacked(ctx: PoolContext): void {
  * remembered by head. The note a pull request needs is what GitHub refused it with, or that the arm bot could not be asked (and the ask is made again on the next sweep). A pull request with a note about its base has none here: its stack merge waits for the base. One that cannot be read keeps the note it had.
  * A pull request that is not ready is not read at all, and a head the watch read is not the head GitHub says now is not ready either. A code host that has neither operation (before contract 1.16) asks the arm bot for nothing.
  */
-function stackMergeNotes(ctx: PoolContext, entry: Entry, urls: readonly string[], baseNotes: Readonly<Record<string, string>>): Record<string, string> {
+function sweepStackMerges(ctx: PoolContext, entry: Entry, urls: readonly string[], baseNotes: Readonly<Record<string, string>>): Record<string, string> {
   const { codeHost, now, stackMergeAsked } = ctx;
   const notes: Record<string, string> = {};
   if (codeHost.stackMergeFactsOf === undefined || codeHost.requestStackMerge === undefined) return notes;
@@ -288,26 +290,28 @@ function stackMergeNotes(ctx: PoolContext, entry: Entry, urls: readonly string[]
     const facts = codeHost.stackMergeFactsOf(url);
     if (facts === null) {
       const kept = entry.retargets?.[url];
-      if (kept !== undefined) notes[url] = kept;
+      if (kept !== undefined && isStackMergeNote(kept)) notes[url] = kept;
       continue;
     }
     const step = stackMergeStep({ url, facts, ready: entry.pullHeads?.[url]?.head === facts.head, asked: stackMergeAsked.get(url), now: now() });
     if (step.note !== null) notes[url] = step.note;
-    if (step.ask) askArmBot(ctx, url, facts.head, notes);
+    const refused = step.ask ? askArmBot(ctx, url, facts.head) : null;
+    if (refused !== null) notes[url] = refused;
   }
   return notes;
 }
 
-/** Asks the arm bot to stack-merge the pull request at `head` and remembers that it did; a refused ask is the pull request's note instead, and is made again on the next sweep. */
-function askArmBot(ctx: PoolContext, url: string, head: string, notes: Record<string, string>): void {
+/** Asks the arm bot to stack-merge the pull request at `head` and remembers that it did. @returns the note to show when the ask was refused (it is made again on the next sweep), or null once it was made. */
+function askArmBot(ctx: PoolContext, url: string, head: string): string | null {
   const request = stackMergeRequestOf(url);
   try {
     if (request === null) throw new Error("it is not a GitHub pull request address");
     ctx.codeHost.requestStackMerge?.(request);
     ctx.stackMergeAsked.set(url, { head, at: ctx.now() });
     log(`${url}: approved and green in a stack, so the arm bot was asked to merge it with the stack merge`);
+    return null;
   } catch (err) {
-    notes[url] = `The board could not hand ${url} to the arm bot: ${messageOf(err)}`;
     log(`${url}: the arm bot could not be asked to merge it: ${messageOf(err)}`);
+    return handBackNote(url, messageOf(err));
   }
 }
