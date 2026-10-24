@@ -15,8 +15,11 @@ const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repositor
 
 type Node = { author?: { login?: string; __typename?: string } | null; body?: unknown; url?: unknown; createdAt?: string; submittedAt?: string; state?: string };
 
-/** A login with GitHub's `[bot]` suffix removed, in the case GitHub compares it: REST and `gh api user` spell an app's account `name[bot]`, and GraphQL spells the same account `name`. */
-const withoutBotSuffix = (login: string): string => login.toLowerCase().replace(/\[bot\]$/, "");
+/** The suffix GitHub gives an app's login: REST and `gh api user` spell an app's account `name[bot]`, and GraphQL spells the same account `name`. */
+const BOT_SUFFIX = /\[bot\]$/i;
+
+/** A login with the `[bot]` suffix removed, in the case GitHub compares it. */
+const withoutBotSuffix = (login: string): string => login.replace(BOT_SUFFIX, "").toLowerCase();
 
 /**
  * Whether `node` was written by one of the accounts the caller `named` (A11-235). A bot is named by the spelling `gh api user` gives (`a11ign-workers[bot]`) and GraphQL answers with the other (`a11ign-workers`), so a
@@ -25,8 +28,8 @@ const withoutBotSuffix = (login: string): string => login.toLowerCase().replace(
 function writtenByNamed(node: Node, named: readonly string[]): boolean {
   const author = node.author?.login;
   if (typeof author !== "string") return false;
-  const bot = node.author?.__typename === "Bot" || /\[bot\]$/i.test(author);
-  return named.some((login) => (/\[bot\]$/i.test(login) ? bot && withoutBotSuffix(login) === withoutBotSuffix(author) : login.toLowerCase() === author.toLowerCase()));
+  const bot = node.author?.__typename === "Bot" || BOT_SUFFIX.test(author);
+  return named.some((login) => (BOT_SUFFIX.test(login) ? bot && withoutBotSuffix(login) === withoutBotSuffix(author) : login.toLowerCase() === author.toLowerCase()));
 }
 
 /** The text of a node, or null when it has none a reviewer could read: not a string, or only whitespace. */

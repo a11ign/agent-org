@@ -22,7 +22,7 @@ const FIXED = `${BODY}Outside-Region: src/a.ts — the type moved with it\n`;
 const clock = { ms: 0 };
 
 /** A finished run NBF-1 that holds pull request 1 of `REPO`, over a code host that has the reviewer's first look at `HEAD` behind it: the reviewer started, ended and blocked. */
-async function blockedRun({ held = true, rounds = 0 }: { held?: boolean; rounds?: number } = {}) {
+async function blockedRun({ held = true, rounds = 0, roundEnded = true }: { held?: boolean; rounds?: number; roundEnded?: boolean } = {}) {
   await loadReviewerGate();
   clock.ms = 10 * MINUTE;
   const fixture = poolFixture({ keys: ["NBF-1"], tickets: { reviewer: "atomic", drafts: false }, now: () => clock.ms });
@@ -32,7 +32,7 @@ async function blockedRun({ held = true, rounds = 0 }: { held?: boolean; rounds?
   await reviewer.load();
   const queue = fixture.store.get();
   const outcome = { kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url }] } as Outcome;
-  fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", rounds, ...(held ? { outcome } : {}) }] });
+  fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", finishedAt: 15 * MINUTE, rounds, ...(held ? { outcome } : {}) }] });
   const pool = fixture.restart({ codeHost: host, reviewer });
   const pull = host.pullAt(url)!;
   const ref = { pr: url, head: HEAD };
@@ -46,9 +46,12 @@ async function blockedRun({ held = true, rounds = 0 }: { held?: boolean; rounds?
   clock.ms = 30 * MINUTE;
   const reply = (text: string, minute: number) => { pull.replies = [...pull.replies, { author: "worker-bot", at: minute * MINUTE, url: `${url}#c${minute}`, text }]; };
   const entry = () => fixture.store.get().entries[0];
+  /** The run's round that answers the block ends: the worker has edited and replied, and finished. */
+  const endRound = () => fixture.store.set({ ...fixture.store.get(), entries: [{ ...entry(), phase: "finished", finishedAt: clock.ms }] });
   /** The reviewer of a re-review ends having posted nothing, as the door refuses a second `not convinced` at an equal patch. */
   const settleRereview = () => { reviewer.wrote(ref, null); pool.reviewNewHeads(); };
-  return { fixture, host, reviewer, pool, pull, url, ref, reply, entry, settleRereview };
+  if (roundEnded) endRound();
+  return { fixture, host, reviewer, pool, pull, url, ref, reply, entry, endRound, settleRereview };
 }
 
 test("A11-235: a body-only fix starts a re-review on the same head, with the description's changed lines in its brief and no replies, and it counts as one of the run's rounds", async () => {
@@ -171,4 +174,41 @@ test("A11-235: a new head is a first review with no description lines in its bri
   pull.state = "merged";
   pool.releaseReviewers();
   assert.deepEqual([...readReviewerMemory(reviewerMemoryPath(fixture.settings.stateDir)).memory.looks.keys()], [], "the looks of the pull request are dropped with it");
+});
+
+test("A11-235: a description edited before the block was posted is not an answer to it, and the run's round that answers the block is what releases a body-only re-review", async () => {
+  const { reviewer, pool, pull, endRound, entry } = await blockedRun({ roundEnded: false });
+  pull.body = FIXED;
+  pool.reviewNewHeads();
+  assert.deepEqual([reviewer.started.length, entry().rounds ?? 0], [1, 0], "the run last finished before the block, so its worker has not answered it: the block asks for the worker's round, not a second look");
+  endRound();
+  pool.reviewNewHeads();
+  assert.deepEqual([reviewer.started.length, entry().rounds], [2, 1], "and once the round that answers the block has ended, the description is its answer");
+});
+
+test("A11-235: a refused re-review start of a head with no look is not remembered as a look, so the reply is still found on the next sweep", async () => {
+  const { fixture, host, reviewer, url, reply } = await blockedRun();
+  const path = reviewerMemoryPath(fixture.settings.stateDir);
+  const { memory } = readReviewerMemory(path);
+  writeReviewerMemory(path, { ...noReviewerMemory(), started: memory.started, heads: memory.heads });
+  reply("not a defect", 25);
+  const pool = fixture.restart({ codeHost: host, reviewer });
+  reviewer.refuseWith("another instance holds the review");
+  clock.ms = 40 * MINUTE;
+  pool.reviewNewHeads();
+  assert.equal(readReviewerMemory(path).memory.looks.has(`${url}@${HEAD}`), false, "the refused start leaves no look on disk");
+  reviewer.refuseWith(null);
+  pool.reviewNewHeads();
+  assert.equal(reviewer.started.length, 2, "and the reply, older than the refused attempt, still starts the re-review");
+});
+
+test("A11-235: a run handed back at the cap reads no replies on the sweeps that follow", async () => {
+  const { host, pool, pull, url } = await blockedRun({ rounds: MAX_FEEDBACK_ROUNDS });
+  pull.body = FIXED;
+  pool.reviewNewHeads();
+  const reads = () => host.calls.filter((call) => call === `readReplies ${url}`).length;
+  const before = reads();
+  pool.reviewNewHeads();
+  pool.reviewNewHeads();
+  assert.equal(reads(), before, "the hand-back stands, so nothing is asked of GitHub for it again");
 });
