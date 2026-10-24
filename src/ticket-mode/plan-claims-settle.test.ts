@@ -1,7 +1,7 @@
 // no-token: gh -- herdr, git, the tracker and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
@@ -105,4 +105,22 @@ test("A11-212: a run briefed before this check, with no claims file, is not refu
   rmSync(join(dir, CLAIMS_GIVEN_FILE), { force: true });
   await end(planOf("agent-org:ui/test/"));
   assert.equal(entry("A11-212").outcome, undefined);
+});
+
+test("A11-212: a claims file that is there but is not a list refuses the plan, saying the folder claims cannot be checked, and attaches nothing", async () => {
+  const { dir, entry, attached, end } = await planning();
+  writeFileSync(join(dir, CLAIMS_GIVEN_FILE), "{}\n");
+  await end(planOf("agent-org:ui/test/"));
+  assert.equal(entry("A11-212").outcome?.kind, "needs-human");
+  assert.match(reasonOf(entry("A11-212").outcome), /the list of paths other tickets held \(.*claims-given\.json\) is not a list, so the plan's folder claims cannot be checked/);
+  assert.deepEqual(attached, []);
+});
+
+test("A11-212: a claims file that cannot be read refuses the plan the same way", async () => {
+  const { dir, entry, attached, end } = await planning();
+  rmSync(join(dir, CLAIMS_GIVEN_FILE));
+  mkdirSync(join(dir, CLAIMS_GIVEN_FILE));
+  await end(planOf("agent-org:ui/test/"));
+  assert.match(reasonOf(entry("A11-212").outcome), /the list of paths other tickets held \(.*claims-given\.json\) cannot be read \(.*\), so the plan's folder claims cannot be checked/);
+  assert.deepEqual(attached, []);
 });
