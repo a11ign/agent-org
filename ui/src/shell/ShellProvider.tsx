@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { People } from "../api/types.ts";
 import { chosenConnection } from "../../../src/ticket-mode/board-view.ts";
 import { chosenProject, inProject, projectCounts } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
@@ -6,11 +6,14 @@ import { queueIsEmpty } from "../api/emptiness.ts";
 import { createClient, type Client } from "../api/client.ts";
 import type { Fetch } from "../api/request.ts";
 import type { ConfigView, QueueView, TicketView, ViewConnection } from "../api/types.ts";
+import { POLL_MS } from "../api/poll-schedule.ts";
 import { usePoll } from "../api/use-poll.ts";
 import type { LifecycleView } from "../lifecycle/Lifecycle.tsx";
 import { ALL_GOALS_ID, contextParentsOf, goalEntries, goalShown, mergedTickets, runningCount, scopeOf, ticketsView, isLive, unreachableOf, type GoalEntry } from "./shell-model.ts";
 import { useReachability } from "./use-reachability.ts";
 import { useScopeReads } from "./use-scope-reads.ts";
+import { NO_UPDATE, type UpdateView } from "../updating/update-model.ts";
+import { useUpdate } from "../updating/use-update.ts";
 import { browserStorage, CONNECTION_MEMORY, PROJECT_MEMORY, recalled, remembered } from "./storage.ts";
 
 /** Everything the sidebar reads, once, so a page reuses it and never reads it again. */
@@ -28,6 +31,8 @@ export type ShellValue = Readonly<{
   retryConnections: () => void;
   /** `/api/queue`, polled every 5s: the Runs badge, the connection pill and the Runs and Run detail pages. */
   queue: LifecycleView<QueueView>;
+  /** Whether the page is in the middle of an `agent-org update` (A11-217): `updating` while the queue poll fails with a reason to think so, `back` once the instance answers on the new version, else `none`. */
+  update: UpdateView;
   /** The backend's sentence while the connection is an SSH remote that cannot be reached (the queue poll, which drives the pill, or the tickets read is `unreachable`), else null. A local connection's failure is never this. */
   unreachable: string | null;
   /** True once the connection has been unreachable and is reached again, until the connection is switched. */
@@ -71,7 +76,7 @@ const LOADING_VIEW = { state: "loading", data: null, refusal: null, refresh: noo
 /** The shell as it is before anything is read: nothing chosen, everything loading. */
 const LOADING_SHELL: ShellValue = {
   connectionsReady: false, client: createClient(null), connections: [], connection: null, connectionsRefusal: null, switchConnection: noop, retryConnections: noop,
-  queue: LOADING_VIEW, unreachable: null, reconnected: false, checkNow: noop, config: null, tickets: LOADING_VIEW, scope: scopeOf(null, null), chooseScope: noop, readingScope: null, scopesRead: new Set(), held: null, allTickets: [], contextParents: [],
+  queue: LOADING_VIEW, update: NO_UPDATE, unreachable: null, reconnected: false, checkNow: noop, config: null, tickets: LOADING_VIEW, scope: scopeOf(null, null), chooseScope: noop, readingScope: null, scopesRead: new Set(), held: null, allTickets: [], contextParents: [],
   runningRuns: null, ticketCount: null, projects: [], project: null, chooseProject: noop, goals: [], goal: ALL_GOALS_ID, chooseGoal: noop, projectTickets: [],
 };
 
@@ -106,6 +111,8 @@ function useListing(fetchWith: Fetch | undefined): Readonly<{ listing: Listing |
 const nameToOpenOn = (storage: Storage | null): string | null => new URLSearchParams(globalThis.location?.search ?? "").get("connection") ?? recalled(storage, CONNECTION_MEMORY);
 
 type Chosen = Readonly<{
+  /** What a Back does to move on, for a test: the page reloads itself by default (see `useUpdate`). */
+  reload?: () => void;
   listing: Listing;
   connection: ViewConnection | null;
   switchConnection: (name: string) => void;
@@ -115,10 +122,16 @@ type Chosen = Readonly<{
 }>;
 
 /** The reads of one connection. It is keyed by the connection, so a switch drops every read and every choice made on the other instance. */
-function ConnectionReads({ listing, connection, switchConnection, retryConnections, fetchWith, children }: Chosen) {
+function ConnectionReads({ listing, connection, switchConnection, retryConnections, fetchWith, reload, children }: Chosen) {
   const client = useMemo(() => createClient(connection, fetchWith === undefined ? {} : { fetch: fetchWith }), [connection, fetchWith]);
   const config = usePoll<ConfigView>(client.config, { connection, repeat: false, isEmpty: () => false });
-  const queue = usePoll<QueueView>(client.queue, { connection, isEmpty: queueIsEmpty });
+  // While the Updating screen shows, the queue is tried every POLL_MS and not on the backoff up to 60 s, so the page is back within one poll of the instance (A11-217).
+  const updating = useRef(false);
+  const queue = usePoll<QueueView>(client.queue, { connection, isEmpty: queueIsEmpty, maxWaitMs: () => (updating.current ? POLL_MS : Infinity) });
+  const update = useUpdate(queue, reload);
+  useEffect(() => {
+    updating.current = update.kind === "updating";
+  }, [update.kind]);
   const ticketsRead = usePoll<TicketView[]>(client.tickets, { connection, repeat: false });
   const storage = browserStorage();
   const [rememberedProject, setRememberedProject] = useState(() => recalled(storage, PROJECT_MEMORY));
@@ -150,7 +163,7 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const goals = goalEntries(projectTickets);
   const value: ShellValue = {
     connectionsReady: true, client, connections: listing.connections, connection, connectionsRefusal: listing.refusal, switchConnection, retryConnections,
-    queue, unreachable, reconnected, checkNow, config: config.data, tickets, scope, held: reads.held, allTickets, readingScope: reads.reading, scopesRead: reads.read,
+    queue, update, unreachable, reconnected, checkNow, config: config.data, tickets, scope, held: reads.held, allTickets, readingScope: reads.reading, scopesRead: reads.read,
     chooseScope: (next) => {
       setScopeChoice(next);
       reads.readScope(next);
@@ -168,9 +181,9 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
 
 /**
  * The shell's data. It reads the connections once; the instance shown is `?connection=`, else the one remembered, else this machine's (`chosenConnection`), and a switch
- * remembers the choice and gives every read a new client for that instance, which starts them again from `loading`. `fetchWith` is for a test; the page uses the browser's.
+ * remembers the choice and gives every read a new client for that instance, which starts them again from `loading`. `fetchWith` and `reload` are for a test; the page uses the browser's.
  */
-export function ShellProvider({ fetchWith, children }: Readonly<{ fetchWith?: Fetch; children: ReactNode }>) {
+export function ShellProvider({ fetchWith, reload, children }: Readonly<{ fetchWith?: Fetch; reload?: () => void; children: ReactNode }>) {
   const { listing, retry } = useListing(fetchWith);
   const storage = browserStorage();
   const [name, setName] = useState<string | null>(() => nameToOpenOn(storage));
@@ -182,7 +195,7 @@ export function ShellProvider({ fetchWith, children }: Readonly<{ fetchWith?: Fe
     remembered(storage, CONNECTION_MEMORY, next);
   };
   return (
-    <ConnectionReads key={connection?.name ?? ""} listing={listing} connection={connection} switchConnection={switchConnection} retryConnections={retry} fetchWith={fetchWith}>
+    <ConnectionReads key={connection?.name ?? ""} listing={listing} connection={connection} switchConnection={switchConnection} retryConnections={retry} fetchWith={fetchWith} {...(reload === undefined ? {} : { reload })}>
       {children}
     </ConnectionReads>
   );
