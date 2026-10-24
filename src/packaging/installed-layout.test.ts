@@ -32,7 +32,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { installedPlaywrightCore, installedToolchain, linkToolchain } from "./copied-tool-fixture.ts";
+import { installedClackPrompts, installedPlaywrightCore, installedToolchain, linkToolchain } from "./copied-tool-fixture.ts";
 
 const TOOL_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PNPM_TIMEOUT_MS = 120_000;
@@ -127,8 +127,8 @@ function installedProject({ withTypescript }: { withTypescript: boolean }) {
   const project = projectRepository();
   // The tool declares `@a11ign/toolchain` (a11ign/agent-org#522) and `pnpm` runs `--offline`, so the dependency is resolved from the one this checkout
   // has installed, by an override, and not from a registry mirror this machine may not hold.
-  // `playwright-core` (ticket A11-151) is the tool's runtime dependency too, so it is overridden the same way.
-  const overrides = { "@a11ign/toolchain": `link:${installedToolchain()}`, "playwright-core": `link:${installedPlaywrightCore()}` };
+  // `playwright-core` (ticket A11-151) and `@clack/prompts` (A11-186) are the tool's runtime dependencies too, so they are overridden the same way.
+  const overrides = { "@a11ign/toolchain": `link:${installedToolchain()}`, "playwright-core": `link:${installedPlaywrightCore()}`, "@clack/prompts": `link:${installedClackPrompts()}` };
   writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true, pnpm: { overrides } }));
   const typescript = withTypescript ? [`typescript@file:${fixtureTypescript()}`] : [];
   const added = pnpm(project, "add", "--offline", "-D", ...typescript, `agent-org@git+file://${taggedTool()}#semver:^0.1.0`);

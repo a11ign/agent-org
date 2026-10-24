@@ -12,6 +12,9 @@ const INPUTS: WrapperInputs = {
   identity: { scheduler: { mode: "user-accounts" }, workers: { mode: "github-apps", appId: "1", keyPath: "/opt/workers.pem" }, managers: { mode: "user-accounts" }, reviewer: { mode: "user-accounts" } },
 };
 
+/** The forms a checkout's `origin` takes for `owner/repo`, which the group maps to the one repository. */
+const REMOTE = { urls: ["https://github.com/owner/repo.git", "git@github.com:owner/repo.git", "ssh://git@github.com/owner/repo"], repository: { name: "repo", fullName: "owner/repo" } };
+
 function seeded() {
   const host = createFakeCodeHost("fake-worker");
   const { url, ref } = host.seedPull("owner/repo", 7, { feedback: { authors: ["a-person", "fake-worker"] } });
@@ -19,7 +22,7 @@ function seeded() {
   const check = { detailsUrl: "https://github.com/owner/repo/actions/runs/1/job/2", log: "Error: the build failed" };
   host.checksAndClaims.logs.set(check.detailsUrl, `2026-10-22T10:00:00Z ${check.log}\n`);
   const claim = { repository: "owner/repo", head: "c".repeat(40), environment: { GH_CONFIG_DIR: "/opt/reviewer/gh" } };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE } };
 }
 
 /**
@@ -54,7 +57,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");

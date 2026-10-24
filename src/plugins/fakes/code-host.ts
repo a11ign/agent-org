@@ -3,10 +3,11 @@
 //
 // IT HOLDS PULL REQUESTS, AND ROW MODE'S ROWS (`code-host-rows.ts`), and answers `null` for one it was never given, as a host does that cannot read it. A test seeds a pull request (`seedPull`),
 // moves its head or its checks, and reads what the board asked of it (`calls`) and did to it (`armed`, `reviewRequests`, `retargets`). Every read is synchronous, as the contract's are.
-import { join } from "node:path";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, DefaultBranchRed, MergedFindings, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -213,6 +214,58 @@ function wrapperOf(state: FakeWrapperState): CodeHostWrapper {
   };
 }
 
+/**
+ * What the fake holds of the repositories a person can pick (contract 1.14), and what a test sets: the owners (null: the host cannot be asked), the repositories of each owner by login (an owner with none seeded cannot be
+ * asked about), why a clone of `fullName` fails, and the clones made, in order.
+ */
+export type FakeRepositories = {
+  owners: readonly RepositoryOwner[] | null;
+  byOwner: Map<string, readonly HostRepository[]>;
+  cloneFailures: Map<string, string>;
+  cloned: { fullName: string; path: string }[];
+};
+
+const GITHUB_REMOTE = /^(?:(?:git\+)?(?:https?|ssh|git):\/\/(?:[^@/]+@)?github\.com(?::\d+)?\/|(?:[^@/\s]+@)?github\.com:)([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/i;
+
+/** The fake's checkout: a directory whose `.git/config` names `fullName`'s GitHub address, which is all the scan of a folder reads. */
+function makeCheckout(fullName: string, path: string): void {
+  mkdirSync(join(path, ".git"), { recursive: true });
+  writeFileSync(join(path, ".git", "config"), `[remote "origin"]\n\turl = https://github.com/${fullName}.git\n`);
+}
+
+/** The group over what a test seeded. A clone makes the destination, so the folder it clones into holds a checkout the scan finds; it fails as the test says, and where the destination holds something already. */
+function repositoriesOf(state: FakeRepositories, calls: string[]): CodeHostRepositories {
+  return {
+    readOwners() {
+      calls.push("readOwners");
+      return state.owners;
+    },
+    readRepositories(owner) {
+      calls.push(`readRepositories ${owner.login}`);
+      return state.byOwner.get(owner.login) ?? null;
+    },
+    repositoryOfRemote(url) {
+      const match = GITHUB_REMOTE.exec(url.trim());
+      return match === null ? null : { name: match[2], fullName: `${match[1]}/${match[2]}` };
+    },
+    cloneCommand: (fullName, path) => `gh repo clone ${fullName} ${path}`,
+    cloneRepository(fullName, path) {
+      calls.push(`cloneRepository ${fullName} ${path}`);
+      const failure = state.cloneFailures.get(fullName);
+      if (failure !== undefined) return failure;
+      try {
+        if (readdirSync(path).length > 0) return `destination path '${path}' already exists and is not an empty directory.`;
+      } catch (error) {
+        void error; // no such directory: the clone makes it
+      }
+      mkdirSync(dirname(path), { recursive: true });
+      makeCheckout(fullName, path);
+      state.cloned.push({ fullName, path });
+      return null;
+    },
+  };
+}
+
 /** Whether an event is one the subscriber's filter names. */
 const wants = ({ filter }: Subscriber, event: CodeHostEvent): boolean => (filter.kinds?.includes(event.kind) ?? true) && (filter.ref === undefined || filter.ref.id === event.ref.id);
 
@@ -227,10 +280,11 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const reviewRequests: { ref: ChangeRef; reviewer: string }[] = [];
   const retargets: { url: string; base: string }[] = [];
   const wrapperState: FakeWrapperState = { refusal: null, mintFailures: {} };
+  const repositoriesWorld: FakeRepositories = { owners: login === null ? null : [{ login, kind: "account" }], byOwner: new Map(), cloneFailures: new Map(), cloned: [] };
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const host: CodeHost = {
     ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls),
-    sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld),
+    sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
   return Object.assign(host, {
@@ -238,6 +292,16 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     rowsWorld,
     /** The checks' logs and reruns and the review claims the fake holds, for a test to seed and read (see {@link FakeChecksAndClaims}). */
     checksAndClaims,
+    /** The owners, repositories and clones the fake's `repositories` group holds, for a test to seed and read (see {@link FakeRepositories}). */
+    repositoriesWorld,
+    /** Say which owners the fake lists (the account first, as the contract says), or null for a host that cannot be asked. */
+    seedOwners(owners: readonly RepositoryOwner[] | null) {
+      repositoriesWorld.owners = owners;
+    },
+    /** Say which repositories an owner holds, by name (`owner/name`): until it does, the fake cannot be asked about that owner and answers null. */
+    seedRepositories(login: string, fullNames: readonly string[]) {
+      repositoriesWorld.byOwner.set(login, fullNames.map((fullName): HostRepository => ({ name: fullName.slice(fullName.indexOf("/") + 1), fullName })));
+    },
     /** What the fake's wrapper refuses to write (null: nothing) and the reason a role's App cannot mint, by role. */
     wrapperState,
     /** Hold a pull request, open at head `head-<number>` on `main` unless a test says otherwise. Returns its address and its change ref. */

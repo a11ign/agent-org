@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+At a terminal, `agent-org onboard` no longer asks for checkout paths one per line. Without `--repo`, it lists the GitHub checkouts in the folder it runs in (that folder and each folder one level down, matched by their remote), pre-ticked and named as GitHub names them, then asks `Add repositories not cloned here?`. A Yes lists your account and its organisations, then their repositories (type to filter), with the host file's repositories pre-ticked, and offers to clone each pick that has no checkout into that folder, showing the `gh repo clone` command first. A summary of each repository, its path and found, cloned or kept is printed before the host file is written, and a repository the host file already names is kept. Without a terminal, `--repo` and profiles work as before and nothing is prompted. The code host contract is 1.14: an optional `repositories` group (`readOwners`, `readRepositories`, `repositoryOfRemote`, `cloneCommand`, `cloneRepository`), which `plugins/github` implements through its own `gh` runner. The tool depends on `@clack/prompts` 1.8.1.
