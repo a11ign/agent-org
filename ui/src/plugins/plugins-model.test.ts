@@ -1,6 +1,7 @@
 import { skillRefs } from "../../../src/ticket-mode/plugin-contract.ts";
 import { a11ign, A11IGN_CONTRACT, answerOf, claudePlugin, failing } from "../../test/plugins/plugins-stand.ts";
-import { checkRowsOf, chosenSkill, claudeStatusOf, healthLinesOf, isPluginEntry, needsOf, pickOf, shownPlugin, SKILL_JOBS, skillChange, skillsNamedIn, statusOf } from "./plugins-model.ts";
+import { chosenSkill, claudeStatusOf, healthLinesOf, isPluginEntry, needsOf, SKILL_JOBS, skillChange, skillsNamedIn } from "./claude-model.ts";
+import { checkRowsOf, pickOf, shownPlugin, statusOf } from "./plugins-model.ts";
 
 const WRITER = SKILL_JOBS[0];
 const REVIEW = SKILL_JOBS[1];

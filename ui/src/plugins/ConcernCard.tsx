@@ -3,6 +3,7 @@ import { SECRET_WORDS, CONTROL_LABEL } from "../../../src/ticket-mode/plugins-se
 import { ConcernSettings } from "./ConcernSettings.tsx";
 import { CommandLine } from "./CopyButton.tsx";
 import { usePage } from "./PageContext.ts";
+import { Dot } from "./StatusDot.tsx";
 import { buttonsOf, checkRowsOf, concernRows, hasChoice, lockReasons, pickOf, purposeOf, shownPlugin, statusOf, titleOf, type CheckRow, type Concern, type Plugin } from "./plugins-model.ts";
 
 /** Fixed copy under the boards' Reviewer and Code host cards: what the concern does, since neither has a setting of its own to draw. */
@@ -14,10 +15,6 @@ const NOTES: Readonly<Partial<Record<Concern["concern"], ReactNode>>> = {
 };
 
 const PUBLISHER_WARNING = "This is the publish run's instruction. A wrong one lets it act outside this machine, or in your accounts.";
-
-function Dot({ tone }: Readonly<{ tone: CheckRow["tone"] }>) {
-  return <span className={`plugin-dot tone-dot-${tone}`} aria-hidden="true" />;
-}
 
 function Chevron() {
   return (

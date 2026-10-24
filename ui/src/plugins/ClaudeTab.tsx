@@ -1,14 +1,11 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { CommandLine } from "./CopyButton.tsx";
 import { usePage } from "./PageContext.ts";
+import { Dot } from "./StatusDot.tsx";
 import {
   addPluginChange, chosenSkill, claudeSaid, claudeStatusOf, healthLinesOf, heldText, isPluginEntry, listedPlugins, needsOf, removePluginChange, skillChange, skillOptions, SKILL_JOBS,
-  type ClaudePlugin, type SkillJob, type Tone,
-} from "./plugins-model.ts";
-
-function Dot({ tone }: Readonly<{ tone: Tone }>) {
-  return <span className={`plugin-dot tone-dot-${tone}`} aria-hidden="true" />;
-}
+  type ClaudePlugin, type SkillJob,
+} from "./claude-model.ts";
 
 /** What a Claude plugin's health says, line by line: whether workers get it, then each way its contract and this machine disagree. */
 function Health({ plugin }: Readonly<{ plugin: ClaudePlugin }>) {
@@ -38,21 +35,20 @@ function SkillSelect({ job, plugin }: Readonly<{ job: SkillJob; plugin: ClaudePl
   const provided = skillOptions(job, plugin);
   const options = chosen === null || provided.includes(chosen) ? provided : [chosen, ...provided];
   const pick = (skill: string) => changes.change([skillChange(job, text, plugin, skill)], claudeSaid.skill(job, skill));
-  let control;
-  if (view === null) control = <span className="plugin-value">{viewWords}</span>;
-  else if (job.point === "writer" && chosen === null) control = <code className="plugin-value">{text ?? "Not set"}</code>;
-  else {
-    control = (
+  const control = (): ReactNode => {
+    if (view === null) return <span className="plugin-value">{viewWords}</span>;
+    if (job.point === "writer" && chosen === null) return <code className="plugin-value">{text ?? "Not set"}</code>;
+    return (
       <select id={id} className="settings-select" value={chosen ?? ""} disabled={!controls || changes.busy} onChange={(event) => pick(event.target.value)}>
         {chosen === null ? <option value="">Not set</option> : null}
         {options.map((skill) => <option key={skill} value={skill}>{skill}</option>)}
       </select>
     );
-  }
+  };
   return (
     <div className="plugin-job">
       <label htmlFor={id}><span className="settings-label settings-label-block">{job.label}</span><span className="plugin-job-words">{job.words}</span></label>
-      {control}
+      {control()}
     </div>
   );
 }
