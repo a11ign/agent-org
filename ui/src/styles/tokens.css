@@ -148,6 +148,26 @@
   --measure-empty: 460px;
   --measure-empty-narrow: 440px;
 
+  /* Settings (A11-200): the Models, Workers and Machine boards' own values. */
+  --color-overlay: rgba(5, 6, 8, 0.66);
+  --color-staged: rgba(91, 99, 217, 0.1);
+  --color-card-divider: #1d1f25;
+  --color-success-body: #a6e6b1;
+  --color-success-heading: #c9f3d1;
+  --color-success-border-strong: #2f6a40;
+  --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --measure-settings: 760px;
+  --measure-lede: 620px;
+  --dialog-width: 640px;
+  --dialog-top: 72px;
+  --dialog-side: var(--space-16);
+  --control-min-width: 200px;
+  --input-width: 200px;
+  --input-width-number: 88px;
+  --z-dialog: 10;
+  --skeleton-settings-title-height: 30px;
+  --skeleton-settings-card-height: 84px;
+
   /* Icons and marks. */
   --icon-10: 10px;
   --icon-12: 12px;

@@ -9,7 +9,7 @@ import { defaultSchema } from "../plugins/schema.ts";
 /** The schema the page and the readers use: core's entries and the bundled plugins' settings (A11-159). */
 const SCHEMA = defaultSchema();
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { PAGE_ORDER, settingsView, type Row, type Section, type View, type ViewInput } from "./settings-view.ts";
+import { PAGE_ORDER, settingsPageOf, settingsView, type Row, type Section, type View, type ViewInput } from "./settings-view.ts";
 import type { PluginState } from "./plugins.ts";
 
 const read = (file: string, raw: Record<string, unknown>): Section => ({ file, raw, refusal: null });
@@ -255,4 +255,45 @@ test("the machine's plumbing is in Machine alone, and each provider's settings a
   assert.equal(groupOf("tickets.providers.codeHost.gh.workers"), "Code host");
   assert.equal(groupOf("tickets.providers.publish.run"), "Publisher");
   assert.equal(groupOf("tickets.providers.reviewer.provider"), "Reviewer");
+});
+
+/** Asserts that each of `keys` is a row of `view` on `page`. */
+function assertOn(view: View, page: string, keys: readonly string[]): void {
+  for (const key of keys) assert.equal(row(view, key).page, page, key);
+}
+
+test("every row is on one of the three pages: models and efforts on Models, the Workers group on Workers, and everything else on Machine", () => {
+  const view = viewOf({ project: {} });
+  const rows = rowsOf(view);
+  assert.ok(rows.length > 100, "the view holds every schema entry's row");
+  // The keys the design boards place (A11-200): the writer's model among the host-file rows of Models, the drafts and capture switches on Workers, home and design tools on Machine.
+  assertOn(view, "models", ["tickets.writer.model"]);
+  assertOn(view, "workers", ["tickets.drafts", "tickets.capture"]);
+  assertOn(view, "machine", ["tickets.designTools", "home"]);
+  // Every choice, and every host-file key whose last segment is a model or an effort, whatever its group.
+  assertOn(view, "models", ["model", "effort", "planModel", "planEffort", "writerModel", "writerEffort", "tickets.writer.effort", "tickets.publish.model", "tickets.publish.effort", "tickets.providers.publish.model", "tickets.providers.publish.effort"]);
+  // The groups the boards place no key of go where their neighbours in PAGE_ORDER are: Machine.
+  assertOn(view, "machine", ["tickets.providers.tracker.provider", "tickets.providers.exposure.port", "tickets.providers.codeHost.stack", "tickets.providers.publish.run", "tickets.providers.reviewer.required", "events.source", "units.prefix", "tickets.plan"]);
+  assertOn(view, "workers", ["tickets.max", "tickets.stallMinutes", "tickets.preflight", "workers.haikuBrief", "emergencyPriority.enabled"]);
+  // Whatever the rule, each row is on exactly one page, and no page is empty.
+  for (const candidate of rows) assert.ok(["models", "workers", "machine"].includes(candidate.page), `${candidate.key} is on a page`);
+  for (const page of ["models", "workers", "machine"]) assert.ok(rows.some((candidate) => candidate.page === page), `${page} has rows`);
+});
+
+test("a row is on Models by its key's last segment, not by a segment inside it, and a project-file key is never a model", () => {
+  assert.equal(settingsPageOf({ key: "tickets.modelRoute", file: "host.json", group: "Workers" }), "workers");
+  assert.equal(settingsPageOf({ key: "tickets.model.note", file: "host.json", group: "Machine" }), "machine");
+  assert.equal(settingsPageOf({ key: "routing.model", file: "project.json", group: "Project" }), "machine");
+  assert.equal(settingsPageOf({ key: "tickets.writer.model", file: "host.json", group: "Conventions plugin" }), "models");
+});
+
+test("a row says what its key is by default and, for a key the page changes, when a change is in force, in the words a review of the change uses", () => {
+  const view = viewOf({ project: {} });
+  const drafts = row(view, "tickets.drafts");
+  assert.deepEqual([drafts.default, drafts.inForce], ["true", "in force after the board restarts: ticket:serve and ticket:ui."]);
+  const home = row(view, "home");
+  assert.equal(home.default, null, "a key with no default says none");
+  assert.equal(home.inForce, "in force after you reinstall and restart the units this machine installs for its host file.");
+  assert.equal(row(view, "tickets.capture").inForce, null, "a key the page does not change is not said to be in force by a change");
+  assert.equal(row(view, "tickets.capture").default, "false");
 });

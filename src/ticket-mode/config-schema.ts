@@ -41,6 +41,15 @@ export type Edit =
   | Readonly<{ editable: true; input: Input; applies: Applies; unit?: string; note?: string; dangerous?: string }>
   | Readonly<{ editable: false; why: string }>;
 
+/** The in-force sentence of an editable entry, from its `applies`: what must restart before the value is read. The review of a change and the row of a key say it alike. */
+export function inForceOf(edit: Extract<Edit, { editable: true }>, applies: Applies): string {
+  const note = edit.note === undefined ? "" : ` ${edit.note}.`;
+  if (applies === "now") return `in force now.${note}`;
+  if (applies === "board") return `in force after the board restarts: ticket:serve and ticket:ui.${note}`;
+  if (applies === "unit") return `in force after you reinstall and restart ${edit.unit ?? "the units this machine installs"}.${note}`;
+  return "not in force: the queue keeps the number of workers it already has, so change it with Workers at once";
+}
+
 /** The groups the page shows, in this order. Each entry names one. */
 export const GROUPS = ["Tracker", "Code host", "Publisher", "Reviewer", "Exposure", "Conventions plugin", "Workers", "Events", "Project", "Machine"] as const;
 export type Group = (typeof GROUPS)[number];

@@ -8,7 +8,7 @@
 // THE INPUT IS READ BY THE CALLER (`settings-read.ts`): each file's parsed object, the message each reader refused it with, the saved choices, the
 // queue's number of workers and the plugin install record. This module imports no reader, so a ticket-only machine with no project loads it.
 import type { ChoicePart, File, Group, Input, SchemaEntry } from "./config-schema.ts";
-import { GROUPS } from "./config-schema.ts";
+import { GROUPS, inForceOf } from "./config-schema.ts";
 /** The order the page draws its sections in: the three providers the chairman sees first, then the rest, with the machine's plumbing last (A11-146). */
 export const PAGE_ORDER: readonly Group[] = ["Tracker", "Exposure", "Code host", "Publisher", "Reviewer", "Conventions plugin", "Workers", "Events", "Project", "Machine"];
 import type { PluginInstall, PluginState } from "./plugins.ts";
@@ -33,17 +33,23 @@ export type ViewInput = Readonly<{
 
 export type State = "enabled" | "disabled" | "not set" | "default";
 export type Source = "host.json" | "project.json" | "choice.json" | "queue.json" | "built-in default";
-/**
- * A row: what the key says in words, and, for a key the page may change, the kind of input that changes it (`input`) and its value as that input takes it (`raw`).
- * `editable` says the page changes the key in place; `why` says, for a key that is not, why not (null when it is editable). `alias` replaces the value text of
- * an old key that is set: where its new key is, and that `agent-org doctor --fix` moves it there.
- */
-export type Row = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean;
+/** A row as the schema and the files make it, before `settingsPageOf` says which page it is drawn on. */
+type Unplaced = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean;
   input: Input | null; raw: string | null; editable: boolean; why: string | null; alias: string | null;
+  /** What the key is when its file does not hold it, in the schema's words, or null for a key with no default; and, for a key the page changes, when a change is in force. */
+  default: string | null; inForce: string | null;
   /** Whether the key matters to the host now: an old key matters only while it is set, and an App's field of a role that does not use an App only while the role uses one. The page hides the rest, and a search still finds them. */
   inUse: boolean;
   /** The row this one sits inside, for a key of a role (`identity.<role>`) or of the routing gh: the page nests it under that row. Null at the top of a section. */
   nest: string | null }>;
+/** The three pages Settings is split into: which model and effort each kind of work runs on, how the workers run, and the machine they run on (A11-200). */
+export type SettingsPage = "models" | "workers" | "machine";
+/**
+ * A row: what the key says in words, and, for a key the page may change, the kind of input that changes it (`input`) and its value as that input takes it (`raw`).
+ * `editable` says the page changes the key in place; `why` says, for a key that is not, why not (null when it is editable). `alias` replaces the value text of
+ * an old key that is set: where its new key is, and that `agent-org doctor --fix` moves it there. `page` is the page of the split the row is drawn on.
+ */
+export type Row = Unplaced & Readonly<{ page: SettingsPage }>;
 export type PluginLine = Readonly<{ plugin: string; installed: string; loads: string }>;
 export type View = Readonly<{
   groups: readonly Readonly<{ group: Group; rows: readonly Row[] }>[];
@@ -53,6 +59,19 @@ export type View = Readonly<{
   contract: readonly ContractRow[];
   words: readonly string[];
 }>;
+
+/**
+ * The page of the split a row is on, first match wins: a model or an effort (a `choice.json` row, or a host-file key whose last segment is `model` or `effort`) is Models; the
+ * `Workers` group is Workers; everything else is Machine, which takes the groups the design boards place no key of (Tracker, Exposure, Code host, Publisher, Reviewer, Events and
+ * Project) because each sits beside Conventions plugin or Machine in `PAGE_ORDER`.
+ */
+export function settingsPageOf({ key, file, group }: Pick<Unplaced, "key" | "file" | "group">): SettingsPage {
+  if (file === "choice.json" || (file === "host.json" && namesModelOrEffort(key))) return "models";
+  return group === "Workers" ? "workers" : "machine";
+}
+
+/** Whether the last segment of a key is `model` or `effort`. */
+const namesModelOrEffort = (key: string): boolean => ["model", "effort"].includes(key.slice(key.lastIndexOf(".") + 1));
 
 /** The built-in value of each choice, which applies when `choice.json` names none. */
 const CHOICE_BUILT_IN: Readonly<Record<ChoicePart, string>> = { model: "opus", effort: "high", planModel: "opus", planEffort: "high", writerModel: "opus", writerEffort: "high" };
@@ -99,8 +118,10 @@ function stateWhenAbsent(entry: SchemaEntry): State {
 const rawOf = (value: unknown): string => (typeof value === "string" ? value : JSON.stringify(value));
 
 /** How the page may change a key: its input, whether it is changed in place, and, when it is not, why. */
-const editOf = (entry: SchemaEntry): Pick<Row, "input" | "editable" | "why"> =>
-  (entry.edit.editable ? { input: entry.edit.input, editable: true, why: null } : { input: null, editable: false, why: entry.edit.why });
+const editOf = (entry: SchemaEntry): Pick<Unplaced, "input" | "editable" | "why" | "default" | "inForce"> =>
+  (entry.edit.editable
+    ? { input: entry.edit.input, editable: true, why: null, default: entry.default, inForce: inForceOf(entry.edit, entry.edit.applies) }
+    : { input: null, editable: false, why: entry.edit.why, default: entry.default, inForce: null });
 
 /** Why a key is not changed in place, from its schema entry, and null for a key that is. */
 const whyOf = (entry: SchemaEntry): string | null => (entry.edit.editable ? null : entry.edit.why);
@@ -174,9 +195,9 @@ function absentValue(entry: SchemaEntry, state: State): string {
 }
 
 /** The rows of one schema entry, for each key it stands for in the file, each followed by its list's element rows. */
-function rowsOf(entry: SchemaEntry, input: ViewInput): Row[] {
+function rowsOf(entry: SchemaEntry, input: ViewInput): Unplaced[] {
   const root = fileRoot(entry, input);
-  const rows: Row[] = [];
+  const rows: Unplaced[] = [];
   for (const key of concreteKeys(entry.key, root)) {
     const path = key.split(".");
     const value = valueAt(root, path);
@@ -199,7 +220,7 @@ function rowsOf(entry: SchemaEntry, input: ViewInput): Row[] {
 }
 
 /** The element rows of a list: each `key[].field` entry shows its field of every item, in the list's order. */
-function elementRows({ parent, key, items, state }: Readonly<{ parent: SchemaEntry; key: string; items: readonly unknown[]; state: State }>, input: ViewInput): Row[] {
+function elementRows({ parent, key, items, state }: Readonly<{ parent: SchemaEntry; key: string; items: readonly unknown[]; state: State }>, input: ViewInput): Unplaced[] {
   const prefix = `${parent.key}${ELEMENT}`;
   return input.entries
     .filter((entry) => entry.file === parent.file && entry.key.startsWith(prefix) && !entry.key.slice(prefix.length).includes("."))
@@ -208,28 +229,28 @@ function elementRows({ parent, key, items, state }: Readonly<{ parent: SchemaEnt
       const fieldKey = `${key}${ELEMENT}${field}`;
       const values = items.filter(isObject).map((item) => (item[field] === undefined ? "not set" : showValue({ key: fieldKey, value: item[field] }, entry, input.exists)));
       return { key: fieldKey, file: entry.file, group: entry.group, value: values.join("; ") || "none", state, source: fileOf(entry), explanation: entry.explanation,
-        breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined, input: null, raw: null, editable: false, why: whyOf(entry) ?? "a list is changed as a whole",
+        breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined, input: null, raw: null, editable: false, why: whyOf(entry) ?? "a list is changed as a whole", default: null, inForce: null,
         alias: items.length > 0 ? aliasText(entry, fieldKey) : null, inUse: entry.aliasOf === undefined || items.length > 0, nest: nestOf(fieldKey) };
     });
 }
 
 /** A choice the page's controls change: the saved one, else the host file's writer value, else the built-in one. */
-function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
+function choiceRow(entry: SchemaEntry, input: ViewInput): Unplaced {
   const part = entry.key as ChoicePart;
   const saved = input.choice.saved[part];
   const hostValue = part === "writerModel" || part === "writerEffort" ? input.choice.host[part] : undefined;
   const base = { key: entry.key, file: entry.file, group: entry.group, explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null,
-    editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true, nest: null };
+    editable: false, why: CONTROLS_ABOVE, alias: null, default: entry.default, inForce: null, inUse: true, nest: null };
   if (saved !== undefined) return { ...base, value: saved, state: "enabled", source: "choice.json" };
   if (hostValue !== undefined) return { ...base, value: hostValue, state: "default", source: "host.json" };
   return { ...base, value: CHOICE_BUILT_IN[part], state: "default", source: "built-in default" };
 }
 
 /** The page's queue line: the number of workers, and which file it came from. */
-function queueRow(entry: SchemaEntry, input: ViewInput): Row {
+function queueRow(entry: SchemaEntry, input: ViewInput): Unplaced {
   const { max, source } = input.queue;
   return { key: entry.key, file: entry.file, group: entry.group, value: String(max), state: source === "built-in default" ? "default" : "enabled", source,
-    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null, editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true, nest: null };
+    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null, editable: false, why: CONTROLS_ABOVE, alias: null, default: entry.default, inForce: null, inUse: true, nest: null };
 }
 
 /** The connector pattern's name, as the text between its `^mcp__` and the next `__`, or the pattern as written when it has none. */
@@ -275,7 +296,7 @@ function pluginLines(input: ViewInput): PluginLine[] {
 export function settingsView(input: ViewInput): View {
   const sections = [input.host, input.tickets, input.project];
   const refusals = sections.flatMap((section) => (section.refusal === null ? [] : [{ file: section.file, message: section.refusal }]));
-  const rows = input.entries.flatMap((entry): Row[] => {
+  const rows = input.entries.flatMap((entry): Unplaced[] => {
     // A list's element keys (`tickets.deny[].pattern`) are shown under their list, by `elementRows`, never on their own.
     if (entry.key.includes("[]")) return [];
     if (entry.file === "choice.json") return [choiceRow(entry, input)];
@@ -285,7 +306,7 @@ export function settingsView(input: ViewInput): View {
     return rowsOf(entry, input);
   });
   // Every group, in the page's order, even one with no rows: the plugins and connectors are drawn in one of them, and the page skips the rest when empty.
-  const groups = PAGE_ORDER.map((group) => ({ group, rows: rows.filter((row) => row.group === group) }));
+  const groups = PAGE_ORDER.map((group) => ({ group, rows: rows.filter((row) => row.group === group).map((row): Row => ({ ...row, page: settingsPageOf(row) })) }));
   return { groups, refusals, notes: input.notes, plugins: pluginLines(input), contract: input.contract ?? [], words: wordsOf(input.tickets.refusal === null ? input.tickets.raw : null) };
 }
 
