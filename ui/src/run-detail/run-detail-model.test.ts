@@ -151,10 +151,19 @@ describe("the steps", () => {
     expect(stepsOf({ ...steps, currentStep: 4 } as RunEntry).map(({ mark }) => mark)).toEqual(["done", "done", "done"]);
   });
 
-  it("draws none for a finished run, a queued one, or a run with no steps", () => {
-    expect(stepsOf({ ...steps, phase: "finished" } as RunEntry)).toEqual([]);
-    expect(stepsOf({ ...steps, phase: "queued" } as RunEntry)).toEqual([]);
+  it("draws the steps of a finished run, which keeps them, with none spinning: the steps it reached are done and the rest not started", () => {
+    expect(stepsOf({ ...steps, phase: "finished", currentStep: 2 } as RunEntry).map(({ text, mark }) => [text, mark])).toEqual([["one", "done"], ["two", "done"], ["three", "next"]]);
+    expect(stepsOf({ ...steps, phase: "finished", currentStep: undefined } as RunEntry).map(({ mark }) => mark)).toEqual(["next", "next", "next"]);
+  });
+
+  it("draws the steps a finished entry of the queue kept", () => {
+    const kept = { ...runFor("done"), plannedSteps: [{ n: 1, title: "one" }, { n: 2, title: "two" }], currentStep: 2 } as RunEntry;
+    expect(stepsOf(kept).map(({ text, mark }) => [text, mark])).toEqual([["one", "done"], ["two", "done"]]);
+  });
+
+  it("draws none for a run that recorded no steps", () => {
     expect(stepsOf({ ...steps, plannedSteps: undefined } as RunEntry)).toEqual([]);
+    expect(stepsOf(runFor("done"))).toEqual([]);
   });
 });
 

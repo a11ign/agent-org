@@ -27,9 +27,6 @@ const BOARD_OF_STATUS: Readonly<Record<RunStatus, RunBoard | "needs-you">> = {
   "awaiting-review": "awaiting", "ready-to-merge": "ready", publishing: "ready", published: "ready", checked: "done", completed: "done", failed: "failed", cancelled: "cancelled",
 };
 
-/** Whether a run is still being worked: it is starting or running, so a Needs you run that is waiting on a dialog is live and a hand-back is not. */
-export const isLiveRun = (entry: Pick<RunEntry, "phase">): boolean => entry.phase === "starting" || entry.phase === "running";
-
 /** The board a status is drawn as, and for Needs you the Needs board while the run is live and Handed back once it has finished. PURE. */
 export function boardOfStatus(status: RunStatus, phase: string): RunBoard {
   const board = BOARD_OF_STATUS[status];
@@ -147,15 +144,29 @@ export type StepMark = "now" | "next" | "done";
 
 export type StepRow = Readonly<{ n: number; text: string; mark: StepMark }>;
 
-const markOf = (n: number, current: number | undefined): StepMark => {
-  if (current === undefined || n > current) return "next";
-  return n === current ? "now" : "done";
+/** How far a run has got: the last step it has passed, and the step it is working on now, if any. */
+type Progress = Readonly<{ passed: number; working: number | undefined }>;
+
+/**
+ * While a run is being worked the step its worker says it is on is the board's spinner and the ones before it are passed. A run that has finished is working on none, so the steps it reached, the one it ended on
+ * among them, have the Completed check and the rest the ring. The board has no third mark, so this is the smallest reading and can be overturned without touching anything else.
+ */
+function progressOf(entry: Pick<RunEntry, "phase" | "currentStep">): Progress {
+  const current = entry.currentStep;
+  if (current === undefined) return { passed: 0, working: undefined };
+  return entry.phase === "finished" ? { passed: current, working: undefined } : { passed: current - 1, working: current };
+}
+
+const markOf = (n: number, { passed, working }: Progress): StepMark => {
+  if (n === working) return "now";
+  return n <= passed ? "done" : "next";
 };
 
-/** The rows of "What it will do": each planned step of a run that is being worked, marked by the step its worker says it is on; none for a run that has finished or has no steps. PURE. */
+/** The rows of "What it will do": each planned step the run kept, finished or not, marked by the step its worker says it is on; none for a run that recorded no steps. PURE. */
 export function stepsOf(entry: RunEntry): StepRow[] {
-  const steps: readonly PlannedStep[] = isLiveRun(entry) ? (entry.plannedSteps ?? []) : [];
-  return steps.map(({ n, title }) => ({ n, text: title, mark: markOf(n, entry.currentStep) }));
+  const steps: readonly PlannedStep[] = entry.plannedSteps ?? [];
+  const progress = progressOf(entry);
+  return steps.map(({ n, title }) => ({ n, text: title, mark: markOf(n, progress) }));
 }
 
 // ---- The pull requests ----
