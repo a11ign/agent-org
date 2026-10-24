@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { main, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
+import { main, reloadService, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
 import { TAILSCALE_MISSING } from "../../plugins/tailscale/tailnet.ts";
 
 type Answer = (args: string[]) => RunResult;
@@ -230,7 +230,7 @@ test("the terminal serves the host file's herdr session, on the port its tickets
 test("the terminal is refused, naming the fix, without the plugin or without bun, and then reads as not registered", () => {
   const noPlugin = withTerminal("linux");
   noPlugin.files.delete(join(noPlugin.home, ".config", "herdr", "plugins.json"));
-  assert.throws(() => unitFor("terminal", noPlugin.deps), /herdr plugin install devswha\/herdr-web-ui --yes/);
+  assert.throws(() => unitFor("terminal", noPlugin.deps), /Run `agent-org onboard`, which installs it at its newest release tag/);
   assert.equal(serviceState("terminal", noPlugin.deps), "not-registered");
   const noBun = withTerminal("linux");
   noBun.files.delete(join(noBun.home, ".bun", "bin", "bun"));
@@ -251,6 +251,24 @@ test("start, stop and status take the terminal by name", async () => {
   assert.equal(await main(["stop", "terminal"], d, out), 0);
   assert.ok(calls.includes("systemctl --user disable --now agent-org-terminal.service"));
   assert.match(lines[1], /^terminal: running \(systemd agent-org-terminal\.service\)$/);
+});
+
+test("A11-184: reloading the terminal writes its unit from the plugin_root installed now and restarts it: on systemd after a daemon-reload, on launchd by booting the agent out and in", () => {
+  const moved = (made: ReturnType<typeof withTerminal>) => made.files.set(join(made.home, ".config", "herdr", "plugins.json"), JSON.stringify([{ plugin_id: "devswha.herdr-web-ui", plugin_root: "/h/plugins/devswha.herdr-web-ui-NEW" }]));
+  const linux = withTerminal("linux");
+  moved(linux);
+  const unit = unitFor("terminal", linux.deps);
+  linux.files.set(unit.path, "old");
+  reloadService("terminal", linux.deps);
+  assert.match(linux.files.get(unit.path) ?? "", /devswha\.herdr-web-ui-NEW/);
+  assert.deepEqual(linux.calls, ["systemctl --user daemon-reload", "systemctl --user restart agent-org-terminal.service"]);
+  const mac = withTerminal("darwin");
+  moved(mac);
+  const plist = unitFor("terminal", mac.deps);
+  reloadService("terminal", mac.deps);
+  assert.match(mac.files.get(plist.path) ?? "", /devswha\.herdr-web-ui-NEW/);
+  assert.deepEqual(mac.calls.map((call) => call.split(" ").slice(0, 2).join(" ")), ["launchctl print", "launchctl bootout", "launchctl bootstrap"]);
+  assert.throws(() => reloadService("terminal", { ...linux.deps, run: () => ({ status: 1, stdout: "", stderr: "Failed to restart" }) }), /systemctl --user daemon-reload failed: Failed to restart/);
 });
 
 // AUTO-UPDATE: `agent-org update` every ten minutes (A11-169), so a merged fix reaches the instance without a person.

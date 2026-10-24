@@ -109,6 +109,7 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
     status: { write: (status) => { statuses.push(status); } },
     upkeep: () => [],
     conventions: () => ({ said: [], failed: [] }),
+    herdr: () => ({ said: [], failed: [] }),
     out: { log: (line: string) => { said.push(line); }, error: (line: string) => { errors.push(line); } },
     ...over,
   });

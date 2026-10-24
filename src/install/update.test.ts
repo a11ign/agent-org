@@ -4,14 +4,17 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { update } from "./update.ts";
+import { herdrWiring, update } from "./update.ts";
 import { readLiveRuns } from "./instance-queue.ts";
 import { currentVersionName } from "./tool-install.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { fakePluginDeps } from "../plugins/fakes/deps.ts";
 import type { PluginDeps } from "../plugins/manifest.ts";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
-import { updateFixture } from "./update-fixture.ts";
+import { stubServices, updateFixture } from "./update-fixture.ts";
+import { herdrStatusPath, readHerdrStatus } from "./herdr-upkeep.ts";
+import { unitFor, type RunResult } from "./service.ts";
+import { herdrConfigDir } from "./terminal.ts";
 
 /** An install at v0.1.0 in version folders, running from it, with v0.2.0 and v0.10.0 cut since. */
 function installed(states: Parameters<typeof updateFixture>[0] = { states: { instance: "running" } }) {
@@ -188,4 +191,68 @@ test("A11-160: a plugin that cannot be imported, and a keep that throws, are sai
     [false, "the github plugin could not be kept up: gh exploded"],
     [false, "the local plugin could not be kept up: gh exploded"],
   ], "and the exposure the host enables is imported to ask what it keeps too");
+});
+
+// A11-184: herdr's integrations and plugins are kept current at the end of every update, whatever the move did.
+const HERDR_LINES = { said: ["reinstalled herdr's claude integration (it was outdated (v8 < v10); now current (v10))"], failed: ["the herdr plugin devswha/herdr-web-ui is at @35bf28fa and `herdr plugin install devswha/herdr-web-ui --ref v0.4.13 -y` failed: no"] };
+
+test("A11-184: update logs what herdr's upkeep changed as it does the plugins' and the conventions', and a failure is an error that fails nothing", () => {
+  const f = installed();
+  let ran = 0;
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps({ herdr: () => { ran += 1; return HERDR_LINES; } })), true);
+  assert.equal(ran, 1);
+  assert.ok(f.said.includes(`agent-org update: ${HERDR_LINES.said[0]}`));
+  assert.deepEqual(f.errors, [`agent-org update: ${HERDR_LINES.failed[0]}`]);
+});
+
+test("A11-184: herdr's upkeep runs when nothing is newer, when the build fails, and while a breaking release drains", () => {
+  const quiet = installed();
+  update({ version: undefined, channel: "release" }, quiet.deps());
+  let ran = 0;
+  const count = () => { ran += 1; return { said: [], failed: [] }; };
+  update({ version: undefined, channel: "release" }, quiet.deps({ herdr: count }));
+  assert.equal(ran, 1, "nothing newer");
+  const broken = installed();
+  broken.state.failBuild = true;
+  assert.throws(() => update({ version: undefined, channel: "release" }, broken.deps({ herdr: count })), /building it failed/);
+  assert.equal(ran, 2, "a failed build");
+  const draining = updateFixture({ states: { instance: "running" }, live: 0 });
+  draining.release("0.1.0");
+  update({ version: undefined, channel: "release" }, draining.deps());
+  draining.runFromVersion("v0.1.0");
+  draining.release("0.2.0", "Breaking: the queue file moves");
+  draining.state.live = 2;
+  assert.equal(update({ version: undefined, channel: "release" }, draining.deps({ herdr: count })), false, "the breaking release waits on the live runs");
+  assert.equal(ran, 3, "a drain");
+});
+
+test("A11-184: the production wiring moves the web UI, rewrites the terminal's unit from the new plugin_root, restarts only the terminal, and records the newest versions", () => {
+  const f = updateFixture({ states: { instance: "running", ui: "running" } });
+  f.release("0.1.0");
+  const stub = stubServices(f.home);
+  const plugins = join(herdrConfigDir(stub.services.env, f.home), "plugins.json");
+  const entry = (root: string, ref: string | null) => JSON.stringify([{ plugin_id: "devswha.herdr-web-ui", plugin_root: root, source: { kind: "github", owner: "devswha", repo: "herdr-web-ui", ...(ref === null ? {} : { requested_ref: ref }), resolved_commit: "35bf28fa1234" } }]);
+  stub.files.set(plugins, entry("/h/herdr/plugins/old", null));
+  stub.files.set("/opt/bin/bun", "");
+  const calls: string[] = [];
+  const services = { ...stub.services, run: (file: string, args: string[]): RunResult => { calls.push([file, ...args].join(" ")); return { status: 0, stdout: args[1] === "is-active" ? "active\n" : "", stderr: "" }; } };
+  const unit = unitFor("terminal", services);
+  stub.files.set(unit.path, "the old unit");
+  assert.match(unit.text, /\/h\/herdr\/plugins\/old/);
+  const herdr = (args: string[], env?: Record<string, string | undefined>): RunResult => {
+    calls.push(`herdr ${args.join(" ")}${env?.PATH === undefined ? "" : ` [PATH ${env.PATH}]`}`);
+    if (args[0] === "plugin") stub.files.set(plugins, entry("/h/herdr/plugins/new", args[args.indexOf("--ref") + 1]));
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const remoteTags = () => `${"a".repeat(40)}\trefs/tags/v0.4.12\n${"b".repeat(40)}\trefs/tags/v0.4.13\n`;
+  const wiring = herdrWiring({ version: "0.9.5" }, services, { herdr, remoteTags });
+  update({ version: undefined, channel: "release" }, f.deps({ ...wiring }));
+  assert.ok(f.said.includes("agent-org update: moved the herdr plugin devswha/herdr-web-ui from @35bf28fa to v0.4.13"), f.said.join("\n"));
+  assert.ok(f.said.includes("agent-org update: restarted the terminal service so it runs herdr web ui v0.4.13"));
+  assert.ok(calls.includes("herdr plugin install devswha/herdr-web-ui --ref v0.4.13 -y [PATH /opt/bin:/opt/bin:/usr/bin]"), calls.join("\n"));
+  assert.match(stub.files.get(unit.path) ?? "", /\/h\/herdr\/plugins\/new/, "the unit names the plugin_root that is installed now");
+  assert.ok(calls.includes("systemctl --user daemon-reload") && calls.includes("systemctl --user restart agent-org-terminal.service"));
+  assert.deepEqual(calls.filter((call) => /restart|stop|kill/.test(call) && !call.includes("agent-org-terminal")), [], "herdr, the instance and the ui are not restarted by upkeep");
+  const status = readHerdrStatus(herdrStatusPath(services.env, f.home));
+  assert.deepEqual(status.kind === "status" ? [status.status.herdr, status.status.plugins] : status, [{ newest: "0.9.5" }, [{ repo: "devswha/herdr-web-ui", newest: "v0.4.13" }]]);
 });

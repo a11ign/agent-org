@@ -15,9 +15,11 @@
 // as `doctor --fix` moves it. A key the host file already holds is kept as it is; onboard writes only the keys that are absent.
 //
 // IT SETS UP WHAT TICKET MODE NEEDS TO WORK OUT OF THE BOX:
-//   - THE WEB TERMINAL (A11-66). Onboard installs bun when the machine has none (`bun.ts`), installs the plugin with
-//     `herdr plugin install devswha/herdr-web-ui --yes`, writes the exposure block's `terminal` when it is absent, and starts the `terminal` service. A step
+//   - THE WEB TERMINAL (A11-66). Onboard installs bun when the machine has none (`bun.ts`), installs the plugin at its newest release tag with
+//     `herdr plugin install devswha/herdr-web-ui --ref <tag> --yes` (A11-184: never the default branch), writes the exposure block's `terminal` when it is absent, and starts the `terminal` service. A step
 //     that fails is said with its reason and leaves `terminal` unwritten, so the board never links to a terminal nothing serves.
+//   - HERDR'S AGENT INTEGRATIONS (A11-184): `herdr integration install claude` and `codex`, on every machine from the first run, `--no-terminal` or not. They are how herdr knows each agent's
+//     state and resumes its session. `agent-org update` keeps them current afterwards (`herdr-upkeep.ts`).
 //   - LINEAR FOR THE WORKERS (A11-71). With a readable key and no `linear` MCP yet, onboard registers Linear's for Claude Code at user scope, authenticated by
 //     that key, and lets the workers call its read and comment tools (`LINEAR_CONNECTORS`, in the tracker block). The key goes to `claude` as an argument and
 //     is never printed: a message that would carry it carries `<key>` instead.
@@ -58,6 +60,7 @@ import { ensureBun } from "./bun.ts";
 import { chromiumProblems, chromiumReport, lacksLibraries, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, PAIRING_STEPS, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
+import { HERDR_INTEGRATIONS, integrationInstallCommand, newestPluginTag, type HerdrIntegration } from "./herdr-upkeep.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { asAccount, type Account, type ProgramRunner } from "./gh-account.ts";
@@ -112,6 +115,8 @@ export type OnboardDeps = Readonly<{
   ensureBun: () => Promise<{ path: string; installed: boolean }>;
   /** The text of herdr's `plugins.json`, or null. */
   herdrPlugins: () => string | null;
+  /** The newest release tag of a herdr plugin's GitHub repository (A11-184); throws with the reason when it cannot be read or the repository has none. */
+  newestPluginTag: (repo: string) => string;
   /** Run a program (`herdr`, `claude`, `gh`) with `env` added to this process's, and say what it returned. */
   run: (file: string, args: string[], env?: Env) => RunResult;
   /** The first executable called `name` on PATH, or null. */
@@ -272,17 +277,37 @@ async function setUpTerminal(deps: OnboardDeps): Promise<boolean> {
     if (bun.installed) deps.out.log(`installed bun at ${bun.path}, for the web terminal`);
     if (pluginRoot(deps.herdrPlugins()) === null) {
       const bunDir = bun.path.slice(0, bun.path.lastIndexOf("/"));
+      // At the newest RELEASE tag, never the default branch (A11-184): an install with no `--ref` pinned a commit of it, which nothing then moved. A tag that cannot be read fails this step.
+      const tag = deps.newestPluginTag(TERMINAL_PLUGIN);
+      const command = `herdr plugin install ${TERMINAL_PLUGIN} --ref ${tag} --yes`;
       // The plugin's build runs `bun install`, so bun's directory leads the PATH it runs with.
-      const installed = deps.run("herdr", ["plugin", "install", TERMINAL_PLUGIN, "--yes"], { PATH: `${bunDir}:${deps.env.PATH ?? "/usr/bin:/bin"}` });
-      if (installed.status !== 0) throw new OnboardRefusal(`\`herdr plugin install ${TERMINAL_PLUGIN} --yes\` failed: ${firstLine(installed)}`);
+      const installed = deps.run("herdr", ["plugin", "install", TERMINAL_PLUGIN, "--ref", tag, "--yes"], { PATH: `${bunDir}:${deps.env.PATH ?? "/usr/bin:/bin"}` });
+      if (installed.status !== 0) throw new OnboardRefusal(`\`${command}\` failed: ${firstLine(installed)}`);
       if (pluginRoot(deps.herdrPlugins()) === null) throw new OnboardRefusal(`herdr installed ${TERMINAL_PLUGIN}, but its plugins.json does not list it`);
-      deps.out.log(`installed the herdr plugin ${TERMINAL_PLUGIN}, the web terminal`);
+      deps.out.log(`installed the herdr plugin ${TERMINAL_PLUGIN} ${tag}, the web terminal`);
     }
     return true;
   } catch (err) {
     deps.out.log(`the web terminal is not set up: ${(err as Error).message}. The board shows no terminal link until it is; fix that, then run \`agent-org onboard\` again.`);
     return false;
   }
+}
+
+/**
+ * Install herdr's `claude` and `codex` integrations (A11-184), on every machine from the first run, whatever the profile or flags (`--no-terminal` does not skip them): they are how herdr knows each
+ * agent's state and resumes its session, and the board reads agent status from herdr. One line each. A failure is said with its reason and the command to run, and does not fail onboard: `doctor`
+ * fails the row until it is installed, as it does for onboard's other optional steps.
+ */
+function setUpHerdrIntegrations(deps: OnboardDeps): void {
+  for (const name of HERDR_INTEGRATIONS) deps.out.log(installIntegration(name, deps));
+}
+
+/** The line that says what installing one integration did: it installed, or why it did not and the command to run. */
+function installIntegration(name: HerdrIntegration, deps: OnboardDeps): string {
+  const command = integrationInstallCommand(name);
+  if (deps.which("herdr") === null) return `herdr's ${name} integration did not install: herdr is not on PATH. Install herdr, then run \`${command}\`.`;
+  const result = deps.run("herdr", ["integration", "install", name]);
+  return result.status === 0 ? `installed herdr's ${name} integration` : `herdr's ${name} integration did not install: ${firstLine(result)}. Run \`${command}\`.`;
 }
 
 /**
@@ -495,6 +520,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   sayInstalls(plannedProviders({ host, tickets, planned, catalog: deps.catalog() }), existing, deps);
   const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null, clones }, deps);
   const terminal = options.terminal && await setUpTerminal(deps);
+  setUpHerdrIntegrations(deps);
   const capture = setUpChromium(deps);
   const plugin = profile?.conventions === undefined ? null : installPlugin(profile.conventions, deps);
   for (const line of plugin?.lines ?? []) deps.out.log(line);
@@ -577,6 +603,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         writeExecutable: (path, data) => writeAtomic(path, data, 0o755),
       }),
       herdrPlugins: () => readOrNull(join(herdrConfigDir(process.env, home), "plugins.json")),
+      newestPluginTag: (repo) => newestPluginTag(repo),
       run: runProgram,
       which: (name) => whichOn(name, process.env),
       ghAs: (account) => asAccount(defaultGh, account),

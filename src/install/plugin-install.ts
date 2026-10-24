@@ -163,9 +163,9 @@ export function stateOfRecord(folder: string, record: PluginRecord = {}): (plugi
   };
 }
 
-/** A program run as the person, with its output read back: a program that cannot start is a result with no status, and the reason in its stderr. */
-export const runProgram: Run = (file, args) => {
-  const result = spawnSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 600_000 });
+/** A program run as the person, with its output read back: a program that cannot start is a result with no status, and the reason in its stderr. `env` is added to this process's (A11-184). */
+export const runProgram = (file: string, args: string[], env?: Record<string, string | undefined>): RunResult => {
+  const result = spawnSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 600_000, ...(env === undefined ? {} : { env: { ...process.env, ...env } }) });
   if (result.error) return { status: null, stdout: "", stderr: result.error.message };
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 };

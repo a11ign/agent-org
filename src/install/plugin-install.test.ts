@@ -1,7 +1,7 @@
 // no-token: none -- every program is a stand-in that answers from a list; the install record is an in-memory file, and no `claude` or `gh` is run
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { installConventions, marketplacesOf, pluginVersion, type Run, updateConventions } from "./plugin-install.ts";
+import { installConventions, marketplacesOf, pluginVersion, runProgram, type Run, updateConventions } from "./plugin-install.ts";
 import { conventionsWiring, update } from "./update.ts";
 import { updateFixture } from "./update-fixture.ts";
 import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
@@ -213,4 +213,11 @@ test("A11-169: the conventions plugin's deferral is gone: the module holds no ho
   const module = await import("./plugin-install.ts");
   assert.deepEqual(Object.keys(module).filter((name) => /deferral/i.test(name)), []);
   assert.equal("deferralPath" in module, false);
+});
+
+test("A11-184: a program run through runProgram sees the env it is given on top of this process's, and none when it is given none", () => {
+  const probe = ["-c", "printf %s \"$A11_184_PROBE\""];
+  assert.equal(runProgram("sh", probe, { A11_184_PROBE: "bun-first" }).stdout, "bun-first");
+  assert.equal(runProgram("sh", probe).stdout, "");
+  assert.equal(runProgram("sh", ["-c", "printf %s \"$HOME\""], { A11_184_PROBE: "x" }).stdout, process.env.HOME ?? "", "the rest of this process's env is kept");
 });

@@ -108,6 +108,7 @@ const UNNAMED_CALLS: Reason[] = [
   { file: "src/branch-inventory-report.ts", call: '"git"', kind: "session", reason: "the `branches:inventory` CLI, run by an operator standing in the project tree; no unit or workflow runs it" },
   { file: "src/control-plane-hygiene.ts", call: '"git"', kind: "session", reason: "the `hygiene:report` CLI derives `this checkout` from where the operator runs it; no importer" },
   { file: "src/host-units/host-drift-findings-and-notes.ts", call: '"--file", path', kind: "param", reason: "`git config --file <path>` reads the named file and no repository" },
+  { file: "src/install/herdr-upkeep.ts", call: '"ls-remote"', kind: "param", reason: "`git ls-remote --tags <https url>` reads the named remote and no repository: the release tags of a herdr plugin's GitHub repository (A11-184)" },
   { file: "src/mark-primary-checkout.ts", call: '"git"', kind: "session", reason: "`primary:mark` marks THIS checkout by design: the directory the operator runs it in" },
   { file: "src/merge-guard/lookups.ts", call: '"ls-remote"', kind: "session", reason: "`lookupBranchTip` is called only by the merge-guard CLI, which CI and the pre-push hook run in the project checkout" },
   { file: "src/merge-guard/reconciliation.ts", call: '"--git-common-dir"', kind: "param", reason: "the checkout is the spawner's `cwd`: CI, the pre-push hook, or the `row-claim` child whose `cwd` the tick sets (`wake.ts` `launch.dir`)" },

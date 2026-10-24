@@ -114,13 +114,18 @@ test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub
   assertNothingMachineWide(machine.calls());
 });
 
-/** What a scratch run may ask of the machine: nothing, but a service's state read (`systemctl --user is-active|show|cat`). Any other call, and any call at all to the rest, is a change or a reach beyond HOME. */
+/**
+ * What a scratch run may ask of the machine: a service's state read (`systemctl --user is-active|show|cat`), herdr's reads (`herdr --version`, `herdr integration status`), and the two integration
+ * installs onboard runs on every machine (A11-184), which write only under HOME: `~/.claude` and `~/.codex`. Any other call is a change or a reach beyond HOME.
+ */
+const SCRATCH_SAFE = /^(?:systemctl --user (?:is-active|show|cat) |herdr (?:--version$|integration (?:status$|install (?:claude|codex)$)))/;
+
 function assertNothingMachineWide(calls: readonly string[]): void {
-  const reach = calls.filter((call) => !/^systemctl --user (?:is-active|show|cat) /.test(call));
+  const reach = calls.filter((call) => !SCRATCH_SAFE.test(call));
   assert.deepEqual(reach, [], "a throwaway HOME is not a throwaway machine: onboard called a machine-wide program");
 }
 
-test("A11-163: onboard in a throwaway HOME never calls a machine-wide program that changes anything: no `tailscale serve`, `systemctl`, `launchctl` or `herdr` call that is not a read", async () => {
+test("A11-163: onboard in a throwaway HOME never calls a machine-wide program that changes anything: no `tailscale serve`, `systemctl`, `launchctl` or `herdr` call that is not a read or an install under HOME", async () => {
   const local = scratchMachine();
   const onboard = local.run("onboard", "--profile", "laptop", "--linear-key-file", local.keyFile, "--no-start", "--no-terminal", "--no-auto-update");
   assert.equal(onboard.status, 0, `${onboard.stdout}\n${onboard.stderr}`);
@@ -135,5 +140,5 @@ test("A11-163: onboard in a throwaway HOME never calls a machine-wide program th
   assert.ok(tailscale.length > 0, "POSITIVE CONTROL: the tailnet onboard does ask Tailscale, so the spy is on the path it takes");
   const changes = tailscale.filter((call) => !/^tailscale (?:status|version|serve status)\b/.test(call));
   assert.deepEqual(changes, [], "and it only reads: no serve, no off, no reset");
-  assert.deepEqual(tailnet.calls().filter((call) => !call.startsWith("tailscale")).filter((call) => !/^systemctl --user (?:is-active|show|cat) /.test(call)), []);
+  assert.deepEqual(tailnet.calls().filter((call) => !call.startsWith("tailscale")).filter((call) => !SCRATCH_SAFE.test(call)), []);
 });
