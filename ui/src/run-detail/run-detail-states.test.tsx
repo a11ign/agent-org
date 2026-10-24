@@ -1,5 +1,5 @@
 import { runActions } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
-import { queueOf, RUNS_OF, STATES, type State } from "../../test/run-detail/run-detail-stand.ts";
+import { detailStand, queueOf, RUNS_OF, STATES, type State } from "../../test/run-detail/run-detail-stand.ts";
 import { callout, headerButtons, pageFor, screen, textOf, within } from "./run-detail-harness.tsx";
 
 /** What each run board draws, the words it shows and the buttons it has. */
@@ -71,6 +71,15 @@ describe("the twelve states", () => {
 });
 
 describe("the sections", () => {
+  it("draws a finished run's steps, with no step running", async () => {
+    const finished = { ...RUNS_OF.failed.runs[0], plannedSteps: [{ n: 1, title: "Read the plan" }, { n: 2, title: "Open the pull request" }], currentStep: 1 };
+    await pageFor("failed", detailStand("failed", { runs: [finished] }));
+    expect(screen.getByRole("heading", { name: /What it will do/ })).toBeTruthy();
+    const steps = [...document.querySelectorAll<HTMLElement>(".step")].map((step) => [textOf(step.querySelector(".step-text")), step.querySelector("svg")?.getAttribute("aria-label")]);
+    expect(steps).toEqual([["Read the plan", "Done"], ["Open the pull request", "Not started"]]);
+    expect(screen.queryByRole("img", { name: "Running now" })).toBeNull();
+  });
+
   it("draws the running board's five steps with the first one now and the rest not started", async () => {
     await pageFor("running");
     const steps = [...document.querySelectorAll<HTMLElement>(".step")].map((step) => [textOf(step.querySelector(".step-text")), step.querySelector("svg")?.getAttribute("aria-label")]);
