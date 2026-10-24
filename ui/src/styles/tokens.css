@@ -211,6 +211,24 @@
   --detail-side-max: 340px;
 
   --spinner-duration: 1s;
+
+  /* The Runs page (A11-197): the values its four boards use that the tokens above do not hold. */
+  --color-spinner-track-warn: #3a3416;
+  --color-spinner-track-planning: #2f2848;
+  --color-text-rail: #d0d3da;
+  --space-9: 9px;
+  --radius-3: 3px;
+  --icon-18: 18px;
+  --icon-20: 20px;
+  --pool-dot-size: 8px;
+  --slot-size: 16px;
+  --run-main-basis: 380px;
+  --run-actions-width: 96px;
+  --skeleton-rail-heading-width: 50px;
+  --skeleton-runs-count-width: 130px;
+  --skeleton-runs-heading-width: 110px;
+  --skeleton-runs-pill-width: 70px;
+  --skeleton-runs-pill-height: 22px;
 }
 
 /* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */
