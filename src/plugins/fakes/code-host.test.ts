@@ -22,7 +22,12 @@ function seeded() {
   const check = { detailsUrl: "https://github.com/owner/repo/actions/runs/1/job/2", log: "Error: the build failed" };
   host.checksAndClaims.logs.set(check.detailsUrl, `2026-10-22T10:00:00Z ${check.log}\n`);
   const claim = { repository: "owner/repo", head: "c".repeat(40), environment: { GH_CONFIG_DIR: "/opt/reviewer/gh" } };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE } };
+  // A pull request in a stack with the arm bot's refusal on it, and a hand-back the fake refuses (contract 1.16).
+  const stacked = host.seedPull("owner/repo", 9, { head: "d".repeat(40) });
+  host.stackMerges.facts.set(stacked.url, { stacked: true, refusal: { head: "d".repeat(40), reason: "a member below has changes requested" } });
+  host.stackMerges.requestRefusal = "Resource not accessible by integration (HTTP 403)";
+  const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 } } };
 }
 
 /**
@@ -57,7 +62,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -78,6 +83,26 @@ test("without wrapper inputs in the probe the wrapper's checks are skipped with 
   assert.deepEqual(skipped.map(({ check }) => check), [...ROWS_CHECKS, "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints"]);
   assert.ok(skipped.filter(({ check }) => !ROWS_CHECKS.includes(check)).every(({ reason }) => /the code host has no wrapper or the probe names no inputs for one/.test(reason)));
   assert.ok(!passed.some((check) => check.startsWith("the wrapper")));
+});
+
+const STACK_CHECKS = ["stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made"];
+
+test("without a stacked pull request and a refused request in the probe the stack merge's two checks are skipped with the reason, not passed (contract 1.16)", async () => {
+  const { host, probe } = seeded();
+  const { passed, skipped } = await runCodeHostConformance(host, { ...probe, stackRefusal: undefined, stackRequestRefused: undefined });
+  assert.deepEqual(skipped.map(({ check }) => check).filter((check) => STACK_CHECKS.includes(check)), STACK_CHECKS);
+  assert.ok(skipped.filter(({ check }) => STACK_CHECKS.includes(check)).every(({ reason }) => /the probe names no/.test(reason)));
+  assert.ok(!passed.some((check) => STACK_CHECKS.includes(check)));
+});
+
+test("a code host that reads a pull request it cannot read as not stacked, drops a refusal, or swallows a refused request fails each by name", async () => {
+  const { host, probe } = seeded();
+  const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
+  const reads = host.stackMergeFactsOf!;
+  assert.deepEqual(await failures({ ...host, stackMergeFactsOf: (url) => reads(url) ?? { stacked: false, base: "main", defaultBranch: "main", head: "x", settled: null, refusal: null } }),
+    ["stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked"]);
+  assert.deepEqual(await failures({ ...host, stackMergeFactsOf: (url) => (reads(url) === null ? null : { ...reads(url)!, refusal: null }) }), [STACK_CHECKS[0]]);
+  assert.deepEqual(await failures({ ...host, requestStackMerge: () => undefined }), [STACK_CHECKS[1]]);
 });
 
 test("a wrapper that refuses to write its own text fails by name", async () => {

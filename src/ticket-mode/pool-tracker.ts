@@ -14,6 +14,8 @@ import { startStackConflictRound } from "./pool-watch.ts";
 import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import { resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
+import { isPullReadyToMerge } from "./board-view/pull-readiness.ts";
+import { stackMergeRequestOf, stackMergeStep } from "./stack-merge.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { recordClosedByBoard } from "./queue.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
@@ -250,10 +252,9 @@ async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
 }
 
 /**
- * The stale bases of the open pull requests on the queue, asked on the server's own sweep (every `FEEDBACK_MS`), as `releaseReviewers` is (A11-106): a
- * stacked pull request whose base merged is moved to the default branch (`stack-retarget.ts`), and what a run still needs said of its bases is recorded
- * when it changes. The default branch of each repository is read once per sweep. Only a finished run stacked on a blocker's branch is asked, and only its open
- * pull requests whose base is one of those branches.
+ * The stacked pull requests on the queue that need something said, asked on the server's own sweep (every `FEEDBACK_MS`), as `releaseReviewers` is (A11-106, A11-238). It is the one writer of a finished run's per-URL notes (`retargets`), so what it
+ * records is one map: the stale bases first (`stack-retarget.ts`: a stacked pull request whose base merged is moved to the default branch, over a finished run stacked on a blocker's branch, and only its open pull requests whose base is one of those
+ * branches), then the stack merge of every other open pull request ({@link stackMergeNotes}). The default branch of each repository is read once per sweep. The note is recorded when it changes.
  */
 export function retargetStacked(ctx: PoolContext): void {
   const { codeHost, store } = ctx;
@@ -264,10 +265,49 @@ export function retargetStacked(ctx: PoolContext): void {
     if (entry.phase !== "finished") continue;
     const stacked = new Set((entry.blockers ?? []).flatMap(({ branch }) => (branch ? [branch] : [])));
     const urls = openPulls(entry).map(({ url }) => url);
-    if (stacked.size === 0 || urls.length === 0) continue;
+    if (urls.length === 0) continue;
     const previous = entry.retargets ?? {};
-    const notes = codeHost.sweepRetargets({ urls, previous, stacked, defaults, log });
+    const bases = stacked.size === 0 ? {} : codeHost.sweepRetargets({ urls, previous, stacked, defaults, log });
+    const notes = { ...bases, ...stackMergeNotes(ctx, entry, urls, bases) };
     const next = Object.keys(notes).length === 0 ? undefined : notes;
     if (JSON.stringify(next ?? {}) !== JSON.stringify(previous)) update(ctx, (queue) => recordRetargets(queue, entry.ticket.key, next));
+  }
+}
+
+/**
+ * The stack merge of a finished run's open pull requests (A11-238): each one that is approved and green is read (`stackMergeFactsOf`) and goes through {@link stackMergeStep}, and when that asks, the arm bot is asked to merge it (`requestStackMerge`) and the ask is
+ * remembered by head. The note a pull request needs is what GitHub refused it with, or that the arm bot could not be asked (and the ask is made again on the next sweep). A pull request with a note about its base has none here: its stack merge waits for the base. One that cannot be read keeps the note it had.
+ * A pull request that is not ready is not read at all, and a head the watch read is not the head GitHub says now is not ready either. A code host that has neither operation (before contract 1.16) asks the arm bot for nothing.
+ */
+function stackMergeNotes(ctx: PoolContext, entry: Entry, urls: readonly string[], baseNotes: Readonly<Record<string, string>>): Record<string, string> {
+  const { codeHost, now, stackMergeAsked } = ctx;
+  const notes: Record<string, string> = {};
+  if (codeHost.stackMergeFactsOf === undefined || codeHost.requestStackMerge === undefined) return notes;
+  for (const url of urls) {
+    if (baseNotes[url] !== undefined || !isPullReadyToMerge(entry, url)) continue;
+    const facts = codeHost.stackMergeFactsOf(url);
+    if (facts === null) {
+      const kept = entry.retargets?.[url];
+      if (kept !== undefined) notes[url] = kept;
+      continue;
+    }
+    const step = stackMergeStep({ url, facts, ready: entry.pullHeads?.[url]?.head === facts.head, asked: stackMergeAsked.get(url), now: now() });
+    if (step.note !== null) notes[url] = step.note;
+    if (step.ask) askArmBot(ctx, url, facts.head, notes);
+  }
+  return notes;
+}
+
+/** Asks the arm bot to stack-merge the pull request at `head` and remembers that it did; a refused ask is the pull request's note instead, and is made again on the next sweep. */
+function askArmBot(ctx: PoolContext, url: string, head: string, notes: Record<string, string>): void {
+  const request = stackMergeRequestOf(url);
+  try {
+    if (request === null) throw new Error("it is not a GitHub pull request address");
+    ctx.codeHost.requestStackMerge?.(request);
+    ctx.stackMergeAsked.set(url, { head, at: ctx.now() });
+    log(`${url}: approved and green in a stack, so the arm bot was asked to merge it with the stack merge`);
+  } catch (err) {
+    notes[url] = `The board could not hand ${url} to the arm bot: ${messageOf(err)}`;
+    log(`${url}: the arm bot could not be asked to merge it: ${messageOf(err)}`);
   }
 }
