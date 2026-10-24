@@ -5,6 +5,9 @@
 // The pool does what the chairman did by hand: it answers No with Esc, the key the prompt names for its No choice, never Enter and never a digit, and sends the agent one message saying
 // which command was refused and why. A dialog it does not recognise is left for a person, with its first line on the card.
 //
+// A SUBAGENT'S PROMPT IS DECLINED THE SAME WAY (A11-209): Claude Code stops on it in the same pane, headed `from the <name> agent`, and the one Esc denies that tool call. The message goes to the
+// run's agent, the only one herdr can message, and names the subagent.
+//
 // BOUNDED AND NARROW. A run is declined at most MAX_SAFETY_DECLINES times; the next prompt is left for a person. A talk session is never declined: a person is at its terminal. The start dialogs
 // are answered first, by `answerStartDialog`, and are never read as safety prompts. Only ticket runs are watched here (`watchRunning`); writer and publish runs are left as they are.
 
@@ -51,9 +54,9 @@ export function declineSafetyPrompt(ctx: PoolContext, entry: Entry, place: RunPl
     log(`${entry.batch ?? entry.ticket.key}: its safety prompt on \`${prompt.command}\` could not be declined (${herdrRefusal(err)})`);
     return false;
   }
-  const { command, warning } = prompt;
-  updateEach(ctx, runMembers(ctx, entry), (queue, key) => declinedPrompt(queue, key, { command, warning }, now()));
-  log(`${entry.batch ?? entry.ticket.key}: declined a Claude Code safety prompt on \`${command}\`${warning === "" ? "" : ` ("${warning}")`}`);
+  const { command, warning, agent } = prompt;
+  updateEach(ctx, runMembers(ctx, entry), (queue, key) => declinedPrompt(queue, key, { command, warning, ...(agent === undefined ? {} : { agent }) }, now()));
+  log(`${entry.batch ?? entry.ticket.key}: declined a Claude Code safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} on \`${command}\`${warning === "" ? "" : ` ("${warning}")`}`);
   tellDeclined(ctx, entry, place);
   return true;
 }

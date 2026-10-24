@@ -5,10 +5,11 @@ import { clearMove, type Entry, type Outcome, type ProposedEdit, type WrittenOut
 import { type PlannedAgainst, recordStampedPlan } from "./queue/queue-ticket-text.ts";
 import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
-import { ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
+import { FINDINGS_RETRIED_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
-import { FINDINGS_HEADING, findingsSection, type PlanStamp, stampedPlan, unnamedIn, urlsNamedIn } from "./plan-stamp.ts";
+import { findingsMiss, findingsRefusal, retriedUrls } from "./blocker-findings-check.ts";
+import { type PlanStamp, stampedPlan, urlsNamedIn } from "./plan-stamp.ts";
 import { type TicketRead } from "./ticket-read.ts";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, recordPullStates, unpark } from "./queue/queue-transitions.ts";
 import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
@@ -164,9 +165,9 @@ const settleFailed = (entry: Entry) => (err: unknown): void => log(`${entry.batc
 
 /**
  * The files a planning run left in `planDir` to attach, or why they cannot be. Only plain markdown files are taken: a planning run is
- * unattended, so a link in its folder could point the board at a secret it would then upload.
+ * unattended, so a link in its folder could point the board at a secret it would then upload. `retried` are the addresses the stop hook's one automatic retry named (A11-207), which the refusal says were asked for.
  */
-function planFiles(planDir: string, given: readonly string[] = []): { files: string[] } | { refusal: string } {
+function planFiles(planDir: string, given: readonly string[] = [], retried: readonly string[] = []): { files: string[] } | { refusal: string } {
   const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
   if (names.length === 0) return { refusal: `the planning run wrote no plan in ${planDir}` };
   const odd = names.find((name) => {
@@ -179,20 +180,22 @@ function planFiles(planDir: string, given: readonly string[] = []): { files: str
     const bullet = productDecisionIn(readFileSync(join(planDir, name), "utf8"));
     if (bullet !== null) return { refusal: `the plan records a product decision made without asking: ${bullet}` };
   }
-  const unsaid = findingsRefusal(names.map((name) => readFileSync(join(planDir, name), "utf8")), given);
-  if (unsaid !== null) return { refusal: unsaid };
+  const miss = findingsMiss(names.map((name) => readFileSync(join(planDir, name), "utf8")), given);
+  if (miss !== null) return { refusal: findingsRefusal(miss, given, retried) };
   return { files: names.map((name) => join(planDir, name)) };
 }
 
 /**
- * Why a plan given the findings of its blockers' merged pull requests is refused, or null (A11-167): it must carry a `## What the blockers found` section that names each pull request it was given, saying
- * how each finding applies or why it does not. A plan given none is not asked for the section. PURE.
+ * The addresses the stop hook's one automatic retry named for the ticket `key` (A11-207), from the mark it left beside the run's outcome file in `runDir`. None when it made no retry, or the mark cannot be read:
+ * the refusal is then the plain one.
  */
-function findingsRefusal(plans: readonly string[], given: readonly string[]): string | null {
-  if (given.length === 0) return null;
-  if (!plans.some((plan) => findingsSection(plan) !== null)) return `the plan has no "${FINDINGS_HEADING}" section, though it was given what its blockers' pull requests found (${given.join(", ")}): it must say how each applies or why it does not`;
-  const missing = given.filter((url) => plans.every((plan) => unnamedIn(plan, [url]).length > 0));
-  return missing.length === 0 ? null : `the plan's "${FINDINGS_HEADING}" section does not name ${missing.join(", ")}: it must say how each pull request's findings apply or why they do not`;
+function retriedFor(runDir: string, key: string): readonly string[] {
+  const path = join(runDir, FINDINGS_RETRIED_FILE);
+  try {
+    return existsSync(path) ? retriedUrls(readFileSync(path, "utf8"))[key] ?? [] : [];
+  } catch {
+    return [];
+  }
 }
 
 /** The entry of the ticket `key`, as the queue has it now: the planning run's own, which holds the text it was briefed with. */
@@ -230,7 +233,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   const planDir = join(ticketDir(settings, key), PLAN_DIR);
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
-    const found = planFiles(planDir, entry.findingsGiven);
+    const found = planFiles(planDir, entry.findingsGiven, retriedFor(runPlace(ctx, entry).dir, key));
     if ("refusal" in found) return end(ctx, entry, { kind: "needs-human", reason: found.refusal });
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const stamp = stampPlan(ctx, found.files, entry.briefedAgainst);
@@ -252,7 +255,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
 async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<Outcome | null> {
   const { settings, source } = ctx;
   const member = entryOf(ctx, key);
-  const found = planFiles(dir, member?.findingsGiven);
+  const found = planFiles(dir, member?.findingsGiven, member === undefined ? [] : retriedFor(runPlace(ctx, member).dir, key));
   if ("refusal" in found) return { kind: "needs-human", reason: found.refusal };
   if (source.attachPlan === undefined) return { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${dir} by hand` };
   try {

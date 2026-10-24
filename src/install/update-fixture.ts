@@ -13,12 +13,16 @@ import { clearDrain, drainPath, readDrain, writeDrain, type Drain } from "./upda
 import { migrateInstall } from "./tool-migrate.ts";
 import type { RunResult, ServiceDeps, ServiceName, ServiceState } from "./service.ts";
 import { toolVersionAt, versionNameOf } from "./tool-versions.ts";
-import { buildVersion, currentVersionName, fetchMirror, mainVersionName, mirrorGit, pruneVersions, seedMirror, swapCurrent } from "./tool-install.ts";
+import { buildVersion, completeUiBuild, currentVersionName, fetchMirror, mainVersionName, mirrorGit, pruneVersions, seedMirror, swapCurrent } from "./tool-install.ts";
 import type { UpdateDeps } from "./update.ts";
 import type { UpdateStatus } from "./update-safety.ts";
+import type { UiSource } from "./ui-asset.ts";
 
 const ENV = sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" });
 export const gitIn = (cwd: string) => (args: string[]) => execFileSync("git", args, { cwd, env: ENV, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+/** Where UI builds are fetched from unless a test says: nowhere. A release that declares a build fails on it, and one that does not never asks. */
+const OFFLINE: UiSource = { releases: () => null, exec: () => { throw new Error("the update tests reach no network"); } };
 
 export const NOW = Date.parse("2026-10-21T10:00:00.000Z");
 export const HOUR = 3600e3;
@@ -36,11 +40,11 @@ export function releaseRemote() {
     git(["add", "-A"]);
     git(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", message]);
   };
-  /** Cut `version`: a summary starting `Breaking: ` marks it breaking. */
-  const release = (version: string, summary = "a fix") => {
+  /** Cut `version`: a summary starting `Breaking: ` marks it breaking, and `shipsUiBuild` declares that CI attaches a UI build to its Release (A11-191). */
+  const release = (version: string, summary = "a fix", { shipsUiBuild = false }: { shipsUiBuild?: boolean } = {}) => {
     mkdirSync(join(work, "src"), { recursive: true });
     writeFileSync(join(work, "src", "bin.ts"), `// agent-org ${version}\n`);
-    writeFileSync(join(work, "package.json"), `${JSON.stringify({ name: "agent-org", version, dependencies: { "left-pad": "1.0.0" } })}\n`);
+    writeFileSync(join(work, "package.json"), `${JSON.stringify({ name: "agent-org", version, dependencies: { "left-pad": "1.0.0" }, ...(shipsUiBuild ? { agentOrg: { shipsUiBuild: true } } : {}) })}\n`);
     changelog = changelog.replace("# agent-org\n", `# agent-org\n\n## ${version}\n\n### Minor Changes\n\n- 1a2b3c4: ${summary}\n`);
     writeFileSync(join(work, "CHANGELOG.md"), changelog);
     commit(`v${version}`);
@@ -80,10 +84,13 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
   const git = mirrorGit(tool);
   const env = { AGENT_ORG_HOME: join(home, ".agent-org"), HOME: home } as NodeJS.ProcessEnv;
   const checkout = join(remote.root, "agent-org");
-  const state = { failBuild: false, live: options.live ?? 0, inUse: options.inUse === undefined ? [] as readonly string[] | null : options.inUse, now: NOW, root: checkout };
+  const state = { ui: OFFLINE, failBuild: false, live: options.live ?? 0, inUse: options.inUse === undefined ? [] as readonly string[] | null : options.inUse, now: NOW, root: checkout };
   const drainFile = drainPath(env, home);
   const hostPath = join(home, ".agent-org", "host.json");
   const binDir = join(home, ".local", "bin");
+  const uiSource = (): { ui: UiSource } => ({ ui: state.ui });
+  /** Fetch UI builds from `releases`, a stand-in for GitHub's downloads (`fixtures/release-server.ts`), with the real `curl` and `tar`. */
+  const fetchUiFrom = (releases: string) => { state.ui = { releases: () => releases, exec: execFileSync }; };
   const deps = (over: Partial<UpdateDeps> = {}): UpdateDeps => ({
     root: state.root, git,
     fetch: (channel) => {
@@ -92,8 +99,9 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
     },
     build: (name, ref) => {
       if (state.failBuild) return { state: "failed", folder: join(tool, "versions", name), reason: "pnpm could not reach the registry" };
-      return buildVersion({ tool, name, ref, exec: (_file, _args, run) => { installs.push(name); mkdirSync(join((run as { cwd: string }).cwd, "node_modules"), { recursive: true }); } });
+      return buildVersion({ tool, name, ref, ...uiSource(), exec: (_file, _args, run) => { installs.push(name); mkdirSync(join((run as { cwd: string }).cwd, "node_modules"), { recursive: true }); } });
     },
+    completeUi: (name) => completeUiBuild({ tool, name, ...uiSource() }),
     swap: (name) => swapCurrent(tool, name),
     current: () => currentVersionName(tool),
     pinned: () => undefined,
@@ -115,5 +123,5 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
   });
   /** Pretend the code now runs from a version folder, as the instance restarted on `current` does. */
   const runFromVersion = (name: string) => { state.root = join(tool, "versions", name); };
-  return { ...remote, ...stub, home, tool, checkout, deps, restarted, said, errors, statuses, installs, state, drainFile, hostPath, binDir, env, runFromVersion, mainName: () => mainVersionName(git), versionOf: toolVersionAt, versionNameOf };
+  return { ...remote, ...stub, home, tool, checkout, deps, restarted, said, errors, statuses, installs, state, drainFile, hostPath, binDir, env, runFromVersion, fetchUiFrom, mainName: () => mainVersionName(git), versionOf: toolVersionAt, versionNameOf };
 }

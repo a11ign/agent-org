@@ -50,13 +50,14 @@ const inputsOf = (w: Workflow): Record<string, unknown> => callJob(w).with ?? {}
 const scriptChangesets = (): string | undefined => /@changesets\/cli@(\d+\.\d+\.\d+)/.exec(PACKAGE.scripts["changeset"] ?? "")?.[1];
 
 /**
- * Beside `consumer-check` (a11ign/a11ign#4412; its own pin is `release-consumer-check.test.ts`), one job named `release` that is a call, pinned by full sha, with no steps of its own, a `needs`
+ * Beside `consumer-check` (a11ign/a11ign#4412; its own pin is `release-consumer-check.test.ts`) and the two jobs that follow it to build and attach the board UI (A11-191; `ui-build` and `ui-attach`,
+ * pinned by `release-triggers-itself.test.ts` and `ui-asset.test.ts`), one job named `release` that is a call, pinned by full sha, with no steps of its own, a `needs`
  * of that one job and nothing else, and no secrets passed to it.
  */
 function callProblems(w: Workflow): string[] {
   const names = Object.keys(w.jobs);
   const job = callJob(w);
-  if (names.join() !== "consumer-check,release") return [`jobs are [${names}], not exactly consumer-check and the call named release`];
+  if (names.join() !== "consumer-check,release,ui-build,ui-attach") return [`jobs are [${names}], not exactly consumer-check, the call named release, and the UI build's two jobs`];
   const problems: string[] = [];
   if (!SHARED.test(job.uses ?? "")) problems.push(`uses is '${job.uses}', not the shared per-merge workflow pinned by a full sha`);
   if (job.steps !== undefined) problems.push("the call job has steps of its own: a called job runs none, so they would not run, and a reader would think they did");

@@ -37,7 +37,7 @@ import { readUpdateStatus, updateStatusPath, writeUpdateStatus, type UpdateStatu
 import { clearDrain, drainPath, readDrain, writeDrain, type Drain, type DrainRecord } from "./update-drain.ts";
 import { breakingLines } from "./breaking-release.ts";
 import { toolDir, toolVersionAt } from "./tool-versions.ts";
-import { buildVersion, withUpdateLock, currentVersionName, fetchMirror, mainVersionName, mirrorGit, mirrorTags, pruneVersions, seedMirror, swapCurrent, type Build, type Exec, type Git } from "./tool-install.ts";
+import { buildVersion, completeUiBuild, withUpdateLock, currentVersionName, fetchMirror, mainVersionName, mirrorGit, mirrorTags, pruneVersions, seedMirror, swapCurrent, type Build, type Exec, type Git } from "./tool-install.ts";
 import { migrateInstall } from "./tool-migrate.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { HOUR_MS } from "./update-safety.ts";
@@ -60,6 +60,8 @@ export type UpdateDeps = Readonly<{
   fetch: (channel: Channel) => void;
   /** Build `versions/<name>` from `ref`, or find it built. */
   build: (name: string, ref: string) => Build;
+  /** Give the version folder `name` the UI build its release declares and it lacks (A11-191). */
+  completeUi: (name: string) => Build;
   /** Point `current` at `versions/<name>`. */
   swap: (name: string) => void;
   /** The version `current` names, or null when there is none (an install that has not migrated). */
@@ -212,6 +214,7 @@ function moveTool({ version, channel, force = false }: { version: string | undef
     // checkout (install.sh ran over it, or the checkout's own timer ran the first update) is pointed at `current` now.
     deps.drain.clear();
     deps.out.log(`agent-org is at ${target.name}: nothing newer`);
+    completeCurrentUi(deps, target.name);
     const migrated = deps.migrate();
     sayMigrated(deps, migrated);
     if (migrated.length > 0) restartRunning(deps, running);
@@ -225,6 +228,7 @@ function moveTool({ version, channel, force = false }: { version: string | undef
     deps.drain.clear();
     throw new UpdateRefusal(`agent-org stays at ${installed ?? "its current version"}, not moved to ${target.name}, because building it failed: ${built.reason}. Run \`agent-org doctor\`, then update again.`);
   }
+  if (built.said !== undefined) deps.out.log(`agent-org update: ${built.said}`);
   // Read after the build, which can take minutes: a run that started meanwhile is live, and one that finished is not waited for.
   const live = running.includes("instance") ? deps.liveRuns() : null;
   if (mustDrain({ breaking: breaking.length > 0, force, live })) return drain(deps, { target, installed, channel, live: live ?? 0, lines: breaking.map((line) => `${line.release}: ${line.summary}`) });
@@ -262,6 +266,16 @@ function apply(deps: UpdateDeps, { target, installed, running, channel }: { targ
   deps.drain.clear();
   finish(deps, channel, target.name, target.name);
   return true;
+}
+
+/**
+ * The folder `current` names, given the UI build its release declares when it has none (A11-191). The release that first ships the build is installed by the previous version's update, which does not
+ * know of it, so this version's own update completes it. Failing would change nothing, so a failure is said as an error and the update goes on.
+ */
+function completeCurrentUi(deps: UpdateDeps, name: string): void {
+  const done = deps.completeUi(name);
+  if (done.state === "failed") deps.out.error(`agent-org update: ${name} is current but has no UI build: ${done.reason}`);
+  else if (done.said !== undefined) deps.out.log(`agent-org update: ${done.said}`);
 }
 
 /** Says what the migration rewrote. */
@@ -342,6 +356,7 @@ function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"], newestHerdr: HerdrNewes
       fetchMirror(git, channel);
     },
     build: (name, ref) => buildVersion({ tool, name, ref, exec, pnpm: pinnedPnpm }),
+    completeUi: (name) => completeUiBuild({ tool, name }),
     swap: (name) => swapCurrent(tool, name),
     current: () => currentVersionName(tool),
     pinned: () => pinnedVersion(),

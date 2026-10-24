@@ -53,7 +53,9 @@ import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
 import { guardsPresent } from "./interim-guards.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { drainPath, readDrain, type Drain } from "./update-drain.ts";
-import { runningToolVersion, toolDir } from "./tool-versions.ts";
+import { runningToolVersion, toolDir, versionNameOf } from "./tool-versions.ts";
+import { buildCandidates, findBuild, UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
+import { declaresUiBuild } from "./ui-asset.ts";
 import { mirrorGit, mirrorTags } from "./tool-install.ts";
 import { readQueue } from "./instance-queue.ts";
 import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
@@ -71,6 +73,9 @@ export const MIN_NODE_MAJOR = 24;
  * with its fix, for something to do at a person's moment that is not broken.
  */
 export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null; section?: string; warning?: true }>;
+
+/** The board UI's build as this machine has it (A11-191): the folder `/next` is served from, or null; whether the running version's release ships one; and where it is looked for. */
+export type UiBuildReading = Readonly<{ found: string | null; declared: boolean; looked: string; version: string | null }>;
 
 export type DoctorDeps = Readonly<{
   /** Runs one `tickets.preflight` command; a shell when absent. A test injects one so no process runs. */
@@ -118,6 +123,8 @@ export type DoctorDeps = Readonly<{
   drain: () => Drain;
   /** Each live or parked run with the version of agent-org it started on, or null when the queue cannot be read (A11-169). */
   runs: () => readonly RunVersion[] | null;
+  /** The board UI's build, read now (A11-191). */
+  uiBuild: () => UiBuildReading;
   /** The version this instance runs: its version folder's name, else its package's. */
   instanceVersion: () => string | null;
   /** The conventions plugins' installs now, as a session started now gets them (A11-169). */
@@ -475,6 +482,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...herdrScopeChecks(settings, instanceState, deps),
     ...readCacheGuardChecks(deps),
     ...ui,
+    uiBuildCheck(deps),
     ...terminal,
     // One section per agent-org plugin, in concern order, each with the plugin's own rows and then the concern's row that summarises them (A11-163).
     ...sections,
@@ -485,6 +493,21 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...runVersionChecks(settings, deps),
     ...chromiumChecks(deps),
   ];
+}
+
+/**
+ * The board UI's build (A11-191). It is `ok` when the build `/next` serves is there (A11-190's own lookup, so the two cannot disagree), and `ok` when this version ships none; it WARNS when the running
+ * version's release ships one and none is found: `/next` shows its missing-build page, and nothing else is broken. A version folder is fixed by `agent-org update`, which fetches the build the release
+ * carries; the main channel has no release to fetch from; a checkout builds it.
+ */
+function uiBuildCheck(deps: DoctorDeps): Check {
+  const { found, declared, looked, version } = deps.uiBuild();
+  if (found !== null) return ok("ui build", `/next is served from ${found}`);
+  if (!declared) return ok("ui build", "this version ships no UI build");
+  const detail = `${version ?? "this version"} should have a UI build and none is in ${looked}, so /next shows the missing-build page`;
+  if (version === null) return warned("ui build", detail, "run `pnpm ui:build`");
+  if (!isReleaseTag(version)) return warned("ui build", detail, "main has no release to fetch a UI build from: run `agent-org update --channel release`, which moves to the newest release");
+  return warned("ui build", detail, "run `agent-org update`, which fetches it");
 }
 
 /**
@@ -861,6 +884,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       const queue = readQueue();
       return queue === null ? null : runVersions(queue);
     },
+    uiBuild: () => ({ found: findBuild(buildCandidates()), declared: declaresUiBuild(TOOL_ROOT), looked: join(TOOL_ROOT, UI_BUILD_DIR), version: versionNameOf(TOOL_ROOT) }),
     instanceVersion: () => runningToolVersion(),
     pluginCopies: (wanted) => pluginCopiesOf(wanted, homedir()),
     releaseTags: localReleaseTags,

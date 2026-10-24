@@ -10,7 +10,12 @@
 # folder while a newer one is built beside it (A11-169). It changes nothing else: no sudo, no system package, no shell rc file. Running it again fetches the
 # tags and builds the newest into a new folder. An earlier install's checkout, $AGENT_ORG_HOME/agent-org, is left as it is.
 #
-# It checks what it needs (git, tar, Node, a way to run pnpm) before it writes anything, lists every problem at once with the command that fixes it, and prints
+# A release that ships a UI build (its package.json says `agentOrg.shipsUiBuild`, A11-191) is given it too: CI builds the board UI into each release and attaches
+# `agent-org-ui-<tag>.tar.gz` and its `.sha256` to the GitHub Release, and this downloads both, checks the one against the other, and unpacks the build into
+# the version folder as `ui-build/` before `current` moves. A release without the marker installs as it always did, with no download. The releases are fetched
+# from https://github.com/<owner>/<repo>/releases/download (the repository AGENT_ORG_REPO names), or from AGENT_ORG_RELEASES_URL when that is set.
+#
+# It checks what it needs (git, tar, gzip, curl, Node, a way to run pnpm) before it writes anything, lists every problem at once with the command that fixes it, and prints
 # a short report for a person: a header, one line per step, the outcome on its own line, then the next commands. --verbose adds where the mirror, the version
 # folder and `current` are (A11-185).
 #
@@ -23,6 +28,8 @@ MIN_NODE_MAJOR=24
 # version, release.yml and CI to one value.
 PNPM_VERSION=10.34.5
 REPO_URL="${AGENT_ORG_REPO:-https://github.com/a11ign/agent-org.git}"
+# Where a release's assets are downloaded from, when it is not the repository's GitHub releases (a test, a mirror).
+RELEASES_OVERRIDE="${AGENT_ORG_RELEASES_URL:-}"
 AGENT_ORG_HOME="${AGENT_ORG_HOME:-$HOME/.agent-org}"
 BIN_DIR="${AGENT_ORG_BIN_DIR:-$HOME/.local/bin}"
 TOOL="$AGENT_ORG_HOME/tool"
@@ -167,7 +174,8 @@ Usage: install.sh [--version vX.Y.Z] [--verbose]
 
 Installs the newest agent-org release, or the one --version names, into its own folder under $AGENT_ORG_HOME/tool/versions
 (default ~/.agent-org/tool/versions), points $AGENT_ORG_HOME/tool/current at it, and writes the `agent-org` launcher into ~/.local/bin.
-It checks git, tar, Node and a way to run pnpm first, and changes nothing when one is missing.
+It checks git, tar, gzip, curl, Node and a way to run pnpm first, and changes nothing when one is missing.
+A release that ships a UI build also has it downloaded from its GitHub Release (or from $AGENT_ORG_RELEASES_URL), checked against its checksum, and unpacked into the version folder.
 --verbose also says where the mirror, the version folder and `current` are.
 EOF
 }
@@ -219,7 +227,7 @@ node_problem() {
   esac
 }
 
-# git or tar is missing: the command that installs it on this system. $1 is the program, $2 what is wrong.
+# git, tar, gzip or curl is missing: the command that installs it on this system. $1 is the program, $2 what is wrong.
 tool_problem() {
   if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
     if [ "$1" != git ]; then problem "$2"
@@ -270,6 +278,8 @@ preflight() {
   local node_version="" node_major=""
   if has git; then detail "$(git --version 2>/dev/null || echo "git found")"; else tool_problem git "git is not installed"; fi
   if has tar; then detail "tar found"; else tool_problem tar "tar is not installed, and the release is unpacked with it"; fi
+  if has gzip; then detail "gzip found"; else tool_problem gzip "gzip is not installed, and a release's UI build is unpacked with it"; fi
+  if has curl; then detail "curl found"; else tool_problem curl "curl is not installed, and a release's UI build is downloaded with it"; fi
   if ! has node; then
     node_problem "Node.js $MIN_NODE_MAJOR or newer is needed, and there is no \`node\` on PATH" missing
     return 0
@@ -408,7 +418,140 @@ install_dependencies() {
   esac
 }
 
-# The release, built whole in its own folder (or found there already), with its dependencies.
+# Whether the release in $1 declares a UI build: `agentOrg.shipsUiBuild` in its package.json. Node exits 10 for yes.
+declares_ui_build() {
+  local status=0
+  (cd "$1" && node -e 'process.exit(require("./package.json").agentOrg?.shipsUiBuild === true ? 10 : 0)') || status=$?
+  [ "$status" -eq 10 ]
+}
+
+# Where releases are downloaded from: AGENT_ORG_RELEASES_URL, else the GitHub releases of the repository (https://github.com/<owner>/<repo>[.git], git@github.com:<owner>/<repo>.git
+# or ssh://git@github.com/<owner>/<repo>.git). Returns 1 for any other repository. src/install/ui-asset.ts holds the same rule.
+releases_url() {
+  local rest
+  if [ -n "$RELEASES_OVERRIDE" ]; then
+    rest="$RELEASES_OVERRIDE"
+    while [ "${rest%/}" != "$rest" ]; do rest="${rest%/}"; done
+    printf '%s' "$rest"
+    return 0
+  fi
+  case "$REPO_URL" in
+    https://github.com/*) rest="${REPO_URL#https://github.com/}" ;;
+    git@github.com:*) rest="${REPO_URL#git@github.com:}" ;;
+    ssh://git@github.com/*) rest="${REPO_URL#ssh://git@github.com/}" ;;
+    *) return 1 ;;
+  esac
+  rest="${rest%/}"
+  rest="${rest%.git}"
+  case "$rest" in
+    */*/*|*/|/*|"") return 1 ;;
+    */*) ;;
+    *) return 1 ;;
+  esac
+  printf 'https://github.com/%s/releases/download' "$rest"
+}
+
+# GET $1 into $2, following redirects (GitHub serves an asset from a CDN) and retrying what curl calls transient. Sets UI_STATUS to the HTTP status.
+# Returns 1 with UI_CURL_ERROR set when there was no status at all.
+UI_STATUS=""
+UI_CURL_ERROR=""
+get_asset() {
+  UI_STATUS=""
+  UI_CURL_ERROR=""
+  if UI_STATUS="$(curl -sSL --retry 3 -o "$2" -w '%{http_code}' "$1" 2>"$2.error")"; then
+    rm -f "$2.error"
+  else
+    UI_STATUS=""
+    UI_CURL_ERROR="$(tail -n 1 "$2.error" 2>/dev/null || true)"
+    return 1
+  fi
+}
+
+# Whether the tarball $1 is the file the checksum file $2 names: its first word is the tarball's SHA-256. Prints the digest when it is. A file with no digest is a mismatch.
+verify_checksum() {
+  node -e '
+    const fs = require("node:fs");
+    const { createHash } = require("node:crypto");
+    const [file, sidecar] = process.argv.slice(1);
+    const want = (fs.readFileSync(sidecar, "utf8").trim().split(/\s+/)[0] ?? "").toLowerCase();
+    const got = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    if (!/^[0-9a-f]{64}$/.test(want) || want !== got) process.exit(1);
+    process.stdout.write(got);
+  ' "$1" "$2"
+}
+
+# Why the UI build could not be had (UI_PROBLEM), and what to do about it (UI_ADVICE). Set by fetch_ui_build when it returns 1.
+UI_PROBLEM=""
+UI_ADVICE=""
+
+# Records why, and removes what was made. It does not return 1 itself: it is called under `set -e`'s exemptions (fetch_ui_build runs as an `if` condition) and its callers return.
+ui_failed() {
+  UI_PROBLEM="$1"
+  UI_ADVICE="${2:-Run this again in a few minutes}"
+  rm -rf "$FOLDER.ui.partial" "$UI_INTO/ui-build.partial"
+}
+
+# Gives the folder $1 (the release being built, or a built one that has none) the UI build of $TAG: the checksum and the tarball are downloaded into $FOLDER.ui.partial, the tarball
+# is checked against the checksum, unpacked into $1/ui-build.partial, and that is renamed to $1/ui-build, so the folder only ever gains a whole ui-build. Returns 1 with
+# UI_PROBLEM set, having removed what it made, when it cannot.
+UI_INTO=""
+fetch_ui_build() {
+  local releases staging="$FOLDER.ui.partial" asset="agent-org-ui-$TAG.tar.gz" file url digest
+  UI_INTO="$1"
+  rm -rf "$staging" "$1/ui-build.partial"
+  if ! releases="$(releases_url)"; then
+    ui_failed "the UI build of $TAG cannot be fetched: $REPO_URL is not a GitHub URL" "Set AGENT_ORG_RELEASES_URL to where its releases are downloaded from, then run this again"
+    return 1
+  fi
+  if ! mkdir -p "$staging"; then ui_failed "the UI build of $TAG cannot be downloaded: $staging cannot be made"; return 1; fi
+  for file in "$asset.sha256" "$asset"; do
+    url="$releases/$TAG/$file"
+    detail "downloading $url"
+    if ! get_asset "$url" "$staging/$file"; then
+      ui_failed "the UI build of $TAG could not be downloaded from $url (${UI_CURL_ERROR:-curl failed})"
+      return 1
+    fi
+    case "$UI_STATUS" in
+      200) ;;
+      404) ui_failed "$TAG has not attached its UI build yet (CI attaches it a few minutes after the release)"; return 1 ;;
+      *) ui_failed "the UI build of $TAG could not be downloaded from $url (HTTP $UI_STATUS)"; return 1 ;;
+    esac
+  done
+  if ! digest="$(verify_checksum "$staging/$asset" "$staging/$asset.sha256")"; then
+    ui_failed "the UI build of $TAG did not match its checksum"
+    return 1
+  fi
+  detail "checksum $digest verified"
+  if ! mkdir -p "$1/ui-build.partial"; then ui_failed "the UI build of $TAG cannot be unpacked: $1/ui-build.partial cannot be made"; return 1; fi
+  if ! tar -xzf "$staging/$asset" -C "$1/ui-build.partial" || [ ! -f "$1/ui-build.partial/index.html" ]; then
+    ui_failed "the UI build of $TAG could not be unpacked, or holds no index.html"
+    return 1
+  fi
+  # fetch_ui_build runs as an `if` condition, where `set -e` does not apply: each step that must not fail says so, or a failed rename would read as a build that was installed.
+  if ! rm -rf "$1/ui-build" || ! mv "$1/ui-build.partial" "$1/ui-build"; then ui_failed "the UI build of $TAG could not be moved into $1/ui-build"; return 1; fi
+  rm -rf "$staging"
+}
+
+# The step that gives the folder $1 its UI build. $2 says what a build that cannot be had means: "fail" stops the install, with current where it was, and "warn" is for a folder that
+# is current already, where stopping would change nothing, so it is said under the steps instead.
+ui_build_step() {
+  step_begin "Download its UI build"
+  if fetch_ui_build "$1"; then
+    step_done "Downloaded its UI build"
+  elif [ "$2" = warn ]; then
+    STEP_FAILED=""
+    DETAILS=""
+    NOTES="$NOTES""agent-org $TAG is current, but its UI build could not be fetched: $UI_PROBLEM. /next shows the missing-build page until agent-org update fetches it."$'\n'
+  else
+    if [ "$1" = "$PARTIAL" ]; then rm -rf "$PARTIAL"; fi
+    fail "$UI_PROBLEM, so current stays where it was. $UI_ADVICE"
+  fi
+}
+
+# Whether $CURRENT already names this release.
+is_current() { [ "$(readlink "$CURRENT" 2>/dev/null || true)" = "versions/$TAG" ]; }
+
+# The release, built whole in its own folder (or found there already), with its dependencies and, when it ships one, its UI build.
 download_step() {
   step_begin "Download agent-org"
   fetch_mirror
@@ -418,10 +561,14 @@ download_step() {
     step_done "Downloaded agent-org $TAG"
     read_dependencies "$FOLDER"
     if [ "$HAS_DEPENDENCIES" -eq 10 ]; then step_done "Installed its dependencies"; fi
+    if [ ! -f "$FOLDER/ui-build/index.html" ] && declares_ui_build "$FOLDER"; then
+      if is_current; then ui_build_step "$FOLDER" warn; else ui_build_step "$FOLDER" fail; fi
+    fi
   else
     unpack_release
     step_done "Downloaded agent-org $TAG"
     install_dependencies
+    if declares_ui_build "$PARTIAL"; then ui_build_step "$PARTIAL" fail; fi
     mv "$PARTIAL" "$FOLDER"
   fi
 }

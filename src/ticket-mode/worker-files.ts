@@ -42,6 +42,16 @@ export const BRIEF_FILE = "brief.md";
 /** The stop hook's count of refused stops in a row, beside the outcome file. */
 export const STOP_COUNT_FILE = "stop-refusals";
 /**
+ * Beside a planning run's outcome file: the pull requests its brief listed as needing a line in the plan's `## What the blockers found` section, per ticket (A11-207). The board writes it from the
+ * same list as the brief, and the stop hook checks the plan against it before the planner ends. No worker may write it.
+ */
+export const FINDINGS_GIVEN_FILE = "findings-given.json";
+/**
+ * Beside a planning run's outcome file: written by the stop hook when it asked the planner, once, to add the lines its plan missed (A11-207). Its presence ends the retry, and the settle step reads it to
+ * say on the card that the retry was made. The board removes it when it prepares a run. No worker may write it.
+ */
+export const FINDINGS_RETRIED_FILE = "findings-retried.json";
+/**
  * The time of the `working` outcome the stop hook last let a stop through on, beside the outcome file. A later stop on that same file is a turn
  * its background work woke and that ended without saying how the run stands, so the hook asks for a new outcome.
  */
@@ -127,8 +137,8 @@ const CHECKS_NOT_STARTED = `When no check has started on your head commit, run \
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
 
-/** What an unattended run does with a command Claude Code would stop to ask a person about (A11-174): the pool answers that prompt No, so the command is written to raise none. */
-const STALLING_COMMANDS = "## Commands that stall an unattended run\n\nClaude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`.";
+/** What an unattended run does with a command Claude Code would stop to ask a person about (A11-174, A11-209): the pool answers that prompt No, whether the main agent or one of its subagents raised it, so the command is written to raise none. */
+const STALLING_COMMANDS = "## Commands that stall an unattended run\n\nClaude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`. The subagents you start inherit these rules, so tell them. Every delete names an explicit path guarded with `${VAR:?}`, never a bare `*` after `cd`.";
 
 /**
  * What a planner does with a ticket that is only a parent: an epic whose work is all in the tickets under it is not work for one run, so its plan
@@ -359,9 +369,9 @@ const quoted = (description: string): string => (description.trim() || "(no desc
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
  */
-export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, findings = [], replan }: {
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, blockers = [], findings = [], replan }: {
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
-  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; findings?: readonly Finding[]; replan?: Replan;
+  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; replan?: Replan;
 }): string {
   const repos = reposText(clones);
   const instruction = plannerInstruction(run, [ticket.key], planDir);
@@ -380,7 +390,7 @@ ${projectRepoLine(ticket, clones)}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${findingsText(findings, "planner")}${replanText(replan)}
+${parentText(parent)}${findingsText(blockers, findings)}${replanText(replan)}
 ## The repositories on this machine
 
 Read them to plan, but never change them, commit in them or change their branches:
@@ -416,10 +426,10 @@ Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may
 }
 
 /** One ticket of a batch, as its planning brief names it: the ticket, its downloaded files, and the ticket it is part of. */
-export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; findings?: readonly Finding[] }>;
+export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[] }>;
 
 /** One ticket's section of a batch's brief. Its description is quoted, as a parent's is, so its headings cannot read as the brief's. */
-function batchTicketText({ ticket, attachments, parent, read, findings = [] }: BatchTicket, clones: Readonly<Record<string, string>>): string {
+function batchTicketText({ ticket, attachments, parent, read, blockers = [], findings = [] }: BatchTicket, clones: Readonly<Record<string, string>>): string {
   const parentPart = parent === null ? "" : `
 ### ${ticket.key} is part of ${parent.ticket.key}: ${parent.ticket.title}
 
@@ -443,7 +453,7 @@ ${projectRepoLine(ticket, clones)}
 ### Files from ${ticket.key}
 
 ${filesText(attachments)}
-${parentPart}${findingsText(findings, "planner").replace(/^\n## /, "\n### ")}`;
+${parentPart}${findingsText(blockers, findings).replace(/^\n## /, "\n### ")}`;
 }
 
 /**

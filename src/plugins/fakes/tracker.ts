@@ -32,7 +32,7 @@ export const FAKE_TRACKER_WRITING: TrackerWriting = Object.freeze({
 type Completion = { by: "integration" | "person"; from: string; fromType: string };
 
 /** A ticket as the fake holds it: the board's ticket, with the state type the tracker would name and the relations the fake records. */
-type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: { name: string; text: string }[]; claimant?: string; completion?: Completion };
+type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; titles: Record<string, string>; files: { name: string; text: string }[]; claimant?: string; completion?: Completion };
 type Tickets = Map<string, Held>;
 
 const ME: Assignee = { id: "fake-me", name: "Fake Person" };
@@ -97,7 +97,10 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
     // A copy, as a tracker answers a read: a pull request linked after the read must not change what the board recorded from it.
     pullStates: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, { ...heldOf(held, key).pulls }] as const] : []))),
     async blockers(keys) {
-      const blockerOf = (blocker: string): Blocker => ({ key: blocker, state: heldOf(held, blocker).statusType, status: heldOf(held, blocker).ticket.status, pulls: heldOf(held, blocker).pulls });
+      const blockerOf = (blocker: string): Blocker => {
+        const { statusType, ticket, pulls, titles } = heldOf(held, blocker);
+        return { key: blocker, state: statusType, status: ticket.status, pulls, ...(Object.keys(titles).length === 0 ? {} : { titles }) };
+      };
       return new Map(keys.flatMap((key): [string, Blocker[]][] => (held.has(key) ? [[key, heldOf(held, key).blockedBy.map(blockerOf)]] : [])));
     },
     claims: async (keys) => new Map(keys.flatMap((key) => (held.get(key)?.claimant === undefined ? [] : [[key, held.get(key)!.claimant!] as const]))),
@@ -176,7 +179,7 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
   const comments: { key: string; text: string }[] = [];
   const calls: string[] = [];
   const claimed: { key: string; claimant: string }[] = [];
-  const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, files: [] });
+  const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, titles: {}, files: [] });
   seed.forEach(hold);
   const source: TicketSource = { ...readsOf(held, calls), ...writesOf(held, comments, claimed), keywords: DEFAULT_KEYWORDS };
   return Object.assign(source, {
@@ -184,9 +187,10 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
     seed: hold,
     /** The ticket as the fake holds it now, or undefined. */
     ticketOf: (key: string): Ticket | undefined => held.get(key)?.ticket,
-    /** Record a pull request on a ticket, as the tracker would link it. */
-    linkPull(key: string, url: string, state: PullState) {
+    /** Record a pull request on a ticket, as the tracker would link it, with its title when the tracker has one (contract 1.6). */
+    linkPull(key: string, url: string, state: PullState, title?: string) {
       heldOf(held, key).pulls[url] = state;
+      if (title !== undefined) heldOf(held, key).titles[url] = title;
     },
     /** Name a file as uploaded to a ticket, with its text, for `download` to write and return. */
     attach(key: string, file: string, text = "") {
