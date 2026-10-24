@@ -10,7 +10,10 @@ import { useShell } from "./ShellProvider.tsx";
 export type Layout = "list" | "detail" | "settings";
 
 /** Which layout a page has. */
-export const layoutOf = (page: Page): Layout => (page === "run" ? "detail" : isSettingsPage(page) ? "settings" : "list");
+export function layoutOf(page: Page): Layout {
+  if (page === "run") return "detail";
+  return isSettingsPage(page) ? "settings" : "list";
+}
 
 /** The sidebar's middle section of each page: the projects and goals on Tickets, the Settings sub-nav on Settings and Plugins, and nothing on Runs (its status rail is A11-197's) and on a run. */
 function MiddleSection({ page }: Readonly<{ page: Page }>) {

@@ -103,19 +103,14 @@ describe("the instance switcher", () => {
   });
 
   it("leaves an empty list when the connections cannot be read, and reads /api at the root", async () => {
-    const { fetchWith } = await render_failedConnections();
+    const fetchWith = standFetch({ connectionsFail: true });
+    render(<ShellProvider fetchWith={fetchWith}><ShellFrame page="tickets"><Placeholder page="tickets" runKey={null} /></ShellFrame></ShellProvider>);
+    await waitFor(() => expect(fetchWith.paths).toContain("/api/queue"));
     expect(within(screen.getByLabelText("Instance")).queryAllByRole("option")).toHaveLength(0);
     expect(screen.queryByRole("alert")).toBeNull();
     await waitFor(() => expect(fetchWith.paths).toContain("/api/queue"));
   });
 });
-
-async function render_failedConnections() {
-  const fetchWith = standFetch({ connectionsFail: true });
-  const view = render(<ShellProvider fetchWith={fetchWith}><ShellFrame page="tickets"><Placeholder page="tickets" runKey={null} /></ShellFrame></ShellProvider>);
-  await waitFor(() => expect(fetchWith.paths).toContain("/api/queue"));
-  return { ...view, fetchWith };
-}
 
 describe("the connection pill", () => {
   const sshDown: Stand = { connections: [PERSONAL], instances: { personal: { queueFails: { status: 502, error: "cannot reach personal: ssh: Permission denied" } } } };
@@ -149,16 +144,17 @@ describe("the connection pill", () => {
 });
 
 describe("the main navigation", () => {
-  const pages: readonly (readonly [Page, string, string])[] = [
-    ["tickets", "Tickets", "Tickets"], ["runs", "Runs", "Runs"], ["run", "Runs", "Runs"], ["models", "", "Settings"], ["workers", "", "Settings"], ["machine", "", "Settings"], ["plugins", "", "Settings"],
+  const pages: readonly (readonly [Page, readonly string[]])[] = [
+    ["tickets", ["Tickets"]], ["runs", ["Runs"]], ["run", ["Runs"]],
+    ["models", ["Models", "Settings"]], ["workers", ["Workers", "Settings"]], ["machine", ["Machine", "Settings"]], ["plugins", ["Plugins", "Settings"]],
   ];
 
-  it.each(pages)("marks the active item on %s", async (page, mainItem, bottomItem) => {
+  /** The text of every link the sidebar marks as the current page, count badges dropped. */
+  const currentItems = async (): Promise<string[]> => within(sidebar()).getAllByRole("link").filter((link) => link.getAttribute("aria-current") === "page").map((link) => textOf(link).replace(/\d+$/, ""));
+
+  it.each(pages)("marks the active items on %s", async (page, items) => {
     await shellOn(page);
-    const current = within(sidebar()).queryAllByRole("link").filter((link) => link.getAttribute("aria-current") === "page").map((link) => link.textContent?.replace(/\d+$/, ""));
-    const expected = page === "tickets" || page === "runs" || page === "run" ? [mainItem] : [bottomItem];
-    const section = ["models", "workers", "machine", "plugins"].includes(page) ? [page[0].toUpperCase() + page.slice(1)] : [];
-    expect(current.sort()).toEqual([...expected, ...section].sort());
+    expect((await currentItems()).sort()).toEqual([...items].sort());
   });
 
   it("links Tickets, Runs and Settings to their routes", async () => {
