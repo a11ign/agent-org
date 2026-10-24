@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The atomic reviewer no longer stalls on Codex's "Trust this folder?" dialog in a repository it has not reviewed before (A11-221). Before it claims a head and starts Codex, it finds the review checkout's clone root (the root Codex resolves a worktree's trust to) and, when that root is one of `host.json`'s `clones`, adds `[projects."<root>"]` with `trust_level = "trusted"` to `$CODEX_HOME/config.toml` (else `~/.codex/config.toml`) if the config has no entry for it. The config is parsed to find an entry, the entry is appended as text so the person's comments stay, and the result is parsed again before it replaces the file by a rename; an entry that exists, `untrusted` included, is left exactly as it is, and a path the host file does not name is never written. A config that cannot be read or parsed refuses the start, naming the file. `agent-org doctor` gains a `codex trust` row that lists each host repository Codex does not trust, with the fix, and `agent-org onboard` gains a `codex trust` step that trusts every chosen repository when the reviewer is atomic. Adds the `smol-toml` dependency, used only to parse.

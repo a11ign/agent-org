@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { runPlugin } from "../plugins/cli.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
@@ -66,9 +67,13 @@ const gateLoads = (refusal: string | null = null): ReviewerHelpers => ({ ...gate
 const INTEGRATIONS = "pi: not installed (/h/.pi/agent/extensions/herdr-agent-state.ts)\nclaude: current (v10) (/h/.claude/hooks/herdr-agent-state.sh)\ncodex: current (v8) (/h/.codex/herdr-agent-state.sh)\ncopilot: not installed (/h/.copilot/hooks/herdr-agent-state.sh)\n";
 const integrationsSaying = (stdout: string): DoctorDeps["herdrIntegrations"] => () => ({ status: 0, stdout, stderr: "" });
 
+/** A Codex home that trusts the clone `HOST` names (A11-221: the atomic reviewer's doctor reads Codex's config), so no test reads the machine's own ~/.codex. */
+const CODEX_HOME = tmpDirForFile("doctor-codex-");
+writeFileSync(join(CODEX_HOME, "config.toml"), '[projects."/src/netbox"]\ntrust_level = "trusted"\n');
+
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
-    env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json" }, home: "/home/me",
+    env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json", HOME: "/home/me", CODEX_HOME }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
     readFile: () => HOST, exec: execOf(), mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
     pnpmVersion: () => ({ version: "10.34.5", via: "npm exec" as const }),

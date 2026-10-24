@@ -1,7 +1,6 @@
 // no-token: none -- the gate, `which` and `codex` are injected: nothing is loaded from the gate, no program runs
 //
-// THE PLUGIN AS CORE USES IT (A11-161): the registry finds it from its manifest under the name `atomic`, its doctor rows are the gate's check and Codex's, and its one onboard step says what is left of Codex
-// and asks nothing.
+// THE PLUGIN AS CORE USES IT (A11-161): the registry finds it from its manifest under the name `atomic`, its doctor rows are the gate's check, Codex's and Codex's trust of the host file's repositories, and its onboard steps say what is left of Codex (asking nothing) and trust the host file's repositories (A11-221).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -41,7 +40,7 @@ test("the plugin has no release: disabling the reviewer stops new starts only, a
 
 test("doctor: the gate loads and Codex is installed and logged in are two passing rows, in the words doctor always used", async () => {
   const rows = await doctorChecks({}, depsOf());
-  assert.deepEqual(rows.map(({ name, ok, detail }) => [name, ok, detail]), [["reviewer gate", true, "the gate's modules load"], ["codex", true, "/home/me/.local/bin/codex, logged in"]]);
+  assert.deepEqual(rows.map(({ name, ok, detail }) => [name, ok, detail]), [["reviewer gate", true, "the gate's modules load"], ["codex", true, "/home/me/.local/bin/codex, logged in"], ["codex trust", true, "the host file names no repositories, so Codex has none to trust"]]);
 });
 
 test("doctor: a gate that does not load fails its row, with what it names, and the reviewer starts none until it does", async () => {
@@ -64,8 +63,8 @@ function stepDeps(over: Partial<PluginDeps> = {}): OnboardStepDeps {
   return { ...depsOf(over), interactive: true, answered: false, ask: refused, askSecret: refused, writeFile: () => undefined, platform: "linux", home: "/home/me", agentOrgHome: "/home/me/.agent-org", flags: {} };
 }
 
-test("onboard: one step, which never prompts, says Codex is installed and logged in as done, and answers ok", async () => {
-  assert.deepEqual(onboardSteps.map(({ name }) => name), ["codex"]);
+test("onboard: the codex step, which never prompts, says Codex is installed and logged in as done, and answers ok", async () => {
+  assert.deepEqual(onboardSteps.map(({ name }) => name), ["codex", "codex trust"]);
   const answer = await onboardSteps[0].run({}, stepDeps());
   assert.deepEqual(answer, { ok: true, detail: "Codex is installed: done\nCodex is logged in: done" });
 });

@@ -496,7 +496,7 @@ test("A11-145: a host that sets codeHost.stack to false is not asked for the sta
 /** The doctor's readings of the fake home, each green: what `agent-org doctor` asks, answered for a machine with every secret and install in place. */
 function greenDoctor(home: string): DoctorDeps {
   return {
-    env: {}, home, nodeVersion: () => "v24.21.0", which: () => "/usr/local/bin/tool", readFile: (path) => readFileSync(path, "utf8"),
+    env: { HOME: home }, home, nodeVersion: () => "v24.21.0", which: () => "/usr/local/bin/tool", readFile: (path) => readFileSync(path, "utf8"),
     exec: (file, args) => {
       if (file === "claude") return { status: 0, stdout: "linear: https://mcp.linear.app/mcp (HTTP) - Connected\n", stderr: "" };
       // The code host plugin's checks run `gh`: the stacking extension is listed, and no clone has a GitHub remote to ask about.

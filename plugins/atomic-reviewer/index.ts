@@ -11,6 +11,7 @@
 import type { Reviewer } from "../../src/plugins/contracts/reviewer.ts";
 import type { PluginCheck, PluginDeps, PluginSettings } from "../../src/plugins/manifest.ts";
 import { atomicChecks } from "./checks.ts";
+import { codexTrustSeam } from "./codex-trust.ts";
 import { ONBOARD_STEPS } from "./onboard.ts";
 import { atomicReviewerPort, portWhereGateLoads } from "./port.ts";
 
@@ -20,11 +21,11 @@ import { atomicReviewerPort, portWhereGateLoads } from "./port.ts";
  */
 export function create(_settings: PluginSettings, deps: PluginDeps): Reviewer {
   const { reviewing } = deps;
-  const port = portWhereGateLoads(atomicReviewerPort(reviewing), reviewing.gateRefusal);
+  const port = portWhereGateLoads(atomicReviewerPort(reviewing, { codexTrust: codexTrustSeam(deps) }), reviewing.gateRefusal);
   return { ...port, load: reviewing.loadGate, refusal: reviewing.gateRefusal };
 }
 
-/** The rows doctor shows for the plugin: the gate's modules load, and Codex is on the path and logged in. */
+/** The rows doctor shows for the plugin: the gate's modules load, Codex is on the path and logged in, and Codex trusts the host file's repositories. */
 export const doctorChecks = (settings: PluginSettings, deps: PluginDeps): Promise<readonly PluginCheck[]> => atomicChecks(settings, deps);
 
 export const onboardSteps = ONBOARD_STEPS;
