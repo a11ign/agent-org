@@ -392,8 +392,9 @@ const codeHostOf = (context: Context): CodeHost => boardOf(context).codeHost();
  */
 function trustCodexFor(context: Context, { pr, tree }: { pr: string; tree: string }): string | null {
   const codex = context.seams.codexTrust;
-  const root = codex?.rootOf(tree) ?? null;
-  if (codex === undefined || root === null) return null;
+  if (codex === undefined) return null;
+  const root = codex.rootOf(tree);
+  if (root === null) return null;
   const answer = codex.ensure(root);
   if (answer.kind === "refused") return `no reviewer for ${pr}: ${answer.reason}`;
   if (answer.kind === "added") codex.log(`codex now trusts ${answer.root}: the reviewer of ${pr} starts in it`);
