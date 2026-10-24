@@ -607,3 +607,18 @@ test("on a terminal the UI step has the mark and the colour of the others", { sk
     "  agent-org onboard     set up this machine", "  agent-org doctor      check everything works", ""].join("\n"));
   assert.equal(result.stdout.includes(`${ESCAPE}32m`), true);
 });
+
+test("a build that unpacks but cannot be moved into place fails the install and leaves current where it was, where the move is not a step set -e would catch", async () => {
+  const { root, home, repo, path, server, env } = await withGithub();
+  assert.equal(install(home, path, repo, ["--version", "v0.2.0"], env).status, 0);
+  uiRelease(root, repo);
+  publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  const failing = join(root, "failing-mv");
+  mkdirSync(failing);
+  writeFileSync(join(failing, "mv"), `#!/bin/sh\ncase "$2" in */ui-build) exit 1 ;; esac\nexec ${programPath("mv")} "$@"\n`, { mode: 0o755 });
+  const result = install(home, `${failing}:${path}`, repo, [], env);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /the UI build of v0\.13\.0 could not be moved into .*\/ui-build, so current stays where it was/);
+  assert.equal(currentOf(home), join("versions", "v0.2.0"));
+  assert.deepEqual(versionsOf(home), ["v0.2.0"]);
+});

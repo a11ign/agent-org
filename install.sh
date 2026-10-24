@@ -503,7 +503,7 @@ fetch_ui_build() {
     ui_failed "the UI build of $TAG cannot be fetched: $REPO_URL is not a GitHub URL" "Set AGENT_ORG_RELEASES_URL to where its releases are downloaded from, then run this again"
     return 1
   fi
-  mkdir -p "$staging"
+  if ! mkdir -p "$staging"; then ui_failed "the UI build of $TAG cannot be downloaded: $staging cannot be made"; return 1; fi
   for file in "$asset.sha256" "$asset"; do
     url="$releases/$TAG/$file"
     detail "downloading $url"
@@ -522,13 +522,13 @@ fetch_ui_build() {
     return 1
   fi
   detail "checksum $digest verified"
-  mkdir -p "$1/ui-build.partial"
+  if ! mkdir -p "$1/ui-build.partial"; then ui_failed "the UI build of $TAG cannot be unpacked: $1/ui-build.partial cannot be made"; return 1; fi
   if ! tar -xzf "$staging/$asset" -C "$1/ui-build.partial" || [ ! -f "$1/ui-build.partial/index.html" ]; then
     ui_failed "the UI build of $TAG could not be unpacked, or holds no index.html"
     return 1
   fi
-  rm -rf "$1/ui-build"
-  mv "$1/ui-build.partial" "$1/ui-build"
+  # fetch_ui_build runs as an `if` condition, where `set -e` does not apply: each step that must not fail says so, or a failed rename would read as a build that was installed.
+  if ! rm -rf "$1/ui-build" || ! mv "$1/ui-build.partial" "$1/ui-build"; then ui_failed "the UI build of $TAG could not be moved into $1/ui-build"; return 1; fi
   rm -rf "$staging"
 }
 
