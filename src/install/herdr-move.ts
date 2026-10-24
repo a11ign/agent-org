@@ -59,33 +59,39 @@ export async function startHerdr({ move }: { move: boolean }, deps: MoveDeps, sa
       + "Run `agent-org start herdr --move` at a quiet moment");
   }
   if (!move) return withinTime(limitMs, "starting the herdr unit", startService("herdr", deps.services));
+  return moveHerdr({ session, place, outside }, deps, say);
+}
+
+/** The move: the four steps, the guards' retirement and the result line, said through `say` as each finishes. */
+async function moveHerdr({ session, place, outside }: { session: string; place: HerdrPlace; outside: boolean }, deps: MoveDeps, say: (line: string) => void): Promise<Started> {
+  const limitMs = deps.limitMs ?? DEFAULT_LIMIT_MS;
   const unit = unitFor("herdr", deps.services);
   const logHint = unit.log ?? `\`journalctl --user -u ${unit.id}\``;
-  const stopByHand = `Run \`herdr --session ${session} server stop\` by hand, then \`agent-org start herdr --move\` again`;
+  const report = (n: number, text: string): void => say(`step ${n} of ${MOVE_STEPS}: ${text}`);
   // Registered before anything is stopped: an instance that finds no server in between starts the unit, and never spawns one beside it.
   await step(STEP.register, "registering the unit", `Make ${dirname(unit.path)} writable, then run \`agent-org start herdr --move\` again`, () => {
     const registered = deps.services.exists(unit.path);
     if (!registered) deps.services.write(unit.path, unit.text);
-    say(`step 1 of ${MOVE_STEPS}: registered the herdr unit (${unit.manager} ${unit.id}, ${registered ? `already registered at ${unit.path}` : unit.path})`);
+    report(STEP.register, `registered the herdr unit (${unit.manager} ${unit.id}, ${registered ? `already registered at ${unit.path}` : unit.path})`);
   });
+  const stopByHand = `Run \`herdr --session ${session} server stop\` by hand, then \`agent-org start herdr --move\` again`;
   await step(STEP.stop, "stopping the outside server", stopByHand, async () => {
     if (!(outside || place.kind === "unknown")) {
-      say(`step 2 of ${MOVE_STEPS}: no herdr server ran outside the unit, so none was stopped`);
+      report(STEP.stop, "no herdr server ran outside the unit, so none was stopped");
       return;
     }
     const stopped = deps.services.run("herdr", ["--session", session, "server", "stop"]);
     if (stopped.status !== 0) throw new ServiceRefusal(`herdr would not stop its server for session ${session}: ${(stopped.stderr || stopped.stdout).trim() || `exit ${stopped.status}`}. Nothing was started`);
     await goneOrRefuse(session, deps);
-    say(`step 2 of ${MOVE_STEPS}: stopped the herdr server that ran outside the unit (${whereOf(place)}); herdr restores its workspaces when the unit's server is up`);
+    report(STEP.stop, `stopped the herdr server that ran outside the unit (${whereOf(place)}); herdr restores its workspaces when the unit's server is up`);
   });
   const started = await step(STEP.start, "starting the unit", `Run \`agent-org status herdr\` and read ${logHint}`, async () => {
     const result = await withinTime(limitMs, "starting the herdr unit", startService("herdr", deps.services));
-    say(`step 3 of ${MOVE_STEPS}: started the herdr unit (${result.manager} ${result.id}), logging to ${logHint}`);
+    report(STEP.start, `started the herdr unit (${result.manager} ${result.id}), logging to ${logHint}`);
     return result;
   });
   await step(STEP.answer, "waiting for the server in the unit", `Read ${logHint}, then run \`agent-org start herdr\``, async () => {
-    const answering = await answeringInUnit(session, deps);
-    say(`step 4 of ${MOVE_STEPS}: the herdr server for session ${session} answers in the unit (${answering})`);
+    report(STEP.answer, `the herdr server for session ${session} answers in the unit (${await answeringInUnit(session, deps)})`);
   });
   for (const line of await withinTime(limitMs, "retiring the interim guards", deps.retire())) say(line);
   say(`moved herdr into its service: the server for session ${session} runs in ${started.id}, and herdr restores its workspaces in it`);
