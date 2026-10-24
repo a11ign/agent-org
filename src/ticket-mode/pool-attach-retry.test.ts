@@ -145,6 +145,19 @@ test("a run waiting to try again is never marked stalled or prompted, however lo
   assert.equal(entry("NBF-1").working?.reason, "attaching the plan (retry 2)");
 });
 
+test("a planner that writes working while an attach waits to be tried again drops the wait: its next planned is attached at once, from the first try", async () => {
+  const { entry, calls, tick, dir } = await planning((n) => { if (n === 1) throw networkBlip(); });
+  await tick();
+  assert.equal(entry("NBF-1").working?.reason, "attaching the plan (retry 1)");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "working", reason: "rechecking the plan" }));
+  await tick(1);
+  assert.equal(calls.length, 1, "working attaches nothing");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  await tick(1);
+  assert.equal(calls.length, 2, "attached without waiting out the earlier wait");
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome], ["queued", undefined]);
+});
+
 test("a batch whose attach fails once with fetch failed is planned whole, with no member handed back", async () => {
   const { entry, calls, tick, prompts } = await planning((n) => { if (n === 1) throw networkBlip(); }, { keys: ["NBF-1", "NBF-2"], batch: true });
   await tick();

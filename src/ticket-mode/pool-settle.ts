@@ -6,6 +6,7 @@ import { type PlannedAgainst, recordStampedPlan } from "./queue/queue-ticket-tex
 import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
 import { FINDINGS_RETRIED_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
+import { ATTACH_TRIES, ATTACH_WAITS_MS, isTransient, MS_PER_SECOND } from "./attach-retry.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { findingsMiss, findingsRefusal, retriedUrls } from "./blocker-findings-check.ts";
@@ -28,7 +29,6 @@ import { settledByPulls } from "./board-view/pull-settled.ts";
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { ATTACH_TRIES, ATTACH_WAITS_MS, isTransient, MS_PER_SECOND } from "./attach-retry.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { PullState } from "./source.ts";
 
@@ -37,7 +37,9 @@ import type { PullState } from "./source.ts";
  * time says whether it is newer than the note recorded, so reading the same file on every tick changes nothing.
  */
 function noteStillWorking(ctx: PoolContext, entry: Entry, reason: string): void {
-  const { now } = ctx;
+  const { attachRetries, now } = ctx;
+  // The agent is working again, so a plan attach waiting to be tried again belongs to an outcome it has replaced: its next `planned` is attached afresh, and the stall watch reads the run as it does any other.
+  attachRetries.delete(runPlace(ctx, entry).name);
   const path = join(runPlace(ctx, entry).dir, OUTCOME_FILE);
   const at = existsSync(path) ? statSync(path).mtimeMs : now();
   updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, reason, at, now()));
