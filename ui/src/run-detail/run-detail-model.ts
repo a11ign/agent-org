@@ -8,9 +8,10 @@ import { repoLabel, shownStatus, terminalLink, waitNote, workingNote } from "../
 import { openPulls, pullsOf, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
+import { diffLines, learnsFrom, ticketChangeOf, type DiffLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
 import type { PlannedStep, QueueView, RunAction, ViewConnection } from "../api/types.ts";
 import { actionsOf, type RowAction } from "../runs/run-actions.ts";
-import { labelOf, since, timingOf, tokensOf, type RunEntry } from "../runs/runs-model.ts";
+import { labelOf, noteLines, since, timingOf, tokensOf, type NoteContext, type RunEntry } from "../runs/runs-model.ts";
 
 // ---- Which board a run is drawn as ----
 
@@ -219,4 +220,46 @@ const workerOf = (entry: RunEntry): string | null => {
 /** The Properties of a run. PURE. */
 export const propertiesOf = (entry: RunEntry, queue: QueueView): Properties => ({
   repos: repoLabel(entry), model: `${entry.model}/${entry.effort}`, plan: planOf(entry), worker: workerOf(entry), tokens: tokensOf(entry), version: versionOf(entry, queue),
+});
+
+// ---- What the callout leaves out: the disclosures ----
+
+/** The ticket text a run's planner or live worker was told changed: the board's line and the description as a line diff. */
+export type TicketChange = Readonly<{ summary: string; heading: string; lines: readonly DiffLine[] }>;
+
+/** The worker's proposed edit to its ticket: why, then the text the ticket has now beside the title and description it would have. */
+export type Proposal = Readonly<{ summary: string; now: string; proposed: string }>;
+
+/** What a run says beside its callout, each only when it has something to say. */
+export type Disclosures = Readonly<{
+  changed: TicketChange | null;
+  learns: readonly Readonly<{ text: string; url: string }>[];
+  proposal: Proposal | null;
+  /** Every line the Runs row clamps to two, whole: the full text of the row's note. */
+  noted: readonly string[];
+}>;
+
+/** The text of a title and a description as `ui.html` shows a ticket's text: the title, a blank line, the description. */
+const ticketText = (title: string, description: string): string => `${title}\n\n${description}`;
+
+function proposalOf(entry: RunEntry): Proposal | null {
+  const outcome = entry.outcome;
+  const edit = outcome !== undefined && "edit" in outcome ? outcome.edit : undefined;
+  if (edit === undefined) return null;
+  const now = edit.base ?? { title: "", description: "" };
+  return { summary: `Proposed edit to the ticket: ${edit.why}`, now: ticketText(now.title, now.description), proposed: ticketText(edit.title ?? now.title, edit.description ?? now.description) };
+}
+
+function changeOf(entry: RunEntry): TicketChange | null {
+  const change = ticketChangeOf(entry);
+  if (change === null) return null;
+  return { summary: change.line, heading: `What changed in ${entry.ticket.key}`, lines: diffLines(change.change.from, change.change.to) };
+}
+
+/**
+ * What `ui.html` shows of a run beyond the callout: what changed in its ticket's text, the pull requests its planner learns from, the proposed edit's text, and every line of its note. The
+ * Runs page clamps the note to two lines with the whole only in a tooltip, so the full text is here, where a keyboard and a screen reader reach it. PURE.
+ */
+export const disclosuresOf = (entry: RunEntry, context: NoteContext): Disclosures => ({
+  changed: changeOf(entry), learns: learnsFrom(entry), proposal: proposalOf(entry), noted: noteLines(entry, context),
 });

@@ -346,6 +346,20 @@
   border-color: var(--color-warn-border);
   color: var(--color-warn-text);
 }
+.label-tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The mark of a ticket with no plan of its own: in the warning colour, muted when its parent's plan covers it. */
+.no-plan {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--color-warn-text);
+}
+.no-plan-covered {
+  color: var(--color-text-muted);
+}
 .section-empty {
   padding: var(--space-32);
   text-align: center;

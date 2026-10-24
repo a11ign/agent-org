@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
-import type { QueueView } from "../api/types.ts";
+import type { ConfigView, QueueView } from "../api/types.ts";
 import { EmptyState } from "../lifecycle/EmptyState.tsx";
 import { Lifecycle, type LifecycleView } from "../lifecycle/Lifecycle.tsx";
 import { SkeletonBlock } from "../lifecycle/Skeleton.tsx";
@@ -8,9 +8,12 @@ import { usePool, type Pool } from "../settings/use-pool.ts";
 import { ticketsHref } from "../shell/routes.ts";
 import { runningCount } from "../shell/shell-model.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
+import { AfterMergeList } from "./AfterMergeList.tsx";
 import { FailureBanner } from "./FailureBanner.tsx";
 import { PoolBar } from "./PoolBar.tsx";
+import { PullRequestsList } from "./PullRequestsList.tsx";
 import { RunsList } from "./RunsList.tsx";
+import { RunsNotices } from "./RunsNotices.tsx";
 import { RunsSkeleton } from "./RunsSkeleton.tsx";
 import { countText, filteredRuns, groupsOf, PAGE_SIZE, paged } from "./runs-model.ts";
 import type { RowContext } from "./RunRow.tsx";
@@ -36,12 +39,24 @@ function useLimit(filter: RunStatus | null): Readonly<{ limit: number; more: () 
   return { limit, more: () => setState({ filter, limit: limit + PAGE_SIZE }) };
 }
 
-/** The panel of a queue with no run: the pool bar over the board's "No runs yet". */
-function NoRuns({ queue, pool, disabled }: Readonly<{ queue: QueueView; pool: Pool; disabled: boolean }>) {
+/** The lists below the runs: the open pull requests no run lists, and the After-merge checks. A pull request can be a person's while no run exists, so they are drawn under the empty panel too. */
+function Lists({ queue }: Readonly<{ queue: QueueView }>) {
   return (
     <>
+      <PullRequestsList entries={queue.entries} reviews={queue.pulls ?? {}} />
+      <AfterMergeList entries={queue.entries} />
+    </>
+  );
+}
+
+/** The panel of a queue with no run: the pool bar over the board's "No runs yet". */
+function NoRuns({ queue, pool, disabled, reviewer }: Readonly<{ queue: QueueView; pool: Pool; disabled: boolean; reviewer: ConfigView["reviewer"] | undefined }>) {
+  return (
+    <>
+      <RunsNotices queue={queue} reviewer={reviewer} />
       <PoolBar queue={queue} pool={pool} disabled={disabled} />
       <EmptyState title="No runs yet" text="Queue tickets from the Tickets page and each one shows up here as it runs." actions={<a className="empty-link" href={ticketsHref}>Go to Tickets</a>} />
+      <Lists queue={queue} />
     </>
   );
 }
@@ -63,12 +78,14 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
     <>
       <Header count={count} loading={queue.state === "loading"} />
       <FailureBanner sentence={failure.sentence} onRetry={failure.retry} onDismiss={failure.dismiss} />
-      <Lifecycle view={lifecycleOf(queue)} skeleton={<RunsSkeleton />} empty={queue.data === null ? null : <NoRuns queue={queue.data} pool={pool} disabled={disabled} />} connection={connection?.name ?? ""}>
+      <Lifecycle view={lifecycleOf(queue)} skeleton={<RunsSkeleton />} empty={queue.data === null ? null : <NoRuns queue={queue.data} pool={pool} disabled={disabled} reviewer={config?.reviewer} />} connection={connection?.name ?? ""}>
         {(data) =>
-          data.entries.length === 0 ? <NoRuns queue={data} pool={pool} disabled={disabled} /> : (
+          data.entries.length === 0 ? <NoRuns queue={data} pool={pool} disabled={disabled} reviewer={config?.reviewer} /> : (
             <>
+              <RunsNotices queue={data} reviewer={config?.reviewer} />
               <PoolBar queue={data} pool={pool} disabled={disabled} />
               <RunsList page={paged(groupsOf(data, filteredRuns(data, filter)), paging.limit)} context={context(data)} onMore={paging.more} />
+              <Lists queue={data} />
             </>
           )}
       </Lifecycle>

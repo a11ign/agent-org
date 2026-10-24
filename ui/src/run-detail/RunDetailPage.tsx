@@ -9,9 +9,11 @@ import { useShell } from "../shell/ShellProvider.tsx";
 import { Callout } from "./Callout.tsx";
 import { Properties } from "./Properties.tsx";
 import { PullRequests } from "./PullRequests.tsx";
+import { RunDisclosures } from "./RunDisclosures.tsx";
 import { Breadcrumb, RunHeader, type HeaderControls } from "./RunHeader.tsx";
-import { boardOf, calloutOf, headerActionsOf, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
+import { boardOf, calloutOf, disclosuresOf, headerActionsOf, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
 import { Steps } from "./Steps.tsx";
+import { useFollowTerminal, useQueueReadAt } from "./use-stale-terminal.ts";
 import { useTalk } from "./use-talk.ts";
 
 /** The loading layout's words, which the board's skeleton is labelled with. */
@@ -34,6 +36,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   const inputs = { client, connection, config, refresh: read.refresh };
   const actions = useRunActions(inputs);
   const talk = useTalk(inputs);
+  const followTerminal = useFollowTerminal(inputs, entry, useQueueReadAt(queue));
   const board = boardOf(entry, queue);
   const headerActions = headerActionsOf(entry, queue);
   const clear = () => {
@@ -43,6 +46,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   const controls: HeaderControls = {
     actions: headerActions,
     terminalHref: terminalHrefOf(entry, headerActions, config?.terminal ?? null, connection),
+    followTerminal,
     busy: actions.busy.has(entry.ticket.key) || talk.busy,
     disabled: unreachable !== null,
     onPress: (verb) => {
@@ -60,6 +64,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
       <div className="run-columns">
         <div className="detail-main">
           <Callout board={board} callout={calloutOf(entry, queue, board)} open={readyPullOf(entry)} />
+          <RunDisclosures disclosures={disclosuresOf(entry, { queue, publisher: config?.publisher })} />
           <Steps steps={stepsOf(entry)} />
           <PullRequests rows={pullRowsOf(entry)} board={board} />
         </div>

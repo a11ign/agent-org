@@ -79,3 +79,16 @@ export function PriorityMark({ priority }: Readonly<{ priority: number }>) {
     </svg>
   );
 }
+
+/** A document with a mark on it: the ticket has no plan of its own. Muted when its parent's plan covers it. */
+export function NoPlanMark({ note, covered }: Readonly<{ note: string; covered: boolean }>) {
+  return (
+    <span className={covered ? "no-plan no-plan-covered" : "no-plan"} role="img" aria-label={note} title={note}>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M4 1.5h5.5L13 5v9.5H4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M8.5 6v4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        <circle cx="8.5" cy="12.3" r=".9" fill="currentColor" />
+      </svg>
+    </span>
+  );
+}

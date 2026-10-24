@@ -87,9 +87,9 @@ export type Staging = Readonly<{ staged: readonly Staged[]; problems: Readonly<R
 
 type Read = Readonly<{ change: Change }> | Readonly<{ problem: string }>;
 
-/** What a draft of a row comes to: the change it makes, or why it does not read. An emptied text, number or JSON field returns the key to its default (`remove`). */
+/** What a draft of a row comes to: the change it makes, or why it does not read. An emptied field, or a switch returned to its default, returns the key to its default (`remove`). */
 function readDraft(row: Row, draft: string): Read {
-  if (row.input === "boolean") return { change: { key: row.key, value: draft === "true" } };
+  if (row.input === "boolean") return draft === "" ? { change: { key: row.key, remove: true } } : { change: { key: row.key, value: draft === "true" } };
   if (draft.trim() === "" && row.input !== "text") return { change: { key: row.key, remove: true } };
   if (row.input === "number") return Number.isNaN(Number(draft)) ? { problem: `${row.key} needs a number` } : { change: { key: row.key, value: Number(draft) } };
   if (row.input === "json") {
