@@ -354,7 +354,7 @@ function fetchThroughProxy(broken: Break, kind: Connection["kind"]) {
   }) as unknown as typeof globalThis.fetch;
 }
 
-describe("usePoll unreachable versus error, with the proxy's real answers", () => {
+describe("usePoll unreachable versus reconnecting versus error, with the proxy's real answers", () => {
   const CANNOT_REACH: readonly Break[] = ["reach", "forward", "key"];
 
   for (const broken of CANNOT_REACH) {
@@ -374,35 +374,209 @@ describe("usePoll unreachable versus error, with the proxy's real answers", () =
     });
 
     for (const kind of ["local", "https"] as const) {
-      it(`is an error for a ${kind} connection that fails the same way (${broken})`, async () => {
+      it(`is reconnecting for a ${kind} connection that fails the same way (${broken}): its instance is restarting, not an error it answered with`, async () => {
         const connection: ViewConnection = { name: "personal", kind };
         const client = createClient(connection, { fetch: fetchThroughProxy(broken, kind) });
         const { result } = renderHook(() => usePoll(client.tickets, { connection }));
         await advance(0);
-        expect(result.current.state).toBe("error");
+        expect(result.current.state).toBe("reconnecting");
         expect(result.current.refusal).toMatch(/^cannot reach /);
       });
     }
   }
 
-  it("is an error for an SSH connection whose instance was reached but answered something that is not JSON", async () => {
+  it("is reconnecting for an SSH connection whose instance was reached but answered something that is not JSON with a 502, which is not the proxy's 'cannot reach'", async () => {
     const connection: ViewConnection = { name: "personal", kind: "ssh" };
     const client = createClient(connection, { fetch: fetchThroughProxy("not-json", "ssh") });
     const { result } = await polling(client.tickets, { connection });
-    expect(result.current.state).toBe("error");
+    expect(result.current.state).toBe("reconnecting");
     expect(result.current.refusal).toBe("personal's instance answered with something that is not JSON");
   });
 
-  it("is an error for an SSH connection when ticket:ui itself cannot be fetched", async () => {
+  it("is reconnecting for an SSH connection when ticket:ui itself cannot be fetched", async () => {
     const connection: ViewConnection = { name: "personal", kind: "ssh" };
     const client = createClient(connection, { fetch: (async () => { throw new TypeError("Failed to fetch"); }) as unknown as typeof globalThis.fetch });
     const { result } = await polling(client.tickets, { connection });
-    expect(result.current).toMatchObject({ state: "error", refusal: "Failed to fetch" });
+    expect(result.current).toMatchObject({ state: "reconnecting", refusal: "Failed to fetch" });
   });
 
-  it("is an error for a null connection, which addresses the local instance", async () => {
+  it("is reconnecting for a null connection, which addresses the local instance", async () => {
     const client = createClient(null, { fetch: (async () => new Response(JSON.stringify({ error: "cannot reach the instance: down" }), { status: 502 })) as unknown as typeof globalThis.fetch });
     const { result } = await polling(client.tickets, { connection: null });
-    expect(result.current.state).toBe("error");
+    expect(result.current.state).toBe("reconnecting");
+  });
+});
+
+/** The hook on a scripted read, its first read settled; `start` is when it began, for `seen`. */
+async function scriptedPoll<T>(script: readonly Answer<T>[]) {
+  const start = Date.now();
+  const { read, calls } = scripted(script);
+  return { ...(await polling(read)), calls, start };
+}
+
+const answerWith = (status: number, refusal: string): Answer<never> => ({ ok: false, status, refusal, unreachable: false });
+const restart = (): Answer<never> => answerWith(0, "Failed to fetch");
+
+function focusWindow() {
+  window.dispatchEvent(new Event("focus"));
+}
+
+describe("usePoll reads again on focus and when the page is shown (A11-211)", () => {
+  it("reads at once when the window gains focus, without waiting for the 5s timer", async () => {
+    const { calls, start } = await scriptedPoll([ok([1])]);
+    await advance(1_000);
+    await act(async () => { focusWindow(); });
+    await advance(0);
+    expect(seen(calls, start)).toEqual([0, 1_000]);
+    await advance(5_000);
+    expect(seen(calls, start)).toEqual([0, 1_000, 6_000]);
+  });
+
+  it("reads at once when the page is shown, and the failures in a row are forgotten so the next wait is 2s", async () => {
+    const { calls, start } = await scriptedPoll<number[]>([restart(), restart(), restart(), restart(), restart(), restart(), ok([1])]);
+    await advance(2_000 + 4_000 + 8_000);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000, 14_000]);
+    await act(async () => { setVisibility("visible"); });
+    await advance(0);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000, 14_000, 14_000]);
+    await advance(1_999);
+    expect(calls).toHaveLength(5);
+    await advance(1);
+    expect(seen(calls, start).slice(5)).toEqual([16_000]);
+  });
+
+  it("resets the backoff on focus", async () => {
+    const { calls, start } = await scriptedPoll<number[]>([restart()]);
+    await advance(2_000 + 4_000 + 8_000);
+    await act(async () => { focusWindow(); });
+    await advance(0);
+    await advance(2_000);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000, 14_000, 14_000, 16_000]);
+  });
+
+  it("makes one read when a focus and a return to the page land together", async () => {
+    const { read, state } = held();
+    await polling(read);
+    await act(async () => {
+      focusWindow();
+      setVisibility("hidden");
+      setVisibility("visible");
+      focusWindow();
+    });
+    expect(state.started).toBe(1);
+  });
+
+  it("makes no read on focus while the page is hidden, nor for a one-shot read that has succeeded", async () => {
+    const { read, calls } = scripted([ok([1])]);
+    await polling(read);
+    setVisibility("hidden");
+    await act(async () => { focusWindow(); });
+    expect(calls).toHaveLength(1);
+    const once = scripted([ok([1])]);
+    setVisibility("visible");
+    await polling(once.read, { connection: LOCAL, repeat: false });
+    await act(async () => { focusWindow(); });
+    await advance(0);
+    expect(once.calls).toHaveLength(1);
+  });
+
+  it("stops listening for focus when the hook unmounts", async () => {
+    const { read, calls } = scripted([ok([1])]);
+    const { unmount } = await polling(read);
+    unmount();
+    await act(async () => { focusWindow(); });
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("usePoll reconnecting (A11-211)", () => {
+  it("is reconnecting for no answer, a proxy's 502 and a 503, keeps the last data, and backs off 2s then 4s", async () => {
+    const { result, calls, start } = await scriptedPoll<number[]>([ok([1]), restart(), answerWith(502, "<html>Bad Gateway</html>"), answerWith(503, "starting"), ok([2])]);
+    expect(result.current.state).toBe("ready");
+    for (const [wait, refusal] of [[5_000, "Failed to fetch"], [2_000, "<html>Bad Gateway</html>"], [4_000, "starting"]] as const) {
+      await advance(wait);
+      expect(result.current).toMatchObject({ state: "reconnecting", data: [1], refusal });
+    }
+    expect(seen(calls, start)).toEqual([0, 5_000, 7_000, 11_000]);
+    await advance(8_000);
+    expect(result.current).toMatchObject({ state: "ready", data: [2], refusal: null });
+  });
+
+  it("is an error, with the server's sentence, for an answer that is not a restart", async () => {
+    const { read } = scripted<number[]>([ok([1]), answerWith(500, "Linear refused the key")]);
+    const { result } = await polling(read);
+    await advance(5_000);
+    expect(result.current).toMatchObject({ state: "error", data: [1], refusal: "Linear refused the key" });
+    for (const status of [400, 403, 404, 504]) {
+      const { read: again } = scripted<number[]>([answerWith(status, "no")]);
+      const { result: seenStatus } = await polling(again);
+      expect(seenStatus.current.state, String(status)).toBe("error");
+    }
+  });
+
+  it("is still unreachable for an SSH 502 'cannot reach', which is its own state", async () => {
+    const { read } = scripted<number[]>([{ ok: false, status: 502, refusal: "cannot reach personal over SSH: down", unreachable: true }]);
+    const { result } = await polling(read, { connection: { name: "personal", kind: "ssh" } });
+    expect(result.current.state).toBe("unreachable");
+  });
+});
+
+describe("usePoll.current, the data fresh enough to build a link from (A11-211)", () => {
+  it("resolves to the held data while it was read no more than 5s ago, and reads nothing", async () => {
+    const { read, calls } = scripted([ok([1]), ok([2])]);
+    const { result } = await polling(read);
+    await advance(4_999);
+    expect(await result.current.current()).toEqual([1]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reads now when the data is older than 5s, and resolves to that read's data", async () => {
+    rstest.setSystemTime(Date.now());
+    const { read, calls } = scripted([ok([1]), ok([2]), ok([3])]);
+    const { result } = await polling(read);
+    setVisibility("hidden");
+    await advance(5_001);
+    expect(calls).toHaveLength(1);
+    let found: number[] | null = null;
+    await act(async () => { found = await result.current.current(); });
+    expect(found).toEqual([2]);
+    expect(calls).toHaveLength(2);
+    expect(result.current.data).toEqual([2]);
+  });
+
+  it("resolves to null when the read it makes fails, and to null before any data", async () => {
+    const { read } = scripted<number[]>([ok([1]), restart()]);
+    const { result } = await polling(read);
+    setVisibility("hidden");
+    await advance(5_001);
+    let found: number[] | null = [0];
+    await act(async () => { found = await result.current.current(); });
+    expect(found).toBeNull();
+    expect(result.current.data).toEqual([1]);
+  });
+
+  it("joins the read already in flight instead of starting another", async () => {
+    const { read, state } = held();
+    const { result } = await polling(read);
+    let found: number[] | null = null;
+    await act(async () => {
+      const pending = result.current.current();
+      state.release(ok([7]));
+      found = await pending;
+    });
+    expect(state.started).toBe(1);
+    expect(found).toEqual([7]);
+  });
+
+  it("says when the last good data was read, and keeps that time through a failure", async () => {
+    const { read } = scripted<number[]>([ok([1]), restart()]);
+    const { result } = renderHook(() => usePoll(read, { connection: LOCAL }));
+    expect(result.current.readAt).toBeNull();
+    await advance(0);
+    const first = result.current.readAt;
+    expect(first).toBe(Date.now());
+    await advance(5_000);
+    expect(result.current.state).toBe("reconnecting");
+    expect(result.current.readAt).toBe(first);
   });
 });

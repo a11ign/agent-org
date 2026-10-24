@@ -1,4 +1,8 @@
+import { isUnreachable } from "../../../src/ticket-mode/board-view/reconnect.ts";
 import type { ViewConnection } from "./types.ts";
+
+// The rule for an SSH remote its proxy cannot reach is `reconnect.ts`'s, which the board page applies too; it is re-exported so this path keeps it.
+export { CANNOT_REACH, isUnreachable } from "../../../src/ticket-mode/board-view/reconnect.ts";
 
 /**
  * What a call to the instance API comes to, as data. A call never throws: a success carries the server's JSON, and a failure carries the server's own
@@ -8,19 +12,6 @@ export type Answer<T> = Readonly<{ ok: true; data: T }> | Readonly<{ ok: false; 
 
 /** The words for an answer that is not JSON, since a page has nothing of the server's own to show. */
 export const NOT_JSON = "the instance answered with something that is not JSON";
-
-/** How every one of `ticket:ui`'s three "cannot reach" answers for a connection begins (`remote-proxy.ts`'s `proxy`). */
-export const CANNOT_REACH = "cannot reach ";
-
-const BAD_GATEWAY = 502;
-
-/**
- * Whether a failure means an SSH remote connection's proxy could not reach it. A local or https connection that fails is an error, and so is a reached
- * instance that answered something that is not JSON, which the proxy also answers with 502 but does not word as "cannot reach".
- */
-export function isUnreachable(connection: ViewConnection | null, status: number, refusal: string): boolean {
-  return connection?.kind === "ssh" && status === BAD_GATEWAY && refusal.startsWith(CANNOT_REACH);
-}
 
 /** The refusal in a failed answer's JSON: its `error` sentence, or the status text when it names none. */
 function refusalOf(value: unknown, response: Pick<Response, "status" | "statusText">): string {

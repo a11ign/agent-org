@@ -133,6 +133,11 @@ describe("ticketsView", () => {
     expect(ticketsView(view("loading", null), view("unreachable", null, "cannot reach personal")).state).toBe("unreachable");
   });
 
+  it("is reconnecting when the config cannot be read because the instance is restarting, and keeps the last good tickets when the tickets read does", () => {
+    expect(ticketsView(view("loading", null), view("reconnecting", null, "Failed to fetch"))).toEqual({ state: "reconnecting", data: null, refusal: "Failed to fetch" });
+    expect(ticketsView(view("reconnecting", [mine], "Failed to fetch"), view("ready", config()))).toEqual({ state: "reconnecting", data: [mine], refusal: "Failed to fetch" });
+  });
+
   it("keeps showing the tickets in scope when a later read of the config fails after it answered", () => {
     expect(ticketsView(view("ready", [mine, theirs]), view("error", config(), "late")).data?.map((t) => t.key)).toEqual(["A11-1"]);
   });

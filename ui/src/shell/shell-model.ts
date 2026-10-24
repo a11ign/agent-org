@@ -29,13 +29,16 @@ export function ticketsInScope(tickets: readonly TicketView[], config: ConfigVie
   return tickets.filter((ticket) => inScope(ticket, scope, config.viewer));
 }
 
+/** The states of a read that failed. */
+const FAILED: readonly PollState[] = ["error", "unreachable", "reconnecting"];
+
 /**
  * The Tickets read as the shell shows it: only the tickets in the default scope, which needs the config; so until the config has answered the tickets are still `loading`, and a
  * config that cannot be read is the page's failure (`ui.html` reports it the same way), with nothing shown until it can. A read that came back with tickets none of which are in scope
  * is `empty` ("Nothing is assigned to you"). A tickets failure keeps the last good tickets. PURE.
  */
 export function ticketsView(tickets: PollView<TicketView[]>, config: PollView<ConfigView>): PollView<TicketView[]> {
-  if (config.data === null && (config.state === "error" || config.state === "unreachable")) return { state: config.state, data: null, refusal: config.refusal };
+  if (config.data === null && FAILED.includes(config.state)) return { state: config.state, data: null, refusal: config.refusal };
   if (tickets.state === "loading" || (config.state === "loading" && tickets.data !== null)) return { state: "loading", data: null, refusal: null };
   const data = tickets.data === null ? null : ticketsInScope(tickets.data, config.data);
   const state = tickets.state === "ready" || tickets.state === "empty" ? (data?.length === 0 ? "empty" : "ready") : tickets.state;

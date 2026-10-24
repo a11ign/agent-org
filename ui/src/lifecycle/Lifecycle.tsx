@@ -22,7 +22,8 @@ export type LifecycleProps<T> = Readonly<{
 
 /**
  * One page's lifecycle, driven by the polling hook's state: `loading` is the skeleton, `empty` the empty panel, `ready` the page, `error` the error banner with Retry above the
- * last good data, and `unreachable` the unreachable frame above it. The pages pick the words and layouts; this picks which one is shown.
+ * last good data, `unreachable` the unreachable frame above it, and `reconnecting` (the instance is restarting) a quiet "Reconnecting..." line above it, with the skeleton
+ * before any data. The pages pick the words and layouts; this picks which one is shown.
  */
 export function Lifecycle<T>({ view, skeleton, empty, connection, onDismiss, children }: LifecycleProps<T>) {
   const lastGood = () => (view.data === null ? null : children(view.data));
@@ -38,6 +39,15 @@ export function Lifecycle<T>({ view, skeleton, empty, connection, onDismiss, chi
         <>
           <ErrorState refusal={view.refusal ?? ""} onRetry={view.refresh} {...(onDismiss === undefined ? {} : { onDismiss })} />
           {lastGood()}
+        </>
+      );
+    case "reconnecting":
+      return (
+        <>
+          <p role="status" className="reconnecting-note" title={view.refusal ?? ""}>
+            Reconnecting…
+          </p>
+          {view.data === null ? skeleton : lastGood()}
         </>
       );
     case "unreachable":
