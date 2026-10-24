@@ -753,7 +753,7 @@ test("the instance mints a worker terminal's code for its key only, and says why
 
 test("A11-129: /api/terminal-run says whether a worker link's terminal is a run's now, a run that has ended, or none the board holds", async () => {
   const b = board(4747, WRITER);
-  b.store.set(queueWriter(b.store.get(), { id: "w1", request: "Show the requests", mode: "grill", form: {} }, 1));
+  b.store.set(queueWriter(b.store.get(), { id: "w1", request: "Show the requests", mode: "grill", placement: "auto", form: {} }, 1));
   b.store.set(markWriterRunning(markWriterStarting(b.store.get(), "w1", 2), "w1", "w1", "w1:p1"));
   const link = "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal";
   assert.deepEqual(await b.api("POST", "/api/terminal-run", { link }), [200, { state: "live" }], "a waiting or working run's terminal is live");
@@ -805,6 +805,51 @@ test("a new-ticket request is queued as a run of the writer and shown with its s
   await assert.rejects(b.api("POST", "/api/writer", { request: "a", parent: "NBF-404" }), /no ticket NBF-404/);
   const [graceful] = await b.api("POST", "/api/writer", { request: "a", mode: "grill" }) as [number, unknown];
   assert.equal(graceful, 200, "grill is allowed with a terminal to open in");
+});
+
+/** The placement and form of the one run a body queued, as `/api/writer` shows them. */
+async function placedBy(body: Record<string, unknown>): Promise<{ placement: string; form: unknown; mode: string }> {
+  const b = board(4747, WRITER, {}, creating());
+  const [status, writers] = await b.api("POST", "/api/writer", { request: "Show requests", ...body }) as [number, any];
+  assert.equal(status, 200);
+  const [run] = writers.runs;
+  return { placement: run.placement, form: run.form, mode: run.mode };
+}
+
+test("A11-199: an auto request queues a run that places nothing, and a manual one queues the choices as given", async () => {
+  assert.deepEqual(await placedBy({ placement: "auto" }), { placement: "auto", form: {}, mode: "quick" });
+  assert.deepEqual(await placedBy({ placement: "manual", project: "Board", repo: "nbl-ui-netbox", goal: "Speed", priority: "none", parent: "NBF-1" }),
+    { placement: "manual", form: { project: "Board", repo: "nbl-ui-netbox", goal: "Speed", priority: "none", parent: "NBF-1" }, mode: "quick" }, "'No priority' is a choice");
+  assert.deepEqual(await placedBy({ placement: "manual", priority: "low", project: "" }), { placement: "manual", form: { priority: "low" }, mode: "quick" },
+    "an empty field is not set, and the writer chooses it");
+  assert.deepEqual(await placedBy({ placement: "manual" }), { placement: "manual", form: {}, mode: "quick" }, "manual with every choice unset is allowed");
+});
+
+test("A11-199: a body that names no placement is read as its choices imply, so a caller from before placement behaves as it did", async () => {
+  assert.equal((await placedBy({})).placement, "auto");
+  assert.deepEqual(await placedBy({ repo: "nbl-ui-netbox", priority: "high" }), { placement: "manual", form: { repo: "nbl-ui-netbox", priority: "high" }, mode: "quick" });
+  assert.equal((await placedBy({ priority: "none" })).placement, "manual", "ui.html always sends a priority, even 'No priority', and that is a choice");
+});
+
+test("A11-199: a choice that is only spaces is not set, so an auto request naming one is not refused for it and a manual one leaves it to the writer", async () => {
+  assert.deepEqual(await placedBy({ placement: "auto", project: "   ", goal: " " }), { placement: "auto", form: {}, mode: "quick" });
+  assert.deepEqual(await placedBy({ placement: "manual", project: "  ", priority: "low" }), { placement: "manual", form: { priority: "low" }, mode: "quick" });
+  assert.equal((await placedBy({ goal: "  " })).placement, "auto", "and with no placement it implies none");
+});
+
+test("A11-199: a placement that is not auto or manual is refused, and so is an auto request that names a choice", async () => {
+  const b = board(4747, WRITER, {}, creating());
+  await assert.rejects(b.api("POST", "/api/writer", { request: "a", placement: "random" }), /placement must be "auto" or "manual"/);
+  await assert.rejects(b.api("POST", "/api/writer", { request: "a", placement: "Auto" }), /placement must be "auto" or "manual"/);
+  await assert.rejects(b.api("POST", "/api/writer", { request: "a", placement: null }), /placement must be "auto" or "manual"/);
+  for (const choice of [{ project: "Board" }, { repo: "nbl-ui-netbox" }, { goal: "Speed" }, { priority: "none" }, { parent: "NBF-1" }]) {
+    await assert.rejects(b.api("POST", "/api/writer", { request: "a", placement: "auto", ...choice }),
+      /auto placement names no project, repository, goal, priority or parent: send placement manual to name them/, JSON.stringify(choice));
+  }
+  await assert.rejects(b.api("POST", "/api/writer", { request: "a", placement: "manual", repo: "elsewhere" }), /repo must be one of nbl-ui-netbox, platform-monorepo, not elsewhere/, "manual checks each choice");
+  await assert.rejects(b.api("POST", "/api/writer", { request: "a", placement: "manual", parent: "NBF-404" }), /no ticket NBF-404/);
+  assert.deepEqual(b.store.get().writers ?? [], [], "a refused request queues nothing");
+  assert.deepEqual(b.ticks, [], "and wakes nothing");
 });
 
 test("grill is refused without a terminal, and a machine with no writer writes no tickets", async () => {
@@ -1142,6 +1187,7 @@ test("A11-134: Grill on a ticket with an open decision queues a grill run on it 
   assert.equal(status, 200);
   assert.deepEqual(writers.runs.map((r: any) => [r.request, r.mode, r.status, r.ticket]), [["Grill A11-50", "grill", "queued", "A11-50"]]);
   assert.equal(writers.runs[0].startedFrom, undefined, "the text it started from is kept on the board, not sent to the page");
+  assert.deepEqual([writers.runs[0].placement, writers.runs[0].form], ["auto", {}], "A11-199: a Grill on a ticket places nothing");
   const [, view] = await b.api("GET", "/api/queue", {}) as [number, any];
   assert.equal(view.writers[0].startedFrom, undefined, "the queue the page reads holds no Grill run's ticket text either");
   assert.deepEqual(b.ticks, ["tick"], "the pool is woken to start it");

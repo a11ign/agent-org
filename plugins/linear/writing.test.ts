@@ -11,7 +11,7 @@ import { workerSettings, writerBriefText, writerTools } from "../../src/ticket-m
 import { createdKeyOf } from "../../src/ticket-mode/writer.ts";
 
 const WRITING = trackerWritingOf(resolveProviders({ tickets: {} }));
-const brief = (over: Partial<Parameters<typeof writerBriefText>[0]> = {}) => writerBriefText({ run: "Run the a11ign:create-ticket skill for this request: {request}.", request: "x", mode: "quick", form: {}, clones: {}, dir: "/d", pickTeam: "A11", writing: WRITING, ...over });
+const brief = (over: Partial<Parameters<typeof writerBriefText>[0]> = {}) => writerBriefText({ run: "Run the a11ign:create-ticket skill for this request: {request}.", request: "x", mode: "quick", placement: "auto", form: {}, clones: {}, dir: "/d", pickTeam: "A11", writing: WRITING, ...over });
 
 test("a host that names no tracker runs Linear's writing, which is the manifest's", () => {
   assert.equal(WRITING, pluginNamed(defaultCatalog(), "linear")?.tooling.writer);
@@ -24,7 +24,7 @@ test("the brief names Linear's create tool and its two attachment tools, which t
 });
 
 test("the brief gives Linear's number for each priority the form names, 0 being none", () => {
-  const priority = (name: string) => brief({ form: { priority: name as "high" } });
+  const priority = (name: string) => brief({ placement: "manual", form: { priority: name as "high" } });
   for (const [name, number] of [["urgent", 1], ["high", 2], ["medium", 3], ["low", 4], ["none", 0]] as const) {
     assert.match(priority(name), new RegExp(`- Priority: ${name}, number ${number} \\(the ticket's priority number\\)`), name);
   }

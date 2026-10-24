@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { outcomeExamples } from "./outcome.ts";
-import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
+import type { WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 import { ticketReadOf } from "./ticket-read.ts";
@@ -153,7 +153,7 @@ test("A11-174, A11-209: every unattended brief says to guard variable paths with
   const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
   const review = reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs: [], resumed: true });
   const publish = publishBriefText({ dir: "/d", prs: [], run: "r" });
-  const writer = writerBriefText({ run: "write {request}", request: "a ticket", mode: "quick", form: {}, clones: { a: "/a" }, dir: "/d", pickTeam: null, writing: FAKE_TRACKER_WRITING });
+  const writer = writerBriefText({ run: "write {request}", request: "a ticket", mode: "quick", placement: "auto", form: {}, clones: { a: "/a" }, dir: "/d", pickTeam: null, writing: FAKE_TRACKER_WRITING });
   const rule = "Claude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`."
     + " The subagents you start inherit these rules, so tell them. Every delete names an explicit path guarded with `${VAR:?}`, never a bare `*` after `cd`.";
   for (const [name, brief] of Object.entries({ work, plan, batch, review, publish, writer })) assert.ok(brief.includes(`## Commands that stall an unattended run\n\n${rule}`), `${name} carries the rule, with no host notes passed`);
@@ -595,7 +595,7 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
 
 const WRITER = { run: "Run the a11ign:create-ticket skill for this request: {request}.", clones: { "nbl-ui-netbox": "/r/netbox" } };
 /** The brief a run of `mode` is given, for the request "x" with nothing else chosen and the team `A11` on the Pick view. */
-const briefIn = (mode: WriterMode, pickTeam: string | null = "A11") => writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode, form: {}, dir: "/d", pickTeam });
+const briefIn = (mode: WriterMode, pickTeam: string | null = "A11") => writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode, placement: "auto", form: {}, dir: "/d", pickTeam });
 /** Each pattern is in the text: a brief is checked as one list of what it must say. */
 const says = (text: string, patterns: readonly RegExp[]): void => {
   for (const pattern of patterns) assert.match(text, pattern);
@@ -606,7 +606,7 @@ test("A11-135: the brief tells a run to run the create-ticket skill in full, in 
   const readme = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Make the ticket and attach its plan.";
   for (const mode of ["quick", "grill"] as const) {
     for (const run of [WRITER.run, readme]) {
-      const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, run, request: "x", mode, form: {}, clones: {}, dir: "/d", pickTeam: "A11" });
+      const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, run, request: "x", mode, placement: "auto", form: {}, clones: {}, dir: "/d", pickTeam: "A11" });
       says(brief, [/Run the `a11ign:create-ticket` skill in full/, /call the tracker's create-or-update tool with an `id`/]);
       for (const banned of [/drafts only/i, /\bskip/i, /do not run the grill/i, /no plan/i, /create no ticket/i]) {
         assert.doesNotMatch(brief, banned, `${mode}: no instruction to skip a step (${banned})`);
@@ -628,7 +628,7 @@ test("A11-135: the brief states that the run files its own ticket, with the trac
 });
 
 test("A11-135: the brief says where each choice of the form lands on the ticket", () => {
-  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "Show the requests\nA person made", mode: "quick", form: { project: "Board", repo: "nbl-ui-netbox", goal: "Speed",
+  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "Show the requests\nA person made", mode: "quick", placement: "manual", form: { project: "Board", repo: "nbl-ui-netbox", goal: "Speed",
     priority: "high", parent: "A11-12" }, dir: "/state/tickets/writer/w1", pickTeam: "A11" });
   says(brief, [
     /^# New ticket: Show the requests$/m,
@@ -644,16 +644,49 @@ test("A11-135: the brief says where each choice of the form lands on the ticket"
   ]);
 });
 
+/** The brief of a request placed `placement`, with the choices `form` names, for the request "x". */
+const placedBrief = (placement: "auto" | "manual", form: WriterForm) =>
+  writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode: "quick", placement, form, dir: "/d", pickTeam: "A11" });
+
+test("A11-199: an auto brief leaves all five choices to the writer, and the priority to the request, as one of the tracker's numbers", () => {
+  const brief = placedBrief("auto", {});
+  says(brief, [
+    /## The person's choices\n\nAuto placement: choose the project, repository, goal, priority and parent from the request, as the skill's Steps 7 and 8 say\./,
+    /- \*\*Priority:\*\* the number of the form's priority when it names one, else the priority the request warrants, as one of these numbers: urgent 1, high 2, medium 3, low 4, none 0\./,
+    /The description ends with `\*\*Repository:\*\* <repo>`: the form's repository or, when it names none, the one of the repositories below that holds the work, if one clearly does\./,
+  ]);
+  assert.doesNotMatch(brief, /These are requirements|and 0 when the form names none/, "no requirement is given, and the priority no longer defaults to 0");
+});
+
+test("A11-199: a manual brief lists each choice the person made as a requirement, and leaves the rest to the writer", () => {
+  const brief = placedBrief("manual", { project: "Board", priority: "low" });
+  says(brief, [
+    /Manual placement:\n- Project: Board \(the project of the ticket, by its name\)\n- Priority: low, number 4 \(the ticket's priority number\)\n\nThese are requirements\. Use them as given: you set each one on the ticket you file\. Each of the five not listed here is yours to choose from the request\./,
+  ]);
+  assert.doesNotMatch(brief, /Auto placement:|- Repository:|- Goal:|- Parent:/, "an unset choice is not a requirement");
+  const all = placedBrief("manual", { project: "Board", repo: "nbl-ui-netbox", goal: "Speed", priority: "none", parent: "A11-12" });
+  assert.match(all, /- Priority: none, number 0 /, "No priority is a choice, and is the number 0");
+  assert.doesNotMatch(all, /Each of the five not listed here/, "with all five named, none is left to choose");
+});
+
+test("A11-199: a manual brief with none of the five set says so, and leaves each to the writer", () => {
+  says(placedBrief("manual", {}), [/Manual placement, and the person set none of the five\. Each of the five not listed here is yours to choose from the request\./]);
+});
+
 test("A11-135: the team is the parent's, else the team the Pick view lists, and with neither the run ends needs-human", () => {
   assert.match(briefIn("quick", "A11"), /the team of the parent ticket the form names, else `A11`, the team the Pick view lists/);
   assert.match(briefIn("quick", null), /else none: when the form names no parent and no team is set here, end needs-human/);
+});
+
+test("A11-199: the team bullet says a parent the writer chooses under Auto sets the team too", () => {
+  assert.match(briefIn("quick", "A11"), /the team of the parent ticket the form names, else `A11`, the team the Pick view lists\. A parent you choose yourself under Auto placement takes its team in the same way\./);
 });
 
 test("A11-135: the brief keeps the duplicate check under Possible duplicates, and reads the tracker with read-only tools", () => {
   says(briefIn("quick"), [
     /read-only Fake tools \(`get`, `list`, `search`, `extract`\)/,
     /Name each one under "Possible duplicates" in the description, with the reason/,
-    /None\. The request decides each of these\./,
+    /Auto placement: choose the project, repository, goal, priority and parent from the request, as the skill's Steps 7 and 8 say\./,
   ]);
 });
 
@@ -694,7 +727,7 @@ test("A11-124: the brief names the board's mode, and says it wins over the instr
 });
 
 test("A11-124: a {mode} placeholder in the instruction is filled with the board's mode, and the instruction names no mode of its own", () => {
-  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}.", request: "x", mode: "grill", form: {}, clones: {}, dir: "/d", pickTeam: null });
+  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}.", request: "x", mode: "grill", placement: "auto", form: {}, clones: {}, dir: "/d", pickTeam: null });
   assert.match(brief, /Run the a11ign:create-ticket skill, grill, for this request: x\./);
 });
 
@@ -735,7 +768,7 @@ test("A11-134: both planners end a ticket with a decision only a person can make
 
 test("A11-134: a Grill run's brief grills one ticket, asks its open line and its screen's behaviour, and files nothing: it ends decided", () => {
   const grilled = { ...ticket, description: "## Acceptance\n\n### 4. Decide whether to isolate the failing ticket or keep the stall\n\n**Screen:** yes\n" };
-  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "Grill NBF-1270", mode: "grill", form: {}, dir: "/d", pickTeam: "A11", ticket: grilled });
+  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "Grill NBF-1270", mode: "grill", placement: "auto", form: {}, dir: "/d", pickTeam: "A11", ticket: grilled });
   assert.match(brief, /^# Grill NBF-1270: Refresh Data gives no feedback\n/);
   assert.ok(brief.includes("`### 4. Decide whether to isolate the failing ticket or keep the stall`"));
   assert.match(brief, /the ticket changes a screen\. Ask the person what they see, what each control does/);

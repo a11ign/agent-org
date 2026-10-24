@@ -23,7 +23,7 @@ import {
 import { approve, completableRuns, finish, markResumed, park, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { talk } from "./queue/talk.ts";
 import { recordPullHeads } from "./queue/queue-pull-heads.ts";
-import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, talkRound, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
+import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, talkRound, writerStatus, type Outcome, type Queue, type WriterForm } from "./queue/queue-entries-and-outcomes.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
@@ -4334,7 +4334,7 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
  */
 
 const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." } };
-const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; form: { repo?: string }; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", form: { repo: "nbl-ui-netbox" } };
+const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; form: WriterForm; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", placement: "manual", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
 function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source, now?: () => number) {
@@ -4621,6 +4621,35 @@ test("a new-ticket run starts on a free slot, with the writer's model, its brief
   assert.ok(existsSync(join(settings.stateDir, "tickets", "writer", "w1")));
   const sessionSettings = JSON.parse(readFileSync(join(writerFolder(settings, "w1"), ".claude", "settings.local.json"), "utf8")) as { hooks: Record<string, unknown> };
   assert.ok("PostToolUse" in sessionSettings.hooks, "its settings record each ticket it files, as the creation returns");
+});
+
+test("A11-199: a manual request is placed as given, end to end with the writer stubbed: its choices reach the brief as requirements, and the ticket the stub files is read back with its title, priority and project", async () => {
+  const filedTicket = { title: "Show the requests", priority: 4, project: "Board", url: "https://linear.app/x/NBF-1" };
+  const fixture = writing({ id: "m1", placement: "manual", form: { project: "Board", repo: "nbl-ui-netbox", priority: "low" } }, WRITER, trackerOf({ "NBF-1": filedTicket }));
+  const { dir, run } = fixture;
+  assert.deepEqual([run().placement, run().form], ["manual", { project: "Board", repo: "nbl-ui-netbox", priority: "low" }]);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "idle");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  for (const pattern of [
+    /Manual placement:\n- Project: Board /,
+    /- Repository: `nbl-ui-netbox` /,
+    /- Priority: low, number 4 /,
+    /Each of the five not listed here is yours to choose from the request\./,
+  ]) assert.match(brief, pattern);
+  assert.doesNotMatch(brief, /Auto placement:|- Goal:|- Parent:/, "only what the person chose is a requirement");
+  assert.deepEqual(run().tickets, [{ key: "NBF-1", url: "https://linear.app/x/NBF-1", inPick: true, title: "Show the requests", priority: 4, project: "Board" }],
+    "the Done row's title, priority and project are what the tracker holds");
+  assert.deepEqual([run().phase, run().failure], ["finished", undefined]);
+});
+
+test("A11-199: an auto request's brief leaves every choice to the writer, and a ticket the tracker could not read back is shown by its key alone", async () => {
+  const fixture = writing({ id: "a1", placement: "auto", form: {} }, WRITER, trackerOf({}));
+  const { dir, run } = fixture;
+  assert.deepEqual([run().placement, run().form], ["auto", {}]);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "idle");
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /Auto placement: choose the project, repository, goal, priority and parent from the request/);
+  assert.deepEqual(run().tickets, [{ key: "NBF-1", url: null, inPick: false }], "it has no title, priority or project to show");
+  assert.equal(run().failure, "NBF-1 is not in the tracker");
 });
 
 test("a new-ticket run starts on the model and effort it was queued with, whatever the host file says, and one queued before they were stamped starts on the host file's", async () => {

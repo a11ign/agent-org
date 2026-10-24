@@ -37,6 +37,8 @@ import { runningToolVersion } from "../install/tool-versions.ts";
 import type { UpdateNote } from "./board-view/update-banner.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
+import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
+import { type Placement, placementOf } from "./writer-placement.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
@@ -170,8 +172,6 @@ function validChange<P extends keyof SavedChoice>(body: Json, parts: readonly P[
   return Object.fromEntries(named) as Partial<Pick<SavedChoice, P>>;
 }
 
-/** The longest request a new-ticket run takes, in characters. */
-const WRITER_REQUEST_CHARS = 8000;
 const TICKET_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
 /**
@@ -182,7 +182,7 @@ function writerForm(body: Json, settings: TicketSettings): Readonly<Record<strin
   const text = (name: string): string | undefined => {
     if (body[name] === undefined || body[name] === "") return undefined;
     if (typeof body[name] !== "string") throw new Error(`${name} must be text`);
-    return String(body[name]).trim();
+    return String(body[name]).trim() || undefined;
   };
   const repo = text("repo");
   if (repo !== undefined && !(repo in settings.clones)) throw new Error(`repo must be one of ${Object.keys(settings.clones).join(", ")}, not ${repo}`);
@@ -191,6 +191,20 @@ function writerForm(body: Json, settings: TicketSettings): Readonly<Record<strin
   const parent = text("parent");
   if (parent !== undefined && !TICKET_KEY.test(parent)) throw new Error(`parent must be a ticket's key, such as A11-12, not ${parent}`);
   return Object.fromEntries(Object.entries({ project: text("project"), repo, goal: text("goal"), priority, parent }).filter(([, value]) => value !== undefined));
+}
+
+/**
+ * Who places a new-ticket request's ticket (A11-199), from the body's `placement` and the choices `writerForm` read. A body that names no placement is read as
+ * the form implies, so a caller from before placement keeps its behaviour. An `auto` request that names a choice is refused rather than dropped, so a caller
+ * that thinks it placed a ticket learns it did not. Throws naming the fault.
+ */
+function writerPlacement(body: Json, form: WriterRun["form"]): Placement {
+  if (body.placement === undefined) return placementOf(form);
+  if (body.placement !== "auto" && body.placement !== "manual") throw new Error("placement must be \"auto\" or \"manual\"");
+  if (body.placement === "auto" && placementOf(form) === "manual") {
+    throw new Error("auto placement names no project, repository, goal, priority or parent: send placement manual to name them");
+  }
+  return body.placement;
 }
 
 /** What the routes act on: the settings and seams, the queue's store, the pool, the tickets the page last read, and the functions that make a queue change. */
@@ -551,12 +565,13 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
     if (mode !== "quick" && mode !== "grill") throw new Error("mode must be \"quick\" or \"grill\"");
     if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or choose quick");
     const form = writerForm(body, settings);
+    const placement = writerPlacement(body, form);
     if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
     // The model and effort are read now and stamped on the request, so a change in Settings reaches the next request, and this one keeps its own.
     const saved = readChoice(deps.choicePath);
     const model = saved.writerModel ?? settings.writer.model;
     const effort = saved.writerEffort ?? settings.writer.effort;
-    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, form, model, effort }, now()));
+    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, placement, form, model, effort }, now()));
     wake();
     return [200, writersViewOf(store.get())];
   }
@@ -573,7 +588,7 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
     const saved = readChoice(deps.choicePath);
     const model = saved.writerModel ?? settings.writer.model;
     const effort = saved.writerEffort ?? settings.writer.effort;
-    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request: `Grill ${key}`, mode: "grill", form: {}, model, effort, ticket: key,
+    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request: `Grill ${key}`, mode: "grill", placement: "auto", form: {}, model, effort, ticket: key,
       startedFrom: ticket.description }, now()));
     wake();
     return [200, writersViewOf(store.get())];
