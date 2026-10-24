@@ -24,14 +24,14 @@ function useInstanceEmptyText(listed: readonly unknown[]): string | null {
 }
 
 /** The empty panel of the chosen scope, with the board's buttons where the board draws them. */
-export function EmptyPanelView({ list, writer }: Readonly<{ list: ListView; writer: boolean }>) {
+export function EmptyPanelView({ list, writer, onNewTicket }: Readonly<{ list: ListView; writer: boolean; onNewTicket?: () => void }>) {
   const { chooseScope, allTickets } = useShell();
   const instanceText = useInstanceEmptyText(allTickets);
   if (list.source === null) return null;
   const panel = emptyPanelOf(list.source, instanceText);
   const actions = panel.offersActions ? (
     <>
-      {writer ? <button type="button" className="primary primary-small" disabled>New ticket</button> : null}
+      {writer ? <button type="button" className="primary primary-small" disabled={onNewTicket === undefined} onClick={onNewTicket}>New ticket</button> : null}
       <button type="button" className="ghost" onClick={() => chooseScope(ANYONE)}>Show anyone's tickets</button>
     </>
   ) : undefined;

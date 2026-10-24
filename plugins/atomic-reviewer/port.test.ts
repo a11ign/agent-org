@@ -591,3 +591,47 @@ test("A11-213: the ticket's decisions in the brief reach the prompt a reviewer i
   assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
   assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(decisions) && again.prompted().includes(DECISION_RULE), "the re-review carries them too");
 });
+
+/** A port whose Codex trust is `answer` for the root `rootOf` finds, with the order in which the trust, the claim and the spawn happened. */
+function trustingPort({ root = "/repos/alpha" as string | null, answer }: { root?: string | null; answer: (root: string) => import("./codex-trust.ts").Ensured }) {
+  const herd = herdr(new Map());
+  const fake = ghFor({ head: "h1" });
+  const events: string[] = [];
+  const logged: string[] = [];
+  const asked: string[] = [];
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(fake),
+    spawn: (order) => { events.push(`spawn (${fake.pr.statuses?.length ?? 0} claim statuses)`); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: () => ({ path: "/work/pr-7", head: "h1" }),
+    codexTrust: { rootOf: (tree) => { asked.push(tree); return root; }, ensure: (found) => { events.push(`trust ${found} (${fake.pr.statuses?.length ?? 0} claim statuses)`); return answer(found); }, log: (line) => logged.push(line) } });
+  return { port, events, logged, asked, herd, statuses: () => fake.pr.statuses ?? [] };
+}
+
+test("A11-221: an untrusted host repository is trusted before the reviewer launches: the checkout's clone root is trusted before the claim is written and before the spawn", async () => {
+  await loadReviewerGate();
+  const made = trustingPort({ answer: (root) => ({ kind: "added", root, file: "/home/me/.codex/config.toml" }) });
+  assert.deepEqual(made.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  assert.deepEqual(made.asked, ["/work/pr-7"], "the clone root is found from the checkout");
+  assert.deepEqual(made.events, ["trust /repos/alpha (0 claim statuses)", "spawn (1 claim statuses)"]);
+  assert.deepEqual(made.logged, [`codex now trusts /repos/alpha: the reviewer of ${PR_URL} starts in it`]);
+});
+
+test("A11-221: a repository Codex already has an entry for starts silently, as does a root the host file does not name and a checkout with no clone root", async () => {
+  await loadReviewerGate();
+  const present = trustingPort({ answer: (root) => ({ kind: "present", root, file: "/c", level: "untrusted" }) });
+  assert.deepEqual(present.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  const outside = trustingPort({ answer: (root) => ({ kind: "not-host", root, reason: "not named" }) });
+  assert.deepEqual(outside.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  const rootless = trustingPort({ root: null, answer: () => { throw new Error("nothing to trust"); } });
+  assert.deepEqual(rootless.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  assert.deepEqual([present.logged, outside.logged, rootless.logged], [[], [], []]);
+});
+
+test("A11-221: a Codex config that cannot be used refuses the start, naming the file, and no claim is written, no reviewer spawned, no prompt sent", async () => {
+  await loadReviewerGate();
+  const made = trustingPort({ answer: () => ({ kind: "refused", file: "/home/me/.codex/config.toml", reason: "/home/me/.codex/config.toml does not parse as TOML" }) });
+  const started = made.port.start({ pr: PR_URL, head: "h1" });
+  assert.equal("refusal" in started ? started.refusal : "", `no reviewer for ${PR_URL}: /home/me/.codex/config.toml does not parse as TOML`);
+  assert.deepEqual(made.events, ["trust /repos/alpha (0 claim statuses)"]);
+  assert.deepEqual(made.statuses(), [], "no claim is written");
+  assert.equal(made.herd.calls.some((args) => args.includes("prompt")), false);
+});

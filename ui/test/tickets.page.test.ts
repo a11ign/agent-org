@@ -4,6 +4,7 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import { captureName } from "../../src/ticket-mode/capture.ts";
 import { HERE, OTHER, queueingConfig, queueOf, ticket, ticketsBoardStand, type Stand } from "./fixtures.ts";
 import { serveInstance, type Serving } from "./instance-routes.ts";
+import { withWriter } from "./new-ticket/new-ticket-stand.ts";
 import { overflowProblem, SCREENS, SCREENSHOT_DIR } from "./screenshots.ts";
 import { launchBrowser, startSite, type Site } from "./site.ts";
 
@@ -25,7 +26,7 @@ const OPEN_BACKLOG = (context: BrowserContext) => context.addInitScript(() => lo
 async function open(serving: Serving, width = 1440): Promise<{ page: Page; asked: Awaited<ReturnType<typeof serveInstance>>; context: BrowserContext }> {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
   await OPEN_BACKLOG(context);
-  const asked = await serveInstance(context, serving);
+  const asked = await serveInstance(context, withWriter(serving));
   const page = await context.newPage();
   await page.goto(`${site.origin}${TICKETS}`);
   return { page, asked, context };
@@ -90,11 +91,13 @@ describe("the states, over a stand-in instance in Chromium", () => {
     await context.close();
   });
 
-  it("keeps New ticket present and disabled", async () => {
+  it("opens the New ticket dialog from the header button", async () => {
     const { page, context } = await open({ stand: small });
     const button = page.getByRole("button", { name: "New ticket" });
     await button.waitFor();
-    expect(await button.isDisabled()).toBe(true);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>(".page-header .primary")?.disabled);
+    await button.click();
+    expect(await page.getByRole("dialog", { name: "New ticket" }).isVisible()).toBe(true);
     await context.close();
   });
 });
@@ -151,7 +154,7 @@ describe("no horizontal overflow, and the captures of the four boards", () => {
     const context = await browser.newContext({ viewport: screen, deviceScaleFactor: 1 });
     try {
       await OPEN_BACKLOG(context);
-      await serveInstance(context, serving);
+      await serveInstance(context, withWriter(serving));
       const page = await context.newPage();
       await page.goto(`${site.origin}${TICKETS}`);
       await ready(page);

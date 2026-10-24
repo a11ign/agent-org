@@ -6,7 +6,8 @@
 // named as the code host names it.
 //
 // STEP 2 IS OPTIONAL: "Add repositories not cloned here?". The code host lists the signed-in account and its organisations, then the repositories of those ticked; each ticked repository without a checkout is
-// offered for cloning, with the command shown, into a folder that starts as the folder onboard runs in.
+// offered for cloning into a folder that starts as the folder onboard runs in. THE OFFER LISTS THE REPOSITORIES BY NAME (A11-222), one per line with the path it goes to; the command each runs is shown with `--verbose`. Each clone then
+// prints ONE LINE when it ends, ✓ or ✗, and the summary comes once after them.
 //
 // THE HOST FILE'S CLONES ARE KEPT. A name the host file already holds keeps its path whatever is ticked, and is never removed (onboard writes only the keys that are absent); the host file's repositories are pre-ticked.
 // A NEW NAME IS THE CODE HOST'S: `repoOfProject` matches a Linear project's repository against the names (A11-70). The host file names a repository once, so two ticked repositories with one name are asked again.
@@ -14,6 +15,7 @@
 // IT PRINTS A SUMMARY before onboard writes anything: each repository, its path, and found, cloned or kept. A list the code host cannot give is said, and onboard falls back to the typed prompt when nothing was found.
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { CodeHostRepositories, HostRepository, RepositoryOwner } from "../plugins/contracts/code-host.ts";
+import type { OnboardOutput } from "./onboard-output.ts";
 import type { Choice, Prompts } from "./prompts.ts";
 
 export type PickerDeps = Readonly<{
@@ -22,7 +24,8 @@ export type PickerDeps = Readonly<{
   home: string;
   repositories: CodeHostRepositories;
   prompts: Prompts;
-  out: Pick<Console, "log">;
+  /** Where the picker speaks: a clone is one ✓ or ✗ line, and the commands it runs show only when the output is verbose (A11-222). */
+  out: OnboardOutput;
   isDirectory: (path: string) => boolean;
   exists: (path: string) => boolean;
   readFile: (path: string) => string;
@@ -87,7 +90,7 @@ function surroundingsOf(deps: PickerDeps): Surroundings {
     try {
       config = deps.readFile(join(path, ".git", "config"));
     } catch (error) {
-      deps.out.log(`could not read ${join(path, ".git", "config")} (${(error as Error).message}), so ${path} is left out`);
+      deps.out.note(`could not read ${join(path, ".git", "config")} (${(error as Error).message}), so ${path} is left out`);
       return null;
     }
     return remoteUrls(config).map((url) => deps.repositories.repositoryOfRemote(url)).find((repository) => repository !== null) ?? null;
@@ -101,7 +104,7 @@ function surroundingsOf(deps: PickerDeps): Surroundings {
     try {
       return deps.listDir(cwd).filter((name) => !name.startsWith(".") && !SKIPPED_FOLDERS.has(name)).sort().map((name) => join(cwd, name));
     } catch (error) {
-      deps.out.log(`could not read ${cwd} (${(error as Error).message}), so the checkouts in it were not looked for`);
+      deps.out.note(`could not read ${cwd} (${(error as Error).message}), so the checkouts in it were not looked for`);
       return null;
     }
   };
@@ -156,7 +159,7 @@ async function pickWithoutClash(question: Parameters<Prompts["pickMany"]>[0], cl
     const picked = await deps.prompts.pickMany({ ...question, ticked });
     const clash = clashOf(picked);
     if (clash === null) return picked;
-    deps.out.log(clash);
+    deps.out.note(clash);
     ticked = picked;
   }
 }
@@ -209,7 +212,7 @@ async function pickOwners(interesting: readonly string[], deps: PickerDeps): Pro
 /** The repositories of `owners`, each once, by `owner/name`. A list the code host cannot give is said and left out. @returns null when none could be given */
 function repositoriesOf(owners: readonly RepositoryOwner[], deps: PickerDeps): HostRepository[] | null {
   const lists = owners.map((owner) => ({ owner, repositories: deps.repositories.readRepositories(owner) }));
-  for (const { owner, repositories } of lists) if (repositories === null) deps.out.log(`could not list ${owner.login}'s repositories`);
+  for (const { owner, repositories } of lists) if (repositories === null) deps.out.note(`could not list ${owner.login}'s repositories`);
   if (lists.every(({ repositories }) => repositories === null)) return null;
   const byName = new Map<string, HostRepository>();
   for (const repository of lists.flatMap(({ repositories }) => repositories ?? [])) byName.set(repository.fullName.toLowerCase(), repository);
@@ -231,7 +234,7 @@ async function pickListed(context: Readonly<{ shown: readonly Checkout[]; picked
   if (listed === null) return null;
   const options = listed.filter((repository) => !shown.some((checkout) => same(checkout.repository.fullName, repository.fullName)));
   if (options.length === 0) {
-    deps.out.log("There are no other repositories to add.");
+    deps.out.note("There are no other repositories to add.");
     return [];
   }
   const hintOf = (repository: HostRepository): string => {
@@ -263,7 +266,7 @@ async function askCloneFolder(context: Readonly<{ deps: PickerDeps; surroundings
   for (;;) {
     const answer = surroundings.expanded((await deps.prompts.text({ message: "Clone into", initial: surroundings.shown(deps.cwd) })).trim());
     if (isAbsolute(answer)) return resolve(answer);
-    deps.out.log(`${answer} is not an absolute path: give one that starts with / or ~/`);
+    deps.out.note(`${answer} is not an absolute path: give one that starts with / or ~/`);
   }
 }
 
@@ -303,15 +306,17 @@ async function rowsOfListed(listed: readonly HostRepository[], context: Readonly
   const folder = await askCloneFolder({ deps, surroundings });
   const places = wanted.map((repository) => ({ repository, ...placeFor(repository, folder, { surroundings, deps }) }));
   rows.push(...places.flatMap(({ existing }) => (existing === null ? [] : [existing])));
-  return [...rows, ...await cloneOffered(places.filter(({ existing }) => existing === null), { deps, surroundings })];
+  return [...rows, ...await cloneOffered(places.filter(({ existing }) => existing === null), { folder, deps, surroundings })];
 }
 
-/** Offers each clone as the command it runs, all ticked, and runs those left ticked, saying each. A clone that fails is a row with the host's reason; one declined is left out. */
-async function cloneOffered(offered: readonly { repository: HostRepository; path: string }[], context: Readonly<{ deps: PickerDeps; surroundings: Surroundings }>): Promise<Row[]> {
-  const { deps, surroundings } = context;
+/** Offers each clone by the repository's name and where it goes, all ticked, and runs those left ticked, saying each in one line. A clone that fails is a row with the host's reason; one declined is left out. */
+async function cloneOffered(offered: readonly { repository: HostRepository; path: string }[], context: Readonly<{ folder: string; deps: PickerDeps; surroundings: Surroundings }>): Promise<Row[]> {
+  const { folder, deps, surroundings } = context;
   if (offered.length === 0) return [];
-  const choices: Choice<string>[] = offered.map(({ repository, path }) => ({ value: repository.fullName, label: deps.repositories.cloneCommand(repository.fullName, surroundings.shown(path)) }));
-  const ticked = await deps.prompts.pickMany({ message: "Clone these repositories? Each runs the command shown", choices, ticked: choices.map(({ value }) => value), filter: false, required: false });
+  for (const { repository, path } of offered) deps.out.detail(deps.repositories.cloneCommand(repository.fullName, surroundings.shown(path)));
+  const choices: Choice<string>[] = offered.map(({ repository, path }) => ({ value: repository.fullName, label: repository.fullName, hint: surroundings.shown(path) }));
+  const message = `Clone ${plural(offered.length, "repository", "repositories")} into ${surroundings.shown(folder)}?`;
+  const ticked = await deps.prompts.pickMany({ message, choices, ticked: choices.map(({ value }) => value), filter: false, required: false });
   const rows: Row[] = [];
   for (const { repository, path } of offered) {
     const row = { name: repository.name, path, fullName: repository.fullName, picked: true };
@@ -319,8 +324,9 @@ async function cloneOffered(offered: readonly { repository: HostRepository; path
       rows.push({ ...row, ok: false, how: "not cloned" });
       continue;
     }
-    deps.out.log(`  Cloning ${repository.fullName} …`);
     const refusal = deps.repositories.cloneRepository(repository.fullName, path);
+    if (refusal === null) deps.out.done(`${repository.fullName}  ${surroundings.shown(path)}`);
+    else deps.out.failed(`${repository.fullName}  ${surroundings.shown(path)}`, refusal);
     rows.push(refusal === null ? { ...row, ok: true, how: "cloned" } : { ...row, ok: false, how: `not cloned: ${refusal}` });
   }
   return rows;
@@ -358,14 +364,14 @@ export async function pickRepositories(clones: Held, deps: PickerDeps): Promise<
   const found = onePerRepository(scanned.found, held);
   let rows: Row[] = [];
   if (found.length > 0) rows = foundRows(await pickFound(found, held, { deps, surroundings }), held);
-  else if (scanned.folderRead) deps.out.log(`No repositories from GitHub in ${surroundings.shown(deps.cwd)}`);
+  else if (scanned.folderRead) deps.out.note(`No repositories from GitHub in ${surroundings.shown(deps.cwd)}`);
   if (found.length === 0 || await deps.prompts.confirm({ message: "Add repositories not cloned here?", initial: false })) {
     const added = await addFromHost({ shown: found, picked: rows, held, deps, surroundings });
     if (added === null) return null;
     rows = [...rows, ...added];
   }
   // A blank line either side sets the summary apart from the prompts above it and the steps that follow.
-  deps.out.log(`\n${summaryOf([...rows, ...keptRows(rows, held, surroundings)], surroundings)}\n`);
+  deps.out.note(`\n${summaryOf([...rows, ...keptRows(rows, held, surroundings)], surroundings)}\n`);
   return rows.filter(({ ok, picked, fullName }) => ok && picked && fullName !== null).map(({ name, path, fullName }) => ({ name, path, fullName: fullName! })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -375,9 +381,9 @@ async function addFromHost(context: Readonly<{ shown: readonly Checkout[]; picke
   const listed = await pickListed(context);
   if (listed !== null) return rowsOfListed(listed, { held, deps, surroundings });
   if (shown.length > 0) {
-    deps.out.log(UNREADABLE);
+    deps.out.note(UNREADABLE);
     return [];
   }
-  deps.out.log(`${UNREADABLE}${NAME_THEM_BY_PATH}`);
+  deps.out.note(`${UNREADABLE}${NAME_THEM_BY_PATH}`);
   return null;
 }

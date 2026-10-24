@@ -8,6 +8,7 @@
     "concern": "publisher",
     "contract": "1.1",
     "description": "Slack: announces the pull requests a person chose, through a publish run.",
+    "setUp": "Slack connected as the publisher",
     "entry": "index.ts",
     "settings": {
       "run": {

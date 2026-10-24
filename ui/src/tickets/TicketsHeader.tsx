@@ -10,14 +10,16 @@ type HeaderProps = Readonly<{
   onFold: () => void;
   /** Whether this instance writes tickets, which New ticket needs; an instance that does not has no button. */
   writer: boolean;
+  /** Opens the New ticket dialog. Without it the button is drawn disabled: the instance's config is not read yet, or the connection is paused. */
+  onNewTicket?: () => void;
   /** The name of the SSH connection that cannot be reached, which pauses New ticket until it answers; null while it can. */
   pausedFor?: string | null;
   /** Whether the tickets drawn are the last known ones: the board's "Last known" pill beside the count. */
   lastKnown?: boolean;
 }>;
 
-/** The page's header: the h1, the count, Expand all, and New ticket, which is present and disabled until the dialog (its own ticket) opens from it. */
-export function TicketsHeader({ count, allOpen, foldable, onFold, writer, pausedFor = null, lastKnown = false }: HeaderProps) {
+/** The page's header: the h1, the count, Expand all, and New ticket, which opens the dialog. */
+export function TicketsHeader({ count, allOpen, foldable, onFold, writer, onNewTicket, pausedFor = null, lastKnown = false }: HeaderProps) {
   return (
     <div className="page-header">
       <div className="page-header-title">
@@ -27,7 +29,7 @@ export function TicketsHeader({ count, allOpen, foldable, onFold, writer, paused
       </div>
       <button type="button" className="ghost" disabled={!foldable} onClick={onFold}>{allOpen ? "Collapse all" : "Expand all"}</button>
       {writer ? (
-        <button type="button" className="primary primary-small" disabled {...(pausedFor === null ? {} : { title: `Paused until ${pausedFor} is reachable` })}>
+        <button type="button" className="primary primary-small" disabled={onNewTicket === undefined} onClick={onNewTicket} {...(pausedFor === null ? {} : { title: `Paused until ${pausedFor} is reachable` })}>
           <PlusIcon />
           New ticket
         </button>

@@ -8,6 +8,7 @@
     "concern": "exposure",
     "contract": "1.1",
     "description": "Serves the board and the worker terminal on loopback only.",
+    "setUp": "Board served on this machine",
     "entry": "index.ts",
     "settings": {
       "port": {

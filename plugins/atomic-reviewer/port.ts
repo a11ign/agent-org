@@ -13,6 +13,7 @@ import type { DoorRun } from "../../src/review-trust.ts";
 import type { CodeHost, ReviewState } from "../../src/plugins/contracts/code-host.ts";
 import type { CloseAnswer, PromptAnswer, RepostAnswer, RetireAnswer, ReviewBrief, ReviewerPort, ReviewerRef, ReviewerSettled } from "../../src/plugins/contracts/reviewer.ts";
 import type { ReviewerBoard, ReviewerGate, ReviewerHelpers } from "../../src/plugins/manifest.ts";
+import type { Ensured } from "./codex-trust.ts";
 import { reviewWords, rereviewWords } from "./prompt.ts";
 
 /** The cause the reviewer is started for: the gate's `draft-awaiting-verdict`, the one a ready pull request is reviewed under. */
@@ -194,6 +195,11 @@ export type Seams = Readonly<{
   /** Runs the verdict door with the reviewer's environment: throws on a non-zero exit, with the door's stderr. */
   door?: DoorRun;
   now?: () => number;
+  /**
+   * Makes Codex trust the repository a review checkout belongs to, before the reviewer starts (A11-221): `rootOf` finds the checkout's clone root (the one Codex resolves a worktree's trust to),
+   * `ensure` trusts it when the host file names it, and `log` says what was added. Absent, the port trusts nothing.
+   */
+  codexTrust?: Readonly<{ rootOf: (tree: string) => string | null; ensure: (root: string) => Ensured; log: (line: string) => void }>;
 }>;
 
 const spawnOf = (context: Context) => context.seams.spawn ?? gateOf(context).wake.spawnReviewer;
@@ -380,6 +386,21 @@ function releaseClaim(context: Context, seat: Seat, { pr, head, tree }: { pr: st
 /** The code host the board reads each pull request through: its head, its reviews, its trust and whether its checks settled. */
 const codeHostOf = (context: Context): CodeHost => boardOf(context).codeHost();
 
+/**
+ * Trusts the clone a review checkout belongs to in Codex's config, so Codex does not stop on its "Trust this folder?" dialog (A11-221). The reason no reviewer starts when the config cannot be used
+ * (Codex could not start on it either), or null: an entry added, one already there, a root the host file does not name, or a checkout with no clone root all go ahead.
+ */
+function trustCodexFor(context: Context, { pr, tree }: { pr: string; tree: string }): string | null {
+  const codex = context.seams.codexTrust;
+  if (codex === undefined) return null;
+  const root = codex.rootOf(tree);
+  if (root === null) return null;
+  const answer = codex.ensure(root);
+  if (answer.kind === "refused") return `no reviewer for ${pr}: ${answer.reason}`;
+  if (answer.kind === "added") codex.log(`codex now trusts ${answer.root}: the reviewer of ${pr} starts in it`);
+  return null;
+}
+
 function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): ReturnType<ReviewerPort["start"]> {
   const { pr, head } = ref;
   const seat = seatOf(context, pr);
@@ -398,6 +419,9 @@ function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | 
   if (stale) closeWorkspace(board.run, board.session, seat.label);
   const tree = checkoutSeam(context)({ pr: seat.number, session: seat.label, trust: trust.INSIDE, ...rootOf(seat) });
   if ("refusal" in tree) return tree;
+  // Codex's trust comes before the claim and the spawn: a repository it has not been told to trust stops the reviewer on a dialog nobody answers (A11-221).
+  const untrusted = trustCodexFor(context, { pr, tree: tree.path });
+  if (untrusted !== null) return { refusal: untrusted };
   // The claim comes before the spawn: an instance that holds the head starts nothing, and a claim that cannot be made starts nothing either (A11-149).
   const claimed = claimOf(context, seat, { pr, head, tree: tree.path, rereview: brief?.rereview !== undefined });
   if ("refusal" in claimed) return claimed;

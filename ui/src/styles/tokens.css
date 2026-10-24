@@ -229,6 +229,16 @@
   --skeleton-runs-heading-width: 110px;
   --skeleton-runs-pill-width: 70px;
   --skeleton-runs-pill-height: 22px;
+
+  /* The New ticket dialog and its request strip (A11-199): the values the ten boards use that the tokens above do not hold. */
+  --color-chosen: rgba(91, 99, 217, 0.12);
+  --color-writing-border: #2e3150;
+  --color-warn-note-bg: #1d1a10;
+  --color-done-text: #56d364;
+  --measure-mode-card: 240px;
+  --measure-field: 180px;
+  --dot-size-run: 8px;
+  --opacity-sending: 0.45;
 }
 
 /* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */
