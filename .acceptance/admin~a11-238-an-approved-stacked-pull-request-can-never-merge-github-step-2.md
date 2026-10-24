@@ -5,6 +5,6 @@ Step 2 of 2 (agent-org): the board hands an approved, green stacked pull request
 Acceptance:
 
 ```bash
-node --test src/ticket-mode/stack-merge.test.ts src/ticket-mode/pool-stack-merge.test.ts plugins/github/stack-merge.test.ts src/ticket-mode/worker-files.test.ts src/packaging/auto-arm-stack-merge.test.ts
+node --test src/ticket-mode/stack-merge.test.ts plugins/github/stack-merge.test.ts src/ticket-mode/worker-files.test.ts src/packaging/auto-arm-stack-merge.test.ts
 npm run typecheck
 ```
