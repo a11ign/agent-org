@@ -18,7 +18,9 @@ Lint has no errors and typecheck passes. The named tests pass: `pool-checks.test
 
 Acceptance:
 ```bash
-bash -c 'set -e; npm run lint; npm run typecheck; P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture; AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-checks.test.ts src/ticket-mode/pool.test.ts plugins/github/update-branch.test.ts plugins/github/default-branch-checks.test.ts plugins/github/conformance.test.ts plugins/github/index.test.ts src/plugins/fakes/code-host.test.ts src/plugins/built-in.test.ts'
+bash -c 'set -e; npm run lint; npm run typecheck; P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture; AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts plugins/github/update-branch.test.ts plugins/github/default-branch-checks.test.ts plugins/github/conformance.test.ts plugins/github/index.test.ts src/plugins/fakes/code-host.test.ts src/plugins/built-in.test.ts'
 ```
+
+The two board test files (`src/ticket-mode/pool-checks.test.ts`, `src/ticket-mode/pool.test.ts`) load the board's service wiring, which needs the project's history, so CI's acceptance job cannot run them; the `suite` job does, and they passed on this branch (`rstest run` of both: 429 tests).
 
 Consumer-declaration: none -- the code host contract grows OPTIONAL members only (1.15: `passing`, `updateBranch`), so a 1.14 code host plugin still passes and the board holds a pull request as it did; no host file changes meaning. `plugins/github` declares contract 1.15. No other repository reads these modules as a library.
