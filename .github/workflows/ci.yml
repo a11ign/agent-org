@@ -223,7 +223,7 @@ jobs:
 
   # THE UI (A11-188): `ui/` is a private package of its own, Astro with React islands, built to static files and not a workspace member (the layout check above refuses a `pnpm-workspace.yaml`),
   # so it installs from its own lockfile. It runs on the same three events as `lint` and `typecheck`, because `gate` waits for a check reporting on `merge_group`. The steps are the UI's typecheck
-  # (`astro check` and `tsc`), its build, and its tests: the components, the dev proxy and the page checks, which serve the build in Chromium and take the placeholder page's screenshots at 1440px and
+  # (`astro check` and `tsc`), its build, and its tests: the components, the dev proxy and the page checks, which serve the build in Chromium and take each route's screenshots at 1440px and
   # 390px (they fail on horizontal overflow). The UI's LINT is not here: the root `lint` script covers `ui/`, so the `lint` job runs it.
   # Chromium is the build `playwright-core` names, which `ui/test/package.test.ts` holds to the root's version; `--with-deps` adds the system libraries the runner lacks.
   # ASTRO_TELEMETRY_DISABLED: the build reports nothing to a third party.
@@ -248,10 +248,10 @@ jobs:
         run: pnpm ui:typecheck
       - name: pnpm ui:build -- static files in ui/dist
         run: pnpm ui:build
-      - name: pnpm ui:test -- components, dev proxy and page checks, with the placeholder's screenshots
+      - name: pnpm ui:test -- components, dev proxy and page checks, with the shell's screenshots
         run: pnpm ui:test
       # The screenshots the page checks took, kept with the run so a reviewer can see them without a checkout.
-      - name: The placeholder page's screenshots, archived
+      - name: The shell's screenshots, archived
         if: always()
         uses: actions/upload-artifact@v7
         with:

@@ -89,6 +89,9 @@ describe("the instance switcher", () => {
     await waitFor(() => expect(textOf(mainNav().getByRole("link", { name: /Tickets/ }))).toBe("Tickets0"));
   });
 
+});
+
+describe("the connections list", () => {
   it("shows a connections file the service refused, in its own words, beside this machine's instance", async () => {
     await shellOn("tickets", { refusal: "connections: work has no host" });
     expect(textOf(screen.getByRole("alert"))).toContain("connections: work has no host");
@@ -100,6 +103,17 @@ describe("the instance switcher", () => {
     const before = fetchWith.paths.filter((path) => path === "/api/connections").length;
     fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(fetchWith.paths.filter((path) => path === "/api/connections").length).toBe(before + 1));
+  });
+
+  it("keeps the refusal and the list when Retry's read of the connections fails", async () => {
+    const stand: { -readonly [Key in keyof Stand]: Stand[Key] } = { refusal: "connections: work has no host" };
+    await shellOn("tickets", stand);
+    stand.connectionsFail = true;
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(within(screen.getByLabelText("Instance")).getAllByRole("option")).toHaveLength(1));
+    await new Promise((done) => setTimeout(done, 50));
+    expect(textOf(screen.getByRole("alert"))).toContain("connections: work has no host");
+    expect(within(screen.getByLabelText("Instance")).getAllByRole("option")).toHaveLength(1);
   });
 
   it("leaves an empty list when the connections cannot be read, and reads /api at the root", async () => {
@@ -252,6 +266,22 @@ describe("projects and goals", () => {
     await waitFor(() => expect(rows("Goals")).toEqual(["All goals0"]));
     expect(rows("Projects")).toEqual([]);
     expect(textOf(mainNav().getByRole("link", { name: /Tickets/ }))).toMatch(/^Tickets0$/);
+  });
+
+  it("claims no count and lists nothing when the tickets could not be read at all, and the page says why", async () => {
+    await shellOn("tickets", { fallback: { ticketsFail: { status: 500, error: "tracker refused" } } });
+    await waitFor(() => expect(textOf(screen.getByRole("alert"))).toContain("tracker refused"));
+    expect(textOf(mainNav().getByRole("link", { name: /Tickets/ }))).toBe("Tickets");
+    expect(screen.queryByText("Projects")).toBeNull();
+    expect(screen.queryByText("Goals")).toBeNull();
+    expect(within(sidebar()).queryByRole("status", { name: "Loading projects and goals" })).toBeNull();
+  });
+
+  it("shows a config that cannot be read as the Tickets page's failure, and no tickets from outside the default scope", async () => {
+    await shellOn("tickets", { fallback: { tickets, configFail: { status: 500, error: "no config" } } });
+    await waitFor(() => expect(textOf(screen.getByRole("alert"))).toContain("no config"));
+    expect(textOf(mainNav().getByRole("link", { name: /Tickets/ }))).toBe("Tickets");
+    expect(screen.queryByText("Projects")).toBeNull();
   });
 
   it("is not drawn on the other pages", async () => {

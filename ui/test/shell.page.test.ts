@@ -75,6 +75,13 @@ describe("every route renders inside the shell", () => {
     }
   });
 
+  it("keeps ?connection= and the hash when it sends /next/ on, so a link to an instance still opens on it", async () => {
+    const { page, context } = await open("/next/?connection=personal#A11-9");
+    await page.waitForURL("**/next/tickets?connection=personal#A11-9");
+    await page.waitForFunction(() => (document.querySelector("select") as HTMLSelectElement | null)?.value === "personal");
+    await context.close();
+  });
+
   it("falls back to Tickets for an unknown /next path, as ticket:ui answers it with the root page", async () => {
     const { page, context } = await open("/next/index.html");
     await page.waitForURL("**/next/tickets");
@@ -120,6 +127,8 @@ describe("the sidebar over a stand-in instance", () => {
     expect(loaded.inter).toBeGreaterThan(0);
     expect(loaded.mono).toBeGreaterThan(0);
     expect(requested.filter((url) => !url.startsWith(`${site.origin}/`))).toEqual([]);
+    expect(requested.some((url) => /inter-.*\.woff2$/.test(url))).toBe(true);
+    expect(requested.some((url) => /jetbrains-mono-.*\.woff2$/.test(url))).toBe(true);
     await context.close();
   });
 });

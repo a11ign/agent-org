@@ -128,7 +128,12 @@ describe("ticketsView", () => {
     expect(ticketsView(view("unreachable", [mine], "cannot reach personal"), view("ready", config()))).toEqual({ state: "unreachable", data: [mine], refusal: "cannot reach personal" });
   });
 
-  it("reads the tickets as the list starts when the config failed", () => {
-    expect(ticketsView(view("ready", [mine, theirs]), view("error", null, "no")).data).toHaveLength(2);
+  it("is the config's failure when the config cannot be read, with nothing shown", () => {
+    expect(ticketsView(view("ready", [mine, theirs]), view("error", null, "no config"))).toEqual({ state: "error", data: null, refusal: "no config" });
+    expect(ticketsView(view("loading", null), view("unreachable", null, "cannot reach personal")).state).toBe("unreachable");
+  });
+
+  it("keeps showing the tickets in scope when a later read of the config fails after it answered", () => {
+    expect(ticketsView(view("ready", [mine, theirs]), view("error", config(), "late")).data?.map((t) => t.key)).toEqual(["A11-1"]);
   });
 });

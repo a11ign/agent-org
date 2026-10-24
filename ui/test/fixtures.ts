@@ -27,7 +27,7 @@ export const config = (fields: Partial<ConfigView> = {}): ConfigView => ({ viewe
 export const queueOf = (...phases: readonly string[]): QueueView => ({ entries: phases.map((phase, index) => ({ ticket: { key: `A11-${index + 1}` }, phase })) }) as unknown as QueueView;
 
 /** What one instance answers. */
-export type InstanceAnswers = Readonly<{ config?: ConfigView; tickets?: readonly TicketView[]; queue?: QueueView; queueFails?: Readonly<{ status: number; error: string }> }>;
+export type InstanceAnswers = Readonly<{ config?: ConfigView; tickets?: readonly TicketView[]; queue?: QueueView; queueFails?: Readonly<{ status: number; error: string }>; ticketsFail?: Readonly<{ status: number; error: string }>; configFail?: Readonly<{ status: number; error: string }> }>;
 
 export type Stand = Readonly<{ connections?: readonly ViewConnection[]; refusal?: string | null; connectionsFail?: boolean; instances?: Readonly<Record<string, InstanceAnswers>>; fallback?: InstanceAnswers }>;
 // `fallback` answers for any instance `instances` does not name, and for the root `/api/...` of a page with no connections.
@@ -45,9 +45,9 @@ export function answerFor(stand: Stand, path: string): { status: number; body: s
   const answers = (name === undefined ? undefined : stand.instances?.[decodeURIComponent(name)]) ?? stand.fallback ?? {};
   switch (route) {
     case "/api/config":
-      return json(answers.config ?? config());
+      return answers.configFail === undefined ? json(answers.config ?? config()) : json({ error: answers.configFail.error }, answers.configFail.status);
     case "/api/tickets":
-      return json(answers.tickets ?? []);
+      return answers.ticketsFail === undefined ? json(answers.tickets ?? []) : json({ error: answers.ticketsFail.error }, answers.ticketsFail.status);
     case "/api/queue":
       return answers.queueFails === undefined ? json(answers.queue ?? queueOf()) : json({ error: answers.queueFails.error }, answers.queueFails.status);
     default:

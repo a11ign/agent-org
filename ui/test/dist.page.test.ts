@@ -3,6 +3,8 @@ import { extname, join } from "node:path";
 import { requireBuild, UI_ROOT } from "./site.ts";
 
 const DIST = join(UI_ROOT, "dist");
+/** The pages that hold the shell: one for each route that has its own file. */
+const SHELL_PAGES = ["runs/index.html", "settings/machine/index.html", "settings/models/index.html", "settings/plugins/index.html", "settings/workers/index.html", "tickets/index.html"];
 
 function filesUnder(directory: string): string[] {
   return readdirSync(directory).flatMap((name) => {
@@ -29,10 +31,16 @@ describe("the build, as static files", () => {
   });
 
   it("links no stylesheet from any page, since the instance's page policy allows only inline styles", () => {
-    const pages = filesUnder(DIST).filter((path) => path.endsWith(".html") && !/<meta http-equiv="refresh"/.test(readFileSync(path, "utf8")));
-    expect(pages.length).toBe(6);
+    const pages = filesUnder(DIST).filter((path) => path.endsWith(".html"));
+    const shellPages = pages.filter((path) => readFileSync(path, "utf8").includes("<astro-island"));
+    expect(shellPages.map((path) => path.slice(DIST.length + 1)).sort()).toEqual(SHELL_PAGES);
     expect(pages.filter((path) => /<link[^>]+rel="stylesheet"/.test(readFileSync(path, "utf8")))).toEqual([]);
-    expect(pages.filter((path) => !/<style[ >]/.test(readFileSync(path, "utf8")))).toEqual([]);
+    expect(shellPages.filter((path) => !/<style[ >]/.test(readFileSync(path, "utf8")))).toEqual([]);
+  });
+
+  it("holds no font as a data: address, which the instance's page policy refuses for a font", () => {
+    const pages = filesUnder(DIST).filter((path) => path.endsWith(".html"));
+    expect(pages.filter((path) => /url\(\s*["']?data:/.test(readFileSync(path, "utf8")))).toEqual([]);
   });
 
   it("names no http(s) address in a page or a stylesheet", () => {

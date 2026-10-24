@@ -55,14 +55,20 @@ export const useShell = (): ShellValue => useContext(ShellContext);
 
 type Listing = Readonly<{ connections: readonly ViewConnection[]; refusal: string | null }>;
 
-/** `/api/connections`, read once (and again on `retry`). A read that fails leaves an empty list, as `ui.html` does: this is the only case under `pnpm ui:dev`. */
+const NO_CONNECTIONS: Listing = { connections: [], refusal: null };
+
+/**
+ * `/api/connections`, read once (and again on `retry`). A first read that fails leaves an empty list, as `ui.html` does: this is the only case under `pnpm ui:dev`. A retry that fails keeps
+ * what the page already had, so the sentence the person is trying to fix is not cleared by the failure.
+ */
 function useListing(fetchWith: Fetch | undefined): Readonly<{ listing: Listing | null; retry: () => void }> {
   const [listing, setListing] = useState<Listing | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const reading = new AbortController();
     void createClient(null, fetchWith === undefined ? {} : { fetch: fetchWith }).connections(reading.signal).then((answer) => {
-      if (!reading.signal.aborted) setListing(answer.ok ? { connections: answer.data.connections, refusal: answer.data.refusal } : { connections: [], refusal: null });
+      if (reading.signal.aborted) return;
+      setListing((before) => (answer.ok ? { connections: answer.data.connections, refusal: answer.data.refusal } : (before ?? NO_CONNECTIONS)));
     });
     return () => reading.abort();
   }, [fetchWith, attempt]);
@@ -91,16 +97,21 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const [rememberedProject, setRememberedProject] = useState(() => recalled(storage, PROJECT_MEMORY));
   const [goalChoice, setGoalChoice] = useState(ALL_GOALS_ID);
 
-  const tickets = { ...ticketsView(ticketsRead, config), refresh: ticketsRead.refresh };
+  const tickets = {
+    ...ticketsView(ticketsRead, config),
+    refresh: () => {
+      ticketsRead.refresh();
+      config.refresh();
+    },
+  };
   const projects = projectCounts(tickets.data ?? []);
   const project = chosenProject(projects, rememberedProject);
   const projectTickets = inProject(tickets.data ?? [], project);
   const goals = goalEntries(projectTickets);
-  const loadingTickets = tickets.state === "loading";
-
+  
   const value: ShellValue = {
     connectionsReady: true, connections: listing.connections, connection, connectionsRefusal: listing.refusal, switchConnection, retryConnections,
-    queue, tickets, runningRuns: queue.data === null ? null : runningCount(queue.data), ticketCount: loadingTickets ? null : projectTickets.length,
+    queue, tickets, runningRuns: queue.data === null ? null : runningCount(queue.data), ticketCount: tickets.data === null ? null : projectTickets.length,
     projects, project,
     chooseProject: (name) => {
       setRememberedProject(name);
