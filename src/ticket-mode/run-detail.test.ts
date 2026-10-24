@@ -123,3 +123,19 @@ test("A11-219: an outcome file that cannot be read as a file does not stop the w
   assert.equal(made.entry("NBF-1").currentStep, undefined);
   assert.equal(made.entry("NBF-1").phase, "running");
 });
+
+test("A11-219: a plan file that cannot be read starts the run without steps, and the log says which file and why", async () => {
+  const made = poolFixture({ tickets: PLAN });
+  mkdirSync(join(ticketDir(made.settings, "NBF-1"), "paths", "NBF-1-plan-unreadable.md"), { recursive: true });
+  const said: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((line: string) => { said.push(String(line)); return true; }) as typeof process.stderr.write;
+  try {
+    await made.pool.tick();
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(made.entry("NBF-1").plannedSteps, undefined);
+  assert.equal(made.entry("NBF-1").phase, "running", "a plan the board cannot read for steps does not stop the run");
+  assert.ok(said.some((line) => line.includes("NBF-1: its plan file NBF-1-plan-unreadable.md could not be read (EISDIR")), said.join(""));
+});

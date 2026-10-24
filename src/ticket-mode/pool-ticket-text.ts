@@ -53,8 +53,8 @@ export function planStepSection(ctx: PoolContext, key: string, step: number): st
 }
 
 /**
- * The text of each plan file `planFiles` downloaded for ticket `key`, by file name: none when this machine names no plan, the folder cannot be read, or a file is over {@link PLAN_FILE_BYTES}. Reads the folder
- * and downloads nothing; a folder that cannot be read holds no plan to quote.
+ * The text of each plan file `planFiles` downloaded for ticket `key`, by file name: none when this machine names no plan, the folder cannot be read, or a file is over {@link PLAN_FILE_BYTES}; a file that
+ * cannot be read is logged and left out. Reads the folder and downloads nothing; a folder that cannot be read holds no plan to quote.
  */
 export function* planTexts(ctx: PoolContext, key: string): Generator<string> {
   const { settings } = ctx;
@@ -68,16 +68,17 @@ export function* planTexts(ctx: PoolContext, key: string): Generator<string> {
     return;
   }
   for (const name of names) {
-    const text = pattern.test(name) ? readPlanFile(join(dir, name)) : null;
+    const text = pattern.test(name) ? readPlanFile(key, join(dir, name)) : null;
     if (text !== null) yield text;
   }
 }
 
-/** A plan file's text, or null for one over {@link PLAN_FILE_BYTES} or that cannot be read. */
-function readPlanFile(path: string): string | null {
+/** A plan file's text, or null for one over {@link PLAN_FILE_BYTES}. One that cannot be read is null too, and the log says so: the run starts without its steps, and a person can see why. */
+function readPlanFile(key: string, path: string): string | null {
   try {
     return statSync(path).size > PLAN_FILE_BYTES ? null : readFileSync(path, "utf8");
-  } catch {
+  } catch (err) {
+    log(`${key}: its plan file ${basename(path)} could not be read (${messageOf(err)}), so it is read as no plan`);
     return null;
   }
 }
