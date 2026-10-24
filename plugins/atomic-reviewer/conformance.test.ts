@@ -43,7 +43,7 @@ function fakeGate(listed: Map<string, string>): ReviewerGate {
     trust: { INSIDE: "inside", runDoor: () => undefined },
     config: { homeProjectDeclaration: () => ({ code: [] }) },
     identity: { REPO },
-    orders: { awaitingVerdictPrompt: () => "the verdict prompt", reviewHeadsOf: () => [] },
+    orders: { awaitingVerdictPrompt: () => "the verdict prompt", reviewHeadsOf: () => [], reviewerRoleFile: () => ".agent-org/roles/reviewer.md" },
     doorPath: { reviewerDoorPath: () => "/nowhere/door" },
     host: { HOST_CONFIG_ENV: "AGENT_ORG_HOST", hostConfigPath: () => "/nowhere/host.json" },
   } as unknown as ReviewerGate;

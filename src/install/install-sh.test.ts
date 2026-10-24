@@ -99,6 +99,14 @@ function oldNodeDir(root: string): string {
   return dir;
 }
 
+/** A folder holding a `herdr` that prints the version it is told to (A11-223). */
+function herdrDir(root: string, version = "0.9.3"): string {
+  const dir = join(root, "herdr-bin");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "herdr"), `#!/bin/sh\necho "herdr ${version}"\n`, { mode: 0o755 });
+  return dir;
+}
+
 function install(home: string, path: string, repo: string, args: string[] = [], extra: Record<string, string> = {}) {
   return spawnSync(BASH, [INSTALL_SH, ...args], {
     encoding: "utf8",
@@ -110,11 +118,12 @@ function install(home: string, path: string, repo: string, args: string[] = [], 
  * `AGENT_ORG_HOME: ""` above is the variable unset as far as `${AGENT_ORG_HOME:-...}` reads it, so the default home is what is tested.
  * `path` holds node, the tools and an `npm` (so preflight finds a way to run pnpm); `bare` holds node and the tools only, with no way to run pnpm.
  */
-function fixture() {
+function fixture({ herdr = true }: { herdr?: boolean } = {}) {
   const root = tmpDir("install-sh-");
   const home = join(root, "home");
   mkdirSync(home);
-  const bare = `${nodeDir(root)}:${toolsDir(root)}`;
+  // herdr is on every PATH but the ones that test it missing (A11-223): without it install.sh ends with a note, which the exact-output cases are not about.
+  const bare = `${nodeDir(root)}:${toolsDir(root)}${herdr ? `:${herdrDir(root)}` : ""}`;
   return { root, home, repo: releaseRepo(root), bare, path: `${stub(root, "default-npm", "npm")}:${bare}` };
 }
 
@@ -619,4 +628,26 @@ test("a build that unpacks but cannot be moved into place fails the install and 
   assert.match(result.stdout, /the UI build of v0\.13\.0 could not be moved into .*\/ui-build, so current stays where it was/);
   assert.equal(currentOf(home), join("versions", "v0.2.0"));
   assert.deepEqual(versionsOf(home), ["v0.2.0"]);
+});
+
+// ---- A11-223: install.sh names herdr as needed, and says onboard installs it
+
+test("A11-223: with no herdr on PATH install.sh still ends OK, and notes that onboard installs the pinned herdr", () => {
+  const { home, repo, path } = fixture({ herdr: false });
+  const result = install(home, path, repo);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const notes = result.stdout.split("\n").filter((line) => line.includes("herdr"));
+  assert.deepEqual(notes, ["herdr is not installed. agent-org onboard installs herdr 0.9.3, which runs every worker's terminal."]);
+  assert.match(result.stdout, /^agent-org install OK: v0\.10\.0 installed/m, "the outcome is the install's own");
+  assert.ok(result.stdout.indexOf("herdr is not installed") < result.stdout.indexOf("is not on your PATH"), "the notes come before the PATH line, between the steps and the outcome");
+});
+
+test("A11-223: with herdr on PATH install.sh says nothing of it, and --verbose shows its version", () => {
+  const { home, repo, path } = fixture();
+  const quiet = install(home, path, repo);
+  assert.equal(quiet.status, 0, quiet.stdout + quiet.stderr);
+  assert.doesNotMatch(quiet.stdout, /herdr/);
+  const verbose = install(home, path, repo, ["--verbose"]);
+  assert.match(verbose.stdout, /herdr 0\.9\.3/);
+  assert.doesNotMatch(verbose.stdout, /herdr is not installed/);
 });

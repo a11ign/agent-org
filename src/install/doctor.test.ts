@@ -80,7 +80,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     healthy: async (port) => port === 7318, unitProblem: () => null,
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
-    platform: "linux", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
+    platform: "linux", arch: "x64", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
@@ -1196,26 +1196,53 @@ test("A11-184: with no herdr on PATH the herdr row fails and the integration, ve
   assert.deepEqual(Object.keys(rows).filter((name) => name.startsWith("herdr ")).filter((name) => name !== "herdr service" && name !== "herdr scope"), []);
 });
 
-test("A11-184: doctor warns when herdr is behind the newest release the last update recorded, with the person's upgrade steps; a warning is ok, so the exit code is unchanged", async () => {
+const PINNED_STEP = (hand: string) => `at a quiet moment, with no live run on the board, run \`${hand}\`, then \`agent-org stop herdr\` and \`agent-org start herdr\`: every pane restarts once`;
+const LINUX_HAND = "mkdir -p ~/.local/bin && curl -fsSL https://github.com/herdrdev/herdr/releases/download/v0.9.3/herdr-linux-x86_64 -o ~/.local/bin/herdr.download && chmod +x ~/.local/bin/herdr.download && mv ~/.local/bin/herdr.download ~/.local/bin/herdr";
+
+test("A11-223: doctor reports herdr's version against the one this release pins: at the pin it is ok, and the newest release is told for information only", async () => {
   const checks = await diagnose(deps({ herdrStatus: () => SEEN }));
   const row = byName(checks)["herdr version"];
-  assert.deepEqual([row.ok, row.warning, row.detail], [true, true, "herdr 0.9.3, newest 0.9.5"]);
-  assert.equal(row.fix, "at a quiet moment, with no live run on the board, run `herdr update`, then `agent-org stop herdr` and `agent-org start herdr`: every pane restarts once");
-  assert.ok(checks.every((check) => check.ok), "nothing else fails, so doctor exits 0");
-  assert.match(report(checks), /^WARN {2}herdr version: herdr 0\.9\.3, newest 0\.9\.5\n {6}fix: at a quiet moment, with no live run on the board, run `herdr update`/m);
-  const current = byName(await diagnose(deps({ herdrStatus: () => SEEN, herdrVersion: () => "herdr 0.9.5" })))["herdr version"];
-  assert.deepEqual([current.warning, current.detail], [undefined, "herdr 0.9.5, which is the newest release"]);
+  assert.deepEqual([row.ok, row.warning, row.fix, row.detail], [true, undefined, null, "herdr 0.9.3, the version this release pins (herdr 0.9.5 is out; the pin moves with an agent-org release)"]);
+  assert.ok(checks.every((check) => check.ok));
+  const quiet = byName(await diagnose(deps({ herdrStatus: () => ({ kind: "absent" }) })))["herdr version"];
+  assert.deepEqual([quiet.ok, quiet.warning, quiet.detail], [true, undefined, "herdr 0.9.3, the version this release pins"]);
 });
 
-test("A11-184: with no status file yet, or one that could not read the newest version, herdr and its plugins are ok and say the newest is not known", async () => {
+test("A11-223: a herdr newer or older than the pin is a warning with the pinned step, never `herdr update`, and the exit code is unchanged", async () => {
+  for (const [printed, detail] of [["herdr 0.9.5", "herdr 0.9.5, this release pins 0.9.3"], ["herdr 0.9.1", "herdr 0.9.1, this release pins 0.9.3"]] as const) {
+    const checks = await diagnose(deps({ herdrStatus: () => SEEN, herdrVersion: () => printed }));
+    const row = byName(checks)["herdr version"];
+    assert.deepEqual([row.ok, row.warning, row.detail], [true, true, detail]);
+    assert.equal(row.fix, PINNED_STEP(LINUX_HAND));
+    assert.ok(!(row.fix ?? "").includes("herdr update"));
+    assert.ok(checks.every((check) => check.ok), "nothing else fails, so doctor exits 0");
+    assert.match(report(checks), new RegExp(`^WARN {2}herdr version: ${detail.replaceAll(".", "\\.")}\\n {6}fix: at a quiet moment`, "m"));
+  }
+});
+
+test("A11-223: the pinned step names the build of the machine doctor runs on", async () => {
+  const mac = byName(await diagnose(deps({ herdrVersion: () => "herdr 0.9.5", platform: "darwin", arch: "arm64" })))["herdr version"];
+  assert.match(mac.fix ?? "", /v0\.9\.3\/herdr-macos-aarch64 /);
+});
+
+test("A11-184: with no status file yet, or one that could not read the newest version, the plugins are ok and say the newest is not known, and herdr's own row does not depend on it", async () => {
   const absent = await herdrRows({ herdrPlugins: () => web(null) });
-  assert.deepEqual([absent["herdr version"].ok, absent["herdr version"].warning, absent["herdr version"].detail], [true, undefined, "herdr 0.9.3; the newest release is not known until `agent-org update` has run"]);
+  assert.deepEqual([absent["herdr version"].ok, absent["herdr version"].warning], [true, undefined]);
   assert.deepEqual([absent["herdr plugin devswha/herdr-web-ui"].warning, absent["herdr plugin devswha/herdr-web-ui"].detail], [undefined, "at @35bf28fa; the newest release is not known until `agent-org update` has run"]);
   const why: HerdrStatusFile = { kind: "status", status: { checkedAt: "2026-10-24T09:50:00.000Z", herdr: { why: "herdr.dev answered 503" }, plugins: [{ repo: "devswha/herdr-web-ui", why: "devswha/herdr-web-ui has no release tag" }] } };
   const unread = await herdrRows({ herdrStatus: () => why, herdrPlugins: () => web(null) });
-  assert.match(unread["herdr version"].detail, /could not be read at 2026-10-24T09:50:00\.000Z: herdr\.dev answered 503$/);
+  assert.equal(unread["herdr version"].detail, "herdr 0.9.3, the version this release pins");
   assert.equal(unread["herdr version"].warning, undefined);
   assert.equal(unread["herdr plugin devswha/herdr-web-ui"].warning, undefined);
+});
+
+test("A11-223: doctor's herdr fix gives the command, not just 'install herdr': onboard, and the pinned hand command for this machine", async () => {
+  const rows = await herdrRows({ which: (name) => (name === "herdr" ? null : `/home/me/.local/bin/${name}`) });
+  assert.equal(rows.herdr.ok, false);
+  assert.equal(rows.herdr.detail, "`herdr` is not on PATH");
+  assert.equal(rows.herdr.fix, `run \`agent-org onboard\`, which installs herdr 0.9.3, or by hand: \`${LINUX_HAND}\``);
+  const mac = (await herdrRows({ which: (name) => (name === "herdr" ? null : `/home/me/.local/bin/${name}`), platform: "darwin", arch: "arm64" })).herdr;
+  assert.match(mac.fix ?? "", /v0\.9\.3\/herdr-macos-aarch64 -o ~\/\.local\/bin\/herdr\.download/);
 });
 
 test("A11-184: doctor warns when an installed herdr plugin is behind its newest release tag, with the command that moves it; at the newest tag it passes, and a plugin that is not installed has no row", async () => {

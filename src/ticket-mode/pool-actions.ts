@@ -94,7 +94,7 @@ export async function dismiss(ctx: PoolContext, key: string): Promise<void> {
   // ticket where it was put, and the run on the board, for Dismiss to try again.
   await restoreWorkingState(ctx, key);
   if (isParked(entry)) close(ctx, key);
-  update(ctx, (next) => dismissFinished(next, key));
+  update(ctx, (next) => dismissFinished(next, key, ctx.now()));
 }
 
 /**
@@ -109,5 +109,5 @@ export async function remove(ctx: PoolContext, key: string): Promise<void> {
     try { await restoreWorkingState(ctx, key); }
     finally { removing.delete(key); }
   }
-  update(ctx, (queue) => removeQueued(queue, key));
+  update(ctx, (queue) => removeQueued(queue, key, ctx.now()));
 }

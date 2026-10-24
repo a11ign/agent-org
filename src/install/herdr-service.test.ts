@@ -49,7 +49,7 @@ test("the herdr unit runs `herdr --session <s> server` with the instance's envir
 test("the herdr unit is refused, naming the fix, when herdr is not on PATH", () => {
   const { services, files } = setup();
   files.delete("/opt/bin/herdr");
-  assert.throws(() => unitFor("herdr", services), /the herdr service runs `herdr`, and this machine has none on PATH/);
+  assert.throws(() => unitFor("herdr", services), (error: Error) => error.message === "the herdr service runs `herdr`, and this machine has none on PATH. Run `agent-org onboard`, which installs herdr 0.9.3, then start the herdr service again.");
 });
 
 test("the instance and the terminal Want= and start After= herdr, and no unit names it in Requires=, BindsTo= or PartOf=", () => {
@@ -181,6 +181,9 @@ test("on macOS a herdr server in the herdr job's group is the unit's, one in the
 
 // ---- start herdr, and the one move ----
 
+/** Whether the command starts the herdr unit's server, on systemd or on launchd. */
+const startsUnit = (file: string, args: string[]): boolean => (file === "systemctl" && args.includes("start")) || (file === "launchctl" && args[0] === "bootstrap");
+
 function mover(place: HerdrPlace, options: { live?: number | null } = {}) {
   const { services, files, calls, home } = setup();
   // Both interim guards stand on disk, and the real retirement runs: the drop-in's proof is that the server now runs in the unit.
@@ -191,6 +194,8 @@ function mover(place: HerdrPlace, options: { live?: number | null } = {}) {
   const run: ServiceDeps["run"] = (file, args) => {
     calls.push([file, ...args].join(" "));
     if (file === "herdr" && args.includes("stop")) current = { kind: "none" };
+    // The unit's own start puts the server in the unit, as launchd and systemd do: the move's last step waits for that.
+    if (startsUnit(file, args)) current = { kind: "unit", where: "/app.slice/agent-org-herdr.service" };
     return done();
   };
   const wired: ServiceDeps = { ...services, run };
@@ -215,7 +220,8 @@ test("start herdr refuses while a server runs outside the unit, saying how many 
 
 test("start herdr --move stops the server outside the unit, starts the unit, and retires both guards", async () => {
   const { deps, calls, removed, paths } = mover({ kind: "elsewhere", where: "/app.slice/agent-org-herdr-work.scope" });
-  const { lines: said } = await startHerdr({ move: true }, deps);
+  const said: string[] = [];
+  await startHerdr({ move: true }, deps, (line) => said.push(line));
   const stop = calls.findIndex((call) => call === "herdr --session work server stop");
   const start = calls.findIndex((call) => call === "systemctl --user start agent-org-herdr.service");
   assert.ok(stop >= 0 && start > stop, "the outside server is stopped first, then the unit is started");
@@ -247,8 +253,10 @@ test("the start command takes --move for herdr only, and a start of herdr says s
   const { deps } = mover({ kind: "none" });
   const out: string[] = [];
   const io = { log: (line: string) => out.push(line), error: (line: string) => out.push(line) };
-  assert.equal(await main(["start", "herdr", "--move"], deps.services, io, deps), 0);
+  assert.equal(await main(["start", "herdr"], deps.services, io, deps), 0);
   assert.ok(out.some((line) => line.startsWith("started the herdr service (systemd agent-org-herdr.service)")));
+  assert.equal(await main(["start", "herdr", "--move"], deps.services, io, deps), 0);
+  assert.ok(out.at(-1)?.startsWith("moved herdr into its service"), "--move ends on its own result line");
   assert.equal(await main(["start", "ui", "--move"], deps.services, io, deps), 2);
   assert.ok(out.some((line) => line.includes("--move is for `agent-org start herdr`")));
 });

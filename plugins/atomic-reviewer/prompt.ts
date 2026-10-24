@@ -1,5 +1,5 @@
 // @ts-check
-// module: the words a ticket-mode reviewer is sent beyond the gate's own verdict prompt (PURE) -- the ticket's Done-when, the post-merge rule, the brief of a re-review (A11-156), the checks left red because
+// module: the words a ticket-mode reviewer is sent beyond the gate's own verdict prompt (PURE) -- the ticket's Done-when, the post-merge rule, the brief of a re-review (A11-156, A11-235), the checks left red because
 // they are not required, the plan step a partial pull request finishes (A11-175), and the ticket's explicit decisions with the rule that they override a general direction (A11-213)
 //
 // EVERY PROMPT THE PORT SENDS CARRIES THE POST-MERGE RULE, the first review's, the reprompt's and the re-review's: a rule only in the re-review brief would leave every first review to block on a
@@ -8,7 +8,7 @@
 //
 // THE SAME GOES FOR THE DECISION RULE (A11-213): the first review, the reprompt and the re-review all carry the ticket's decisions and the rule that they come before a general direction. A reviewer that held
 // "permissions only shrink" against the chairman's written decision to widen one blocked a pull request the ticket asked for, and a re-review that did not see the decision could not correct it.
-import type { ReviewBrief, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
+import type { ReviewBodyLine, ReviewBrief, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
 
 /** What the reviewer is told about a Done-when line the ticket puts under "After merge". */
 export const POST_MERGE_RULE = "A Done-when line under the ticket's \"After merge\" part is not a merge condition: do not block the pull request on it. "
@@ -34,6 +34,9 @@ const indented = (text: string): string => text.split("\n").map((line) => `  ${l
 
 /** One reply as the brief lists it: who wrote it, where it is, and what it says. */
 const replyLine = ({ author, url, text }: ReviewerReply): string => `- ${author} (${url}):\n${indented(cut(text, REPLY_LIMIT))}`;
+
+/** The changed lines of the description as the brief lists them: `-` for an old line that is gone, `+` for a new one, cut at the reply limit. */
+const bodyLines = (lines: readonly ReviewBodyLine[]): string => cut(lines.map(({ kind, text }) => `${kind === "added" ? "+" : "-"} ${text}`).join("\n"), REPLY_LIMIT);
 
 /** What the reviewer is told about a step whose section of the plan the pool could not find. */
 export const NO_SECTION_LINE = "The board found no section of the plan for this step, so go by the `Partial:` line of the pull request body for what the step is to do.";
@@ -84,17 +87,22 @@ export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, u
 }
 
 /**
- * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156), in this order: what this is, the replies since the review, the ticket's decisions and
- * the rule that they come first (A11-213), the ticket's Done-when (or the plan step), the post-merge rule, and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the
- * verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure.
+ * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156, A11-235), in this order: what this is and what changed since the review (the description, a reply, or both) with the
+ * instruction to review the whole diff again, the description's changed lines, the replies since the review, the ticket's decisions and the rule that they come first (A11-213), the ticket's Done-when (or the plan step), the post-merge rule,
+ * and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure.
  */
-export function rereviewWords({ number, head, pr, roleFile, replies, doneWhen, decisions, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; doneWhen: string | null; decisions?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
+export function rereviewWords({ number, head, pr, roleFile, replies, body, doneWhen, decisions, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; doneWhen: string | null; decisions?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
   const head8 = head.slice(0, 8);
   // The verdict door finds the standing review by this spelling, with the backtick before the commit (`names_review` in pr-review-verdict.sh): without it the approval is refused.
   const standing = `Review of #${number} at \`${head8}\``;
+  const edited = body !== undefined && body.length > 0;
+  // What answered the review since: the description, a reply, or both.
+  const answers = [...(edited ? ["the pull request's description has been edited"] : []), ...(replies.length > 0 ? ["a reply has been posted to it"] : [])];
   return [
-    `This is a re-review of #${number} (${pr}) at \`${head8}\`. The head has no new commit since your \`not convinced\` review, "${standing}"; a reply has been posted to it since, and the head is yours to read once more with the reply.`,
-    `The replies posted since that review:\n\n${replies.map(replyLine).join("\n")}`,
+    `This is a re-review of #${number} (${pr}) at \`${head8}\`. The head has no new commit since your \`not convinced\` review, "${standing}"; since that review ${answers.join(" and ")}, and the head is yours to read once more with the answer. `
+    + "Review the whole diff again, not only the answer: check that the answer settles your finding, and that the rest of the diff still meets the contract below.",
+    ...(edited ? [`The description's lines that changed since your last review ("-" is a line it no longer has, "+" a line it now has):\n\n${bodyLines(body)}`] : []),
+    ...(replies.length > 0 ? [`The replies posted since that review:\n\n${replies.map(replyLine).join("\n")}`] : []),
     afterGateWords({ doneWhen, ...(decisions === undefined ? {} : { decisions }), ...(step === undefined ? {} : { step }) }, unrequiredRed),
     POST_MERGE_RULE,
     `Review it per ${roleFile} and post the verdict as it says, with this difference. A \`convinced\` verdict is an approval whose body names the standing review on a line after the verdict line: `
