@@ -86,8 +86,16 @@ jobs:
           # The `stack` field of a pull request is sent under this API version (GitHub's stacked-pull-request docs).
           API_VERSION: "2026-03-10"
         run: |
-          # A read that fails is "not stacked": the job then does what it did before this step existed.
-          number=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST" --jq '.stack.number // empty') || number=""
+          # A READ THAT FAILS IS NOT AN ANSWER: it is asked three times, and then the step goes red with nothing written. "Not stacked" is never assumed.
+          read_stack=no
+          for attempt in 1 2 3; do
+            if number=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST" --jq '.stack.number // empty'); then read_stack=yes; break; fi
+            sleep 5
+          done
+          if [ "$read_stack" != yes ]; then
+            echo "::error::AUTO-ARM: could not read whether #${PULL_REQUEST} is in a stack: not arming it"
+            exit 1
+          fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
       - name: A stacked pull request is left to `arm-approved`, which stack-merges it once it is approved and green (A11-238)
         if: steps.stack.outputs.number != ''
@@ -175,10 +183,22 @@ jobs:
               else "arm" end' <<<"$pr")
           case "$verdict" in
             skip:*) echo "AUTO-ARM: leaving #${PULL_REQUEST} in ${REPOSITORY} untouched -- ${verdict#skip: }"; exit 0;;
-            ready) echo "AUTO-ARM: #${PULL_REQUEST} is an approved draft: marking it ready"; gh pr ready "$PULL_REQUEST" --repo "$REPOSITORY";;
           esac
-          # A read that fails is "not stacked": the pull request then takes the path it took before stacks were read.
-          stack=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST" --jq '.stack.number // empty') || stack=""
+          # A READ THAT FAILS IS NOT AN ANSWER (A11-238): it is asked three times, and then the job goes red with nothing written, not even the draft marked ready. "Not stacked" is never assumed,
+          # so a pull request in a stack is never given to auto-merge on a guess, nor a plain one left unarmed without a red job saying so.
+          read_stack=no
+          for attempt in 1 2 3; do
+            if stack=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST" --jq '.stack.number // empty'); then read_stack=yes; break; fi
+            sleep 5
+          done
+          if [ "$read_stack" != yes ]; then
+            echo "::error::AUTO-ARM: could not read whether #${PULL_REQUEST} in ${REPOSITORY} is in a stack: not arming it"
+            exit 1
+          fi
+          if [ "$verdict" = ready ]; then
+            echo "AUTO-ARM: #${PULL_REQUEST} is an approved draft: marking it ready"
+            gh pr ready "$PULL_REQUEST" --repo "$REPOSITORY"
+          fi
           if [ -z "$stack" ]; then
             echo "AUTO-ARM: arming #${PULL_REQUEST} in ${REPOSITORY} with the Octo STS token"
             gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge

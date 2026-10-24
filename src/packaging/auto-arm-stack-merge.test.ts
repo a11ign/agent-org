@@ -213,12 +213,23 @@ test("a pull request that is not in a stack still uses auto-merge, and never the
 
 const UNREADABLE = { [`GET ${STACK_PATH}`]: { stderr: "gh: Server Error (HTTP 500)", exit: 1 } };
 
-test("a stack read that fails leaves a pull request on the path it took before stacks were read: auto-merge, and a green job", () => {
-  assertArmedWithAutoMerge(UNREADABLE);
+test("a stack read that fails is not an answer: asked three times, then a red job with nothing written, not auto-merge and not a draft marked ready", () => {
+  for (const isDraft of [false, true]) {
+    const out = run(armApproved(), { ...withPr({ ...APPROVED_PR, isDraft }), ...UNREADABLE });
+    assert.equal(out.status, 1, `the job is red:\n${out.out}`);
+    assert.equal(out.calls.filter((c) => c === `api -H X-GitHub-Api-Version: 2026-03-10 ${STACK_PATH} --jq .stack.number // empty`).length, 3, "it asks three times");
+    assert.deepEqual(writes(out.calls), [], "nothing is written, so no pull request is armed on a guess");
+    assert.match(out.out, /could not read whether #311 in a11ign\/agent-org is in a stack: not arming it/);
+  }
 });
 
-test("the same failed stack read in the arm job still runs auto-merge", () => {
-  assert.deepEqual(writes(runArmJob(UNREADABLE).calls), [`pr merge ${PR} --repo ${REPOSITORY} --auto --merge`]);
+test("the arm job's stack read fails the same way: three asks, then a red step, so neither of its two following steps can run", () => {
+  const read = jobs().arm!.steps.find((s) => s.id === "stack");
+  assert.ok(read);
+  const out = run(read, UNREADABLE);
+  assert.equal(out.status, 1, out.out);
+  assert.equal(out.calls.length, 3);
+  assert.equal(out.outputs, "", "no `number` output is written, so an unknown state is not read as not stacked");
 });
 
 test("a stacked pull request that is not the bottom one (its base is not main) is left alone: it is not even read as stacked, and nothing names it", () => {
@@ -248,7 +259,7 @@ test("an approved stacked draft is marked ready, then stack-merged", () => {
 function runArmJob(table: Table): { out: string, calls: string[] } {
   const steps = jobs().arm!.steps;
   const read = steps.find((s) => s.id === "stack");
-  const notice = steps.find((s) => (s.run ?? "").includes("is in a stack"));
+  const notice = steps.find((s) => (s.run ?? "").includes("GitHub refuses auto-merge for stacks"));
   const enable = stepRunning("arm", "gh pr merge");
   assert.ok(read && notice, "arm has the stack read and the stacked notice");
   assert.equal(notice.if, "steps.stack.outputs.number != ''");
