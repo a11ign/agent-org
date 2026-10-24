@@ -22,6 +22,19 @@ const BIN = fileURLToPath(new URL("../bin.ts", import.meta.url));
 const KEY = "lin_api_DEMOKEYDEMOKEYDEMO";
 const TOKEN = "d".repeat(48);
 
+/**
+ * LINEAR IS A STAND-IN IN THE CHILD PROCESS (A11-222): onboard checks the key against Linear, and a scratch run must reach no network. This module is preloaded into the child with `--import` and replaces its
+ * `fetch` with one that answers Linear's `viewer` query for the demo key and refuses any other, so the check is the real code and Linear is the only thing faked. (Without it the key would go to the real Linear, whose answer is not the test's to decide.)
+ */
+const LINEAR_STUB = `const real = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = String(input);
+  if (!url.startsWith("https://api.linear.app/")) return real(input, init);
+  const known = init?.headers?.Authorization === "${KEY}";
+  return new Response(JSON.stringify(known ? { data: { viewer: { id: "u1", name: "Demo Chairman", email: "demo@example.com" } } } : { errors: [{ message: "Authentication required, not authenticated" }] }), { status: known ? 200 : 401 });
+};
+`;
+
 /** The programs onboard and the plugins' checks run, as stubs: the Linear MCP is connected, the gh-stack extension is listed, and the browser install is a no-op. */
 const STUBS: Readonly<Record<string, string>> = {
   security: '#!/bin/sh\nexit 44\n',
@@ -57,7 +70,10 @@ function scratchMachine() {
     schema: 1, tracker: { provider: "linear" }, codeHost: { provider: "github" }, publish: { provider: "none" }, reviewer: { provider: "none" }, exposure: { provider: "local" },
     repos: [{ name: "demo-app", path: repo }],
   }));
-  const env = { HOME: home, AGENT_ORG_HOME: state, AGENT_ORG_HOST: join(state, "host.json"), PATH: `${bin}:${process.env.PATH ?? ""}`, USER: "demo", LANG: "C" };
+  const stub = join(home, "linear-stub.mjs");
+  writeFileSync(stub, LINEAR_STUB);
+  // `bin.ts` starts the command as a process of its own, so the stub reaches it through NODE_OPTIONS and not as an argument of the first.
+  const env = { HOME: home, AGENT_ORG_HOME: state, AGENT_ORG_HOST: join(state, "host.json"), PATH: `${bin}:${process.env.PATH ?? ""}`, USER: "demo", LANG: "C", NODE_OPTIONS: `--import=${stub}` };
   const run = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
   /** The machine-wide calls the scratch run made, one per line. */
   const calls = () => readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
@@ -90,11 +106,11 @@ async function askPlugins(machine: ReturnType<typeof scratchMachine>): Promise<P
 
 test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub plugins, `plugin list` reads both from their blocks, and the board's /api/plugins shows them under Tracker and Code host", async () => {
   const machine = scratchMachine();
-  const onboard = machine.run("onboard", "--profile", "laptop", "--linear-key-file", machine.keyFile, "--no-start", "--no-terminal", "--no-auto-update");
+  const onboard = machine.run("onboard", "--profile", "laptop", "--linear-key-file", machine.keyFile, "--no-start", "--no-terminal", "--no-auto-update", "--verbose");
   assert.equal(onboard.status, 0, `${onboard.stdout}\n${onboard.stderr}`);
-  assert.match(onboard.stdout, /^installed linear as the tracker$/m);
+  assert.match(onboard.stdout, /^installed linear as the tracker$/m, "the internal names are there with --verbose");
   assert.match(onboard.stdout, /^installed github as the code host$/m);
-  assert.match(onboard.stdout, /^tracker: linear \(enabled, contract 1\.7, plugins\/linear\)$/m, "and it ends with the doctor's report, a section per plugin");
+  assert.match(onboard.stdout, /^tracker: linear \(enabled, contract 1\.7, plugins\/linear\)$/m, "and --verbose ends with the doctor's whole report, a section per plugin");
   assert.match(onboard.stdout, /^code host: github \(enabled, contract 1\.15, plugins\/github\)$/m);
   assert.doesNotMatch(onboard.stdout + onboard.stderr, new RegExp(KEY), "the key is never printed");
 
@@ -141,4 +157,39 @@ test("A11-163: onboard in a throwaway HOME never calls a machine-wide program th
   const changes = tailscale.filter((call) => !/^tailscale (?:status|version|serve status)\b/.test(call));
   assert.deepEqual(changes, [], "and it only reads: no serve, no off, no reset");
   assert.deepEqual(tailnet.calls().filter((call) => !call.startsWith("tailscale")).filter((call) => !SCRATCH_SAFE.test(call)), []);
+});
+
+test("A11-222: a profile's onboard reads as setup steps, one ✓ or ✗ line each, in setup words, with the internal names left out, and ends with how many steps need fixing and the next commands", async () => {
+  const machine = scratchMachine();
+  const onboard = machine.run("onboard", "--profile", "laptop", "--linear-key-file", machine.keyFile, "--no-start", "--no-terminal", "--no-auto-update");
+  assert.equal(onboard.status, 0, `${onboard.stdout}\n${onboard.stderr}`);
+  const out = onboard.stdout;
+  const transcript = process.env.ONBOARD_DEMO_TRANSCRIPT;
+  if (transcript !== undefined && transcript !== "") writeFileSync(transcript, out);
+  for (const line of ["  ✓ Linear key works: signed in as Demo Chairman", "  ✓ Workers can read Linear", "  ✓ Linear connected as the tracker", "  ✓ GitHub stacked pull requests ready", "  ✓ GitHub connected as the code host", "  ✓ Board served on this machine"]) {
+    assert.ok(out.split("\n").includes(line), `${line}\n${out}`);
+  }
+  assert.doesNotMatch(out, /installed linear as the tracker|installed local as the exposure|github\/gh-stack|which a worker links|the Linear key is readable from/, "the internal names appear only with --verbose");
+  assert.doesNotMatch(out, /^tracker: linear \(enabled/m, "and so does doctor's whole report");
+  assert.doesNotMatch(out + onboard.stderr, new RegExp(KEY), "the key is never printed");
+  // The scratch machine runs no herdr, browser or service, so some steps fail and say so: the ending counts exactly the ✗ lines above it, and names the commands to run next.
+  const lines = out.split("\n");
+  const outcome = lines.findIndex((line) => line.startsWith("agent-org is "));
+  const failed = lines.slice(0, outcome).filter((line) => line.startsWith("  ✗ ")).length;
+  assert.ok(failed > 0, "POSITIVE CONTROL: the scratch machine does fail some steps, so the count below is a count");
+  assert.equal(lines[outcome], `agent-org is not fully set up: ${failed} steps above need fixing.`);
+  assert.equal(lines[outcome - 1], "");
+  assert.deepEqual(lines.slice(outcome + 1).filter((line) => line !== ""), ["Next:", "  agent-org ticket:pair pair a browser with the board (add --terminal for the worker terminal)", "  agent-org doctor      check everything works"]);
+});
+
+test("A11-222: a Linear key that Linear refuses fails its step with the fix, the machine is not called set up, and the key is not printed", async () => {
+  const machine = scratchMachine();
+  writeFileSync(machine.keyFile, "lin_api_NOTTHEDEMOKEY\n", { mode: 0o600 });
+  const onboard = machine.run("onboard", "--profile", "laptop", "--linear-key-file", machine.keyFile, "--no-start", "--no-terminal", "--no-auto-update");
+  assert.equal(onboard.status, 0, "the exit status is unchanged: doctor is what fails an incomplete machine");
+  assert.match(onboard.stdout, /^ {2}✗ Linear connected as the tracker$/m);
+  assert.match(onboard.stdout, /^ {4}Linear did not accept the key in the file .*: Linear answered 401: Authentication required, not authenticated\. Replace it: write it to .* with mode 600, then run `agent-org doctor`\.$/m);
+  assert.match(onboard.stdout, /^agent-org is not fully set up: \d+ steps? above needs? fixing\.$/m);
+  assert.doesNotMatch(onboard.stdout, /^agent-org is set up on this machine\.$/m);
+  assert.doesNotMatch(onboard.stdout + onboard.stderr, /lin_api_NOTTHEDEMOKEY/);
 });

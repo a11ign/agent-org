@@ -39,6 +39,8 @@ export type ManifestData = Readonly<{
   /** `<major>.<minor>` of the concern's contract this plugin implements. */
   contract: string;
   description: string;
+  /** What onboard says once the plugin is set up, as a person reads it ("Linear connected as the tracker", A11-222); absent, onboard says the description. */
+  setUp?: string;
   /** The entry module's path inside the plugin's directory, or null for a plugin whose code is not a bundled module. */
   entry: string | null;
   settings: Readonly<Record<string, SchemaEntry>>;
@@ -304,8 +306,10 @@ export type OnboardStepDeps = PluginDeps & Readonly<{
 /**
  * What a step answers: whether it passed, what to say, and the settings it wants in the plugin's block. A setting it returns REPLACES the block's value, and the step knows whether to
  * keep the one the block holds (it is given them); one it does not return, or returns `undefined`, is left as it is. An `ok: false` step is said and does not stop onboard.
+ * `summary` (A11-222) is the step's own line in a person's words ("GitHub stacked pull requests ready"): onboard prints it as a ✓ or ✗ line, with `detail` beside it under `--verbose` when it passed and as the fix when it failed.
+ * A step with no `summary` prints nothing when it passed, unless onboard is verbose; when it failed, its `detail` is the fix of the plugin's line.
  */
-export type StepResult = Readonly<{ ok: boolean; detail: string; settings?: PluginSettings }>;
+export type StepResult = Readonly<{ ok: boolean; detail: string; settings?: PluginSettings; summary?: string }>;
 
 /**
  * One step onboard runs for a plugin: a name, what it does in a sentence, and the run, which is given the block's settings as they stand (the earlier steps' settings applied) and

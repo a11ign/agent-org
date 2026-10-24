@@ -1,6 +1,6 @@
 // module: the GitHub plugin's onboard steps, and what `agent-org update` keeps true for it -- the stacking extension is installed for the workers' account, and each App's key is copied into the host's apps folder (A11-160)
 //
-// Moved out of `install/onboard.ts` (`stackLine`, `reviewerIdentity`) and `install/update.ts` (`keepStackExtension`) with their words unchanged. The extension serves stacked pull requests only, so a failure to
+// Moved out of `install/onboard.ts` (`stackLine`, `reviewerIdentity`) and `install/update.ts` (`keepStackExtension`) with their words unchanged. Each step's `summary` (A11-222) is its line in a person's words; the `detail` is the internal sentence, shown under `--verbose` or as the fix. The extension serves stacked pull requests only, so a failure to
 // install it is said with its reason and the command to run by hand, and is never thrown: doctor fails on it until it is there.
 import { isAbsolute, join } from "node:path";
 import type { OnboardStep, PluginDeps, PluginSettings, StepResult } from "../../src/plugins/manifest.ts";
@@ -43,7 +43,7 @@ const APP_KEY_STEP: OnboardStep = {
     const app = deps.flags.reviewerApp as ReviewerApp | undefined;
     if (heldReviewer(settings, deps) !== null || app === undefined) return { ok: true, detail: "" };
     if (!deps.interactive) {
-      return { ok: true, detail: `NO reviewer App key is set for ${app.slug}. Run \`agent-org onboard --profile <name>\` at a terminal, which asks for the path of the App's downloaded .pem file.` };
+      return { ok: false, detail: `NO reviewer App key is set for ${app.slug}. Run \`agent-org onboard --profile <name>\` at a terminal, which asks for the path of the App's downloaded .pem file.`, summary: "Reviewer App key is not set" };
     }
     const answer = (await deps.ask(`Path to the downloaded private key (.pem) of the reviewer App ${app.slug}, or an empty line to add it later: `)).trim();
     if (answer === "") return { ok: true, detail: "" };
@@ -58,7 +58,7 @@ const APP_KEY_STEP: OnboardStep = {
     const keyPath = join(deps.agentOrgHome, "apps", `${app.slug}.pem`);
     deps.writeFile(keyPath, key);
     const identity = isObject(settings.identity) ? settings.identity : {};
-    return { ok: true, detail: `copied the reviewer App's key to ${keyPath}, mode 600; its text is not shown`,
+    return { ok: true, detail: `copied the reviewer App's key to ${keyPath}, mode 600; its text is not shown`, summary: "Reviewer App key copied",
       settings: { identity: { ...identity, reviewer: { mode: "github-apps", slug: app.slug, appId: app.appId, installationId: app.installationId, keyPath } } } };
   },
 };
@@ -69,7 +69,8 @@ export const ONBOARD_STEPS: readonly OnboardStep[] = [{
   async run(settings, deps): Promise<StepResult> {
     if (!stackRequired(settings)) return { ok: true, detail: "" };
     const { stack, account } = ensured(settings, deps);
-    return { ok: stack.state !== "failed", detail: line(stack, account) };
+    return stack.state === "failed" ? { ok: false, detail: line(stack, account), summary: "GitHub stacked pull requests are not set up" }
+      : { ok: true, detail: line(stack, account), summary: "GitHub stacked pull requests ready" };
   },
 }, APP_KEY_STEP];
 

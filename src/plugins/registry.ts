@@ -149,11 +149,13 @@ function manifestOf(declared: unknown, entryExists: (entry: string) => boolean):
   if (typeof description !== "string" || description === "") return "agentOrg.description must be a sentence saying what the plugin does";
   if (typeof entry !== "string" || !isInsidePackage(entry)) return "agentOrg.entry must be the entry module's path inside the package, such as \"index.ts\"";
   if (!entryExists(entry)) return `agentOrg.entry ${JSON.stringify(entry)} is not a file in the package`;
+  const { setUp } = declared;
+  if (setUp !== undefined && (typeof setUp !== "string" || setUp === "")) return "agentOrg.setUp must be a sentence saying what is set up, such as \"Linear connected as the tracker\"";
   const settings = settingsOf(concern as Concern, declared.settings);
   if (typeof settings === "string") return settings;
   const tooling = toolingOf(declared.tooling, concern as Concern);
   if (typeof tooling === "string") return tooling;
-  return { concern: concern as Concern, contract, description, entry, settings, tooling };
+  return { concern: concern as Concern, contract, description, ...(setUp === undefined ? {} : { setUp }), entry, settings, tooling };
 }
 
 /**
