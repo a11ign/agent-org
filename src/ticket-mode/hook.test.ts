@@ -2,14 +2,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, publisherSkills, readOutcomeFile, resolveWritePath, stopVerdict, toolVerdict, writerGrants } from "./hook.ts";
 import { buildCatalog, defaultCatalog } from "../plugins/registry.ts";
-import { PROTECTED_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, PROTECTED_FILE, QUESTION_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { lineForm } from "./blocker-findings-check.ts";
+import { outcomeWritten } from "./pool-outcome.ts";
 import { CREATED_FILE } from "./writer.ts";
 
 const bash = (command: string) => toolVerdict("Bash", { command }).code;
@@ -784,4 +786,128 @@ test("A11-135: the record counts a run's creations, fails closed when it cannot 
   assert.equal(pre("Bash", { command: `echo '{}' >> ${dir}/${CREATED_FILE}` }), 2, "nor append to it");
   writeFileSync(join(dir, CREATED_FILE), "garbage\n");
   assert.equal(pre(UPLOAD, { ticket: "A11-10", filename: "x.md" }), 2, "a record that cannot be read refuses the attachment");
+});
+
+const PULL_A = "https://github.com/a11ign/agent-org/pull/1841";
+const PULL_B = "https://github.com/a11ign/agent-org/pull/1843";
+const PLAN_WITH = (...urls: string[]): string => `# Plan\n\n${urls.length === 0 ? "" : `## What the blockers found\n\n${urls.map((url) => `- ${url}: it applies here.`).join("\n")}\n\n`}## Paths\n\n- \`agent-org:src/a.ts\`\n`;
+
+/** A planning run's ticket dir: its outcome, the list its brief gave, and each ticket's plan folder holding `plans[key]` (file name to text). */
+function planningRun(outcome: object, given: readonly { key: string; urls: readonly string[] }[], plans: Record<string, Record<string, string>>) {
+  const dir = tmpDir("ticket-hook-findings-");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify(outcome));
+  const rows = given.map(({ key, urls }) => ({ key, planDir: join(dir, "plan", key), urls }));
+  writeFileSync(join(dir, FINDINGS_GIVEN_FILE), JSON.stringify(rows));
+  for (const { key, planDir } of rows) {
+    mkdirSync(planDir, { recursive: true });
+    for (const [name, text] of Object.entries(plans[key] ?? {})) writeFileSync(join(planDir, name), text);
+  }
+  return { dir, planDir: (key: string) => join(dir, "plan", key) };
+}
+
+const PLANNED = { kind: "planned" };
+
+/** The planner writing its outcome again after a retry, as the refusal tells it to: a file newer than the stale mark the retry left. */
+function writeOutcomeAgain(dir: string): void {
+  const later = Date.now() / 1000 + 5;
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify(PLANNED));
+  utimesSync(join(dir, "outcome.json"), later, later);
+}
+
+test("A11-207: a planned stop whose plan misses a blocker pull request is refused once, naming it and the line form, and the next stop is allowed whatever the plan says", () => {
+  const { dir, planDir } = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A, PULL_B] }], { "A11-191": { "plan.md": PLAN_WITH(PULL_B) } });
+  const refused = stopVerdict(dir);
+  assert.equal(refused.code, 2);
+  const said = refused.say.join("\n");
+  for (const part of [PULL_A, "A11-191", planDir("A11-191"), lineForm([PULL_A]), "the one automatic retry", `write ${join(dir, "outcome.json")} again as the last thing you do`]) {
+    assert.ok(said.includes(part), `the refusal says ${part}`);
+  }
+  assert.equal(said.includes(`- ${PULL_B}: <`), false, "it asks only for what is missing");
+  const mark = JSON.parse(readFileSync(join(dir, FINDINGS_RETRIED_FILE), "utf8")) as { at: number; missing: Record<string, string[]> };
+  assert.deepEqual(mark.missing, { "A11-191": [PULL_A] });
+  assert.equal(typeof mark.at, "number");
+  assert.equal(existsSync(join(dir, "stop-refusals")), false, "the retry does not use the outcome refusal count");
+  assert.equal(outcomeWritten(dir), false, "the refused outcome is stale, so the board does not settle the plan while the planner fixes it");
+  writeFileSync(join(planDir("A11-191"), "plan.md"), PLAN_WITH(PULL_A, PULL_B));
+  writeOutcomeAgain(dir);
+  assert.equal(outcomeWritten(dir), true, "the outcome the planner writes again is the board's to read");
+  assert.equal(stopVerdict(dir).code, 0, "a plan that now names both is allowed");
+});
+
+test("A11-207: a second miss is allowed through, for the board's check to send to a person, and the mark is the only thing that bounds the retry", () => {
+  const { dir } = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  assert.equal(stopVerdict(dir).code, 2, "the first miss is asked for");
+  writeOutcomeAgain(dir);
+  assert.deepEqual(Array.from({ length: 3 }, () => stopVerdict(dir).code), [0, 0, 0], "the plan still misses it and every later stop is allowed");
+});
+
+test("A11-207: a plan that names every pull request, or a brief that listed none, is never retried, and a blocker with no pull request needs no line", () => {
+  const named = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH(PULL_A) } });
+  assert.equal(stopVerdict(named.dir).code, 0);
+  assert.equal(existsSync(join(named.dir, FINDINGS_RETRIED_FILE)), false, "no mark when nothing was missing");
+  const none = planningRun(PLANNED, [{ key: "A11-191", urls: [] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  assert.equal(stopVerdict(none.dir).code, 0, "a ticket whose blockers have no pull request on the list: a plan with no section passes");
+  assert.equal(existsSync(join(none.dir, FINDINGS_RETRIED_FILE)), false);
+});
+
+test("A11-207: only a planned outcome with a list is retried: a needs-human outcome, a run with no list and a plan folder with a question or no plan are not", () => {
+  const asked = planningRun({ kind: "needs-human", reason: "which?" }, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  assert.equal(stopVerdict(asked.dir).code, 0, "a needs-human outcome");
+  const unlisted = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  rmSync(join(unlisted.dir, FINDINGS_GIVEN_FILE));
+  assert.equal(stopVerdict(unlisted.dir).code, 0, "a run with no findings-given list (a worker's run, or a board older than this)");
+  const question = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { [QUESTION_FILE]: "which?" } });
+  assert.equal(stopVerdict(question.dir).code, 0, "a ticket that wrote a question");
+  const empty = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], {});
+  assert.equal(stopVerdict(empty.dir).code, 0, "a plan folder with no plan is the board's refusal, not a findings one");
+  assert.equal(existsSync(join(empty.dir, FINDINGS_RETRIED_FILE)), false);
+});
+
+test("A11-207: the plan is read as the board reads it: any plain markdown file of the folder counts, and a file that is not markdown does not", () => {
+  const split = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "a.md": PLAN_WITH(), "b.md": `## What the blockers found\n\n- ${PULL_A}: yes.\n` } });
+  assert.equal(stopVerdict(split.dir).code, 0, "the section may be in any one file");
+  const text = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "a.md": PLAN_WITH(), "notes.txt": PLAN_WITH(PULL_A) } });
+  assert.equal(stopVerdict(text.dir).code, 2, "a .txt file is not a plan file");
+});
+
+test("A11-207: a batch is checked ticket by ticket, and the retry names only the tickets that missed", () => {
+  const { dir } = planningRun(PLANNED, [{ key: "A11-1", urls: [PULL_A] }, { key: "A11-2", urls: [PULL_B] }, { key: "A11-3", urls: [] }],
+    { "A11-1": { "plan.md": PLAN_WITH(PULL_A) }, "A11-2": { "plan.md": PLAN_WITH() }, "A11-3": { "plan.md": PLAN_WITH() } });
+  const refused = stopVerdict(dir);
+  assert.equal(refused.code, 2);
+  assert.ok(refused.say.join("\n").includes("A11-2") && !refused.say.join("\n").includes("A11-1 "), "only A11-2 is named");
+  assert.deepEqual((JSON.parse(readFileSync(join(dir, FINDINGS_RETRIED_FILE), "utf8")) as { missing: object }).missing, { "A11-2": [PULL_B] });
+});
+
+test("A11-207: a list or a plan the hook cannot read lets the stop through out loud, and the board's check decides", () => {
+  const garbled = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  writeFileSync(join(garbled.dir, FINDINGS_GIVEN_FILE), "{not json");
+  const lenient = stopVerdict(garbled.dir);
+  assert.equal(lenient.code, 0);
+  assert.match(lenient.say.join("\n"), /is not a list of tickets, so the plan was not checked and the stop is ALLOWED/);
+  const unreadable = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  const failing = stopVerdict(unreadable.dir, { read: (path) => { if (path.endsWith("plan.md")) throw new Error("EIO"); return readFileSync(path, "utf8"); } });
+  assert.equal(failing.code, 0);
+  assert.match(failing.say.join("\n"), /could not check the plan against .*findings-given\.json \(EIO\), so the stop is ALLOWED/);
+  assert.equal(existsSync(join(unreadable.dir, FINDINGS_RETRIED_FILE)), false, "no retry was spent on a plan the hook could not read");
+});
+
+test("A11-207: the retry does not reset or use the outcome refusal count, so an outcome fix and the findings retry each keep their own", () => {
+  const { dir, planDir } = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  writeFileSync(join(dir, "stop-refusals"), "1");
+  assert.equal(stopVerdict(dir).code, 2, "the findings retry");
+  assert.equal(readFileSync(join(dir, "stop-refusals"), "utf8"), "1", "the count stays where the outcome problem left it");
+  writeFileSync(join(planDir("A11-191"), "plan.md"), PLAN_WITH(PULL_A));
+  writeOutcomeAgain(dir);
+  assert.equal(stopVerdict(dir).code, 0);
+  assert.equal(readFileSync(join(dir, "stop-refusals"), "utf8"), "0", "an outcome that passes resets it, as before");
+});
+
+test("A11-207: no worker may write the list its plan is checked against or the mark of its retry, by a command or a file tool", () => {
+  for (const name of [FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE]) {
+    assert.equal(bash(`echo '[]' > /state/tickets/A11-1/${name}`), 2, name);
+    assert.equal(bash(`rm /state/tickets/A11-1/${name}`), 2, `rm ${name}`);
+    assert.equal(toolVerdict("Write", { file_path: `/state/tickets/A11-1/${name}`, content: "[]" }).code, 2, `Write ${name}`);
+    assert.equal(toolVerdict("Edit", { file_path: `/state/tickets/A11-1/${name}` }).code, 2, `Edit ${name}`);
+  }
 });

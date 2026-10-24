@@ -15,7 +15,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PRIORITIES, type Ticket, type TicketSource, type TrackerWriting } from "../contracts/tracker.ts";
+import { type Blocker, PRIORITIES, type Ticket, type TicketSource, type TrackerWriting } from "../contracts/tracker.ts";
 import { createdKeyOf } from "../../ticket-mode/writer.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 
@@ -199,6 +199,19 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const blockers = await expectMap(source.blockers!([probe.known]), "blockers()");
       const held = blockers.get(probe.known);
       expect(Array.isArray(held) && held.filter((blocker) => blocker.key === probe.other).length === 1, `${probe.other} must block ${probe.known} exactly once after two calls`);
+    },
+  },
+  "a blocker's titles, when it gives any, are text for pull requests it links": {
+    applies: ({ source, probe }) => typeof source.addBlockers === "function" && typeof source.blockers === "function" && probe.other !== undefined,
+    reason: "the tracker has no addBlockers or blockers, or the probe names no second ticket (titles are optional, contract 1.6)",
+    run: async ({ source, probe }) => {
+      await source.addBlockers!(probe.known, [probe.other!]);
+      const held = (await expectMap(source.blockers!([probe.known]), "blockers()")).get(probe.known);
+      expect(Array.isArray(held), `blockers() must give ${probe.known} a list of blockers after addBlockers`);
+      for (const { key, pulls, titles } of held as readonly Blocker[]) {
+        if (titles === undefined) continue;
+        expect(Object.entries(titles).every(([url, title]) => url in pulls && typeof title === "string"), `blockers() must give ${key}'s titles as text keyed by a pull request ${key} links`);
+      }
     },
   },
   "claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing": {

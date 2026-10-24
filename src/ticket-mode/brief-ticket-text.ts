@@ -3,7 +3,9 @@
 //
 // PURE TEXT, apart from `worker-files.ts` so that module keeps to the public API a module may have. `worker-files.ts` lays these sections into the briefs; the pool names the folders below.
 import { diffLines } from "./board-view/ticket-change.ts";
+import { lineForm } from "./blocker-findings-check.ts";
 import { FINDINGS_HEADING } from "./plan-stamp.ts";
+import type { Blocker, PullState } from "./source.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
 /** The folder of a ticket's folder that holds the plan a re-plan replaces, as the board copied it before it detached it (A11-167). */
@@ -46,17 +48,52 @@ export function diffText(from: string, to: string): string {
   return `\`\`\`diff\n${shown.join("\n")}\n\`\`\``;
 }
 
-/** The section that names what a ticket's blockers' merged pull requests found, for the brief of a run that is planned or worked (A11-167). Nothing when there are none. */
-export function findingsText(findings: readonly Finding[], audience: "planner" | "worker"): string {
-  if (findings.length === 0) return "";
-  const list = findings.map(({ key, number, url, title, file }) => `- \`${file}\`: ${key}, ${url} (#${number}, "${title}")`).join("\n");
-  const rule = audience === "planner"
-    ? `The plan must carry a \`${FINDINGS_HEADING}\` section, before \`## Paths\`, with one bullet for each pull request above. Name each by its address, as written above, and say how each finding applies to this ticket or why it does not. A plan without that section, or one that leaves a pull request out, is refused.`
-    : "Read each file before you start: what a blocker found may change how this ticket is worked. The plan, when there is one, says how each finding applies.";
-  return `
-## What its blockers found
+/** What a pull request of a blocker is listed as when the tracker gave no title and the board has not read its findings. */
+const NO_TITLE = "title not given by the tracker";
 
-A pull request of each of these blockers merged. Each file holds the pull request's title and body, and the markdown sections it added to the repository, such as a write-up's new section:
+/** One blocker as the planner's section lists it: its pull requests with their state and title, and for each the findings the board read, when it did. */
+type Listed = Readonly<{ key: string; status: string; pulls: readonly Readonly<{ url: string; state: PullState; title: string; finding?: Finding }>[] }>;
+
+/**
+ * Every blocker in `blockers`, with every pull request of each. A merged pull request the board read the findings of carries them: only those are the check's list (`blocker-findings-check.ts`). A
+ * pull request the board read that its blocker no longer links, such as a blocker taken off the ticket since, is listed under its ticket's key so the check's list is whole. PURE.
+ */
+function listed(blockers: readonly Blocker[], findings: readonly Finding[]): Listed[] {
+  const byUrl = new Map(findings.map((finding) => [finding.url, finding]));
+  const rows = blockers.map(({ key, status, pulls, titles }): Listed => ({ key, status,
+    pulls: Object.entries(pulls).map(([url, state]) => ({ url, state, title: titles?.[url] ?? byUrl.get(url)?.title ?? NO_TITLE, ...(byUrl.has(url) ? { finding: byUrl.get(url)! } : {}) })) }));
+  const shown = new Set(rows.flatMap(({ pulls }) => pulls.map(({ url }) => url)));
+  const unlinked = findings.filter(({ url }) => !shown.has(url));
+  return [...rows, ...unlinked.map((finding): Listed => ({ key: finding.key, status: "no longer linked by the tracker", pulls: [{ url: finding.url, state: "merged", title: finding.title, finding }] }))];
+}
+
+/** One pull request line of the planner's section: its state, title and address, and whether the plan needs a line for it. PURE. */
+function pullLine({ url, state, title, finding }: Listed["pulls"][number]): string {
+  const verdict = finding !== undefined ? `needs a line. What it found is in \`${finding.file}\`.`
+    : state === "merged" ? "needs no line: the board has not read what it found yet." : "needs no line.";
+  return `  - ${state}, "${title}", ${url}: ${verdict}`;
+}
+
+/**
+ * The section of a planning brief that lists a ticket's blockers (A11-207, A11-167): every blocker with its status and every pull request of each, with its state, title and address, and for each
+ * whether the plan needs a line for it. The ones that need a line are the check's own list, the merged pull requests whose findings the board read (`findings`); the section ends with the exact form
+ * the check accepts. Nothing when the ticket has no blockers and no findings. PURE.
+ */
+export function findingsText(blockers: readonly Blocker[], findings: readonly Finding[]): string {
+  const rows = listed(blockers, findings);
+  if (rows.length === 0) return "";
+  const list = rows.map(({ key, status, pulls }) => (pulls.length === 0 ? `- ${key}, ${status}: no pull request linked: needs no line.` : `- ${key}, ${status}:\n${pulls.map(pullLine).join("\n")}`)).join("\n");
+  const rule = findings.length === 0
+    ? `No pull request here needs a line, so the plan needs no \`${FINDINGS_HEADING}\` section.`
+    : `Each file named above holds the pull request's title and body, and the markdown sections it added to the repository, such as a write-up's new section.
+
+The plan must carry a \`${FINDINGS_HEADING}\` section, before \`## Paths\`, with one bullet for each pull request marked "needs a line". Name each by its address, as written above, and say how each finding applies to this ticket or why it does not. A plan without that section, or one that leaves one of them out, is refused. The board checks your plan against this list before you end, and asks you once to add what it misses, in this session. Write the section in exactly this form:
+
+${lineForm(findings.map(({ url }) => url))}`;
+  return `
+## Its blockers and what they found
+
+This ticket waits on these tickets. Under each is every pull request it links, with its state, title and address:
 
 ${list}
 
@@ -72,7 +109,7 @@ export function replanText(replan: Replan | undefined): string {
   if (replan === undefined) return "";
   const files = replan.files.length === 0 ? "" : `\nThe plan it replaces is copied here:\n\n${replan.files.map((path) => `- \`${path}\``).join("\n")}\n`;
   const change = replan.change === undefined ? "" : `\nThe ticket's description changed after that plan was written. These lines differ:\n\n${diffText(replan.change.from, replan.change.to)}\n`;
-  const findings = replan.findings ? `\nA pull request of a blocker merged after that plan was written: see "What its blockers found" below.\n` : "";
+  const findings = replan.findings ? `\nA pull request of a blocker merged after that plan was written: see "Its blockers and what they found" below.\n` : "";
   return `
 ## This is a re-plan
 

@@ -100,12 +100,18 @@ export function pullState(status: string | undefined): PullState {
 }
 
 /** A ticket's links, as read for the state of its pull requests. Linear's GitHub integration keeps each one's state in its metadata. */
-type Attached = { attachments: { nodes: { url: string; sourceType: string; metadata: { status?: string } | null }[] } };
-const ATTACHED_PULLS = "attachments { nodes { url sourceType metadata } }";
+type Attached = { attachments: { nodes: { url: string; sourceType: string; title?: string | null; metadata: { status?: string } | null }[] } };
+const ATTACHED_PULLS = "attachments { nodes { url sourceType title metadata } }";
 
 /** The state of each pull request a ticket links, by URL. Its other links, such as an upload, are left out. PURE. */
 function linkedPulls(node: Attached): Record<string, PullState> {
   return Object.fromEntries(node.attachments.nodes.filter(({ sourceType }) => sourceType === "github").map(({ url, metadata }) => [url, pullState(metadata?.status)]));
+}
+
+/** The title of each pull request a ticket links, by URL, from the GitHub attachment's title (A11-207). A pull request whose attachment has no title is left out. PURE. */
+function linkedTitles(node: Attached): Record<string, string> {
+  const titled = node.attachments.nodes.flatMap(({ url, sourceType, title }) => (sourceType === "github" && title?.trim() ? [[url, title.trim()] as const] : []));
+  return Object.fromEntries(titled);
 }
 
 /** What attaching a plan reads of its ticket: its id, its state's type, its team's states, and the files already attached. */
@@ -327,7 +333,10 @@ async function blockersOf(client: Client, keys: readonly string[]): Promise<Read
   type Related = { inverseRelations: { nodes: { type: string; issue: { identifier: string; branchName: string; state: { type: string; name: string } } & Attached }[] } };
   const found = await eachIssue<Related>(client, keys, `inverseRelations { nodes { type issue { identifier branchName state { type name } ${ATTACHED_PULLS} } } }`);
   return new Map([...found].map(([key, node]) => [key, node.inverseRelations.nodes.filter(({ type }) => type === "blocks")
-    .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, branch: issue.branchName, pulls: linkedPulls(issue) }))]));
+    .map(({ issue }): Blocker => {
+      const titles = linkedTitles(issue);
+      return { key: issue.identifier, state: issue.state.type, status: issue.state.name, branch: issue.branchName, pulls: linkedPulls(issue), ...(Object.keys(titles).length === 0 ? {} : { titles }) };
+    })]));
 }
 
 async function attachPlanTo(client: Client, identifier: string, files: readonly string[], state: string | null): Promise<string | null> {

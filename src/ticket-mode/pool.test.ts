@@ -42,7 +42,7 @@ import { createFakePublisher } from "../plugins/fakes/publisher.ts";
 import { createFakeReviewer, reviewerOver } from "../plugins/fakes/reviewer.ts";
 import { corePolicy } from "../plugins/policy.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
-import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
+import { FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 /**
@@ -6158,7 +6158,7 @@ test("a blocker's merged findings appear in the dependent's planning brief, and 
   await made.pool.tick();
   const dir = ticketDir(made.settings, "NBF-1");
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
-  assert.ok(brief.includes(`## What its blockers found`) && brief.includes(`- \`${file}\`: A11-165, ${ANNOUNCEMENT_PULL} (#3, "feat: scripted replay")`));
+  assert.ok(brief.includes(`## Its blockers and what they found`) && brief.includes(`  - merged, "feat: scripted replay", ${ANNOUNCEMENT_PULL}: needs a line. What it found is in \`${file}\`.`));
   assert.ok(brief.includes("`## What the blockers found` section, before `## Paths`"));
   const saved = readFileSync(file, "utf8");
   for (const part of ["feat: scripted replay (#3)", ANNOUNCEMENT_PULL, "Cookie dialogs drop pages.", "### `docs/announcement-emulator-spike.md`: Scripted replay", "Handle the cookie dialog before the replay."]) {
@@ -6178,28 +6178,165 @@ test("a blocker pull request that is not merged, or that the host cannot read, g
 });
 
 test("a plan given blocker findings without a What the blockers found section naming each is refused, and one that names each is attached", async () => {
-  const { world, gh } = blockedByMerged(["NBF-1"]);
-  /** A planning run of NBF-1 given the findings, whose plan is `PLAN_BODY` with `section` before its Paths, and the made run once it wrote `planned`. */
+  /** A planning run of NBF-1 given the findings, whose plan is `PLAN_BODY` with `section` before its Paths, ended on `planned`. */
   const planWith = async (section: string) => {
-    const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
-    await made.pool.refreshTracker();
-    await made.pool.tick();
-    made.store.set(pauseQueue(made.store.get()));
-    const dir = ticketDir(made.settings, "NBF-1");
-    writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), PLAN_BODY.replace("## Paths", `${section}## Paths`));
-    await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
-    await settled();
-    return made;
+    const planned = await plannedWithFindings(section);
+    await planned.end();
+    return planned;
   };
   const without = await planWith("");
-  assert.equal(without.entry("NBF-1").outcome?.kind, "needs-human");
-  assert.match(reasonOfOutcome(without.entry("NBF-1").outcome), /has no "## What the blockers found" section.*pull\/3/);
-  assert.equal(world.files.get("NBF-1")!.size, 0, "nothing is attached");
+  assert.equal(without.made.entry("NBF-1").outcome?.kind, "needs-human");
+  assert.match(reasonOfOutcome(without.made.entry("NBF-1").outcome), /has no "## What the blockers found" section.*pull\/3/);
+  assert.equal(without.world.files.get("NBF-1")!.size, 0, "nothing is attached");
   const other = await planWith("## What the blockers found\n\n- https://github.com/a11ign/announcement-emulator/pull/33: not it.\n\n");
-  assert.match(reasonOfOutcome(other.entry("NBF-1").outcome), /does not name https:\/\/github\.com\/a11ign\/announcement-emulator\/pull\/3:/, "pull/33 is not pull/3");
-  const named = await planWith(`## What the blockers found\n\n- ${ANNOUNCEMENT_PULL}: cookie dialogs drop pages, so the replay clears them first.\n\n`);
-  assert.equal(named.entry("NBF-1").phase, "queued");
-  assert.deepEqual(named.entry("NBF-1").plannedAgainst?.named, [ANNOUNCEMENT_PULL], "the stamp records the pull requests the plan names");
+  assert.match(reasonOfOutcome(other.made.entry("NBF-1").outcome), /does not name https:\/\/github\.com\/a11ign\/announcement-emulator\/pull\/3:/, "pull/33 is not pull/3");
+  const named = await planWith(NAMES_PULL);
+  assert.equal(named.made.entry("NBF-1").phase, "queued");
+  assert.deepEqual(named.made.entry("NBF-1").plannedAgainst?.named, [ANNOUNCEMENT_PULL], "the stamp records the pull requests the plan names");
+});
+
+/** The addresses a brief's fenced line form holds: the ones the plan must name. */
+const formAddresses = (brief: string): string[] => [...(/```markdown\n## What the blockers found\n\n([\s\S]*?)\n```/.exec(brief)?.[1] ?? "").matchAll(/^- (\S+): </gm)].map((match) => match[1]);
+const OPEN_BLOCKER_PULL = "https://github.com/a11ign/announcement-emulator/pull/4";
+
+test("A11-207: the planning brief lists every blocker and pull request with its state, title and address, and the addresses its line form holds are the ones the plan is checked against", async () => {
+  const { world, gh } = blockedByMerged(["NBF-1"]);
+  world.blocked.set("NBF-1", [{ ...blocks("A11-165", "completed", "Done", { [ANNOUNCEMENT_PULL]: "merged", [OPEN_BLOCKER_PULL]: "open" }), titles: { [OPEN_BLOCKER_PULL]: "feat: next step" } }, blocks("A11-170", "completed", "Done")]);
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  const dir = ticketDir(made.settings, "NBF-1");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  for (const line of ["- A11-165, Done:", `  - merged, "feat: scripted replay", ${ANNOUNCEMENT_PULL}: needs a line.`, `  - open, "feat: next step", ${OPEN_BLOCKER_PULL}: needs no line.`, "- A11-170, Done: no pull request linked: needs no line."]) {
+    assert.ok(brief.includes(line), `the brief says ${line}`);
+  }
+  assert.deepEqual(formAddresses(brief), [ANNOUNCEMENT_PULL], "the form holds the check's own list");
+  assert.deepEqual(made.entry("NBF-1").findingsGiven, formAddresses(brief), "which is what the settle step checks");
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, FINDINGS_GIVEN_FILE), "utf8")), [{ key: "NBF-1", planDir: join(dir, "plan"), urls: [ANNOUNCEMENT_PULL] }], "and what the stop hook checks");
+});
+
+/** A planning run of NBF-1 given the findings of a merged pull request, started and paused, whose plan is `PLAN_BODY` with `section` before its Paths. */
+async function plannedWithFindings(section: string, blockers?: Blocker[]) {
+  const { world, gh } = blockedByMerged(["NBF-1"]);
+  if (blockers !== undefined) world.blocked.set("NBF-1", blockers);
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  made.store.set(pauseQueue(made.store.get()));
+  const dir = ticketDir(made.settings, "NBF-1");
+  const plan = join(dir, "plan", PLAN_NAME("NBF-1"));
+  writeFileSync(plan, PLAN_BODY.replace("## Paths", `${section}## Paths`));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  const end = async () => {
+    await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
+    await settled();
+  };
+  return { made, world, dir, plan, end };
+}
+/** The planner writing its outcome again after the hook's retry, as the refusal tells it to: a file newer than the stale mark the retry left. */
+function plannerWritesAgain(dir: string): void {
+  const later = Date.now() / 1000 + 5;
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  utimesSync(join(dir, "outcome.json"), later, later);
+}
+const NAMES_PULL = `## What the blockers found\n\n- ${ANNOUNCEMENT_PULL}: cookie dialogs drop pages, so the replay clears them first.\n\n`;
+
+test("A11-207: a plan that misses a blocker pull request is sent back once in its own session by the stop hook, and the plan it then writes is attached with no one asked", async () => {
+  const { made, world, dir, plan, end } = await plannedWithFindings("");
+  const refused = stopVerdict(dir);
+  assert.equal(refused.code, 2, "the hook refuses the stop before the planner ends");
+  assert.ok(refused.say.join("\n").includes(ANNOUNCEMENT_PULL), "naming the pull request it misses");
+  assert.equal(made.entry("NBF-1").phase, "running", "nothing has gone to a person");
+  writeFileSync(plan, PLAN_BODY.replace("## Paths", `${NAMES_PULL}## Paths`));
+  plannerWritesAgain(dir);
+  assert.equal(stopVerdict(dir).code, 0, "the planner's second plan is allowed");
+  await end();
+  assert.equal(made.entry("NBF-1").phase, "queued", "and attached");
+  assert.equal(made.entry("NBF-1").outcome, undefined, "with no Needs you");
+  assert.equal(world.files.get("NBF-1")!.size, 1);
+});
+
+test("A11-207: a second miss goes to Needs you, and the card names the pull request and that one automatic retry was made", async () => {
+  const { made, world, dir, end } = await plannedWithFindings("");
+  assert.equal(stopVerdict(dir).code, 2, "the one retry");
+  plannerWritesAgain(dir);
+  assert.equal(stopVerdict(dir).code, 0, "the plan still misses it, and the stop is allowed");
+  await end();
+  assert.equal(made.entry("NBF-1").outcome?.kind, "needs-human");
+  const reason = reasonOfOutcome(made.entry("NBF-1").outcome);
+  assert.ok(reason.includes(`has no "## What the blockers found" section, though it was given what its blockers' pull requests found (${ANNOUNCEMENT_PULL})`), reason);
+  assert.ok(reason.includes(`One automatic retry was made, naming ${ANNOUNCEMENT_PULL}, and the plan still misses ${ANNOUNCEMENT_PULL}`), reason);
+  assert.equal(world.files.get("NBF-1")!.size, 0, "nothing is attached");
+  const other = await plannedWithFindings("## What the blockers found\n\n- https://github.com/a11ign/announcement-emulator/pull/33: not it.\n\n");
+  assert.equal(stopVerdict(other.dir).code, 2);
+  plannerWritesAgain(other.dir);
+  await other.end();
+  assert.match(reasonOfOutcome(other.made.entry("NBF-1").outcome), new RegExp(`does not name ${ANNOUNCEMENT_PULL}: .*One automatic retry was made, naming ${ANNOUNCEMENT_PULL},`));
+});
+
+test("A11-207: a plan refused with no retry made says nothing of a retry", async () => {
+  const { made, end } = await plannedWithFindings("");
+  await end();
+  const reason = reasonOfOutcome(made.entry("NBF-1").outcome);
+  assert.ok(reason.includes(ANNOUNCEMENT_PULL) && !reason.includes("automatic retry"), reason);
+});
+
+test("A11-207: a new planning run of the same ticket gets its own single retry: the mark belongs to the run it was made in", async () => {
+  const { made, dir } = await plannedWithFindings("");
+  assert.equal(stopVerdict(dir).code, 2);
+  assert.ok(existsSync(join(dir, FINDINGS_RETRIED_FILE)));
+  made.pool.stop("NBF-1");
+  made.store.set(resumeQueue(retry(made.store.get(), "NBF-1", 200)));
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  assert.equal(made.entry("NBF-1").phase, "running");
+  assert.equal(existsSync(join(dir, FINDINGS_RETRIED_FILE)), false, "the new run starts without it");
+  assert.deepEqual((JSON.parse(readFileSync(join(dir, FINDINGS_GIVEN_FILE), "utf8")) as { urls: string[] }[]).map(({ urls }) => urls), [[ANNOUNCEMENT_PULL]], "and with the list its brief wrote");
+  writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), PLAN_BODY);
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  assert.equal(stopVerdict(dir).code, 2, "so the planner is sent back once again");
+});
+
+test("A11-207: a blocker with no pull requests needs no line: its plan with no section is neither sent back nor refused", async () => {
+  const { made, world, dir, end } = await plannedWithFindings("", [blocks("A11-165", "completed", "Done")]);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, FINDINGS_GIVEN_FILE), "utf8")), [{ key: "NBF-1", planDir: join(dir, "plan"), urls: [] }]);
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.ok(brief.includes("- A11-165, Done: no pull request linked: needs no line.") && brief.includes("the plan needs no `## What the blockers found` section"));
+  assert.equal(stopVerdict(dir).code, 0, "not sent back");
+  assert.equal(existsSync(join(dir, FINDINGS_RETRIED_FILE)), false);
+  await end();
+  assert.equal(made.entry("NBF-1").phase, "queued", "and not refused by the board either");
+  assert.equal(world.files.get("NBF-1")!.size, 1);
+});
+
+test("A11-207: a batch's run writes one list entry per ticket with its own plan folder, is sent back for the ticket that missed, and the card of that ticket says so", async () => {
+  const world = followed(["NBF-1", "NBF-2"]);
+  for (const key of ["NBF-1", "NBF-2"]) world.blocked.set(key, [blocks("A11-165", "completed", "Done", { [ANNOUNCEMENT_PULL]: "merged" })]);
+  const host = createFakeCodeHost();
+  host.seedPull("a11ign/announcement-emulator", 3, { state: "merged", findings: FINDINGS });
+  const made = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: world.tracker, planFirst: ["NBF-1", "NBF-2"], batch: true, gh: { run: () => "", calls: [], codeHost: host, host } as World });
+  await made.pool.refreshTracker();
+  await made.pool.tick();
+  const run = batchDir(made.settings, BATCH);
+  const plan = join(run, "plan");
+  assert.deepEqual(JSON.parse(readFileSync(join(run, FINDINGS_GIVEN_FILE), "utf8")), [
+    { key: "NBF-1", planDir: join(plan, "NBF-1"), urls: [ANNOUNCEMENT_PULL] }, { key: "NBF-2", planDir: join(plan, "NBF-2"), urls: [ANNOUNCEMENT_PULL] }]);
+  assert.ok(readFileSync(join(run, "brief.md"), "utf8").includes("### Its blockers and what they found"));
+  put(join(plan, "NBF-1", PLAN_NAME("NBF-1")), PLAN_BODY.replace("## Paths", `${NAMES_PULL}## Paths`));
+  put(join(plan, "NBF-2", PLAN_NAME("NBF-2")), PLAN_BODY);
+  writeFileSync(join(run, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  const refused = stopVerdict(run);
+  assert.equal(refused.code, 2);
+  assert.ok(refused.say.join("\n").includes("NBF-2") && !refused.say.join("\n").includes("NBF-1 "), "only the ticket that missed is named");
+  plannerWritesAgain(run);
+  assert.equal(stopVerdict(run).code, 0, "the second stop is allowed whatever the plan says");
+  made.status.set(herdrName(BATCH), "idle");
+  await made.pool.tick();
+  await settled();
+  assert.equal(made.entry("NBF-1").outcome, undefined, "the ticket that named it is attached");
+  assert.match(reasonOfOutcome(made.entry("NBF-2").outcome), new RegExp(`One automatic retry was made, naming ${ANNOUNCEMENT_PULL}, and the plan still misses ${ANNOUNCEMENT_PULL}`));
+  assert.equal(world.files.get("NBF-1")!.size, 1);
+  assert.equal(world.files.get("NBF-2")!.size, 0);
 });
 
 test("a dependent planned before its blocker merged is re-planned with the findings, and its run says learns from the blocker", async () => {
@@ -6229,7 +6366,7 @@ test("a dependent planned before its blocker merged is re-planned with the findi
   assert.deepEqual(world.detached.map(({ key }) => key), ["NBF-1"], "the plan written before the merge is detached");
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").plan !== undefined], ["running", true]);
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
-  assert.ok(brief.includes("## This is a re-plan") && brief.includes("A pull request of a blocker merged after that plan was written") && brief.includes("## What its blockers found"));
+  assert.ok(brief.includes("## This is a re-plan") && brief.includes("A pull request of a blocker merged after that plan was written") && brief.includes("## Its blockers and what they found"));
   assert.equal(brief.includes("These lines differ"), false, "no description change is claimed");
 });
 
