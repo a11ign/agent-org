@@ -40,7 +40,7 @@ test("A11-212: both briefs carry the narrowest-path, parallel-planning, integrat
 
 test("A11-212: the batch brief says its tickets are held against each other, and orders a ticket after another only for its code or a shared file", () => {
   const brief = batch(held);
-  assert.ok(brief.includes("**The tickets of this batch are held against each other the same way:** a folder two of them claim is refused, unless `order.json` orders them."));
+  assert.ok(brief.includes("**The tickets of this batch are held against each other the same way:** a folder two of them claim is sent back once, unless `order.json` orders them."));
   assert.ok(brief.includes("Order a ticket after another only when it needs that ticket's code, or both must change the same file. Tickets whose paths do not overlap get no `after` and run side by side"));
   assert.equal(brief.includes("whose work touches the same area"), false, "the old chain-making rule is gone");
   assert.equal(single(held).includes("held against each other"), false, "a ticket planned alone has no siblings");

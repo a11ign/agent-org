@@ -95,3 +95,12 @@ test("A11-212: and it names no overlapping path and no folder to narrow", () => 
   const { waiting, entries } = unreadHold();
   assert.deepEqual(overlapWait(waiting, entries)?.overlaps, []);
 });
+
+test("A11-212: a hold over many files names the first five and how many more, and the folder flag still names the folder", () => {
+  const url = "https://github.com/a11ign/agent-org/pull/12";
+  const files = Array.from({ length: 8 }, (_, n) => `ui/src/f${n}.ts`);
+  const holder = { ticket: { key: "A11-196" }, phase: "finished", paths: [], outcome: { kind: "draft-pr", prs: [{ url, repo: "agent-org" }] }, pullFiles: { [url]: files } } as unknown as ViewEntry;
+  const waiting = { ticket: { key: "A11-200" }, phase: "queued", paths: ["agent-org:ui/"] } as unknown as ViewEntry;
+  assert.equal(waitNote(waiting, [holder, waiting]),
+    "Waits on A11-196 #12: both touch ui/src/f0.ts, ui/src/f1.ts, ui/src/f2.ts, ui/src/f3.ts, ui/src/f4.ts, and 3 more; a folder claim, not a shared file: narrow A11-200's `ui/` in its plan");
+});

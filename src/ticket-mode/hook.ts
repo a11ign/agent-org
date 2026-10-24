@@ -656,12 +656,12 @@ function findingsRetry(ticketDir: string, { text, mtime }: OutcomeRead, io: Stop
 
 /**
  * The plans of a planning run, by ticket: each ticket's plan folder and the paths its plan claims, from the list the brief wrote beside the outcome (it names every ticket of the run and its plan folder).
- * A ticket with a question, or with no plan file, claims none. Empty when the list is missing or is not one.
+ * A ticket with a question, or with no plan file, claims none. Null when the list is missing or is not one.
  */
-function planClaims(ticketDir: string, io: StopIo): { key: string; planDir: string; paths: string[] }[] {
+function planClaims(ticketDir: string, io: StopIo): { key: string; planDir: string; paths: string[] }[] | null {
   const listed = join(ticketDir, FINDINGS_GIVEN_FILE);
-  const rows = io.exists(listed) ? parseFindingsGiven(io.read(listed)) ?? [] : [];
-  return rows.map(({ key, planDir }) => {
+  const rows = io.exists(listed) ? parseFindingsGiven(io.read(listed)) : null;
+  return rows === null ? null : rows.map(({ key, planDir }) => {
     const names = io.exists(join(planDir, QUESTION_FILE)) ? [] : io.planNames(planDir);
     return { key, planDir, paths: names.flatMap((name) => planClaimPaths(io.read(join(planDir, name)))) };
   });
@@ -690,6 +690,7 @@ function claimsRetry(ticketDir: string, { text, mtime }: OutcomeRead, io: StopIo
     const held = parseClaimsGiven(io.read(given));
     if (held === null) return { code: 0, say: [`ticket:hook: ${given} is not a list of held paths, so the plan was not checked and the stop is ALLOWED.`] };
     const plans = planClaims(ticketDir, io);
+    if (plans === null) return { code: 0, say: [`ticket:hook: the list of this run's plan folders beside ${given} is missing or is not a list, so the plan was not checked and the stop is ALLOWED.`] };
     const order = batchOrder(plans, io);
     const misses = plans.flatMap(({ key, planDir, paths }) => {
       const folders = folderClaimMisses(paths, [...held, ...siblingClaims(key, plans, order)]);

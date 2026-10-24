@@ -199,10 +199,17 @@ export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): strin
 function overlapNote(overlap: OverlapWait): string {
   const pull = overlap.pull === null ? "" : ` #${overlap.pull}`;
   if (overlap.path === null) return `Waits on ${overlap.key}${pull}: its changed files are not read yet`;
-  const both = `Waits on ${overlap.key}${pull}: both touch ${overlap.overlaps.map(({ path }) => path).join(", ")}`;
+  const both = `Waits on ${overlap.key}${pull}: both touch ${named(overlap.overlaps.map(({ path }) => path))}`;
   const narrow = foldersToNarrow(overlap.overlaps);
   return narrow === null ? both : `${both}; a folder claim, not a shared file: narrow ${narrow.join(" and ")} in ${narrow.length === 1 ? "its plan" : "their plans"}`;
 }
+
+/** The most paths a card's wait line names; a hold over more says how many it leaves out. */
+const MAX_PATHS_NAMED = 5;
+
+/** The paths as the wait line lists them: the first {@link MAX_PATHS_NAMED}, then how many more there are. PURE. */
+const named = (paths: readonly string[]): string =>
+  (paths.length <= MAX_PATHS_NAMED ? paths : [...paths.slice(0, MAX_PATHS_NAMED), `and ${paths.length - MAX_PATHS_NAMED} more`]).join(", ");
 
 /** Whose directory claims to narrow, as "A11-196's `ui/test/`, `ui/captures/`" for each run, when every overlap is a directory claim; null when a file is shared for real. PURE. */
 function foldersToNarrow(overlaps: OverlapWait["overlaps"]): string[] | null {

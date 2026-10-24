@@ -502,7 +502,7 @@ How \`wait\` says how a ticket waits on each ticket in its \`after\`:
 - With no \`wait\`, or \`"stacked"\`, the ticket is stacked. When its work lands in the same repository as its blocker and that blocker's branch is pushed there, the board starts the ticket on that branch, with or without a pull request on it, and its pull request is based on the blocker's branch. Choose this when the code builds on the blocker's diff.
 - \`"wait": "merged"\` keeps the ticket Blocked until every ticket in its \`after\` has merged, then starts it on the default branch. Choose this when the work needs the blocker's change live rather than in a diff: fleet state, a deployed or released package, a published artifact, or anything a worker checks on the running system.
 - When a plan says "wait until X merges", set \`"wait": "merged"\`, or the board contradicts the plan.
-- Order a ticket after another only when it needs that ticket's code, or both must change the same file. Tickets whose paths do not overlap get no \`after\` and run side by side: a shared folder, or the same area of the code, is no reason to order them. The board holds back a run whose paths overlap a run already in progress, so \`after\` is what keeps two tickets that change one file in turn, and a folder two tickets of the batch both claim is refused until each claims its own files.
+- Order a ticket after another only when it needs that ticket's code, or both must change the same file. Tickets whose paths do not overlap get no \`after\` and run side by side: a shared folder, or the same area of the code, is no reason to order them. The board holds back a run whose paths overlap a run already in progress, so \`after\` is what keeps two tickets that change one file in turn, and a folder two tickets of the batch both claim is sent back once until each claims its own files.
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -517,7 +517,7 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 }
 
 /** The bullet the batch brief adds to its section on the paths other tickets hold: its own tickets are held against each other. */
-const BATCH_CLAIMS_BULLET = `- **The tickets of this batch are held against each other the same way:** a folder two of them claim is refused, unless \`${ORDER_FILE}\` orders them.\n`;
+const BATCH_CLAIMS_BULLET = `- **The tickets of this batch are held against each other the same way:** a folder two of them claim is sent back once, unless \`${ORDER_FILE}\` orders them.\n`;
 
 /**
  * The brief's section on the paths other tickets hold and how to plan beside them (A11-212): the list, printed from the same array the board writes to the run's claims file, and the rules that keep tickets side by side.

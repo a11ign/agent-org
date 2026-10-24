@@ -1,7 +1,7 @@
 // no-token: gh -- the hook decides on text; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
@@ -128,4 +128,12 @@ test("A11-212: a plan that misses a blocker's findings and claims a folder is as
   const second = stopVerdict(dir);
   assert.equal(second.code, 2);
   assert.ok(second.say.join("\n").includes("`agent-org:ui/test/` is a folder A11-196"), "then the folder");
+});
+
+test("A11-212: a run whose list of plan folders is missing is allowed out loud, for the board's check to decide", () => {
+  const { dir } = planningRun({ "A11-200": { "plan.md": planWith("agent-org:ui/test/") } });
+  rmSync(join(dir, FINDINGS_GIVEN_FILE));
+  const said = stopVerdict(dir);
+  assert.equal(said.code, 0);
+  assert.match(said.say.join("\n"), /is missing or is not a list, so the plan was not checked and the stop is ALLOWED/);
 });
