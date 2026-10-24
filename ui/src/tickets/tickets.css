@@ -1,0 +1,441 @@
+/* The Tickets page: its header, filters, sections and rows, the queue bar and the popover that opens from it, as the Tickets boards lay them out. Every value is a token. */
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-16);
+}
+.page-header-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-12);
+  flex: 1 1 var(--measure-header-basis);
+}
+.page-header-title .sk {
+  align-self: center;
+}
+.page-count {
+  color: var(--color-text-muted);
+}
+
+/* The buttons: the ghost every secondary action is, the accent one for the main action, and the small and quiet forms of each. */
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-small);
+}
+.ghost:hover:enabled {
+  background: var(--color-hover);
+  border-color: var(--color-border-hover);
+}
+.ghost:disabled {
+  color: var(--color-text-disabled);
+  cursor: default;
+}
+.ghost-dashed {
+  padding: var(--space-4) var(--space-10);
+  border-style: dashed;
+  border-color: var(--color-border-hover);
+}
+.ghost-small {
+  padding: 1px var(--space-10);
+  white-space: nowrap;
+}
+.ghost-quiet {
+  padding: var(--space-2) var(--space-6);
+  border-color: transparent;
+  border-radius: var(--radius-4);
+  color: var(--color-text-nav);
+}
+.primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-16);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+}
+.primary-small {
+  padding: var(--space-5) var(--space-12);
+  font-size: var(--font-size-small);
+}
+.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.filter-row {
+  position: relative;
+  container-type: inline-size;
+  container-name: filter-row;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+}
+.search {
+  position: relative;
+  display: block;
+  flex: 1 1 var(--measure-search-basis);
+  max-width: var(--measure-search-max);
+}
+.search-icon {
+  position: absolute;
+  left: var(--space-10);
+  top: var(--space-8);
+  color: var(--color-text-muted);
+}
+.search input {
+  width: 100%;
+  padding: var(--space-5) var(--space-10) var(--space-5) var(--space-28);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-sidebar);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.filter-note {
+  color: var(--color-text-muted);
+}
+
+.segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-sidebar);
+}
+.segment {
+  padding: var(--space-2) var(--space-10);
+  border: 0;
+  border-radius: var(--radius-4);
+  background: transparent;
+  color: var(--color-text-nav);
+  font-size: var(--font-size-small);
+}
+.segment:hover {
+  background: var(--color-hover);
+}
+.segment[aria-pressed="true"] {
+  background: var(--color-segment-active);
+  color: var(--color-on-accent);
+  font-weight: var(--font-weight-medium);
+}
+.segment-count {
+  margin-left: var(--space-4);
+  color: var(--color-text-nav);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A popover: the surface the Run options and every filter menu open on. */
+.popover {
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-10);
+  background: var(--color-raised);
+  box-shadow: var(--shadow-popover);
+  z-index: var(--z-popover);
+}
+.menu-anchor {
+  position: relative;
+}
+.menu-panel {
+  position: absolute;
+  left: 0;
+  top: calc(100% + var(--space-6));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: var(--menu-min-width);
+  padding: var(--space-6);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-6);
+  color: var(--color-text);
+}
+.menu-item:hover {
+  background: var(--color-hover);
+}
+.menu-item input {
+  width: var(--icon-15);
+  height: var(--icon-15);
+  margin: 0;
+  accent-color: var(--color-accent-light);
+}
+.menu-item-text {
+  flex: 1 1 auto;
+}
+.menu-item-count {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-14);
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid var(--color-warn-border);
+  border-radius: var(--radius-8);
+  background: var(--color-warn-bg);
+  color: var(--color-warn-soft);
+}
+.status-banner-text {
+  flex: 1 1 var(--measure-banner-basis);
+}
+.status-banner-link {
+  padding: var(--space-3) var(--space-12);
+  border: 1px solid var(--color-warn-border-strong);
+  border-radius: var(--radius-6);
+  color: var(--color-warn-link);
+  font-size: var(--font-size-small);
+}
+
+/* The list: one panel for each status. */
+.ticket-section {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-surface);
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-12);
+  background: var(--color-sidebar);
+  border-bottom: 1px solid var(--color-border);
+}
+.section-head .status-icon {
+  color: var(--color-text-muted);
+}
+.section-name {
+  font-weight: var(--font-weight-semibold);
+}
+.section-count {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.fold-button {
+  display: flex;
+  padding: var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--color-text-nav);
+}
+.fold-chevron-closed {
+  transform: rotate(-90deg);
+}
+.ticket-section input[type="checkbox"],
+.queue-bar input[type="checkbox"],
+.popover-check input {
+  flex: 0 0 auto;
+  width: var(--icon-15);
+  height: var(--icon-15);
+  margin: 0;
+  accent-color: var(--color-accent-light);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-12);
+  min-height: var(--row-height);
+  padding: 0 var(--space-12) 0 calc(var(--space-12) + var(--depth) * var(--space-24));
+  border-bottom: 1px solid var(--color-hover);
+}
+.row:hover {
+  background: var(--color-row-hover);
+}
+.row-picked,
+.row-picked:hover {
+  background: var(--color-selection);
+}
+.row-dim {
+  opacity: 0.5;
+  color: var(--color-text-muted);
+}
+.priority-mark,
+.status-icon {
+  flex: 0 0 auto;
+}
+.priority-off {
+  stroke: var(--color-text-disabled);
+}
+.priority-lit {
+  stroke: var(--color-text-nav);
+}
+.priority-urgent {
+  stroke: var(--color-warn-text);
+}
+.row-key {
+  flex: 0 0 var(--row-key-width);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+}
+.row-title {
+  flex: 1 1 var(--measure-title-basis);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-note {
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+.row-project {
+  flex: 0 0 var(--row-project-width);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+  text-align: right;
+}
+.pill-tag {
+  padding: 0 var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-nav);
+  font-size: var(--font-size-pill);
+  line-height: var(--line-height-pill);
+  white-space: nowrap;
+}
+.pill-tag-warn {
+  border-color: var(--color-warn-border);
+  color: var(--color-warn-text);
+}
+.section-empty {
+  padding: var(--space-32);
+  text-align: center;
+  color: var(--color-text-muted);
+}
+.section-foot {
+  padding: var(--space-10) var(--space-12);
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+}
+
+/* The queue bar: it sticks to the bottom of the page while tickets are selected, and its popover opens upward from the Options button. */
+.queue-bar {
+  position: sticky;
+  bottom: var(--bar-offset);
+  container-type: inline-size;
+  container-name: queue-bar;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-16);
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-10);
+  background: var(--color-hover);
+  box-shadow: var(--shadow-bar);
+}
+.queue-bar-count {
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+.queue-bar-spacer {
+  flex: 1 1 0;
+}
+.run-options-anchor {
+  position: relative;
+}
+.run-options {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--space-10));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  width: var(--popover-width);
+  padding: var(--space-14);
+}
+.popover-title {
+  font-weight: var(--font-weight-semibold);
+}
+.popover-title-note,
+.popover-muted {
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-muted);
+}
+.popover-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--color-text);
+}
+.popover-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  color: var(--color-text-nav);
+}
+.popover-field select {
+  min-width: var(--popover-select-width);
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+}
+.popover-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  padding-top: var(--space-10);
+  border-top: 1px solid var(--color-divider);
+}
+.popover-link {
+  color: var(--color-accent-lighter);
+  font-size: var(--font-size-small);
+}
+
+/*
+ * A menu or the popover opens beside the button that opened it while there is room, and on the whole row or bar once there is not, so it never reaches past the screen. A media query
+ * cannot see the width the page is given beside the sidebar, so the row and the bar are containers and the width is theirs.
+ */
+@container filter-row (max-width: 60rem) {
+  .menu-anchor {
+    position: static;
+  }
+}
+@container queue-bar (max-width: 40rem) {
+  .run-options-anchor {
+    position: static;
+  }
+  .run-options {
+    left: 0;
+    width: auto;
+    max-width: var(--popover-width);
+    margin-left: auto;
+  }
+}
