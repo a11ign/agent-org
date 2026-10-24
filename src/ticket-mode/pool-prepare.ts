@@ -11,6 +11,7 @@ import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts"
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
+import { heldClaims } from "./board-view/overlap-hold.ts";
 import { repoOf, stackedOn } from "./board-view/pull-status-and-notes.ts";
 import { STACK_BASE_FILE } from "./stack-rebase.ts";
 import { pluginProblems } from "./plugins.ts";
@@ -21,6 +22,7 @@ import { type PoolContext } from "./pool-context.ts";
 import { pluginCopiesOf } from "./pool-pin.ts";
 import { recordPluginCopy } from "./queue/queue-pins.ts";
 import { type FindingsGiven } from "./blocker-findings-check.ts";
+import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, type HeldClaim } from "./path-claims.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
@@ -108,8 +110,10 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   } else if (isPlanning(ctx, entry) && settings.planner) {
     const planDir = emptyPlanDir(dir);
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
+    const claims = heldClaims(store.get().entries, [entry]);
     writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, run: settings.planner.run,
-      notes, connectors, read, blockers: entry.blockers, findings, ...(replan ? { replan } : {}) }));
+      notes, connectors, read, blockers: entry.blockers, findings, claims, ...(replan ? { replan } : {}) }));
+    writeClaimsGiven(dir, claims);
     const urls = findings.map(({ url }) => url);
     writeFindingsGiven(dir, [{ key: ticket.key, planDir, urls }]);
     update(ctx, (queue) => recordFindingsGiven(queue, ticket.key, urls));
@@ -142,8 +146,9 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   // An earlier run's outcome and stop count would end this run before it began, and an earlier review or publish run's mark would lift a
   // refusal for it. An earlier run's pre-PR review log would say the skill ran on commits this run has not made (A11-86).
   // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
-  // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
+  // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207). So do the paths it listed
+  // other tickets as holding, and the retry made for a folder claim (A11-212).
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
 }
@@ -151,6 +156,11 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
 /** The pull requests each ticket of a planning run was told need a line in its plan, written beside the run's outcome file for the stop hook to check the plan against (A11-207). */
 function writeFindingsGiven(dir: string, given: FindingsGiven): void {
   writeFileSync(join(dir, FINDINGS_GIVEN_FILE), `${JSON.stringify(given)}\n`);
+}
+
+/** The paths other tickets held when a planning brief was written, beside the run's outcome file for the stop hook and the settle step to check the plan's folder claims against (A11-212). */
+function writeClaimsGiven(dir: string, claims: readonly HeldClaim[]): void {
+  writeFileSync(join(dir, CLAIMS_GIVEN_FILE), `${JSON.stringify(claims)}\n`);
 }
 
 /** The run's plan folder, made empty: an earlier attempt's files would be attached as this one's. */
@@ -192,7 +202,7 @@ export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, di
  * downloaded into its own {@link ticketDir}, as a run of its own would have them. Throws, with the reason, when any of it cannot be made.
  */
 export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]): Promise<{ folder: string; dir: string }> {
-  const { settings, source } = ctx;
+  const { settings, source, store } = ctx;
   const [lead] = members;
   const { dir, folder } = runPlace(ctx, lead);
   if (settings.planner === null) throw new Error("this machine names no planner");
@@ -205,8 +215,10 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
     tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), blockers: member.blockers, findings: findingsOf(member) });
   }
   const planDir = emptyPlanDir(dir);
+  const claims = heldClaims(store.get().entries, members);
   writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir, clones: settings.clones, run: settings.planner.run,
-    notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors }));
+    notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors, claims }));
+  writeClaimsGiven(dir, claims);
   writeFindingsGiven(dir, tickets.map(({ ticket, findings = [] }) => ({ key: ticket.key, planDir: join(planDir, ticket.key), urls: findings.map(({ url }) => url) })));
   for (const { ticket, read, findings } of tickets) {
     update(ctx, (queue) => recordFindingsGiven(recordBriefed(queue, [ticket.key], read!), ticket.key, (findings ?? []).map(({ url }) => url)));

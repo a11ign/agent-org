@@ -11,7 +11,8 @@ import * as view_4 from "./board-view/pull-review-state.ts";
 import * as view_5 from "./board-view/update-banner.ts";
 import * as view_6 from "./board-view/ticket-change.ts";
 import * as view_7 from "./board-view/run-terminal.ts";
-import * as view_8 from "./board-view/reconnect.ts";
+import * as view_8 from "./board-view/overlap-hold.ts";
+import * as view_9 from "./board-view/reconnect.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -260,7 +261,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   const browser = browserStubs(blockTabs);
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...view_7, ...view_8, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...view_7, ...view_8, ...view_9, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
     window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } },
       addEventListener: tab.onWindow },
     location, URLSearchParams, setTimeout: browser.setTimeout, clearTimeout: browser.clearTimeout, Date: browser.Date, JSON, Object, Array, Set, Map, String, Number,

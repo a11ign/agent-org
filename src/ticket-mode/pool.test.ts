@@ -2752,7 +2752,7 @@ test("A11-82: a run waits on a path a live run holds and starts once that run's 
   await pool.tick();
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase, entry("NBF-3").phase], ["running", "queued", "running"], "NBF-2 shares src/ with NBF-1; NBF-3 shares no path");
   assert.equal(runStatus(entry("NBF-2"), store.get().entries), "blocked");
-  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/a.ts; a folder claim, not a shared file: narrow NBF-2's `src/` in its plan");
   status.set(herdrName("NBF-1"), "idle");
   writeFileSync(join(ticketDir(planned.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
   await pool.tick();

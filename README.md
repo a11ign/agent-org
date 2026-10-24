@@ -399,7 +399,8 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   their pull requests in its brief, and checks that any release it depends on is out before relying on it. A run whose plan cannot be
   downloaded waits, saying why, and the board asks again on every pass; the other runs start, and it takes no slot (A11-125).
 - **Held back by an overlap.** A queued run whose plan declares a path another run holds waits, as Blocked, saying which run it waits on
-  and the path both touch. A run holds the paths its plan declares, and the files its open pull requests change, from the moment it ends.
+  and every path both touch, such as "Waits on A11-196 #12: both touch ui/src/shell/App.tsx, ui/test/fixtures.ts". When every path is only a
+  directory claim and no file is shared, the line adds whose directory to narrow: "a folder claim, not a shared file: narrow A11-196's `ui/test/` in its plan" (A11-212). A run holds the paths its plan declares, and the files its open pull requests change, from the moment it ends.
   Its plan's `## Paths` section lists those paths, `<repo>:<path>` bullets; `pr:open` reads the same section as the Region its pull
   request is checked against. A pull request whose files are not read yet holds its whole repository until a watch reads them.
   A run on one step of a multi-step plan (A11-175) holds that step's paths and its open pull requests' files, not the whole plan's: a plan
@@ -409,6 +410,14 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   contests only its own step's paths. A reviewer of a pull request whose body says `Partial: step N of M` is given that step's section
   of the plan, told to hold the pull request to the ratchets' direction (a baseline or allow-list only shrinks, a rule or check only
   tightens), and shown the ticket's Done-when as the last step's.
+- **Planned to run side by side (A11-212).** A planning brief lists the paths every other queued and running ticket holds, grouped by repository, and asks for the narrowest claim that
+  holds the change: files, or a folder only this ticket writes into, never a repository's whole `test/` or `captures/`. It asks the plan to avoid the held paths where the design allows
+  (per-feature folders, per-feature test data beside its tests, no edit to a registration point another ticket prepared), to say under `## Overlaps that remain` which ones it still shares
+  and why, to name a shared integration point (a route table, a registry, a fixtures file) in the plan of the ticket that first creates it, and to prepare it with per-feature entries or
+  placeholders. A batch's `order.json` orders a ticket `after` another only when it needs that ticket's code or both change one file. A plan that claims a directory another queued or
+  running ticket also writes into is sent back once by the planner's Stop hook, naming the narrower paths, and refused on the board as Needs you when it still does. A file claim is never
+  refused: two tickets that name one file share it, and the overlap wait puts them in turn. The list is written beside the brief (`claims-given.json`) so the brief, the hook and the board judge
+  the plan against what the planner was shown.
 - **Start anyway, for an overlap.** A run Blocked only on such an overlap, and on no ticket that blocks it, offers Start anyway. It
   starts beside the run it overlapped, the board says so on its row ("Started anyway: it overlapped NBF-1 #12 on src/pool.ts; a person
   overrode the wait") and the log records it. It does not pass a blocker, nor a plan that could not be downloaded (A11-125).

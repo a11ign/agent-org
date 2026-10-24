@@ -4,7 +4,7 @@
 // A RED CHECK THE RUN CANNOT MEND GETS NO FIX ROUND. A check that is red on the head of the repository's default branch, or on another open pull request of the repository whose files touch none of this run's plan
 // paths, is red for a reason no diff of the run's changes (A11-127's `refusalOwners`, an old-org check outside A11-177's region, was handed to its worker round after round). "Fails identically" is read as the
 // same check name failing: it is decided again on every watch, from fresh reads, so a check main has since fixed goes back to the run.
-import { pathsOverlap } from "./board-view/pull-status-and-notes.ts";
+import { pathsOverlap } from "./board-view/overlap-hold.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { log, messageOf } from "./pool-state.ts";
