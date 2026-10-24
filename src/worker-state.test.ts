@@ -30,6 +30,7 @@ import { MANAGER_SEATS } from "./decided-by.ts";
 import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
 import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./host-config.ts";
 
 afterEach(() => forgetActivation());
 
@@ -845,4 +846,44 @@ test("the detector's other conditions each hold it back: the row is not in progr
   assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(70)] }), { now: T0 }), null, "a note from before the claim is an earlier claim's");
   assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(16, "looks good")] }), { now: T0 }), null, "a note that says nothing of verified is not a reading");
   assert.ok(verifiedCloseOrder(closeFacts({ comments: [noteAt(16, "Done-when items 1 and 2 met")] }), { now: T0 }), "the Done-when reading counts too");
+});
+
+// --- A11-160, step 9: THE CODE HOST IS ASKED FOR WHEN A CALL IS MADE, NOT WHEN A DECLARATION STARTS ---------------------------------------------------------------
+
+/** A code host whose `rows` are read through a counter, and which has none: asking for them is the thing counted. Installed; the state directory is a shadow copy the test makes, so nothing real is written. */
+function countingHost(): { loads: () => number; dir: string; restore: () => void } {
+  const dir = scratch("lazy-host");
+  writeFileSync(join(dir, SHADOW_COPY_MARKER), "");
+  const prior = process.env[SHADOW_STATE_DIR_ENV];
+  process.env[SHADOW_STATE_DIR_ENV] = dir;
+  const host = createFakeCodeHost();
+  let loads = 0;
+  const countRowsAsked = (): undefined => { loads += 1; return undefined; };
+  Object.defineProperty(host, "rows", { get: countRowsAsked });
+  substituteCodeHost(host);
+  return { loads: () => loads, dir, restore: () => { if (prior === undefined) delete process.env[SHADOW_STATE_DIR_ENV]; else process.env[SHADOW_STATE_DIR_ENV] = prior; rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test("`main` writes a declaration that reads nothing of GitHub on a code host that has no rows, and never asks the host for them", async () => {
+  const { loads, dir, restore } = countingHost();
+  try {
+    const out = await runMain(["waiting-ci", "123", "--session=worker-9"]);
+    assert.equal(out.code, 0, `declared: ${out.stderr}`);
+    assert.equal(loads(), 0, "the code host's rows were not asked for: a declaration that makes no GitHub call must not need the host to load");
+    assert.equal(readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.size, 1, "and the declaration is on disk");
+  } finally {
+    restore();
+  }
+});
+
+test("`main` asks the code host for its rows the moment a declaration needs GitHub: `blocked` reads its row, and says so by name when the host has none", async () => {
+  const { loads, dir, restore } = countingHost();
+  try {
+    const out = await runMain(["blocked", "460", "why", "--session=worker-9"]);
+    assert.ok(loads() >= 1, "the row was read through the code host, so its rows were asked for");
+    assert.equal(out.code === 0, false, "and a host with no rows is not a declaration");
+    assert.equal(readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.size ?? 0, 0, "nothing is on disk");
+  } finally {
+    restore();
+  }
 });

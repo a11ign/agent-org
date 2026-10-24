@@ -496,3 +496,20 @@ test("#2081 a failed FLOOR read is CANNOT ASK, and never borrows the board read'
   assert.match(stuck.line, /did not finish within 50 pages/,
     "and it carries the cause rather than summarising it");
 });
+
+test("A11-160 THE RUNNER: each page is read through a runner the code host makes with no bound of its own, which is the policy `execFileSync` had here, and not through the plugin's own 30 s one", async () => {
+  const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
+  const host = createFakeCodeHost();
+  host.rowsWorld.tail.closing.closedRowPages = [{ numbers: [7], hasNextPage: true, endCursor: "c1" }, { numbers: [8], hasNextPage: false, endCursor: null }];
+  const operations = host.rows as unknown as Record<string, (request: { run?: unknown }) => unknown>;
+  const requested: unknown[] = [];
+  const runner = (): string => "";
+  const given: unknown[] = [];
+  operations.runnerWith = ((request: unknown) => { requested.push(request); return runner; }) as never;
+  const page = operations.closedRowPageOf;
+  operations.closedRowPageOf = (request) => { given.push(request.run); return page(request); };
+  substituteCodeHost(host);
+  assert.deepEqual(closedRowsOnProject(), [7, 8]);
+  assert.deepEqual(requested, [{}, {}], "a runner with no timeout, buffer or directory named is asked for, once per page: the process's default policy applies (the plugin's tests hold it to ten minutes)");
+  assert.deepEqual(given, [runner, runner], "and that runner is the one every page's read was handed: without it the operation falls back to the plugin's own runner, cut at 30 s");
+});
