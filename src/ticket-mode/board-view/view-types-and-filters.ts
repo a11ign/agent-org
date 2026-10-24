@@ -104,15 +104,21 @@ export type ViewEntry = Readonly<{
 /** A line of a ticket's After-merge section, and who runs it, or null when the line names no one (A11-173). */
 export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
 
-/** A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit. */
-export type PullHead = Readonly<{ head: string; approved: boolean }>;
+/**
+ * A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit, as the last watch read them (A11-153). The rest is what the same read said
+ * of the pull request's readiness to merge at that head (A11-179), each field absent until a watch has read it, and when the code host does not say it: `review` is `approved` only when the
+ * newest verdict on the head approves and GitHub's own review decision does not still ask for a review or for changes, `changes-requested` when either says changes, and `none` otherwise;
+ * `red` is the required checks failing, and `pending` the required checks still running.
+ */
+export type PullHead = Readonly<{ head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[] }>;
 
 /**
  * What the board did about the red checks on one pull request at one head (A11-154): a fix round was started for them (`round`), the checks that failed for an
  * infrastructure reason were rerun (`rerun`), or they failed again on that head after their rerun and are named for a person (`named`). `note` is the line the
- * card shows for the last two.
+ * card shows for the last two. `not-ours` (A11-179) is a head whose red checks are all ones the run cannot mend, because they fail on the default branch or on pull requests that touch none of the
+ * run's files: no round is started and nothing is rerun, `notOurs` names them, each with the ticket that owns it or null, and the record is made again on every watch, so it lasts only as long as the checks are red elsewhere.
  */
-export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named"; note?: string }>;
+export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named" | "not-ours"; note?: string; notOurs?: Readonly<Record<string, string | null>> }>;
 
 /**
  * The branch a run was branched from: the blocker's key, the repository and branch, the commit it has the blocker's branch merged in up to (`sha`), and what

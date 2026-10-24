@@ -78,6 +78,10 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     expect(Array.isArray(feedback.failing) && Array.isArray(feedback.failures) && Array.isArray(feedback.authors) && Array.isArray(feedback.files), "feedback.failing, failures, authors and files must be lists");
     expect(typeof feedback.conflicting === "boolean" && typeof feedback.filesComplete === "boolean", "feedback.conflicting and filesComplete must be true or false");
     expect(typeof feedback.mergeable === "boolean" && typeof feedback.approvedAtHead === "boolean" && (feedback.head === null || isString(feedback.head)), "feedback.mergeable and approvedAtHead must be true or false, and head a commit or null");
+    expect(feedback.reviewDecision === undefined || [null, "approved", "changes-requested", "review-required"].includes(feedback.reviewDecision), "feedback.reviewDecision, when the host says it, must be approved, changes-requested, review-required or null (contract 1.13)");
+    expect(feedback.verdictAtHead === undefined || [null, "approved", "changes-requested"].includes(feedback.verdictAtHead), "feedback.verdictAtHead, when the host says it, must be approved, changes-requested or null (contract 1.13)");
+    expect(feedback.pendingRequired === undefined || (Array.isArray(feedback.pendingRequired) && feedback.pendingRequired.every(isString)), "feedback.pendingRequired, when the host says it, must be a list of check names (contract 1.13)");
+    expect(feedback.body === undefined || isString(feedback.body), "feedback.body, when the host says it, must be text (contract 1.13)");
   },
   "readPullFeedback answers null for a pull request it cannot read": ({ host, probe }) => {
     expect(host.readPullFeedback(probe.missing, probe.self) === null, "readPullFeedback must answer null for what it cannot read: null is never 'no feedback'");
@@ -440,6 +444,15 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const found = host.readMergedFindings!(probe.merged);
       expect(isObject(found) && isString(found.title) && Number.isInteger(found.number) && isString(found.body) && Array.isArray(found.sections), `readMergedFindings(${probe.merged}) must read { title, number, body, sections }`);
       expect(found.sections.every((section) => isString(section.file) && isString(section.heading) && isString(section.text)), "each section must be { file, heading, text }");
+    },
+  },
+  "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read": {
+    applies: ({ host }) => typeof host.readDefaultBranchRed === "function",
+    reason: "the code host has no readDefaultBranchRed, which is optional (contract 1.13)",
+    run: ({ host, probe }) => {
+      const red = host.readDefaultBranchRed!(probe.repository);
+      expect(red === null || (isObject(red) && isString(red.branch) && isString(red.head) && Array.isArray(red.failing) && red.failing.every(isString)), `readDefaultBranchRed(${probe.repository}) must read { branch, head, failing } or be null`);
+      expect(host.readDefaultBranchRed!("not a repository") === null, "readDefaultBranchRed must answer null for what it cannot read: null is never 'nothing is red'");
     },
   },
   "readChange reads a change, and answers null for one it cannot": withChange("the port's reads are not asked", ({ host, change }) => {

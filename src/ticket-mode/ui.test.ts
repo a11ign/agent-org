@@ -796,7 +796,7 @@ test("a review run reads as Reviewing while it works, and its reviewed pull requ
   const prs = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/y/pull/12" }];
   const p = await page(new Map(), { entries: [
     entry("V-1", { phase: "running", startedAt: 5, review: prs }),
-    entry("V-2", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "reviewed", prs } }),
+    entry("V-2", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "reviewed", prs }, pullHeads: readyHeads(prs) }),
   ] });
   const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
   assert.equal(row("V-1").children[0].className, "icon st-reviewing");
@@ -889,10 +889,12 @@ test("a planning run is Planning on the Board, and its row names the planning mo
 });
 
 const SHIPPED = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/y/pull/12" }];
+/** The heads the watch read as ready to merge for pull requests `prs`: approved at them, no required check red or running (A11-179). */
+const readyHeads = (prs: readonly { url: string }[]) => Object.fromEntries(prs.map(({ url }) => [url, { head: "h1", approved: true, review: "approved", red: [], pending: [] }]));
 const PUBLISHABLE = [
-  entry("P-1", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "reviewed", prs: SHIPPED } }),
-  entry("P-2", { phase: "finished", startedAt: 2, finishedAt: 8, outcome: { kind: "reviewed", prs: SHIPPED } }),
-  entry("P-3", { phase: "finished", startedAt: 2, finishedAt: 9, outcome: { kind: "reviewed", prs: SHIPPED }, published: { link: "https://x.slack.com/archives/C1/p1", at: 9 } }),
+  entry("P-1", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "reviewed", prs: SHIPPED }, pullHeads: readyHeads(SHIPPED) }),
+  entry("P-2", { phase: "finished", startedAt: 2, finishedAt: 8, outcome: { kind: "reviewed", prs: SHIPPED }, pullHeads: readyHeads(SHIPPED) }),
+  entry("P-3", { phase: "finished", startedAt: 2, finishedAt: 9, outcome: { kind: "reviewed", prs: SHIPPED }, pullHeads: readyHeads(SHIPPED), published: { link: "https://x.slack.com/archives/C1/p1", at: 9 } }),
   entry("D-1", { phase: "finished", startedAt: 2, finishedAt: 6, outcome: { kind: "draft-pr", prs: SHIPPED } }),
 ];
 const tickFor = (p: Page, key: string) => runRows(p).find((r) => r.text().includes(key))!.all().find((n) => n.tag === "input");

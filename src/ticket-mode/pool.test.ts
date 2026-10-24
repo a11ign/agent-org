@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
-import { isParked, rebaseNote, runStatus, terminalLink, waitNote } from "./board-view/pull-status-and-notes.ts";
+import { isParked, publishable, rebaseNote, runStatus, terminalLink, waitNote } from "./board-view/pull-status-and-notes.ts";
 import { checkNote, promptNote, reasonOf } from "./board-view/run-reason.ts";
 import { declineMessage } from "./safety-prompt.ts";
 import { ASK_USER, DANGEROUS_RM } from "./safety-prompt-fixture.ts";
@@ -21,6 +21,7 @@ import {
 } from "./pool.ts";
 import { approve, completableRuns, finish, markResumed, park, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { talk } from "./queue/talk.ts";
+import { recordPullHeads } from "./queue/queue-pull-heads.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, talkRound, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
@@ -351,7 +352,7 @@ test("a review run ends Ready to merge with the pull requests the person approve
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
   await pool.tick();
   assert.deepEqual(entry("NBF-1").outcome, { kind: "reviewed", prs: [approvedPr] });
-  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+  assert.equal(runStatus(entry("NBF-1")), "awaiting-review", "reviewed says the round ended: no watch has read the pull requests yet");
   store.set(retry(finish(store.get(), "NBF-1", { kind: "crashed", reason: "x" }, 300), "NBF-1", 301));
   status.delete(herdrName("NBF-1"));
   const plain = { ...entry("NBF-1"), review: undefined };
@@ -2236,7 +2237,7 @@ test("a parked review run whose worker wrote reviewed between two looks, never s
   const { pool, entry, dir, h, status } = await parkedReview();
   await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "reviewed" });
   assert.deepEqual(entry("NBF-1").outcome, { kind: "reviewed", prs: [approvedPr] });
-  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+  assert.equal(runStatus(entry("NBF-1")), "awaiting-review", "reviewed, and no watch has read the pull requests yet");
   assert.equal(entry("NBF-1").workspace, undefined);
   assert.equal(closes(h, "w2"), 1);
   assert.ok(existsSync(join(dir, "outcome.json")), "the outcome is read where the worker wrote it, not moved aside");
@@ -2329,7 +2330,7 @@ test("a parked run seen working after it wrote a new outcome keeps that outcome,
   assert.ok(existsSync(join(dir, "outcome.json")), "not moved aside: it is the run's new outcome");
   status.set(herdrName("NBF-1"), "idle");
   await pool.tick();
-  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+  assert.equal(runStatus(entry("NBF-1")), "awaiting-review", "it ended reviewed, and no watch has read its pull requests yet");
 });
 
 /**
@@ -2341,7 +2342,7 @@ test("a parked run seen working after it wrote a new outcome keeps that outcome,
 type World = { codeHost: CodeHost; host: ReturnType<typeof createFakeCodeHost> };
 
 type Node = { author?: { login?: string } | null; state?: string; submittedAt?: string; createdAt?: string; commit?: { oid?: string }; body?: string; url?: string };
-type Described = { body?: string; state: string; headRefOid: string; mergeable: string; mergeStateStatus: string; baseRefName: string;
+type Described = { body?: string; reviewDecision?: PullFeedback["reviewDecision"]; state: string; headRefOid: string; mergeable: string; mergeStateStatus: string; baseRefName: string;
   files: { pageInfo: { hasNextPage: boolean }; nodes: { path: string }[] }; reviews: { nodes: Node[] }; comments: { nodes: Node[] };
   commits: { nodes: { commit: { statusCheckRollup: { contexts: { nodes: Record<string, any>[] } } } }[] } };
 
@@ -2368,6 +2369,9 @@ function feedbackOfDescribed(pull: Described, self: string, ignored: readonly st
     feedbackAt: newest(items.map(({ at }) => at)), authors: [...new Set(items.sort((x, y) => y.at - x.at).map(({ author }) => author))],
     failing: failing.map(({ name }) => name), failures: red.map(({ name, detailsUrl }) => ({ name, detailsUrl })), failedAt: newest(failing.map(({ at }) => at)),
     conflicting: pull.mergeable === "CONFLICTING" || pull.mergeStateStatus === "DIRTY", mergeable: pull.mergeable === "MERGEABLE",
+    // The required checks that have not concluded, and GitHub's decision on the reviews when the description gives one (A11-179).
+    pendingRequired: contexts.filter((check) => check.isRequired === true && (check.conclusion === null || check.conclusion === undefined)).map((check) => String(check.name)),
+    ...(pull.reviewDecision === undefined ? {} : { reviewDecision: pull.reviewDecision }),
     ...filesOfDescribed(pull.files),
   };
 }
@@ -2411,8 +2415,8 @@ function ghFor(pulls: Record<number, unknown>): World {
 }
 const at = (ms: number) => new Date(ms).toISOString();
 const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
-  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], more = false, body = undefined as string | undefined } = {}) =>
-  ({ ...(body === undefined ? {} : { body }), state, headRefOid: head, mergeable, mergeStateStatus, baseRefName: base, files: { pageInfo: { hasNextPage: more, endCursor: more ? "c1" : null }, nodes: files.map((path) => ({ path })) },
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], more = false, body = undefined as string | undefined, reviewDecision = undefined as PullFeedback["reviewDecision"] } = {}) =>
+  ({ ...(body === undefined ? {} : { body }), ...(reviewDecision === undefined ? {} : { reviewDecision }), state, headRefOid: head, mergeable, mergeStateStatus, baseRefName: base, files: { pageInfo: { hasNextPage: more, endCursor: more ? "c1" : null }, nodes: files.map((path) => ({ path })) },
     reviews: { nodes: reviews },
     comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] } });
 /** The gate's check on a head, green: a reviewer starts only where the checks have settled green. */
@@ -2426,9 +2430,14 @@ async function readyRun(gh: World, tickets: Record<string, unknown> = {}, review
   writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
   await ctx.pool.tick();
   ctx.status.delete(herdrName("NBF-1"));
-  assert.deepEqual([runStatus(ctx.entry("NBF-1")), ctx.entry("NBF-1").finishedAt], ["ready-to-merge", 100]);
+  // The round ended `reviewed`; whether GitHub would merge is what a watch reads next (A11-179), so until then the run waits on a read of its pull requests.
+  assert.deepEqual([ctx.entry("NBF-1").outcome?.kind, runStatus(ctx.entry("NBF-1")), ctx.entry("NBF-1").finishedAt], ["reviewed", "awaiting-review", 100]);
   return ctx;
 }
+/** The pull request read as ready to merge at its head (A11-179): approved there, with no required check red or running, as a watch of a green, approved one records it. */
+const READY_HEAD = { head: "1a2b3c4d", approved: true, review: "approved", red: [], pending: [] } as const;
+/** `queue` with NBF-1's pull request recorded as ready to merge, so that Publish may tick it. */
+const readRatherReady = (queue: Queue): Queue => recordPullHeads(queue, "NBF-1", { [approvedPr.url]: READY_HEAD });
 /** Let the tick that a feedback round wakes, which `watchFeedback` does not wait for, start the round. */
 const roundStarted = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 /** Watches for feedback once, then waits for the round it starts. */
@@ -2858,7 +2867,7 @@ const PUBLISH = { publish: { run: "Run the post-pr-to-slack skill on these pull 
 async function publishing() {
   const ctx = await readyRun(ghFor({}), PUBLISH);
   const { pool, store, settings } = ctx;
-  store.set(pauseQueue(queuePublish(store.get(), ["NBF-1"], 300)));
+  store.set(pauseQueue(queuePublish(readRatherReady(store.get()), ["NBF-1"], 300)));
   ctx.h.calls.length = 0;
   await pool.tick();
   const publish = store.get().publish!;
@@ -2929,7 +2938,7 @@ test("a parked run that wrote a new outcome while a dialog waits on a person is 
   assert.deepEqual([entry("NBF-1").outcome?.kind, entry("NBF-1").workspace], ["no-outcome", "w2"]);
   status.set(herdrName("NBF-1"), "idle");
   await pool.tick();
-  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+  assert.equal(runStatus(entry("NBF-1")), "awaiting-review", "it ended reviewed, and no watch has read its pull requests yet");
 });
 
 test("Respond to review resumes the worker, told a person asked it to answer the feedback", async () => {
@@ -2987,7 +2996,7 @@ test("a drafts-off run's ticket dir carries the ready mark and a brief that open
 test("with no tickets.publish, Publish starts no run and posts nothing: the request fails saying so, and the runs stay Ready to merge", async () => {
   const gh = ghFor({});
   const ctx = await readyRun(gh);
-  ctx.store.set(pauseQueue(queuePublish(ctx.store.get(), ["NBF-1"], 300)));
+  ctx.store.set(pauseQueue(queuePublish(readRatherReady(ctx.store.get()), ["NBF-1"], 300)));
   ctx.h.calls.length = 0;
   gh.host.calls.length = 0;
   await ctx.pool.tick();
@@ -3105,7 +3114,7 @@ test("a restarted pool asks for no second round for a verdict it already answere
   await roundStarted();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the reviewer's changes are asked for once");
   await finishRound(ctx);
-  assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the round ends Ready to merge again");
+  assert.equal(ctx.entry("NBF-1").outcome?.kind, "reviewed", "the round ends reviewed again");
   ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 1], "a restarted pool asks no second round for the verdict it already answered");
@@ -5008,7 +5017,7 @@ test("A11-153 done-when: a needs-human run goes from Needs you to Answered to Co
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "which colour?"], "nothing has answered it: a watch of an unchanged pull request changes nothing");
   pulls[1] = feedbackPull({ head: "h2" });
   pool.watchFeedback();
-  assert.deepEqual(entry("NBF-1").pullHeads, { [approvedPr.url]: { head: "h2", approved: false } });
+  assert.deepEqual(entry("NBF-1").pullHeads, { [approvedPr.url]: { head: "h2", approved: false, review: "none", red: [], pending: [] } }, "the heads carry what the read said of readiness (A11-179)");
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1"))], ["awaiting-review", { line: "Answered: awaiting review", question: "which colour?" }]);
   assert.equal(completed.length, 0, "answered is not merged: the ticket is left open");
   pull.state = "merged";
@@ -5299,6 +5308,71 @@ test("A11-154: a name for a person is dropped once nothing fails on the head any
   assert.deepEqual([checkNote(ctx.entry("NBF-1")), ctx.entry("NBF-1").checkHeads?.[approvedPr.url]], [null, { head: HEAD_1, step: "named" }]);
 });
 
+/** NBF-1's pull request as GitHub gives it at `HEAD_1`: a required `gate` that is `conclusion`, and whatever else `over` adds. */
+const gated = (conclusion: string | null, over: Parameters<typeof feedbackPull>[0] = {}) =>
+  feedbackPull({ head: HEAD_1, checks: [{ name: "gate", __typename: "CheckRun", conclusion, completedAt: conclusion === null ? null : at(400), isRequired: true }], ...over });
+
+test("A11-179: a run that ended reviewed reads Awaiting review until a watch reads its pull request approved at its head with every required check green, and says what it waits on", async () => {
+  const pulls: Record<number, unknown> = { 1: gated("SUCCESS") };
+  const ctx = await readyRun(ghFor(pulls));
+  const status = () => [runStatus(ctx.entry("NBF-1")), reasonOf(ctx.entry("NBF-1")).line, ctx.entry("NBF-1").outcome?.kind];
+  assert.deepEqual(status(), ["awaiting-review", "not read yet", "reviewed"], "the round ended, and no watch has read the pull request");
+  ctx.pool.watchFeedback();
+  assert.deepEqual(status(), ["awaiting-review", "review: none yet at 1a2b3c4d", "reviewed"], "green checks and no review at all: A11-177's pull request");
+  assert.deepEqual(ctx.entry("NBF-1").pullHeads, { [approvedPr.url]: { head: HEAD_1, approved: false, review: "none", red: [], pending: [] } });
+  pulls[1] = gated("SUCCESS", { reviews: [approvalAt(HEAD_1)], reviewDecision: "review-required" });
+  ctx.pool.watchFeedback();
+  assert.deepEqual(status(), ["awaiting-review", "review: none yet at 1a2b3c4d", "reviewed"], "an approval does not outrank GitHub's own review decision");
+  pulls[1] = gated(null, { reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
+  ctx.pool.watchFeedback();
+  assert.deepEqual(status(), ["awaiting-review", "checks not passed: gate", "reviewed"], "a required check that has not concluded is not green");
+  assert.equal(ctx.entry("NBF-1").rounds, undefined, "and no round was started for any of it");
+  pulls[1] = gated("SUCCESS", { reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
+  ctx.pool.watchFeedback();
+  assert.deepEqual(status(), ["ready-to-merge", null, "reviewed"], "approved at the head by the required review, with the required checks green there");
+  assert.equal(publishable(ctx.entry("NBF-1")), true);
+  pulls[1] = gated("SUCCESS", { head: HEAD_2, reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
+  ctx.pool.watchFeedback();
+  assert.deepEqual(status(), ["awaiting-review", "review: none yet at 5e6f7a8b", "reviewed"], "a push takes the approval of the earlier head with it: a reviewed run is watched until it merges");
+  assert.equal(publishable(ctx.entry("NBF-1")), false);
+  pulls[1] = gated("SUCCESS", { head: HEAD_2, reviews: [approvalAt(HEAD_2), { ...approvalAt(HEAD_2), state: "CHANGES_REQUESTED", submittedAt: at(9) }] });
+  ctx.pool.watchFeedback();
+  assert.deepEqual(status(), ["awaiting-review", "changes requested at 5e6f7a8b", "reviewed"], "the newest verdict on the head decides");
+});
+
+test("A11-179: a pull request that merged is not read as 'not read yet' in the minutes before the tracker says so: the watch keeps its head record", async () => {
+  const pulls: Record<number, unknown> = { 1: gated("SUCCESS", { reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" }) };
+  const ctx = await readyRun(ghFor(pulls));
+  ctx.pool.watchFeedback();
+  assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge");
+  pulls[1] = gated("SUCCESS", { state: "MERGED", reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
+  ctx.pool.watchFeedback();
+  assert.deepEqual([runStatus(ctx.entry("NBF-1")), reasonOf(ctx.entry("NBF-1")).line], ["ready-to-merge", null], "the tracker has not been asked yet; the run does not flicker to 'not read yet'");
+});
+
+test("A11-179: a check red on the default branch starts no fix round, is not rerun, and is named on the card as red on main with the ticket that owns it; once main is green it is the run's again", async () => {
+  const roll = { ...redCheck("gate", 40), isRequired: true };
+  const owned = stamped(["refusal: refusalOwners is retired by NBF-127", "##[error]Process completed with exit code 1."]);
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [roll, redCheck("refusalOwners", 41)], reviews: [approvalAt(HEAD_1)] }) };
+  const ci = withCi(ghFor(pulls), { 40: stamped(["a job reported 'failure', not success"]), 41: owned });
+  ci.host.seedDefaultBranch("x/nbl-ui-netbox", ["refusalOwners", "gate"]);
+  const ctx = await readyRun(ci);
+  await watchRound(ctx.pool);
+  const run = ctx.entry("NBF-1");
+  const note = "refusalOwners is red on main / not this run's; owned by NBF-127";
+  assert.deepEqual([run.phase, run.rounds, run.feedback, ci.reruns], ["finished", undefined, undefined, []], "no round and no rerun");
+  assert.deepEqual(run.checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "not-ours", note, notOurs: { refusalOwners: "NBF-127", gate: "NBF-127" } } });
+  assert.equal(checkNote(run), note, "the card names it, and the ticket that owns it");
+  assert.deepEqual([runStatus(run), reasonOf(run).line], ["awaiting-review", "checks red: gate (not this run's)"], "and it is still red there, so the run is not Ready to merge");
+  assert.deepEqual(ci.logReads, [41], "the log that names the owner is read once, for the check behind the gate");
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").rounds, ci.logReads], [undefined, [41]], "looked at again on the next watch, it is the same: nothing more is read or started");
+  ci.host.seedDefaultBranch("x/nbl-ui-netbox", []);
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").checkHeads], ["running", 1, { [approvedPr.url]: { head: HEAD_1, step: "round" } }], "main is green: the check is the run's, and gets its round");
+  assert.match(ctx.entry("NBF-1").feedback ?? "", /^refusalOwners failed on the head commit of /);
+});
+
 test("A11-154: a conflict and a rerun in one watch queue the conflict round and still record the rerun, so it is not made twice", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", checks: [redCheck("test", 11)] }) };
   const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST });
@@ -5509,7 +5583,7 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
   // 4. The round's worker pushes a fix and ends; the new head's checks settle green; the sweep gives it a reviewer.
   pulls[1] = feedbackPull({ head: HEAD_2, base: "main" });
   await finishRound({ ...ctx, dir });
-  assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the round ended reviewed");
+  assert.equal(ctx.entry("NBF-1").outcome?.kind, "reviewed", "the round ended reviewed");
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), [HEAD_1, HEAD_2], "the reviewer reviews the new head");
   assert.deepEqual(ci.reruns, [], "and nothing was rerun by hand");
@@ -5618,6 +5692,7 @@ const PUBLISH_OFF = { providers: { publish: { provider: "slack", enabled: false,
 
 test("A11-161: a run Ready to merge waits through the publisher being off, and enabling it starts and queues no publish run: nothing is published retroactively", async () => {
   const off = await readyRun(ghFor({}), PUBLISH_OFF);
+  off.store.set(readRatherReady(off.store.get()));
   assert.equal(off.settings.publish, null, "the publisher is off: the board has none");
   const enabled = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: off.settings.stateDir,
     tickets: { providers: { publish: { provider: "slack", run: "post {prs} into {dir}", connectors: ["^mcp__chat__send"] } } } });
@@ -6486,7 +6561,7 @@ test("A11-173: a review round's done with a pull request still open is recorded 
   const { run, calls } = await reviewRoundDone(states, WORKER_DONE);
   const entry = run.entry("NBF-1");
   assert.deepEqual(calls, [], "nothing is completed while the pull request is open");
-  assert.deepEqual([entry.outcome?.kind, entry.partial, runStatus(entry)], ["reviewed", undefined, "ready-to-merge"], "the round's ordinary result, with the declaration the worker's done took back");
+  assert.deepEqual([entry.outcome?.kind, entry.partial, runStatus(entry)], ["reviewed", undefined, "awaiting-review"], "the round's ordinary result, with the declaration the worker's done took back");
   states[REVIEWED_PR] = "merged";
   await run.pool.refreshTracker();
   assert.deepEqual(calls.map(({ op, args }) => [op, args[0]]), [["complete", "NBF-1"]], "it completes on the merge, through the board's own completion");

@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.12 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.13 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,8 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.13 (A11-179): `PullFeedback` gains four OPTIONAL fields, `reviewDecision`, `verdictAtHead`, `pendingRequired` and `body`, which the board reads to say whether a pull request is ready to merge (approved at its head, its required checks green there)
+// and who owns a red check, and the base contract gains `readDefaultBranchRed`, OPTIONAL: the checks failing on the head of a repository's default branch. A plugin of 1.12 is read as one that says none of them, and the board then reads its pull requests as not proven ready.
 // 1.12 (A11-160, step 9): `rows` gains the operations of the last callers of `gh` in `src/`, `scripts/` and `host/`, in seven sections (`code-host-rows-{pullwork,audit,closing,classes,queue,readouts,plumbing}.ts`): opening, holding and sweeping pull requests, the label audit, the closing of rows, the CI failure class and the ledgers, the queue and trunk readings, the read-only reporters, and the tool-version agreement, the ledger's retry and the host's scripts. After it no file outside `plugins/github` calls `gh`. A plugin of 1.11 is read as one whose `rows` lack them, which a 1.11 plugin would have to be updated for; while plugins are in-repo that is the same pull request.
 // 1.11 (A11-160, step 8): `rows` gains the operations of the board's reads and posts (`src/board-*`), the health and retro readings (`src/org-health/sweep-readings.ts`, `src/org-retro/`), the DORA reader (`src/dora.ts`), the trace (`src/trace/`) and the
 // chairman's watch and answers (`src/messaging/`), and the runners a caller that keeps its own policy asks for (`runnerWith`, `asyncRunnerWith`): see `code-host-rows.ts`. A plugin of 1.10 is read as one whose `rows` lack them,
@@ -40,10 +42,19 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.12";
+export const CODE_HOST_CONTRACT_VERSION = "1.13";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
+
+/** GitHub's decision on a pull request's reviews: null is a branch that requires none. */
+export type ReviewDecision = "approved" | "changes-requested" | "review-required" | null;
+
+/**
+ * The checks failing on the head of a repository's default branch (contract 1.13): the branch, its head commit, and the names of the checks failing there, check runs and commit statuses both,
+ * the newest of each name as the red-check decider reads it.
+ */
+export type DefaultBranchRed = Readonly<{ branch: string; head: string; failing: readonly string[] }>;
 
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{
@@ -71,6 +82,20 @@ export type PullFeedback = Readonly<{
   approvedAtHead: boolean;
   /** The branch it merges into, or null when GitHub does not say. */
   base: string | null;
+  /**
+   * GitHub's own review decision on the pull request (contract 1.13): `approved`, `changes-requested`, `review-required`, or null when its branch requires no review. Absent when the host does not say, which is
+   * not the same as null.
+   */
+  reviewDecision?: ReviewDecision;
+  /**
+   * What the newest review on the head commit that approves or requests changes says (contract 1.13), by every account but `self`, the reviewer's included (`approvedAtHead` leaves the accounts in `alsoIgnore` out):
+   * `approved`, `changes-requested`, or null when no review takes a side on the head. Absent when the host does not say.
+   */
+  verdictAtHead?: "approved" | "changes-requested" | null;
+  /** The required checks on the head commit that have not concluded, by name (contract 1.13). Empty when every required check has; absent when the host does not say. */
+  pendingRequired?: readonly string[];
+  /** The pull request's body (contract 1.13), where a `Blocked-by:` line names the ticket that owns what it is waiting on. Absent when the host does not say. */
+  body?: string;
   /** The files it changes, by path within its repository. */
   files: readonly string[];
   /** Whether `files` is all of them. Read a page of 100 at a time, up to {@link MAX_FILE_PAGES}: a list cut off there is not complete. */
@@ -191,6 +216,11 @@ export interface CodeHost extends CodeHostPort {
    * move `feedbackAt`), or null for "could not ask".
    */
   readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[]): PullFeedback | null;
+  /**
+   * The checks failing on the head of `repository`'s default branch (contract 1.13), or null for "could not ask": a repository the host cannot read, a branch with no head, and an answer of another shape are all
+   * null. Null is never "nothing is red". A host without it is read as one that names none, and no red check is called main's.
+   */
+  readDefaultBranchRed?(repository: string): DefaultBranchRed | null;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
   /**

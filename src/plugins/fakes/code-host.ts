@@ -6,7 +6,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, MergedFindings, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, DefaultBranchRed, MergedFindings, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -31,7 +31,8 @@ type Pulls = Map<string, FakePull>;
 type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref?: ChangeRef }>; handler: (event: CodeHostEvent) => void };
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
-function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, calls: string[]): Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "readChange"> {
+function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<string, DefaultBranchRed>, login: string | null, calls: string[]):
+  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "readChange"> {
   return {
     readOwnLogin() {
       calls.push("readOwnLogin");
@@ -46,7 +47,11 @@ function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, 
       const authors = (pull.feedback.authors ?? []).filter((author) => !ignored(author));
       const approvedAtHead = pull.reviews.some((review) => review.commit === pull.head && review.state === "APPROVED" && !ignored(review.author));
       return { state: pull.state, feedbackAt: null, failing: [], failures: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
-        base: pull.base, files: pull.files, filesComplete: true, ...pull.feedback, authors };
+        base: pull.base, files: pull.files, filesComplete: true, reviewDecision: null, verdictAtHead: verdictAtHead(pull, self), pendingRequired: [], body: pull.body ?? "", ...pull.feedback, authors };
+    },
+    readDefaultBranchRed(repository) {
+      calls.push(`readDefaultBranchRed ${repository}`);
+      return defaultBranches.get(repository) ?? null;
     },
     readReplies(url, { since, authors }) {
       calls.push(`readReplies ${url}`);
@@ -80,6 +85,13 @@ function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, 
       return { ref, head: pull.head, checks: [], reviews: [], merge: { state: pull.state, armed: pull.merge.armed, mergeable: pull.merge.mergeable } };
     },
   };
+}
+
+/** What the newest review on the pull request's head that approves or requests changes says, by anyone but `self`: the reviewer's too. */
+function verdictAtHead(pull: FakePull, self: string): "approved" | "changes-requested" | null {
+  const rulings = pull.reviews.filter((review) => review.commit === pull.head && review.author !== self && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED"));
+  const newest = rulings.reduce<ReviewState["reviews"][number] | null>((latest, review) => (latest === null || review.at >= latest.at ? review : latest), null);
+  return newest === null ? null : newest.state === "APPROVED" ? "approved" : "changes-requested";
 }
 
 /**
@@ -208,6 +220,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const rowsWorld = emptyRowsWorld();
   const pulls: Pulls = new Map();
   const repositories = new Set<string>();
+  const defaultBranches = new Map<string, DefaultBranchRed>();
   const subscribers: Subscriber[] = [];
   const calls: string[] = [];
   const armed: string[] = [];
@@ -216,7 +229,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const wrapperState: FakeWrapperState = { refusal: null, mintFailures: {} };
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -237,6 +250,10 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     /** Say a repository can be asked about though it holds no pull request: its list of open ones is then empty, and not "could not ask". */
     seedRepository(repository: string) {
       repositories.add(repository);
+    },
+    /** Say what fails on the head of `repository`'s default branch (`main` at head `main-head`, unless a test says otherwise): until it does, the fake cannot be asked and answers null. */
+    seedDefaultBranch(repository: string, failing: readonly string[], over: Partial<DefaultBranchRed> = {}) {
+      defaultBranches.set(repository, { branch: "main", head: "main-head", failing, ...over });
     },
     /** Deliver an event to every subscriber whose filter it matches. */
     emit(event: CodeHostEvent) {

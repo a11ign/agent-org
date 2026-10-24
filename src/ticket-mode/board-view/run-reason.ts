@@ -3,6 +3,7 @@
 import { pullAnswer, type PullAnswer } from "./pull-answer.ts";
 import { afterPartialMerge, stepQueuedLine, stepRunningLine } from "./plan-steps.ts";
 import { completedEarly, settledByPulls } from "./pull-settled.ts";
+import { mergeWaitLine } from "./pull-readiness.ts";
 import { rebaseNote, retargetNote, runStatus, verdictNote, workingNote } from "./pull-status-and-notes.ts";
 import { openPulls, pullsOf, type ViewEntry } from "./view-types-and-filters.ts";
 import { pullLabel } from "./pull-label.ts";
@@ -78,6 +79,11 @@ export function completedLine(entry: ViewEntry): string | null {
   return `completed: ${merged.map(({ url }) => pullLabel(url)).join(", ")} merged${listed > 0 ? `; ${listed} after-merge check${listed === 1 ? "" : "s"} listed` : ""}`;
 }
 
+/** What a reviewed run that is Awaiting review waits on (A11-179): its review, its red checks, its running checks, from the heads the watch read. Null for any other run, and for one that waits on nothing. PURE. */
+function mergeWait(entry: ViewEntry): string | null {
+  return entry.phase === "finished" && entry.outcome?.kind === "reviewed" && runStatus(entry) === "awaiting-review" ? mergeWaitLine(entry) : null;
+}
+
 /**
  * The reason line a run's card shows, and the question it keeps one click away. A needs-human run whose pull requests answered it says "Answered: awaiting
  * review" or "Approved" from them, and keeps what it asked as `question`. A text the card already shows as the rebase, retarget or verdict note is not said a
@@ -94,8 +100,8 @@ export function reasonOf(entry: ViewEntry): Readonly<{ line: string | null; ques
   // A Completed run says what completed it; what its worker said of it (a `done`'s reason, posted on the ticket) is kept one click away (A11-173).
   const completed = completedLine(entry);
   if (completed !== null) return { line: ticketChangeLine(entry) ?? completed, question: asking ?? asked };
-  // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167).
-  return { line: ticketChangeLine(entry) ?? asked ?? stepNote(entry), question: asking };
+  // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167). A reviewed run that is not ready says what it waits on (A11-179).
+  return { line: ticketChangeLine(entry) ?? asked ?? stepNote(entry) ?? mergeWait(entry), question: asking };
 }
 
 

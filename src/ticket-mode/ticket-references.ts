@@ -148,3 +148,24 @@ export function namedTicketClosesReport(body: string, keywords: Keywords): { ok:
   const key = (closing[0] ?? references.find(({ key: named }) => named !== undefined))?.key;
   return key === undefined ? null : ticketClosesReport(body, key, keywords);
 }
+
+/** A body's `Blocked-by:` line, at the start of a line, with or without a list marker or bold around its label: the ticket keys it names follow. */
+const BLOCKED_BY_LINE = /^[ \t]*(?:[-*>][ \t]+)?(?:\*\*|__)?Blocked-by:(?:\*\*|__)?[ \t]*(\S.*)$/gim;
+
+/** The ticket keys a body's `Blocked-by:` lines name, in the order written, each once: `Blocked-by: A11-127, A11-130`. A word that is not a ticket's key is not one. PURE. */
+export function blockedByIn(body: string): string[] {
+  const words = [...body.matchAll(BLOCKED_BY_LINE)].flatMap(([, rest]) => rest.split(/[\s,;]+/).filter((word) => word !== ""));
+  return [...new Set(words.map((word) => REFERENCED.exec(word)?.[1]).filter((name): name is string => name !== undefined && isTicketKey(name)))];
+}
+
+/**
+ * The ticket that owns a red check a run cannot mend (A11-179), or null when none is named: the first ticket other than the run's own (`key`) that the pull request's `Blocked-by:` line names, else the first
+ * key of the run's team that the check's own error lines name (its refusal text: `A11-127 retires this check`). A key of another team in a log is not read, since `UTF-8` and `SHA-256` are written
+ * the same way. PURE.
+ */
+export function ownerOfRed(key: string, body: string, errorLines: readonly string[]): string | null {
+  const blocker = blockedByIn(body).find((name) => !sameKey(name, key));
+  if (blocker !== undefined) return blocker;
+  const named = errorLines.flatMap((line) => [...line.matchAll(new RegExp(KEY_IN_TEXT, "g"))].map(([name]) => name));
+  return named.find((name) => isTeammate(name, key)) ?? null;
+}

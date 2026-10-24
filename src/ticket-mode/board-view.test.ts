@@ -6,6 +6,8 @@ import * as boardView_1 from "./board-view/pull-status-and-notes.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
+import { isReadyToMerge, mergeWaitLine } from "./board-view/pull-readiness.ts";
+import type { PullHead } from "./board-view/view-types-and-filters.ts";
 import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
@@ -15,6 +17,9 @@ import { AWAITING_PERSON_LINE, claimWarning, publishingOffLine, pullReviewText, 
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
 import { CHANGESET_SCAFFOLD, SCAFFOLD_DIRS } from "../scaffold-dirs.ts";
+
+/** A pull request head the watch read as ready to merge: approved at it, no required check red or running (A11-179). */
+const GREEN_HEAD: PullHead = { head: "1a2b3c4d5e6f", approved: true, review: "approved", red: [], pending: [] };
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
   ({ key, title, status, statusOrder, priority, project });
@@ -405,9 +410,82 @@ test("a review run shows as Reviewing while it works, and its reviewed pull requ
   const review = [{ url }];
   assert.equal(runStatus(run({ phase: "running", review })), "reviewing");
   assert.equal(runStatus(run({ phase: "running", review, waiting: true })), "needs-you", "a dialog still needs the person");
-  const reviewed = run({ outcome: { kind: "reviewed", prs: review }, pullStates: { [url]: "open" } });
+  const reviewed = run({ outcome: { kind: "reviewed", prs: review }, pullStates: { [url]: "open" }, pullHeads: { [url]: GREEN_HEAD } });
   assert.equal(runStatus(reviewed), "ready-to-merge");
   assert.equal(runStatus({ ...reviewed, pullStates: { [url]: "merged" } }), "completed");
+});
+
+/** A reviewed run (A11-177's) on one open pull request, which the watch read as `head`: the card's status, its reason line and its outcome. */
+function reviewedRun(head: Partial<PullHead> | null, fields: Partial<ViewEntry> = {}) {
+  const url = "https://github.com/a11ign/a11ign/pull/5717";
+  const entry = run({ outcome: { kind: "reviewed", prs: [{ repo: "a11ign", url }] }, pullStates: { [url]: "open" }, ...(head === null ? {} : { pullHeads: { [url]: { ...GREEN_HEAD, head: "58848c34a1b2", ...head } } }), ...fields });
+  return { entry, url, status: runStatus(entry), line: reasonOf(entry).line, kind: entry.outcome?.kind };
+}
+
+test("A11-179: a reviewed run whose pull request has no approval at its head is Awaiting review, and says review: none yet, with its outcome still reviewed", () => {
+  const unreviewed = reviewedRun({ approved: false, review: "none" });
+  assert.deepEqual([unreviewed.status, unreviewed.line, unreviewed.kind], ["awaiting-review", "review: none yet at 58848c34", "reviewed"]);
+  const changes = reviewedRun({ approved: false, review: "changes-requested" });
+  assert.deepEqual([changes.status, changes.line], ["awaiting-review", "changes requested at 58848c34"]);
+  assert.equal(publishable(unreviewed.entry), false, "a person cannot tick Publish on it");
+  assert.equal(isWatched(unreviewed.entry), true, "and it is read again until it merges, or it could never become ready");
+});
+
+test("A11-179: a reviewed run whose pull request is approved but has a required check red is Awaiting review, and names the check", () => {
+  const red = reviewedRun({ red: ["gate"] });
+  assert.deepEqual([red.status, red.line, red.kind], ["awaiting-review", "checks red: gate", "reviewed"]);
+  const both = reviewedRun({ approved: false, review: "none", red: ["gate", "refusalOwners"] });
+  assert.equal(both.line, "review: none yet at 58848c34; checks red: gate, refusalOwners", "the review first, then the checks");
+  const running = reviewedRun({ pending: ["gate", "suite"] });
+  assert.deepEqual([running.status, running.line], ["awaiting-review", "checks not passed: gate, suite"], "a required check that has not concluded is not green");
+  const all = reviewedRun({ review: "none", red: ["gate"], pending: ["suite"] });
+  assert.equal(all.line, "review: none yet at 58848c34; checks red: gate; checks not passed: suite", "in the order review, red, running");
+});
+
+test("A11-179: a reviewed run whose pull request is approved at its head with every required check green is Ready to merge, with nothing it waits on", () => {
+  const ready = reviewedRun({});
+  assert.deepEqual([ready.status, ready.line, ready.kind, publishable(ready.entry), isReadyToMerge(ready.entry), mergeWaitLine(ready.entry)], ["ready-to-merge", null, "reviewed", true, true, null]);
+});
+
+test("A11-179: a pull request the watch has not read for readiness, or whose host does not say, is not proven ready: not read yet", () => {
+  assert.deepEqual([reviewedRun(null).status, reviewedRun(null).line], ["awaiting-review", "not read yet"], "no watch has recorded a head");
+  const url = reviewedRun(null).url;
+  for (const [why, head] of [["a head recorded before readiness was read", { head: "h1", approved: true }], ["a host that does not say its checks", { head: "h1", approved: true, review: "approved", red: [] }],
+    ["a host that does not say its review", { head: "h1", approved: true, red: [], pending: [] }]] as const) {
+    const unread = run({ outcome: { kind: "reviewed", prs: [{ url }] }, pullStates: { [url]: "open" }, pullHeads: { [url]: head } });
+    assert.deepEqual([runStatus(unread), reasonOf(unread).line], ["awaiting-review", "not read yet"], why);
+  }
+});
+
+test("A11-179: every open pull request of a reviewed run has to be ready, and each is named by its address when more than one waits", () => {
+  const [one, two] = ["https://github.com/a11ign/agent-org/pull/1", "https://github.com/a11ign/control/pull/2"];
+  const both = (second: object) => run({ outcome: { kind: "reviewed", prs: [{ url: one }, { url: two }] }, pullStates: { [one]: "open", [two]: "open" }, pullHeads: { [one]: GREEN_HEAD, [two]: { ...GREEN_HEAD, ...second } } });
+  assert.equal(runStatus(both({})), "ready-to-merge");
+  assert.deepEqual([runStatus(both({ red: ["gate"] })), reasonOf(both({ red: ["gate"] })).line], ["awaiting-review", "a11ign/control #2: checks red: gate"], "one pull request that is not ready is enough");
+  assert.equal(reasonOf(both({ review: "none", approved: false })).line, "a11ign/control #2: review: none yet at 1a2b3c4d");
+  const merged = run({ outcome: { kind: "reviewed", prs: [{ url: one }, { url: two }] }, pullStates: { [one]: "open", [two]: "merged" }, pullHeads: { [one]: GREEN_HEAD } });
+  assert.equal(runStatus(merged), "ready-to-merge", "a merged pull request is not waited for");
+});
+
+test("A11-179: a check red that the board named not this run's is marked so in the red clause, only at the head it was named for, and the card's note names where and who owns it", () => {
+  const url = "https://github.com/a11ign/a11ign/pull/5717";
+  const waiting = (checkHeads: ViewEntry["checkHeads"]) => reviewedRun({ approved: false, review: "none", red: ["gate", "refusalOwners"] }, { checkHeads }).entry;
+  const named = waiting({ [url]: { head: "58848c34a1b2", step: "not-ours", note: "refusalOwners is red on main / not this run's; owned by A11-127", notOurs: { refusalOwners: "A11-127" } } });
+  assert.equal(reasonOf(named).line, "review: none yet at 58848c34; checks red: gate, refusalOwners (not this run's)");
+  assert.equal(checkNote(named), "refusalOwners is red on main / not this run's; owned by A11-127", "the note says where it is red and which ticket owns it");
+  assert.equal(runStatus(named), "awaiting-review", "a red check that is not the run's still keeps the pull request from being ready: GitHub would not merge it");
+  const stale = waiting({ [url]: { head: "0ld0ld0ld0ld", step: "not-ours", note: "x", notOurs: { refusalOwners: null } } });
+  assert.equal(reasonOf(stale).line, "review: none yet at 58848c34; checks red: gate, refusalOwners", "a record made at another head marks nothing");
+});
+
+test("A11-179: only a reviewed run that is Awaiting review gets the clause line: a ready-pr run, a handed-back run and a Published one keep their own", () => {
+  const url = "https://github.com/a11ign/a11ign/pull/5717";
+  const unready = { approved: false, review: "none" as const };
+  assert.equal(reasonOf(run({ outcome: { kind: "ready-pr", prs: [{ url }] }, pullStates: { [url]: "open" }, pullHeads: { [url]: { ...GREEN_HEAD, ...unready } } })).line, null);
+  assert.equal(reasonOf(reviewedRun(unready, { handedBack: "keeps getting feedback" }).entry).line, "keeps getting feedback");
+  const published = reviewedRun(unready, { published: { link: null } });
+  assert.deepEqual([published.status, published.line], ["published", null], "a published run is as it was");
+  assert.equal(reasonOf(reviewedRun(unready, { pullStates: { "https://github.com/a11ign/a11ign/pull/5717": "merged" } }).entry).line, "completed: a11ign/a11ign #5717 merged");
 });
 
 test("A11-153: a finished run whose pull requests have all merged is Completed, whatever kind its outcome was, and one whose all closed unmerged is Cancelled", () => {
@@ -677,7 +755,7 @@ test("a pull request's repository is read from its GitHub URL, and anything else
 });
 
 const shipped = (fields: Partial<ViewEntry> = {}): ViewEntry =>
-  ({ ticket: { key: "NBF-1" }, phase: "finished", outcome: { kind: "reviewed", prs: [{ url: "https://github.com/x/a/pull/1" }] }, ...fields });
+  ({ ticket: { key: "NBF-1" }, phase: "finished", outcome: { kind: "reviewed", prs: [{ url: "https://github.com/x/a/pull/1" }] }, pullHeads: { "https://github.com/x/a/pull/1": GREEN_HEAD }, ...fields });
 
 test("a reviewed run is Published once a publish run posted it, and still Completed once its pull requests merge", () => {
   assert.equal(runStatus(shipped()), "ready-to-merge");
@@ -1251,7 +1329,7 @@ test("A11-154: a run the board handed back reads Needs you whatever its outcome 
     assert.ok(runActions(withOpenPull({ outcome: outcome as ViewEntry["outcome"], handedBack: handed })).includes("respond"), `${outcome.kind}: Respond starts another round`);
   }
   assert.equal(runStatus(withOpenPull({ outcome: { kind: "ready-pr", prs: [OPEN_PR] } })), "awaiting-review", "a ready run not handed back still awaits its review");
-  assert.equal(runStatus(withOpenPull({ outcome: { kind: "reviewed", prs: [OPEN_PR] }, handedBack: undefined })), "ready-to-merge");
+  assert.equal(runStatus(withOpenPull({ outcome: { kind: "reviewed", prs: [OPEN_PR] }, handedBack: undefined, pullHeads: { [OPEN_PR.url]: GREEN_HEAD } })), "ready-to-merge");
   assert.equal(runStatus(run({ pullStates: { [OPEN_PR.url]: "merged" }, outcome: { kind: "reviewed", prs: [OPEN_PR] }, handedBack: handed })), "completed", "a merge settles it, handed back or not");
   assert.equal(runStatus(withOpenPull({ trackerState: "completed", outcome: { kind: "reviewed", prs: [OPEN_PR] }, handedBack: handed })), "completed", "and so does the tracker");
 });

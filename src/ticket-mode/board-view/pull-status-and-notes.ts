@@ -2,6 +2,7 @@ import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls,
 import { SCAFFOLD_DIRS } from "../../scaffold-dirs.ts";
 import { pullAnswer } from "./pull-answer.ts";
 import { completedEarly, settledByPulls } from "./pull-settled.ts";
+import { isReadyToMerge } from "./pull-readiness.ts";
 import { currentStepOf, currentStepPaths } from "./plan-steps.ts";
 
 /**
@@ -296,7 +297,8 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (entry.handedBack !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";
   if (kind === "draft-pr" || kind === "ready-pr") return "awaiting-review";
-  if (kind === "reviewed") return entry.published ? "published" : "ready-to-merge";
+  // A reviewed outcome says the worker's feedback round ended, not that GitHub would merge: the pull requests have to be approved at their head and green there (A11-179).
+  if (kind === "reviewed") return entry.published ? "published" : isReadyToMerge(entry) ? "ready-to-merge" : "awaiting-review";
   if (kind === "needs-human" && pullAnswer(entry) !== null) return "awaiting-review";
   if (HANDED_BACK.has(kind)) return "needs-you";
   if (kind === "checked") return "checked";
@@ -489,13 +491,13 @@ export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: rea
 }
 
 /**
- * Whether the board watches a run's pull requests for new feedback: it is Ready to merge or Published, or a ready-pr run waiting for review
- * (opened ready on a machine with `tickets.drafts: false`, with no Approve to come). It holds no workspace, and has a pull request still open.
- * Merged or closed pull requests are never watched.
+ * Whether the board watches a run's pull requests for new feedback: it is Ready to merge or Published, a reviewed run still waiting on its review or its checks (A11-179: it is read again until
+ * it merges, or it could never become ready), or a ready-pr run waiting for review (opened ready on a machine with `tickets.drafts: false`, with no Approve to come). It holds no workspace, and has a
+ * pull request still open. Merged or closed pull requests are never watched.
  */
 export function isWatched(entry: ViewEntry): boolean {
   const status = runStatus(entry);
-  const waitingReady = status === "awaiting-review" && entry.outcome?.kind === "ready-pr";
+  const waitingReady = status === "awaiting-review" && (entry.outcome?.kind === "ready-pr" || entry.outcome?.kind === "reviewed");
   return (status === "ready-to-merge" || status === "published" || waitingReady) && !isParked(entry) && openPulls(entry).length > 0;
 }
 
