@@ -11,6 +11,7 @@ import { needsDecision } from "../open-decisions.ts";
 import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
 import type { TicketRead } from "../ticket-read.ts";
 import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
+import { logEvent, type RunEvent } from "./run-log.ts";
 
 
 
@@ -378,7 +379,9 @@ export type PublishRun = Readonly<{
  * `paused`: no queued entry starts while it is true. A new queue starts PAUSED, so queueing is never also starting: a person can queue tickets
  * before what the workers need is ready (a dev environment, a merge) and start them on the board when it is.
  */
-export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean; publish?: PublishRun; writers?: readonly WriterRun[] }>;
+export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean; publish?: PublishRun; writers?: readonly WriterRun[];
+  /** What happened to each run, by ticket key, oldest first (A11-219, ADR 0006). Kept beside the entries so it outlives `dismiss`, `remove` and every transition that builds an entry afresh. Unset until something is logged. */
+  runLog?: Readonly<Record<string, readonly RunEvent[]>> }>;
 
 /**
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list
@@ -563,7 +566,8 @@ export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunCho
   }
   const plan = (ticket: Ticket) => (planFirst?.keys.has(ticket.key) ? { plan: planFirst.choice } : {});
   const batch = (ticket: Ticket) => (batches.has(ticket.key) ? { batch: batches.get(ticket.key) } : {});
-  return { ...queue, entries: [...queue.entries, ...fresh.map((ticket): Entry => ({ ticket, repos: [], ...choice, ...plan(ticket), ...batch(ticket), phase: "queued", queuedAt: now }))] };
+  const added: Queue = { ...queue, entries: [...queue.entries, ...fresh.map((ticket): Entry => ({ ticket, repos: [], ...choice, ...plan(ticket), ...batch(ticket), phase: "queued", queuedAt: now }))] };
+  return fresh.reduce<Queue>((next, ticket) => logEvent(next, ticket.key, now, { kind: "queued", model: choice.model, effort: choice.effort, planFirst: planFirst?.keys.has(ticket.key) === true }), added);
 }
 
 /** The ticket is planned on its own, without the rest of its batch. */
@@ -577,9 +581,11 @@ export function amend(queue: Queue, key: string, choice: Partial<RunChoice>): Qu
 }
 
 /** Take a queued entry off. A live or finished one stays: stop the first, and the second is a record. */
-export function remove(queue: Queue, key: string): Queue {
-  // A queued talk session is not a run of its own: taking it off puts back the finished run it replaced, with its outcome and pull requests.
-  return { ...queue, entries: queue.entries.flatMap((entry): Entry[] => (entry.ticket.key !== key || entry.phase !== "queued" ? [entry] : entry.talkFrom ? [{ ...entry.talkFrom }] : [])) };
+export function remove(queue: Queue, key: string, now?: number): Queue {
+  // A queued talk session is not a run of its own: taking it off puts back the finished run it replaced, with its outcome and pull requests, and logs nothing: the run was not removed.
+  const entry = find(queue, key);
+  const removed = { ...queue, entries: queue.entries.flatMap((each): Entry[] => (each.ticket.key !== key || each.phase !== "queued" ? [each] : each.talkFrom ? [{ ...each.talkFrom }] : [])) };
+  return entry?.phase === "queued" && entry.talkFrom === undefined ? logEvent(removed, key, now, { kind: "removed" }) : removed;
 }
 
 /**
@@ -617,11 +623,11 @@ export function clearEdit(queue: Queue, key: string): Queue {
  * neither is touched, and nor is a parked one: its workspace is closed first (the pool's `dismiss` does both), so no herdr workspace is left open
  * with no run on the board to close it. A run the publish run under way is posting stays until it has posted.
  */
-export function dismiss(queue: Queue, key: string): Queue {
+export function dismiss(queue: Queue, key: string, now?: number): Queue {
   const entry = find(queue, key);
   const isUnsettledEntry = entry === undefined || entry.phase !== "finished" || isParked(entry) || isBeingPublished(entry, queue.publish);
   if (isUnsettledEntry) return queue;
-  return { ...queue, entries: queue.entries.filter((e) => e.ticket.key !== key) };
+  return logEvent({ ...queue, entries: queue.entries.filter((e) => e.ticket.key !== key) }, key, now, { kind: "dismissed" });
 }
 
 /**
@@ -642,7 +648,7 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
+  return logEvent({ ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] }, key, now, { kind: "requeued", why: "retry" });
 }
 
 /** A run whose outcome is its result, pull requests to show for it: retried, they would only be made again. */

@@ -106,7 +106,7 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     // A dialog that is not a start dialog (A11-174): a Claude Code safety prompt is answered No and the agent told why, any other is left for a person, with its first line.
     const prompt = sitting ? readPrompt(ctx, runPlace(ctx, entry)) : null;
     if (prompt !== null && declineSafetyPrompt(ctx, entry, runPlace(ctx, entry), prompt)) continue;
-    updateEach(ctx, runMembers(ctx, entry), (queue, member) => observe(queue, member, seen, prompt?.firstLine));
+    updateEach(ctx, runMembers(ctx, entry), (queue, member) => observe(queue, member, seen, prompt?.firstLine, ctx.now()));
     const latest = () => store.get().entries.find((e) => e.ticket.key === key) ?? entry;
     const current = latest();
     const outcomePath = join(dir, OUTCOME_FILE);
@@ -512,7 +512,7 @@ function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: s
   const key = entry.ticket.key;
   followUpdatesFromMain(ctx, entry, readable);
   const heads = stampedBlocks(pullHeadsOf(readable), entry.pullHeads, ctx.now());
-  if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads));
+  if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads, ctx.now()));
   const open = readable.filter(({ read }) => read.state === "open");
   const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
@@ -541,7 +541,7 @@ function followUpdatesFromMain(ctx: PoolContext, entry: Entry, readable: readonl
 function clearOverStaleBlocks(ctx: PoolContext): void {
   for (const entry of ctx.store.get().entries) {
     const over = entry.phase === "finished" && isStaleBlockNote(entry.handedBack) && (openPulls(entry).length === 0 || SETTLED.has(entry.trackerState ?? ""));
-    if (over) update(ctx, (queue) => recordStaleBlock(queue, entry.ticket.key, null));
+    if (over) update(ctx, (queue) => recordStaleBlock(queue, entry.ticket.key, null, ctx.now()));
   }
 }
 
@@ -553,7 +553,7 @@ function flagStaleBlock(ctx: PoolContext, key: string): void {
   const { now, store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   if (entry === undefined) return;
-  const next = recordStaleBlock(store.get(), key, staleBlockNote(entry, now()));
+  const next = recordStaleBlock(store.get(), key, staleBlockNote(entry, now()), now());
   if (next.entries.find((e) => e.ticket.key === key)?.handedBack !== entry.handedBack) update(ctx, () => next);
 }
 
