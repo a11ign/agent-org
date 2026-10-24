@@ -1,0 +1,30 @@
+/* The fonts are bundled: the Fontsource packages carry the woff2 files, and Vite copies them into `dist/`. Nothing is fetched from another origin. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+:root {
+  color-scheme: light dark;
+  --font-sans: "Inter Variable", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.counter {
+  font: inherit;
+  padding: 0.5rem 1rem;
+}

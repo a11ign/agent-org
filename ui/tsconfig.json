@@ -1,0 +1,15 @@
+{
+  // The UI's program, checked by `pnpm ui:typecheck`: `astro check` reads the `.astro` files and `tsc --noEmit` (the toolchain's required `tsc`, ADR 0043) every `.ts` and `.tsx`.
+  // It extends Astro's strict base, which is a bundler-resolved ESM program, and adds React's JSX and the toolchain base's `erasableSyntaxOnly`.
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    // As the toolchain base has it: the files stay inside the subset Node can strip types from, so an enum or a parameter property is refused.
+    "erasableSyntaxOnly": true,
+    "types": ["node", "@rstest/core/globals"]
+  },
+  // `../src/ticket-mode/capture.ts` is reached by the screenshot helper (A11-151's `captureName` and `pngSize`), so the program names it by import only.
+  "include": [".astro/types.d.ts", "astro.config.ts", "rstest.config.ts", "dev/**/*", "src/**/*", "test/**/*"],
+  "exclude": ["dist", "node_modules", "screenshots"]
+}
