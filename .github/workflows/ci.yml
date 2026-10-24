@@ -248,8 +248,21 @@ jobs:
         run: pnpm ui:typecheck
       - name: pnpm ui:build -- static files in ui/dist
         run: pnpm ui:build
+      # THE RELEASE'S PACK STEP, AS A DRY RUN (A11-191): the same command `release.yml`'s `ui-build` runs, with the tag `dry-run`, writing to the runner and uploading to no Release. A pull request that breaks
+      # how the build is packed fails here and not in the release. `src/packaging/ui-asset.test.ts` holds this install, this build and this pack equal to the release job's.
+      - name: Pack the UI asset -- agent-org-ui-<tag>.tar.gz and its sha256
+        env:
+          ASSET_TAG: dry-run
+        run: node scripts/ui-asset.ts pack ui/dist "$ASSET_TAG" "$RUNNER_TEMP/ui-asset"
       - name: pnpm ui:test -- components, dev proxy and page checks, with the placeholder's screenshots
         run: pnpm ui:test
+      # The two files a release would attach, kept with the run so a reviewer can see them (the pull request links this artifact).
+      - name: The dry run's UI asset, archived
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-org-ui-dry-run
+          path: ${{ runner.temp }}/ui-asset/*
+          if-no-files-found: error
       # The screenshots the page checks took, kept with the run so a reviewer can see them without a checkout.
       - name: The placeholder page's screenshots, archived
         if: always()

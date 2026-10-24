@@ -11,7 +11,9 @@
  *   - concurrency (`group: release`, never cancelled in flight) ............ HERE, `concurrencyProblems` (new: the old file had it, and no test did);
  *   - reach (no registry, OIDC, secret; no tag deleted or moved) ........... HERE, `reachProblems`, over the caller's text; the called workflow's own `tag` job holds
  *     `contents: write` and runs no caller code, and `kind: tag` skips its only `id-token` job (toolchain `release-per-merge.test.ts`: the publish job alone holds OIDC). The call
- *     still HOLDS `id-token: write`, because a called workflow's job permissions are checked against the caller's at load, `if:` or not (ceo, review of #352);
+ *     still HOLDS `id-token: write`, because a called workflow's job permissions are checked against the caller's at load, `if:` or not (ceo, review of #352). THE ONE EXCEPTION is A11-191's
+ *     `ui-attach`, which ADDS the two UI files to the Release just cut (`gh release upload`, the tarball and then its checksum, never `--clobber`): those two exact lines are the only Release
+ *     write allowed, `uiJobProblems` pins the jobs around them, and every other `gh release` write, a changed upload and `--clobber` are still refused;
  *   - writes (the one push is of the tag, atomic, never forced, no `gh api` write) ... toolchain `release-parity.test.ts`, "parity G5: the tag step pushes every tag
  *     atomically and never forced ..." and its mutants "... seen to FAIL on a push that is not atomic, one that is forced ...". The caller has no step to push with, which
  *     `callProblems` in `release-tag-on-merge.test.ts` pins;
@@ -28,7 +30,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
-interface Job { permissions?: Record<string, string> | string; concurrency?: { group?: string; "cancel-in-progress"?: boolean }; uses?: string; with?: Record<string, unknown>; steps?: unknown[] }
+interface Step { name?: string; uses?: string; run?: string }
+interface Job { permissions?: Record<string, string> | string; concurrency?: { group?: string; "cancel-in-progress"?: boolean }; uses?: string; with?: Record<string, unknown>; steps?: Step[]; needs?: string | string[]; if?: string }
 interface Workflow { on: unknown; permissions?: Record<string, string> | string; jobs: Record<string, Job> }
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -39,6 +42,20 @@ const WRITABLE = ["contents"];
 const READABLE = ["contents", "checks"];
 
 const clone = (w: Workflow): Workflow => structuredClone(w);
+
+const UPLOAD_TARBALL = 'gh release upload "$ASSET_TAG" "$tarball" --repo "$GITHUB_REPOSITORY"';
+const UPLOAD_CHECKSUM = 'gh release upload "$ASSET_TAG" "$checksum" --repo "$GITHUB_REPOSITORY"';
+
+/** The run text of `ui-attach`'s tarball upload line replaced by `line`. */
+function replaceUpload(w: Workflow, line: string): void {
+  for (const step of w.jobs["ui-attach"].steps ?? []) if (step.run !== undefined) step.run = step.run.replace(UPLOAD_TARBALL, line);
+}
+
+/** The two upload lines of `ui-attach` in the other order. */
+function swapUploads(w: Workflow): void {
+  for (const step of w.jobs["ui-attach"].steps ?? []) if (step.run !== undefined) step.run = step.run.replace(UPLOAD_TARBALL, "@@").replace(UPLOAD_CHECKSUM, UPLOAD_TARBALL).replace("@@", UPLOAD_CHECKSUM);
+}
+
 /** The job that calls the shared workflow and tags: `consumer-check` (a11ign/a11ign#4412) precedes it in the file and holds `contents: read` alone. */
 const callJob = (w: Workflow): Job => Object.values(w.jobs).find((j) => j.uses !== undefined) ?? (Object.values(w.jobs)[0] as Job);
 
@@ -97,9 +114,13 @@ function concurrencyProblems(w: Workflow): string[] {
   return problems;
 }
 
+/** The workflow as text the patterns read: JSON, with the line breaks of a multi-line `run` as line breaks again, so `\b` finds a command that starts a line. */
+const textOf = (w: Workflow): string => JSON.stringify(w).replaceAll("\\n", "\n");
+
 /** Nothing in the caller reaches a registry, an OIDC provider or a secret; nothing deletes a tag or a Release, or force-moves one. Comments are not the caller's text. */
-function reachProblems(w: Workflow, text: string = JSON.stringify(w)): string[] {
+function reachProblems(w: Workflow, text: string = textOf(withoutUiUploads(w))): string[] {
   const forbidden: Array<[RegExp, string]> = [
+    [/--clobber/, "an upload that replaces a file already on a Release"],
     [/oidc/i, "an OIDC provider or token (the `id-token` permission is `permissionProblems`'s)"],
     [/NPM_TOKEN|NODE_AUTH_TOKEN|registry-url/, "a registry token or URL"],
     [/\b(?:npm|pnpm)\s+publish|changeset\s+publish/, "a publish command"],
@@ -109,8 +130,42 @@ function reachProblems(w: Workflow, text: string = JSON.stringify(w)): string[] 
   return forbidden.filter(([re]) => re.test(text)).map(([, what]) => `the workflow holds ${what}`);
 }
 
+/**
+ * The workflow without the one Release write there is (A11-191): `ui-attach` ADDS the two UI files to the Release just cut, the tarball and then its checksum, never replacing one. Taking exactly those
+ * two lines out leaves nothing that may write to a Release, which is what `reachProblems` reads.
+ */
+function withoutUiUploads(w: Workflow): Workflow {
+  const copy = clone(w);
+  for (const step of copy.jobs["ui-attach"]?.steps ?? []) if (step.run !== undefined) step.run = step.run.replaceAll(UPLOAD_TARBALL, "").replaceAll(UPLOAD_CHECKSUM, "");
+  return copy;
+}
+
+/**
+ * The UI build is attached by two jobs that follow the call (A11-191): `ui-build` needs the call, runs only when it succeeded, holds `contents: read` and runs the repository's code; `ui-attach` needs
+ * `ui-build`, runs only when a tag was found, holds `contents: write`, checks nothing out and runs none of the repository's code, and uploads the tarball and then the checksum.
+ */
+function uiJobProblems(w: Workflow): string[] {
+  const build = w.jobs["ui-build"];
+  const attach = w.jobs["ui-attach"];
+  if (build === undefined || attach === undefined) return ["the workflow has no ui-build or no ui-attach job"];
+  const problems: string[] = [];
+  if (build.needs !== "release") problems.push(`ui-build needs ${JSON.stringify(build.needs)}, not the call (release)`);
+  if (build.if !== "needs.release.result == 'success'") problems.push(`ui-build runs on ${JSON.stringify(build.if)}, not only when the release succeeded`);
+  if (JSON.stringify(build.permissions) !== '{"contents":"read"}') problems.push(`ui-build holds ${JSON.stringify(build.permissions)}, not contents: read alone: it runs the repository's code`);
+  if (attach.needs !== "ui-build") problems.push(`ui-attach needs ${JSON.stringify(attach.needs)}, not ui-build`);
+  if (attach.if !== "needs.ui-build.outputs.tag != ''") problems.push(`ui-attach runs on ${JSON.stringify(attach.if)}, not only when a tag was found`);
+  if (JSON.stringify(attach.permissions) !== '{"contents":"write"}') problems.push(`ui-attach holds ${JSON.stringify(attach.permissions)}, not contents: write alone`);
+  for (const step of attach.steps ?? []) {
+    if (step.uses?.startsWith("actions/checkout@")) problems.push("ui-attach checks the repository out, and it holds the write token");
+    if (/\b(?:pnpm|npm|node|npx)\b/.test(step.run ?? "")) problems.push(`ui-attach runs the repository's or a package's code: ${step.run}`);
+  }
+  const uploads = (attach.steps ?? []).flatMap((step) => (step.run ?? "").split("\n").filter((line) => line.includes("gh release upload")).map((line) => line.trim()));
+  if (JSON.stringify(uploads) !== JSON.stringify([UPLOAD_TARBALL, UPLOAD_CHECKSUM])) problems.push(`ui-attach uploads ${JSON.stringify(uploads)}, not the tarball and then the checksum`);
+  return problems;
+}
+
 const PROPERTIES: Array<[string, (w: Workflow) => string[]]> = [
-  ["triggers", triggerProblems], ["permissions", permissionProblems], ["concurrency", concurrencyProblems], ["reach", (w) => reachProblems(w)],
+  ["triggers", triggerProblems], ["permissions", permissionProblems], ["concurrency", concurrencyProblems], ["reach", (w) => reachProblems(w)], ["ui", uiJobProblems],
 ];
 const problemsOf = (w: Workflow): string[] => PROPERTIES.flatMap(([name, check]) => check(w).map((p) => `${name}: ${p}`));
 
@@ -120,7 +175,7 @@ test("the real release.yml has no trigger, permission, concurrency or reach prob
 
 test("positive control: the properties are about something (one push trigger, one call job that writes contents, and a concurrency block to read)", () => {
   assert.equal(Object.keys(REAL.on as object).length, 1);
-  assert.equal(Object.keys(REAL.jobs).length, 2, "the consumer-check job and the call");
+  assert.deepEqual(Object.keys(REAL.jobs), ["consumer-check", "release", "ui-build", "ui-attach"], "the consumer-check job, the call, and the two jobs that build and attach the UI (A11-191)");
   assert.equal((callJob(REAL).permissions as Record<string, string>)["contents"], "write");
   assert.equal(callJob(REAL).concurrency?.group, "release");
   assert.equal((callJob(REAL).permissions as Record<string, string>)["id-token"], "write");
@@ -149,14 +204,35 @@ test("positive control: each copy with ONE thing broken is refused by the proper
     ["reach", "inherited secrets", (w) => { (callJob(w) as Record<string, unknown>)["secrets"] = "inherit"; }],
     ["reach", "an npm publish step", (w) => { callJob(w).steps = [{ run: "pnpm publish" }]; }],
     ["reach", "a force push of a tag", (w) => { callJob(w).steps = [{ run: "git push --force origin HEAD:refs/tags/v1.0.0" }]; }],
+    ["reach", "a Release deleted", (w) => { (w.jobs["ui-attach"].steps ??= []).push({ run: 'gh release delete "$ASSET_TAG" --yes' }); }],
+    ["reach", "a Release edited", (w) => { (w.jobs["ui-attach"].steps ??= []).push({ run: 'gh release edit "$ASSET_TAG" --notes x' }); }],
+    ["reach", "an upload from the call job", (w) => { callJob(w).steps = [{ run: UPLOAD_TARBALL }]; }],
+    // An upload that is not exactly one of the two lines is a Release write `reach` refuses, and the `ui` property refuses the changed upload too: both own it.
+    ["reach+ui", "an upload that replaces (--clobber)", (w) => { replaceUpload(w, `${UPLOAD_TARBALL} --clobber`); }],
+    ["reach+ui", "an upload of another file", (w) => { replaceUpload(w, 'gh release upload "$ASSET_TAG" ./other.txt --repo "$GITHUB_REPOSITORY"'); }],
+    ["ui", "ui-build waiting on nothing", (w) => { delete w.jobs["ui-build"].needs; }],
+    ["ui", "ui-build running whatever the release did", (w) => { delete w.jobs["ui-build"].if; }],
+    ["ui", "ui-build given the write token", (w) => { w.jobs["ui-build"].permissions = { contents: "write" }; }],
+    ["ui", "ui-attach running with no tag", (w) => { delete w.jobs["ui-attach"].if; }],
+    ["ui", "ui-attach given read only", (w) => { w.jobs["ui-attach"].permissions = { contents: "read" }; }],
+    ["ui", "ui-attach checking the repository out", (w) => { (w.jobs["ui-attach"].steps ??= []).unshift({ uses: "actions/checkout@v7" }); }],
+    ["ui", "ui-attach running the repository's code", (w) => { (w.jobs["ui-attach"].steps ??= []).push({ run: "pnpm install" }); }],
+    ["ui", "the checksum uploaded before the tarball", swapUploads],
+    ["permissions+ui", "ui-attach given pull-requests: write", (w) => { w.jobs["ui-attach"].permissions = { contents: "write", "pull-requests": "write" }; }],
   ];
-  for (const [owner, what, mutate] of mutants) {
+  for (const [owners, what, mutate] of mutants) {
     const broken = clone(REAL);
     mutate(broken);
     const found = problemsOf(broken);
-    assert.ok(found.some((p) => p.startsWith(`${owner}:`)), `${what}: not refused by the ${owner} property (${JSON.stringify(found)})`);
-    assert.ok(found.every((p) => p.startsWith(`${owner}:`)), `${what}: refused by a property that does not own it (${JSON.stringify(found)})`);
+    for (const owner of owners.split("+")) assert.ok(found.some((p) => p.startsWith(`${owner}:`)), `${what}: not refused by the ${owner} property (${JSON.stringify(found)})`);
+    assert.ok(found.every((p) => owners.split("+").some((owner) => p.startsWith(`${owner}:`))), `${what}: refused by a property that does not own it (${JSON.stringify(found)})`);
   }
+});
+
+test("the real release.yml attaches the two UI files and nothing else to a Release: the reach property sees the uploads only when they are not exactly the two lines", () => {
+  assert.deepEqual(reachProblems(REAL), []);
+  assert.equal(WORKFLOW_TEXT.split("\n").filter((line) => line.trim() === UPLOAD_TARBALL || line.trim() === UPLOAD_CHECKSUM).length, 2);
+  assert.deepEqual(reachProblems(REAL, textOf(REAL)).length > 0, true, "with the two lines left in, the pattern notices a Release write: the exception is what lets them through");
 });
 
 test("positive control, the other direction: the header comments name the registry and OIDC to refuse them, so the pattern WOULD notice them in text, and the parsed call has none", () => {
