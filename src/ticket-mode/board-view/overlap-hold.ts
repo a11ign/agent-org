@@ -155,11 +155,15 @@ export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): Ov
 export function heldClaims(entries: readonly ViewEntry[], selves: readonly ViewEntry[]): HeldClaim[] {
   const keys = new Set(selves.map(({ ticket }) => ticket.key));
   return entries.filter((other) => !keys.has(other.ticket.key) && !selves.some((self) => exempt(self, other))).flatMap((other) => {
-    const running = other.phase === "starting" || other.phase === "running";
-    const state = running ? "running" : holds(other) ? "open pull request" : "queued";
     const paths = holds(other) ? footprintOf(other) : contested(other);
-    return paths.length === 0 ? [] : [{ key: other.ticket.key, state, paths }];
+    return paths.length === 0 ? [] : [{ key: other.ticket.key, state: claimState(other), paths }];
   });
+}
+
+/** Why a run holds paths a planner is shown: it is `running`, it has an `open pull request`, or it is still `queued` and contests them. PURE. */
+function claimState(run: ViewEntry): string {
+  if (run.phase === "starting" || run.phase === "running") return "running";
+  return holds(run) ? "open pull request" : "queued";
 }
 
 /**

@@ -200,13 +200,18 @@ function overlapNote(overlap: OverlapWait): string {
   const pull = overlap.pull === null ? "" : ` #${overlap.pull}`;
   if (overlap.path === null) return `Waits on ${overlap.key}${pull}: its changed files are not read yet`;
   const both = `Waits on ${overlap.key}${pull}: both touch ${overlap.overlaps.map(({ path }) => path).join(", ")}`;
+  const narrow = foldersToNarrow(overlap.overlaps);
+  return narrow === null ? both : `${both}; a folder claim, not a shared file: narrow ${narrow.join(" and ")} in ${narrow.length === 1 ? "its plan" : "their plans"}`;
+}
+
+/** Whose directory claims to narrow, as "A11-196's `ui/test/`, `ui/captures/`" for each run, when every overlap is a directory claim; null when a file is shared for real. PURE. */
+function foldersToNarrow(overlaps: OverlapWait["overlaps"]): string[] | null {
+  if (overlaps.some(({ folderOf }) => folderOf === null)) return null;
   const foldersOf = new Map<string, Set<string>>();
-  for (const { folderOf, folder } of overlap.overlaps) {
+  for (const { folderOf, folder } of overlaps) {
     if (folderOf !== null && folder !== null) foldersOf.set(folderOf, (foldersOf.get(folderOf) ?? new Set()).add(`\`${folder}\``));
   }
-  if (overlap.overlaps.some(({ folderOf }) => folderOf === null)) return both;
-  const narrow = [...foldersOf].map(([key, folders]) => `${key}'s ${[...folders].join(", ")}`);
-  return `${both}; a folder claim, not a shared file: narrow ${narrow.join(" and ")} in ${narrow.length === 1 ? "its plan" : "their plans"}`;
+  return [...foldersOf].map(([key, folders]) => `${key}'s ${[...folders].join(", ")}`);
 }
 
 /**

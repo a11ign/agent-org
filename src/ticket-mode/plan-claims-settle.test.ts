@@ -102,7 +102,7 @@ test("A11-212: a plan of per-feature folders and files is attached, whatever els
 
 test("A11-212: a run briefed before this check, with no claims file, is not refused for a folder", async () => {
   const { dir, entry, end } = await planning();
-  rmSync(join(dir, CLAIMS_GIVEN_FILE));
+  rmSync(join(dir, CLAIMS_GIVEN_FILE), { force: true });
   await end(planOf("agent-org:ui/test/"));
   assert.equal(entry("A11-212").outcome, undefined);
 });

@@ -59,7 +59,7 @@ import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
 import { findingsMiss, parseFindingsGiven, retryAsk } from "./blocker-findings-check.ts";
-import { parseOrder } from "./batch-order.ts";
+import { type Order, parseOrder } from "./batch-order.ts";
 import { checkOutcome, isStale } from "./outcome.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMisses, parseClaimsGiven, planClaimPaths, siblingClaims } from "./path-claims.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
@@ -667,6 +667,15 @@ function planClaims(ticketDir: string, io: StopIo): { key: string; planDir: stri
   });
 }
 
+/** The order a batch planner wrote beside its tickets' plan folders (`order.json`), or null for a ticket planned alone, a batch that wrote none yet, or one the board would refuse (which sequences nothing). */
+function batchOrder(plans: readonly Readonly<{ key: string; planDir: string }>[], io: StopIo): Order | null {
+  if (plans.length < 2) return null;
+  const file = join(dirname(plans[0].planDir), ORDER_FILE);
+  if (!io.exists(file)) return null;
+  const parsed = parseOrder(io.read(file), plans.map(({ key }) => key));
+  return "order" in parsed ? parsed.order : null;
+}
+
 /**
  * The one automatic retry of a plan that claims a folder other tickets write into (A11-212): a `planned` outcome, a brief that listed the paths other tickets hold, no retry made yet,
  * and a plan folder, without a question, whose paths fail the check the board's settle step applies (`path-claims.ts`). For a batch the tickets are also checked against each other, unless the batch's `order.json` orders
@@ -681,9 +690,7 @@ function claimsRetry(ticketDir: string, { text, mtime }: OutcomeRead, io: StopIo
     const held = parseClaimsGiven(io.read(given));
     if (held === null) return { code: 0, say: [`ticket:hook: ${given} is not a list of held paths, so the plan was not checked and the stop is ALLOWED.`] };
     const plans = planClaims(ticketDir, io);
-    const orderFile = plans.length > 1 ? join(dirname(plans[0].planDir), ORDER_FILE) : null;
-    const parsed = orderFile !== null && io.exists(orderFile) ? parseOrder(io.read(orderFile), plans.map(({ key }) => key)) : null;
-    const order = parsed !== null && "order" in parsed ? parsed.order : null;
+    const order = batchOrder(plans, io);
     const misses = plans.flatMap(({ key, planDir, paths }) => {
       const folders = folderClaimMisses(paths, [...held, ...siblingClaims(key, plans, order)]);
       return folders.length === 0 ? [] : [{ key, planDir, folders }];

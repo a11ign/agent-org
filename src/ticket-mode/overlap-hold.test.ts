@@ -65,18 +65,33 @@ test("A11-212: a folder inside another's folder overlaps at the narrower folder,
   assert.equal(waitNote(entries[1], entries), "Waits on A11-196: both touch ui/test/settings/; a folder claim, not a shared file: narrow A11-196's `ui/test/` in its plan");
 });
 
-test("A11-212: a hold is still one hold: the first run that overlaps is named, and `path`, which Start anyway records, is still the waiting run's own first overlapping claim", () => {
+test("A11-212: a hold is still one hold: the first run that overlaps is named, and `path`, which Start anyway records, is the waiting run's own first overlapping claim", () => {
   const entries = holderAndWaiter(["agent-org:ui/src/shell/App.tsx"], ["agent-org:ui/src/shell/", "agent-org:docs/"]);
   const wait = overlapWait(entries[1], entries);
   assert.deepEqual([wait?.key, wait?.pull, wait?.path], ["A11-196", null, "ui/src/shell/"]);
-  assert.deepEqual(wait?.overlaps.map(({ path }) => path), ["ui/src/shell/App.tsx"], "while the card names the file");
 });
 
-test("A11-212: a run held for a pull request whose files are not read yet names no path and no folder, as before", () => {
-  const url = "https://github.com/a11ign/agent-org/pull/12";
-  const holder = { ticket: { key: "A11-196" }, phase: "finished", paths: [], outcome: { kind: "draft-pr", prs: [{ url, repo: "agent-org" }] } } as unknown as ViewEntry;
+test("A11-212: the file the card names for that hold is the narrower claim, and the folder to narrow is the waiting run's own", () => {
+  const entries = holderAndWaiter(["agent-org:ui/src/shell/App.tsx"], ["agent-org:ui/src/shell/", "agent-org:docs/"]);
+  assert.deepEqual(overlapWait(entries[1], entries)?.overlaps, [{ path: "ui/src/shell/App.tsx", folderOf: "A11-200", folder: "ui/src/shell/" }]);
+});
+
+const URL_12 = "https://github.com/a11ign/agent-org/pull/12";
+/** A finished run with a pull request open whose files are not read yet, and a queued run in its repository. */
+function unreadHold() {
+  const holder = { ticket: { key: "A11-196" }, phase: "finished", paths: [], outcome: { kind: "draft-pr", prs: [{ url: URL_12, repo: "agent-org" }] } } as unknown as ViewEntry;
   const waiting = { ticket: { key: "A11-200" }, phase: "queued", paths: ["agent-org:ui/src/a.ts"] } as unknown as ViewEntry;
-  const wait = overlapWait(waiting, [holder, waiting]);
-  assert.deepEqual(wait, { key: "A11-196", pull: "12", path: null, overlaps: [] });
-  assert.equal(waitNote(waiting, [holder, waiting]), "Waits on A11-196 #12: its changed files are not read yet");
+  return { holder, waiting, entries: [holder, waiting] };
+}
+
+test("A11-212: a run held for a pull request whose files are not read yet says so, as before", () => {
+  const { waiting, entries } = unreadHold();
+  assert.equal(waitNote(waiting, entries), "Waits on A11-196 #12: its changed files are not read yet");
+  const wait = overlapWait(waiting, entries);
+  assert.deepEqual([wait?.key, wait?.pull, wait?.path], ["A11-196", "12", null]);
+});
+
+test("A11-212: and it names no overlapping path and no folder to narrow", () => {
+  const { waiting, entries } = unreadHold();
+  assert.deepEqual(overlapWait(waiting, entries)?.overlaps, []);
 });
