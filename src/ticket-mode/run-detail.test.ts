@@ -124,18 +124,25 @@ test("A11-219: an outcome file that cannot be read as a file does not stop the w
   assert.equal(made.entry("NBF-1").phase, "running");
 });
 
-test("A11-219: a plan file that cannot be read starts the run without steps, and the log says which file and why", async () => {
+test("A11-219: a plan file that cannot be read does not start the run as if it had no plan: it ends crashed, naming the file, and no agent starts", async () => {
   const made = poolFixture({ tickets: PLAN });
   mkdirSync(join(ticketDir(made.settings, "NBF-1"), "paths", "NBF-1-plan-unreadable.md"), { recursive: true });
-  const said: string[] = [];
-  const write = process.stderr.write;
-  process.stderr.write = ((line: string) => { said.push(String(line)); return true; }) as typeof process.stderr.write;
-  try {
-    await made.pool.tick();
-  } finally {
-    process.stderr.write = write;
-  }
-  assert.equal(made.entry("NBF-1").plannedSteps, undefined);
-  assert.equal(made.entry("NBF-1").phase, "running", "a plan the board cannot read for steps does not stop the run");
-  assert.ok(said.some((line) => line.includes("NBF-1: its plan file NBF-1-plan-unreadable.md could not be read (EISDIR")), said.join(""));
+  await made.pool.tick();
+  const entry = made.entry("NBF-1");
+  assert.equal(entry.phase, "finished");
+  assert.equal(entry.outcome?.kind, "crashed");
+  assert.match(entry.outcome?.kind === "crashed" ? entry.outcome.reason : "", /^its plan file NBF-1-plan-unreadable\.md could not be read \(EISDIR/);
+  assert.equal(entry.plannedSteps, undefined);
+  assert.equal(made.herdr.calls.filter((args) => args.includes("agent") && args.includes("start")).length, 0, "no agent was started");
+});
+
+test("A11-219: a plan file over the size limit, or a ticket with no plan folder, is not an unreadable plan: the run starts without steps", async () => {
+  const absent = poolFixture({ tickets: PLAN });
+  await absent.pool.tick();
+  assert.equal(absent.entry("NBF-1").phase, "running");
+  const big = poolFixture({ tickets: PLAN });
+  writePlan(big, "NBF-1", `${PLAN_TEXT}${"x".repeat(1_000_001)}`);
+  await big.pool.tick();
+  assert.equal(big.entry("NBF-1").phase, "running");
+  assert.equal(big.entry("NBF-1").plannedSteps, undefined);
 });
