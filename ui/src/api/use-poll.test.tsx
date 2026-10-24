@@ -118,6 +118,20 @@ describe("usePoll cadence", () => {
   });
 });
 
+describe("usePoll reads that land together", () => {
+  it("starts one read when refresh and a return to the page land while a read is in flight", async () => {
+    const { read, state } = held();
+    const { result } = await polling(read);
+    await act(async () => {
+      result.current.refresh();
+      result.current.refresh();
+      setVisibility("hidden");
+      setVisibility("visible");
+    });
+    expect(state.started).toBe(1);
+  });
+});
+
 describe("usePoll visibility", () => {
   it("makes no read while the page is hidden however far the timers advance, and reads at once when it is shown", async () => {
     const start = Date.now();
