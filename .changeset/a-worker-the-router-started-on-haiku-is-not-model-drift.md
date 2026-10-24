@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`host:check`'s `SESSION ON AN UNDECLARED MODEL` no longer calls an engineer the router started on Haiku drift. The worker the gate starts on a profile the router chose (`haiku/high`, via the provider or the fallback) carries no `tier:haiku` label, and a keyed worker (`worker-<key>-<n>`) never reached the row-label read at all, so both were judged against the org's Sonnet and woke `orchestrator` with `cause:host-units-stale` (`worker-agent-org-791`, 2026-10-10 and 2026-10-11; `worker-4918`, 2026-10-11), with a remedy (`/model <alias>`) that would have undone the routing. An engineer instance (`worker-<n>`, or `worker-<key>-<n>` for a key the project's tracker declaration names) is now expected on the org's models or Haiku; a worker on any other model, a `tier:haiku` row's worker on Sonnet, and every standing seat on Haiku (`orchestrator`, `ceo`, `product-manager`, which are still the resumed-session drift) are findings as before. A keyed worker's row is another tracker's, so its tier label is not read from the first tracker's issue of that number. a11ign/agent-org#795.
