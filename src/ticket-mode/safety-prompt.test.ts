@@ -82,10 +82,21 @@ test("A11-209: a subagent's name is kept whatever it is, and a heading without `
   assert.equal(agentOf("Bash command"), undefined);
 });
 
-test("A11-209: a bare `No` is a safety prompt's only under a tool's heading: the same dialog without one stays unrecognised", () => {
+test("A11-209: a bare `No` is a safety prompt's only in a tool's ruled box: a heading-like line, a start dialog or a longer No elsewhere stays unrecognised", () => {
   const headless = SUBAGENT_RM.replace("Bash command · from the general-purpose agent", "Something else");
-  assert.equal(readSafetyPrompt(headless)?.kind, "unrecognised");
-  assert.deepEqual(readSafetyPrompt(BOX("Do you want to leave?", "❯ 1. Yes", "  2. No")), { kind: "unrecognised", firstLine: "Do you want to leave?" });
+  assert.equal(readSafetyPrompt(headless)?.kind, "unrecognised", "no tool heading");
+  const unrecognised = (name: string, pane: string): void => assert.equal(readSafetyPrompt(pane)?.kind, "unrecognised", name);
+  unrecognised("a question with no heading", BOX("Do you want to leave?", "❯ 1. Yes", "  2. No"));
+  unrecognised("a heading far above an unrelated question", ["Read file", "notes.md", "", "● Done reading.", "", "Do you want to use the staging database?", "❯ 1. Yes", "  2. No", "Esc to cancel"].join("\n"));
+  unrecognised("a prose block that starts with a heading word", ["Fetch", "the release notes then summarise", "", "Do you want to ship it today?", "❯ 1. Yes", "  2. No"].join("\n"));
+  unrecognised("a trust question whose No means exit", ["Tool use", "", "Do you want to trust this folder?", "1. Yes, proceed", "2. No, exit", "Enter to confirm · Esc to cancel"].join("\n"));
+  unrecognised("a No that is longer than No, under a ruled box", SUBAGENT_RM.replace("  2. No", "  2. No (recommended)"));
+  unrecognised("an edit with a bare No and no ruled box", BOX("Edit file", "", "  src/app.ts", "", "Do you want to make this edit to app.ts?", "❯ 1. Yes", "  2. No"));
+});
+
+test("A11-209: a rule that closes the command itself leaves the command where it was, and the text after it is the warning", () => {
+  const prompt = readSafetyPrompt(["Bash command", "  rm -rf $X/y", "╌╌╌╌╌╌╌╌", "Dangerous rm operation on possibly-empty variable path", "", "Do you want to proceed?", "❯ 1. Yes", "  2. No"].join("\n"));
+  assert.deepEqual(prompt, { kind: "safety", command: "rm -rf $X/y", warning: "Dangerous rm operation on possibly-empty variable path", firstLine: "Do you want to proceed?" });
 });
 
 test("A11-209: the message for a subagent's prompt names the subagent and the command, quotes the warning, says to name a guarded path and that subagents follow the same rules", () => {

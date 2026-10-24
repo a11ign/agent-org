@@ -3,7 +3,7 @@
 // Claude Code asks a person before some commands even with permissions bypassed (an `rm` on a path built from a variable that could be empty, A11-160), and nobody answers on an unattended
 // run. Two results, and a pane that shows no dialog gives neither:
 //   - a SAFETY PROMPT: a dialog whose question starts `Do you want to` and that offers a `No` choice, with the command it asks about and its warning line, and, for a subagent's,
-//     the subagent's name. Older Claude Code drew `No ... (esc)`; 2.1.310 draws a bare `No`, which counts only under a tool's heading (A11-209);
+//     the subagent's name. Older Claude Code drew `No ... (esc)`; 2.1.310 draws a bare `No`, which counts only in a tool's ruled box (A11-209);
 //   - an UNRECOGNISED PROMPT: any other dialog, with its first line. It is left for a person.
 // The two start dialogs ("Is this a project you created or one you trust?", "Allow external CLAUDE.md file imports?") have another shape, and their No means exit: the pool answers them Yes
 // first (`pool-start.ts`) and they are never read as safety prompts here.
@@ -19,8 +19,8 @@ const FIRST_LINE_CHARS = 120;
 const QUESTION = /^Do you want to\b/;
 /** The choice older Claude Code draws for No: `No, and tell Claude what to do differently (esc)`. */
 const NO_CHOICE_ESC = /^No\b.*\(esc\)$/i;
-/** The choice Claude Code 2.1.310 draws for No: a bare `No`. It is a safety prompt's only under a tool's heading, because the start dialogs' No means exit. */
-const NO_CHOICE = /^No\b/i;
+/** The choice Claude Code 2.1.310 draws for No: exactly `No`. It is a safety prompt's only inside a tool's ruled box, because the start dialogs' No means exit (`No, exit`). */
+const NO_CHOICE = /^No$/i;
 /**
  * The heading of the box a tool asks about: `Bash command`, `Edit file`. The command is under it. A subagent's tool call adds ` · from the <name> agent`, and `<name>` is kept.
  */
@@ -58,18 +58,20 @@ function blocksOf(above: readonly string[]): Block[] {
  * The command and the warning of a prompt, and the subagent that raised it. The command is the block under the tool's heading, and the warning is the text between it and the question:
  * the blocks after the command, and the paragraph lines above the question's own. 2.1.310 puts a description under the heading, closed by a dashed rule, and the command between two
  * rules: then the description is not the command. A pane whose heading is not on screen has no command to name: the block nearest the question stands for it, with no warning.
- * `headed` is whether the tool's heading was found.
+ * `boxed` is whether the heading is the top of a box drawn with a dashed rule under it, which is what makes a bare `No` a safety prompt's.
  */
-function whatIsAsked(above: readonly string[], preface: readonly string[]): { command: string; warning: string; agent?: string; headed: boolean } {
+function whatIsAsked(above: readonly string[], preface: readonly string[]): { command: string; warning: string; agent?: string; boxed: boolean } {
   const blocks = blocksOf(above);
   const heading = blocks.findLastIndex((block) => TOOL_HEADING.test(block.lines[0]));
-  if (heading < 0) return { command: squeeze(blocks.at(-1)?.lines ?? [], COMMAND_CHARS), warning: squeeze(preface, COMMAND_CHARS), headed: false };
+  if (heading < 0) return { command: squeeze(blocks.at(-1)?.lines ?? [], COMMAND_CHARS), warning: squeeze(preface, COMMAND_CHARS), boxed: false };
   const beside = blocks[heading].lines.slice(1);
-  const inline = beside.length > 0 && !blocks[heading].ruled;
+  // A description under the heading is closed by a rule and the command after it is closed by another; one rule only closes the command itself.
+  const described = beside.length > 0 && blocks[heading].ruled && blocks[heading + 1]?.ruled === true;
+  const inline = beside.length > 0 && !described;
   const command = inline ? beside : (blocks[heading + 1]?.lines ?? []);
   const warned = [...blocks.slice(heading + (inline ? 1 : 2)).flatMap((block) => block.lines), ...preface].filter((line) => !AUTO_DENY_NOTICE.test(line));
   const agent = TOOL_HEADING.exec(blocks[heading].lines[0])?.[1];
-  return { command: squeeze(command, COMMAND_CHARS), warning: squeeze(warned, COMMAND_CHARS), headed: true, ...(agent === undefined ? {} : { agent }) };
+  return { command: squeeze(command, COMMAND_CHARS), warning: squeeze(warned, COMMAND_CHARS), boxed: blocks[heading].ruled, ...(agent === undefined ? {} : { agent }) };
 }
 
 /**
@@ -82,8 +84,8 @@ export function readSafetyPrompt(pane: string | null): PanePrompt | null {
   const firstLine = paragraph[0].slice(0, FIRST_LINE_CHARS);
   const asked = paragraph.findIndex((line) => QUESTION.test(line));
   if (asked < 0) return { kind: "unrecognised", firstLine };
-  const { headed, ...what } = whatIsAsked(above, paragraph.slice(0, asked));
-  const declinable = dialog.choices.some((choice) => NO_CHOICE_ESC.test(choice)) || (headed && dialog.choices.some((choice) => NO_CHOICE.test(choice)));
+  const { boxed, ...what } = whatIsAsked(above, paragraph.slice(0, asked));
+  const declinable = dialog.choices.some((choice) => NO_CHOICE_ESC.test(choice)) || (boxed && dialog.choices.some((choice) => NO_CHOICE.test(choice)));
   return declinable ? { kind: "safety", ...what, firstLine } : { kind: "unrecognised", firstLine };
 }
 
