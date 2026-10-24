@@ -265,10 +265,12 @@ describe("the list", () => {
     expect(textOf(document.querySelector(".page-count"))).toBe("90 total · 3 running");
   });
 
-  it("serves a run's own address with the shell's placeholder, not the list", async () => {
+  it("serves a run's own address with Run detail, not the list", async () => {
     history.replaceState(null, "", "/next/runs/A11-184");
     await pageOn(runsStand(), { ready: false });
-    await waitFor(() => expect(screen.getByRole("heading", { level: 1 }).textContent).not.toBe("Runs"));
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("herdr's claude and codex integrations are installed by onboard and kept current, and herdr's plugins are auto-updated");
+    expect(textOf(screen.getByRole("navigation", { name: "Breadcrumb" }))).toBe("Runs/A11-184");
     expect(screen.queryByRole("navigation", { name: "Run status" })).toBeNull();
+    expect(document.title).toBe("Atomaut: Run detail");
   });
 });

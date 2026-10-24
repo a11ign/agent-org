@@ -1,0 +1,383 @@
+/* The Run detail page: the breadcrumb and header, the callout, the steps, the pull requests and the properties, and the panel for a run that is gone, as the twelve Run detail boards lay them out. Every value is a token. */
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--color-text-muted);
+}
+.crumb-link {
+  color: var(--color-accent-lighter);
+}
+.crumb-link:hover,
+.link:hover {
+  text-decoration: underline;
+}
+.crumb-key {
+  font-size: var(--font-size-small);
+  color: var(--color-text-nav);
+  overflow-wrap: anywhere;
+}
+
+/* The header. */
+.run-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-12) var(--space-20);
+}
+.run-head-icon {
+  flex: 0 0 var(--space-28);
+  display: flex;
+  justify-content: center;
+  padding-top: var(--space-4);
+}
+.run-head-title {
+  flex: 1 1 var(--measure-detail-title-basis);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.run-title-text {
+  margin: 0;
+  font-size: var(--font-size-h1);
+  line-height: var(--line-height-h1);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-h1);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.run-head-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-10);
+  color: var(--color-text-muted);
+}
+.run-head-status {
+  font-weight: var(--font-weight-medium);
+}
+.tone-done {
+  color: var(--color-done-text);
+}
+.run-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+.ghost.run-button {
+  gap: var(--space-8);
+  line-height: normal;
+  padding: var(--space-5) var(--space-12);
+  border-color: var(--color-border-hover);
+  font-weight: var(--font-weight-medium);
+}
+.ghost.run-button-danger {
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+}
+.ghost.run-button-muted {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-nav);
+}
+
+/* The columns: the run's own sections, and its properties beside them, or beneath them when the page is narrow. */
+.run-columns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-20);
+}
+.run-main {
+  flex: 999 1 var(--detail-main-basis);
+  min-width: 0;
+  max-width: var(--detail-main-max);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-20);
+}
+
+/* The callout: each board's colours. */
+.callout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  padding: var(--space-14) var(--space-16);
+  border: 1px solid;
+  border-radius: var(--radius-10);
+}
+.callout-title {
+  font-weight: var(--font-weight-semibold);
+}
+.callout-body {
+  margin: 0;
+  color: var(--color-text-rail);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.callout-help {
+  color: var(--color-text-muted);
+}
+.callout-running {
+  border-color: var(--color-spinner-track-warn);
+  background: var(--color-callout-working-bg);
+}
+.callout-running .callout-title,
+.callout-needs .callout-title,
+.callout-handback .callout-title {
+  color: var(--color-warn-text);
+}
+.callout-needs,
+.callout-handback {
+  border-color: var(--color-warn-border);
+  background: var(--color-warn-bg);
+}
+.callout-ready,
+.callout-done {
+  border-color: var(--color-callout-done-line);
+  background: var(--color-callout-done-bg);
+}
+.callout-ready .callout-title,
+.callout-done .callout-title {
+  color: var(--color-done-text);
+}
+.callout-failed {
+  border-color: var(--color-danger-border);
+  background: var(--color-callout-failed-bg);
+}
+.callout-failed .callout-title {
+  color: var(--color-danger-dot);
+}
+.callout-cancelled,
+.callout-queued,
+.callout-blocked {
+  border-color: var(--color-border-strong);
+  background: var(--color-sidebar);
+}
+.callout-cancelled .callout-title {
+  color: var(--color-text-nav);
+}
+.callout-queued .callout-title,
+.callout-blocked .callout-title {
+  color: var(--color-text);
+}
+.callout-awaiting {
+  border-color: var(--color-callout-awaiting-line);
+  background: var(--color-callout-awaiting-bg);
+}
+.callout-awaiting .callout-title {
+  color: var(--color-planning);
+}
+.callout-merge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+.callout-open {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-14);
+  border-radius: var(--radius-6);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+}
+
+/* The sections: a heading over a panel. */
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.detail-heading {
+  margin: 0;
+  font-size: var(--font-size-14);
+  font-weight: var(--font-weight-semibold);
+}
+.detail-heading-note {
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-muted);
+}
+.steps,
+.pulls,
+.props {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-sidebar);
+}
+.steps,
+.pulls {
+  overflow: hidden;
+}
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-12);
+  padding: var(--space-10) var(--space-14);
+  border-bottom: 1px solid var(--color-card-divider);
+}
+.step-now {
+  background: var(--color-step-now);
+}
+.step-mark {
+  flex: 0 0 var(--icon-18);
+  display: flex;
+  justify-content: center;
+  padding-top: var(--space-2);
+}
+.step-ring {
+  stroke: var(--color-step-ring);
+}
+.step-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--color-text-nav);
+  overflow-wrap: anywhere;
+}
+.step-now .step-text {
+  color: var(--color-text);
+}
+
+/* The pull requests. */
+.pulls-none {
+  padding: var(--space-14) var(--space-16);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-10);
+  color: var(--color-text-count);
+}
+.pull-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-14);
+  padding: var(--space-12) var(--space-14);
+  border-bottom: 1px solid var(--color-card-divider);
+}
+.pull-mark {
+  flex: 0 0 auto;
+}
+.pull-label {
+  font-size: var(--font-size-small);
+  color: var(--color-accent-lighter);
+  overflow-wrap: anywhere;
+}
+.pull-detail {
+  flex: 1 1 var(--measure-pull-detail-basis);
+  min-width: 0;
+  color: var(--color-text-nav);
+}
+.pull-state {
+  font-weight: var(--font-weight-medium);
+}
+.pull-merged.pull-state {
+  color: var(--color-planning);
+}
+.pull-merged.pull-mark {
+  stroke: var(--color-planning);
+}
+.pull-approved.pull-state {
+  color: var(--color-success-dot);
+}
+.pull-approved.pull-mark {
+  stroke: var(--color-success-dot);
+}
+.pull-draft.pull-state,
+.pull-closed.pull-state {
+  color: var(--color-text-muted);
+}
+.pull-draft.pull-mark,
+.pull-closed.pull-mark {
+  stroke: var(--color-text-muted);
+}
+.pull-open.pull-state {
+  color: var(--color-text-nav);
+}
+.pull-open.pull-mark {
+  stroke: var(--color-text-nav);
+}
+
+/* The properties. */
+.props {
+  box-sizing: content-box;
+  flex: 1 1 var(--measure-props-basis);
+  min-width: var(--measure-props-min);
+  max-width: var(--measure-props-max);
+  display: flex;
+  flex-direction: column;
+}
+.props-head {
+  padding: var(--space-12) var(--space-14);
+  border-bottom: 1px solid var(--color-card-divider);
+  font-weight: var(--font-weight-semibold);
+}
+.props-list {
+  margin: 0;
+  padding: var(--space-6) var(--space-14) var(--space-12);
+  display: grid;
+  grid-template-columns: var(--measure-props-term) minmax(0, 1fr);
+  gap: var(--space-8) var(--space-10);
+}
+.props-list dt {
+  color: var(--color-text-muted);
+}
+.props-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.prop-key {
+  font-size: var(--font-size-small);
+}
+.prop-tokens {
+  font-variant-numeric: tabular-nums;
+}
+.props .link {
+  color: var(--color-accent-lighter);
+}
+
+/* A run that is not on the board. */
+.run-gone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-48) var(--space-24);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-10);
+  text-align: center;
+}
+.run-gone-title {
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+}
+.run-gone-text {
+  max-width: var(--measure-empty-narrow);
+  color: var(--color-text-muted);
+}
+.run-gone-link {
+  margin-top: var(--space-6);
+  color: var(--color-accent-lighter);
+}
+
+/* A refusal or a failed read names a path or an address with no break in it: the banner above the run wraps it rather than widen the page. */
+.shell-main-detail .alert-banner-text {
+  overflow-wrap: anywhere;
+}
+
+/* The loading board rounds its avatar and its three blocks as its own style says, over the shimmer's 6px. */
+.skeleton-detail .sk-avatar {
+  border-radius: 50%;
+}
+.skeleton-detail .sk-block,
+.skeleton-detail .sk-panel,
+.skeleton-detail .sk-side {
+  border-radius: var(--radius-10);
+}

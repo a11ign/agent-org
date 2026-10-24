@@ -239,6 +239,22 @@
   --measure-field: 180px;
   --dot-size-run: 8px;
   --opacity-sending: 0.45;
+
+  /* The Run detail page (A11-198): the values its boards use that the tokens above do not hold. */
+  --color-callout-working-bg: #14120a;
+  --color-callout-done-line: #25402c;
+  --color-callout-done-bg: #0d1610;
+  --color-callout-failed-bg: #1a0f10;
+  --color-callout-awaiting-line: #3a2f63;
+  --color-callout-awaiting-bg: #120f1d;
+  --color-step-ring: #4a4e59;
+  --color-step-now: rgba(227, 179, 65, 0.06);
+  --measure-detail-title-basis: 420px;
+  --measure-props-basis: 260px;
+  --measure-props-max: 320px;
+  --measure-props-min: 240px;
+  --measure-props-term: 96px;
+  --measure-pull-detail-basis: 200px;
 }
 
 /* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */

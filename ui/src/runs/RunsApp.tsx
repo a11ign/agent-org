@@ -1,6 +1,7 @@
+import { useEffect } from "react";
 import type { Fetch } from "../api/request.ts";
-import { App } from "../shell/App.tsx";
-import { runKeyOf } from "../shell/routes.ts";
+import { RunDetailPage } from "../run-detail/RunDetailPage.tsx";
+import { runKeyOf, TITLES } from "../shell/routes.ts";
 import { ShellFrame } from "../shell/ShellFrame.tsx";
 import { ShellProvider } from "../shell/ShellProvider.tsx";
 import { RunsPage } from "./RunsPage.tsx";
@@ -19,15 +20,18 @@ function RunsInShell() {
 }
 
 /**
- * The island of the runs route. The route also serves `/next/runs/<key>`, which a static build cannot list: that path is Run detail, still the shell's placeholder until its page lands, so it is drawn by the
- * shell's own island. `fetchWith` is for a test; the page uses the browser's.
+ * The island of the runs route. The route also serves `/next/runs/<key>`, which a static build cannot list: that path is Run detail, which the page draws in the shell and titles as the board does. `fetchWith` is for a test;
+ * the page uses the browser's.
  */
 export function RunsApp({ fetchWith }: Readonly<{ fetchWith?: Fetch }>) {
   const pathname = usePathname();
-  if (runKeyOf(pathname) !== null) return <App section="runs" />;
+  const runKey = runKeyOf(pathname);
+  useEffect(() => {
+    if (runKey !== null) document.title = TITLES.run;
+  }, [runKey]);
   return (
     <ShellProvider {...(fetchWith === undefined ? {} : { fetchWith })}>
-      <RunsInShell />
+      {runKey === null ? <RunsInShell /> : <ShellFrame page="run"><RunDetailPage runKey={runKey} /></ShellFrame>}
     </ShellProvider>
   );
 }
