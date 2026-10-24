@@ -18,6 +18,8 @@ export type PollOptions<T> = Readonly<{
   connection: ViewConnection | null;
   /** Whether a good answer is "nothing here": an empty array unless the page says otherwise. */
   isEmpty?: (data: T) => boolean;
+  /** False for a read made once per connection and not again, unless `refresh` asks (see `startPolling`). True by default. */
+  repeat?: boolean;
 }>;
 
 const isEmptyList = (data: unknown): boolean => Array.isArray(data) && data.length === 0;
@@ -35,7 +37,7 @@ function viewAfter<T>(before: PollView<T>, answer: Answer<T>, isEmpty: (data: T)
  * starts again from `loading`, so one connection's data never lands on another's view. `refresh` is "Check now": it reads at once, and a failure it
  * meets counts toward the backoff like any other.
  */
-export function usePoll<T>(read: (signal: AbortSignal) => Promise<Answer<T>>, { connection, isEmpty = isEmptyList }: PollOptions<T>): PollView<T> & Readonly<{ refresh: () => void }> {
+export function usePoll<T>(read: (signal: AbortSignal) => Promise<Answer<T>>, { connection, isEmpty = isEmptyList, repeat = true }: PollOptions<T>): PollView<T> & Readonly<{ refresh: () => void }> {
   const connectionKey = connection === null ? "" : `${connection.kind}:${connection.name}`;
   const [held, setHeld] = useState<Readonly<{ connectionKey: string; view: PollView<T> }>>({ connectionKey, view: LOADING });
   const poller = useRef<Poller | undefined>(undefined);
@@ -47,11 +49,12 @@ export function usePoll<T>(read: (signal: AbortSignal) => Promise<Answer<T>>, { 
   useEffect(() => {
     const running = startPolling<T>({
       read: (signal) => latest.current.read(signal),
+      repeat,
       onAnswer: (answer) => setHeld((before) => ({ connectionKey, view: viewAfter(before.connectionKey === connectionKey ? before.view : LOADING, answer, latest.current.isEmpty) })),
     });
     poller.current = running;
     return () => running.stop();
-  }, [connectionKey]);
+  }, [connectionKey, repeat]);
 
   return { ...(held.connectionKey === connectionKey ? held.view : LOADING), refresh: () => poller.current?.refresh() };
 }

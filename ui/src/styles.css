@@ -1,30 +1,86 @@
 /* The fonts are bundled: the Fontsource packages carry the woff2 files, and Vite copies them into `dist/`. Nothing is fetched from another origin. */
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
+/* Every value lives in the tokens; this file and the stylesheets beside the components only refer to them. */
+@import "./styles/tokens.css";
+@import "./lifecycle/lifecycle.css";
+@import "./shell/shell.css";
 
-:root {
-  color-scheme: light dark;
-  --font-sans: "Inter Variable", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  padding: 1rem;
+  min-height: 100vh;
+  background: var(--color-page);
+  color: var(--color-text);
   font-family: var(--font-sans);
-  line-height: 1.5;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
 }
 
-main {
-  max-width: 40rem;
-  margin: 0 auto;
+button,
+select,
+input,
+textarea {
+  font-family: inherit;
 }
 
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+code,
 .mono {
   font-family: var(--font-mono);
 }
 
-.counter {
-  font: inherit;
-  padding: 0.5rem 1rem;
+/* The focus ring is the same on every control, and only for the keyboard. */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* Read by a screen reader, drawn nowhere: a label the boards hide. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* The skeleton block every loading layout is made of. */
+.sk {
+  background: var(--skeleton-gradient);
+  background-size: var(--skeleton-size);
+  animation: skeleton-shimmer var(--skeleton-duration) linear infinite;
+  border-radius: var(--skeleton-radius);
+}
+
+.spin {
+  animation: spinner-turn var(--spinner-duration) linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk,
+  .spin {
+    animation: none;
+  }
 }

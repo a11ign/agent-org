@@ -1,0 +1,176 @@
+/*
+ * The Atomaut design tokens: every colour, size, space, radius, the focus ring, the skeleton shimmer and reduced motion, taken from the design boards
+ * (docs/design/atomaut/README.md says how to read them). This is the ONE file that holds values: `ui/test/tokens.test.ts` refuses a colour literal anywhere
+ * else under `ui/src/`, and a pixel length in any other stylesheet (bar a 1px hairline and the one 820px media query in `shell/shell.css`).
+ * Names are by role, not by value. A page ticket adds the tokens its own boards need to this file.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, from the page outward. */
+  --color-page: #0d0e11;
+  --color-sidebar: #111216;
+  --color-surface: #0f1013;
+  --color-raised: #16181d;
+  --color-hover: #1a1c22;
+  --color-active: #1e2027;
+  --color-skeleton-highlight: #22252c;
+  --color-selection: rgba(91, 99, 217, 0.14);
+
+  /* Borders: hairlines, controls, and a control under the pointer. */
+  --color-border: #23252b;
+  --color-border-strong: #2e3138;
+  --color-border-hover: #3a3e47;
+
+  /* Text: body, navigation, counts, muted labels, disabled. */
+  --color-text: #e7e8ec;
+  --color-text-nav: #b4b7c0;
+  --color-text-count: #9a9ea9;
+  --color-text-muted: #8d919c;
+  --color-text-disabled: #6b707c;
+
+  /* The accent and its two lighter steps; the mark uses all three, the focus ring the lightest. */
+  --color-accent: #5b63d9;
+  --color-accent-light: #7b83f0;
+  --color-accent-lighter: #9aa1f5;
+  --color-on-accent: #ffffff;
+
+  /* Status sets. Success: connected. */
+  --color-success-text: #7ee08f;
+  --color-success-bg: #0f1a13;
+  --color-success-border: #1f4a2b;
+  --color-success-dot: #3fb950;
+
+  /* Danger: unreachable and errors. `text` is the pill's, `body` the banner's sentence, `heading` its bold lead. */
+  --color-danger-text: #f4a3a8;
+  --color-danger-body: #f1c4c7;
+  --color-danger-heading: #ffd9db;
+  --color-danger-muted: #c99aa0;
+  --color-danger-bg: #1d1315;
+  --color-danger-code-bg: #2a1a1c;
+  --color-danger-border: #5a2b2f;
+  --color-danger-border-strong: #6b3a3f;
+  --color-danger-dot: #f47067;
+
+  /* Warning: runs in progress and "Last known". */
+  --color-warn-text: #e3b341;
+  --color-warn-soft: #f0d98a;
+  --color-warn-bg: #1a1608;
+  --color-warn-border: #5a4a1a;
+
+  --color-planning: #a78bfa;
+
+  /* Type. Inter for text and JetBrains Mono for keys and code, both bundled (A11-188). */
+  --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+  --font-size-label: 11px;
+  --line-height-label: 16px;
+  --font-size-small: 12px;
+  --line-height-small: 18px;
+  --font-size-body: 13px;
+  --line-height-body: 20px;
+  --font-size-14: 14px;
+  --font-size-mark: 15px;
+  --font-size-title: 15px;
+  --font-size-16: 16px;
+  --font-size-h1: 20px;
+  --line-height-h1: 28px;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --tracking-label: 0.04em;
+  --tracking-mark: -0.01em;
+  --tracking-h1: -0.015em;
+
+  /* Spacing. */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-5: 5px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-18: 18px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-56: 56px;
+
+  /* Radii. */
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-10: 10px;
+  --radius-12: 12px;
+  --radius-pill: 999px;
+
+  /* Layout: the sidebar and the page beside it. A media query cannot read a custom property, so the 820px collapse is written once in `shell/shell.css`, beside the sidebar. */
+  --sidebar-width: 248px;
+  --sidebar-padding: var(--space-14) var(--space-12) var(--space-16);
+  --sidebar-gap: var(--space-16);
+  --main-min-width: 560px;
+  --main-padding: var(--space-20) var(--space-24) var(--space-24);
+  --main-padding-tall: var(--space-20) var(--space-24) var(--space-40);
+  --measure-alert-text: 320px;
+  --measure-empty: 460px;
+  --measure-empty-narrow: 440px;
+
+  /* Icons and marks. */
+  --icon-14: 14px;
+  --icon-15: 15px;
+  --icon-16: 16px;
+  --mark-size: 24px;
+  --dot-size: 7px;
+  --dot-size-small: 6px;
+
+  /* The focus ring every interactive element shows from the keyboard. */
+  --focus-ring-width: 2px;
+  --focus-ring-color: var(--color-accent-lighter);
+  --focus-ring-offset: 1px;
+
+  /* The skeleton: a shimmer that sweeps across a block, and the block sizes the page skeletons are drawn from. */
+  --skeleton-gradient: linear-gradient(90deg, var(--color-raised) 25%, var(--color-skeleton-highlight) 50%, var(--color-raised) 75%);
+  --skeleton-size: 200% 100%;
+  --skeleton-duration: 1.6s;
+  --skeleton-radius: var(--radius-6);
+  --skeleton-heading-height: 10px;
+  --skeleton-line-height: 18px;
+  --skeleton-title-height: 22px;
+  --skeleton-label-width: 60px;
+  --skeleton-label-width-short: 48px;
+  --skeleton-count-width: 120px;
+  --skeleton-text-height: 12px;
+  --skeleton-banner-height: 48px;
+  --skeleton-block-height: 96px;
+  --skeleton-panel-height: 200px;
+  --skeleton-crumb-width: 140px;
+  --skeleton-subtitle-width: 260px;
+  --skeleton-avatar-size: 28px;
+  --skeleton-side-height: 260px;
+  --skeleton-pill-width: 60px;
+  --detail-main-basis: 520px;
+  --detail-main-max: 760px;
+  --detail-side-basis: 280px;
+  --detail-side-max: 340px;
+
+  --spinner-duration: 1s;
+}
+
+/* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes spinner-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -1,0 +1,9 @@
+---
+import { App } from "../../shell/App.tsx";
+import { TITLES } from "../../shell/routes.ts";
+import Shell from "../../layouts/Shell.astro";
+---
+
+<Shell title={TITLES.runs}>
+  <App client:load section="runs" />
+</Shell>

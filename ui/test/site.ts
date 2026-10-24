@@ -39,7 +39,7 @@ async function waitUntilAnswering(origin: string, stderr: () => string): Promise
   const deadline = Date.now() + STARTUP_MS;
   while (Date.now() < deadline) {
     try {
-      if ((await fetch(`${origin}/next/`)).ok) return;
+      if ((await fetch(`${origin}/next/tickets`)).ok) return;
     } catch {
       // not listening yet
     }

@@ -1,0 +1,252 @@
+/* The shell: the 248px sidebar and the main column beside it, as the boards lay them out. Every value is a token; the only length written here is the 820px of the media rule. */
+
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  background: var(--color-page);
+  color: var(--color-text);
+}
+
+.sidebar {
+  flex: 0 0 var(--sidebar-width);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sidebar-gap);
+  padding: var(--sidebar-padding);
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-border);
+}
+
+.sidebar-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  padding: 0 var(--space-4);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+}
+.brand-name {
+  font-size: var(--font-size-mark);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-mark);
+}
+.mark {
+  flex: 0 0 auto;
+}
+.mark-ring-light {
+  stroke: var(--color-accent-lighter);
+}
+.mark-ring-mid {
+  stroke: var(--color-accent-light);
+}
+.mark-ring-base {
+  stroke: var(--color-accent);
+}
+.mark-core {
+  fill: var(--color-text);
+}
+
+.switcher {
+  display: block;
+}
+.switcher select {
+  width: 100%;
+  padding: var(--space-5) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-raised);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-10);
+  border: 1px solid;
+  border-radius: var(--radius-6);
+  font-size: var(--font-size-small);
+}
+.pill-dot {
+  flex: 0 0 auto;
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: 50%;
+}
+.pill-connected {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+  border-color: var(--color-success-border);
+}
+.pill-connected .pill-dot {
+  background: var(--color-success-dot);
+}
+.pill-unreachable {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border-color: var(--color-danger-border);
+}
+.pill-unreachable .pill-dot {
+  background: var(--color-danger-dot);
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.sidebar-spacer {
+  flex: 1 1 0;
+}
+
+.section-label {
+  padding: 0 var(--space-8) var(--space-4);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-6);
+  color: var(--color-text-nav);
+  font-weight: var(--font-weight-medium);
+}
+.nav-link-label {
+  flex: 1 1 auto;
+}
+.nav-count {
+  font-weight: var(--font-weight-regular);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+.nav-link[aria-current="page"] {
+  background: var(--color-active);
+  color: var(--color-text);
+}
+.nav-link[aria-current="page"] .nav-count {
+  color: var(--color-text-count);
+}
+.run-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-5);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-warn-text);
+}
+.run-badge-dot {
+  width: var(--dot-size-small);
+  height: var(--dot-size-small);
+  border-radius: 50%;
+  background: var(--color-warn-text);
+}
+
+.sub-nav-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-8);
+  border-radius: var(--radius-6);
+  color: var(--color-text-nav);
+}
+.sub-nav-link[aria-current="page"] {
+  background: var(--color-active);
+  color: var(--color-text);
+}
+
+.filter-button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-5) var(--space-8);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--color-text-nav);
+  font-size: var(--font-size-body);
+  text-align: left;
+}
+.filter-button[aria-pressed="true"] {
+  background: var(--color-active);
+  color: var(--color-text);
+}
+.filter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-count {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.filter-group-projects .filter-button[aria-pressed="true"] .filter-count {
+  color: var(--color-text-count);
+}
+
+.nav-link:hover,
+.sub-nav-link:hover,
+.filter-button:hover {
+  background: var(--color-hover);
+}
+.nav-link[aria-current="page"]:hover,
+.sub-nav-link[aria-current="page"]:hover,
+.filter-button[aria-pressed="true"]:hover {
+  background: var(--color-active);
+}
+
+.shell-main {
+  flex: 999 1 var(--main-min-width);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  padding: var(--main-padding);
+}
+.shell-main-detail {
+  gap: var(--space-18);
+  padding: var(--main-padding-tall);
+}
+.shell-main-settings {
+  gap: var(--space-14);
+  padding: var(--main-padding-tall);
+}
+
+.page-heading {
+  margin: 0;
+  font-size: var(--font-size-h1);
+  line-height: var(--line-height-h1);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-h1);
+}
+.placeholder-note {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+/* The boards' media rule: a custom property cannot be read in a media query, so 820px is written here, once, beside the sidebar width it mirrors. */
+@media (max-width: 820px) {
+  .sidebar {
+    flex: 1 1 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .shell-main {
+    flex-basis: 100%;
+  }
+}

@@ -1,0 +1,25 @@
+---
+interface Props {
+  /** Where the browser goes on: an address under `/next`. */
+  to: string;
+}
+
+const { to } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Redirecting to {to}</title>
+    <meta name="robots" content="noindex" />
+    <!-- The query and the hash go with it: `?connection=` names the instance a link is for (A11-129). With no script the page still goes on, without them. -->
+    <script is:inline define:vars={{ to }}>
+      location.replace(to + location.search + location.hash);
+    </script>
+    <noscript><meta http-equiv="refresh" content={`0;url=${to}`} /></noscript>
+  </head>
+  <body>
+    <a href={to}>Continue to {to}</a>
+  </body>
+</html>

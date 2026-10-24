@@ -1,21 +1,6 @@
 ---
-import "../styles.css";
-import { Counter } from "../components/Counter.tsx";
+import Redirect from "../layouts/Redirect.astro";
+import { ticketsHref } from "../shell/routes.ts";
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>agent-org UI</title>
-  </head>
-  <body>
-    <main>
-      <h1>agent-org UI</h1>
-      <p id="placeholder">This is the UI package's placeholder page. It proves the build, the React island, the fonts and the screenshot, and the Atomaut shell replaces it.</p>
-      <p class="mono" id="mono-line">JetBrains Mono: 0123456789 {"{ ticket: \"A11-188\" }"}</p>
-      <Counter client:load />
-    </main>
-  </body>
-</html>
+<Redirect to={ticketsHref} />

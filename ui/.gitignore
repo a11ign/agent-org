@@ -1,4 +1,4 @@
-# The build, Astro's generated types, the installed packages, and the screenshots the page checks take (the pull request's are committed under `.acceptance/captures/`).
+# The build, Astro's generated types, the installed packages, and the screenshots the page checks take (the pull request's are committed under `ui/captures/`).
 dist/
 .astro/
 node_modules/

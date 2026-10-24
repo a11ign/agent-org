@@ -1,0 +1,47 @@
+import type { ReactNode } from "react";
+import { ErrorState } from "../lifecycle/ErrorState.tsx";
+import { isSettingsPage, type Page } from "./routes.ts";
+import { ProjectsAndGoals } from "./ProjectsAndGoals.tsx";
+import { SettingsNav } from "./SettingsNav.tsx";
+import { Sidebar } from "./Sidebar.tsx";
+import { useShell } from "./ShellProvider.tsx";
+
+/** The padding and spacing of a page's main column: a list page, the run's, or Settings', as the boards have them. */
+export type Layout = "list" | "detail" | "settings";
+
+/** Which layout a page has. */
+export function layoutOf(page: Page): Layout {
+  if (page === "run") return "detail";
+  return isSettingsPage(page) ? "settings" : "list";
+}
+
+/** The sidebar's middle section of each page: the projects and goals on Tickets, the Settings sub-nav on Settings and Plugins, and nothing on Runs (its status rail is A11-197's) and on a run. */
+function MiddleSection({ page }: Readonly<{ page: Page }>) {
+  if (page === "tickets") return <ProjectsAndGoals />;
+  if (isSettingsPage(page)) return <SettingsNav page={page} />;
+  return null;
+}
+
+/** A connections file the service refused: its own sentence in the shared error banner, with Retry reading the connections again, as today's page says it. */
+function ConnectionsRefusal() {
+  const { connectionsRefusal, retryConnections } = useShell();
+  return connectionsRefusal === null ? null : <ErrorState refusal={connectionsRefusal} onRetry={retryConnections} />;
+}
+
+/**
+ * The frame every page sits in: the sidebar of the boards and the page's main column beside it. At 820px and below the sidebar takes the full width and the page goes beneath
+ * (`shell.css`). `children` is the page.
+ */
+export function ShellFrame({ page, children }: Readonly<{ page: Page; children: ReactNode }>) {
+  return (
+    <div className="shell">
+      <Sidebar page={page}>
+        <MiddleSection page={page} />
+      </Sidebar>
+      <main className={`shell-main shell-main-${layoutOf(page)}`}>
+        <ConnectionsRefusal />
+        {children}
+      </main>
+    </div>
+  );
+}
