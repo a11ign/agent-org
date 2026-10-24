@@ -45,6 +45,9 @@ describe("a request in each state", () => {
     expect(textOf(card().querySelector(".run-note-failed"))).toBe("the writer ended its turn without creating a ticket");
   });
 
+});
+
+describe("a request's note, its terminal and the tickets it filed", () => {
   it("done: 'Filed by this request' lists each ticket's key, title and meta, linked to the tracker", async () => {
     await pageOver([writerRun({ phase: "finished", status: "done", tickets: [FILED, { key: "A11-144", url: null, inPick: null }] })]);
     expect(textOf(card().querySelector(".run-made-title"))).toBe("Filed by this request");

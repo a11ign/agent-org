@@ -41,22 +41,36 @@ async function overHeld(more: Parameters<typeof writerBoard>[1]) {
 
 const click = (name: string | RegExp) => fireEvent.click(inDialog().getByRole("button", { name }));
 
+/** The blank tab a Grill opens in the click: a stand-in window, and the spy that hands it out. */
+function blankTab() {
+  const tab = { closed: false, close: rstest.fn(), location: { href: "" } };
+  return { tab, open: rstest.spyOn(window, "open").mockReturnValue(tab as never) };
+}
+
+type Sending = Readonly<{ text?: string; mode?: "quick" | "grill"; manual?: Readonly<Record<string, string>> }>;
+
+/** Opens the dialog, writes the request, chooses Grill and Manual placement's fields when asked (by their labels), and presses Write ticket. */
+function sendRequest({ text = REQUEST, mode = "quick", manual }: Sending = {}): void {
+  openDialog();
+  typeRequest(text);
+  if (mode === "grill") fireEvent.click(inDialog().getByRole("radio", { name: /^Grill/ }));
+  if (manual !== undefined) {
+    fireEvent.click(inDialog().getByRole("radio", { name: "Manual" }));
+    for (const [label, value] of Object.entries(manual)) fireEvent.change(inDialog().getByLabelText(new RegExp(`^${label}`)), { target: { value } });
+  }
+  click("Write ticket");
+}
+
 describe("sending a request", () => {
   it("sends a Quick, Auto request as the request, the mode and the placement, and nothing else", async () => {
     const { base } = await pageOver([], accepting(true));
-    openDialog();
-    typeRequest(`  ${REQUEST}  `);
-    click("Write ticket");
+    sendRequest({ text: `  ${REQUEST}  ` });
     await waitFor(() => expect(sent(base)).toEqual([{ request: REQUEST, mode: "quick", placement: "auto" }]));
   });
 
   it("is accepted: the dialog closes, the new request is in the strip, and the form is empty again", async () => {
     await pageOver([], accepting(false));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: "Manual" }));
-    fireEvent.change(inDialog().getByLabelText("Project"), { target: { value: "agent-org" } });
-    click("Write ticket");
+    sendRequest({ manual: { Project: "agent-org" } });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     // The poll's own read lists no request yet, so the strip is drawn from the answer to the send.
     expect(strips().length).toBe(1);
@@ -73,24 +87,17 @@ describe("sending a request", () => {
     await pageOver([], accepting(true));
     const opener = screen.getByRole("button", { name: "New ticket" });
     opener.focus();
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(opener);
   });
 
+});
+
+describe("sending a request with a placement", () => {
   it("sends Manual placement's five choices as given, and the writer's brief takes them", async () => {
     const { base, board } = await pageOver([], accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: "Manual" }));
-    fireEvent.change(inDialog().getByLabelText("Project"), { target: { value: "agent-org" } });
-    fireEvent.change(inDialog().getByLabelText("Repository"), { target: { value: "a11ign" } });
-    fireEvent.change(inDialog().getByLabelText("Goal"), { target: { value: "Fleet" } });
-    fireEvent.change(inDialog().getByLabelText("Priority"), { target: { value: "low" } });
-    fireEvent.change(inDialog().getByLabelText(/^Parent ticket/), { target: { value: " A11-24 " } });
-    click("Write ticket");
+    sendRequest({ manual: { Project: "agent-org", Repository: "a11ign", Goal: "Fleet", Priority: "low", Parent: " A11-24 " } });
     await waitFor(() => expect(sent(base).length).toBe(1));
     expect(sent(base)[0]).toEqual({ request: REQUEST, mode: "quick", placement: "manual", project: "agent-org", repo: "a11ign", goal: "Fleet", priority: "low", parent: "A11-24" });
     expect(board.view.runs[0]?.placement).toBe("manual");
@@ -98,21 +105,14 @@ describe("sending a request", () => {
 
   it("sends 'No priority' as a choice of its own, and a field left on Not set not at all", async () => {
     const { base } = await pageOver([], accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: "Manual" }));
-    fireEvent.change(inDialog().getByLabelText("Priority"), { target: { value: "none" } });
-    click("Write ticket");
+    sendRequest({ manual: { Priority: "none" } });
     await waitFor(() => expect(sent(base).length).toBe(1));
     expect(sent(base)[0]).toEqual({ request: REQUEST, mode: "quick", placement: "manual", priority: "none" });
   });
 
   it("sends Manual placement with nothing set as manual alone, and Auto after Manual without the choices that were set", async () => {
     const { base } = await pageOver([], accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: "Manual" }));
-    click("Write ticket");
+    sendRequest({ manual: {} });
     await waitFor(() => expect(sent(base).length).toBe(1));
     expect(sent(base)[0]).toEqual({ request: REQUEST, mode: "quick", placement: "manual" });
     openDialog();
@@ -126,13 +126,9 @@ describe("sending a request", () => {
   });
 
   it("sends Grill as the mode", async () => {
-    const tab = { closed: false, close: rstest.fn(), location: { href: "" } };
-    const open = rstest.spyOn(window, "open").mockReturnValue(tab as never);
+    const { tab, open } = blankTab();
     const { base } = await pageOver([], accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: /^Grill/ }));
-    click("Write ticket");
+    sendRequest({ mode: "grill" });
     await waitFor(() => expect(sent(base)).toEqual([{ request: REQUEST, mode: "grill", placement: "auto" }]));
     open.mockRestore();
   });
@@ -140,13 +136,9 @@ describe("sending a request", () => {
 
 describe("Grill's tab", () => {
   it("opens a blank tab in the click, and points it at the run's terminal once the run has one", async () => {
-    const tab = { closed: false, close: rstest.fn(), location: { href: "" } };
-    const open = rstest.spyOn(window, "open").mockReturnValue(tab as never);
+    const { tab, open } = blankTab();
     const { board } = await pageOver([], accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: /^Grill/ }));
-    click("Write ticket");
+    sendRequest({ mode: "grill" });
     expect(open).toHaveBeenCalledWith("", "_blank");
     await waitFor(() => expect(board.view.runs.length).toBe(1));
     board.view.runs[0] = { ...board.view.runs[0], phase: "running", status: "writing", workspace: "w1", pane: "p1" } as Run;
@@ -156,13 +148,9 @@ describe("Grill's tab", () => {
   });
 
   it("closes the tab when the server refuses the request", async () => {
-    const tab = { closed: false, close: rstest.fn(), location: { href: "" } };
-    const open = rstest.spyOn(window, "open").mockReturnValue(tab as never);
+    const { tab, open } = blankTab();
     await pageOver([], refusing("grill needs tickets.terminal"));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: /^Grill/ }));
-    click("Write ticket");
+    sendRequest({ mode: "grill" });
     await within(dialog()).findByRole("alert");
     expect(tab.close).toHaveBeenCalled();
     open.mockRestore();
@@ -171,9 +159,7 @@ describe("Grill's tab", () => {
   it("opens no tab for Quick", async () => {
     const open = rstest.spyOn(window, "open");
     const { base } = await pageOver([], accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     await waitFor(() => expect(sent(base).length).toBe(1));
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
@@ -185,11 +171,7 @@ describe("a request the server refuses", () => {
 
   it("says 'Not sent.' with the server's sentence, a full stop where it lacks one, and that the request is still there", async () => {
     await pageOver([], refusing(SENTENCE));
-    openDialog();
-    typeRequest(REQUEST);
-    fireEvent.click(inDialog().getByRole("radio", { name: "Manual" }));
-    fireEvent.change(inDialog().getByLabelText("Project"), { target: { value: "agent-org" } });
-    click("Write ticket");
+    sendRequest({ manual: { Project: "agent-org" } });
     const alert = await within(dialog()).findByRole("alert");
     expect(textOf(alert)).toBe(`Not sent. ${SENTENCE}. Your request is still here.`);
     expect(dialog()).toBeTruthy();
@@ -202,18 +184,14 @@ describe("a request the server refuses", () => {
 
   it("does not double a full stop the server's sentence has", async () => {
     await pageOver([], refusing("no ticket A11-999."));
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     expect(textOf(await within(dialog()).findByRole("alert"))).toBe("Not sent. no ticket A11-999. Your request is still here.");
   });
 
   it("sends the same request again from the box, and an accepted one clears it", async () => {
     let refuse = true;
     await pageOver([], (view) => ({ post: (path: string) => (refuse ? { status: 400, error: "tracker is down" } : { runs: view.runs, path }) }));
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     await within(dialog()).findByRole("alert");
     refuse = false;
     click("Write ticket");
@@ -224,9 +202,7 @@ describe("a request the server refuses", () => {
 describe("the request goes on with the dialog closed", () => {
   it("is Sending… while the request is out, with the button busy and disabled", async () => {
     const { release, base } = await overHeld(accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     expect(textOf(writeButton())).toBe("Sending…");
     expect(writeButton().disabled).toBe(true);
     expect(writeButton().getAttribute("aria-busy")).toBe("true");
@@ -238,9 +214,7 @@ describe("the request goes on with the dialog closed", () => {
 
   it("is still Sending… when the dialog is opened again", async () => {
     const { release, base } = await overHeld(accepting(true));
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     click("Close");
     expect(screen.queryByRole("dialog")).toBeNull();
     openDialog();
@@ -253,9 +227,7 @@ describe("the request goes on with the dialog closed", () => {
 
   it("shows the refusal, with the request kept, when the dialog is opened after the server refused it", async () => {
     const { release } = await overHeld(refusing("tracker is down"));
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     click("Close");
     release();
     await waitFor(() => expect(strips().length).toBe(0));
@@ -267,9 +239,7 @@ describe("the request goes on with the dialog closed", () => {
 
   it("shows a fresh form, and the request in the strip, when it was accepted while the dialog was closed", async () => {
     const { release } = await overHeld(accepting(false));
-    openDialog();
-    typeRequest(REQUEST);
-    click("Write ticket");
+    sendRequest();
     click("Close");
     release();
     await screen.findByRole("region", { name: "New ticket request" });

@@ -36,7 +36,7 @@
   line-height: var(--space-24);
   font-weight: var(--font-weight-semibold);
 }
-.nt-close {
+.ghost.nt-close {
   display: flex;
   padding: var(--space-4);
   border-color: transparent;
@@ -181,6 +181,7 @@
   grid-column: 1 / -1;
 }
 .nt-parent input {
+  box-sizing: content-box;
   max-width: var(--input-width);
   font-family: var(--font-mono);
 }
@@ -220,7 +221,7 @@
 .nt-spacer {
   flex: 1 1 0;
 }
-.nt-cancel {
+.ghost.nt-cancel {
   padding: var(--space-5) var(--space-12);
   font-size: var(--font-size-body);
 }
@@ -288,11 +289,16 @@
 .run-spacer {
   flex: 1 1 0;
 }
-.run-stop {
+/* The buttons of a request's head are the boards' small ones: two pixels of padding, and the browser's own line height. */
+.run-head .ghost {
+  padding: var(--space-2) var(--space-10);
+  line-height: normal;
+}
+.run-head .ghost.run-stop {
   border-color: var(--color-danger-border);
   color: var(--color-danger-text);
 }
-.run-dismiss {
+.run-head .ghost.run-dismiss {
   color: var(--color-text-nav);
 }
 .run-request {
@@ -331,7 +337,8 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-4) var(--space-12);
-  min-height: var(--space-32);
+  /* The boards' row has a content box: its 32 are the row's own, beside the padding. */
+  min-height: calc(var(--space-32) + 2 * var(--space-6));
   padding: var(--space-6) var(--space-14);
 }
 a.run-ticket:hover {
