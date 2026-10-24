@@ -7,7 +7,10 @@
     "jsxImportSource": "react",
     // As the toolchain base has it: the files stay inside the subset Node can strip types from, so an enum or a parameter property is refused.
     "erasableSyntaxOnly": true,
-    "types": ["node", "@rstest/core/globals"]
+    "types": ["node", "@rstest/core/globals"],
+    // The server files the client's types reach (`../src/`) import `typescript` (`src/lib/resolve-typescript.ts`), and from there module resolution looks in the repository root's `node_modules`, which the `ui` job does not install (`ui/` is a package of its own).
+    // So the UI program resolves it from its own devDependency: the same major as the root's, and only its types are read.
+    "paths": { "typescript": ["./node_modules/typescript"] }
   },
   // The program reaches `../src/` by import only: the screenshot helper takes `captureName` and `pngSize` from `../src/ticket-mode/capture.ts` (A11-151), and `src/api/` imports the instance API's types and `apiBase` from the server's
   // modules (A11-189), so `tsc` checks every file those reach with these options, and a server change that breaks a page fails here. A server file these options reject is fixed or its import narrowed, never copied into `ui/`.

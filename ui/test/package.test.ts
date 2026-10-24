@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import ts from "typescript";
 import config from "../astro.config.ts";
 import { UI_ROOT } from "./site.ts";
 
@@ -31,5 +32,15 @@ describe("playwright-core", () => {
 describe("the UI package", () => {
   it("is private, so it is never published", () => {
     expect(readPackage(`${UI_ROOT}package.json`).private).toBe(true);
+  });
+});
+
+describe("the UI program's tsconfig", () => {
+  // The server files the API client's types reach import `typescript`, and the `ui` job installs no root `node_modules` for them to find it in (A11-189).
+  it("resolves `typescript` from the UI package's own install, which is where CI has it", () => {
+    const { config } = ts.readConfigFile(`${UI_ROOT}tsconfig.json`, ts.sys.readFile);
+    const [target] = config.compilerOptions.paths?.typescript ?? [];
+    expect(target).toBe("./node_modules/typescript");
+    expect(existsSync(`${UI_ROOT}${target}/package.json`)).toBe(true);
   });
 });
