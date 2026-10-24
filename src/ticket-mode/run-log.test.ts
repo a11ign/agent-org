@@ -157,6 +157,22 @@ test("a run that needs a person logs it once, and its answer when the person giv
   assert.deepEqual(bodies(answered).slice(-2), [{ kind: "answered", by: "respond" }, { kind: "round", cause: "asked", reason: null }]);
 });
 
+test("a start that is put back on the queue before its agent opens is not logged as a start, and a run that opens is, at the time it began", () => {
+  const queued = enqueue(emptyQueue(1), [ticket("A")], choice, 1);
+  const abandoned = planDone(markStarting(queued, "A", 2, worker), "A", { unattended: false, now: 3 });
+  assert.deepEqual(kinds(abandoned), ["queued", "planned"], "its plan had reached the ticket, so the run went back on the queue");
+  const refused = finish(markStarting(queued, "A", 2, worker), "A", { kind: "needs-human", reason: "a decision is open" }, 3);
+  assert.deepEqual(kinds(refused), ["queued", "finished", "needs-you"], "an open decision refuses the start before an agent opens");
+  const opened = markRunning(markStarting(queued, "A", 2, worker), "A", "w1", "w1:p1");
+  assert.deepEqual(logOf(opened, "A").at(-1), { at: 2, kind: "started", model: "opus", effort: "high", instance: "agents" });
+  assert.equal(logOf(markRunning(opened, "A", "w1", "w1:p1"), "A").length, 2, "a run that is running already is not started again");
+});
+
+test("a watch of a run that is no longer on the queue logs nothing for it", () => {
+  const gone = observe(emptyQueue(1), "NBL-1", "blocked", "Allow?", 5);
+  assert.equal(gone.runLog, undefined);
+});
+
 test("the board's hand-back at its cap of rounds logs that a person is needed, and a stale-block note does too, once", () => {
   const watched = (rounds: number): Queue => {
     const queue = finishedA();

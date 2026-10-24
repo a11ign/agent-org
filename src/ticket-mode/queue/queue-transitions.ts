@@ -227,13 +227,8 @@ export function setMax(queue: Queue, max: number): Queue {
 export function markStarting(queue: Queue, key: string, now: number, worker?: RunWorker): Queue {
   // The round that follows a stop for an update is under way: the board stops saying the run was stopped (A11-169). What a start records of the run's plan and machine is read again
   // for this start, so the earlier one's is dropped (A11-219).
-  const before = find(queue, key);
-  const starting = replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, plannedSteps: _planned, currentStep: _step, ...entry }) =>
+  return replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, plannedSteps: _planned, currentStep: _step, ...entry }) =>
     ({ ...entry, phase: "starting", startedAt: now, ...(worker === undefined ? {} : { worker }) }));
-  if (before === undefined) return starting;
-  // A planning run starts on the choice its plan was asked with, and any other on the entry's own.
-  const { model, effort } = before.plan ?? before;
-  return logEvent(starting, key, now, { kind: "started", model, effort, instance: worker?.instance ?? null });
 }
 
 /**
@@ -254,7 +249,13 @@ export function recordRepos(queue: Queue, key: string, repos: readonly string[])
 }
 
 export function markRunning(queue: Queue, key: string, workspace: string, pane: string): Queue {
-  return replace(queue, key, (entry) => ({ ...entry, phase: "running", workspace, pane }));
+  const before = find(queue, key);
+  const running = replace(queue, key, (entry) => ({ ...entry, phase: "running", workspace, pane }));
+  if (before?.phase !== "starting" || before.startedAt === undefined) return running;
+  // The start is logged here, once its agent is open, at the time it began: a start that is put back on the queue (its plan reached the ticket, or it plans again) or refused never ran. A planning run starts on the
+  // choice its plan was asked with, and any other on the entry's own.
+  const { model, effort } = before.plan ?? before;
+  return logEvent(running, key, before.startedAt, { kind: "started", model, effort, instance: before.worker?.instance ?? null });
 }
 
 /**
@@ -263,11 +264,13 @@ export function markRunning(queue: Queue, key: string, workspace: string, pane: 
  */
 export function observe(queue: Queue, key: string, status: string, prompt?: string, now?: number): Queue {
   const waiting = !["working", "idle", "done", "unknown"].includes(status);
-  const was = find(queue, key)?.waiting === true;
+  const before = find(queue, key);
+  const was = before?.waiting === true;
   const observed = replace(queue, key, ({ prompt: _earlier, ...entry }) =>
     ({ ...entry, seenWorking: entry.seenWorking === true || status === "working", waiting, ...(waiting && prompt !== undefined ? { prompt } : {}) }));
   // A change of whether the run waits is the event: the pool observes it on every pass (A11-219).
-  if (waiting && !was) return logEvent(observed, key, now, { kind: "needs-you", reason: prompt === undefined ? status : (shortReason(prompt) ?? status) });
+  if (before === undefined) return observed;
+  if (waiting && !was) return logEvent(observed, key, now, { kind: "needs-you", reason: shortReason(prompt ?? "") ?? status });
   return !waiting && was ? logEvent(observed, key, now, { kind: "answered", by: "terminal" }) : observed;
 }
 
