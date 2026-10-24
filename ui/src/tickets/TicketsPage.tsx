@@ -105,9 +105,10 @@ function TicketsContent() {
   return (
     <>
       {header}
+      {/* Outside the unreachable frame, which swaps its element when the connection drops or returns: a request held in what it wraps would be lost with it. */}
+      {writing && config !== null ? <NewTicket config={config} paused={unreachable === null ? null : (connection?.name ?? "")} open={newTicketOpen} onClose={() => setNewTicketOpen(false)} /> : null}
       <TicketsUnreachable>
         <FailureBanner refusal={page.actions.refusal} clearRefusal={page.actions.clearRefusal} />
-        {writing && config !== null ? <NewTicket config={config} open={newTicketOpen} onClose={() => setNewTicketOpen(false)} /> : null}
         {body}
       </TicketsUnreachable>
     </>

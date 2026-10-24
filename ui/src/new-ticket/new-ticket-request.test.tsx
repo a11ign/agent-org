@@ -314,3 +314,39 @@ describe("the strip's buttons and failures", () => {
     await waitFor(() => expect(reads()).toBeGreaterThan(before));
   });
 });
+
+describe("what the person does while a request is out, and after a Dismiss", () => {
+  it("keeps what was typed after the request went out, when it is accepted", async () => {
+    const { release } = await overHeld(accepting(true));
+    sendRequest();
+    typeRequest("The next request, begun while the first was out");
+    release();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    openDialog();
+    expect((inDialog().getByLabelText("What is the ticket for?") as HTMLTextAreaElement).value).toBe("The next request, begun while the first was out");
+  });
+
+  it("takes a dismissed request off the strip at once, even while the poll still lists it, and posts the Dismiss once", async () => {
+    const { base } = await pageOver([STAGES.done], { post: () => ({ runs: [] }) });
+    const dismiss = within(strips()[0] as HTMLElement).getByRole("button", { name: "Dismiss" });
+    fireEvent.click(dismiss);
+    fireEvent.click(dismiss);
+    await waitFor(() => expect(strips().length).toBe(0));
+    expect(base.requests.filter(({ method, path }) => method === "POST" && path.endsWith("/dismiss")).length).toBe(1);
+  });
+
+  it("shows a read failure again after a read has answered, though the same sentence was dismissed before", async () => {
+    const board = writerBoard([STAGES.writing]);
+    let failing = true;
+    Object.defineProperty(board.instance, "writer", { get: () => (failing ? undefined : board.view) });
+    await pageWith(standOn(board));
+    const first = await screen.findByRole("alert");
+    fireEvent.click(within(first).getByRole("button", { name: "Dismiss" }));
+    failing = false;
+    window.dispatchEvent(new Event("focus"));
+    await screen.findAllByRole("region", { name: "New ticket request" });
+    failing = true;
+    window.dispatchEvent(new Event("focus"));
+    expect(textOf(await screen.findByRole("alert"))).toContain("no route /c/here/api/writer");
+  });
+});

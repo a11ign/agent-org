@@ -54,10 +54,10 @@ function RunNote({ run }: Readonly<{ run: Run }>) {
   return null;
 }
 
-type CardProps = Readonly<{ run: Run; readAt: number | null; onStop: (id: string) => void; onDismiss: (id: string) => void }>;
+type CardProps = Readonly<{ run: Run; readAt: number | null; /** A Stop or Dismiss is out, or the connection is paused: the buttons wait. */ busy: boolean; onStop: (id: string) => void; onDismiss: (id: string) => void }>;
 
 /** One new-ticket request as the boards draw it: its status and who is writing, the buttons that status has, the request, the note, and the tickets it filed. */
-export function RunCard({ run, readAt, onStop, onDismiss }: CardProps) {
+export function RunCard({ run, readAt, busy, onStop, onDismiss }: CardProps) {
   const actions = writerRunActions(run);
   return (
     <section aria-label="New ticket request" className={`run-card run-card-${run.status}`}>
@@ -67,8 +67,8 @@ export function RunCard({ run, readAt, onStop, onDismiss }: CardProps) {
         <span className="run-by">{headLineOf(run)}</span>
         <div className="run-spacer" />
         <OpenTerminal run={run} readAt={readAt} />
-        {actions.stop ? <button type="button" className="ghost run-stop" onClick={() => onStop(run.id)}>Stop</button> : null}
-        {actions.dismiss ? <button type="button" className="ghost run-dismiss" onClick={() => onDismiss(run.id)}>Dismiss</button> : null}
+        {actions.stop ? <button type="button" className="ghost run-stop" disabled={busy} onClick={() => onStop(run.id)}>Stop</button> : null}
+        {actions.dismiss ? <button type="button" className="ghost run-dismiss" disabled={busy} onClick={() => onDismiss(run.id)}>Dismiss</button> : null}
       </div>
       <div className="run-request">“{run.request}”</div>
       <RunNote run={run} />

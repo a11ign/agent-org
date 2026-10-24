@@ -12,6 +12,8 @@ export type WriterRuns = Readonly<{
   readAt: number | null;
   /** The sentence of the last failure, a read that failed or a Stop or Dismiss the server refused, or null. */
   failure: string | null;
+  /** The ids of the requests a Stop or Dismiss is out for. */
+  acting: ReadonlySet<string>;
   retry: () => void;
   dismissFailure: () => void;
   stop: (id: string) => void;
@@ -55,27 +57,41 @@ export function useWriterRuns(): WriterRuns {
   const learn = useCallback((run: Run) => setAnswered((before) => [...before.filter(({ id }) => id !== run.id), run]), []);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [dismissedRead, setDismissedRead] = useState<string | null>(null);
+  const [acting, setActing] = useState<ReadonlySet<string>>(new Set());
+  const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
   const polled = poll.data?.runs ?? null;
 
   useEffect(() => {
     if (polled !== null && answered.some((run) => holds(polled, run.id))) setAnswered((before) => before.filter((run) => !holds(polled, run.id)));
   }, [polled, answered]);
-  const runs = polled === null ? answered : [...polled, ...answered.filter((run) => !holds(polled, run.id))];
+  // A dismissed request leaves the strip at once, and its id is forgotten once a read no longer lists it.
+  useEffect(() => {
+    if (polled !== null && [...gone].some((id) => !holds(polled, id))) setGone((before) => new Set([...before].filter((id) => holds(polled, id))));
+  }, [polled, gone]);
+  useEffect(() => {
+    if (poll.state !== "error") setDismissedRead(null);
+  }, [poll.state]);
+  const listed = polled === null ? answered : [...polled, ...answered.filter((run) => !holds(polled, run.id))];
+  const runs = listed.filter((run) => !gone.has(run.id));
   useRefreshTicketsOnNew(polled);
 
   const failure = refusal ?? (poll.state === "error" && poll.refusal !== dismissedRead ? poll.refusal : null);
-  const act = (call: (id: string) => ReturnType<typeof client.stopWriterRun>) => async (id: string) => {
+  const act = (call: (id: string) => ReturnType<typeof client.stopWriterRun>, afterwards: (id: string) => void = () => undefined) => async (id: string) => {
+    if (acting.has(id)) return;
+    setActing((before) => new Set(before).add(id));
     const answer = await call(id);
+    setActing((before) => new Set([...before].filter((other) => other !== id)));
     if (!answer.ok) return setRefusal(answer.refusal);
     setRefusal(null);
+    afterwards(id);
     poll.refresh();
   };
   return {
-    runs, readAt: poll.readAt, failure,
+    runs, readAt: poll.readAt, failure, acting,
     retry: () => { setRefusal(null); setDismissedRead(null); poll.refresh(); },
     dismissFailure: () => { setRefusal(null); setDismissedRead(poll.refusal); },
     stop: (id) => void act(client.stopWriterRun)(id),
-    dismiss: (id) => void act(client.dismissWriterRun)(id),
+    dismiss: (id) => void act(client.dismissWriterRun, (left) => setGone((before) => new Set(before).add(left)))(id),
     learn,
   };
 }

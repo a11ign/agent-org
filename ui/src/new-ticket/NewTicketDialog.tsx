@@ -44,17 +44,17 @@ function WriterPill({ config }: Readonly<{ config: ConfigView }>) {
   );
 }
 
-type DialogProps = Readonly<{ request: NewTicketRequest; config: ConfigView; options: ManualOptions; onClose: () => void }>;
+type DialogProps = Readonly<{ request: NewTicketRequest; config: ConfigView; /** The SSH connection that cannot be reached, whose pause holds Write ticket; null while it can. */ paused: string | null; options: ManualOptions; onClose: () => void }>;
 
 /** Cancel and Write ticket: the latter reads Sending… and is busy while the request goes out, and says why it cannot be pressed when it cannot. */
-function Footer({ request, config, onClose }: Pick<DialogProps, "request" | "config" | "onClose">) {
+function Footer({ request, config, paused, onClose }: Pick<DialogProps, "request" | "config" | "paused" | "onClose">) {
   const sending = request.sending.phase === "sending";
   return (
     <div className="nt-foot">
       <WriterPill config={config} />
       <div className="nt-spacer" />
       <button type="button" className="ghost nt-cancel" onClick={onClose}>Cancel</button>
-      <button type="submit" className="primary nt-write" disabled={!request.start.enabled || sending} aria-busy={sending} title={request.start.reason ?? ""}>
+      <button type="submit" className="primary nt-write" disabled={!request.start.enabled || sending || paused !== null} aria-busy={sending} title={paused === null ? (request.start.reason ?? "") : `Paused until ${paused} is reachable`}>
         {sending ? "Sending…" : "Write ticket"}
       </button>
     </div>
@@ -65,7 +65,7 @@ function Footer({ request, config, onClose }: Pick<DialogProps, "request" | "con
  * The New ticket dialog: the request, Quick or Grill, Auto or Manual placement, and the writer pill. The form and where the request is belong to the page (`request`), so this dialog
  * shows them as they are when it opens, and closing it stops nothing. The focus goes to the request, stays inside, and goes back to the button that opened it.
  */
-export function NewTicketDialog({ request, config, options, onClose }: DialogProps) {
+export function NewTicketDialog({ request, config, paused, options, onClose }: DialogProps) {
   const { dialog, onKeyDown } = useModalFocus<HTMLFormElement>(onClose);
   const field = useRef<HTMLTextAreaElement>(null);
   useEffect(() => field.current?.focus(), []);
@@ -87,7 +87,7 @@ export function NewTicketDialog({ request, config, options, onClose }: DialogPro
           <ModeCards mode={form.mode} grill={config.writerGrill} onChoose={(mode) => change({ mode })} />
           <PlacementSection form={form} options={options} onChange={change} />
         </div>
-        <Footer request={request} config={config} onClose={onClose} />
+        <Footer request={request} config={config} paused={paused} onClose={onClose} />
       </form>
     </div>
   );

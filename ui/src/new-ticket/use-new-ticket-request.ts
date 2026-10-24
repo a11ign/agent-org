@@ -39,7 +39,8 @@ export function useNewTicketRequest(accepted: (view: WritersView) => void): NewT
       tab?.close();
       return setSending({ phase: "refused", sentence: answer.refusal });
     }
-    setForm(EMPTY_FORM);
+    // What the person has typed since is theirs: only the form that was sent is emptied.
+    setForm((now) => (now === form ? EMPTY_FORM : now));
     setSending(IDLE);
     accepted(answer.data);
     const run = answer.data.runs.at(-1);
