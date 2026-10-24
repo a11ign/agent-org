@@ -37,6 +37,13 @@ name: auto-arm
 # `main`'s copy (the policy admits that event on `refs/heads/main`), re-reads the PR as the minted token and acts only on
 # `reviewDecision == APPROVED` for an open, same-repository PR against `main` that carries no `hold:` label. Nothing the dispatch says is trusted.
 
+# A STACKED PULL REQUEST IS MERGED WITH GITHUB'S STACK MERGE, NOT AUTO-MERGE (A11-238). GitHub refuses `gh pr merge --auto` and a plain merge for any pull request in a stack ("Auto-merge is not
+# supported for stacked pull requests"); it accepts only `PUT /pulls/{n}/merge-async` (what `gh stack merge` calls), which merges or queues that pull request AND every open member below it,
+# atomically. `arm-approved` makes that call, with the same minted token, for a stacked pull request whose base is `main` (so every member below has merged and the call names this one pull
+# request only; one higher up is skipped by the base check) and whose required checks are green (the API does not wait for checks as auto-merge does). A refusal is one keyed comment on the pull
+# request, carrying the head it was given at, which the board reads onto the run's card and which goes stale when the head moves. `arm` only says so and writes nothing. Unstacking is not an
+# option: it removes every unmerged member, so the members above lose their link.
+
 on:
   pull_request_target:
     branches: [main]
@@ -70,7 +77,26 @@ jobs:
         with:
           scope: ${{ github.repository }}
           identity: auto-arm
+      - name: Is the pull request in a stack? GitHub refuses auto-merge to one (A11-238)
+        id: stack
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          # The `stack` field of a pull request is sent under this API version (GitHub's stacked-pull-request docs).
+          API_VERSION: "2026-03-10"
+        run: |
+          # A read that fails is "not stacked": the job then does what it did before this step existed.
+          number=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST" --jq '.stack.number // empty') || number=""
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+      - name: A stacked pull request is left to `arm-approved`, which stack-merges it once it is approved and green (A11-238)
+        if: steps.stack.outputs.number != ''
+        env:
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: |
+          echo "AUTO-ARM: #${PULL_REQUEST} is in a stack: GitHub refuses auto-merge for stacks, so arm-approved merges it with the stack merge once it is approved and green"
       - name: Enable auto-merge (merge commit)
+        if: steps.stack.outputs.number == ''
         env:
           GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
           PULL_REQUEST: ${{ github.event.pull_request.number }}
@@ -119,18 +145,22 @@ jobs:
         with:
           scope: ${{ github.repository }}
           identity: auto-arm
-      - name: Mark an approved draft ready and arm it -- unless held, forked, closed or not against main (a11ign/a11ign#4969)
+      - name: Mark an approved draft ready and arm it, or stack-merge a stacked one -- unless held, forked, closed or not against main (a11ign/a11ign#4969, A11-238)
         env:
           GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
           PULL_REQUEST: ${{ github.event.inputs.pr }}
           REPOSITORY: ${{ github.repository }}
+          API_VERSION: "2026-03-10"
+          # How long the stack merge is followed before the job stops watching: the board sees the queue seat or the merge on its next read.
+          POLL_SECONDS: "5"
+          POLL_ATTEMPTS: "12"
           # MIRRORS `HOLD_PREFIX` in src/pr-hold-state.ts, as `arm` does above; `auto-arm-workflow-honours-hold.test.ts` fails if the two drift.
           HOLD_PREFIX: "hold:"
         run: |
           case "$PULL_REQUEST" in ''|*[!0-9]*) echo "::error::AUTO-ARM: pr input '$PULL_REQUEST' is not a pull request number"; exit 1;; esac
           # An approval is readable a moment after the review event, so a dispatch that outruns it asks again before it refuses.
           for attempt in 1 2 3; do
-            pr=$(gh pr view "$PULL_REQUEST" --repo "$REPOSITORY" --json state,baseRefName,isCrossRepository,reviewDecision,isDraft,labels)
+            pr=$(gh pr view "$PULL_REQUEST" --repo "$REPOSITORY" --json state,baseRefName,isCrossRepository,reviewDecision,isDraft,labels,headRefOid)
             [ "$(jq -r .reviewDecision <<<"$pr")" = APPROVED ] && break
             sleep 5
           done
@@ -147,8 +177,63 @@ jobs:
             skip:*) echo "AUTO-ARM: leaving #${PULL_REQUEST} in ${REPOSITORY} untouched -- ${verdict#skip: }"; exit 0;;
             ready) echo "AUTO-ARM: #${PULL_REQUEST} is an approved draft: marking it ready"; gh pr ready "$PULL_REQUEST" --repo "$REPOSITORY";;
           esac
-          echo "AUTO-ARM: arming #${PULL_REQUEST} in ${REPOSITORY} with the Octo STS token"
-          gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge
+          # A read that fails is "not stacked": the pull request then takes the path it took before stacks were read.
+          stack=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST" --jq '.stack.number // empty') || stack=""
+          if [ -z "$stack" ]; then
+            echo "AUTO-ARM: arming #${PULL_REQUEST} in ${REPOSITORY} with the Octo STS token"
+            gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge
+            exit 0
+          fi
+
+          # A STACKED PULL REQUEST (A11-238). Its base is `main` (checked above), so it is the bottom open member and the atomic merge takes this one only. The API does not wait
+          # for checks, so they are read first: exit 8 is pending, anything else is red. Neither fails this job; the board dispatches again when the pull request is ready.
+          head=$(jq -r .headRefOid <<<"$pr")
+          checks=0
+          report=$(gh pr checks "$PULL_REQUEST" --repo "$REPOSITORY" --required 2>&1) || checks=$?
+          if [ "$checks" -ne 0 ]; then
+            state=red; [ "$checks" -eq 8 ] && state=pending
+            echo "AUTO-ARM: #${PULL_REQUEST} is stacked and its required checks are not green (${state}): not merging yet"
+            printf '%s\n' "$report"
+            exit 0
+          fi
+
+          # A refusal is ONE comment, keyed by the marker and carrying the head it was given at; it is edited in place, and the board reads it (it is stale once the head moves).
+          refuse() {
+            body=$(printf '<!-- agent-org:stack-merge head=%s -->\nGitHub refused the stack merge of #%s: %s' "$head" "$PULL_REQUEST" "$1")
+            echo "AUTO-ARM: GitHub refused the stack merge of #${PULL_REQUEST} in ${REPOSITORY}: $1"
+            existing=$(gh api --paginate "repos/$REPOSITORY/issues/$PULL_REQUEST/comments" --jq '.[] | select(.body | startswith("<!-- agent-org:stack-merge ")) | .id' | tail -n 1)
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/$REPOSITORY/issues/comments/$existing" -f body="$body" >/dev/null
+            else
+              gh api -X POST "repos/$REPOSITORY/issues/$PULL_REQUEST/comments" -f body="$body" >/dev/null
+            fi
+            exit 0
+          }
+
+          echo "AUTO-ARM: #${PULL_REQUEST} is stacked: requesting the stack merge of ${REPOSITORY}#${PULL_REQUEST}, up to this pull request, with the Octo STS token"
+          err=$(mktemp)
+          trap 'rm -f "${err:?}"' EXIT
+          put=0
+          answer=$(gh api -X PUT -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST/merge-async" -f sha="$head" -f merge_method=merge -f merge_action=default 2>"$err") || put=$?
+          if [ "$put" -ne 0 ]; then
+            # 409: another request for this pull request is already running, which is the state asked for. Any other refusal is shown.
+            if grep -q 'HTTP 409' "$err"; then echo "AUTO-ARM: a stack merge of #${PULL_REQUEST} is already pending"; exit 0; fi
+            reason=$(jq -r '.message // empty' <<<"$answer" 2>/dev/null || true)
+            refuse "${reason:-$(cat "$err")}"
+          fi
+          uuid=$(jq -r '.details.uuid // empty' <<<"$answer")
+          # The answer to the PUT is read first, then each poll's: POLL_ATTEMPTS polls, every one read.
+          for poll in $(seq 0 "$POLL_ATTEMPTS"); do
+            status=$(jq -r .status <<<"$answer")
+            case "$status" in
+              merged|enqueued) echo "AUTO-ARM: the stack merge of #${PULL_REQUEST} is ${status}"; exit 0;;
+              failed) refuse "$(jq -r '.details.message // "no reason given"' <<<"$answer")";;
+            esac
+            if [ -z "$uuid" ] || [ "$poll" -eq "$POLL_ATTEMPTS" ]; then break; fi
+            sleep "$POLL_SECONDS"
+            answer=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" "repos/$REPOSITORY/pulls/$PULL_REQUEST/merge-async/$uuid")
+          done
+          echo "AUTO-ARM: the stack merge of #${PULL_REQUEST} is still pending: the board reads the queue seat or the merge on its next read"
 
   # agent-org#1573. THE TOOL IS THIS CHECKOUT AND THE PROJECT IS a11ign's, side by side, because the tool serves the repository it is run in (`resolveHomeCheckout`, the standalone layout): `cd project`
   # makes a11ign the home checkout, and the flag is its `.agent-org/decisions.json`. `--ignore-scripts`: nothing the install runs is wanted here.
