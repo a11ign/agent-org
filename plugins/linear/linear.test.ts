@@ -339,6 +339,18 @@ test("attachPlan() says so when the storage refuses an upload, and attaches noth
   assert.equal(requests.some((r) => /attachmentCreate/.test(String(r.init.body ?? ""))), false);
 });
 
+test("attachPlan() rejects with the status Linear answered with, as data on the error, and the message as it was (A11-216)", async () => {
+  const [plan] = planFiles();
+  const unavailable = (async () => new Response("<html>upstream</html>", { status: 503 })) as unknown as typeof globalThis.fetch;
+  const answered = await linearSource({ key: "k", fetch: unavailable }).attachPlan!("NBF-1", [plan], "Planned").catch((err: unknown) => err);
+  assert.equal((answered as { status?: unknown }).status, 503);
+  assert.equal((answered as Error).message, "Linear answered 503: no JSON");
+  const { fetch } = linear([planning("backlog"), signed(1)], { "https://storage.example/upload-1?sig=1": { status: 403 } });
+  const refused = await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned").catch((err: unknown) => err);
+  assert.equal((refused as { status?: unknown }).status, 403);
+  assert.equal((refused as Error).message, "the upload of NBF-1-0001-plan-fit-to-view.md was refused (403)");
+});
+
 test("attachPlan() still attaches the plan when the ticket's team has no state of the planner's name, leaves the state alone and says so", async () => {
   const [plan] = planFiles();
   const { fetch, requests } = linear([planning("backlog"), signed(1), done], { "https://storage.example/upload-1?sig=1": { status: 200 } });

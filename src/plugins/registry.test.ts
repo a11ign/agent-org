@@ -106,7 +106,7 @@ test("this checkout's catalog is read once, holds no refusal, and reads a real p
   assert.equal(defaultCatalog(), defaultCatalog());
   assert.deepEqual(defaultCatalog().refusals, []);
   const linear = pluginNamed(defaultCatalog(), "linear");
-  assert.deepEqual([linear?.concern, linear?.where, linear?.contract, linear?.dir?.endsWith("/plugins/linear")], ["tracker", "bundled", "1.6", true], "linear is the bundled package, found on disk");
+  assert.deepEqual([linear?.concern, linear?.where, linear?.contract, linear?.dir?.endsWith("/plugins/linear")], ["tracker", "bundled", "1.7", true], "linear is the bundled package, found on disk");
   assert.deepEqual(["local", "tailscale", "telegram"].map((name) => { const found = pluginNamed(defaultCatalog(), name); return [name, found?.concern, found?.where, found?.contract]; }),
     [["local", "exposure", "bundled", "1.1"], ["tailscale", "exposure", "bundled", "1.1"], ["telegram", "messaging", "bundled", "1.1"]], "A11-162: the exposures and the messaging provider are bundled packages too, not rows in core");
   const root = mkdtempSync(join(tmpdir(), "registry-"));
