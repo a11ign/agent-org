@@ -264,7 +264,7 @@ function rereviewable(ctx: PoolContext, reviewer: ReviewerPort, url: string, sta
 function handBackUnreviewed(ctx: PoolContext, held: Entry, answered: string): void {
   if (held.handedBack !== undefined) return;
   log(`${held.ticket.key}: ${answered}; it has no round left, so it is handed to a person`);
-  update(ctx, (queue) => handBackRereview(queue, held.ticket.key, answered));
+  update(ctx, (queue) => handBackRereview(queue, held.ticket.key, answered, ctx.now()));
 }
 
 /**
@@ -288,14 +288,15 @@ function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, stat
   if (replies === null) return null;
   if (replies.length === 0 && changed.length === 0) return null;
   if (ctx.codeHost.readPullState(url) !== "OPEN") return null;
+  const how = changed.length > 0 ? "by editing the description" : "in a reply";
   if (held !== undefined && !roundsLeft(held)) {
-    handBackUnreviewed(ctx, held, answeredWords(url, head, changed.length > 0 ? "by editing the description" : "in a reply"));
+    handBackUnreviewed(ctx, held, answeredWords(url, head, how));
     return null;
   }
   const quoted = replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text }));
   const brief: ReviewBrief = { ...briefOf(ctx, url, state), rereview: { replies: quoted, ...(changed.length === 0 ? {} : { body: changed }) } };
   const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state) });
-  if (held !== undefined && started.refusal === null) update(ctx, (queue) => countRereview(queue, held.ticket.key));
+  if (held !== undefined && started.refusal === null) update(ctx, (queue) => countRereview(queue, held.ticket.key, ctx.now(), `the block was answered ${how}`));
   return started;
 }
 
