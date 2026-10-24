@@ -6,6 +6,7 @@
 @import "./lifecycle/lifecycle.css";
 @import "./shell/shell.css";
 @import "./tickets/tickets.css";
+@import "./plugins/plugins.css";
 
 *,
 *::before,

@@ -186,12 +186,13 @@ async function saveOrRestore(save: () => ReturnType<typeof saveEdit>, plan: Plan
 
 /**
  * Writes a plan through the page's path, and says what changed. A refusal of the readers, of a release or of a dangerous key is thrown as a command refusal. `base` is the hash of the file as
- * the caller last read it (the Settings page's): a file that has changed since is refused, and nothing is released or written (A11-163). Answers when each change is in force, one sentence each.
+ * the caller last read it (the Settings page's): a file that has changed since is refused, and nothing is released or written (A11-163). Answers when each change is in force, one sentence each,
+ * and the file the save kept (null when the plan changed nothing, so nothing was saved).
  */
-export async function writePlan(plan: Plan, deps: PluginCliDeps, confirmed: readonly string[], base?: string): Promise<readonly string[]> {
+export async function writePlan(plan: Plan, deps: PluginCliDeps, confirmed: readonly string[], base?: string): Promise<Readonly<{ inForce: readonly string[]; backup: string | null }>> {
   if (plan.changes.length === 0) {
     deps.log(plan.said);
-    return [];
+    return { inForce: [], backup: null };
   }
   const options = { hostPath: deps.hostPath, projectPath: deps.projectPath, plugins: true } as const;
   const file: EditFile = plan.file ?? "host.json";
@@ -210,7 +211,7 @@ export async function writePlan(plan: Plan, deps: PluginCliDeps, confirmed: read
     const inForce = [...new Set(saved.changes.map((change) => change.inForce))];
     for (const sentence of inForce) deps.log(`  ${sentence}`);
     deps.log(`  the file before this change is ${saved.backup}`);
-    return inForce;
+    return { inForce, backup: saved.backup };
   } catch (error) {
     if (!(error instanceof SettingsEditRefusal)) throw error;
     throw new PluginCommandRefusal(/needs a second confirmation/.test(error.message) ? `${error.message}. Run it again with --confirm to make the change` : error.message);
