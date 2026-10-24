@@ -88,3 +88,113 @@ jobs:
       node-version: 22.22.1
       pnpm-version: 10.34.5
       changesets-version: 3.0.1
+
+  # THE UI BUILD, BUILT FOR THE RELEASE JUST CUT AND ATTACHED TO ITS GITHUB RELEASE (A11-191; parent A11-187: CI builds the UI into each release, so no machine needs its toolchain). The shared workflow above
+  # declares NO `workflow_call` outputs, so the call is never told which tag it cut, and a tag pushed with GITHUB_TOKEN starts no workflow (`on: release` and `on: push: tags` never fire). So the two jobs
+  # below follow the call in this file, and `scripts/ui-asset.ts released-tag` finds the tag from the one thing both know: the shared workflow builds the release commit "on top of this merge", so the `vX.Y.Z`
+  # tag whose commit has `$GITHUB_SHA` as its FIRST PARENT is the tag this push released. A push that released nothing (no unreleased changeset) matches no tag, says so, and ends green.
+  #
+  # BUILD AND ATTACH ARE TWO JOBS because the build RUNS THE REPOSITORY'S CODE (`pnpm install` of `ui/`) and so holds no write token, as the shared workflow's own `version` job holds none; the job that
+  # holds `contents: write` runs none of the repository's code: it downloads two files and uploads them. `ui-build` hands them on as a run artifact.
+  #
+  # THE DRY RUN IS `ci.yml`'s `ui` JOB: it runs the same install, build and `ui-asset.ts pack` on every pull request (`ASSET_TAG: dry-run`) and archives the two files as `agent-org-ui-dry-run`, uploading nothing to a
+  # Release. `src/packaging/ui-asset.test.ts` holds the three commands of the two jobs equal.
+  #
+  # THE UPLOAD ADDS AND NEVER REPLACES: `gh release upload` with no `--clobber`, the tarball first and its checksum second, so a checksum that is there always has its tarball. A re-run that finds both already
+  # attached says so and succeeds; one that finds only one fails and names it, because replacing a file a machine may already have verified is a person's decision. `release-triggers-itself.test.ts` allows exactly
+  # these two uploads and still refuses every other `gh release` write.
+  ui-build:
+    needs: release
+    if: needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PNPM_VERSION: 10.34.5
+      ASTRO_TELEMETRY_DISABLED: 1
+    outputs:
+      tag: ${{ steps.released.outputs.tag }}
+    steps:
+      # Every tag, and the parent of every commit a tag points at, must be here: the release commit is on no branch, and the tag job pushed it before this job began.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - name: The tag this push released, if it released one
+        id: released
+        run: |
+          tag=$(node scripts/ui-asset.ts released-tag "$GITHUB_SHA")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then echo "$GITHUB_SHA released no tag, so there is no UI build to attach"; else echo "$GITHUB_SHA released $tag"; fi
+      - name: Check out the release
+        if: steps.released.outputs.tag != ''
+        env:
+          ASSET_TAG: ${{ steps.released.outputs.tag }}
+        run: git checkout --detach "refs/tags/$ASSET_TAG"
+      - uses: pnpm/action-setup@v6
+        if: steps.released.outputs.tag != ''
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Install the UI from its own lockfile
+        if: steps.released.outputs.tag != ''
+        run: pnpm --dir ui install --frozen-lockfile --ignore-scripts
+      - name: pnpm ui:build -- static files in ui/dist
+        if: steps.released.outputs.tag != ''
+        run: pnpm ui:build
+      - name: Pack the UI asset -- agent-org-ui-<tag>.tar.gz and its sha256
+        if: steps.released.outputs.tag != ''
+        env:
+          ASSET_TAG: ${{ steps.released.outputs.tag }}
+        run: node scripts/ui-asset.ts pack ui/dist "$ASSET_TAG" "$RUNNER_TEMP/ui-asset"
+      - name: The two files, handed to the job that attaches them
+        if: steps.released.outputs.tag != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-org-ui
+          path: ${{ runner.temp }}/ui-asset/*
+          if-no-files-found: error
+          retention-days: 1
+
+  ui-attach:
+    needs: ui-build
+    if: needs.ui-build.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      # The Release's assets are the only write. This job runs no repository code: it checks nothing out.
+      contents: write
+    env:
+      ASSET_TAG: ${{ needs.ui-build.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: agent-org-ui
+          path: ${{ runner.temp }}/ui-asset
+      - name: Attach the tarball, then its checksum, to the Release
+        working-directory: ${{ runner.temp }}/ui-asset
+        run: |
+          tarball="agent-org-ui-$ASSET_TAG.tar.gz"
+          checksum="$tarball.sha256"
+          attached=$(gh release view "$ASSET_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          has_tarball=false
+          has_checksum=false
+          if printf '%s\n' "$attached" | grep -Fxq "$tarball"; then has_tarball=true; fi
+          if printf '%s\n' "$attached" | grep -Fxq "$checksum"; then has_checksum=true; fi
+          if [ "$has_tarball" = true ] && [ "$has_checksum" = true ]; then
+            echo "$ASSET_TAG already carries $tarball and $checksum"
+            exit 0
+          fi
+          if [ "$has_tarball" = true ]; then
+            echo "::error::$ASSET_TAG carries $tarball but not $checksum; remove the tarball from the Release by hand, then re-run this job"
+            exit 1
+          fi
+          if [ "$has_checksum" = true ]; then
+            echo "::error::$ASSET_TAG carries $checksum but not $tarball; remove the checksum from the Release by hand, then re-run this job"
+            exit 1
+          fi
+          gh release upload "$ASSET_TAG" "$tarball" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$ASSET_TAG" "$checksum" --repo "$GITHUB_REPOSITORY"
+          echo "attached $tarball and $checksum to $ASSET_TAG"

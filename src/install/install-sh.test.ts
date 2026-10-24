@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { publishUiAsset, startReleaseServer } from "./fixtures/release-server.ts";
 
 const INSTALL_SH = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "install.sh");
 const TAGS = ["v0.2.0", "v0.9.0", "v0.10.0", "v0.11.0-rc1"];
@@ -24,42 +25,45 @@ const GIT_ENV = sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/d
 const PINNED_PNPM = "pnpm@10.34.5";
 const INSTALL_FLAGS = "install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent";
 /** Every program install.sh runs, other than node, npm and corepack, which a case chooses. */
-const TOOLS = ["git", "tar", "grep", "sed", "sort", "tail", "head", "dirname", "mktemp", "mv", "rm", "mkdir", "cat", "chmod", "uname", "readlink"];
+const TOOLS = ["git", "tar", "gzip", "curl", "grep", "sed", "sort", "tail", "head", "dirname", "mktemp", "mv", "rm", "mkdir", "cat", "chmod", "uname", "readlink"];
 
 /** A CI runner sets NVM_DIR, which would make every Node fix `nvm install`: the fix a case expects is for the Node it builds, so these start empty. */
 const NO_VERSION_MANAGER = { NVM_DIR: "", FNM_DIR: "", FNM_MULTISHELL_PATH: "" };
 
 const programPath = (name: string) => execFileSync("/bin/sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim();
 
+const gitIn = (cwd: string) => (args: string[]) => execFileSync("git", args, { cwd, env: GIT_ENV, stdio: "pipe" });
+
+/** Commit and tag `tag` in the working repository `work`, with `manifest` as its package.json and `bin` as its `src/bin.ts`. */
+function commitRelease(work: string, tag: string, manifest: Record<string, unknown>, bin: string): void {
+  const git = gitIn(work);
+  writeFileSync(join(work, "package.json"), `${JSON.stringify({ name: "agent-org", type: "module", ...manifest })}\n`);
+  writeFileSync(join(work, "src", "bin.ts"), bin);
+  git(["add", "-A"]);
+  git(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", tag]);
+  git(["tag", tag]);
+}
+
 /** A bare repository holding one commit per tag. */
 function releaseRepo(root: string): string {
   const work = join(root, "work");
   const bare = join(root, "agent-org.git");
-  const git = (args: string[], cwd = work) => execFileSync("git", args, { cwd, env: GIT_ENV, stdio: "pipe" });
   mkdirSync(join(work, "src"), { recursive: true });
-  git(["init", "--quiet", "--initial-branch=main"]);
-  for (const tag of TAGS) {
-    writeFileSync(join(work, "package.json"), `${JSON.stringify({ name: "agent-org", type: "module" })}\n`);
-    writeFileSync(join(work, "src", "bin.ts"), `console.log("fixture ${tag}", process.env.AGENT_ORG_HOME, process.argv.slice(2).join(" "));\n`);
-    git(["add", "-A"]);
-    git(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", tag]);
-    git(["tag", tag]);
-  }
-  git(["clone", "--quiet", "--bare", work, bare], root);
+  gitIn(work)(["init", "--quiet", "--initial-branch=main"]);
+  for (const tag of TAGS) commitRelease(work, tag, {}, `console.log("fixture ${tag}", process.env.AGENT_ORG_HOME, process.argv.slice(2).join(" "));\n`);
+  gitIn(root)(["clone", "--quiet", "--bare", work, bare]);
   return bare;
 }
 
-/** A release, v0.12.0, whose package.json declares a dependency, pushed to the bare repository. */
-function dependencyRelease(root: string, repo: string): void {
+/** A further release `tag`, whose package.json is `manifest` and whose `src/bin.ts` prints the tag, pushed to the bare repository. */
+function pushRelease(root: string, repo: string, tag: string, manifest: Record<string, unknown>): void {
   const work = join(root, "work");
-  const git = (args: string[]) => execFileSync("git", args, { cwd: work, env: GIT_ENV, stdio: "pipe" });
-  writeFileSync(join(work, "package.json"), `${JSON.stringify({ name: "agent-org", type: "module", dependencies: { leftpad: "^1.0.0" } })}\n`);
-  writeFileSync(join(work, "src", "bin.ts"), "console.log(\"fixture v0.12.0\");\n");
-  git(["add", "-A"]);
-  git(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "v0.12.0"]);
-  git(["tag", "v0.12.0"]);
-  git(["push", "--quiet", repo, "v0.12.0"]);
+  commitRelease(work, tag, manifest, `console.log("fixture ${tag}");\n`);
+  gitIn(work)(["push", "--quiet", repo, tag]);
 }
+
+/** A release, v0.12.0, whose package.json declares a dependency, pushed to the bare repository. */
+const dependencyRelease = (root: string, repo: string): void => pushRelease(root, repo, "v0.12.0", { dependencies: { leftpad: "^1.0.0" } });
 
 /** A folder holding only the programs install.sh runs, linked in, so a PATH made of it finds no npm and no corepack. */
 function toolsDir(root: string): string {
@@ -408,4 +412,211 @@ test("--help prints the usage and no report", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /^Usage: install\.sh \[--version vX\.Y\.Z\] \[--verbose\]/);
   assert.doesNotMatch(result.stdout, /Installing agent-org|install OK|FAILED/);
+});
+
+// A11-191: a release that ships a UI build has it downloaded from its GitHub Release, checked against its checksum, and unpacked into its version folder before current moves.
+// GitHub is a static server on 127.0.0.1 (`fixtures/release-server.ts`); AGENT_ORG_RELEASES_URL points the script at it.
+
+/** A release, v0.13.0, whose package.json declares a UI build, pushed to the bare repository. */
+const uiRelease = (root: string, repo: string): void => pushRelease(root, repo, "v0.13.0", { agentOrg: { shipsUiBuild: true } });
+
+/** A built UI whose page says `label`. */
+function uiDist(root: string, label: string): string {
+  const dist = join(root, `dist-${label}`);
+  mkdirSync(join(dist, "_astro"), { recursive: true });
+  writeFileSync(join(dist, "index.html"), `<title>${label}</title>\n`);
+  writeFileSync(join(dist, "_astro", "app.js"), `console.log("${label}");\n`);
+  return dist;
+}
+
+/** The fixture with the stub GitHub running, and curl on the PATH. */
+async function withGithub() {
+  const f = fixture();
+  const server = await startReleaseServer(join(f.root, "github"));
+  return { ...f, server, env: { AGENT_ORG_RELEASES_URL: server.url } };
+}
+
+/** `withGithub()` with v0.2.0 installed and current, and the UI-declaring release v0.13.0 cut after it. */
+async function withEarlierInstall() {
+  const github = await withGithub();
+  assert.equal(install(github.home, github.path, github.repo, ["--version", "v0.2.0"], github.env).status, 0);
+  uiRelease(github.root, github.repo);
+  return github;
+}
+
+const versionsOf = (home: string) => readdirSync(join(home, ".agent-org", "tool", "versions")).toSorted();
+const LAUNCHER_AT = "~/.local/bin/agent-org";
+
+test("a release that ships a UI build has it downloaded, checked and unpacked into its folder before current moves, and the report has the step", async () => {
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
+  publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  const result = install(home, `${join(home, ".local", "bin")}:${path}`, repo, [], env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout, [
+    "Installing agent-org",
+    "",
+    "  ok Downloaded agent-org v0.13.0",
+    "  ok Downloaded its UI build",
+    `  ok Added the agent-org command  (${LAUNCHER_AT})`,
+    "",
+    `agent-org install OK: v0.13.0 installed, command at ${LAUNCHER_AT}`,
+    "",
+    "Next:",
+    "  agent-org onboard     set up this machine",
+    "  agent-org doctor      check everything works",
+    "",
+  ].join("\n"));
+  const folder = join(home, ".agent-org", "tool", "versions", "v0.13.0");
+  assert.equal(readFileSync(join(folder, "ui-build", "index.html"), "utf8"), "<title>thirteen</title>\n");
+  assert.equal(readFileSync(join(folder, "ui-build", "_astro", "app.js"), "utf8"), "console.log(\"thirteen\");\n");
+  assert.equal(currentOf(home), join("versions", "v0.13.0"));
+  assert.deepEqual(versionsOf(home), ["v0.13.0", "v0.2.0"], "no .partial and no staging folder is left");
+  assert.deepEqual(readdirSync(folder).toSorted(), ["package.json", "src", "ui-build"]);
+  assert.deepEqual(server.requests(), ["/v0.13.0/agent-org-ui-v0.13.0.tar.gz.sha256", "/v0.13.0/agent-org-ui-v0.13.0.tar.gz"]);
+});
+
+test("--verbose adds the asset's address and the verified checksum under the UI step", async () => {
+  const { root, home, repo, path, server, env } = await withGithub();
+  uiRelease(root, repo);
+  const { checksum } = publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  const digest = readFileSync(checksum, "utf8").split(" ")[0];
+  const result = install(home, path, repo, ["--version", "v0.13.0", "--verbose"], env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^ {2}ok Downloaded its UI build\\n {6}downloading ${server.url}/v0\\.13\\.0/agent-org-ui-v0\\.13\\.0\\.tar\\.gz\\.sha256\\n {6}downloading .*\\.tar\\.gz\\n {6}checksum ${digest} verified$`, "m"));
+});
+
+test("a release before the marker installs exactly as it did: no UI step, and not one request reaches GitHub", async () => {
+  const { home, repo, path, server, env } = await withGithub();
+  const result = install(home, path, repo, [], env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /UI build/);
+  assert.deepEqual(server.requests(), []);
+  assert.equal(existsSync(join(home, ".agent-org", "tool", "versions", "v0.10.0", "ui-build")), false);
+});
+
+test("a release whose UI build is not attached yet fails with the FAILED line, says to try again in a few minutes, and leaves current where it was", async () => {
+  const { home, repo, path, env } = await withEarlierInstall();
+  const result = install(home, path, repo, [], env);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^ {2}FAILED Download its UI build$/m);
+  assert.equal(lastLine(result.stdout), "agent-org install FAILED: v0.13.0 has not attached its UI build yet (CI attaches it a few minutes after the release), so current stays where it was. Run this again in a few minutes. Its download was kept in ~/.agent-org/tool, so the next run is faster. Your earlier install, v0.2.0, still works.");
+  assert.equal(currentOf(home), join("versions", "v0.2.0"));
+  assert.match(launch(home, path), /^fixture v0\.2\.0 /);
+  assert.deepEqual(versionsOf(home), ["v0.2.0"], "no folder for v0.13.0, finished or half");
+});
+
+test("a checksum that does not match fails the install, names it, and leaves current where it was", async () => {
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
+  const { checksum } = publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  writeFileSync(checksum, `${"0".repeat(64)}  agent-org-ui-v0.13.0.tar.gz\n`);
+  const result = install(home, path, repo, [], env);
+  assert.equal(result.status, 1);
+  assert.equal(lastLine(result.stdout), "agent-org install FAILED: the UI build of v0.13.0 did not match its checksum, so current stays where it was. Run this again in a few minutes. Its download was kept in ~/.agent-org/tool, so the next run is faster. Your earlier install, v0.2.0, still works.");
+  assert.equal(currentOf(home), join("versions", "v0.2.0"));
+  assert.deepEqual(versionsOf(home), ["v0.2.0"]);
+  publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  const again = install(home, path, repo, [], env);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.equal(currentOf(home), join("versions", "v0.13.0"), "once the checksum is right, the same install goes through");
+});
+
+test("a tarball changed after its checksum was made fails the install", async () => {
+  const { root, home, repo, path, server, env } = await withGithub();
+  uiRelease(root, repo);
+  const { tarball } = publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  writeFileSync(tarball, Buffer.concat([readFileSync(tarball), Buffer.from("tampered")]));
+  const result = install(home, path, repo, ["--version", "v0.13.0"], env);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /the UI build of v0\.13\.0 did not match its checksum/);
+  assert.equal(existsSync(join(home, ".agent-org", "tool", "current")), false, "nothing was ever current");
+  assert.deepEqual(versionsOf(home), []);
+});
+
+test("a download that cannot reach the server fails the install naming curl's words, and a repository that is not on GitHub, with no override, names AGENT_ORG_RELEASES_URL", async () => {
+  const { root, home, repo, path } = fixture();
+  uiRelease(root, repo);
+  const unreachable = install(home, path, repo, ["--version", "v0.13.0"], { AGENT_ORG_RELEASES_URL: "http://127.0.0.1:1/dl" });
+  assert.equal(unreachable.status, 1);
+  assert.match(unreachable.stdout, /^ {2}the UI build of v0\.13\.0 could not be downloaded from http:\/\/127\.0\.0\.1:1\/dl\/v0\.13\.0\/agent-org-ui-v0\.13\.0\.tar\.gz\.sha256 \(.*\), so current stays where it was\./m);
+  const elsewhere = install(home, path, repo, ["--version", "v0.13.0"]);
+  assert.equal(elsewhere.status, 1);
+  assert.match(elsewhere.stdout, /the UI build of v0\.13\.0 cannot be fetched: .* is not a GitHub URL, so current stays where it was\. Set AGENT_ORG_RELEASES_URL to where its releases are downloaded from, then run this again/);
+  assert.deepEqual(versionsOf(home), []);
+});
+
+test("a folder that was built already, and is not current, is given its build, and a failure there stops the move", async () => {
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
+  const folder = join(home, ".agent-org", "tool", "versions", "v0.13.0");
+  mkdirSync(join(folder, "src"), { recursive: true });
+  writeFileSync(join(folder, "src", "bin.ts"), "console.log(\"fixture v0.13.0\");\n");
+  writeFileSync(join(folder, "package.json"), JSON.stringify({ agentOrg: { shipsUiBuild: true } }));
+  const refused = install(home, path, repo, ["--version", "v0.13.0"], env);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stdout, /v0\.13\.0 has not attached its UI build yet/);
+  assert.equal(currentOf(home), join("versions", "v0.2.0"));
+  assert.equal(existsSync(join(folder, "ui-build")), false);
+  publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  const completed = install(home, path, repo, ["--version", "v0.13.0"], env);
+  assert.equal(completed.status, 0, completed.stdout + completed.stderr);
+  assert.equal(readFileSync(join(folder, "ui-build", "index.html"), "utf8"), "<title>thirteen</title>\n");
+  assert.equal(currentOf(home), join("versions", "v0.13.0"));
+});
+
+test("running it again on the release that is current completes a missing build, and when it cannot says so under the steps and still succeeds", async () => {
+  const { root, home, repo, path, server, env } = await withGithub();
+  uiRelease(root, repo);
+  publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  assert.equal(install(home, path, repo, ["--version", "v0.13.0"], env).status, 0);
+  const folder = join(home, ".agent-org", "tool", "versions", "v0.13.0");
+  rmSync(join(folder, "ui-build"), { recursive: true });
+  const completed = install(home, path, repo, ["--version", "v0.13.0"], env);
+  assert.equal(completed.status, 0, completed.stdout + completed.stderr);
+  assert.equal(existsSync(join(folder, "ui-build", "index.html")), true);
+  const asked = server.requests().length;
+  const quiet = install(home, path, repo, ["--version", "v0.13.0"], env);
+  assert.doesNotMatch(quiet.stdout, /UI build/);
+  assert.equal(server.requests().length, asked, "a folder that has its build asks for nothing");
+  rmSync(join(folder, "ui-build"), { recursive: true });
+  rmSync(join(server.root, "v0.13.0"), { recursive: true });
+  const warned = install(home, path, repo, ["--version", "v0.13.0"], env);
+  assert.equal(warned.status, 0, "stopping would change nothing: it is current already");
+  assert.match(warned.stdout, /^agent-org v0\.13\.0 is current, but its UI build could not be fetched: v0\.13\.0 has not attached its UI build yet .*\. \/next shows the missing-build page until agent-org update fetches it\.$/m);
+  assert.equal(existsSync(join(folder, "ui-build")), false);
+});
+
+test("curl is checked in preflight with the other tools, before anything is written, with the command that fixes it", () => {
+  const { root, home, repo } = fixture();
+  const withoutCurl = join(root, "tools-without-curl");
+  mkdirSync(withoutCurl);
+  for (const name of TOOLS.filter((tool) => tool !== "curl")) symlinkSync(programPath(name), join(withoutCurl, name));
+  symlinkSync(process.execPath, join(withoutCurl, "node"));
+  const result = install(home, `${stub(root, "default-npm", "npm")}:${withoutCurl}`, repo);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^ {2}curl is not installed, and a release's UI build is downloaded with it\./m);
+  assert.match(result.stdout, /^ {2}FAILED Check what agent-org needs$/m);
+  assert.equal(existsSync(join(home, ".agent-org")), false, "preflight ran before the first mkdir");
+});
+
+test("on a terminal the UI step has the mark and the colour of the others", { skip: !SCRIPT_IS_UTIL_LINUX && "util-linux `script` gives a pseudo-terminal; this machine's `script` is not that one" }, async () => {
+  const { root, home, repo, path, server, env } = await withGithub();
+  uiRelease(root, repo);
+  publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  const result = installOnTerminal(home, `${join(home, ".local", "bin")}:${path}`, repo, env);
+  assert.equal(result.status, 0, result.stdout);
+  assert.equal(shown(result.stdout), ["Installing agent-org", "", "  ✓ Downloaded agent-org v0.13.0", "  ✓ Downloaded its UI build", `  ✓ Added the agent-org command  (${LAUNCHER_AT})`, "", "agent-org v0.13.0 is installed.", "", "Next:",
+    "  agent-org onboard     set up this machine", "  agent-org doctor      check everything works", ""].join("\n"));
+  assert.equal(result.stdout.includes(`${ESCAPE}32m`), true);
+});
+
+test("a build that unpacks but cannot be moved into place fails the install and leaves current where it was, where the move is not a step set -e would catch", async () => {
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
+  publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
+  const failing = join(root, "failing-mv");
+  mkdirSync(failing);
+  writeFileSync(join(failing, "mv"), `#!/bin/sh\ncase "$2" in */ui-build) exit 1 ;; esac\nexec ${programPath("mv")} "$@"\n`, { mode: 0o755 });
+  const result = install(home, `${failing}:${path}`, repo, [], env);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /the UI build of v0\.13\.0 could not be moved into .*\/ui-build, so current stays where it was/);
+  assert.equal(currentOf(home), join("versions", "v0.2.0"));
+  assert.deepEqual(versionsOf(home), ["v0.2.0"]);
 });

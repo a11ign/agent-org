@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpat
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { pinnedPnpm } from "./pnpm.ts";
+import { ensureUiBuild, releasesUrl, type UiSource } from "./ui-asset.ts";
 import { currentLink, mirrorPath, versionFolder, versionsDir } from "./tool-versions.ts";
 
 /** A program run as `execFileSync` runs it; a test passes one that records what it was asked to run. */
@@ -47,8 +48,30 @@ export const mirrorTags = (git: Git): string[] => git(["tag", "--list"]).split("
 /** The short commit `main` is at in the mirror, for the main channel's folder name `main-<sha>`. */
 export const mainVersionName = (git: Git): string => `main-${git(["rev-parse", "--short=8", "refs/heads/main"]).trim()}`;
 
-/** What building a version folder did. A `failed` build leaves nothing behind but the reason. */
-export type Build = Readonly<{ state: "built" | "present"; folder: string }> | Readonly<{ state: "failed"; folder: string; reason: string }>;
+/** What building a version folder did, and a line to say about its UI build when there is one (A11-191). A `failed` build leaves nothing behind but the reason. */
+export type Build = Readonly<{ state: "built" | "present"; folder: string; said?: string }> | Readonly<{ state: "failed"; folder: string; reason: string }>;
+
+/** The URL the mirror was cloned from, or null when it has none. */
+function originOf(tool: string, exec: Exec): string | null {
+  try {
+    return String(exec("git", ["-C", mirrorPath(tool), "remote", "get-url", "origin"], { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] })).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Where the UI builds are fetched from: `AGENT_ORG_RELEASES_URL`, else the releases of the repository the mirror was cloned from (A11-191). */
+export const mirrorUiSource = (tool: string, env: NodeJS.ProcessEnv = process.env, exec: Exec = execFileSync): UiSource => ({ releases: () => releasesUrl(originOf(tool, exec), env), exec });
+
+/**
+ * Give the version folder `name` the UI build its release ships, when the release declares one and the folder has none (A11-191). Used on the current folder when an update finds nothing newer: the
+ * release that first ships the build is installed by the previous version's update, which fetches nothing, so the new version's own update completes it.
+ */
+export function completeUiBuild({ tool, name, ui = mirrorUiSource(tool) }: { tool: string; name: string; ui?: UiSource }): Build {
+  const folder = versionFolder(tool, name);
+  const step = ensureUiBuild({ folder, name, source: ui });
+  return step.state === "failed" ? { state: "failed", folder, reason: step.reason } : { state: "present", folder, ...(step.said === undefined ? {} : { said: step.said }) };
+}
 
 /** `dependencies` of the `package.json` in `folder`: none when there is no file or it names none. */
 function dependenciesIn(folder: string): string[] {
@@ -61,13 +84,17 @@ function dependenciesIn(folder: string): string[] {
 
 /**
  * Build `versions/<name>` from `ref` in the mirror: `git archive` into `<name>.partial`, the pinned pnpm install when the release declares dependencies, then a rename into place, so a failed or killed
- * build never leaves a half folder and a folder that is there is whole. A folder that is there is not built again. `pnpm` is the install's command (the pinned one in production); `exec` runs it.
+ * build never leaves a half folder and a folder that is there is whole. A folder that is there is not built again, but it is given its UI build when its release declares one and it has none.
+ * `pnpm` is the install's command (the pinned one in production); `exec` runs it; `ui` is where the release's UI build is fetched from, which a release before the marker never asks.
+ *
+ * THE UI BUILD IS FETCHED BEFORE THE DEPENDENCY INSTALL (A11-191): the likeliest failure is a release whose asset CI has not attached yet, and it should cost an unpack, not a pnpm install, each time
+ * the timer tries again. A build that cannot be had fails the whole build, so the version never becomes current without it.
  */
-export function buildVersion({ tool, name, ref, exec = execFileSync, pnpm = pinnedPnpm }: {
-  tool: string; name: string; ref: string; exec?: Exec; pnpm?: (args: string[]) => { command: string; args: string[] };
+export function buildVersion({ tool, name, ref, exec = execFileSync, pnpm = pinnedPnpm, ui = mirrorUiSource(tool) }: {
+  tool: string; name: string; ref: string; exec?: Exec; pnpm?: (args: string[]) => { command: string; args: string[] }; ui?: UiSource;
 }): Build {
   const folder = versionFolder(tool, name);
-  if (existsSync(join(folder, "src", "bin.ts"))) return { state: "present", folder };
+  if (existsSync(join(folder, "src", "bin.ts"))) return completeUiBuild({ tool, name, ui });
   const partial = `${folder}.partial`;
   const archive = `${partial}.tar`;
   try {
@@ -78,6 +105,8 @@ export function buildVersion({ tool, name, ref, exec = execFileSync, pnpm = pinn
     execFileSync("tar", ["-xf", archive, "-C", partial], { stdio: ["ignore", "pipe", "pipe"] });
     rmSync(archive, { force: true });
     if (!existsSync(join(partial, "src", "bin.ts"))) throw new Error(`${ref} holds no src/bin.ts, so it is not a release of agent-org`);
+    const fetched = ensureUiBuild({ folder: partial, name, source: ui });
+    if (fetched.state === "failed") throw new Error(fetched.reason);
     if (dependenciesIn(partial).length > 0) {
       const invocation = pnpm(PNPM_INSTALL);
       // pnpm's shim is `#!/usr/bin/env node`, and a unit's PATH need not hold the node this process runs on: put its directory first.
@@ -86,7 +115,7 @@ export function buildVersion({ tool, name, ref, exec = execFileSync, pnpm = pinn
       if (!existsSync(join(partial, "node_modules"))) throw new Error(`\`pnpm ${PNPM_INSTALL.join(" ")}\` finished and left no node_modules in ${partial}`);
     }
     renameSync(partial, folder);
-    return { state: "built", folder };
+    return { state: "built", folder, ...(fetched.said === undefined ? {} : { said: fetched.said }) };
   } catch (err) {
     rmSync(partial, { recursive: true, force: true });
     rmSync(archive, { force: true });

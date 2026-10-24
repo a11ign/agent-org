@@ -77,6 +77,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
     platform: "linux", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
+    uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
@@ -189,7 +190,7 @@ test("doctor passes every check on a working install, and never prints the key",
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
-    ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
+    ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
@@ -1226,4 +1227,40 @@ test("A11-184: doctor warns when an installed herdr plugin is behind its newest 
 test("A11-184: a herdr status file that cannot be read fails one row, with the command that writes it again", async () => {
   const row = (await herdrRows({ herdrStatus: () => ({ kind: "unreadable", why: "it is not valid JSON" }) }))["herdr status"];
   assert.deepEqual([row.ok, row.detail, row.fix], [false, "the herdr status file cannot be read: it is not valid JSON", "run `agent-org update`, which writes the file again, or check its permissions"]);
+});
+
+// A11-191: the running version should have the UI build its release ships, and doctor warns when it does not.
+const LOOKED = "/home/me/.agent-org/tool/versions/v0.290.0/ui-build";
+const uiBuildOf = (reading: Partial<ReturnType<DoctorDeps["uiBuild"]>>): DoctorDeps["uiBuild"] => () => ({ found: null, declared: true, looked: LOOKED, version: "v0.290.0", ...reading });
+
+test("A11-191: doctor's ui build row is ok, naming the folder /next is served from, when the build is there", async () => {
+  const checks = byName(await diagnose(deps({ uiBuild: uiBuildOf({ found: LOOKED }) })));
+  assert.deepEqual(checks["ui build"], { name: "ui build", ok: true, detail: `/next is served from ${LOOKED}`, fix: null });
+});
+
+test("A11-191: a version whose release declares a UI build and has none is a warning that says where it looked, and the fix is `agent-org update`, which fetches it", async () => {
+  const checks = byName(await diagnose(deps({ uiBuild: uiBuildOf({}) })));
+  assert.deepEqual(checks["ui build"], {
+    name: "ui build", ok: true, warning: true, fix: "run `agent-org update`, which fetches it",
+    detail: `v0.290.0 should have a UI build and none is in ${LOOKED}, so /next shows the missing-build page`,
+  });
+  assert.match(report(Object.values(checks)), /WARN {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org update`, which fetches it/);
+});
+
+test("A11-191: a checkout's fix is to build it, and the main channel's is to move to a release, which has a build to fetch", async () => {
+  const checkout = byName(await diagnose(deps({ uiBuild: uiBuildOf({ version: null, looked: "/src/agent-org/ui-build" }) })))["ui build"];
+  assert.equal(checkout.warning, true);
+  assert.equal(checkout.fix, "run `pnpm ui:build`");
+  assert.match(checkout.detail, /^this version should have a UI build and none is in \/src\/agent-org\/ui-build/);
+  const main = byName(await diagnose(deps({ uiBuild: uiBuildOf({ version: "main-1a2b3c4d" }) })))["ui build"];
+  assert.equal(main.warning, true);
+  assert.equal(main.fix, "main has no release to fetch a UI build from: run `agent-org update --channel release`, which moves to the newest release");
+});
+
+test("A11-191: a version whose release declares no UI build is ok, and says so, and a build that is there is ok whatever the release declares", async () => {
+  const undeclared = byName(await diagnose(deps({ uiBuild: uiBuildOf({ declared: false }) })))["ui build"];
+  assert.deepEqual(undeclared, { name: "ui build", ok: true, detail: "this version ships no UI build", fix: null });
+  const dev = byName(await diagnose(deps({ uiBuild: uiBuildOf({ declared: false, found: "/src/agent-org/ui/dist", version: null }) })))["ui build"];
+  assert.equal(dev.detail, "/next is served from /src/agent-org/ui/dist");
+  assert.equal(dev.warning, undefined);
 });

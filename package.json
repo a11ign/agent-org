@@ -11,6 +11,9 @@
   "bin": {
     "agent-org": "src/bin.ts"
   },
+  "agentOrg": {
+    "shipsUiBuild": true
+  },
   "exports": {
     "./acceptance-commands": "./src/acceptance-commands.ts",
     "./acceptance-file": "./src/acceptance-file.ts",
