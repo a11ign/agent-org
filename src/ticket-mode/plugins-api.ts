@@ -8,12 +8,16 @@
 // THE ANSWER IS `pluginHealth`'s: the same account doctor prints, so a failed plugin's reason and fix are doctor's word for word. It adds the `base` of each file a change would write,
 // which the next action sends back so a file that changed since is refused. NO SECRET IS IN IT: a secret is a command that sets it.
 //
+// THE CLAUDE CODE PLUGINS (`tickets.plugins`) ARE IN THE ANSWER TOO (A11-201), read from the host file as it is now, so a save that changed the list is seen at once. They are the page's second tab, and
+// with the agent-org plugins they make the `attention` count: the plugins whose checks fail or whose health is unknown, from this one read.
+//
 // A CHANGE TAKES EFFECT WHEN THE BOARD RESTARTS (activation runs once per process), and the answer to an action says so, with the sentences `settings-edit.ts` gives each key.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { realPluginDeps } from "../plugins/active.ts";
 import type { PluginCliDeps } from "../plugins/cli.ts";
 import { type ActionDone, actionRequestOf, runAction } from "../plugins/page-actions.ts";
+import { attentionOf, type ClaudePlugins } from "../plugins/attention.ts";
 import { type PluginHealth } from "../plugins/health.ts";
 import { readPluginHealth, toolVersionOf } from "../plugins/health-read.ts";
 import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
@@ -21,10 +25,13 @@ import type { Catalog, PluginCheck, PluginDeps } from "../plugins/manifest.ts";
 import { messagingChecksOfFile, messagingStateOfFile } from "../plugins/messaging-state.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import type { MessagingState } from "../plugins/view.ts";
+import { hostFactsOf, pluginName } from "./plugin-contract.ts";
+import { pluginProblems, type PluginProblems, type ProblemOptions } from "./plugins.ts";
 import { PROVIDER_BLOCKS, type Providers, providersOfText, resolveProviders } from "./providers.ts";
 import { baseOf, type EditFile } from "./settings-edit.ts";
 import type { Json } from "./local-http.ts";
-import type { TicketSettings } from "./settings.ts";
+import { parseTicketSettings, type TicketSettings } from "./settings.ts";
+import { ticketFolder } from "./ticket-paths.ts";
 
 /** What the section reads and runs through, each replaceable by a test so no plugin is imported and no program is run. */
 export type PluginsSeam = Readonly<{
@@ -37,13 +44,15 @@ export type PluginsSeam = Readonly<{
   /** The project's declaration, when it is not the primary's (a test's). */
   projectPath?: string;
   outgoing?: PluginCliDeps["outgoing"];
+  /** What the Claude Code plugins are read through: the install record and the machine's commands. The defaults are this machine's. */
+  claude?: ProblemOptions;
 }>;
 
 /**
- * What the page is sent: the account of every plugin, a note when the host file is one the reader refuses (the plugins are then shown as their defaults, and the page offers no control
- * over them), and the `base` of each file a change would write.
+ * What the page is sent: the account of every plugin, the Claude Code plugins the host file lists, how many plugins need attention, a note when the host file is one the reader refuses (the
+ * plugins are then shown as their defaults, and the page offers no control over them), and the `base` of each file a change would write.
  */
-export type PluginsAnswer = PluginHealth & Readonly<{ note: string | null; bases: Readonly<Partial<Record<EditFile, string>>> }>;
+export type PluginsAnswer = PluginHealth & Readonly<{ claude: ClaudePlugins; attention: number; note: string | null; bases: Readonly<Partial<Record<EditFile, string>>> }>;
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -80,6 +89,26 @@ async function basesOf(options: Readonly<{ hostPath: string; projectPath?: strin
   return bases;
 }
 
+/** What the host file says now of the keys the Claude plugins are checked against; the settings the board started with when the file does not parse (its `note` says so). */
+function settingsOfText(text: string | null, started: TicketSettings, catalog: Catalog): TicketSettings {
+  try {
+    return text === null ? started : parseTicketSettings(JSON.parse(text), undefined, undefined, catalog);
+  } catch {
+    return started;
+  }
+}
+
+/** The Claude plugins as the page draws them, from what `pluginProblems` found: each one's install, its fix sentence, the contract it declares and its contract rows. */
+export function claudePluginsOf({ states, contracts, rows }: PluginProblems): ClaudePlugins {
+  return {
+    readable: states.readable,
+    plugins: states.plugins.map(({ plugin, installs, loads, why }) => {
+      const declared = contracts.find(({ entry }) => entry === plugin);
+      return { entry: plugin, name: declared?.name ?? pluginName(plugin), loads, why, installs, contract: declared?.contract ?? null, rows: rows.filter((row) => row.plugin === plugin) };
+    }),
+  };
+}
+
 export function pluginsApi(options: Readonly<{ hostPath: string; settings: TicketSettings; seam?: PluginsSeam }>) {
   const { hostPath, settings, seam = {} } = options;
   const catalog = seam.catalog ?? defaultCatalog();
@@ -95,7 +124,9 @@ export function pluginsApi(options: Readonly<{ hostPath: string; settings: Ticke
     const bases = await basesOf({ hostPath, projectPath: seam.projectPath });
     const health = await readPluginHealth({ catalog, providers: providersOfText(text, catalog), blocks: PROVIDER_BLOCKS, deps, load: (providers, cat, pluginDeps) => load(providers, cat, pluginDeps), messaging,
       version: seam.version ?? toolVersionOf() });
-    return { ...health, note: hostNote(text, catalog), bases };
+    const current = settingsOfText(text, settings, catalog);
+    const claude = claudePluginsOf(pluginProblems({ wanted: current.plugins, folder: ticketFolder(current, "<ticket>"), host: hostFactsOf(current) }, seam.claude));
+    return { ...health, claude, attention: attentionOf(health, claude), note: hostNote(text, catalog), bases };
   }
 
   /** Does what the body asks, and answers what it did. A refusal is thrown with the CLI's sentence, and nothing is written. */

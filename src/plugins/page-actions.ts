@@ -15,8 +15,8 @@ export type PageAction = (typeof PAGE_ACTIONS)[number];
 /** What a request to act on a plugin asks: the action, the plugin, the `base` of the file it changes as the page last read it, and the confirmation of the actions that need one. */
 export type ActionRequest = Readonly<{ action: PageAction; name: string; base: string; confirmed: boolean }>;
 
-/** What a request did: the sentence that says it, and when it is in force. */
-export type ActionDone = Readonly<{ said: string; changed: boolean; inForce: readonly string[] }>;
+/** What a request did: the sentence that says it, when it is in force, and the file the save kept (null when nothing was changed, so nothing was saved). */
+export type ActionDone = Readonly<{ said: string; changed: boolean; inForce: readonly string[]; backup: string | null }>;
 
 const PLANS: Readonly<Record<PageAction, (name: string, context: PlanContext) => Plan>> = {
   install: planInstallOrSwitch, enable: planEnable, disable: planDisable, uninstall: planUninstall,
@@ -43,6 +43,6 @@ export async function runAction(request: ActionRequest, deps: PluginCliDeps): Pr
   if (plan.changes.length > 0 && !request.confirmed && needsConfirmation(request, context)) {
     throw new PluginCommandRefusal(`${request.action} ${request.name} needs the person's confirmation first: ask again with it`);
   }
-  const inForce = await writePlan(plan, { ...deps, log: () => undefined }, [], request.base);
-  return { said: plan.said, changed: plan.changes.length > 0, inForce };
+  const { inForce, backup } = await writePlan(plan, { ...deps, log: () => undefined }, [], request.base);
+  return { said: plan.said, changed: plan.changes.length > 0, inForce, backup };
 }

@@ -1,0 +1,9 @@
+/* The "needs attention" badge of the Settings sub-nav's Plugins link, as the boards draw it: amber words in a hairline pill. */
+.attention-badge {
+  padding: 0 var(--space-6);
+  border: 1px solid var(--color-warn-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-warn-text);
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-label);
+}
