@@ -1,5 +1,8 @@
 // @ts-check
-// module: the reviewer contract, version 1.3 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 1.4 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+//
+// 1.4 (A11-213): `ReviewBrief.decisions`, OPTIONAL: the ticket's explicit decisions, quoted as the ticket words them (a `## Decisions` or `## Behaviour` section, or a line marked as the chairman's decision). The reviewer holds them
+// ahead of its own general rules and requests no change for a change they allow. A reviewer of 1.3 is read as one that is given none.
 //
 // 1.3 (A11-175): `ReviewBrief.step`, OPTIONAL: the plan step a partial pull request finishes (`Partial: step N of M` in its body), and the plan's section for it. The reviewer holds the pull request to that
 // step and not to the ticket's whole Done-when, which it is told is for the last step. A reviewer of 1.2 is read as one that is given no step.
@@ -13,7 +16,7 @@
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.3";
+export const REVIEWER_CONTRACT_VERSION = "1.4";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
@@ -27,8 +30,9 @@ export type ReviewerReply = Readonly<{ author: string; url: string; text: string
  * changes and a trusted account has replied to it with no new commit: the reviewer reads the replies, and its approval names the standing review.
  * `step` is present when the pull request's body says `Partial: step N of M` (A11-175): the pull request is one step of the ticket's plan, `section` is that step's text of the plan, or null when the pool
  * could not find it. The reviewer holds the pull request to that step, and the ticket's Done-when is for the last step.
+ * `decisions` is present when the ticket states explicit decisions (A11-213), as the ticket words them, and absent when the pool holds no ticket or it states none: they override a general direction the reviewer holds.
  */
-export type ReviewBrief = Readonly<{ doneWhen: string | null; step?: ReviewStep; rereview?: Readonly<{ replies: readonly ReviewerReply[] }> }>;
+export type ReviewBrief = Readonly<{ doneWhen: string | null; decisions?: string; step?: ReviewStep; rereview?: Readonly<{ replies: readonly ReviewerReply[] }> }>;
 
 /** The plan step a pull request finishes: step `step` of `of`, and the plan's text for it, or null when the pool found none. */
 export type ReviewStep = Readonly<{ step: number; of: number; section: string | null }>;

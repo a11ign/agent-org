@@ -1,10 +1,13 @@
 // @ts-check
 // module: the words a ticket-mode reviewer is sent beyond the gate's own verdict prompt (PURE) -- the ticket's Done-when, the post-merge rule, the brief of a re-review (A11-156), the checks left red because
-// they are not required, and the plan step a partial pull request finishes (A11-175)
+// they are not required, the plan step a partial pull request finishes (A11-175), and the ticket's explicit decisions with the rule that they override a general direction (A11-213)
 //
 // EVERY PROMPT THE PORT SENDS CARRIES THE POST-MERGE RULE, the first review's, the reprompt's and the re-review's: a rule only in the re-review brief would leave every first review to block on a
 // Done-when line that no branch can meet, and wait for a reply. The rule agrees with the reviewer's role file, which allows a deferral only where the row itself says so: an "After merge" part is
 // the ticket itself saying so. The gate's own prompt is not changed, so the org's own reviewers are unaffected.
+//
+// THE SAME GOES FOR THE DECISION RULE (A11-213): the first review, the reprompt and the re-review all carry the ticket's decisions and the rule that they come before a general direction. A reviewer that held
+// "permissions only shrink" against the chairman's written decision to widen one blocked a pull request the ticket asked for, and a re-review that did not see the decision could not correct it.
 import type { ReviewBrief, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
 
 /** What the reviewer is told about a Done-when line the ticket puts under "After merge". */
@@ -13,6 +16,14 @@ export const POST_MERGE_RULE = "A Done-when line under the ticket's \"After merg
 
 /** What the reviewer is told when it is given no Done-when: the pool holds no ticket for the pull request (one a person opened, or a run since removed), or the ticket has no such section. */
 export const NO_TICKET_LINE = "The board gave no Done-when for this pull request, so the pull request body and its `.acceptance/` file are the only copy of the contract you have.";
+
+/**
+ * What the reviewer is told about the ticket's explicit decisions (A11-213): they come before any general direction, whether that is its role file, the gate's rules or the ratchets' direction. A rule it holds
+ * against one is not a reason to request changes: it says so, quotes the decision, and approves on that point. A change that goes past what the decision allows is still a defect.
+ */
+export const DECISION_RULE = "An explicit decision in the ticket (a line marked as the chairman's decision, or a `## Decisions` or `## Behaviour` section) overrides a general direction, whether that direction is your role file, "
+  + "the gate's rules or the ratchets' direction. When a general rule you hold goes against such a decision, say so in your review, quote the decision, and do not request changes for it. "
+  + "A change that goes beyond what the decision allows is still a defect.";
 
 /** The most of one reply, or of the Done-when, the prompt quotes: a longer text is cut and says so, and the reviewer reads the rest on the pull request. */
 const REPLY_LIMIT = 4000;
@@ -27,8 +38,9 @@ const replyLine = ({ author, url, text }: ReviewerReply): string => `- ${author}
 /** What the reviewer is told about a step whose section of the plan the pool could not find. */
 export const NO_SECTION_LINE = "The board found no section of the plan for this step, so go by the `Partial:` line of the pull request body for what the step is to do.";
 
-/** What the reviewer holds a step's changes to, whatever the step: the ratchets only move one way (A11-175). */
-export const RATCHET_RULE = "Hold it to the ratchets' direction: a baseline or allow-list it changes only shrinks, a rule or check it changes only tightens, and a change the other way is a defect.";
+/** What the reviewer holds a step's changes to, whatever the step: the ratchets only move one way (A11-175), unless the ticket's explicit decision says otherwise (A11-213). */
+export const RATCHET_RULE = "Hold it to the ratchets' direction: a baseline or allow-list it changes only shrinks, a rule or check it changes only tightens, and a change the other way is a defect, "
+  + "unless the ticket's explicit decision says otherwise.";
 
 /**
  * What the reviewer is told of the checks that failed on the head and are not required (A11-175): they held nothing, so the review started, and a failure this diff caused is still a defect to name.
@@ -38,6 +50,10 @@ export function unrequiredRedWords(names: readonly string[] | undefined): string
   if (names === undefined || names.length === 0) return "";
   return `These checks failed at this head and are not required, so they did not hold this review: ${names.map((name) => `\`${name}\``).join(", ")}. A failure this diff caused is still a defect to name.`;
 }
+
+/** The ticket's explicit decisions, as the ticket words them, cut at the Done-when's limit, with the rule that they come first. Nothing when the ticket states none: a prompt without decisions is the one it was. */
+export const decisionWords = (decisions: string | undefined): string =>
+  (decisions === undefined ? "" : `The ticket's explicit decisions, as the ticket states them:\n\n${cut(decisions, DONE_WHEN_LIMIT)}\n\n${DECISION_RULE}`);
 
 /** The step a partial pull request finishes (A11-175): which step it is, its section of the plan or the line that says there is none, and the ratchets' direction. */
 const stepWords = ({ step, of, section }: ReviewStep): string => [
@@ -58,28 +74,28 @@ function contractWords({ doneWhen, step }: Pick<ReviewBrief, "doneWhen" | "step"
   return `${stepWords(step)}\n\n${forLast}`;
 }
 
-/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, then the contract. */
-const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "step">, unrequiredRed: readonly string[] | undefined): string =>
-  [unrequiredRedWords(unrequiredRed), contractWords(brief)].filter((words) => words !== "").join("\n\n");
+/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract. */
+const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "decisions" | "step">, unrequiredRed: readonly string[] | undefined): string =>
+  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), contractWords(brief)].filter((words) => words !== "").join("\n\n");
 
 /** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), then the post-merge rule. */
 export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, unrequiredRed?: readonly string[]): string {
-  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${POST_MERGE_RULE}`;
+  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${POST_MERGE_RULE}`;
 }
 
 /**
- * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156), in this order: what this is, the replies since the review, the ticket's
- * Done-when (or the plan step), the post-merge rule, and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the
+ * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156), in this order: what this is, the replies since the review, the ticket's decisions and
+ * the rule that they come first (A11-213), the ticket's Done-when (or the plan step), the post-merge rule, and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the
  * verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure.
  */
-export function rereviewWords({ number, head, pr, roleFile, replies, doneWhen, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; doneWhen: string | null; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
+export function rereviewWords({ number, head, pr, roleFile, replies, doneWhen, decisions, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; doneWhen: string | null; decisions?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
   const head8 = head.slice(0, 8);
   // The verdict door finds the standing review by this spelling, with the backtick before the commit (`names_review` in pr-review-verdict.sh): without it the approval is refused.
   const standing = `Review of #${number} at \`${head8}\``;
   return [
     `This is a re-review of #${number} (${pr}) at \`${head8}\`. The head has no new commit since your \`not convinced\` review, "${standing}"; a reply has been posted to it since, and the head is yours to read once more with the reply.`,
     `The replies posted since that review:\n\n${replies.map(replyLine).join("\n")}`,
-    afterGateWords({ doneWhen, ...(step === undefined ? {} : { step }) }, unrequiredRed),
+    afterGateWords({ doneWhen, ...(decisions === undefined ? {} : { decisions }), ...(step === undefined ? {} : { step }) }, unrequiredRed),
     POST_MERGE_RULE,
     `Review it per ${roleFile} and post the verdict as it says, with this difference. A \`convinced\` verdict is an approval whose body names the standing review on a line after the verdict line: `
     + `"Corrects review: ${standing}", with the backticks as written. That is the one second review the verdict door accepts at this patch. A \`not convinced\` verdict is refused by the door at this patch (exit 3), and that refusal is `

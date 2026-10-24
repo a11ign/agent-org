@@ -250,7 +250,7 @@ function promptWords(context: Context, seat: { label: string; key: string }, sta
   const { orders } = gateOf(context);
   const pr = { ...state.view, repoKey: seat.key };
   if (brief?.rereview !== undefined) {
-    return rereviewWords({ number: Number(state.view.number), head, pr: url, roleFile: orders.reviewerRoleFile(pr), replies: brief.rereview.replies, doneWhen: brief.doneWhen, ...(brief.step === undefined ? {} : { step: brief.step }), ...(state.unrequiredRed === undefined ? {} : { unrequiredRed: state.unrequiredRed }) });
+    return rereviewWords({ number: Number(state.view.number), head, pr: url, roleFile: orders.reviewerRoleFile(pr), replies: brief.rereview.replies, doneWhen: brief.doneWhen, ...(brief.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief.step === undefined ? {} : { step: brief.step }), ...(state.unrequiredRed === undefined ? {} : { unrequiredRed: state.unrequiredRed }) });
   }
   return reviewWords(orders.awaitingVerdictPrompt(pr, orders.reviewHeadsOf(state.view, head, "settled")), brief, state.unrequiredRed);
 }

@@ -59,6 +59,9 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
       const stepped = reviewer.reprompt(probe.ref, { doneWhen: null, step: { step: 3, of: 9, section } });
       expect("prompted" in stepped || "refusal" in stepped, "reprompt() with a brief that names a plan step must answer { prompted } or { refusal }");
     }
+    // A brief that quotes the ticket's explicit decisions (contract 1.4) is one a reviewer takes too.
+    const decided = reviewer.reprompt(probe.ref, { doneWhen: null, decisions: "## Decisions\n\n- Widen the policy, by the chairman's decision." });
+    expect("prompted" in decided || "refusal" in decided, "reprompt() with a brief that quotes the ticket's decisions must answer { prompted } or { refusal }");
   },
   "close answers closed, gone or busy, or a refusal": ({ reviewer, probe }) => {
     const answer = reviewer.close(probe.ref);

@@ -117,9 +117,10 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  * A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit, as the last watch read them (A11-153). The rest is what the same read said
  * of the pull request's readiness to merge at that head (A11-179), each field absent until a watch has read it, and when the code host does not say it: `review` is `approved` only when the
  * newest verdict on the head approves and GitHub's own review decision does not still ask for a review or for changes, `changes-requested` when either says changes, and `none` otherwise;
- * `red` is the required checks failing, and `pending` the required checks still running.
+ * `red` is the required checks failing, and `pending` the required checks still running. `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
+ * stay (A11-213): the stale-block flag counts from it.
  */
-export type PullHead = Readonly<{ head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[] }>;
+export type PullHead = Readonly<{ head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; blockedSince?: number }>;
 
 /**
  * What the board did about the red checks on one pull request at one head (A11-154): a fix round was started for them (`round`), the checks that failed for an
