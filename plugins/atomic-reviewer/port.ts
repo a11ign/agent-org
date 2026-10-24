@@ -479,7 +479,7 @@ function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerD
   const answers = context.trustAnswers.get(key) ?? 0;
   const codex = context.seams.codexTrust;
   const answer = answerDialog({ seen, answers,
-    ensure: (root) => codex?.ensure(root) ?? { kind: "not-host", root, reason: "no Codex trust is wired" },
+    ensure: codex?.ensure ?? (() => ({ kind: "refused", file: "", reason: "the port is given no Codex trust to ask" })),
     press: () => pressEnter(board, seat.label) });
   if ("answered" in answer) context.trustAnswers.set(key, answers + 1);
   return answer;
