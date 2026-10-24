@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` and `herdr` call here is an injected seam (`read`, `gh`, `run`); nothing imported reaches the real one
+// no-token: gh -- every `herdr` call here is an injected seam (`read`, `run`) and every row read is the fake code host's, from its world; nothing imported reaches the real one
 /**
  * agent-org#4893 (a11ign#4893): AN ENGINEER KEYED TO ANOTHER TRACKER (`worker-agent-org-<n>`) IS READ, WOKEN AND ENDED LIKE ANY OTHER, AND
  * A READ THAT FAILS SAYS WHY.
@@ -12,7 +12,7 @@
  * The project is a RECORDED one (`wake-spawn-worktree.test.ts`'s shape): the host file is set FIRST and the tool imported AFTER it, because
  * a keyed name is a member of a spare family only for a key the project declares (`familyMember`).
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,6 +38,11 @@ const { spareInstances } = await import("./wake/merge-queue-wait.ts");
 const { withScopedPrOwners } = await import("./work-gate/pr-owners.ts");
 const { ownerOfPr } = await import("./work-gate/pr-orders/pr-gate-readings.ts");
 const { homeProjectDeclaration } = await import("./project-config.ts");
+const { forgetActivation, substituteCodeHost } = await import("./plugins/active.ts");
+const { createFakeCodeHost } = await import("./plugins/fakes/code-host.ts");
+const { fakeRow } = await import("./plugins/fakes/code-host-rows.ts");
+
+afterEach(() => forgetActivation());
 
 const AGENT_ORG = "a11ign/agent-org";
 const KEYED = "worker-agent-org-522";
@@ -52,7 +57,7 @@ function reader(rows: number[] | null, fail?: Error) {
     asked.push({ session, exclude, deps });
     if (fail === undefined) return rows;
     try {
-      deps.run?.(["issue", "list"]);
+      deps.run?.(["read-held-rows"]);
     } catch {
       return null;
     }
@@ -78,7 +83,7 @@ test("agent-org#4893 (1): a keyed holder's rows are read in ITS tracker, and an 
 });
 
 test("agent-org#4893 (4): a read that fails leaves a CAUSE -- the failing call's own stderr line -- never only `could not read`", () => {
-  const down = Object.assign(new Error("Command failed: gh issue list --repo a11ign/agent-org --state open"),
+  const down = Object.assign(new Error("Command failed: the held-rows read"),
     { stderr: "\nGraphQL: API rate limit already exceeded for user ID 328832207.\nmore\n" });
   const causes = new Map<string, string>();
   const failing = reader(null, down);
@@ -130,36 +135,43 @@ test("agent-org#4893 (2): a red agent-org pull request with no label is OWNED by
 /**
  * agent-org#942 (a11ign#4148 residual): THE TICK READS EACH TRACKER'S `in-progress` ROWS ONCE, not once per live spare. A spare's rows are read
  * off its own `session:` label in that list, so every spare on a tracker sees the same answer the per-spare read gave it.
+ *
+ * The rows are the fake code host's world: the first tracker's are the world's own, `a11ign/agent-org`'s are its foreign rows. `asked` is the repository of
+ * each `readClaimedRows` the code host was asked, refused or not.
  */
+function trackersAsked(failure?: Error) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  const holding = (number: number, session: string) => fakeRow(world, number, { labels: ["in-progress", `session:${session}`] });
+  world.rows.set(10, holding(10, "worker-4874"));
+  world.rows.set(11, holding(11, "worker-4875"));
+  world.foreignRows.set(`${AGENT_ORG}#522`, holding(522, KEYED));
+  if (failure !== undefined) world.failures.set("readClaimedRows", failure);
+  const asked: (string | undefined)[] = [];
+  const read = host.rows!.readClaimedRows;
+  host.rows!.readClaimedRows = (request) => { asked.push(request.repo); return read(request); };
+  substituteCodeHost(host);
+  return asked;
+}
+
 test("agent-org#942: a tick reads each tracker's in-progress rows once, and each spare takes its own from that list", () => {
-  const asked: string[] = [];
-  const gh = (args: string[]) => {
-    const tracker = args.includes("name=agent-org") ? AGENT_ORG : "first";
-    asked.push(tracker);
-    const row = (number: number, session: string) => ({ number, body: "", labels: { nodes: [{ name: `session:${session}` }] }, blockedBy: { nodes: [] } });
-    const nodes = tracker === AGENT_ORG ? [row(522, KEYED)] : [row(10, "worker-4874"), row(11, "worker-4875")];
-    return JSON.stringify({ data: { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } });
-  };
+  const asked = trackersAsked();
   const held = heldRowsReadOncePerTick();
   const causes = new Map<string, string>();
-  assert.deepEqual(heldRowsOfSpare("worker-4874", causes, { read: held, gh }), [10]);
-  assert.deepEqual(heldRowsOfSpare("worker-4875", causes, { read: held, gh }), [11]);
-  assert.deepEqual(heldRowsOfSpare(KEYED, causes, { read: held, gh }), [522]);
-  assert.deepEqual(heldRowsOfSpare("worker-4876", causes, { read: held, gh }), [], "a spare holding nothing reads [], not a failure");
-  assert.deepEqual(asked, ["first", AGENT_ORG], "NEGATIVE CONTROL: one read per tracker; a read per spare would ask four times");
+  assert.deepEqual(heldRowsOfSpare("worker-4874", causes, { read: held }), [10]);
+  assert.deepEqual(heldRowsOfSpare("worker-4875", causes, { read: held }), [11]);
+  assert.deepEqual(heldRowsOfSpare(KEYED, causes, { read: held }), [522]);
+  assert.deepEqual(heldRowsOfSpare("worker-4876", causes, { read: held }), [], "a spare holding nothing reads [], not a failure");
+  assert.deepEqual(asked, [undefined, AGENT_ORG], "NEGATIVE CONTROL: one read per tracker; a read per spare would ask four times");
 });
 
 test("agent-org#942: a failed read is the tick's answer for every spare on that tracker, with its cause, and is not asked again", () => {
-  let asked = 0;
-  const gh = () => {
-    asked += 1;
-    throw Object.assign(new Error("Command failed: gh api graphql"), { stderr: "\nnetwork is unreachable\n" });
-  };
+  const asked = trackersAsked(Object.assign(new Error("Command failed: the held-rows read"), { stderr: "\nnetwork is unreachable\n" }));
   const held = heldRowsReadOncePerTick();
   const causes = new Map<string, string>();
-  assert.equal(heldRowsOfSpare("worker-4874", causes, { read: held, gh }), null);
+  assert.equal(heldRowsOfSpare("worker-4874", causes, { read: held }), null);
   assert.equal(causes.get("worker-4874"), "the first tracker: network is unreachable");
-  assert.equal(heldRowsOfSpare("worker-4875", causes, { read: held, gh }), null, "still null: a failure is never `[]`");
+  assert.equal(heldRowsOfSpare("worker-4875", causes, { read: held }), null, "still null: a failure is never `[]`");
   assert.equal(causes.get("worker-4875"), "the first tracker: network is unreachable", "the second spare is told the cause too, not `the answer was not a list of rows`");
-  assert.equal(asked, 1, "the tracker was asked once in the tick");
+  assert.equal(asked.length, 1, "the tracker was asked once in the tick");
 });

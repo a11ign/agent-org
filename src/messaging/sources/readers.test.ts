@@ -1,6 +1,6 @@
 // @ts-check
-// THE REAL READERS, AGAINST RECORDED OUTPUT (a11ign/a11ign#3008, row 5b of 13). Each of the seven is handed what `gh api`, `systemctl show` or a file
-// held when it was recorded and must give the value its source expects; each is also handed a failing call and must THROW, which is what the source
+// THE REAL READERS, AGAINST RECORDED OUTPUT (a11ign/a11ign#3008, row 5b of 13). Each of the seven is handed what GitHub's REST API (the fake code host's world, which holds
+// the documents a case seeds: A11-160, step 9), `systemctl show` or a file held when it was recorded and must give the value its source expects; each is also handed a failing call and must THROW, which is what the source
 // turns into `cannot-ask`. The done-whens run through the real core and the in-memory provider on a clock the test owns.
 //
 // POSITIVE CONTROLS, because "no event" is what a source that never fires reports too: a green `main`, a single idle sample and an idle fleet with an
@@ -26,6 +26,7 @@ import {
 import { observeStalls } from "./stall.ts";
 import { forgetActivation, substituteCodeHost } from "../../plugins/active.ts";
 import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
+import { githubOverWorld, type RestDocuments } from "../github-over-world.test.support.ts";
 
 const REPO = "example/project";
 const MINUTE = 60_000;
@@ -38,22 +39,26 @@ afterEach(() => forgetActivation());
 let directories = 0;
 const freshDirectory = () => mkdtempSync(join(scratch, `d${(directories += 1)}-`));
 
-/** A GET-only GitHub: the first route whose pattern matches answers, an `Error` answer throws, and every path asked is kept. */
-function fakeGithub(/** @type {[RegExp, unknown][]} */ routes: [RegExp, unknown][]) {
-  const calls: string[] = /** @type {string[]} */ ([]);
-  return {
-    calls,
-    async api(/** @type {string} */ path: string) {
-      calls.push(path);
-      for (const [pattern, answer] of routes) {
-        if (!pattern.test(path)) continue;
-        if (answer instanceof Error) throw answer;
-        return typeof answer === "function" ? answer(path) : answer;
-      }
-      throw new Error(`no route for gh api ${path}`);
-    },
-  };
-}
+/**
+ * The `github` the readers read through is the REAL reader of the watch over the fake code host's world (`githubOverWorld`): the documents a case holds are SEEDED by the exact path the reader builds (the paths are the
+ * constants below, so a reader that asks for another path is a 404 here), a path seeded with an `Error` is a read GitHub refuses, and `calls` is every path the code host was asked for. How `gh api <path>` is built and
+ * parsed is the plugin's (`plugins/github/rows/messaging-rows.test.ts`).
+ */
+const fakeGithub = (documents: RestDocuments = {}) => githubOverWorld(documents);
+
+/** A code host that refuses every read, whatever the path (the world's `failures`). */
+const failingGithub = () => githubOverWorld({}, (world) => world.failures.set("restGetAsync", DOWN));
+
+// The paths the readers ask for, each as `repos/<repo>/<tail>` (the recordings below are what GitHub answers for them).
+const onRepo = (/** @type {string} */ tail: string) => `repos/${REPO}/${tail}`;
+const PULLS = onRepo("pulls?state=closed&base=main&sort=updated&direction=desc&per_page=30");
+const TRUNK_RUNS = onRepo("actions/workflows/trunk.yml/runs?branch=main&per_page=20");
+const CI_RUNS = onRepo("actions/runs?status=completed&per_page=20");
+const WAITING = onRepo("issues?labels=ready&state=open&per_page=100");
+const INCIDENTS = onRepo("issues?labels=incident&state=open&per_page=100");
+const jobsPath = (/** @type {number} */ id: number) => onRepo(`actions/runs/${id}/jobs?per_page=100`);
+const annotationsPath = (/** @type {number} */ job: number) => onRepo(`check-runs/${job}/annotations?per_page=100`);
+const commentsPath = (/** @type {number} */ number: number, /** @type {number} */ page: number) => onRepo(`issues/${number}/comments?per_page=100&page=${page}`);
 
 const DOWN = new Error("HTTP 502: Bad Gateway");
 
@@ -74,12 +79,12 @@ const seatsOf = (/** @type {string} */ state: string) => [{ label: "ceo", status
 
 /** Every read answering as a healthy host would; `more` replaces routes. @param {Partial<{ merged: string | null, trunk: unknown, seats: any, waiting: unknown, ci: unknown }>} [more] */
 function healthy(more: Partial<{ merged: string | null; trunk: unknown; seats: any; waiting: unknown; ci: unknown; }> = {}) {
-  return fakeGithub([
-    [/\/pulls\?/, closedPulls(more.merged === undefined ? iso(NOW - 10 * MINUTE) : more.merged)],
-    [/workflows\/trunk\.yml\/runs/, { workflow_runs: more.trunk ?? [trunkRun({ updated_at: iso(NOW - 10 * MINUTE) })] }],
-    [/actions\/runs\?/, { workflow_runs: more.ci ?? [trunkRun({ id: 7, name: "auto-arm" })] }],
-    [/\/issues\?/, more.waiting ?? []],
-  ]);
+  return fakeGithub({
+    [PULLS]: closedPulls(more.merged === undefined ? iso(NOW - 10 * MINUTE) : more.merged),
+    [TRUNK_RUNS]: { workflow_runs: more.trunk ?? [trunkRun({ updated_at: iso(NOW - 10 * MINUTE) })] },
+    [CI_RUNS]: { workflow_runs: more.ci ?? [trunkRun({ id: 7, name: "auto-arm" })] },
+    [WAITING]: more.waiting ?? [],
+  });
 }
 
 /** @param {{ github: any, stateDir?: string, now?: () => number, seats?: any, unitText?: string | Error, fleetStatePath?: string, completedAt?: number | null }} input  `seats` may be a function, read at each sample; `completedAt` is the tick record's time, `null` for none */
@@ -103,15 +108,15 @@ function readersFor({ github, stateDir = freshDirectory(), now = () => NOW, seat
 
 describe("readLastMerge", () => {
   test("is the newest merged_at, ignoring a closed-unmerged pull request that was updated more recently", async () => {
-    const github = fakeGithub([[/\/pulls\?state=closed&base=main/, closedPulls(null, "2026-10-02T09:00:00Z", "2026-10-02T11:30:00Z", "2026-10-01T08:00:00Z")]]);
+    const github = fakeGithub({ [PULLS]: closedPulls(null, "2026-10-02T09:00:00Z", "2026-10-02T11:30:00Z", "2026-10-01T08:00:00Z") });
     assert.equal(await readLastMerge({ github, repo: REPO }), Date.parse("2026-10-02T11:30:00Z"));
     assert.match(github.calls[0], /^repos\/example\/project\/pulls\?state=closed&base=main&sort=updated&direction=desc&per_page=30$/);
   });
 
   test("a failing call throws, and so does a window with no merge in it (no merge time is not 'a very old merge')", async () => {
-    await assert.rejects(readLastMerge({ github: fakeGithub([[/./, DOWN]]), repo: REPO }), /502/);
-    await assert.rejects(readLastMerge({ github: fakeGithub([[/./, closedPulls(null, null)]]), repo: REPO }), /no merge time is known/);
-    await assert.rejects(readLastMerge({ github: fakeGithub([[/./, { message: "Not Found" }]]), repo: REPO }), /array was expected/);
+    await assert.rejects(readLastMerge({ github: failingGithub(), repo: REPO }), /502/);
+    await assert.rejects(readLastMerge({ github: fakeGithub({ [PULLS]: closedPulls(null, null) }), repo: REPO }), /no merge time is known/);
+    await assert.rejects(readLastMerge({ github: fakeGithub({ [PULLS]: { message: "Not Found" } }), repo: REPO }), /array was expected/);
   });
 
   test("through the source: a merge 5h59m ago is quiet and one 6h01m ago is one stall:no-merge event (the positive control)", async () => {
@@ -128,14 +133,14 @@ describe("readLastMerge", () => {
 describe("readTrunkRuns", () => {
   test("is the workflow's runs on main, as the source reads them", async () => {
     const runs = [trunkRun({ id: 2, conclusion: "failure" }), trunkRun({ id: 1 })];
-    const github = fakeGithub([[/workflows\/trunk\.yml\/runs\?branch=main/, { total_count: 2, workflow_runs: runs }]]);
+    const github = fakeGithub({ [TRUNK_RUNS]: { total_count: 2, workflow_runs: runs } });
     assert.deepEqual(await readTrunkRuns({ github, repo: REPO }), runs);
     assert.equal(github.calls.length, 1);
   });
 
   test("a failing call and a body with no runs both throw", async () => {
-    await assert.rejects(readTrunkRuns({ github: fakeGithub([[/./, DOWN]]), repo: REPO }), /502/);
-    await assert.rejects(readTrunkRuns({ github: fakeGithub([[/./, { message: "Not Found" }]]), repo: REPO }), /array was expected/);
+    await assert.rejects(readTrunkRuns({ github: failingGithub(), repo: REPO }), /502/);
+    await assert.rejects(readTrunkRuns({ github: fakeGithub({ [TRUNK_RUNS]: { message: "Not Found" } }), repo: REPO }), /array was expected/);
   });
 
   test("DONE-WHEN 2 through the real core: a red main at 29 minutes sends nothing and at 31 sends ONE, and a green main sends nothing", async () => {
@@ -162,11 +167,12 @@ describe("readTrunkRuns", () => {
 
 describe("readCiRuns", () => {
   const failedRun = (/** @type {number} */ id: number, /** @type {string} */ name: string) => ({ ...trunkRun({ id, name, conclusion: "failure", updated_at: iso(NOW - id * MINUTE) }) });
-  const routes = (/** @type {unknown[]} */ runs: unknown[], /** @type {string} */ message: string = "Error: Resource not accessible by integration") => /** @type {[RegExp, unknown][]} */ ([
-    [/actions\/runs\?status=completed/, { workflow_runs: runs }],
-    [/actions\/runs\/\d+\/jobs/, { jobs: [{ id: 5001, conclusion: "success" }, { id: 5002, conclusion: "failure" }] }],
-    [/check-runs\/5002\/annotations/, [{ message, annotation_level: "failure" }]],
-  ]);
+  /** The documents of a repository whose completed runs are `runs`: each has a successful job and a failed one (5002), which carries the one annotation. */
+  const routes = (/** @type {Record<string, any>[]} */ runs: Record<string, any>[], /** @type {string} */ message: string = "Error: Resource not accessible by integration") => /** @type {RestDocuments} */ ({
+    [CI_RUNS]: { workflow_runs: runs },
+    ...Object.fromEntries(runs.map((run) => [jobsPath(run.id), { jobs: [{ id: 5001, conclusion: "success" }, { id: 5002, conclusion: "failure" }] }])),
+    [annotationsPath(5002)]: [{ message, annotation_level: "failure" }],
+  });
 
   test("gives every completed run its annotations, read only for a FAILED run and only from its FAILED jobs", async () => {
     const github = fakeGithub(routes([failedRun(3, "deploy"), trunkRun({ id: 2, name: "auto-arm" })]));
@@ -204,8 +210,8 @@ describe("readCiRuns", () => {
   });
 
   test("a failing list or jobs call throws", async () => {
-    await assert.rejects(readCiRuns({ github: fakeGithub([[/./, DOWN]]), repo: REPO, stateDir: freshDirectory() }), /502/);
-    await assert.rejects(readCiRuns({ github: fakeGithub([[/\/jobs/, DOWN], ...routes([failedRun(3, "deploy")])]), repo: REPO, stateDir: freshDirectory() }), /502/);
+    await assert.rejects(readCiRuns({ github: failingGithub(), repo: REPO, stateDir: freshDirectory() }), /502/);
+    await assert.rejects(readCiRuns({ github: fakeGithub({ ...routes([failedRun(3, "deploy")]), [jobsPath(3)]: DOWN }), repo: REPO, stateDir: freshDirectory() }), /502/);
   });
 });
 
@@ -292,98 +298,97 @@ describe("readGateUnit", () => {
 /** What `issues?labels=incident&state=open` answers: the REST listing WITH bodies, which returns pull requests too. */
 const fixRowIssue = (/** @type {number} */ number: number, /** @type {string | null} */ key: string | null, /** @type {Record<string, unknown>} */ more: Record<string, unknown> = {}) =>
   ({ number, labels: [{ name: "incident" }], body: key === null ? "no marker here" : `## What\n\nIncident: ${key}\n\nmore`, comments: 0, ...more });
-const LISTING = /\/issues\?labels=incident&state=open/;
 const commentOf = (/** @type {string} */ login: string, /** @type {string} */ at: string, /** @type {string} */ body: string) => ({ user: { login }, created_at: at, body });
 
 const KEY = "incident:trunk-red";
 
 describe("readFixRow", () => {
   test("an open `incident` row whose body names the key, with no comment yet, is just its number", async () => {
-    const github = fakeGithub([[LISTING, [fixRowIssue(3500, KEY)]]]);
+    const github = fakeGithub({ [INCIDENTS]: [fixRowIssue(3500, KEY)] });
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500 });
-    assert.deepEqual(github.calls, [`repos/${REPO}/issues?labels=incident&state=open&per_page=100`], "no comments call for a row with none");
+    assert.deepEqual(github.calls, [INCIDENTS], "no comments call for a row with none");
   });
 
   test("the newest comment BY AN ORG ACCOUNT is the one named, and a newer comment from anyone else is not the org's word", async () => {
-    const github = fakeGithub([
-      [LISTING, [fixRowIssue(3500, KEY, { comments: 4 })]],
-      [/\/issues\/3500\/comments\?per_page=100&page=1$/, [
+    const github = fakeGithub({
+      [INCIDENTS]: [fixRowIssue(3500, KEY, { comments: 4 })],
+      [commentsPath(3500, 1)]: [
         commentOf("a11ign-ai-leads", "2026-10-04T10:00:00Z", "promoted"), commentOf("a11ign-ai-workers", "2026-10-04T11:00:00Z", "claimed, fixing"),
         commentOf("a-person", "2026-10-04T11:30:00Z", "any news?"), commentOf("a11ign-ai-leads", "2026-10-04T09:00:00Z", "filed"),
-      ]],
-    ]);
+      ],
+    });
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500, comment: { author: "a11ign-ai-workers", at: Date.parse("2026-10-04T11:00:00Z"), text: "claimed, fixing" } });
   });
 
   test("agent-org#797 a GitHub App's comment is the org's word: the REST `<slug>[bot]` login is read, a person's newer one still is not", async () => {
-    const github = fakeGithub([
-      [LISTING, [fixRowIssue(3500, KEY, { comments: 3 })]],
-      [/\/issues\/3500\/comments\?per_page=100&page=1$/, [
+    const github = fakeGithub({
+      [INCIDENTS]: [fixRowIssue(3500, KEY, { comments: 3 })],
+      [commentsPath(3500, 1)]: [
         commentOf("a11ign-ai-leads", "2026-10-04T10:00:00Z", "promoted"), commentOf("a11ign-workers[bot]", "2026-10-04T11:00:00Z", "claimed by the App"),
         commentOf("a-person", "2026-10-04T11:30:00Z", "any news?"),
-      ]],
-    ]);
+      ],
+    });
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500, comment: { author: "a11ign-workers[bot]", at: Date.parse("2026-10-04T11:00:00Z"), text: "claimed by the App" } });
   });
 
   test("the comments are read from the LAST page the listing's count names, and a page with no org comment sends the walk back one", async () => {
-    const github = fakeGithub([
-      [LISTING, [fixRowIssue(3500, KEY, { comments: 101 })]],
-      [/page=2$/, [commentOf("a-person", "2026-10-04T12:00:00Z", "one more from outside")]],
-      [/page=1$/, [commentOf("a11ign-bot", "2026-10-04T08:00:00Z", "first word")]],
-    ]);
+    const github = fakeGithub({
+      [INCIDENTS]: [fixRowIssue(3500, KEY, { comments: 101 })],
+      [commentsPath(3500, 2)]: [commentOf("a-person", "2026-10-04T12:00:00Z", "one more from outside")],
+      [commentsPath(3500, 1)]: [commentOf("a11ign-bot", "2026-10-04T08:00:00Z", "first word")],
+    });
     const row = await readFixRow({ github, repo: REPO, key: KEY });
     assert.equal(row?.comment?.text, "first word");
     assert.deepEqual(github.calls.map((call) => call.split("&page=")[1]).filter(Boolean), ["2", "1"]);
   });
 
   test("a row with comments and none from the org is just its number (nobody from the org has spoken)", async () => {
-    const github = fakeGithub([[LISTING, [fixRowIssue(3500, KEY, { comments: 1 })]], [/comments/, [commentOf("a-person", "2026-10-04T12:00:00Z", "hello")]]]);
+    const github = fakeGithub({ [INCIDENTS]: [fixRowIssue(3500, KEY, { comments: 1 })], [commentsPath(3500, 1)]: [commentOf("a-person", "2026-10-04T12:00:00Z", "hello")] });
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500 });
   });
 
   test("GitHub answering with no row that names the key is null: the one reading that says nobody has picked it up", async () => {
-    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, []]]), repo: REPO, key: KEY }), null);
+    assert.equal(await readFixRow({ github: fakeGithub({ [INCIDENTS]: [] }), repo: REPO, key: KEY }), null);
     const others = [fixRowIssue(3501, "incident:fleet-down"), fixRowIssue(3502, null), fixRowIssue(3503, `${KEY}-extra`)];
-    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, others]]), repo: REPO, key: KEY }), null, "a row for another key, with no marker, or naming a longer key, is not this one's");
+    assert.equal(await readFixRow({ github: fakeGithub({ [INCIDENTS]: others }), repo: REPO, key: KEY }), null, "a row for another key, with no marker, or naming a longer key, is not this one's");
   });
 
 });
 
 describe("readFixRow", () => {
   test("GitHub failing THROWS, which is not null (the positive control for the empty list above)", async () => {
-    await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, DOWN]]), repo: REPO, key: KEY }), /HTTP 502/);
-    await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, { message: "Bad credentials" }]]), repo: REPO, key: KEY }), /an array was expected/);
-    await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, [fixRowIssue(3500, KEY, { comments: 1 })]], [/comments/, DOWN]]), repo: REPO, key: KEY }), /HTTP 502/);
+    await assert.rejects(readFixRow({ github: fakeGithub({ [INCIDENTS]: DOWN }), repo: REPO, key: KEY }), /HTTP 502/);
+    await assert.rejects(readFixRow({ github: fakeGithub({ [INCIDENTS]: { message: "Bad credentials" } }), repo: REPO, key: KEY }), /an array was expected/);
+    await assert.rejects(readFixRow({ github: fakeGithub({ [INCIDENTS]: [fixRowIssue(3500, KEY, { comments: 1 })], [commentsPath(3500, 1)]: DOWN }), repo: REPO, key: KEY }), /HTTP 502/);
   });
 
   test("of several open items naming the key, the oldest is named", async () => {
-    const github = fakeGithub([[LISTING, [fixRowIssue(3600, KEY), fixRowIssue(3510, KEY), fixRowIssue(3505, KEY)]]]);
+    const github = fakeGithub({ [INCIDENTS]: [fixRowIssue(3600, KEY), fixRowIssue(3510, KEY), fixRowIssue(3505, KEY)] });
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3505 });
   });
 
   test("#3449: an open PULL REQUEST labelled `incident` with the key's line is the fix, and its `session:` label is the holder", async () => {
     const pr = fixRowIssue(3600, KEY, { pull_request: { url: "x" }, labels: [{ name: "incident" }, { name: "session:worker-3449" }] });
-    const github = fakeGithub([[LISTING, [pr]]]);
+    const github = fakeGithub({ [INCIDENTS]: [pr] });
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3600, holder: "worker-3449" });
-    assert.deepEqual(github.calls, [`repos/${REPO}/issues?labels=incident&state=open&per_page=100`], "only OPEN items are asked for: a merged or closed fix is not the fix in flight");
+    assert.deepEqual(github.calls, [INCIDENTS], "only OPEN items are asked for: a merged or closed fix is not the fix in flight");
   });
 
   test("#3449: a pull request with no `session:` label is still the fix, with no holder; one naming another key, or none, is not", async () => {
     const bare = fixRowIssue(3601, KEY, { pull_request: {} });
-    assert.deepEqual(await readFixRow({ github: fakeGithub([[LISTING, [bare]]]), repo: REPO, key: KEY }), { number: 3601 });
+    assert.deepEqual(await readFixRow({ github: fakeGithub({ [INCIDENTS]: [bare] }), repo: REPO, key: KEY }), { number: 3601 });
     const notThis = [fixRowIssue(3602, "incident:fleet-down", { pull_request: {} }), fixRowIssue(3603, null, { pull_request: {} })];
-    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, notThis]]), repo: REPO, key: KEY }), null);
+    assert.equal(await readFixRow({ github: fakeGithub({ [INCIDENTS]: notThis }), repo: REPO, key: KEY }), null);
   });
 
   test("#3449: a fix PR and a row both open: the older number is named, and its holder travels with it", async () => {
     const row = fixRowIssue(3700, KEY, { labels: [{ name: "incident" }, { name: "session:product-manager" }] });
     const pr = fixRowIssue(3650, KEY, { pull_request: {}, labels: [{ name: "incident" }, { name: "session:worker-1" }] });
-    assert.deepEqual(await readFixRow({ github: fakeGithub([[LISTING, [row, pr]]]), repo: REPO, key: KEY }), { number: 3650, holder: "worker-1" });
+    assert.deepEqual(await readFixRow({ github: fakeGithub({ [INCIDENTS]: [row, pr] }), repo: REPO, key: KEY }), { number: 3650, holder: "worker-1" });
   });
 
   test("a key that is not an incident or stall key is refused before GitHub is asked", async () => {
-    const github = fakeGithub([]);
+    const github = fakeGithub();
     for (const key of ["request:example/project#1", "summary:2026-10-02", "incident:", "incident:a&state=closed", ""]) {
       await assert.rejects(readFixRow({ github, repo: REPO, key }), /not an incident or stall key/, key);
     }
@@ -391,7 +396,7 @@ describe("readFixRow", () => {
   });
 
   test("createReaders wires it, and every path it asks passes the read-only allowlist", async () => {
-    const github = fakeGithub([[LISTING, [fixRowIssue(3503, "stall:no-merge", { comments: 1 })]], [/comments/, [commentOf("a11ign-ai-workers", "2026-10-04T11:00:00Z", "on it")]]]);
+    const github = fakeGithub({ [INCIDENTS]: [fixRowIssue(3503, "stall:no-merge", { comments: 1 })], [commentsPath(3503, 1)]: [commentOf("a11ign-ai-workers", "2026-10-04T11:00:00Z", "on it")] });
     const { readers } = readersFor({ github });
     assert.equal((await readers.readFixRow("stall:no-merge"))?.comment?.text, "on it");
     assert.equal(github.calls.length, 2);
@@ -431,7 +436,7 @@ describe("readEpisodeStart", () => {
     assert.equal(readEpisodeStart({ ledgerPath: join(freshDirectory(), "absent.jsonl"), key: KEY }), null);
     const stateDir = freshDirectory();
     writeFileSync(join(stateDir, "ledger.jsonl"), `${JSON.stringify(line("2026-10-04T10:00:00Z", "first"))}\n`);
-    assert.equal(readersFor({ github: fakeGithub([]), stateDir }).readers.readEpisodeStart(KEY), Date.parse("2026-10-04T10:00:00Z"));
+    assert.equal(readersFor({ github: fakeGithub(), stateDir }).readers.readEpisodeStart(KEY), Date.parse("2026-10-04T10:00:00Z"));
   });
 });
 
@@ -554,7 +559,7 @@ describe("the samples file", () => {
   test("a sample whose seats cannot be read, or whose rows cannot be listed, THROWS and appends nothing (an empty roster would read as 'every seat idle')", async () => {
     const stateDir = freshDirectory();
     await assert.rejects(takeSample({ github: healthy(), repo: REPO, stateDir, now: () => NOW, readSeats: () => null }), /herdr could not be asked/);
-    await assert.rejects(takeSample({ github: fakeGithub([[/./, DOWN]]), repo: REPO, stateDir, now: () => NOW, readSeats: () => seatsOf("idle") }), /502/);
+    await assert.rejects(takeSample({ github: failingGithub(), repo: REPO, stateDir, now: () => NOW, readSeats: () => seatsOf("idle") }), /502/);
     assert.deepEqual(readTicks({ stateDir }), []);
   });
 

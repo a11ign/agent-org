@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts` and `row-claim/file-overlap-rule.ts`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#3095)
+// no-token: gh -- imports `work-gate.ts` and `row-claim/file-overlap-rule.ts`, whose default readers spawn `gh`; the claim and the gate's rows read the fake code host's world, the gate's executor is handed a `run` that records its argument lists, and every per-tick read is a stub, so nothing is spawned (#3095)
 /**
  * #3095: THE GATE'S B4 PRE-FILTER COMPARES A ROW WITH THE OPEN PULL REQUESTS OF EVERY DECLARED CODE REPOSITORY, AS THE CLAIM DOES.
  *
@@ -13,7 +13,7 @@
  *   - a row overlapping nothing IS offered, so "shelved" is not what this harness says of every row;
  *   - a row overlapping a PR in the scope's OWN repository is shelved by a refusal that does not name a repository, as before.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { scopesOf } from "../work-gate/vocabulary.ts";
 import { readLanes, scopeTick, pullRequestsOfOthers, unreadLanes } from "../work-gate/tick/tick-decisions-and-flags.ts";
@@ -21,7 +21,9 @@ import { readOtherScopes } from "../work-gate.ts";
 import { fileOverlapReason, lookupOpenPrFiles } from "../row-claim/file-overlap-rule.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { declaredRegionFiles } from "../region-paths.ts";
-import { connectionOf, readsRowsByLabel, type FakeRow } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { FakeRowPull } from "../plugins/fakes/code-host-rows.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 
 type Code = { key: string, repo: string };
@@ -40,25 +42,42 @@ const readyRow = (number: number, ...entries: string[]) => ({ number, title: `ro
 const openPr = (number: number, files: string[]) => ({ number, isDraft: false, headRefOid: "abc", statusCheckRollup: [], author: { login: "a11ign-ai-workers" },
   comments: [], labels: [], body: "", files: files.map((path) => ({ path })), changedFiles: files.length });
 
-/** What each declared repository's `pr list` answers, or `Error` when it cannot be read; absent is an empty list. */
-type PrsByRepo = Record<string, unknown[] | Error>;
+/** What each declared repository's open pull requests are (number and the files each changes), or `Error` when the list cannot be read; absent is an empty list. */
+type PrsByRepo = Record<string, { number: number; files: string[] }[] | Error>;
+
+afterEach(() => forgetActivation());
 
 /**
- * A `gh` that answers per repository. The gate aims a read with a second argument (`undefined` for the primary's own) and the claim's reader
- * with `--repo`, so both reach one table and CANNOT be shown different worlds.
+ * The world the claim AND the gate read: one table of pull requests per declared repository, laid in the fake code host (the first repository's are the world's own pull requests, another's are `rules.otherRepos`),
+ * and the Ready rows in the tracker's. The CLAIM's reader asks the code host (`openPullsWithFilesOf`); the gate's own executor still reads the open list through the `run` it is handed, which answers the list of the
+ * repository it was aimed at from the same table (the code host's stand-in for the list's arguments, which the call records) and cannot be shown a different world.
  */
-function fakeGh(rows: unknown[], prs: PrsByRepo) {
-  return (args: string[], aimed?: string) => {
-    const repo = aimed ?? (args.includes("--repo") ? args[args.indexOf("--repo") + 1] : PRIMARY.repo);
-    if (args[0] === "pr") {
+function fakeWorld(rows: { number: number; body: string }[], prs: PrsByRepo) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = PRIMARY.repo;
+  for (const row of rows) world.rows.set(row.number, { number: row.number, title: `row ${row.number}`, body: row.body, state: "OPEN", labels: ["ready"], createdAt: "2026-10-01T00:00:00Z", closedAt: null, comments: [], blockedBy: [], onBoard: false, boardStatus: null });
+  for (const [repo, listed] of Object.entries(prs)) {
+    if (listed instanceof Error) { world.rules.listRefused.set(repo, listed); continue; }
+    const held = repo === PRIMARY.repo ? world.pulls : world.rules.otherRepos.set(repo, new Map()).get(repo)!;
+    for (const pr of listed) {
+      held.set(pr.number, { number: pr.number, body: "", headRefName: `agent/pr-${pr.number}`, labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [], author: "a11ign-ai-workers", files: pr.files } satisfies FakeRowPull);
+    }
+  }
+  substituteCodeHost(host);
+  const calls: { args: string[]; repo: string | undefined }[] = [];
+  const run = (args: string[], aimed?: string) => {
+    calls.push({ args, repo: aimed });
+    const repo = aimed ?? PRIMARY.repo;
+    // the gate's open list, asked with the arguments the code host builds (the fake's are a stand-in line)
+    if (args[0] === "fake-open-pull-list") {
       const answer = prs[repo] ?? [];
       if (answer instanceof Error) throw answer;
-      return JSON.stringify(answer);
+      return JSON.stringify(answer.map((pr) => openPr(pr.number, pr.files)));
     }
-    // #5050: the Ready list is a connection read (`issues(labels:)` over `gh api graphql`), not `issue list --label ready`, which `gh` sent as a SEARCH.
-    if (readsRowsByLabel(args)?.label === "ready") return connectionOf((repo === PRIMARY.repo ? rows : []) as FakeRow[]);
     return "[]";
   };
+  return Object.assign(run, { host, calls });
 }
 
 /** A fake of the per-tick reads, deliberately partial: the real ones return more fields than these tests read. */
@@ -69,7 +88,7 @@ const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip:
 type Order = { cause: string, discriminator: string };
 
 /** THE PRIMARY'S TICK, composed as `main` composes it: its own lanes, the OTHER scopes' lanes read once, and their pull requests as siblings. */
-function primaryTick(run: ReturnType<typeof fakeGh>) {
+function primaryTick(run: ReturnType<typeof fakeWorld>) {
   const others = readOtherScopes(run);
   const lanes = { ...readLanes(PRIMARY_SCOPE, run), siblingPrs: pullRequestsOfOthers(others) };
   return { tick: scopeTick(PRIMARY_SCOPE, { drain: false }, lanes, NO_READINGS), others };
@@ -78,17 +97,19 @@ function primaryTick(run: ReturnType<typeof fakeGh>) {
 const offered = (orders: unknown[], row: number) => (orders as Order[]).some((o) => o.cause === "ready-row-unclaimed" && o.discriminator === String(row));
 
 /** What the CLAIM says of the row: `fileOverlapReason` over every declared repository's pull requests, as `row-claim` reads them. */
-function claimReason(row: ReturnType<typeof readyRow>, run: ReturnType<typeof fakeGh>) {
-  const others = lookupOpenPrFiles({ run: (args) => run(args), log: () => {} });
+function claimReason(row: ReturnType<typeof readyRow>) {
+  const others = lookupOpenPrFiles({ run: noGh, log: () => {} });
   const mine = declaredRegionFiles(row.body, { rootFiles: new Set() });
   assert.ok(others !== null && mine !== null, "the claim's own reads must succeed for its verdict to be a comparison");
   return fileOverlapReason(mine, others, { rowNumber: row.number }).reason;
 }
 
+const noGh = (args: string[]): string => { throw new Error(`the claim reads the fake code host's world: no gh is run for ${args.join(" ")}`); };
+
 /** One row and one pull request per declared repository, row `i` naming exactly the file PR `i` touches. */
 function population() {
   const rows = DECLARED_CODE.map((code, i) => readyRow(READY_ROW_BASE + i, entryOf(code, i)));
-  const prs: PrsByRepo = Object.fromEntries(DECLARED_CODE.map((code, i) => [code.repo, [openPr(PR_BASE + i, [fileOf(i)])]]));
+  const prs: PrsByRepo = Object.fromEntries(DECLARED_CODE.map((code, i) => [code.repo, [{ number: PR_BASE + i, files: [fileOf(i)] }]]));
   return { rows, prs };
 }
 
@@ -99,7 +120,7 @@ test("the population is the declaration's, and POSITIVE CONTROL: it holds a repo
 
 test("DONE-WHEN 1: a row overlapping a pull request in ANY declared repository is shelved, with the reason `fileOverlapReason` gives", () => {
   const { rows, prs } = population();
-  const run = fakeGh(rows, prs);
+  const run = fakeWorld(rows, prs);
   const { tick } = primaryTick(run);
   for (const [i, code] of DECLARED_CODE.entries()) {
     const row = rows[i];
@@ -114,10 +135,10 @@ test("DONE-WHEN 1: a row overlapping a pull request in ANY declared repository i
 
 test("DONE-WHEN 2: the gate's B4 answer and the claim's agree, row by row, over the whole population", () => {
   const { rows, prs } = population();
-  const run = fakeGh(rows, prs);
+  const run = fakeWorld(rows, prs);
   const { tick } = primaryTick(run);
   const pairs = rows.map((row) => ({ row: row.number,
-    gate: tick.blocked.find((b: { number: number }) => b.number === row.number)?.reason ?? null, claim: claimReason(row, run) }));
+    gate: tick.blocked.find((b: { number: number }) => b.number === row.number)?.reason ?? null, claim: claimReason(row) }));
   assert.ok(pairs.length >= 2 && pairs.every((p) => p.claim !== null), "POSITIVE CONTROL: the claim refuses EVERY row of this population, so agreement is not two nulls");
   assert.deepEqual(pairs.map((p) => p.gate), pairs.map((p) => p.claim), "one verdict per row, whichever repository its pull request is in");
 });
@@ -125,14 +146,14 @@ test("DONE-WHEN 2: the gate's B4 answer and the claim's agree, row by row, over 
 test("POSITIVE CONTROL: a row overlapping no pull request in any declared repository IS still offered", () => {
   const { rows, prs } = population();
   const clear = readyRow(READY_ROW_BASE + 99, "src/collides-nothing.mjs");
-  const { tick } = primaryTick(fakeGh([...rows, clear], prs));
+  const { tick } = primaryTick(fakeWorld([...rows, clear], prs));
   assert.equal(offered(tick.orders, clear.number), true, "the harness can offer a row, so 'shelved' above is the filter's doing");
   assert.equal(tick.blocked.some((b: { number: number }) => b.number === clear.number), false);
 });
 
 test("POSITIVE CONTROL: a row overlapping a pull request in the SCOPE'S OWN repository is shelved exactly as before", () => {
   const { rows, prs } = population();
-  const { tick } = primaryTick(fakeGh(rows, prs));
+  const { tick } = primaryTick(fakeWorld(rows, prs));
   const own = tick.blocked.find((b: { number: number }) => b.number === rows[0].number);
   assert.match(own!.reason, new RegExp(`overlaps #${PR_BASE}, which already touches`), "the first repository's PR is named by its bare number");
   assert.doesNotMatch(own!.reason, / in [\w.-]+\/[\w.-]+/, "and names no repository, which is what every refusal said before a second one was declared");
@@ -142,7 +163,7 @@ test("DONE-WHEN 4: a declared repository whose pull-request list cannot be read 
   const { rows, prs } = population();
   const keyed = DECLARED_CODE.map((code, i) => ({ code, i })).filter(({ code }) => code.key !== "");
   for (const { code, i } of keyed) {
-    const run = fakeGh(rows, { ...prs, [code.repo]: new Error(`HTTP 502 reading ${code.repo}`) });
+    const run = fakeWorld(rows, { ...prs, [code.repo]: new Error(`HTTP 502 reading ${code.repo}`) });
     const { tick, others } = primaryTick(run);
     assert.equal(offered(tick.orders, rows[i].number), true, `the gate fails open: with ${code.repo} unreadable, row ${rows[i].number} is offered and the claim decides`);
     const ticks = others.map(({ scope, read }) => scopeTick(scope, { drain: false }, read, NO_READINGS));

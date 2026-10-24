@@ -10,13 +10,19 @@
  * Every fact is injected: the claim records are written by the REAL writer (`claimRecordComment`), so a change to the record's format reaches this
  * test rather than a hand-copied string.
  */
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { main, EXIT_NOTHING_SENT } from "../pr-open.ts";
 import { claimRecordComment } from "../row-claim.ts";
 import { REPO } from "../project-identity.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { lookupClaimedRowsOfTrackers, type ClaimedRow, type ClaimedRows } from "../closes-mismatch-check.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const BRANCH = "agent/a-pull-request-that-agent-org-744";
 const OTHER = homeProjectDeclaration().tracker.map((tracker) => tracker.repo).find((repo) => repo !== REPO) ?? "a11ign/agent-org";

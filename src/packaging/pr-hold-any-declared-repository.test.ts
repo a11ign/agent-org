@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is a fake first on PATH that keeps its state in a JSON file, and no test lets the real one run.
+// no-token: gh -- the CLI cases run the real command over the fake code host (no `gh` on the child's PATH), and the one case that cannot (`releaseHoldViaModule` starts its own process) runs over a fake `gh` first on PATH that keeps its state in a JSON file; no test lets the real one run.
 /**
  * `pr-hold.ts` AND THE GATE'S HOLD-LIFT FOR A PULL REQUEST OF ANY REPOSITORY THE PROJECT DECLARES, #3479.
  *
@@ -8,106 +8,61 @@
  *
  * THE POSITIVE CONTROLS are the non-empty cases every refusal below is read against: a take and a release that DO land on `a11ign/agent-org` (and, in the same
  * run, leave the same-numbered pull request of `a11ign/a11ign` untouched), and a keyed lift that DOES release. Without them every "nothing was written"
- * would pass for a command that writes nothing anywhere. The CLI half runs against a fixture project so its declared keys are exact; the lift half reads the
+ * would pass for a command that writes nothing anywhere. The CLI half runs over the fake code host (A11-160, step 9) in a fixture project so its declared keys are exact; the lift half reads the
  * host's declaration like its sibling `gate-lifts-resolved-holds.test.ts`, and asserts first that it declares `agent-org`.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { WAIT_MARKER, waitItemOf, staleWaits, liftableHolds, referencesOf } from "../wait-condition.ts";
-import { homeProjectDeclaration, HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 import { liftResolvedHolds, readRefFacts, releaseHoldViaModule } from "../work-gate/org-health.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { holdOverFake } from "../plugins/fakes/pr-hold-cli.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 const EXECUTABLE = 0o755;
 const FIRST = "a11ign/a11ign";
 const KEYED = "a11ign/agent-org";
-const CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const PR = "149";
 
-// --- the CLI, against a fake `gh` that keeps one pull request PER REPOSITORY under the same number ---------------------------------
+// --- the CLI, over the fake code host: one pull request PER REPOSITORY under the same number, and the operations the command asked, each with the repository it named ---------------------------------
 
 type FakePr = { labels: string[]; comments: string[]; armed: boolean };
-type FakeState = { repos: Record<string, { prs: Record<string, FakePr> }>; calls: string[][] };
+/** The repositories' pull requests number 149, as the fake holds them before the command runs and as it holds them after. */
+type Repos = Record<string, { prs: Record<string, FakePr> }>;
 
-/** Answers `pr-hold.ts`'s calls for the repository `--repo` names, or the first's when a call carries none (a real `gh` would use the working directory's). */
-const FAKE_GH = `#!/usr/bin/env node
-const fs = require("node:fs");
-const file = process.env.FAKE_GH_STATE;
-const state = JSON.parse(fs.readFileSync(file, "utf8"));
-const args = process.argv.slice(2);
-const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
-state.calls.push(args);
-const save = () => fs.writeFileSync(file, JSON.stringify(state));
-const pr = (state.repos[flag("--repo") ?? "${FIRST}"] ?? { prs: {} }).prs[args.find((a) => /^\\d+$/.test(a))];
-if (!pr) { save(); process.stderr.write("fake gh: no such pull request: " + args.join(" ")); process.exit(1); }
-const json = flag("--json");
-if (args[0] === "pr" && args[1] === "view") {
-  process.stdout.write(JSON.stringify(json === "labels" ? { labels: pr.labels.map((name) => ({ name })) }
-    : json === "comments" ? { comments: pr.comments.map((body) => ({ body })) }
-    : { autoMergeRequest: pr.armed ? { enabledAt: "now" } : null, state: "OPEN" }));
-} else if (args[0] === "pr" && args[1] === "edit") {
-  if (args.includes("--remove-label")) pr.labels = pr.labels.filter((l) => l !== flag("--remove-label"));
-  if (args.includes("--add-label")) pr.labels.push(flag("--add-label"));
-} else if (args[0] === "pr" && args[1] === "comment") {
-  pr.comments.push(flag("--body"));
-} else if (args[0] === "pr" && args[1] === "merge") {
-  pr.armed = args.includes("--auto");
-} else { save(); process.stderr.write("fake gh: unexpected " + args.join(" ")); process.exit(1); }
-save();
-`;
-
-/**
- * A project declaring the first repository and `agent-org`, so a key the refusals try (`nowhere`) is genuinely undeclared. It is the host's own declaration
- * with `tracker` and `code` replaced: the rest (the vocabulary, the leak patterns) is what every module reads at import and is not what this test is about.
- */
-function fixtureProject(dir: string): string {
-  mkdirSync(join(dir, ".agent-org"), { recursive: true });
-  const own = JSON.parse(readFileSync(join(HOME_CHECKOUT, PROJECT_DECLARATION_PATH), "utf8")) as Record<string, unknown>;
-  writeFileSync(join(dir, PROJECT_DECLARATION_PATH), JSON.stringify({ ...own, tracker: [{ key: "", repo: FIRST, board: { owner: "a11ign", number: 1 } }],
-    code: [{ key: "", repo: FIRST }, { key: "agent-org", repo: KEYED }] }));
-  const host = join(dir, ".agent-org", "host.json");
-  writeFileSync(host, JSON.stringify({ schema: 1, home: dir, binDir: dir, primary: "fx", tool: dir, projects: [{ id: "fx", checkout: dir }] }));
-  return host;
-}
-
+const PROJECT = { first: FIRST, keyed: { "agent-org": KEYED } };
 const heldPr = (): FakePr => ({ labels: ["hold:ceo", "rearm-on-release"], comments: [], armed: false });
-const BOTH_HELD = (): FakeState["repos"] => ({ [FIRST]: { prs: { [PR]: heldPr() } }, [KEYED]: { prs: { [PR]: heldPr() } } });
-const BOTH_FREE = (): FakeState["repos"] => ({ [FIRST]: { prs: { [PR]: { labels: [], comments: [], armed: true } } }, [KEYED]: { prs: { [PR]: { labels: [], comments: [], armed: true } } } });
+const BOTH_HELD = (): Repos => ({ [FIRST]: { prs: { [PR]: heldPr() } }, [KEYED]: { prs: { [PR]: heldPr() } } });
+const BOTH_FREE = (): Repos => ({ [FIRST]: { prs: { [PR]: { labels: [], comments: [], armed: true } } }, [KEYED]: { prs: { [PR]: { labels: [], comments: [], armed: true } } } });
 
-/** Runs `pr-hold.ts` with the fake first on PATH, and returns what it said and what the fake's repositories hold afterwards. */
-function hold(repos: FakeState["repos"], ...argv: string[]) {
-  const dir = mkdtempSync(join(tmpdir(), "pr-hold-3479-"));
-  try {
-    const state = join(dir, "state.json");
-    writeFileSync(state, JSON.stringify({ repos, calls: [] }));
-    writeFileSync(join(dir, "gh"), FAKE_GH);
-    chmodSync(join(dir, "gh"), EXECUTABLE);
-    const result = spawnSync(process.execPath, [CLI, ...argv], { encoding: "utf8",
-      env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir, FAKE_GH_STATE: state, AGENT_ORG_HOST: fixtureProject(dir) } });
-    const after = JSON.parse(readFileSync(state, "utf8")) as FakeState;
-    return { status: result.status, stdout: result.stdout, stderr: result.stderr, repos: after.repos, calls: after.calls.map((c) => c.join(" ")) };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+/** Runs `pr-hold.ts` over the fake code host holding `repos` (a call that names no repository is aimed at the first), and returns what it said, the operations it asked and what the repositories hold afterwards. */
+function hold(repos: Repos, ...argv: string[]) {
+  const run = holdOverFake(PROJECT, { home: FIRST, repos: Object.fromEntries(Object.entries(repos).map(([repo, { prs }]) => [repo, { pulls: prs }])) }, ...argv);
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr, asked: run.asked,
+    repos: Object.fromEntries(Object.entries(run.repos).map(([repo, { pulls }]) => [repo, { prs: pulls }])) as Repos };
 }
 
 const UNTIL = "merged a11ign/agent-org#148";
 const markerBody = (until: string) => `${WAIT_MARKER}\nHeld by \`ceo\`.\nWaiting-for: ${until}`;
+const MADE_WITH = '(made with "This PR is HELD by ceo and must not merge.")';
 
 test("POSITIVE CONTROL (1) TAKE: `--repo-key=agent-org` writes the label and the marker on `a11ign/agent-org`, on no other repository, and every call is aimed there", () => {
   const taken = hold(BOTH_FREE(), PR, "--repo-key=agent-org", "--session=ceo", `--until=${UNTIL}`);
-  assert.equal(taken.status, 0, `${taken.stderr}\n${taken.calls.join("\n")}`);
+  assert.equal(taken.status, 0, `${taken.stderr}\n${taken.asked.join("\n")}`);
   assert.deepEqual(taken.repos[KEYED].prs[PR].labels, ["hold:ceo", "rearm-on-release"], "the hold, and the mark that makes the release re-arm what the take disarmed");
   assert.deepEqual(taken.repos[KEYED].prs[PR].comments, [markerBody(UNTIL)], "the marker, in the exact shape the gate reads");
   assert.equal(taken.repos[KEYED].prs[PR].armed, false, "the take disarmed THAT pull request");
   assert.deepEqual(taken.repos[FIRST].prs[PR], { labels: [], comments: [], armed: true }, "the same number in the first repository is exactly as it was");
   assert.match(taken.stdout, /agent-org#149 is now held by ceo/, "the message names the repository's pull request, not `#149`");
-  assert.ok(taken.calls.length >= 8, "the read-back, the marker and the disarm all ran");
-  assert.deepEqual(taken.calls.filter((c) => !c.includes(`--repo ${KEYED}`)), [], "no call falls back to the first repository, the merge and the auto-merge read included");
+  assert.ok(taken.asked.length >= 8, "the read-back, the marker and the disarm all ran");
+  assert.deepEqual(taken.asked.filter((call) => !call.endsWith(`${KEYED}#${PR}`)), [], "no call falls back to the first repository, the merge and the auto-merge read included");
 });
 
 test("`owner/repo#n` names the same pull request as the key, and a report with no session reads the keyed one", () => {
@@ -117,27 +72,28 @@ test("`owner/repo#n` names the same pull request as the key, and a report with n
   assert.deepEqual(taken.repos[FIRST].prs[PR].labels, []);
   const report = hold(BOTH_HELD(), "--repo-key=agent-org", PR);
   assert.equal(report.stdout, "agent-org#149 is held by ceo.\n");
-  assert.equal(report.calls.length, 1, "a report writes nothing");
+  assert.equal(report.asked.length, 1, "a report writes nothing");
 });
 
 test("(2) THE FIRST REPOSITORY IS UNCHANGED: no key writes on `a11ign/a11ign` with exactly the calls it made before", () => {
   const expected = [
-    // #4661: a `closed #N` take first asks who is working #N. This fake knows no such row, so the read fails and the hold is taken as it always was.
-    `issue view 148 --repo ${FIRST} --json state,labels,closedByPullRequestsReferences,body,comments`,
-    `pr view ${PR} --repo ${FIRST} --json labels`,
-    `pr edit ${PR} --repo ${FIRST} --add-label hold:ceo`,
-    `pr view ${PR} --repo ${FIRST} --json labels`,
-    `pr comment ${PR} --repo ${FIRST} --body ${markerBody("closed #148")}`,
-    `pr view ${PR} --repo ${FIRST} --json comments`,
-    `pr view ${PR} --repo ${FIRST} --json autoMergeRequest,state`,
-    `pr merge --disable-auto ${PR}`,
-    `pr view ${PR} --json autoMergeRequest`,
-    `pr edit ${PR} --repo ${FIRST} --add-label rearm-on-release`,
-    `pr view ${PR} --repo ${FIRST} --json labels`,
+    // #4661: a `closed #N` take first asks who is working #N. This world knows no such row, so the read fails and the hold is taken as it always was.
+    `holdTargetRowOf ${FIRST}#148`,
+    `heldPullLabelsOf ${FIRST}#${PR}`,
+    `editHeldPullLabel add hold:ceo ${MADE_WITH} ${FIRST}#${PR}`,
+    `heldPullLabelsOf ${FIRST}#${PR}`,
+    `commentOnPull ${FIRST}#${PR}`,
+    `readPullComments ${FIRST}#${PR}`,
+    `autoMergeOfHeldPull ${FIRST}#${PR}`,
+    // The calls of the first repository that never carried `--repo` stay as they were: the merge and the auto-merge read name none, and are aimed at the checkout's own repository.
+    `disarmHeldPull (own)#${PR}`,
+    `autoMergeRequestOfHeldPull (own)#${PR}`,
+    `editHeldPullLabel add rearm-on-release ${FIRST}#${PR}`,
+    `heldPullLabelsOf ${FIRST}#${PR}`,
   ];
   const taken = hold(BOTH_FREE(), PR, "--session=ceo", "--until=closed #148");
   assert.equal(taken.status, 0, taken.stderr);
-  assert.deepEqual(taken.calls, expected);
+  assert.deepEqual(taken.asked, expected);
   assert.deepEqual(taken.repos[FIRST].prs[PR].labels, ["hold:ceo", "rearm-on-release"]);
   assert.deepEqual(taken.repos[KEYED].prs[PR], { labels: [], comments: [], armed: true }, "and the keyed repository is untouched");
   assert.match(taken.stdout, /^#149: it was unheld$/m, "a first-repository message still says `#149`");
@@ -147,10 +103,10 @@ test("(2) the empty key IS the first repository: `--repo-key=` makes exactly the
   const plain = hold(BOTH_FREE(), PR, "--session=ceo", "--until=closed #148");
   const spelled = hold(BOTH_FREE(), PR, "--repo-key=", "--session=ceo", "--until=closed #148");
   assert.equal(spelled.status, 0, spelled.stderr);
-  assert.deepEqual(spelled.calls, plain.calls);
+  assert.deepEqual(spelled.asked, plain.asked);
 });
 
-test("(3) REFUSAL: a key or a repository the project does not declare is refused naming the declared ones, with nothing written and no `gh` run", () => {
+test("(3) REFUSAL: a key or a repository the project does not declare is refused naming the declared ones, with nothing written and nothing asked of the code host", () => {
   const refusals: [string, string[]][] = [
     ["a key", [PR, "--repo-key=nowhere", "--session=ceo"]],
     ["an `owner/repo#n` form", ["someone/else#149", "--session=ceo"]],
@@ -162,7 +118,7 @@ test("(3) REFUSAL: a key or a repository the project does not declare is refused
     const refused = hold(BOTH_FREE(), ...argv);
     assert.equal(refused.status, 2, `${name}: ${refused.stdout}${refused.stderr}`);
     assert.match(refused.stderr, /REFUSING/, name);
-    assert.deepEqual(refused.calls, [], `${name}: nothing was asked of GitHub`);
+    assert.deepEqual(refused.asked, [], `${name}: nothing was asked of the code host`);
     assert.deepEqual(refused.repos, BOTH_FREE(), `${name}: nothing was written`);
   }
   const unknown = hold(BOTH_FREE(), PR, "--repo-key=nowhere", "--session=ceo");
@@ -171,11 +127,11 @@ test("(3) REFUSAL: a key or a repository the project does not declare is refused
 
 test("(4) RELEASE with the key removes the label and re-arms in `a11ign/agent-org` only", () => {
   const released = hold(BOTH_HELD(), PR, "--repo-key=agent-org", "--session=ceo", "--release");
-  assert.equal(released.status, 0, `${released.stderr}\n${released.calls.join("\n")}`);
+  assert.equal(released.status, 0, `${released.stderr}\n${released.asked.join("\n")}`);
   assert.deepEqual(released.repos[KEYED].prs[PR], { labels: [], comments: [], armed: true }, "released, re-armed, and the mark spent");
   assert.deepEqual(released.repos[FIRST].prs[PR], heldPr(), "the first repository's pull request keeps its hold and its mark");
-  assert.deepEqual(released.calls.filter((c) => !c.includes(`--repo ${KEYED}`)), [], "the re-arm's merge and read-back are aimed too");
-  assert.ok(released.calls.some((c) => c.startsWith("pr merge --auto --merge")), "and the re-arm ran, so the line above is not vacuous");
+  assert.deepEqual(released.asked.filter((call) => !call.endsWith(`${KEYED}#${PR}`)), [], "the re-arm's merge and read-back are aimed too");
+  assert.ok(released.asked.some((call) => call.startsWith("armHeldPull")), "and the re-arm ran, so the line above is not vacuous");
 });
 
 // --- the gate's lift ------------------------------------------------------------------------------------------------------------
@@ -260,17 +216,52 @@ test("(7) A BARE `#148` ON A KEYED PULL REQUEST IS `agent-org#148`, and a cross-
 test("an open pull request of `agent-org` does not answer for the first repository's same-numbered reference", () => {
   const items = [waitItemOf({ number: 3000, labels: [{ name: "hold:ceo" }], comments: [], body: "Waiting-for: closed #148" }, "pr")];
   const open = [{ number: 148, repoKey: "agent-org", repo: KEYED, labels: [], updatedAt: new Date(NOW).toISOString() }];
-  const asked: string[] = [];
-  const run = (args: string[]) => {
-    asked.push(args[1]);
-    return JSON.stringify({ state: "closed", closed_at: new Date(NOW).toISOString(), updated_at: new Date(NOW).toISOString(), merged_at: null, labels: [] });
-  };
+  // The fake code host holds the first repository's #148, closed. The run handed to the read is the executor core gives the code host; the fake acts on its own state, so none is made.
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = homeProjectDeclaration().repo;
+  world.rows.set(148, fakeRow(world, 148, { state: "CLOSED", closedAt: new Date(NOW).toISOString() }));
+  substituteCodeHost(host);
+  const run = () => { throw new Error("the fake acts on its own state: no run is made"); };
   const facts = readRefFacts({ refs: referencesOf(items), open, run });
-  assert.deepEqual(asked, [`repos/${homeProjectDeclaration().repo}/issues/148`], "the first repository's #148 is READ, not taken from the open list's agent-org#148");
+  assert.deepEqual(world.calls, [`waitRefOf ${homeProjectDeclaration().repo}#148`], "the first repository's #148 is READ, not taken from the open list's agent-org#148");
   assert.equal(facts.items["#148"].state, "closed");
-  const held = readRefFacts({ refs: [{ key: `${KEYED}#148`, repo: KEYED, number: 148 }], open, run: () => { throw new Error("read"); } });
+  const held = readRefFacts({ refs: [{ key: `${KEYED}#148`, repo: KEYED, number: 148 }], open, run });
   assert.equal(held.items[`${KEYED}#148`].state, "open", "and a keyed reference IS answered from the open list under its own key");
+  assert.equal(world.calls.length, 1, "without a read");
 });
+
+// A11-160, step 9: `releaseHoldViaModule` starts `pr-hold.ts` as a process of its own, so no fake code host can reach it: this one case runs the release END TO END through the real plugin over a `gh` first on PATH.
+// What the release decides is the case (4) above, over the fake code host.
+/** Answers `pr-hold.ts`'s calls for the repository `--repo` names, or the first's when a call carries none (a real `gh` would use the working directory's). */
+const FAKE_GH = `#!/usr/bin/env node
+const fs = require("node:fs");
+const file = process.env.FAKE_GH_STATE;
+const state = JSON.parse(fs.readFileSync(file, "utf8"));
+const args = process.argv.slice(2);
+const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
+state.calls.push(args);
+const save = () => fs.writeFileSync(file, JSON.stringify(state));
+const pr = (state.repos[flag("--repo") ?? "${FIRST}"] ?? { prs: {} }).prs[args.find((a) => /^\\d+$/.test(a))];
+if (!pr) { save(); process.stderr.write("fake gh: no such pull request: " + args.join(" ")); process.exit(1); }
+const json = flag("--json");
+if (args[0] === "pr" && args[1] === "view") {
+  process.stdout.write(JSON.stringify(json === "labels" ? { labels: pr.labels.map((name) => ({ name })) }
+    : json === "comments" ? { comments: pr.comments.map((body) => ({ body })) }
+    : { autoMergeRequest: pr.armed ? { enabledAt: "now" } : null, state: "OPEN" }));
+} else if (args[0] === "pr" && args[1] === "edit") {
+  if (args.includes("--remove-label")) pr.labels = pr.labels.filter((l) => l !== flag("--remove-label"));
+  if (args.includes("--add-label")) pr.labels.push(flag("--add-label"));
+} else if (args[0] === "pr" && args[1] === "comment") {
+  pr.comments.push(flag("--body"));
+} else if (args[0] === "pr" && args[1] === "merge") {
+  pr.armed = args.includes("--auto");
+} else { save(); process.stderr.write("fake gh: unexpected " + args.join(" ")); process.exit(1); }
+save();
+`;
+
+
+type FakeState = { repos: Repos; calls: string[][] };
 
 test("THROUGH THE REAL RELEASE: `releaseHoldViaModule` given the key releases and re-arms `a11ign/agent-org`'s pull request and not the first's", () => {
   const dir = mkdtempSync(join(tmpdir(), "pr-hold-3479-lift-"));

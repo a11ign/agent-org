@@ -210,18 +210,19 @@ test("the re-read REFUSES to report DECLINED over an open row left with no state
 // --- the audit and the tick name the rows by number ---------------------------------------------------------------------------------
 
 test("`ready:audit` prints NO STATE LABEL / TWO STATE LABELS by number, with the count examined against the count reported", () => {
-  const open = [
-    { number: 3643, title: "Answered", labels: [{ name: "lane:any" }], state: "OPEN" },
-    { number: 1520, title: "Parked", labels: [{ name: "backlog" }, { name: "parked" }], state: "OPEN" },
-    { number: 7, title: "Fine", labels: [{ name: "ready" }], state: "OPEN" },
-  ];
-  const run = (_cmd: string, args: string[]) => (args[0] === "issue" ? JSON.stringify(open) : "");
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  world.rows.set(3643, fakeRow(world, 3643, { title: "Answered", labels: ["lane:any"] }));
+  world.rows.set(1520, fakeRow(world, 1520, { title: "Parked", labels: ["backlog", "parked"] }));
+  world.rows.set(7, fakeRow(world, 7, { title: "Fine", labels: ["ready"] }));
+  substituteCodeHost(host);
   const written: string[] = [];
   const out = process.stdout.write, err = process.stderr.write;
   process.stdout.write = ((chunk: string) => { written.push(chunk); return true; }) as never;
   process.stderr.write = (() => true) as never;
   let count: number;
-  try { count = reportStateLabels({ run: run as never, fetchReportedNumbers: () => [3643, 1520, 7] }); } finally { process.stdout.write = out; process.stderr.write = err; }
+  try { count = reportStateLabels(); } finally { process.stdout.write = out; process.stderr.write = err; }
   const text = written.join("");
   assert.equal(count, 2);
   assert.match(text, /NO STATE LABEL {2}#3643/);
@@ -229,10 +230,12 @@ test("`ready:audit` prints NO STATE LABEL / TWO STATE LABELS by number, with the
   assert.doesNotMatch(text, /#7\b/, "the row in one state is not named");
   assert.ok(CHECKS.some(([name, fn]) => name === "state labels" && fn === reportStateLabels as unknown), "and it is one of the audit's checks");
 
+  world.rows.delete(3643);
+  world.rows.delete(1520);
   const lines: string[] = [];
   process.stdout.write = ((chunk: string) => { lines.push(chunk); return true; }) as never;
   process.stderr.write = (() => true) as never;
-  try { assert.equal(reportStateLabels({ run: ((_c: string, a: string[]) => (a[0] === "issue" ? JSON.stringify([open[2]]) : "")) as never, fetchReportedNumbers: () => [7] }), 0); }
+  try { assert.equal(reportStateLabels(), 0); }
   finally { process.stdout.write = out; process.stderr.write = err; }
   assert.match(lines.join(""), /OK {2}1 of 1 open issue\(s\) checked, each carries exactly one of/, "POSITIVE CONTROL's other half: a clean population says what it examined");
 });

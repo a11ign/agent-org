@@ -33,7 +33,7 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
 import { ORG_LOGINS } from "./messaging/sources/readers.ts";
-import { readMergedPullRequests } from "./ticket-port/rows-since.ts"; // #5076: the merged list is a connection, never a search
+import { rows } from "./plugins/rows.ts"; // #5076: the merged list is a connection, never a search (the code host reads it); A11-160, step 9: so are the logins of `main`'s commits
 
 const DAY_MS = 86_400_000;
 export const WINDOW_DAYS = 14;
@@ -283,7 +283,7 @@ export function ledgerLine(reading: ReturnType<typeof readLedger>): string {
     + `${excluded}${unread}.`;
 }
 
-// --- the gathering: the only part that reaches GitHub or git, behind two seams ------------------------------------
+// --- the gathering: the only part that reaches the code host or git, behind git's seam and the code host's rows ------------------------------------
 
 export type Run = (args: string[]) => string;
 
@@ -295,7 +295,8 @@ export type Run = (args: string[]) => string;
  */
 const gitIn = (cwd: string): Run => (args) =>
   execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: sandboxGitEnv() });
-const defaultGh: Run = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+/** The code host's own runner, with the buffer a window of `main`'s commits needs: what the operations below are run on (A11-160, step 9). */
+const hostRun: Run = (args) => rows().runnerWith({ maxBuffer: 256 * 1024 * 1024 })(args);
 
 /**
  * Every commit on `main`'s first-parent line since `since`, with its parents, so a merge is told from a commit.
@@ -312,32 +313,26 @@ function firstParentLine(git: Run, base: string, since: Date): { sha: string; pa
 
 /**
  * sha -> GitHub login for every commit on `main` since `since`; an unmatched email gives an EMPTY login, kept as null.
- * @param {Run} runGh @param {string} repo @param {Date} since
+ * @param {string} repo @param {Date} since
  * @returns {Map<string, string | null>}
  */
-function loginsBySha(runGh: Run, repo: string, since: Date): Map<string, string | null> {
-  const raw = runGh(["api", "--paginate", `repos/${repo}/commits?sha=main&since=${since.toISOString()}&per_page=100`,
-    "--jq", '.[] | [.sha, (.author.login // "")] | @tsv']);
-  return new Map(raw.split("\n").filter(Boolean).map((row) => {
-    const [sha, login] = row.split("\t");
-    return [sha, login || null];
-  }));
+function loginsBySha(repo: string, since: Date): Map<string, string | null> {
+  return new Map(rows().mainCommitLoginsSince({ repo, since, run: hostRun }).map((commit) => [commit.sha, commit.login]));
 }
 
 /**
  * Merged pull requests since `since`: author, title and body. No `commits` connection -- GraphQL refuses it at this
  * page size (measured 2026-10-01: 1,000,000 nodes against a 500,000 limit).
- * @param {Run} runGh @param {string} repo @param {Date} since
+ * @param {string} repo @param {Date} since
  * @returns {Map<number, { author: string | null, title: string, body: string }>}
  */
 /** Pages of 100 merged pull requests read for the ledger's window: 5,000, the limit the search was given. */
 const MERGED_WINDOW_PAGES = 50;
 
-function mergedPullRequests(runGh: Run, repo: string, since: Date): Map<number, { author: string | null; title: string; body: string; }> {
+function mergedPullRequests(repo: string, since: Date): Map<number, { author: string | null; title: string; body: string; }> {
   // #5076: a connection read, not `--search merged:>=` (a GitHub SEARCH). 50 pages is the 5,000 the search was given; a window past them is refused, not cut.
-  const rows = readMergedPullRequests({ repo, select: "number title body author{login}", run: runGh,
-    window: { since: since.toISOString().slice(0, 10), maxPages: MERGED_WINDOW_PAGES } }) as unknown as { number: number; author: { login?: string; } | null; title: string; body: string; }[];
-  return new Map(rows.map((r) => [r.number, { author: r.author?.login ?? null, title: r.title, body: r.body ?? "" }]));
+  const merged = rows().mergedPullsSince({ repo, since, maxPages: MERGED_WINDOW_PAGES, run: hostRun });
+  return new Map(merged.map((pull) => [pull.number, { author: pull.author, title: pull.title, body: pull.body }]));
 }
 
 const MERGE_SUBJECT = /^Merge pull request #(\d+)\b/;
@@ -404,11 +399,11 @@ function whyNotLive({ git, repo, base, local, live }: { git: Run; repo: string; 
  * `primary:update` is `ExecStartPre=-`, so a failed update is ignored and the log is read as of whenever it last worked,
  * while the logins come live. Throws, naming both shas, when `base` is not the head `main` has now -- and says whether the
  * checkout is behind or is not the project's at all (#3363: the tick ran git in the tool's checkout, and "stale" was false).
- * @param {{ git: Run, gh: Run, repo: string, base: string }} where
+ * @param {{ git: Run, repo: string, base: string }} where
  */
-export function assertBaseIsLive({ git, gh: runGh, repo, base }: { git: Run; gh: Run; repo: string; base: string; }) {
+export function assertBaseIsLive({ git, repo, base }: { git: Run; repo: string; base: string; }) {
   const local = git(["rev-parse", base]).trim();
-  const live = runGh(["api", `repos/${repo}/commits/main`, "--jq", ".sha"]).trim();
+  const live = rows().mainShaOf({ repo, run: hostRun });
   if (local !== live) throw new Error(whyNotLive({ git, repo, base, local, live }));
 }
 
@@ -417,14 +412,14 @@ export function assertBaseIsLive({ git, gh: runGh, repo, base }: { git: Run; gh:
  * carried; a null author is silence, not an actor, #1672) and one per commit that no merge groups. The commits a merge carries are `<first parent>..<second parent>`, read
  * locally; their LOGINS come from the commits API.
  * `git` runs in `checkout`, the PROJECT's (`HOME_CHECKOUT`), whatever directory the process works in (#3363).
- * @param {{ checkout?: string, git?: Run, gh?: Run, repo?: string, base?: string }} [seams]
+ * @param {{ checkout?: string, git?: Run, repo?: string, base?: string }} [seams]
  * @returns {(range: { from: Date, to: Date }) => Change[]}
  */
-export function gatherChanges({ checkout = HOME_CHECKOUT, git = gitIn(checkout), gh: runGh = defaultGh, repo = REPO, base = "origin/main" }: { checkout?: string; git?: Run; gh?: Run; repo?: string; base?: string; } = {}): (range: { from: Date; to: Date; }) => Change[] {
+export function gatherChanges({ checkout = HOME_CHECKOUT, git = gitIn(checkout), repo = REPO, base = "origin/main" }: { checkout?: string; git?: Run; repo?: string; base?: string; } = {}): (range: { from: Date; to: Date; }) => Change[] {
   return ({ from }) => {
-    assertBaseIsLive({ git, gh: runGh, repo, base });
-    const prs = mergedPullRequests(runGh, repo, from);
-    const logins = loginsBySha(runGh, repo, from);
+    assertBaseIsLive({ git, repo, base });
+    const prs = mergedPullRequests(repo, from);
+    const logins = loginsBySha(repo, from);
     const changes: Map<string, Change> = new Map();
     for (const commit of firstParentLine(git, base, from)) {
       const number = pullRequestNumber(commit);

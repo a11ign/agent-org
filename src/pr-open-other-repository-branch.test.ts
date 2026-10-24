@@ -9,9 +9,15 @@
  * holds another commit, or cannot be read -- each refuses before the Acceptance runs, naming the repository and the branch. CONTROLS: a Region
  * of the tree's own repository still reads `origin/<head>` and never asks GitHub, and so does a call with no `branchHead` wired.
  */
-import { test } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { main, EXIT_NOTHING_SENT } from "./pr-open.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const TRACKER = "a11ign/a11ign";
 const OTHER = "a11ign/agent-org";
@@ -44,13 +50,13 @@ function drive({ region, head = LOCAL, rest = [], wired = true, git = gitFor() }
   region: string[]; head?: string | null | Error; rest?: string[]; wired?: boolean; git?: (args: string[]) => string;
 }): Drive {
   const sent: string[][] = [];
-  const asked: [string, string][] = [];
+  const asked: [string, string][] = []; // the label step (`fake-label`) is not the create, so `sent` leaves it out
   const out: string[] = [];
   const err: string[] = [];
   let acceptance = 0;
   const argv = ["create", "--draft", "--head", BRANCH, ...rest, "--body", `${body}\nDraft-because: a test of the wrapper, not a review\n`];
   const code = main(argv, {
-    run: (args: string[]) => { if (!args.includes("--add-label")) sent.push(args); },
+    run: (args: string[]) => { if (args[0] !== "fake-label") sent.push(args); },
     git,
     prHead: () => ({ ref: BRANCH, oid: LOCAL }),
     runAcceptance: () => { acceptance += 1; return 0; },
@@ -79,7 +85,7 @@ test("agent-org#753 positive: a Region naming another repository, which holds th
   assert.deepEqual(r.asked, [[OTHER, BRANCH]], "the branch was read from the Region's repository, once");
   assert.equal(r.acceptance, 1, "the Acceptance ran");
   assert.equal(r.sent.length, 1, "the create went out");
-  assert.deepEqual(r.sent[0].slice(0, 2), ["pr", "create"]);
+  assert.deepEqual(r.sent[0].slice(0, 2), ["fake-pull-write", "create"]);
   assert.equal(r.sent[0][r.sent[0].indexOf("--repo") + 1], OTHER, "aimed at the repository that holds the branch");
 });
 
@@ -88,7 +94,7 @@ test("agent-org#753 positive: a bare path of a row that STATES the other reposit
   const sent: string[][] = [];
   const asked: string[] = [];
   const code = main(["create", "--draft", "--head", BRANCH, "--body", `${body}\nDraft-because: a test of the wrapper, not a review\n`], {
-    run: (args: string[]) => { if (!args.includes("--add-label")) sent.push(args); },
+    run: (args: string[]) => { if (args[0] !== "fake-label") sent.push(args); },
     git: gitFor(), prHead: () => null, runAcceptance: () => 0, readFile: () => body, rowBody: () => stated,
     rootFiles: new Set<string>(), code: CODE, owner: () => "ceo", login: () => "a11ign-ai-workers",
     branchHead: (repo: string) => { asked.push(repo); return LOCAL; }, out: () => {}, err: () => {},

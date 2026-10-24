@@ -1,7 +1,7 @@
-// no-token: gh
+// no-token: none -- every read and write goes through the fake code host's world (lab#81, its CI and its seat); nothing here reaches GitHub
 //
-// Every `gh` call in this file is a fixture: `crossRepoRedVerdict` (which has not moved into the code host) takes an injected `run`. The two doors that arm -- `runArmPr` and the sweep's
-// `refusalBeforeArming` -- are driven on the fake code host's world (A11-160, step 5), and the sweep as a real process with a stub `gh` first on PATH is the plugin's end-to-end test
+// `crossRepoRedVerdict` (A11-160, step 9) and the two doors that arm -- `runArmPr` and the sweep's `refusalBeforeArming` -- are driven on the fake code host's world (steps 5 and 9: the verdict's reads of CI are the code
+// host's, so a case seeds the world instead of answering `gh`'s arguments), and the sweep as a real process with a stub `gh` first on PATH is the plugin's end-to-end test
 // (`plugins/github/rows/cross-repo-red-refusal-process.test.ts`).
 /**
  * agent-org#992: A LAB PULL REQUEST WHOSE CROSS-REPO LEG FAILS ON A TEST FILE THE NEWEST TRUNK RUN PASSED IS NOT ARMED unless its body
@@ -31,7 +31,10 @@ import { readTrunkRed, trunkOfCodeRepository } from "../trunk-red.ts";
 import { runArmPr, EXIT } from "../arm-pr.ts";
 import { refusalBeforeArming } from "../auto-arm-sweep.ts";
 import { CROSS_REPO_LEG, crossRepoRedMarker, crossRepoRedVerdict, declaredTickets, failingFilesFromRstestLog } from "../cross-repo-red.ts";
-import { forgetActivation } from "../plugins/active.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { trunkRunsKey } from "../plugins/fakes/code-host-queue.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 import { BODY, DECLARED_BODY, FILES, LAB, LAB81_LEG_LOG, LAB81_LEG_LOG_LINES, LEG, PRIMARY, PR_HEAD, PR_RUN, STEP, TRUNK_RUN, failLine, labWorld, logOf, type LabOptions } from "./fixtures/cross-repo-red-world.ts";
 
 afterEach(() => forgetActivation());
@@ -40,59 +43,22 @@ const DECLARED = [{ key: "", repo: PRIMARY }, { key: "lab", repo: LAB }];
 
 
 
-type World = {
-  prLeg?: string | null;             // the PR head's leg conclusion; `null` = the head has no cross-repo check run
-  prLog?: string;
-  trunkLeg?: string | null;          // the newest trunk run's leg conclusion; `null` = that run has no cross-repo job
-  trunkLog?: string;
-  throwOn?: RegExp;                  // any call whose arguments match throws `HTTP 502`
-  comments?: { body: string }[];
-  body?: string;
-  totalCount?: number;
-};
+/** The run `crossRepoRedVerdict` is handed: the fake code host acts on its own state, so one that is reached is a mistake. */
+const NO_RUN = (): string => { throw new Error("the fake code host answers from its world, never through the run it is handed"); };
 
-/** A fake `gh` for one lab pull request, recording every call. Unknown calls answer `""`, as the doors' own fixtures do. */
-function world(w: World = {}) {
-  const { prLeg = "failure", prLog = LAB81_LEG_LOG, trunkLeg = "success", trunkLog = "", comments = [], body = BODY } = w;
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    const line = args.join(" ");
-    if (w.throwOn?.test(line)) throw new Error("HTTP 502");
-    if (line.includes("headRefOid")) return `${PR_HEAD}\n`;
-    if (line.includes("check-runs?per_page=100")) {
-      const checks: unknown[] = [{ name: "gate", conclusion: "success", details_url: `https://github.com/${LAB}/actions/runs/${PR_RUN}/job/1` }];
-      if (prLeg !== null) checks.push({ name: LEG, conclusion: prLeg, details_url: `https://github.com/${LAB}/actions/runs/${PR_RUN}/job/114504845032` });
-      return JSON.stringify({ total_count: w.totalCount ?? checks.length, check_runs: checks });
-    }
-    if (line.includes("actions/workflows/ci.yml/runs")) {
-      const common = { head_sha: "77283f6e", status: "completed", html_url: `https://github.com/${LAB}/actions/runs/${TRUNK_RUN}` };
-      return JSON.stringify({ workflow_runs: line.includes("event=push")
-        ? [{ ...common, id: TRUNK_RUN, conclusion: "success", created_at: "2026-10-11T15:35:54Z", event: "push" }]
-        : [{ ...common, id: 38133429541, conclusion: "success", created_at: "2026-10-11T10:51:00Z", event: "schedule" }] });
-    }
-    if (line.includes(`actions/runs/${TRUNK_RUN}/jobs`)) {
-      return JSON.stringify({ jobs: [{ name: "gate", conclusion: "success" }, ...(trunkLeg === null ? [] : [{ name: LEG, conclusion: trunkLeg }])] });
-    }
-    if (line.startsWith(`run view ${PR_RUN} `)) return prLog;
-    if (line.startsWith(`run view ${TRUNK_RUN} `)) return trunkLog;
-    if (args[0] === "issue" && args[1] === "view") {
-      const wanted = args[args.indexOf("--json") + 1];
-      return JSON.stringify(wanted === "labels" ? { labels: [] } : { blockedBy: { nodes: [], totalCount: 0 } });
-    }
-    if (args[0] === "pr" && args[1] === "view" && line.includes("comments")) return JSON.stringify({ comments });
-    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ labels: [], body, state: "OPEN", author: { login: "worker-1" } });
-    if (line.includes("pullRequest(number:$n){id merged")) return JSON.stringify({ id: "PR_x", merged: false, autoMergeRequest: null, mergeQueueEntry: null });
-    if (line.includes("timelineItems")) return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [] } });
-    return "";
-  };
-  return { run, calls };
+/** Operations of the code host's rows the verdict reads (CI), so a case can say "and nothing else was asked". */
+const CI_READS = ["headOfChange", "checkRunsOfHead", "workflowRunsOf", "jobsOfRun", "failedLogOfRun"];
+
+/**
+ * Lab#81 on the fake code host's world, its rows WATCHED, for one `crossRepoRedVerdict`. `calls` are the operations of the code host's rows the verdict asked, with the request each was given;
+ * a read that cannot be made is the world's (`LabOptions`: an `Error` for a log, `refuse` for an operation).
+ */
+function ask(w: LabOptions = {}, prBody: string | null = BODY, repo = LAB) {
+  const { host } = labWorld({ prLog: LAB81_LEG_LOG, ...w });
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { calls: watched.calls, verdict: crossRepoRedVerdict({ number: 81, repo, prBody, run: NO_RUN, codeRepositories: DECLARED }) };
 }
-
-const ask = (w: World = {}, prBody: string | null = BODY, repo = LAB) => {
-  const fake = world(w);
-  return { ...fake, verdict: crossRepoRedVerdict({ number: 81, repo, prBody, run: fake.run, codeRepositories: DECLARED }) };
-};
 const why = (verdict: { kind: string }) => ("why" in verdict ? String(verdict.why) : "");
 const filesOf = (verdict: { kind: string }) => ("files" in verdict ? verdict.files : null);
 
@@ -130,13 +96,14 @@ test("#992 the leg-name rule agrees with `readTrunkRed`'s, name by name (the cop
   const stateDir = mkdtempSync(join(tmpdir(), "cross-repo-red-parity-"));
   try {
     const verdicts = names.map((name) => {
-      const run = (args: string[]) => {
-        const line = args.join(" ");
-        if (line.includes("/actions/workflows/")) return JSON.stringify({ workflow_runs: [{ id: 1, head_sha: "a", status: "completed", conclusion: "success", html_url: "u", created_at: "2026-10-11T15:00:00Z", event: "push" }] });
-        if (line.includes("/jobs")) return JSON.stringify({ jobs: [{ name, conclusion: "failure" }] });
-        return "[]";
-      };
-      const red = readTrunkRed(run, trunkOfCodeRepository("lab", LAB), { stateDir, report: () => {} });
+      // The fake code host's world: lab's newest `push` and `schedule` runs are one green run whose only job is the one named.
+      const host = createFakeCodeHost();
+      const lab = trunkOfCodeRepository("lab", LAB);
+      const green = { id: 1, head_sha: "a", status: "completed", conclusion: "success", html_url: "u", created_at: "2026-10-11T15:00:00Z", event: "push" };
+      for (const filter of lab.eventFilters) host.rowsWorld.tail.queue.trunkRuns.set(trunkRunsKey(LAB, lab.workflow, filter), [green]);
+      host.rowsWorld.ci.jobs.set("1", [{ name, conclusion: "failure" }]);
+      substituteCodeHost(host);
+      const red = readTrunkRed(() => { throw new Error("the fake code host acts on its own state: no run is made"); }, lab, { stateDir, report: () => {} });
       return { name, theirs: red?.leg === name, ours: CROSS_REPO_LEG.test(name) };
     });
     assert.ok(verdicts.some((v) => v.theirs) && verdicts.some((v) => !v.theirs), "both answers occur, so agreement is not two silences");
@@ -162,7 +129,7 @@ test("A11-127 the declaration: a ticket key is `clear`, read by its shape, with 
   for (const key of ["A11-123", "NBF-7", "a11-1"]) {
     const declared = ask({}, `${BODY}\nCross-repo-red: ${key}\n`);
     assert.deepEqual(declared.verdict, { kind: "clear" }, key);
-    assert.deepEqual(declared.calls.filter((args) => args[0] === "issue"), [], `${key} is not looked up: CI holds no tracker credential`);
+    assert.deepEqual(declared.calls.filter((call) => call.op === "stateOfRow"), [], `${key} is not looked up: CI holds no tracker credential`);
   }
 });
 
@@ -190,14 +157,14 @@ test("#992 (2) NEGATIVE CONTROL: a leg that PASSED, a PR with no leg at all, and
   for (const prLeg of ["success", "cancelled", "skipped", null]) {
     const { verdict, calls } = ask({ prLeg });
     assert.deepEqual(verdict, { kind: "clear" }, String(prLeg));
-    assert.ok(!calls.some((args) => args.join(" ").includes("actions/workflows")), `${prLeg}: a leg that is not red asks nothing of the trunk`);
+    assert.ok(!calls.some((call) => call.op === "workflowRunsOf" || call.op === "jobsOfRun"), `${prLeg}: a leg that is not red asks nothing of the trunk`);
   }
 });
 
 test("#992 (2) NEGATIVE CONTROL: an INHERITED red is not the PR's -- the same two files failing on the newest trunk run too are `clear`", () => {
   const inherited = ask({ trunkLeg: "failure", trunkLog: logOf(...FILES) });
   assert.deepEqual(inherited.verdict, { kind: "clear" });
-  assert.ok(inherited.calls.some((args) => args.join(" ").startsWith(`run view ${TRUNK_RUN} `)), "the trunk's log WAS read, so `clear` is a comparison and not a skip");
+  assert.equal(inherited.calls.filter((call) => call.op === "failedLogOfRun").length, 2, "the PR's log AND the trunk's WERE read, so `clear` is a comparison and not a skip");
   const control = ask({ trunkLeg: "failure", trunkLog: logOf(FILES[0]) });
   assert.equal(control.verdict.kind, "cross-repo-red", "the control: trunk fails only one of the two");
   assert.deepEqual(filesOf(control.verdict), [FILES[1]], "and only the file the trunk does not fail is named");
@@ -211,26 +178,26 @@ test("#992 (2) NEGATIVE CONTROL: a PR touching only SOME of trunk's failing file
   assert.deepEqual(filesOf(plusOne.verdict), ["packages/lab/src/new/c.test.ts"], "the control: one file of its own is the whole refusal");
 });
 
-test("#992 (2) NEGATIVE CONTROL: a primary-project PR and an undeclared repository are `clear` with ZERO `gh` calls", () => {
+test("#992 (2) NEGATIVE CONTROL: a primary-project PR and an undeclared repository are `clear` with ZERO reads of the code host", () => {
   for (const repo of [PRIMARY, "someone/else"]) {
     const { verdict, calls } = ask({}, BODY, repo);
     assert.deepEqual(verdict, { kind: "clear" }, repo);
-    assert.deepEqual(calls, [], `${repo}: the run double recorded no call`);
+    assert.deepEqual(calls, [], `${repo}: the code host's rows recorded no call`);
   }
   assert.equal(ask({}, BODY, LAB).verdict.kind, "cross-repo-red", "the control: the same world, asked of the lab, is refused");
 });
 
-test("#992 (3) every read that cannot be made is `cannot-ask` -- a run that THROWS, or a log that names no file, never arms", () => {
-  const unreadable: Record<string, World> = {
-    "the PR head": { throwOn: /headRefOid/ },
-    "the PR's check runs": { throwOn: /check-runs/ },
-    "the PR's failed log": { throwOn: new RegExp(`run view ${PR_RUN}`) },
+test("#992 (3) every read that cannot be made is `cannot-ask` -- a read that THROWS, or a log that names no file, never arms", () => {
+  const unreadable: Record<string, LabOptions> = {
+    "the PR head": { refuse: ["headOfChange"] },
+    "the PR's check runs": { refuse: ["checkRunsOfHead"] },
+    "the PR's failed log": { prLog: new Error("HTTP 502") },
     "a PR log that names no failing file": { prLog: `${LEG}\t${STEP}\t2026-10-11T15:35:54.0000000Z ##[error]Process completed with exit code 1.` },
-    "the trunk's runs": { throwOn: /actions\/workflows/ },
-    "the trunk run's jobs": { throwOn: new RegExp(`actions/runs/${TRUNK_RUN}/jobs`) },
+    "the trunk's runs": { refuse: ["workflowRunsOf"] },
+    "the trunk run's jobs": { refuse: ["jobsOfRun"] },
     "a trunk run with no cross-repo job": { trunkLeg: null },
     "a trunk leg that read cancelled": { trunkLeg: "cancelled" },
-    "the trunk's failed log": { trunkLeg: "failure", throwOn: new RegExp(`run view ${TRUNK_RUN}`) },
+    "the trunk's failed log": { trunkLeg: "failure", trunkLog: new Error("HTTP 502") },
     "a trunk log that names no failing file": { trunkLeg: "failure", trunkLog: "" },
     "a page of check runs that was not read": { prLeg: null, totalCount: 250 },
   };
@@ -240,10 +207,10 @@ test("#992 (3) every read that cannot be made is `cannot-ask` -- a run that THRO
     assert.equal(verdict.kind, "cannot-ask", `${name}: ${why(verdict)}`);
     assert.ok(why(verdict).length > 20, name);
   }
-  assert.equal(crossRepoRedVerdict({ number: 81, repo: LAB, prBody: BODY, codeRepositories: DECLARED, run: () => { throw new Error("HTTP 502"); } }).kind, "cannot-ask");
+  assert.equal(ask({ refuse: CI_READS }).verdict.kind, "cannot-ask", "every read of CI refused at once");
   assert.equal(ask({}, null).verdict.kind, "cannot-ask", "a body that was not read, over a red leg");
   assert.equal(ask({ prLeg: "success" }, null).verdict.kind, "clear", "and over a green one nothing was needed of it");
-  assert.equal(ask({ throwOn: /issue view/ }, DECLARED_BODY).verdict.kind, "clear", "a declared ticket is read by its shape, so an unwell tracker cannot make it unreadable");
+  assert.equal(ask({ refuse: ["stateOfRow"] }, DECLARED_BODY).verdict.kind, "clear", "a declared ticket is read by its shape, so an unwell tracker cannot make it unreadable");
 });
 
 test("#992 the project declares the lab as a code repository with a cross-repo leg, and the primary as the one with none (the doors below read it)", () => {

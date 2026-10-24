@@ -87,7 +87,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 # defect #1858 is about -- a merged edit that does not reach the host until somebody reinstalls. The
 # tree copy IS the program, so there is no CURRENT question to ask about it. `host:check` reports the
 # superseded ~/.local/bin copy until it is removed, and would report a new one the day it appeared.
-ExecStart=/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh
+ExecStart=/usr/bin/bash packages/agent-org/plugins/github/host/board-report-dispatch.sh
 
 # NO [Install] SECTION, and its absence is load-bearing. `WantedBy=default.target` -- which the other
 # shipped services carry -- would start this oneshot at every boot, and every boot would dispatch

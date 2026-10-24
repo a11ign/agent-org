@@ -1,8 +1,8 @@
 // no-token: gh
 //
 // #1278 added `import { inventory }`, which pulls `branch-inventory-report.ts` into this file's closure
-// -- and that file spawns `gh` (`openPrHeads`) and `git`. Nothing here reaches either: every test passes
-// `run` injected, and `ownerOfBranch`/`groupByOwner`/`reconcile` are pure.
+// -- and that file spawns `git` and asks the code host for `gh`'s reads (`openPrHeads`). Nothing here reaches either: every test passes
+// `run` injected for git and the fake code host (A11-160, step 9) answers the rest, and `ownerOfBranch`/`groupByOwner`/`reconcile` are pure.
 //
 // DRIVEN, not asserted. A `gh` on PATH that exits 1 loudly, then a failing `git` beside it, run against
 // the whole suite: 13/0 both times, exit 0 -- with the shim confirmed reachable first, so a silent PATH
@@ -20,11 +20,23 @@
  * needs a token; this module spawns nothing, so the row's acceptance command runs in a job that has none
  * (#1009). Every fixture here is shaped like the real data and several ARE the real data, quoted.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { rowNumberFromBranch, sessionFromLabels, sessionFromTimeline, ownerOfBranch, branchFacts,
   reconcile, groupByOwner, renderInventory } from "../branch-inventory.ts";
 import { branchesWithTips, inventory } from "../branch-inventory-report.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
+
+/** The fake code host (installed as the active one) the report reads the pull requests, rows and timelines of: nothing is open until a test seeds it. */
+function codeHost() {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
 
 const tip = { sha: "abc1234", at: "2026-09-09T08:35:00Z" };
 
@@ -208,8 +220,8 @@ const forEachRefCalls = () => sweeps;
 const runWithDriftAfter = (firstCallsBeforeDrift: number) => {
   sweeps = 0;
   let forEachRefCalls = 0;
-  return (cmd: string, args: string[]): string => {
-    if (cmd === "gh") return "";                       // no open PRs, so every branch is a candidate
+  codeHost();                                          // no open PRs, so every branch is a candidate
+  return (_cmd: string, args: string[]): string => {
     if (args[0] === "for-each-ref") {
       forEachRefCalls += 1;
       sweeps += 1;
@@ -272,6 +284,7 @@ test("#1278: ownerOfBranch tolerates `row: undefined` rather than throwing", () 
 
 /** A `run` that records every call, answering one unmerged branch for the ref read. */
 const recordingRun = () => {
+  codeHost();
   const calls: string[][] = [];
   const run = (cmd: string, args: string[]): string => {
     calls.push([cmd, ...args]);
@@ -303,4 +316,42 @@ test("#1282: in a whole inventory, EVERY branch read is immediately preceded by 
   for (const i of reads) {
     assert.deepEqual(calls[i - 1], ["git", "fetch", "--prune", "origin"], `the branch read at call ${i}`);
   }
+});
+
+// --- A11-160 step 9: what the report asks of the code host, and what it makes of the answers --------------------------------------------
+
+test("the inventory leaves out a branch with an open pull request, and names the owner of a closed row from its claim history", () => {
+  const world = codeHost();
+  world.rows.set(7, fakeRow(world, 7, { state: "CLOSED", labels: ["backlog"] }));
+  world.rows.set(8, fakeRow(world, 8, { labels: ["in-progress", "session:worker-judge"] }));
+  world.gate.events.set(7, [{ event: "labeled", label: "backlog", actor: null, at: "2026-09-01T00:00:00Z" }, { event: "labeled", label: "session:worker-audit", actor: null, at: "2026-09-02T00:00:00Z" }, { event: "unlabeled", label: "session:worker-audit", actor: null, at: "2026-09-03T00:00:00Z" }]);
+  world.pulls.set(20, { number: 20, body: "", headRefName: "agent/has-pr-20", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-09-04T00:00:00Z", comments: [] });
+  const run = (_cmd: string, args: string[]): string => {
+    if (args[0] === "for-each-ref") return ["agent/closed-7", "agent/live-8", "agent/has-pr-20", "agent/gone-9", "agent/no-number"].map((branch) => `${branch}\tabc1234\t2026-09-05T00:00:00Z`).join("\n");
+    return args[0] === "rev-list" ? "2" : "";
+  };
+  const { facts, counts } = inventory({ run });
+  assert.equal(counts.candidates, 5);
+  assert.equal(counts.noOpenPR, 4, "the branch with an open pull request is not a candidate");
+  assert.deepEqual(facts.map((f) => [f.branch, f.rowState, f.owner, f.source]), [
+    ["agent/closed-7", "#7 CLOSED", "worker-audit", "claim-history"],
+    ["agent/live-8", "#8 OPEN", "worker-judge", "row-label"],
+    ["agent/gone-9", "#9 does not exist", null, "unknown"],
+    ["agent/no-number", "no row number in the name", null, "unknown"],
+  ]);
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("rowTimelineEventsOf")).map((call) => call.split("#")[1]), ["7"], "the history is read for the one row whose live labels name no session");
+});
+
+test("the history of a row is read only for a row whose live labels name no session, and a history that cannot be read leaves the owner unknown", () => {
+  const world = codeHost();
+  world.rows.set(7, fakeRow(world, 7, { state: "CLOSED", labels: ["backlog"] }));
+  world.rows.set(8, fakeRow(world, 8, { labels: ["session:worker-judge"] }));
+  world.gate.events.set(7, new Error("HTTP 502"));
+  const run = (_cmd: string, args: string[]): string => {
+    if (args[0] === "for-each-ref") return ["agent/closed-7", "agent/live-8"].map((branch) => `${branch}\tabc1234\t2026-09-05T00:00:00Z`).join("\n");
+    return args[0] === "rev-list" ? "2" : "";
+  };
+  const { facts } = inventory({ run });
+  assert.deepEqual(facts.map((f) => [f.branch, f.owner, f.source]), [["agent/closed-7", null, "unknown"], ["agent/live-8", "worker-judge", "row-label"]]);
+  assert.ok(world.calls.every((call) => !call.startsWith("rowTimelineEventsOf") || call.includes("#7")), "the live row's history is never asked for");
 });

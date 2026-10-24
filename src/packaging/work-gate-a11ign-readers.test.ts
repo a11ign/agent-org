@@ -25,7 +25,7 @@
  * AND THE POSITIVES ARE NOT OPTIONAL, for `review-verdict.test.ts`'s reason one level up: a `decide` that
  * returned `[]` for everything satisfies every "no order" case perfectly and would wake nobody, ever.
  */
-import { test, beforeEach } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -48,9 +48,13 @@ import { reviewBlocked } from "../work-gate/causes/pr-reviews.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { forgetRefusedReads } from "../ticket-port/rows-by-label.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 // #5050: the gate remembers a rate-limit refusal for the PROCESS, and a test here fakes one (`rate limited`), so without this every later list read answers `null`
 // with no call made -- a failure far from its cause.
 beforeEach(() => forgetRefusedReads());
+afterEach(() => forgetActivation());
 
 /**
  * #1651: these subtests read a11ign's own checkout -- its roster, its cause plugins, its CI job names, its shipped host units and its role
@@ -760,6 +764,18 @@ const holdOwnPr = (checks: [string, string][] = HELD_RED) => ({ number: 2649, is
 
 
 /**
+ * The code host the escalation writes to: a world holding row #2376 as `ready`, activated for the test, and a reader of that row's labels. The escalation labels a row through the code host (its own state), so
+ * the `run` the wake hands it is one that fails the test if anything reaches for GitHub; what a label write sends to `gh` is asserted in `plugins/github/rows/gate-reads.test.ts`.
+ */
+function escalationHost(): () => string[] {
+  const host = createFakeCodeHost();
+  host.rowsWorld.rows.set(2376, fakeRow(host.rowsWorld, 2376, { labels: ["ready"] }));
+  substituteCodeHost(host);
+  return () => [...host.rowsWorld.rows.get(2376)!.labels];
+}
+const noGhRun = (): string => { throw new Error("the fake code host acts on its own state: no gh is run"); };
+
+/**
  * Clauses 3 and 5: the escalation is read off what `deliver` is HANDED, so an order never emitted cannot reach the
  * breaker at all. The wake half is driven with the ledger already at the cap, which is #2376's state.
  */
@@ -767,19 +783,19 @@ test("a held PR at the cap stops appearing in stuck, and a real failure under th
   const at = (checkNames: [string, string][], labels = ["hold:product-manager"]) => {
     const orders = failingOrders(heldPr(labels, checkNames), ["gate"]);
     const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
-    const calls: string[][] = [];
+    const labelsOfRow = escalationHost();
     const { sent, stuck } = deliver(orders, [], [], { counts, run: () => { throw new Error("nothing may be sent"); } });
-    const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
-    return { orders, sent, stuck, labelled, calls };
+    const labelled = escalateStuck(stuck, noGhRun, () => {});
+    return { orders, sent, stuck, labelled, labels: labelsOfRow() };
   };
   const held = at(HELD_RED);
-  assert.deepEqual([held.orders, held.stuck, held.labelled, held.calls], [[], [], [], []],
+  assert.deepEqual([held.orders, held.stuck, held.labelled, held.labels], [[], [], [], ["ready"]],
     "no order, so no stuck line, so no escalation label");
   const real = at([["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["changeset", "FAILURE"]]);
   assert.equal(real.orders.length, 1, "POSITIVE CONTROL: the order exists");
   assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");
   assert.deepEqual(real.labelled, [2376]);
-  assert.deepEqual(real.calls, [["issue", "edit", "2376", "--add-label", "answer:ceo"]]);
+  assert.deepEqual(real.labels, ["ready", "answer:ceo"], "and the code host's row #2376 now carries the escalation label");
 });
 
 test("a PR held by SOMEBODY ELSE at the cap is not stuck and gets no needs:chairman -- #2993", { skip: SKIP_FIXTURE }, () => {
@@ -787,13 +803,13 @@ test("a PR held by SOMEBODY ELSE at the cap is not stuck and gets no needs:chair
   const at = (checkNames: [string, string][]) => {
     const orders = failingOrders(heldPr(foreign, checkNames), ["gate"]);
     const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
-    const calls: string[][] = [];
+    const labelsOfRow = escalationHost();
     const { stuck } = deliver(orders, [], [], { counts, run: () => { throw new Error("nothing may be sent"); } });
-    const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
-    return { orders, stuck, labelled, calls };
+    const labelled = escalateStuck(stuck, noGhRun, () => {});
+    return { orders, stuck, labelled, labels: labelsOfRow() };
   };
   const held = at(HELD_RED);
-  assert.deepEqual([held.orders, held.stuck, held.labelled, held.calls], [[], [], [], []], "(4) a foreign hold: nothing to escalate");
+  assert.deepEqual([held.orders, held.stuck, held.labelled, held.labels], [[], [], [], ["ready"]], "(4) a foreign hold: nothing to escalate");
   const real = at([["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]]);
   assert.equal(real.orders[0]?.session, "worker-5", "POSITIVE CONTROL: the owner is still ordered on a real failure");
   assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");

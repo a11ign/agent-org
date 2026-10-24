@@ -7,7 +7,7 @@
  * seams do with a fake provider: no network, no real key.
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +16,9 @@ import { fileURLToPath } from "node:url";
 import type { CiFailure } from "./ci-failure-class.ts";
 import type { DepthState } from "./review-depth.ts";
 import { INSIDE } from "./review-trust.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 // A RECORDED PROJECT AND A HOST THAT DECLARES NO PROVIDER, set BEFORE the tool is imported (`claimed-region-overlap.test.ts`'s shape): `wake.ts` resolves the project's declaration at
 // import, and the process tests below inherit this environment, so a host with a real `triage` block would have these ticks ask the REAL provider with the real key.
@@ -89,34 +92,50 @@ test("readCiFailure: a head that moved, or a red check that is not an Actions jo
   assert.throws(() => readCiFailure(pr, fakeGh({}), NOW), /unexpected gh/);
 });
 
+afterEach(() => forgetActivation());
+
+/** The fake code host (A11-160, step 9) the depth state is read from, and a `gh` that must never run: the code host answers from its world. */
+function depthWorld() {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const gh = (args: string[]): string => { throw new Error(`the code host answers; no gh is run (${args.join(" ")})`); };
+  return { world: host.rowsWorld, gh };
+}
+const regionRow = (world: ReturnType<typeof depthWorld>["world"], number: number, region: string) => fakeRow(world, number, { body: `## Region\n\n\`\`\`\n${region}\n\`\`\`\n` });
+
+// WHAT IS ASKED of GitHub (the three REST paths, the page size) and how the pull request's counts are read are the plugin's (`plugins/github/rows/readouts-rows.test.ts`).
 test("readDepthState: the paths, the lines and the Region of every row the pull request closes", () => {
-  const region = "## Region\n\n```\nagent-org:.github/workflows/ci.yml\nsrc/x.ts\n```\n\n## Acceptance\n";
-  const gh = fakeGh({
-    [`repos/${REPO}/pulls/5/files`]: [{ filename: "docs/a.md" }, { filename: "src/a.test.ts" }],
-    [`repos/${REPO}/issues/42`]: { body: region },
-    [`repos/${REPO}/pulls/5`]: { changed_files: 2, additions: 9, deletions: 3, title: "t", body: "Closes #42\nCloses: none -- also" },
-  });
+  const { world, gh } = depthWorld();
+  world.foreignRows.set(`${REPO}#42`, fakeRow(world, 42, { body: "## Region\n\n```\nagent-org:.github/workflows/ci.yml\nsrc/x.ts\n```\n\n## Acceptance\n" }));
+  world.tail.readouts.pulls.set(`${REPO}#5`, { title: "t", body: "Closes #42\nCloses: none -- also", additions: 9, deletions: 3, files: ["docs/a.md", "src/a.test.ts"] });
   const state = readDepthState({ repo: REPO, number: 5 }, gh)!;
   assert.deepEqual(state.paths, ["docs/a.md", "src/a.test.ts"]);
   assert.deepEqual([state.added, state.removed, state.title], [9, 3, "t"]);
   assert.deepEqual(state.closesPaths, [".github/workflows/ci.yml", "src/x.ts"], "the repository prefix is not part of the path");
-  const big = fakeGh({ [`repos/${REPO}/pulls/5`]: { changed_files: 101 } });
-  assert.equal(readDepthState({ repo: REPO, number: 5 }, big), null, "a diff whose files were not all read is not read at all");
+  world.tail.readouts.pulls.set(`${REPO}#5`, { title: "t", body: "", additions: 0, deletions: 0, files: [], changedFiles: 101 });
+  world.calls.length = 0;
+  assert.equal(readDepthState({ repo: REPO, number: 5 }, gh), null, "a diff whose files were not all read is not read at all");
+  assert.deepEqual(world.calls, [`pullDepthFactsOf ${REPO}#5`], "and its files and rows were not asked for");
 });
 
 test("readDepthState: a row closed in the FULL form is read from the repository it names, which is what every pull request body carries", () => {
   const OTHER = "a11ign/agent-org";
-  const asked: string[] = [];
-  const gh = fakeGh({
-    [`repos/${OTHER}/pulls/9/files`]: [{ filename: "docs/a.md" }],
-    [`repos/${REPO}/issues/4888`]: { body: "## Region\n\n```\nagent-org:src/wake.ts\n```\n" },
-    [`repos/${OTHER}/issues/7`]: { body: "## Region\n\n```\nsrc/review-depth.ts\n```\n" },
-    [`repos/${OTHER}/pulls/9`]: { changed_files: 1, additions: 1, deletions: 0, title: "t", body: "Closes a11ign/a11ign#4888\n\nCloses a11ign/agent-org#7\nCloses #7" },
-  }, asked);
+  const { world, gh } = depthWorld();
+  world.foreignRows.set(`${REPO}#4888`, regionRow(world, 4888, "agent-org:src/wake.ts"));
+  world.foreignRows.set(`${OTHER}#7`, regionRow(world, 7, "src/review-depth.ts"));
+  world.tail.readouts.pulls.set(`${OTHER}#9`, { title: "t", body: "Closes a11ign/a11ign#4888\n\nCloses a11ign/agent-org#7\nCloses #7", additions: 1, deletions: 0, files: ["docs/a.md"] });
   const state = readDepthState({ repo: OTHER, number: 9 }, gh)!;
   assert.deepEqual(state.closesPaths, ["src/wake.ts", "src/review-depth.ts"], "both full forms are read, and a bare #7 is the same row as the full one, once");
-  assert.ok(asked.includes(`api repos/${REPO}/issues/4888`), "the row of another repository is read from THAT repository, not from the pull request's own");
-  assert.equal(asked.filter((line) => line.endsWith("/issues/7")).length, 1);
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("restRowBodyOf")), [`restRowBodyOf ${REPO}#4888`, `restRowBodyOf ${OTHER}#7`],
+    "the row of another repository is read from THAT repository, not from the pull request's own, and the same row only once");
+});
+
+test("readDepthState: a read the code host refuses throws, for the caller to read as 'could not determine'", () => {
+  const { world, gh } = depthWorld();
+  world.tail.readouts.pulls.set(`${REPO}#5`, { title: "t", body: "Closes #42", additions: 1, deletions: 0, files: ["a.md"] });
+  assert.throws(() => readDepthState({ repo: REPO, number: 5 }, gh), /the fake holds no row a11ign\/a11ign#42/, "a closed row that cannot be read is not 'a row with no Region'");
+  world.failures.set("pullFilenamesPageOf", new Error("HTTP 502"));
+  assert.throws(() => readDepthState({ repo: REPO, number: 5 }, gh), /HTTP 502/);
 });
 
 test("depthEffort: light is low, full is high, normal is the profile's own", () => {

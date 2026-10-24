@@ -1,10 +1,10 @@
-// no-token: gh -- every `gh` here is a stub on PATH or an injected seam; nothing imported reaches the real one
+// no-token: gh -- the tracker here is the fake code host, and the only `gh` is a stub on PATH for the process cases (the first-wave read, the CLI); nothing imported reaches the real one
 /**
  * #2324: the standing engineers are DRAINED, and a spawn is only made for a row that would pass the claim
  * (`ceo`, #1950 rulings b and d). Its own file, and not a block in `wake.test.ts`, for #2280's reason (and as
  * #2323's `wake-spare-teardown.test.ts` did): that file reaches `route`, which reaches `gh`, so the token-less
- * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, the two ledgers -- is
- * injected or stubbed on PATH, so the row's Acceptance is a command the job can RUN.
+ * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub (the fake code host's rows), the two ledgers -- is
+ * injected, seeded or stubbed on PATH, so the row's Acceptance is a command the job can RUN.
  */
 import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -54,9 +54,10 @@ const { spareRoles } = await import("../wake/merge-queue-wait.ts");
 const { drainReason } = await import("../row-claim/runner-rule.ts");
 const { claimRow } = await import("../row-claim.ts");
 const { REPO } = await import("../project-identity.ts");
-const { substituteCodeHost, forgetActivation } = await import("../plugins/active.ts");
 const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
 const { fakeRow } = await import("../plugins/fakes/code-host-rows.ts");
+const { fakePull } = await import("../plugins/fakes/code-host-pulls.ts");
+const { substituteCodeHost, forgetActivation } = await import("../plugins/active.ts");
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -246,25 +247,33 @@ test("#2324: an unreadable ledger line is a FAILED cycle, so it lifts the drain 
 
 // --- the precheck: no instance is created to be refused and sit idle ---
 
-/** A `gh` that answers the claim's three reads for row 2131: its blockedBy edge, its Region, and the open PRs. */
-function claimGh({ edge = "OPEN", prFiles = ["packages/agent-org/src/wake.ts"] as string[] | null,
+/** The claim has no `run` to read GitHub through: the code host is the fake's, and a `run` that is reached says so. */
+const noRun = (args: string[]): string => {
+  throw new Error(`a claim reached \`gh ${args.join(" ")}\` through its run: GitHub is the code host's`);
+};
+
+/**
+ * The fake code host holding what the claim's three reads see of row 2131 (A11-160, step 9): its blockedBy edge (`OPEN`: blocked by the open #2323; `CLOSED`: by the closed one; `NONE`: by nothing), its Region,
+ * and the open pull request #2300 touching `prFiles` (`null`: no repository's list of open pull requests can be read). The `run` the claim is handed is `noRun`: the default one is the wake's own `gh`, which the first
+ * wave rehearses before it reads (the process cases below), and the fake has no `gh` to rehearse.
+ */
+function claimWorld({ edge = "OPEN", prFiles = ["packages/agent-org/src/wake.ts"] as string[] | null,
   region = "packages/agent-org/src/wake.ts" } = {}) {
-  const calls: string[] = [];
-  const run = (args: string[]): string => {
-    calls.push(args.slice(0, 2).join(" "));
-    const fields = args[args.indexOf("--json") + 1];
-    if (args[0] === "issue" && fields === "blockedBy") {
-      return JSON.stringify({ blockedBy: { nodes: edge === "NONE" ? [] : [{ number: 2323, state: edge }] } });
-    }
-    if (args[0] === "issue" && fields.split(",").includes("body")) return JSON.stringify({ body: `## Region\n\n\`\`\`\n${region}\n\`\`\`\n` });
-    if (args[0] === "pr" && args[1] === "list") {
-      if (prFiles === null) throw new Error("gh: pr list failed");
-      return JSON.stringify([{ number: 2300, changedFiles: prFiles.length, files: prFiles.map((path) => ({ path })),
-        body: "Closes #2299" }]);
-    }
-    throw new Error(`unexpected gh call: ${args.join(" ")}`);
-  };
-  return { run, calls };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  for (const row of [2131, 2132]) {
+    world.rows.set(row, fakeRow(world, row, { body: `## Region\n\n\`\`\`\n${region}\n\`\`\`\n`, blockedBy: edge === "NONE" ? [] : [2323] }));
+  }
+  if (edge !== "NONE") world.rows.set(2323, fakeRow(world, 2323, { state: edge === "CLOSED" ? "CLOSED" : "OPEN" }));
+  if (prFiles === null) {
+    for (const { repo } of homeProjectDeclaration().code) world.rules.listRefused.set(repo, new Error("gh: pr list failed"));
+  } else {
+    fakePull(world, 2300, { body: "Closes #2299", files: prFiles });
+  }
+  substituteCodeHost(host);
+  const openPrReads = () => world.calls.filter((call) => call.startsWith("openPullsWithFilesOf "));
+  return { world, openPrReads, claimable: (over: { warn?: (line: string) => void } = {}) => spawnClaimability({ run: noRun, ...over }) };
 }
 
 const SPAWNING = (claimable: (o: { causeKey: string }) => string | null) => {
@@ -279,8 +288,8 @@ test("#2324: rowOfOrder reads the row from the pool order's causeKey, and only f
 });
 
 test("#2324 (5) ACCEPTANCE: an open blockedBy edge starts NO spawn, and the refusal names the #1886 check", () => {
-  const gh = claimGh({ edge: "OPEN" });
-  const { h, got } = SPAWNING(spawnClaimability({ run: gh.run }));
+  const { claimable } = claimWorld({ edge: "OPEN" });
+  const { h, got } = SPAWNING(claimable());
 
   assert.deepEqual(h.said("workspace create"), [], "no pane was opened for a row the claim would refuse");
   assert.deepEqual(got.sent, []);
@@ -288,38 +297,38 @@ test("#2324 (5) ACCEPTANCE: an open blockedBy edge starts NO spawn, and the refu
 });
 
 test("#2324 (5) POSITIVE CONTROL: the same row with the edge CLOSED spawns", () => {
-  const gh = claimGh({ edge: "CLOSED", prFiles: [] });
-  const { h, got } = SPAWNING(spawnClaimability({ run: gh.run }));
+  const { claimable } = claimWorld({ edge: "CLOSED", prFiles: [] });
+  const { h, got } = SPAWNING(claimable());
   assert.deepEqual(got.sent, ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
   assert.equal(h.said("workspace create").length, 1);
 });
 
 test("#2324 (5): a Region that overlaps an open PR's files starts NO spawn, and the refusal names the B4 check", () => {
-  const gh = claimGh({ edge: "NONE" });
-  const { h, got } = SPAWNING(spawnClaimability({ run: gh.run }));
+  const { claimable } = claimWorld({ edge: "NONE" });
+  const { h, got } = SPAWNING(claimable());
 
   assert.deepEqual(h.said("workspace create"), []);
   assert.match(got.refused[0], /no spawn: #2131 would be refused at the claim by the file-overlap check \(B4\): overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.ts/);
 });
 
 test("#2324 (5) POSITIVE CONTROL: the same row against a PR touching OTHER files spawns", () => {
-  const gh = claimGh({ edge: "NONE", prFiles: ["docs/elsewhere.md"] });
-  const { got } = SPAWNING(spawnClaimability({ run: gh.run }));
+  const { claimable } = claimWorld({ edge: "NONE", prFiles: ["docs/elsewhere.md"] });
+  const { got } = SPAWNING(claimable());
   assert.deepEqual(got.sent, ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
 });
 
 test("#2324: the open-PR list is read ONCE per tick however many rows are asked, and never for a row with no Region", () => {
-  const gh = claimGh({ edge: "NONE", prFiles: ["docs/elsewhere.md"] });
-  const check = spawnClaimability({ run: gh.run });
+  const gh = claimWorld({ edge: "NONE", prFiles: ["docs/elsewhere.md"] });
+  const check = gh.claimable();
   assert.equal(check({ causeKey: "engineers/ready-row-unclaimed/2131" }), null);
   assert.equal(check({ causeKey: "engineers/ready-row-unclaimed/2132" }), null);
   // ONE READ PER DECLARED CODE REPOSITORY, and still not one per row: two rows asked, so a per-row read would make four (#2969 declared a second).
   const repositories = homeProjectDeclaration().code.length;
   assert.ok(repositories >= 2, "POSITIVE CONTROL: with one repository this assertion could not tell a per-row read from a per-tick one");
-  assert.equal(gh.calls.filter((c) => c === "pr list").length, repositories);
-  const none = claimGh({ edge: "NONE", region: "" });
-  assert.equal(spawnClaimability({ run: none.run })({ causeKey: "engineers/ready-row-unclaimed/2131" }), null);
-  assert.equal(none.calls.filter((c) => c === "pr list").length, 0, "no Region to compare, so the expensive read is skipped");
+  assert.equal(gh.openPrReads().length, repositories);
+  const none = claimWorld({ edge: "NONE", region: "" });
+  assert.equal(none.claimable()({ causeKey: "engineers/ready-row-unclaimed/2131" }), null);
+  assert.deepEqual(none.openPrReads(), [], "no Region to compare, so the expensive read is skipped");
 });
 
 // --- #3566, slice 9b: THE WAKE'S OPEN-PR READ GOES OUT TOGETHER, AND ONLY WHEN IT IS THE REAL `gh` ---
@@ -402,17 +411,37 @@ test("#3566 (9b): one refused repository still leaves the read INCONCLUSIVE with
   assert.ok(said.some((line) => /^wake: could not read the open pull requests -- offering #2131 a spawn anyway \(B4 fails open\)\.$/.test(line)));
 });
 
-test("#2324: a lookup that CANNOT ASK offers the row and SAYS SO, as the claim's own checks do", () => {
-  const gh = claimGh({ edge: "NONE", prFiles: null });
+// The decisions the two process cases above wrap, over the fake code host (A11-160, step 9): the stub gh only shows the reads are in flight together.
+test("#3566 (9b), over the fake: the overlap is named from the FIRST declared repository's list, however many repositories hold an overlapping pull request", () => {
+  const { world, claimable } = claimWorld({ edge: "NONE" });
+  const [first, second] = homeProjectDeclaration().code.map(({ repo }) => repo);
+  assert.equal(first, world.repo, "POSITIVE CONTROL: the world's own pull requests are the first repository's");
+  world.rules.otherRepos.set(second, new Map([[2301, { ...(world.pulls.get(2300) as NonNullable<ReturnType<typeof world.pulls.get>>), number: 2301 }]]));
+  assert.match(String(claimable()({ causeKey: "engineers/ready-row-unclaimed/2131" })), /overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.ts/);
+});
+
+test("#3566 (9b), over the fake: one refused repository still leaves the read INCONCLUSIVE with its own line, and the row is offered a spawn", () => {
+  const { world, claimable } = claimWorld({ edge: "NONE" });
+  const [, second] = homeProjectDeclaration().code.map(({ repo }) => repo);
+  world.rules.listRefused.set(second, new Error("gh: HTTP 502"));
   const said: string[] = [];
-  const check = spawnClaimability({ run: gh.run, warn: (line) => said.push(line) });
+  assert.equal(claimable({ warn: (line) => said.push(line) })({ causeKey: "engineers/ready-row-unclaimed/2131" }), null, "fail OPEN, as before");
+  assert.ok(said.some((line) => line.startsWith(`row-claim: could not read ${second}'s open pull requests`)), `the refused repository is named: ${said.join(" | ")}`);
+  assert.ok(said.some((line) => /^wake: could not read the open pull requests -- offering #2131 a spawn anyway \(B4 fails open\)\.$/.test(line)));
+});
+
+test("#2324: a lookup that CANNOT ASK offers the row and SAYS SO, as the claim's own checks do", () => {
+  const gh = claimWorld({ edge: "NONE", prFiles: null });
+  const said: string[] = [];
+  const check = gh.claimable({ warn: (line) => said.push(line) });
   assert.equal(check({ causeKey: "engineers/ready-row-unclaimed/2131" }), null, "fail OPEN: an outage must not stop spawning");
   assert.match(said.join("\n"), /could not read the open pull requests -- offering #2131 a spawn anyway \(B4 fails open\)/);
 });
 
 test("#2324: an order whose row cannot be read is refused rather than spawned for, and says why", () => {
-  const check = spawnClaimability({ run: () => { throw new Error("must not be called"); } });
-  assert.match(String(check({ causeKey: "engineers/ready-row-unclaimed/none" })), /cannot tell which row/);
+  const { claimable, world } = claimWorld();
+  assert.match(String(claimable()({ causeKey: "engineers/ready-row-unclaimed/none" })), /cannot tell which row/);
+  assert.deepEqual(world.calls, [], "nothing was asked of GitHub");
 });
 
 test("#2324: an order the standing path takes is never prechecked -- the precheck is the SPAWN's, not `route`'s", () => {

@@ -1,9 +1,10 @@
-// no-token: gh -- `gh` is never reached: a stub `gh` is put first on PATH and counts the calls it is asked.
+// no-token: gh -- `gh` is never reached: the in-process cases run on a code host whose runner counts the calls it is asked, and the two cases that start the gate's process put a stub `gh` first on PATH that only counts.
 /**
  * agent-org#1095: THE GATE ASKS AN IDENTICAL READ ONCE A TICK.
  *
  * `GATE OUT OF BUDGET` repeated every tick (30 in 3 h) with 567 to 745 `gh` calls, the same `pr list --state merged --limit 100` eight times in one tick. Pinned
- * through `defaultRun` itself, with a stub `gh` that counts its calls and answers with the count so a stale answer is visible:
+ * through `defaultRun` itself, over a code host whose runner (`gateRun`, `runTogether`) counts its calls and answers with the count so a stale answer is visible. The memo is the CORE's policy and the answers
+ * are never GitHub's (a counter), so no case here depends on a wire format; the two that start the gate's own process keep a stub `gh` on PATH, since a process can only be started over a real command:
  *   - the same argv twice is one call; a different argv, or the same argv aimed at another repository, is two;
  *   - a write between two identical reads makes two, and the control without the write makes one;
  *   - a refusal is never kept, and the memo is off in a process that is not the gate (a CLI importing the reads);
@@ -19,38 +20,64 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { capturingStderr, defaultRun, holdReadMemo, releaseReadMemo, inRepo, readMemoReading, readOnlyGh, runBatch } from "./work-gate/reads/read-memo-and-exit.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 
 let dir: string;
 let log: string;
-const saved = { PATH: process.env.PATH, GH_STUB_LOG: process.env.GH_STUB_LOG, GH_STUB_FAIL_FIRST: process.env.GH_STUB_FAIL_FIRST };
+const saved = { PATH: process.env.PATH, GH_STUB_LOG: process.env.GH_STUB_LOG };
 
-/** A stub `gh` that logs its argv and the repository it was aimed at, answers `answer-<n>` (its own call count), and refuses its first call when told to. */
+/** What the runner was asked, as `<repository>|<argv>` (the repository is the ambient one's when none is aimed), and what it refuses: its first call, or every call whose first word is `refusing`. */
+let asked: string[];
+let refusing: { first: boolean; head: string | null };
+
+const isRefused = (args: string[]): boolean => (refusing.first && asked.length <= 1) || args[0] === refusing.head;
+
+/** The code host the gate's executor asks for its `gh`: its runner answers `answer-<n>` (its own call count), as the stub script does for the process cases, and refuses what `refusing` names. */
+function hostWithCountingRunner() {
+  const host = createFakeCodeHost();
+  const answer = (args: string[], repo: string | undefined): string => {
+    asked.push(`${repo ?? ""}|${args.join(" ")}`);
+    if (isRefused(args)) throw new Error("refused");
+    return `answer-${asked.length}\n`;
+  };
+  host.rows!.gateRun = () => (args, repo) => answer(args, repo);
+  host.rows!.runTogether = ({ calls: sent }) => sent.map(({ args, repo }) => {
+    try { return { stdout: answer(args, repo) }; } catch { return { failed: true as const, stdout: "", stderr: "refused", status: 1 }; }
+  });
+  return host;
+}
+
+/** A stub `gh` for the cases that start the gate's process: it logs its argv and the repository it was aimed at, and answers `answer-<n>` (its own call count). */
 beforeEach(() => {
+  asked = [];
+  refusing = { first: false, head: null };
+  substituteCodeHost(hostWithCountingRunner());
   dir = mkdtempSync(join(tmpdir(), "read-memo-"));
   log = join(dir, "calls.log");
   writeFileSync(log, "");
   writeFileSync(join(dir, "gh"), `#!/bin/sh
 echo "$GH_REPO|$*" >> "$GH_STUB_LOG"
 n=$(wc -l < "$GH_STUB_LOG" | tr -d ' ')
-if [ -n "$GH_STUB_FAIL_FIRST" ] && [ "$n" -le 1 ]; then exit 1; fi
 echo "answer-$n"
 `);
   chmodSync(join(dir, "gh"), 0o755);
   process.env.PATH = `${dir}:${saved.PATH}`;
   process.env.GH_STUB_LOG = log;
-  delete process.env.GH_STUB_FAIL_FIRST;
   delete process.env.GH_REPO;
 });
 
 afterEach(() => {
   releaseReadMemo();
+  forgetActivation();
   process.env.PATH = saved.PATH;
   if (saved.GH_STUB_LOG === undefined) delete process.env.GH_STUB_LOG; else process.env.GH_STUB_LOG = saved.GH_STUB_LOG;
-  delete process.env.GH_STUB_FAIL_FIRST;
   rmSync(dir, { recursive: true, force: true });
 });
 
-const calls = () => readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
+const calls = () => asked;
+/** The calls the stub `gh` of a started process logged. */
+const processCalls = () => readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
 const LIST = ["pr", "list", "--state", "merged", "--limit", "100"];
 
 test("the same read argv twice makes one underlying call, and the second answer is the first", () => {
@@ -109,7 +136,7 @@ test("a write between two identical reads makes two calls (positive control: wit
 test("a write that is refused still forgets: it may have landed before it failed", () => {
   holdReadMemo();
   defaultRun(LIST);
-  writeFileSync(join(dir, "gh"), "#!/bin/sh\necho \"$*\" >> \"$GH_STUB_LOG\"\n[ \"$1\" = issue ] && exit 1\necho ok\n"); // refuses every `issue` call
+  refusing.head = "issue"; // refuses every `issue` call
   assert.throws(() => defaultRun(["issue", "edit", "7", "--add-label", "x"]));
   defaultRun(LIST);
   assert.equal(calls().length, 3);
@@ -117,7 +144,7 @@ test("a write that is refused still forgets: it may have landed before it failed
 
 test("a refusal is never kept: the read that failed is asked again", () => {
   holdReadMemo();
-  process.env.GH_STUB_FAIL_FIRST = "1";
+  refusing.first = true;
   assert.throws(() => defaultRun(LIST));
   assert.equal(defaultRun(LIST), "answer-2\n");
   assert.equal(defaultRun(LIST), "answer-2\n");
@@ -166,7 +193,7 @@ function importedAs(entry: string): { asked: number; said: string } {
   const exit = fileURLToPath(new URL("./work-gate/reads/read-memo-and-exit.ts", import.meta.url));
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", code, entry, reads, exit], { encoding: "utf8", env: process.env });
   assert.equal(result.status, 0, result.stderr);
-  return { asked: calls().length, said: result.stderr };
+  return { asked: processCalls().length, said: result.stderr };
 }
 
 test("the gate's process holds the memo from import and says what it answered as it ends", () => {

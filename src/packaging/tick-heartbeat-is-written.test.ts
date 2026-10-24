@@ -2,7 +2,8 @@
 //
 // Nothing here reaches the network or the real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.ts` and `wake.ts` are stubs,
 // with the PATH pointed at one directory holding a `gh` STUB that records what it was asked and whether the completion file already existed when it
-// was. ERASABLE TYPESCRIPT ONLY: node strips the types itself, so no enum, namespace or parameter property here.
+// was (a child process runs the GitHub plugin, so what it is asked is the plugin's own argument list; the unit-level cases below run on the fake code host's rows, A11-160 step 9).
+// ERASABLE TYPESCRIPT ONLY: node strips the types itself, so no enum, namespace or parameter property here.
 
 /**
  * a11ign/a11ign#3880: the gate's last COMPLETION is written to one GitHub object (the Actions variable `GATE_LAST_TICK`), so the control plane (#3851)
@@ -10,7 +11,7 @@
  * a11ign/a11ign#3896: the same completion is also written to one standing COMMENT, because the control plane's token has no scopes and GitHub refuses it the
  * variable; the comment's `updated_at` is what a tokenless reader takes.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -20,6 +21,11 @@ import { fileURLToPath } from "node:url";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { EXIT, HEARTBEAT_COMMENT_ID, HEARTBEAT_COMMENT_MARKER, HEARTBEAT_VARIABLE, heartbeatCommentBody, writeHeartbeat } from "../work-tick.ts";
 import { completionPath, readCompletion } from "../lib/tick-completion.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.ts");
@@ -142,12 +148,19 @@ test("#3896: two consecutive completions carry DIFFERENT bodies, each opening wi
   const bodies = [1_000, 1_001].map((at) => heartbeatCommentBody(at));
   assert.notEqual(bodies[0], bodies[1]);
   assert.ok(bodies.every((body) => body.startsWith(`${HEARTBEAT_COMMENT_MARKER}\n`)));
+  const host = createFakeCodeHost();
+  const standing = fakeRow(host.rowsWorld, 1);
+  standing.comments.push({ id: HEARTBEAT_COMMENT_ID, body: "the standing comment", createdAt: new Date(host.rowsWorld.now()).toISOString() });
+  host.rowsWorld.rows.set(1, standing);
+  substituteCodeHost(host);
   const sent: string[] = [];
   for (const at of [Date.now(), Date.now() + 1]) {
-    writeHeartbeat(at, (_file, args) => { if (args.includes(commentPath)) sent.push(args[args.length - 1]); });
+    writeHeartbeat(at, () => [{ repo: TRACKER }]);
+    sent.push(standing.comments[0]!.body);
   }
   assert.equal(sent.length, 2);
   assert.notEqual(sent[0], sent[1]);
+  assert.ok(sent.every((body) => body.startsWith(`${HEARTBEAT_COMMENT_MARKER}\n`)), "and the standing comment holds what was sent");
 });
 
 test("#3880: a completion record that could NOT be written leaves the heartbeat alone -- the off-host reader sees the stale value the file's reader sees", () => {
@@ -157,12 +170,16 @@ test("#3880: a completion record that could NOT be written leaves the heartbeat 
   assert.deepEqual(calls, []);
 });
 
-test("#3880: the unit-level `writeHeartbeat` never throws, whatever `gh` does", () => {
+test("#3880: the unit-level `writeHeartbeat` never throws, whatever the code host does", () => {
+  const host = createFakeCodeHost();
+  host.rowsWorld.failures.set("writeHeartbeatVariable", Object.assign(new Error("boom"), { stderr: "gh: nope" }));
+  host.rowsWorld.failures.set("editComment", Object.assign(new Error("boom"), { stderr: "gh: nope" }));
+  substituteCodeHost(host);
   const written: string[] = [];
   const realWrite = process.stderr.write;
   process.stderr.write = ((text: string) => { written.push(text); return true; }) as typeof process.stderr.write;
   try {
-    assert.doesNotThrow(() => writeHeartbeat(1, () => { throw Object.assign(new Error("boom"), { stderr: Buffer.from("gh: nope") }); }));
+    assert.doesNotThrow(() => writeHeartbeat(1, () => TRACKERS.map((repo) => ({ repo }))));
   } finally {
     process.stderr.write = realWrite;
   }
@@ -172,4 +189,21 @@ test("#3880: the unit-level `writeHeartbeat` never throws, whatever `gh` does", 
   TRACKERS.slice(1).forEach((repo, index) => {
     assert.match(written[2 + index], new RegExp(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: gh: nope`));
   });
+});
+
+test("#3880: a code host the tick cannot reach is a line on stderr like any refused write, never a throw (the heartbeat is the last thing a completed tick does)", () => {
+  substituteCodeHost(null);
+  const written: string[] = [];
+  const realWrite = process.stderr.write;
+  process.stderr.write = ((text: string) => { written.push(text); return true; }) as typeof process.stderr.write;
+  const saved = process.env.AGENT_ORG_HOST;
+  process.env.AGENT_ORG_HOST = "/nonexistent/host.json";
+  try {
+    assert.doesNotThrow(() => writeHeartbeat(1, () => [{ repo: TRACKER }]));
+  } finally {
+    process.stderr.write = realWrite;
+    if (saved === undefined) delete process.env.AGENT_ORG_HOST; else process.env.AGENT_ORG_HOST = saved;
+  }
+  assert.equal(written.length, 2, "the variable and the comment each say they were not written");
+  assert.match(written[0], /HEARTBEAT NOT WRITTEN to /);
 });

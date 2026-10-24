@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh`, `herdr` or `git` is run; the rows, comments, listing and clock are fixtures, and the only files written are a temporary directory's (a11ign/agent-org#747)
+// no-token: gh -- no `gh`, `herdr` or `git` is run; the rows, comments, listing and clock are fixtures (the tracker's claimed rows are the fake code host's world, A11-160 step 9), and the only files written are a temporary directory's (a11ign/agent-org#747)
 // agent-org#747: THE STALL NUDGE REACHES EVERY DECLARED TRACKER'S CLAIMED ROWS. The gate's stalled-claim pass read the HOME tracker's claimed rows only, so no holder of an
 // `a11ign/agent-org` row was ever nudged: 0 of its holders were in `claim-stalls.json` while all of them sat idle.
 //
@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { claimStallTick, claimStallsNow } from "./work-gate/claim-stall-tick.ts";
 import { claimStallsWithFacts, otherTrackerClaims } from "./work-gate/tick.ts";
 import { readClaimedRowComments } from "./work-gate/reads.ts";
@@ -19,7 +19,11 @@ import { claimRecordComment } from "./row-claim.ts";
 import { STALL_INTERVAL_MS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { STOPPED_CLAIMANT_MINUTES } from "./idle-claimant.ts";
 import { ledgerLine } from "./wake/session-endings.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-11T09:00:00Z");
@@ -217,14 +221,33 @@ const scopeOf = (key: string, repo: string | null, openRows: object[] | null): {
   scope: { key, code: null, tracker: repo === null ? null : { repo } },
   read: { prs: [], readyRows: [], promotableRows: [], chairmanBlocked: [], openRows, codeRepo: undefined, trackerRepo: repo ?? undefined } as never });
 
-test("`otherTrackerClaims` asks each tracker's own repository for the comments of its claimed rows, and only a tracker that holds one", () => {
-  const asked: { repo: string | undefined; args: string[] }[] = [];
-  // #5050: the claimed rows' comments are the by-label connection read, no longer `issue list --label in-progress`; anything else is not what this read asks.
-  const run = (args: string[], repo?: string) => {
-    asked.push({ repo, args });
-    if (readsRowsByLabel(args) === null) throw new Error(`unexpected call: ${args.join(" ")}`);
-    return connectionOf([{ number: 476, comments: [] }]);
+/**
+ * The fake code host in place, its world holding the claimed row 476 (with `comments` comments). The by-label read and the newest-comments read note what they were asked (the tracker's repository for the newest comments; the
+ * label and state for the list), and the by-label read makes ONE call to the `run` it is handed, as the executor does, so the repository the caller AIMED it at is seen: `aimedAt` is the repository of each such call.
+ */
+function claimedRowHost(comments = 0) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  const bodies = Array.from({ length: comments }, (_, i) => ({ id: world.nextCommentId++, body: `comment ${i}`, createdAt: "2026-10-10T00:00:00Z" }));
+  world.rows.set(476, fakeRow(world, 476, { labels: ["in-progress", "session:worker-agent-org-476", "started"], comments: bodies }));
+  const lists: { label: string; state: string }[] = [];
+  const newestFor: string[] = [];
+  const aimedAt: (string | undefined)[] = [];
+  const list = host.rows!.readRowsByLabel;
+  host.rows!.readRowsByLabel = (request) => {
+    lists.push({ label: request.label, state: request.state });
+    (request.run as (args: string[], repo?: string) => string)(["fake-rows-by-label"]);
+    return list(request);
   };
+  const newest = host.rows!.newestCommentsOf;
+  host.rows!.newestCommentsOf = (request) => { newestFor.push(request.repo); return newest(request); };
+  substituteCodeHost(host);
+  const run = (args: string[], repo?: string): string => { aimedAt.push(repo); void args; return "[]"; };
+  return { world, lists, newestFor, aimedAt, run };
+}
+
+test("`otherTrackerClaims` asks each tracker's own repository for the comments of its claimed rows, and only a tracker that holds one", () => {
+  const { run, aimedAt, lists } = claimedRowHost();
   const trackers = otherTrackerClaims([
     scopeOf("agent-org", "a11ign/agent-org", [rowOf(476, "worker-agent-org-476")]),
     scopeOf("quiet", "a11ign/quiet", [rowOf(1, "worker-1", { claim: false })]),
@@ -234,28 +257,18 @@ test("`otherTrackerClaims` asks each tracker's own repository for the comments o
   assert.deepEqual(trackers.map((t) => [t.key, t.repo, t.rows === null ? null : t.rows.length, t.claimedComments === null ? null : t.claimedComments.length]),
     [["agent-org", "a11ign/agent-org", 1, 1], ["quiet", "a11ign/quiet", 1, null], ["refused", "a11ign/refused", null, null]],
     "a scope with no tracker has no rows; a refused lane is `rows: null` and is never an empty one");
-  assert.deepEqual(asked.map((a) => a.repo), ["a11ign/agent-org"], "ONE read, of the one tracker with a claimed row, aimed at that tracker");
-  assert.deepEqual(readsRowsByLabel(asked[0].args), { label: "in-progress", state: "OPEN" }, "and it is the open `in-progress` rows it asked for");
+  assert.deepEqual(aimedAt, ["a11ign/agent-org"], "ONE read, of the one tracker with a claimed row, aimed at that tracker");
+  assert.deepEqual(lists, [{ label: "in-progress", state: "OPEN" }], "and it is the open `in-progress` rows it asked for");
 });
 
-test("the capped re-read of a second tracker's comments names THAT repository in its query (twin: the home one by default)", () => {
-  const cap = Array.from({ length: 100 }, (_, i) => ({ id: `c${i}`, body: "x", createdAt: "2026-10-10T00:00:00Z" }));
-  const queries: string[] = [];
-  const run = (args: string[]) => {
-    // #5050: both the list and the re-read are `api graphql` now, so the list is told apart by `readsRowsByLabel`
-    if (readsRowsByLabel(args) !== null) return connectionOf([{ number: 476, comments: cap }]);
-    if (args[0] === "api") {
-      queries.push(args.join(" "));
-      return JSON.stringify({ data: { repository: { r476: { number: 476, comments: { nodes: [{ id: "newest", body: "y", createdAt: "2026-10-11T00:00:00Z" }] } } } } });
-    }
-    throw new Error(`unexpected call: ${args.join(" ")}`);
-  };
+test("the capped re-read of a second tracker's comments names THAT repository (twin: the home one by default)", () => {
+  const { run, world, newestFor } = claimedRowHost(101);
   const rows = readClaimedRowComments(run, "a11ign/agent-org");
-  assert.equal(rows?.[0].comments[0].id, "newest", "the newest page replaced the capped one");
-  assert.match(queries[0], /owner=a11ign/);
-  assert.match(queries[0], /name=agent-org/);
+  assert.equal(rows?.[0].comments[0].id, world.rows.get(476)!.comments[1].id, "the newest page replaced the capped one (the first comment is not in it)");
+  assert.equal(rows?.[0].comments.length, 100);
+  assert.deepEqual(newestFor, ["a11ign/agent-org"]);
   readClaimedRowComments(run, "a11ign/a11ign");
-  assert.match(queries[1], /name=a11ign(\s|$)/, "twin: aimed at the home tracker it asks the home repository");
+  assert.deepEqual(newestFor, ["a11ign/agent-org", "a11ign/a11ign"], "twin: aimed at the home tracker it asks the home repository");
 });
 
 test("`claimStallsNow` hands the pass the trackers only once the home rows and pull requests are read, and asks for the trackers once", () => {
@@ -276,11 +289,8 @@ test("`claimStallsNow` hands the pass the trackers only once the home rows and p
 test("THE GATE'S OWN WIRING: `claimStallsWithFacts` evaluates the declared trackers' claimed rows from the lanes it was handed (twin: the same lanes without the tracker)", () => {
   const evaluated: string[] = [];
   const tick = ((input: { trackers?: TrackerClaims[] }) => { evaluated.push(...(input.trackers ?? []).map((t) => `${t.key}:${t.rows?.length}:${t.claimedComments?.length}`)); return []; }) as never;
-  const stubs = { tick, merged: () => [], elsewhere: () => ({ open: [], merged: [] }), log: () => undefined,
-    run: (args: string[]) => {
-      if (readsRowsByLabel(args) === null) throw new Error(`unexpected call: ${args.join(" ")}`);
-      return connectionOf([{ number: 476, comments: [] }]);
-    } };
+  const { run } = claimedRowHost();
+  const stubs = { tick, merged: () => [], elsewhere: () => ({ open: [], merged: [] }), log: () => undefined, run };
   const lanes = [scopeOf("agent-org", "a11ign/agent-org", [rowOf(476, "worker-agent-org-476")])] as never;
   claimStallsWithFacts([], [], [], lanes, stubs);
   assert.deepEqual(evaluated, ["agent-org:1:1"], "the tracker's rows and the comments of its claimed one reach the pass");

@@ -57,7 +57,7 @@ function fakeGh(prs: unknown[], pages: string | Error) {
   const run = (args: string[]) => {
     calls.push(args);
     // The open list is asked with the arguments the code host builds (`openPullListArgs`: the fake's are a stand-in line), and its answer is the executor's own read.
-    if (args[0] === "pr" || args[0] === "fake-open-pull-list") return JSON.stringify(prs);
+    if (args[0] === "fake-open-pull-list") return JSON.stringify(prs);
     throw new Error(`the fake code host acts on its own state: no gh is run for ${args.join(" ")}`);
   };
   return { run, calls, paged: () => asked };
@@ -70,7 +70,7 @@ function offeredAfterReading(prs: unknown[], pages: string | Error, region: stri
   const said: string[] = [];
   try {
     const gh = fakeGh(prs, pages);
-    const read = withPagedFiles(JSON.parse(gh.run(["pr"])), { run: gh.run, cachePath: join(dir, "cache.json"), log: (line) => said.push(line) });
+    const read = withPagedFiles(JSON.parse(gh.run(["fake-open-pull-list"])), { run: gh.run, cachePath: join(dir, "cache.json"), log: (line) => said.push(line) });
     return { ...partitionUnclaimed([row(3357, region)], comparablePrFiles(read), { rowBranches: null, openRows: [] }), said, gh };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -120,7 +120,7 @@ test("a pull request whose list is complete is read without a REST call or a cac
     const whole = { number: 7, headRefOid: HEAD, changedFiles: 2, files: [{ path: "a" }, { path: "b" }] };
     const gh = fakeGh([whole], new Error("must not be called"));
     const said: string[] = [];
-    const read = withPagedFiles(JSON.parse(gh.run(["pr"])), { run: gh.run, cachePath, log: (line) => said.push(line) });
+    const read = withPagedFiles(JSON.parse(gh.run(["fake-open-pull-list"])), { run: gh.run, cachePath, log: (line) => said.push(line) });
     assert.deepEqual(gh.paged(), []);
     assert.deepEqual(said, [], "the unreadable cache was never opened, so it was never complained of");
     assert.deepEqual(comparablePrFiles(read).map((p: { number: number }) => p.number), [7]);
@@ -136,7 +136,7 @@ test("the paged list is cached by number + head: one REST read per head, and a n
     const pages = allFiles(REGION_FILE).join("\n");
     const tick = (head: string) => {
       const gh = fakeGh([reportedPr(head)], pages);
-      withPagedFiles(JSON.parse(gh.run(["pr"])), { run: gh.run, cachePath, log: () => {} });
+      withPagedFiles(JSON.parse(gh.run(["fake-open-pull-list"])), { run: gh.run, cachePath, log: () => {} });
       return gh.paged().length;
     };
     assert.equal(tick(HEAD), 1, "first sight of the head pages once");
@@ -156,7 +156,7 @@ test("the cache keeps only the newest entries, so a version PR open for weeks do
     const heads = Array.from({ length: 25 }, (_, i) => String(i).padStart(40, "0"));
     for (const head of heads) {
       const gh = fakeGh([reportedPr(head)], pages);
-      withPagedFiles(JSON.parse(gh.run(["pr"])), { run: gh.run, cachePath, log: () => {} });
+      withPagedFiles(JSON.parse(gh.run(["fake-open-pull-list"])), { run: gh.run, cachePath, log: () => {} });
     }
     const keys = Object.keys(JSON.parse(readFileSync(cachePath, "utf8")));
     assert.equal(keys.length, 20);
@@ -176,7 +176,7 @@ test("an unreadable cache and an unwritable cache path are said aloud and never 
     const said: string[] = [];
     for (const cachePath of [corrupt, join(blocker, "nested", "cache.json")]) {
       const gh = fakeGh([reportedPr()], allFiles(REGION_FILE).join("\n"));
-      const read = withPagedFiles(JSON.parse(gh.run(["pr"])), { run: gh.run, cachePath, log: (line) => said.push(line) });
+      const read = withPagedFiles(JSON.parse(gh.run(["fake-open-pull-list"])), { run: gh.run, cachePath, log: (line) => said.push(line) });
       assert.deepEqual(comparablePrFiles(read).map((p: { number: number }) => p.number), [VERSION_PR], "the pull request is still compared");
     }
     assert.match(said.join(""), /is unreadable/);

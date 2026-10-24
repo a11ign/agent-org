@@ -21,6 +21,7 @@ import { homeProjectDeclaration } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { readClaimedRows } from "./ticket-port/rows-by-label.ts";
+import { rows } from "./plugins/rows.ts";
 import { claimedRegionOverlapReason, claimedRegionsOf, declaredClosedRows } from "./row-claim/file-overlap-rule.ts";
 import { declaredRegionFiles } from "./region-paths.ts";
 
@@ -99,7 +100,7 @@ const reportedSince = (comments: RowComment[], claimedAt: number, marker: string
 
 /** The claim record's time and the reports already made, from the row's comments. Throws when the row has no claim record: a window with no start cannot be judged. */
 function claimOf(row: number, { run, repo }: Required<Pick<SweepReads, "run" | "repo">>): { claimedAt: number; reported: SweepRow["reported"] } {
-  const comments: RowComment[] = JSON.parse(run(["issue", "view", String(row), "--repo", repo, "--json", "comments"])).comments ?? [];
+  const comments: RowComment[] = rows().commentsOfRowIn({ repo, number: row, run });
   const record = claimRecordOf(comments);
   if (record === null) throw new Error(`#${row} is claimed but carries no claim record`);
   return { claimedAt: record.at, reported: { stalled: reportedSince(comments, record.at, STALLED_MARKER), overrun: reportedSince(comments, record.at, OVERRUN_MARKER) } };
@@ -176,7 +177,7 @@ function attempt(what: string, write: () => void, report: (line: string) => void
  * failure ledger, a count that is no class and no repeat (agent-org#1314). A report is a ROW WRITE, not an order -- nobody is woken. The marker comment is what keeps it to one however many claims ask.
  */
 export function reportSweepWindows(sweeps: SweepRow[], { now, repo = REPO, run = gh, io = {} }: { now: number; repo?: string; run?: (args: string[]) => string; io?: ReportIo }): void {
-  const { comment = (row, body) => void run(["issue", "comment", String(row), "--repo", repo, "--body", body]), record = recordFailures,
+  const { comment = (row, body) => void rows().commentOnIssue({ repo, issue: row, body, run }), record = recordFailures,
     logPath = () => stateEntryPath(FAILURE_LEDGER_FILE), report = (line) => process.stderr.write(`${line}\n`) } = io;
   for (const sweep of sweeps) {
     const state = stateOf(sweep, now);

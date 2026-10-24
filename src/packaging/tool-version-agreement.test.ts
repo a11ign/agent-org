@@ -13,6 +13,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 // `org-health.ts` resolves the project it serves at import, so the host file is set FIRST and the tool imported AFTER it (the recorded fixture project `org-health.test.ts` explains, #3233).
 const SCRATCH = mkdtempSync(join(tmpdir(), "tool-version-agreement-"));
@@ -191,39 +193,76 @@ test("the worktree reader reads THROUGH node_modules, tells none from unreadable
 });
 
 test("the CI reader: the lockfile's version while it is pinned, the resolver line after, UNKNOWN for a run that names neither, and a log is read once", () => {
-  const run = JSON.stringify({ workflow_runs: [{ id: 77, head_sha: "a".repeat(40), created_at: "2026-10-04T10:00:00Z" }] });
-  const commit = "b".repeat(40);
-  const lock = `  agent-org@https://codeload.github.com/a11ign/agent-org/tar.gz/${commit}:\n    resolution: {}`;
-  assert.equal(lockedCommit(lock), commit);
-  let logReads = 0;
-  const gh = (args: string[]) => {
-    if (args[0] === "api") return run;
-    logReads += 1;
-    return "setup\nagent-org resolved v0.22.0\ndone";
-  };
-  const where = { checkout: "/c", tool: "/t", repo: "a11ign/a11ign" };
-  const pinned = readLastCiRun(where, { gh, git: () => lock, toolGit: () => JSON.stringify({ version: "0.7.8" }) }) as { version: string };
-  assert.equal(pinned.version, "0.7.8");
-  assert.equal(logReads, 0, "the lockfile answered, so no log was downloaded");
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  try {
+    const { plumbing } = host.rowsWorld.tail;
+    const logReads = () => host.rowsWorld.calls.filter((call) => call.startsWith("ciRunLogOf")).length;
+    plumbing.ciRuns.set("a11ign/a11ign", { id: 77, sha: "a".repeat(40), createdAt: "2026-10-04T10:00:00Z", event: "merge_group" });
+    plumbing.runLogs.set(77, "setup\nagent-org resolved v0.22.0\ndone");
+    const commit = "b".repeat(40);
+    const lock = `  agent-org@https://codeload.github.com/a11ign/agent-org/tar.gz/${commit}:\n    resolution: {}`;
+    assert.equal(lockedCommit(lock), commit);
+    const where = { checkout: "/c", tool: "/t", repo: "a11ign/a11ign" };
+    const pinned = readLastCiRun(where, { git: () => lock, toolGit: () => JSON.stringify({ version: "0.7.8" }) }) as { version: string; runner: string };
+    assert.equal(pinned.version, "0.7.8");
+    assert.match(pinned.runner, /#77, aaaaaaa, 2026-10-04\)/, "the run is named by its event, id, short commit and day");
+    assert.equal(logReads(), 0, "the lockfile answered, so no log was downloaded");
 
-  const memoPath = join(SCRATCH, "memo.json");
-  const memo = memoFile(memoPath);
-  const noLock = () => { throw new Error("path 'pnpm-lock.yaml' does not exist"); };
-  for (let i = 0; i < 3; i += 1) assert.equal((readLastCiRun(where, { gh, git: noLock, toolGit: noLock, memo }) as { version: string }).version, "v0.22.0");
-  assert.equal(logReads, 1, "a finished run's log is read once");
-  assert.match(readFileSync(memoPath, "utf8"), /"77":"v0\.22\.0"/);
+    const memoPath = join(SCRATCH, "memo.json");
+    const memo = memoFile(memoPath);
+    const noLock = () => { throw new Error("path 'pnpm-lock.yaml' does not exist"); };
+    for (let i = 0; i < 3; i += 1) assert.equal((readLastCiRun(where, { git: noLock, toolGit: noLock, memo }) as { version: string }).version, "v0.22.0");
+    assert.equal(logReads(), 1, "a finished run's log is read once");
+    assert.match(readFileSync(memoPath, "utf8"), /"77":"v0\.22\.0"/);
 
-  const silent = (args: string[]) => (args[0] === "api" ? run : "no resolver here");
-  assert.equal((readLastCiRun(where, { gh: silent, git: noLock, toolGit: noLock }) as { version: string | null }).version, null, "the run names no version");
-  const expired = (args: string[]) => {
-    if (args[0] === "api") return run;
-    throw Object.assign(new Error("Command failed"), { stderr: "failed to get run log: log not found" });
-  };
-  assert.equal((readLastCiRun(where, { gh: expired, git: noLock, toolGit: noLock }) as { version: string | null }).version, null, "an expired log is an answer about the run");
-  const refused = (args: string[]) => {
-    if (args[0] === "api") return run;
-    throw new Error("HTTP 403 rate limit");
-  };
-  assert.ok((readLastCiRun(where, { gh: refused, git: noLock, toolGit: noLock }) as { unreadable?: string }).unreadable, "any other refusal is UNREAD and keeps the run's name");
-  assert.ok(RESOLVER_LINE.test("x agent-org resolved v1.2.3"));
+    plumbing.runLogs.set(77, "no resolver here");
+    assert.equal((readLastCiRun(where, { git: noLock, toolGit: noLock }) as { version: string | null }).version, null, "the run names no version");
+    plumbing.runLogs.set(77, "");
+    assert.equal((readLastCiRun(where, { git: noLock, toolGit: noLock }) as { version: string | null }).version, null, "an expired log is an answer about the run");
+    plumbing.runLogs.set(77, new Error("HTTP 403 rate limit"));
+    const refused = readLastCiRun(where, { git: noLock, toolGit: noLock }) as { unreadable?: string; runner: string };
+    assert.match(refused.unreadable ?? "", /HTTP 403 rate limit/, "any other refusal is UNREAD and says why");
+    assert.match(refused.runner, /#77/, "and keeps the run's name");
+    assert.ok(RESOLVER_LINE.test("x agent-org resolved v1.2.3"));
+  } finally {
+    forgetActivation();
+  }
+});
+
+test("the release's date: the code host's, else null when it carries none, and a refusal is no date", () => {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  try {
+    const published = Date.parse("2026-10-04T20:15:29Z");
+    host.rowsWorld.tail.plumbing.releases.set("o/r@v0.22.0", published);
+    const noLocal = (args: string[]) => (args[0] === "ls-remote" ? "sha\trefs/tags/v0.22.0\n" : (() => { throw new Error("no such ref"); })());
+    assert.deepEqual(lib.readRemoteTags({ tool: "/t" }, { git: noLocal, repo: "o/r" }), { tags: ["v0.22.0"], newestCutAt: published }, "the checkout cannot say, so the release is the second source");
+    host.rowsWorld.tail.plumbing.releases.set("o/r@v0.22.0", null);
+    assert.equal(lib.readRemoteTags({ tool: "/t" }, { git: noLocal, repo: "o/r" }).newestCutAt, null, "a release with no date parses to none");
+    host.rowsWorld.tail.plumbing.releases.set("o/r@v0.22.0", new Error("HTTP 404"));
+    assert.equal(lib.readRemoteTags({ tool: "/t" }, { git: noLocal, repo: "o/r" }).newestCutAt, null, "and a refusal is none");
+    const local = (args: string[]) => (args[0] === "ls-remote" ? "sha\trefs/tags/v0.22.0\n" : "1759608926\n");
+    assert.equal(lib.readRemoteTags({ tool: "/t" }, { git: local, repo: "o/r" }).newestCutAt, 1759608926000, "the checkout's own date wins and the release is not asked");
+  } finally {
+    forgetActivation();
+  }
+});
+
+test("A11-160: the gh this module reads GitHub through is the code host's runner, asked with the 30 s cut, the 64 MiB buffer and the role's environment it has always had, and its stderr kept to the failure", () => {
+  const host = createFakeCodeHost();
+  const asked: unknown[] = [];
+  const answers: string[][] = [];
+  substituteCodeHost({ ...host, rows: { ...host.rows!, runnerWith: (request) => { asked.push(request); return (args) => { answers.push([...args]); return "out"; }; } } });
+  try {
+    assert.equal(lib.ghWith({ AGENT_ORG_GH_ROLE: "reviewer" })(["api", "x"]), "out");
+    assert.equal(lib.defaultGh(["run", "view", "1"]), "out");
+    assert.deepEqual(asked, [
+      { env: { AGENT_ORG_GH_ROLE: "reviewer" }, timeoutMs: 30_000, maxBuffer: 64 * 1024 * 1024, echo: false },
+      { env: {}, timeoutMs: 30_000, maxBuffer: 64 * 1024 * 1024, echo: false },
+    ], "the policy this module asks the code host for: the cut, the buffer, the overlay, and nothing let through to the terminal");
+    assert.deepEqual(answers, [["api", "x"], ["run", "view", "1"]], "and the arguments are the caller's, whole");
+  } finally {
+    forgetActivation();
+  }
 });

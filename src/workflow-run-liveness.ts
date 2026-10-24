@@ -42,6 +42,7 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { gh, lookup, lookupRequiredContexts, lookupCheckRuns, checkReasons } from "./merge-guard.ts";
+import { rows } from "./plugins/rows.ts";
 
 export const EXIT = { TESTED: 0, NOT_TESTED: 1, CANNOT_TELL: 2 };
 
@@ -103,8 +104,7 @@ export function commitLiveness({ sha, pulls, required, runs }: {
 
 /** Every pull request GitHub associates with a commit, or `null` if the lookup failed. */
 function lookupAssociatedPulls(sha: string) {
-  return lookup(() => JSON.parse(gh(["api", `repos/${REPO}/commits/${sha}/pulls`]))
-    .map((p: { number: number; head: { sha: string; }; }) => ({ number: p.number, headRefOid: p.head.sha })));
+  return lookup(() => rows().commitAssociatedPullsOf({ repo: REPO, sha, run: gh }));
 }
 
 function facts(sha: string) {

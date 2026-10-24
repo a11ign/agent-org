@@ -1,4 +1,4 @@
-// no-token: gh -- the wrapper is RUN here against a stub `gh-real` the test writes (`A11Y_GH_REAL`), and `defaultGh` against a stub `gh` first on PATH;
+// no-token: gh -- the wrapper is RUN here against a stub `gh-real` the test writes (`A11Y_GH_REAL`), and `defaultGh` against the fake code host;
 // no real `gh` starts and nothing reaches the network or any account's config.
 //
 // #4397: `plugins/github/wrapper/gh` REFUSES `gh pr create` unless `A11Y_PR_OPEN` is set, and `pr:open` sets it on its own `gh` child. A raw create skips the
@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PR_OPEN_ENV } from "./pr-open.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
 const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
@@ -82,22 +84,25 @@ test("#4397: `pr list`, `pr view`, `pr edit` and `pr merge` are untouched withou
   }
 });
 
-test("#4397: `defaultGh` (pr:open's own child) carries A11Y_PR_OPEN=1, and its parent's environment does not", async () => {
+test("#4397: `defaultGh` (pr:open's own child) asks the code host for the one variable the wrapper reads, on the child alone", async () => {
   const { defaultGh } = await import("./pr-open.ts");
-  const root = mkdtempSync(join(tmpdir(), "pr-open-only-creates-4397-bin-"));
-  const seen = join(root, "seen");
-  writeFileSync(join(root, "gh"), ["#!/bin/sh", `echo "\${${PR_OPEN_ENV}:-unset}" > "${seen}"`, ""].join("\n"), { mode: 0o755 });
-  const { PATH, [PR_OPEN_ENV]: before } = process.env;
+  // A11-160, step 9: the process is the code host's. This case holds what pr:open ASKS of it (the variable, set for the child and not for this process, so the row's Acceptance command never
+  // inherits it); the child that carries it and the wrapper that reads it are `plugins/github/rows/runners-inherit.test.ts`.
+  const asked: { request: any; args: readonly string[] }[] = [];
+  const base = createFakeCodeHost();
+  substituteCodeHost({ ...base, rows: { ...base.rows!, runnerWith: (request: any) => (args: readonly string[]) => { asked.push({ request, args }); return ""; } } });
+  const { [PR_OPEN_ENV]: before } = process.env;
   try {
     delete process.env[PR_OPEN_ENV];
-    process.env.PATH = `${root}:${PATH ?? ""}`;
     defaultGh(["pr", "create"]);
-    assert.equal(readFileSync(seen, "utf8").trim(), "1");
+    assert.equal(asked.length, 1);
+    assert.deepEqual(asked[0].args, ["pr", "create"]);
+    assert.equal(asked[0].request.env[PR_OPEN_ENV], "1");
+    assert.equal(asked[0].request.inherit, true);
     assert.equal(process.env[PR_OPEN_ENV], undefined, "the variable is on the child only, so the row's Acceptance command never inherits it");
   } finally {
-    process.env.PATH = PATH;
     if (before !== undefined) process.env[PR_OPEN_ENV] = before;
-    rmSync(root, { recursive: true, force: true });
+    forgetActivation();
   }
 });
 

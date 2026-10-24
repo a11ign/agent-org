@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#2618)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; the rows of a tracker are read from the fake code host's world (one world per tracker repository), the gate's executor is handed a `run` that records its argument lists and answers the open pull request list, and every per-tick read is a stub, so nothing is spawned (#2618)
 /**
  * #2618 (child 3c of #69): THE GATE AND WAKE ENUMERATE EVERY REPOSITORY THE PROJECT DECLARES, AND A SEAT NAME CANNOT COLLIDE ACROSS TWO.
  *
@@ -14,7 +14,7 @@
  * made over a NON-EMPTY population: the recorded fixture, the ledger sample, the two-scope order lists and the second tracker's ready rows each
  * carry an explicit `length > 0` before anything is compared to them, so a gate that emitted nothing cannot equal an empty fixture.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/tick-decisions-and-flags.ts";
@@ -29,7 +29,6 @@ import { reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewChecko
 import { rowOfOrder } from "../wake/release-line-and-seats.ts";
 import { isPerRowInstance } from "../wake/fyi-delivery-and-limits.ts";
 import { codeRepositoryOf } from "../wake/exit-and-limits.ts";
-import { connectionOf, readsRowsByLabel, type FakeRow } from "./rows-by-label-fixtures.ts";
 import { parityOwner, reviewerSeat, reviewerInstance, reviewerInstanceNumber, seatName, subjectRef, subjectMention }
   from "../review-attribution.ts";
 
@@ -40,6 +39,10 @@ const HEAD = "abc12345deadbeefcafe000011112222";
 const DECLARED = { exact: ["a11ign-ai-workers"], pattern: [] };
 const pr = (number: number, extra: Record<string, unknown> = {}) => ({ number, isDraft: true, headRefOid: HEAD, statusCheckRollup: GREEN, isCrossRepository: false,
   author: { login: "a11ign-ai-workers" }, comments: [], labels: [], ...extra });
+/** A body a claim accepts (a Region, an Acceptance and an Open-check), so a Ready row is OFFERED and not reported incomplete. */
+const COMPLETE_BODY = "## Region\n\n```\nsrc/x.ts\n```\n\n## Acceptance\n\n```bash\ntrue\n```\n\n## Open-check\n\n```\ntrue\n```\n";
+/** A row of a tracker's world, as `fakeWorlds` is told it. */
+const rowOf = (number: number, title = `row ${number}`) => ({ number, title });
 const row = (number: number, extra: Record<string, unknown> = {}) => ({ number, title: `row ${number}`, labels: [{ name: "ready" }], ...extra });
 type Order = { session: string, cause: string, subject: string, discriminator: string, causeKey: string, prompt: string, title?: string,
   action?: Record<string, unknown> };
@@ -53,24 +56,37 @@ const reads = (text: string) => (() => text) as never;
 const PRIMARY_DECLARATION = { tracker: [{ key: "", repo: "acme/main" }], code: [{ key: "", repo: "acme/main" }] };
 const OTHER_DECLARATION = { tracker: [{ key: "other", repo: "acme/other" }], code: [{ key: "other", repo: "acme/other" }] };
 
-/** A `gh` that answers per repository -- the second argument is the repository the read is AIMED at (`undefined` for the primary's own). */
-function fakeGh(byRepo: Record<string, { prs?: unknown[] | Error, ready?: unknown[], open?: unknown[] }>) {
+afterEach(() => forgetActivation());
+
+/**
+ * The world of each repository: the rows a tracker holds (Ready ones, and the open list's) in a fake code host of its own, and the open pull requests the gate's executor is told when it reads that repository's
+ * list. A scope reads the tracker it is of, so `activate(scope)` installs the host of THAT tracker's repository before the lanes are read (the Ready rows are the world's, whatever the aim of the `run`);
+ * the open pull request list is still the executor's own read: the code host builds its arguments (a stand-in line in the fake) and `run` answers the repository it was AIMED at, which `calls` records.
+ */
+function fakeWorlds(byRepo: Record<string, { prs?: unknown[] | Error, ready?: { number: number; title: string }[], open?: { number: number; title: string }[] }>) {
   const calls: { args: string[], repo: string | undefined }[] = [];
+  const hosts = new Map<string, ReturnType<typeof createFakeCodeHost>>();
+  for (const [repo, answers] of Object.entries(byRepo)) {
+    const host = createFakeCodeHost();
+    host.rowsWorld.repo = repo;
+    for (const [labels, list] of [[["ready"], answers.ready ?? []], [[], answers.open ?? []]] as const) {
+      for (const { number, title } of list) {
+        const held = host.rowsWorld.rows.get(number);
+        if (held !== undefined) { held.labels = [...new Set([...held.labels, ...labels])]; continue; }
+        host.rowsWorld.rows.set(number, { number, title, body: COMPLETE_BODY, state: "OPEN", labels: [...labels], createdAt: "2026-10-01T00:00:00Z", closedAt: null, comments: [], blockedBy: [], onBoard: false, boardStatus: null });
+      }
+    }
+    hosts.set(repo, host);
+  }
   const run = (args: string[], repo?: string) => {
     calls.push({ args, repo });
-    const answers = byRepo[repo ?? "acme/main"];
-    const pick = (value: unknown[] | Error | undefined) => {
-      if (value instanceof Error) throw value;
-      return JSON.stringify(value ?? []);
-    };
-    if (args[0] === "pr") return pick(answers.prs);
-    // #5050: a label's rows are a connection read over `gh api graphql`, not `issue list --label` (which `gh` sent as a SEARCH). Only `ready` has rows here; any other label is empty.
-    const byLabel = readsRowsByLabel(args);
-    if (byLabel !== null) return connectionOf(byLabel.label === "ready" ? (answers.ready ?? []) as FakeRow[] : []);
-    if (args.includes("--limit") && args[args.indexOf("--limit") + 1] === "500") return pick(answers.open);
-    return "[]";
+    const value = byRepo[repo ?? "acme/main"].prs;
+    if (args[0] !== "fake-open-pull-list") return "[]";
+    if (value instanceof Error) throw value;
+    return JSON.stringify(value ?? []);
   };
-  return { run, calls };
+  const activate = (scope: ReturnType<typeof scopesOf>[number]) => substituteCodeHost(hosts.get(scope.tracker?.repo ?? scope.code?.repo ?? "acme/main")!);
+  return { run, calls, activate };
 }
 
 /** A fake of the per-tick reads, deliberately partial: the real ones return more fields than these tests read. */
@@ -79,7 +95,8 @@ const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip:
   tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) } as unknown as Readings;
 
 /** One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `decide` (the per-tick extras stubbed). */
-function ordersOf(scope: ReturnType<typeof scopesOf>[number], gh: ReturnType<typeof fakeGh>) {
+function ordersOf(scope: ReturnType<typeof scopesOf>[number], gh: ReturnType<typeof fakeWorlds>) {
+  gh.activate(scope);
   const lanes = readLanes(scope, gh.run);
   return { lanes, tick: scopeTick(scope, { drain: false }, lanes, NO_READINGS, DECLARED) };
 }
@@ -103,7 +120,7 @@ test("the scopes: one per KEY, the primary's (empty) key FIRST, and a key declar
 const SAME_NUMBER = 7;
 
 test("DONE-WHEN 1: with two projects, one open pull request in each with the SAME number yields two seats, two cause keys and two ledger keys", () => {
-  const gh = fakeGh({ "acme/main": { prs: [pr(SAME_NUMBER)] }, "acme/other": { prs: [pr(SAME_NUMBER)] } });
+  const gh = fakeWorlds({ "acme/main": { prs: [pr(SAME_NUMBER)] }, "acme/other": { prs: [pr(SAME_NUMBER)] } });
   const [primary, other] = scopesOf([PRIMARY_DECLARATION, OTHER_DECLARATION]);
   const mine = asOrders(ordersOf(primary, gh).tick.orders);
   const theirs = asOrders(ordersOf(other, gh).tick.orders);
@@ -314,18 +331,22 @@ test("DONE-WHEN 4: with one project the orders EQUAL the recorded fixture of tod
   // The primary path adds nothing to what it returns: no `repoKey`, no `repo`, no repository note in any prompt.
   for (const o of asOrders(decide(BUSY_INPUT))) assert.ok(!o.prompt.includes("REPOSITORY `"), `${o.causeKey} says nothing of a repository`);
   // AND THE PRIMARY'S ENUMERATION IS UNTOUCHED: a one-project `readLanes` returns the lists exactly as `gh` did, with no tag on any member.
-  const gh = fakeGh({ "acme/main": { prs: [pr(101)], ready: [row(201)], open: [row(201)] } });
-  const lanes = readLanes(scopesOf([PRIMARY_DECLARATION])[0], gh.run);
+  const gh = fakeWorlds({ "acme/main": { prs: [pr(101)], ready: [rowOf(201)], open: [rowOf(201)] } });
+  const [primary] = scopesOf([PRIMARY_DECLARATION]);
+  gh.activate(primary);
+  const lanes = readLanes(primary, gh.run);
   assert.deepEqual(lanes.prs, [pr(101)]);
-  // #5050: the connection carries the row's `blockedBy` edges, which `gh issue list --json ...,blockedBy` gave as `{ nodes }` too; the row is otherwise as it was written.
-  assert.deepEqual(lanes.readyRows, [{ ...row(201), blockedBy: { nodes: [] } }]);
-  assert.ok(gh.calls.length >= 5 && gh.calls.every((c) => c.repo === undefined), "and every call is AIMED at nothing: the checkout's own repository, as before");
+  // the rows are the tracker's own, whole and in order, and not one member carries a key or a repository
+  assert.deepEqual(lanes.readyRows?.map((r: { number: number }) => r.number), [201], "POSITIVE CONTROL: the Ready lane holds the row");
+  assert.deepEqual(lanes.openRows?.map((r: { number: number }) => r.number), [201]);
+  for (const member of [...(lanes.prs ?? []), ...(lanes.readyRows ?? []), ...(lanes.openRows ?? [])]) assert.ok(!("repoKey" in member) && !("repo" in member), "no tag on any member");
+  assert.ok(gh.calls.length >= 1 && gh.calls.every((c) => c.repo === undefined), "and every call the executor made is AIMED at nothing: the checkout's own repository, as before");
 });
 
 // --- THE SECOND TRACKER REACHES THE QUEUE -----------------------------------------------------------------------------------------
 
 test("a row in the SECOND tracker reaches the ready queue and is offered -- under its own key, beside the primary's row of the same number", () => {
-  const gh = fakeGh({ "acme/main": { ready: [row(SAME_NUMBER)] }, "acme/other": { ready: [row(SAME_NUMBER, { title: "the other's row" })] } });
+  const gh = fakeWorlds({ "acme/main": { ready: [rowOf(SAME_NUMBER)] }, "acme/other": { ready: [rowOf(SAME_NUMBER, "the other's row")] } });
   const [primary, other] = scopesOf([PRIMARY_DECLARATION, OTHER_DECLARATION]);
   const mine = asOrders(ordersOf(primary, gh).tick.orders).filter((o) => o.cause === "ready-row-unclaimed");
   const theirs = asOrders(ordersOf(other, gh).tick.orders).filter((o) => o.cause === "ready-row-unclaimed");
@@ -336,19 +357,21 @@ test("a row in the SECOND tracker reaches the ready queue and is offered -- unde
   assert.equal(theirs[0].discriminator, "other#7");
   assert.match(theirs[0].prompt, /^Ready row other#7 is unclaimed: the other's row\./);
   assert.equal(ordersOf(other, gh).lanes.readyRows?.[0].repoKey, "other", "read from THE OTHER TRACKER's repository, not the primary's");
-  assert.ok(gh.calls.some((c) => c.repo === "acme/other" && readsRowsByLabel(c.args)?.label === "ready"), "the call was aimed at the second tracker's repository");
+  ordersOf(other, gh);
+  assert.ok(gh.calls.some((c) => c.repo === "acme/other"), "the executor's call was aimed at the second tracker's repository");
   // NEGATIVE: wake's row parser does NOT read the keyed key as the primary's row 7 -- claiming the wrong row would be worse than none.
   assert.equal(rowOfOrder({ causeKey: mine[0].causeKey }), 7);
   assert.equal(rowOfOrder({ causeKey: theirs[0].causeKey }), null);
 });
 
 test("the per-tick tracker readings are TAGGED by the scope, so an epic or a closed row that carried no key still lands under the other's key", () => {
-  const gh = fakeGh({ "acme/other": { ready: [] } });
+  const gh = fakeWorlds({ "acme/other": { ready: [] } });
   const other = scopesOf([PRIMARY_DECLARATION, OTHER_DECLARATION])[1];
   const untagged = { code: NO_READINGS.code,
     tracker: () => ({ claimedComments: [], closings: null,
       epics: [{ number: 601, title: "an epic", subIssuesSummary: { total: 0, completed: 0 } }],
       closedRows: [{ number: 302, title: "closed", state: "CLOSED", labels: [{ name: "answer:ceo" }] }] }) } as unknown as Readings;
+  gh.activate(other);
   const keys = asOrders(scopeTick(other, { drain: false }, readLanes(other, gh.run), untagged).orders).map((o) => o.causeKey);
   assert.ok(keys.includes("product-manager/epic-unfiled/epic-other#601"), `POSITIVE CONTROL: the epic order exists, keyed (${keys.join(", ")})`);
   assert.ok(keys.includes("ceo/answer-owed/row-other#302"), "and so does the closed row's answer-owed order");
@@ -369,7 +392,7 @@ test("a row in another tracker is offered WITHOUT a command that would claim the
 
 test("a failed read of one repository is REPORTED and does NOT drop the other's orders", () => {
   const refusal = new Error("HTTP 403: rate limit");
-  const gh = fakeGh({ "acme/main": { prs: [pr(SAME_NUMBER)] }, "acme/other": { prs: refusal, ready: [row(9)] } });
+  const gh = fakeWorlds({ "acme/main": { prs: [pr(SAME_NUMBER)] }, "acme/other": { prs: refusal, ready: [rowOf(9)] } });
   const [primary, other] = scopesOf([PRIMARY_DECLARATION, OTHER_DECLARATION]);
   const mine = ordersOf(primary, gh);
   const theirs = ordersOf(other, gh);

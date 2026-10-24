@@ -10,7 +10,7 @@
  * project's reasons, which the project's own tests pin. The stamp lives where git puts a per-worktree file, and the author's tree is a LINKED
  * worktree, so "the gate reads a stamp it did not write, in a tree it is not in" is the case the gate meets.
  */
-import { afterEach, test } from "node:test";
+import { afterEach, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -25,6 +25,8 @@ import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { VERIFY_STATE, readVerifyStamp, verifyDeclaration, withVerifyStamps, worktreeAtHead } from "../verify-stamp.ts";
 
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
 afterEach(() => forgetActivation());
 
 const STEPS = ["changed", "ts", "agentOrg"];
@@ -40,6 +42,7 @@ const VERIFY_MJS = `
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const file = process.argv.find((arg) => arg.startsWith("--draft-body="))?.slice("--draft-body=".length);
 const body = file ? readFileSync(file, "utf8") : null;

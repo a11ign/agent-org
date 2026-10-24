@@ -2,7 +2,10 @@
 // no-token: none -- the token is a fixture string, the chat ids are made up, and no process is started
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { createFakeProvider } from "./messaging/fake-provider.ts";
 import { createLedger } from "./messaging/ledger.ts";
 import { AUDIENCE } from "./messaging/provider-contract.ts";
@@ -16,8 +19,9 @@ import {
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const NOW = Date.parse("2026-10-10T08:00:00Z");
-const REPO = "a11ign/a11ign";
-const COMMENT_URL = `https://github.com/${REPO}/issues/${TRACKER_EPIC}#issuecomment-6100000001`;
+const DAYS_MARKER = "<!-- decision-confidence-post: 2026-10-10 -->";
+
+afterEach(() => forgetActivation());
 
 const scratch = tmpDirForFile("decision-confidence-post-");
 let nextLedger = 0;
@@ -45,14 +49,18 @@ function chats({ channel }: { channel: boolean }) {
 const messenger = (provider: any, config?: Extract<Delivery, { via: "messenger" }>["config"]): Extract<Delivery, { via: "messenger" }> =>
   ({ via: "messenger", provider, ledger: createLedger({ path: ledgerPath(), now: () => NOW }), config });
 
-/** A `gh` that records its argv. `present` is what the ask for the day's comment finds; posting answers with the comment's URL. */
-function fakeGh(present = "") {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    return args[0] === "api" ? present : `${COMMENT_URL}\n`;
-  };
-  return { delivery: { via: "tracker", repo: REPO, run } as Extract<Delivery, { via: "tracker" }>, calls };
+/**
+ * The fake code host in place with the epic as a row of its world (A11-160, step 9: the day's comment is the code host's, and a test reads the epic's comments). `marked` puts the day's marker comment on it
+ * already. The delivery's `run` is the runner the live tool hands the code host; the fake acts on its world and never calls it.
+ */
+function trackerWorld({ marked = false } = {}) {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const epic = fakeRow(host.rowsWorld, TRACKER_EPIC, { title: "the provider epic" });
+  if (marked) epic.comments.push({ id: 6100000001, body: `${DAYS_MARKER}\nthe reading of earlier today`, createdAt: new Date(NOW).toISOString() });
+  host.rowsWorld.rows.set(TRACKER_EPIC, epic);
+  const run = (): string => { throw new Error("the fake code host runs nothing"); };
+  return { delivery: { via: "tracker", repo: host.rowsWorld.repo, run } as Extract<Delivery, { via: "tracker" }>, epic, world: host.rowsWorld };
 }
 
 const post = (delivery: Delivery, { reading = SOME_READING, providerDeclared = true, now = NOW } = {}): Promise<PostResult> =>
@@ -85,15 +93,13 @@ test("with only the chairman chat configured, the announcement audience sends it
 });
 
 test("with no messaging configured, it is one comment on the epic, carrying the day's marker", async () => {
-  const { delivery, calls } = fakeGh();
+  const { delivery, epic } = trackerWorld();
   const result = posted(await post(delivery));
   assert.equal(result.destination, "tracker-comment");
-  assert.equal(result.ref, "6100000001");
-  const comment = calls.find((args) => args[0] === "issue");
-  assert.deepEqual(comment?.slice(0, 4), ["issue", "comment", String(TRACKER_EPIC), "--repo"]);
-  assert.equal(comment?.[4], REPO);
-  const body = comment?.[6] ?? "";
-  assert.ok(body.startsWith("<!-- decision-confidence-post: 2026-10-10 -->\n"), body);
+  assert.equal(epic.comments.length, 1, "one comment, on the epic");
+  assert.equal(result.ref, String(epic.comments[0]!.id), "the reference is the posted comment's id");
+  const body = epic.comments[0]!.body;
+  assert.ok(body.startsWith(`${DAYS_MARKER}\n`), body);
   assert.ok(body.endsWith(result.text), "the comment is the same text the channel would have been sent");
 });
 
@@ -124,15 +130,18 @@ test("one post per day through the messenger: a second run the same day sends no
 });
 
 test("one post per day on the epic: a day whose marker comment is there posts nothing", async () => {
-  const present = fakeGh("6100000001\n");
+  const present = trackerWorld({ marked: true });
   assert.deepEqual(await post(present.delivery), { posted: false, why: "already-posted" });
-  assert.deepEqual(present.calls.map((args) => args[0]), ["api"], "the ask is made and no comment is");
-  const ask = present.calls[0]?.join(" ") ?? "";
-  assert.ok(ask.includes(`issues/${TRACKER_EPIC}/comments`) && ask.includes("since=2026-10-10T00:00:00Z") && ask.includes("<!-- decision-confidence-post: 2026-10-10 -->"), ask);
+  assert.equal(present.epic.comments.length, 1, "the ask is made and no comment is");
   // the control: the same call with the day's comment absent DOES post, so "already-posted" above is the ask's answer and not a stuck branch
-  const absent = fakeGh("");
+  const absent = trackerWorld();
   posted(await post(absent.delivery));
-  assert.deepEqual(absent.calls.map((args) => args[0]), ["api", "issue"]);
+  assert.equal(absent.epic.comments.length, 1);
+  // and the day's marker is the day's: a comment of YESTERDAY's marker is not today's
+  const yesterday = trackerWorld();
+  yesterday.epic.comments.push({ id: 6100000002, body: "<!-- decision-confidence-post: 2026-10-09 -->\nyesterday", createdAt: new Date(NOW - DAY).toISOString() });
+  posted(await post(yesterday.delivery));
+  assert.equal(yesterday.epic.comments.length, 2);
 });
 
 test("a quiet day is still one message, saying so", async () => {
@@ -149,9 +158,10 @@ test("no provider declared posts nothing: no message, no ledger line, no comment
   assert.deepEqual(await post(viaMessenger, { providerDeclared: false }), { posted: false, why: "no-provider" });
   assert.equal(requests.length, 0);
   assert.deepEqual(viaMessenger.ledger.read(), []);
-  const gh = fakeGh();
-  assert.deepEqual(await post(gh.delivery, { providerDeclared: false }), { posted: false, why: "no-provider" });
-  assert.deepEqual(gh.calls, []);
+  const tracker = trackerWorld();
+  assert.deepEqual(await post(tracker.delivery, { providerDeclared: false }), { posted: false, why: "no-provider" });
+  assert.deepEqual(tracker.epic.comments, []);
+  assert.deepEqual(tracker.world.calls, []);
 });
 
 test("the text asks the chairman nothing: no question mark, even from a question named with one", async () => {

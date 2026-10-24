@@ -56,3 +56,15 @@ test("#1193: a list that fills the limit is `read: false`, because a full page m
   assert.equal(result.read, false, "two pulls at a limit of two is a page that may have been cut");
   assert.match(result.read ? "" : result.reason, /listing limit/);
 });
+
+test("a refused runner's reason is its message's FIRST line, behind the words the prune's report quotes", () => {
+  const result = readOpenPullHeads(REPO, () => { throw new Error("gh: authentication required\nmore"); }, 1000);
+
+  assert.deepEqual(result, { read: false, reason: "the open pull request listing failed: gh: authentication required" });
+});
+
+test("a listing of one page short of the limit is read whole, and every pull request's labels are flattened to their names (an absent list is none)", () => {
+  const result = readOpenPullHeads(REPO, () => JSON.stringify([{ number: 7, url: "u", headRefName: "h", labels: [{ name: "session:x" }, { name: "lane:y" }] }, { number: 8, url: "v", headRefName: "g" }]), 3);
+
+  assert.deepEqual(result, { read: true, pulls: [{ number: 7, url: "u", headRefName: "h", labels: ["session:x", "lane:y"] }, { number: 8, url: "v", headRefName: "g", labels: [] }] });
+});

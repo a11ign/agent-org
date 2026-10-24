@@ -48,9 +48,11 @@ import { holdersOf } from "./pr-hold-state.ts";
 import { brokenChecks } from "./red-pr.ts";
 import { armedFromApi } from "./pr-armed-state.ts";
 import { readRequiredContexts } from "./work-gate/causes/pr-checks.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import type { PullQueueNode } from "./plugins/contracts/code-host-rows-queue.ts";
+import { rows } from "./plugins/rows.ts";
 // `poolFromHeaders` WAS DEFINED HERE until #2003, and its `Pool` shape with it. `work-gate.ts` needs the
 // same reading on its refusal path and may not import this file, so the reader is a leaf now.
-import { poolFromHeaders } from "./api-pool.ts";
 
 export type Pool = import("./api-pool.ts").Pool;
 
@@ -100,11 +102,13 @@ let ghCalls = 0;
 /** @returns {number} */
 export function ghCallsMade(): number { return ghCalls; }
 
-const gh = (args: string[]) => {
-  // `rate_limit` is the one gh call that does not count against the limit, so it must not count here
-  // either -- a meter that includes reading the meter reports its own observation as consumption.
-  if (!(args[0] === "api" && args[1] === "rate_limit")) ghCalls += 1;
-  return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+/**
+ * The code host's own runner (A11-160, step 9), with its stderr kept to the failure's message (a refused read here is a `?`, never a line in the journal), counted. Every call the table's reads make goes through it, so the
+ * count is the table's cost; the budget is read through {@link ghHeaders}, which is not counted, so a meter does not report its own observation as consumption.
+ */
+const gh: RowsRun = (args) => {
+  ghCalls += 1;
+  return rows().runnerWith({ echo: false })(args);
 };
 const git = (args: string[]) => {
   try {
@@ -302,10 +306,9 @@ export function nonSuccessByName(merged: { number: number | null; sha?: string; 
 
 /** @returns {{sha: string, runId: string, conclusion: string, status: string} | null} */
 export function trunkState(): { sha: string; runId: string; conclusion: string; status: string; } | null {
-  const sha = ask(() => gh(["api", `repos/${REPO}/commits/main`, "--jq", ".sha"]).trim());
+  const sha = ask(() => rows().mainShaOf({ repo: REPO, run: gh }));
   if (!sha) return null;
-  const runs = ask(() => JSON.parse(gh(["run", "list", "--workflow=trunk.yml", "--limit", "20",
-    "--json", "headSha,conclusion,status,databaseId"])));
+  const runs = ask(() => rows().checkoutWorkflowRunsOf({ workflow: "trunk.yml", limit: 20, run: gh }));
   if (!Array.isArray(runs)) return { sha, runId: "?", conclusion: "?", status: "?" };
   const mine = runs.find((r: { headSha: string; }) => r.headSha === sha);
   return mine
@@ -314,32 +317,18 @@ export function trunkState(): { sha: string; runId: string; conclusion: string; 
 }
 
 /**
- * The queue field REST cannot carry, for every open pull request in ONE call -- `mergeQueueEntry` is a
- * GraphQL-only object (`pr-armed-state.ts`'s `ARMED_QUERY` says the same about its per-PR read), and
- * `ARMED_QUERY` asks about one PR by number, which would be a call per row. `autoMergeRequest` rides along
- * so a single node answers `armedFromApi`'s whole question. First 100, matching the REST page above.
- */
-export const QUEUE_QUERY = "query($o:String!,$r:String!){repository(owner:$o,name:$r)"
-  + "{pullRequests(states:OPEN,first:100){nodes{number autoMergeRequest{enabledAt} "
-  + "mergeQueueEntry{state position}}}}}";
-
-/** The `gh` argv that asks `QUEUE_QUERY`, jq'd down to the list of nodes. @returns {string[]} */
-export function queueEntriesArgs(): string[] {
-  const [owner, name] = REPO.split("/");
-  return ["api", "graphql", "-f", `query=${QUEUE_QUERY}`, "-f", `o=${owner}`, "-f", `r=${name}`,
-    "--jq", ".data.repository.pullRequests.nodes"];
-}
-
-/**
  * Each open PR's queue reading by number, or `null` when the queue could not be asked. NULL, NEVER AN EMPTY
  * MAP: an empty map says "read it, nobody is queued", and a GraphQL outage must not produce that answer.
- * @param {(args: string[]) => string} run
+ *
+ * The reading is the queue field REST cannot carry (`mergeQueueEntry` is a GraphQL-only object), for every open
+ * pull request in ONE call -- the code host's `pullQueueStatesOf` asks it -- and `autoMergeRequest` rides along so
+ * a single node answers `armedFromApi`'s whole question. First 100, matching the REST page of `openPRs`.
  * @returns {Map<number, {autoMergeRequest?: unknown, mergeQueueEntry?: {state?: string, position?: number} | null}> | null}
  */
-export function queueEntries(run: (args: string[]) => string): Map<number, { autoMergeRequest?: unknown; mergeQueueEntry?: { state?: string; position?: number; } | null; }> | null {
-  const nodes = ask(() => JSON.parse(run(queueEntriesArgs())));
+export function queueEntries(): Map<number, PullQueueNode> | null {
+  const nodes = ask(() => rows().pullQueueStatesOf({ repo: REPO, run: gh }));
   if (!Array.isArray(nodes)) return null;
-  return new Map(nodes.map((node: any) => [node.number, node]));
+  return new Map(nodes.map((node) => [node.number, node]));
 }
 
 /**
@@ -417,29 +406,28 @@ export function armedState(pr: { number: number; auto_merge?: unknown; }, queue:
  *                                         correctness gate"), so it is a decision to revisit rather than a
  *                                         defect to fix.
  *
- * The injected `run` exists so a test can pin WHICH calls this makes and not only what it does with the
- * answers: a fixture-only fix passes every assertion and leaves the payload without the queue key.
- *
- * @param {{ run?: (args: string[]) => string }} [deps]
+ * The code host's `pullQueueStatesOf` is asked ONCE, beside its `openPullRowsOf`: a test pins WHICH reads this makes
+ * (the world's calls) and not only what it does with the answers, since a fixture-only fix passes every assertion
+ * and leaves the payload without the queue key.
  */
-export function openPRs({ run = gh }: { run?: (args: string[]) => string; } = {}) {
-  const prs = ask(() => JSON.parse(run(["api", `repos/${REPO}/pulls?state=open&per_page=100`])));
+export function openPRs() {
+  const prs = ask(() => rows().openPullRowsOf({ repo: REPO, run: gh }));
   if (!Array.isArray(prs)) return null;
-  const queue = queueEntries(run);
-  return prs.map((pr: any) => ({
+  const queue = queueEntries();
+  return prs.map((pr) => ({
     number: pr.number,
-    headRefName: pr.head?.ref ?? "?",
-    headRefOid: pr.head?.sha ?? "",
-    updatedAt: pr.updated_at,
+    headRefName: pr.headRefName,
+    headRefOid: pr.headRefOid,
+    updatedAt: pr.updatedAt,
     ...armedState(pr, queue),
     // THE DRAFT FLAG COMES BACK ON THE SAME PAYLOAD, so reading it costs nothing -- the same reason
     // `holders` is read below. It was dropped here until #912's gate needed it: "every open pull request
     // that is a draft and has no verdict at its current head" is the reviewer's whole lane
     // (.agent-org/roles/reviewer.md), and with this field absent NO script in the tree could answer it, so the
     // two reviewer sessions polled `gh pr list` on a clock to ask a question this payload already knew.
-    // `?? null`, NOT `Boolean()`: absent must stay distinguishable from false, for the reason `prRow`
-    // states where it carries this field on.
-    draft: pr.draft ?? null,
+    // The code host answers `null`, NOT `false`, for a listing that carries no flag: absent must stay
+    // distinguishable from false, for the reason `prRow` states where it carries this field on.
+    draft: pr.draft,
     // THE HOLD LABEL COMES BACK ON THE SAME PAYLOAD, so reading it costs nothing. It has to be read,
     // because a held PR is DISARMED ON PURPOSE (`pr-hold.ts` disarms as part of taking the hold) and
     // "UNARMED" for a held PR is a true word for the wrong reason -- it reads as nobody has got to it
@@ -455,8 +443,8 @@ export function openPRs({ run = gh }: { run?: (args: string[]) => string; } = {}
     // thing it just found. Importing the predicate means this row follows the rename by construction
     // rather than by somebody remembering, and it agrees with `arm-pr`/`auto-arm-sweep` at every instant
     // including the one where main has the rename and this branch has not been carried yet.
-    holders: holdersOf((pr.labels ?? []).map((l: any) => String(l?.name ?? ""))),
-    redChecks: brokenCheckNames(pr.labels, checksOnSha(pr.head?.sha ?? "", run)),
+    holders: holdersOf([...pr.labels]),
+    redChecks: brokenCheckNames(pr.labels.map((name) => ({ name })), checksOnSha(pr.headRefOid)),
   }));
 }
 
@@ -540,17 +528,12 @@ function defaultGitLog(limit: number) {
  * unreadable sha and a sha with no checks are different facts and the caller reports them differently.
  *
  * @param {string} sha
- * @param {(args: string[]) => string} [run] injectable for the same reason `openPRs`'s is
  * @returns {{name: string, conclusion: string}[] | null}
  */
-export function checksOnSha(sha: string, run: (args: string[]) => string = gh): { name: string; conclusion: string; }[] | null {
-  const raw = ask(() => run(["api", `repos/${REPO}/commits/${sha}/check-runs`, "--paginate",
-    "--jq", ".check_runs[] | {name, conclusion, completedAt: .completed_at}"]));
-  if (raw === null) return null;
-  const runs = raw.trim().split("\n").filter(Boolean).flatMap((line) => {
-    try { return [JSON.parse(line)]; } catch { return []; }
-  });
-  return newestPerName(runs).map((c) => ({ name: c.name, conclusion: c.conclusion ?? "" }));
+export function checksOnSha(sha: string): { name: string; conclusion: string; }[] | null {
+  const runs = ask(() => rows().checkRunBriefsOf({ repo: REPO, sha, run: gh }));
+  if (runs === null) return null;
+  return newestPerName([...runs] as Parameters<typeof newestPerName>[0]).map((c) => ({ name: c.name, conclusion: c.conclusion ?? "" }));
 }
 
 /**
@@ -750,7 +733,7 @@ function gitProcessCount(): number | null {
  *   the response on `error.stdout` when gh exits non-zero, as `execFileSync` does
  * @returns {{core: Pool | null, graphql: Pool | null} | null}
  */
-export function apiBudget({ run }: { run?: (args: string[]) => string; } = {}): { core: Pool | null; graphql: Pool | null; } | null {
+export function apiBudget({ run }: { run?: RowsRun; } = {}): { core: Pool | null; graphql: Pool | null; } | null {
   if (typeof run !== "function") {
     throw new Error("apiBudget: no run given -- it is required, because a defaulted one is two live gh calls "
       + "(#1405: render() reached them on every run of queue-table.test.ts, 24 calls a run).");
@@ -771,10 +754,9 @@ export function apiBudget({ run }: { run?: (args: string[]) => string; } = {}): 
   // separate windows, and the counter is shared within each.
   //
   // Each read costs one call of its own kind, which is the cheapest honest price: the headers come back on
-  // a request that has to be made to learn anything at all.
-  const core = poolFromHeaders(["api", `repos/${REPO}`, "-i", "--jq", ".name"], run);
-  const graphql = poolFromHeaders(["api", "graphql", "-f", "query=query { viewer { login } }", "-i"], run);
-  return core === null && graphql === null ? null : { core, graphql };
+  // a request that has to be made to learn anything at all. The code host's `apiBudgetOf` makes both, through
+  // `run` -- the calls and their parsing are the plugin's now (A11-160, step 9).
+  return rows().apiBudgetOf({ repo: REPO, run });
 }
 
 /**
@@ -784,7 +766,7 @@ export function apiBudget({ run }: { run?: (args: string[]) => string; } = {}): 
  * @param {string[]} args
  * @returns {string}
  */
-export const ghHeaders = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+export const ghHeaders: RowsRun = (args) => rows().runnerWith({ echo: false })(args);
 
 /**
  * How the budget line reads. A remaining count with no window is not a measurement -- 4000 left with
@@ -814,7 +796,7 @@ export function renderBudget(budget: { core: Pool | null; graphql: Pool | null; 
   // been a real exhaustion at 14:41Z and a figure that fits the story gets less scrutiny than one that
   // does not. So the words go beside the numbers, and the reset says `resets in`, so it cannot be read
   // as budget either.
-  const line = (name: string, p: ReturnType<typeof poolFromHeaders>) => p === null
+  const line = (name: string, p: Pool | null) => p === null
     ? `${name} UNREADABLE`
     : `${name} ${p.used} used, ${p.remaining} remaining of ${p.limit}`
       + (p.resetInMinutes === null ? "" : ` (resets in ${p.resetInMinutes}m)`);

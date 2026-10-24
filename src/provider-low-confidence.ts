@@ -14,7 +14,9 @@
 // THE PROVIDER IS OPTIONAL (chairman, #4627). With no `jev` provider declared, no key or the question's use switched off, nothing is filed and nothing is asked of `gh`: `uses` is empty and the
 // first thing `fileLowConfidence` does is return. No Jev-specific code lives here beyond the declared provider's name, which `provider-confidence.ts` reads the same way.
 import { readFileSync, realpathSync } from "node:fs";
-import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5076: the class rows are a connection read, never a search
+import { rows } from "./plugins/rows.ts"; // #5076: the class rows are a connection read, never a search (the code host reads them)
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import type { LabelledRowRead } from "./plugins/contracts/code-host-rows-classes.ts";
 import { pathToFileURL } from "node:url";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { confidenceReading, DEFAULT_WINDOW_MS, formatConfidenceReading, parseWindow, type ConfidenceReading, type ConfidenceRow } from "./provider-confidence.ts";
@@ -137,8 +139,8 @@ export function improvementArgv(row: ConfidenceRow, reading: ConfidenceReading, 
 
 // ---- FILING ----
 
-/** `gh` as `class-repeat.ts` calls it: arguments in, stdout out, a throw on a refusal. */
-export type Gh = (args: string[]) => string;
+/** The code host's program as `class-repeat.ts` runs it: arguments in, stdout out, a throw on a refusal. The code host's operations below are run on it. */
+export type Gh = RowsRun;
 
 export type FilingIo = {
   /** The uses the provider may be asked about: empty with no `jev` provider declared, and otherwise those switched on. Anything else is not read and not filed. */
@@ -152,18 +154,17 @@ export type FilingIo = {
 
 export type Outcome = { filed: string } | { skipped: string } | { refused: string };
 
-type Tracked = { number: number; title: string; state: string; closedAt: string | null };
+type Tracked = LabelledRowRead;
 
 const messageOf = (err: unknown): string => String((err as { message?: unknown })?.message ?? err).split("\n")[0].slice(0, 200);
 
 /** The rows of the class, open and closed. A listing of `LIST_LIMIT` or more is refused, never read as the whole: it is the population the filing's duplicate check may not guess at. */
 function listTracked(run: Gh, repo: string): Tracked[] | { unreadable: string } {
   try {
-    // #5076: `repository.issues(labels:)` for each state, a connection -- `--label` was sent as a GitHub SEARCH. `readRowsByLabel` throws for a read that is not a list.
-    const asked = { label: CLASS_LABEL, select: "number title state closedAt", repo, run };
-    const rows = [...readRowsByLabel({ ...asked, state: "OPEN" }), ...readRowsByLabel({ ...asked, state: "CLOSED" })];
-    if (rows.length >= LIST_LIMIT) return { unreadable: `the listing filled its ${LIST_LIMIT}-row limit and may be cut short` };
-    return rows as Tracked[];
+    // #5076: `repository.issues(labels:)` for each state, a connection -- `--label` was sent as a GitHub SEARCH. The code host's read throws for a read that is not a list.
+    const listed = rows().labelledRowsOf({ repo, label: CLASS_LABEL, run });
+    if (listed.length >= LIST_LIMIT) return { unreadable: `the listing filled its ${LIST_LIMIT}-row limit and may be cut short` };
+    return listed;
   } catch (err) {
     return { unreadable: messageOf(err) };
   }
@@ -192,7 +193,7 @@ function refusalOf(err: unknown): string {
 
 function fileOne(row: ConfidenceRow, reading: ConfidenceReading, io: FilingIo): Outcome {
   try {
-    io.run(["label", "create", CLASS_LABEL, "--repo", io.repo, "--force", "--description", CLASS_LABEL_DESCRIPTION]);
+    rows().ensureTriageLabel({ repo: io.repo, label: CLASS_LABEL, description: CLASS_LABEL_DESCRIPTION, run: io.run });
     return { filed: rowNumberOf(io.fileRow(improvementArgv(row, reading, io.session))) };
   } catch (err) {
     return { refused: refusalOf(err) };
@@ -298,11 +299,10 @@ function describePlan(reading: ConfidenceReading, plan: ReturnType<typeof candid
   return [`Provider low confidence, ${day(reading.since)} to ${day(reading.until)}`, "", ...lines].join("\n");
 }
 
-/** `gh` and the home tracker's repository, resolved only when a question may be filed: a host with no provider never needs either. */
+/** The code host's program and the home tracker's repository, resolved only when a question may be filed: a host with no provider never needs either. What the program prints on stderr stays in a failure's message. */
 async function liveTracker(argv: readonly string[]): Promise<{ run: Gh; repo: string }> {
-  const { execFileSync } = await import("node:child_process");
   const { homeProjectDeclaration } = await import("./project-config.ts");
-  const run: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const run: Gh = (args) => rows().runnerWith({ echo: false })(args);
   return { run, repo: flagValue(argv, "repo") ?? homeProjectDeclaration().repo };
 }
 

@@ -88,6 +88,10 @@ export type AsyncRowsRun = (args: readonly string[]) => Promise<string>;
  */
 export type RunnerRequest = Readonly<{
   cwd?: string; timeoutMs?: number; maxBuffer?: number; withoutGitEnv?: boolean; echo?: boolean;
+  /** Variables laid over this process's environment for each call (a reviewer's role, a config directory), A11-160 step 9. */
+  env?: Readonly<Record<string, string>>;
+  /** The program is given this process's terminal for its standard streams and is not bounded in time or in what it prints (`pr-open`'s create, which shows the author what `gh` says): its failure carries the status and no output. A11-160 step 9. */
+  inherit?: boolean;
   guard?: (args: readonly string[]) => void;
 }>;
 

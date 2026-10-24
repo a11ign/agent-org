@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh`, `herdr` or `git` is run: the pull requests, the session and the tracker list are seams, and the only files written are a temporary state directory's
+// no-token: gh -- no `gh`, `herdr` or `git` is run: the pull requests, the session and the tracker list are seams, the row the bound declares on is the fake code host's, and the only files written are a temporary state directory's
 // a11ign#4957 cause 4: a claimed worker that ends its turn with no open pull request and no declaration is REFUSED the stop, by name, twice at most (agent-org#853).
 //
 // EVERY ALLOWANCE HAS A TWIN: the refusal fixture with ONE thing changed. A hook that refuses nothing turns the refusal case red, and one that refuses everything turns the
@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
 import type { Gh } from "./worker-state.ts";
@@ -29,7 +29,14 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { WORKER_STATE_DIR, readDeclarations, writeDeclaration } = await import("./worker-state.ts");
 const { ANSWER_PREFIX, SESSION_PREFIX } = await import("./project-vocabulary.ts");
-const { MAX_REFUSALS, STOP_HOOK_BOUND_KIND, STOP_HOOK_DIR, claimedRowOf, main, runHook } = await import("./worker-stop-hook.ts");
+const { MAX_REFUSALS, STOP_HOOK_BOUND_KIND, STOP_HOOK_DIR, claimedRowOf, main, pullsOfRepository, runHook } = await import("./worker-stop-hook.ts");
+// The fake code host is imported after the host file is named, as the hook is.
+const { forgetActivation, substituteCodeHost } = await import("./plugins/active.ts");
+const { createFakeCodeHost } = await import("./plugins/fakes/code-host.ts");
+const { fakeRow } = await import("./plugins/fakes/code-host-rows.ts");
+const { fakePull } = await import("./plugins/fakes/code-host-pulls.ts");
+
+afterEach(() => forgetActivation());
 
 const T0 = Date.parse("2026-10-11T09:00:00Z");
 const MIN = 60_000;
@@ -53,16 +60,33 @@ test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force:
 /** The refusal fixture, with `over` changed. `prs` is what the repository lists. */
 function seams(dir: string, over: Omit<Partial<Seams>, "prs"> & { prs?: StopPr[] } = {}): Seams {
   const { prs = [], ...rest } = over;
-  return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, regionRepos: () => [], gh: fakeGh([]), answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX, ...rest };
+  return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, regionRepos: () => [], gh: NO_RUN, answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX, ...rest };
 }
-/** The `gh` the bound writes through, every call recorded in `calls`: the row is read OPEN, CLOSED, or not at all (`row`) with `comments` and `labels` on it, and the writes answer nothing. */
-function fakeGh(calls: string[][], row: "open" | "closed" | "unreadable" = "open", comments: object[] = [], labels: string[] = []): Gh {
-  return (args) => {
-    calls.push(args);
-    if (args[0] !== "issue" || args[1] !== "view") return "";
-    if (row === "unreadable") throw Object.assign(new Error("HTTP 502"), { stderr: "HTTP 502" });
-    return JSON.stringify({ state: row === "open" ? "OPEN" : "CLOSED", labels: labels.map((name) => ({ name })), comments });
-  };
+/** What the bound writes goes to the code host, whose fake acts on its own state: the executor the hook hands it is never run. */
+const NO_RUN: Gh = () => {
+  throw new Error("the fake acts on its own state: no run is made");
+};
+/** A comment as the row carries it: the fake numbers it, and its address is the one the fake renders. */
+type RowCommentSeed = { id: string; url: string; createdAt: string; body: string };
+/**
+ * The fake code host, installed, holding the row the bound declares on (`agent-org#853`): OPEN or CLOSED (`row`) with `comments` and `labels` on it, or one the read of which is refused (`unreadable`, as a 502).
+ * `asked` is the writes the bound asked of the code host (a label made, a label put on, a comment posted), recorded when they are called.
+ */
+function boundHost(row: "open" | "closed" | "unreadable" = "open", comments: RowCommentSeed[] = [], labels: string[] = []) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  world.rows.set(853, fakeRow(world, 853, { state: row === "closed" ? "CLOSED" : "OPEN", labels: [...labels], comments: comments.map(({ body, createdAt }, i) => ({ id: i + 1, body, createdAt })) }));
+  if (row === "unreadable") world.failures.set("rowWithCommentsOf", Object.assign(new Error("HTTP 502"), { stderr: "HTTP 502" }));
+  const asked: string[] = [];
+  const operations = host.rows as unknown as Record<string, (request: unknown) => unknown>;
+  for (const op of ["ensureTriageLabel", "addLabelToRowIn", "commentOnIssue"]) {
+    const real = operations[op];
+    operations[op] = (request) => { asked.push(op); return real(request); };
+  }
+  substituteCodeHost(host);
+  const held = world.rows.get(853)!;
+  return { asked, labels: () => held.labels, comments: () => held.comments.map(({ body }) => body) };
 }
 const declaredOf = (dir: string) => readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.get(SESSION);
 const declare = (dir: string, atMinutes: number, state: "done" | "waiting-ci" = "waiting-ci") =>
@@ -77,10 +101,10 @@ const stopVerdictAfterDelivery = (atMinutes: number): number => {
   return runHook(OFF, seams(dir)).code;
 };
 /** A row's third consecutive stop, `T0 + 5 min`, after two refusals: the verdict on the third. */
-const thirdStopAtBound = (dir: string, gh: Gh) => {
-  runHook(OFF, seams(dir, { gh }));
-  runHook(OFF, seams(dir, { gh }));
-  return runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
+const thirdStopAtBound = (dir: string) => {
+  runHook(OFF, seams(dir));
+  runHook(OFF, seams(dir));
+  return runHook(OFF, seams(dir, { now: T0 + 5 * MIN }));
 };
 const OFF = {};
 
@@ -116,22 +140,21 @@ test("the twins of the allowances still refuse: a declaration older than the tur
 
 test("BOUNDED: the third consecutive refusal for one row is not issued; the stop is allowed, ONE failure-ledger line is written, and the row is declared blocked for product-manager", () => {
   const dir = stateDir();
-  const calls: string[][] = [];
-  const gh = fakeGh(calls);
+  const row = boundHost();
   assert.equal(MAX_REFUSALS, 2);
-  assert.equal(runHook(OFF, seams(dir, { gh })).code, 2);
-  assert.equal(runHook(OFF, seams(dir, { gh })).code, 2);
+  assert.equal(runHook(OFF, seams(dir)).code, 2);
+  assert.equal(runHook(OFF, seams(dir)).code, 2);
   assert.deepEqual(ledgerEntries(dir), [], "nothing is on the ledger while the hook is still refusing");
-  assert.equal(calls.length, 0, "nothing is written to GitHub while the hook is still refusing");
-  const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
+  assert.deepEqual(row.asked, [], "nothing is written to GitHub while the hook is still refusing");
+  const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN }));
   assert.equal(third.code, 0, "the bound");
   assert.match(third.say.join("\n"), /ALLOWED/);
   const lines = ledgerEntries(dir);
   assert.equal(lines.length, 1);
   assert.deepEqual(lines[0], { classKey: STOP_HOOK_BOUND_KIND, at: T0 + 5 * MIN, ref: `${REPO}#853` });
   assert.deepEqual(declaredOf(dir), { session: SESSION, state: "blocked", at: T0 + 5 * MIN, row: 853, repo: REPO, to: "product-manager", reason: `ended its turn after ${MAX_REFUSALS} refusals of worker:stop-hook with no pull request and no declaration; nothing says what it was waiting for` }, "the declaration the refusal named, made for the worker");
-  assert.ok(calls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "the answer label is put on the row");
-  assert.ok(calls.some((args) => args[0] === "issue" && args[1] === "comment" && args[2] === "853"), "the reason is posted on the row");
+  assert.deepEqual(row.labels(), [`${ANSWER_PREFIX}product-manager`], "the answer label is put on the row");
+  assert.deepEqual(row.comments().length, 1, "the reason is posted on the row");
 });
 
 /** The reason the bound declares, as `declareAtBound` writes it: the worker's own `BLOCKED` comment for it is what a repeat is checked against. */
@@ -142,26 +165,22 @@ const seatComment = (createdAt: number, seat: string) => commentAt(createdAt, 2,
 
 test("at the bound, a reason a manager has ALREADY RULED ON restores no label: the declaration is written, and nothing is labelled or commented", () => {
   const dir = stateDir();
-  const calls: string[][] = [];
-  const gh = fakeGh(calls, "open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "product-manager")]);
-  const third = thirdStopAtBound(dir, gh);
+  const row = boundHost("open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "product-manager")]);
+  const third = thirdStopAtBound(dir);
   assert.equal(third.code, 0, "the bound");
-  assert.ok(!calls.some((args) => args.includes("--add-label")), "no answer label is put back on the row");
-  assert.ok(!calls.some((args) => args[0] === "issue" && args[1] === "comment"), "no comment is posted");
+  assert.deepEqual(row.labels(), [], "no answer label is put back on the row");
+  assert.equal(row.comments().length, 2, "no comment is posted: the row holds the two it had");
+  assert.deepEqual(row.asked, [], "and the code host was asked to write nothing");
   assert.equal(declaredOf(dir)?.state, "blocked", "the declaration itself is still written");
 });
 
 test("negative controls for the ruling at the bound: a ruling older than the worker's own comment, and a ruling by a seat that is not a manager, each still restore the label", () => {
-  const older = stateDir();
-  const olderCalls: string[][] = [];
-  const olderGh = fakeGh(olderCalls, "open", [seatComment(T0 - 90 * MIN, "product-manager"), ownBoundComment(T0 - 60 * MIN)]);
-  thirdStopAtBound(older, olderGh);
-  assert.ok(olderCalls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "a ruling older than the own comment answers nothing new");
-  const reviewer = stateDir();
-  const reviewerCalls: string[][] = [];
-  const reviewerGh = fakeGh(reviewerCalls, "open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "reviewer-agent-org-853")]);
-  thirdStopAtBound(reviewer, reviewerGh);
-  assert.ok(reviewerCalls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "a reviewer's comment is not a ruling");
+  const older = boundHost("open", [seatComment(T0 - 90 * MIN, "product-manager"), ownBoundComment(T0 - 60 * MIN)]);
+  thirdStopAtBound(stateDir());
+  assert.deepEqual(older.labels(), [`${ANSWER_PREFIX}product-manager`], "a ruling older than the own comment answers nothing new");
+  const reviewer = boundHost("open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "reviewer-agent-org-853")]);
+  thirdStopAtBound(stateDir());
+  assert.deepEqual(reviewer.labels(), [`${ANSWER_PREFIX}product-manager`], "a reviewer's comment is not a ruling");
 });
 
 /** A `BLOCKED` comment the worker left on the row, owing an answer to `to`, with the reason as `applyLabel` writes it. */
@@ -171,36 +190,27 @@ const answeredReason = (earlier: string) => `second bound after an answered bloc
 
 test("POSITIVE CONTROL (agent-org#1687): at the bound, a block the answer has since cleared is named in the declared reason, and the repeat says so on the row", () => {
   const dir = stateDir();
-  const calls: string[][] = [];
-  const gh = fakeGh(calls, "open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step")]);
-  runHook(OFF, seams(dir, { gh }));
-  runHook(OFF, seams(dir, { gh }));
-  assert.equal(runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh })).code, 0, "the bound");
+  const row = boundHost("open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step")]);
+  runHook(OFF, seams(dir));
+  runHook(OFF, seams(dir));
+  assert.equal(runHook(OFF, seams(dir, { now: T0 + 5 * MIN })).code, 0, "the bound");
   assert.equal(declaredOf(dir)?.reason, answeredReason("row-file refuses the milestone step"), "the declared reason names the answered block");
-  assert.ok(calls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "no ruling on that block, so the answer is owed again");
-  const posted = calls.find((args) => args[0] === "issue" && args[1] === "comment");
-  assert.ok(String(posted?.at(-1)).includes(answeredReason("row-file refuses the milestone step")), "the row's comment carries the same reason");
+  assert.deepEqual(row.labels(), [`${ANSWER_PREFIX}product-manager`], "no ruling on that block, so the answer is owed again");
+  assert.ok(String(row.comments().at(-1)).includes(answeredReason("row-file refuses the milestone step")), "the row's comment carries the same reason");
 });
 
 test("the answered-block reason quotes the first line of a longer reason only, and keeps today's text for a block still owed an answer and for one whose time cannot be read", () => {
   const longer = stateDir();
-  const longerGh = fakeGh([], "open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step\nthe second line of the reason")]);
-  runHook(OFF, seams(longer, { gh: longerGh }));
-  runHook(OFF, seams(longer, { gh: longerGh }));
-  runHook(OFF, seams(longer, { now: T0 + 5 * MIN, gh: longerGh }));
+  boundHost("open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step\nthe second line of the reason")]);
+  thirdStopAtBound(longer);
   assert.equal(declaredOf(longer)?.reason, answeredReason("row-file refuses the milestone step"), "only the first line is quoted");
   const owed = stateDir();
-  const owedCalls: string[][] = [];
-  const owedGh = fakeGh(owedCalls, "open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step")], [`${ANSWER_PREFIX}product-manager`]);
-  runHook(OFF, seams(owed, { gh: owedGh }));
-  runHook(OFF, seams(owed, { gh: owedGh }));
-  runHook(OFF, seams(owed, { now: T0 + 5 * MIN, gh: owedGh }));
+  boundHost("open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step")], [`${ANSWER_PREFIX}product-manager`]);
+  thirdStopAtBound(owed);
   assert.equal(declaredOf(owed)?.reason, BOUND_REASON, "the label is still on the row: no answer has come, so today's text");
   const unread = stateDir();
-  const unreadGh = fakeGh([], "open", [{ ...blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step"), createdAt: "not a time" }]);
-  runHook(OFF, seams(unread, { gh: unreadGh }));
-  runHook(OFF, seams(unread, { gh: unreadGh }));
-  const third = runHook(OFF, seams(unread, { now: T0 + 5 * MIN, gh: unreadGh }));
+  boundHost("open", [{ ...blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step"), createdAt: "not a time" }]);
+  const third = thirdStopAtBound(unread);
   assert.equal(third.code, 0, "the declaration is still made: an unreadable earlier block withholds only the enrichment");
   assert.equal(declaredOf(unread)?.reason, BOUND_REASON, "its time cannot be read, so today's text");
   assert.equal(ledgerEntries(unread).length, 1, "the ledger line is still written");
@@ -209,16 +219,13 @@ test("the answered-block reason quotes the first line of a longer reason only, a
 test("at the bound, a row that cannot be read or is closed gets no declaration: the stop is still allowed, the ledger line is still written, and the failure is said", () => {
   for (const row of ["unreadable", "closed"] as const) {
     const dir = stateDir();
-    const calls: string[][] = [];
-    const gh = fakeGh(calls, row);
-    runHook(OFF, seams(dir, { gh }));
-    runHook(OFF, seams(dir, { gh }));
-    const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
+    const held = boundHost(row);
+    const third = thirdStopAtBound(dir);
     assert.equal(third.code, 0, row);
     assert.match(third.say.join("\n"), /NOT DECLARED/, row);
     assert.equal(declaredOf(dir), undefined, `${row}: nothing is declared`);
     assert.equal(ledgerEntries(dir).length, 1, `${row}: the ledger line is still written`);
-    assert.ok(!calls.some((args) => args[0] === "label" || args.includes("--add-label") || args[1] === "comment"), `${row}: nothing is labelled or commented`);
+    assert.deepEqual([held.labels(), held.comments(), held.asked], [[], [], []], `${row}: nothing is labelled or commented`);
   }
 });
 
@@ -226,9 +233,9 @@ test("the bound writes NO declaration when the worker has an open pull request a
   const dir = stateDir();
   mkdirSync(`${dir}/${STOP_HOOK_DIR}`, { recursive: true });
   writeFileSync(countFile(dir), `${JSON.stringify({ row: "agent-org#853", refusals: MAX_REFUSALS })}\n`);
-  const calls: string[][] = [];
-  assert.deepEqual(runHook(OFF, seams(dir, { prs: [PR_OF_THE_ROW], gh: fakeGh(calls) })), { code: 0, say: [] });
-  assert.deepEqual(calls, [], "nothing is written to GitHub");
+  const row = boundHost();
+  assert.deepEqual(runHook(OFF, seams(dir, { prs: [PR_OF_THE_ROW] })), { code: 0, say: [] });
+  assert.deepEqual(row.asked, [], "nothing is written to GitHub");
   assert.equal(declaredOf(dir), undefined, "no declaration");
 });
 
@@ -350,4 +357,31 @@ test("claimedRowOf: the first tracker's row, another tracker's, and the names th
   assert.equal(claimedRowOf("worker-capture-2407", TRACKERS), null, "an undeclared key");
   assert.equal(claimedRowOf("worker-agent-org", TRACKERS), null, "no row number");
   assert.equal(claimedRowOf("worker-agent-org-7-853", TRACKERS), null, "a key that ends in digits parses two ways, so it is none");
+});
+
+// A11-160, step 9: the live hook lists a repository's pull requests through the code host's rows (`pullsOfRepository`), with the `Gh` it runs `gh` through for everything else. These cases hold what the hook DOES with the listing:
+// the repository is stamped on each pull request (a bare `#1713` in a body names the repository it was listed from), every state is listed, and a listing the code host cannot make THROWS, which the hook turns into an
+// allowance that says it could not read them. The arguments and the answer's parse (`--state all --limit 100`, an object that is not a list) are `plugins/github/rows/pullwork-rows.test.ts`.
+test("the pull requests of a repository are listed in any state, each stamped with the repository it was listed from", () => {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  fakePull(host.rowsWorld, 901, { headRefName: "agent/a-stop-hook-in-agent-org-853", title: "A Stop hook", labels: [`session:${SESSION}`], body: "Closes #853" });
+  fakePull(host.rowsWorld, 902, { headRefName: "agent/merged", merged: true, mergedAt: "2026-10-11T08:00:00Z" });
+  substituteCodeHost(host);
+  const listed = pullsOfRepository(REPO, () => { throw new Error("the listing runs on the code host's rows, not on the hook's program"); });
+  assert.deepEqual(listed.map((pr) => [pr.number, pr.state, pr.repo]), [[901, "OPEN", REPO], [902, "MERGED", REPO]]);
+  assert.deepEqual(listed[0].labels, [{ name: `session:${SESSION}` }]);
+  assert.equal(listed[0].body, "Closes #853");
+});
+
+test("a listing the code host cannot make throws, and the hook then ALLOWS the stop and says the pull requests could not be read", () => {
+  const host = createFakeCodeHost();
+  host.rowsWorld.failures.set("pullsListedForStop", Object.assign(new Error("Command failed: gh pr list"), { stderr: "HTTP 502" }));
+  substituteCodeHost(host);
+  assert.throws(() => pullsOfRepository(REPO, () => ""), /Command failed/);
+  const dir = stateDir();
+  const result = runHook(OFF, { ...seams(dir), prs: (repo) => pullsOfRepository(repo, () => "") });
+  assert.equal(result.code, 0, "allowed, not refused");
+  assert.match(result.say.join("\n"), /could not be read \(HTTP 502\).*UNREAD/s);
+  assert.equal(existsSync(countFile(dir)), false, "no refusal is counted");
 });

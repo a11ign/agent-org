@@ -1,16 +1,19 @@
-// no-token: gh
+// no-token: none -- the code host is the fake one; nothing here reaches GitHub
 //
 // a11ign/agent-org#750: A `Closes: none` PULL REQUEST THAT NAMES ITS OWN CLAIMED ROW CLOSES THAT ROW AND FILES THE VERIFY ROW FOR WHAT IT LEFT. The instance is a11ign/agent-org#716 (row #560):
 // its body said `Closes: none -- the row's Done-when 2 (tell a11ign#4623 the fix is in force, ...) can only be true after this merges`, GitHub resolved no closing reference, and the row
 // stayed open and claimed until it was closed by hand.
 //
-// NO NETWORK: `gh` is a fixture that ANSWERS BY QUERY and counts what it was asked to close, and the verify effects count their calls, so "files nothing" is zero creates.
+// NO NETWORK: the code host is the fake one, whose world holds the rows and the merged pull request and records what it was asked to close, and the verify effects count their calls, so "files nothing" is zero creates.
 // EVERY NEGATIVE HAS ITS CONTROL, in the same file and the same shape: case 1 is the positive the cases 2-6 are the negatives of (the same PR, the same row, the same claim,
 // one thing changed), and case 7 is the idempotence control (the same PR merged twice files ONE row, where a store that forgot would file two).
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { applyClosurePlan, closesNoneOwnRow, closingComment, fileVerifyRowsFor, planClosesNone, type ClosureBasis } from "./close-rows-for-merged-pr.ts";
 import { closeOnePr } from "./close-rows-sweep.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { planLeftoverVerifyRow, verifyMarker, type BuildRow, type VerifyEffects, type VerifyPlan } from "./verify-row.ts";
 
 const REPO = "a11ign/agent-org";
@@ -32,38 +35,28 @@ const ROW_560 = { number: 560, title: "The hand-fix ledger counts Dependabot pul
 type RowState = { number: number; state: "OPEN" | "CLOSED"; title: string; body: string; labels: string[] };
 const row = (over: Partial<RowState> = {}): RowState => ({ ...ROW_560, state: "OPEN", ...over });
 
-/** A fake `gh` for one merged PR. `rows` is mutable: a close flips the row's state, which is what a second merge of the same PR then reads. */
-function fakeGh(pr: { body: string; headRefName: string; resolved?: number[] }, rows: RowState[], { unreadable = [] as number[] } = {}) {
-  const closed: number[] = [];
-  const asked: string[] = [];
-  const gh_ = (args: string[]) => {
-    asked.push(args.join(" "));
-    if (args[0] === "api" && args[1] === "graphql") {
-      const query = args[3] ?? "";
-      if (query.includes("pullRequest(")) {
-        const nodes = (pr.resolved ?? []).map((n) => rows.find((r) => r.number === n)).flatMap((r) => (r ? [r] : []));
-        return JSON.stringify({ mergedAt: MERGED, headRefName: pr.headRefName, body: pr.body, mergeCommit: { oid: "6d2e9c1" }, closingIssuesReferences: { nodes: nodes.map((n) => ({
-          number: n.number, state: n.state, title: n.title, body: n.body, milestone: { title: "Out of release" }, parent: { number: 500 },
-          labels: { nodes: n.labels.map((name) => ({ name })) }, timelineItems: { nodes: [] } })) } });
-      }
-      const wanted = Number(/issue\(number:(\d+)\)/.exec(query)?.[1]);
-      const found = rows.find((r) => r.number === wanted);
-      if (unreadable.includes(wanted)) throw new Error("HTTP 502");
-      if (!found) return "null";
-      return JSON.stringify({ number: found.number, state: found.state, title: found.title, body: found.body, milestone: { title: "Out of release" }, parent: { number: 500 },
-        labels: { nodes: found.labels.map((name) => ({ name })) }, timelineItems: { nodes: [] } });
-    }
-    if (args[0] === "issue" && args[1] === "close") {
-      const n = Number(args[2]);
-      closed.push(n);
-      const found = rows.find((r) => r.number === n);
-      if (found) found.state = "CLOSED";
-      return "";
-    }
-    throw new Error(`fake gh was asked something it does not know: ${args.join(" ")}`);
-  };
-  return { gh_, closed, asked };
+afterEach(() => forgetActivation());
+
+/**
+ * The fake code host for one merged PR: the rows are the world's, the pull request is the world's merged one with the rows GitHub resolved as its `closes`, and a close flips the world's row, which is what a
+ * second merge of the same PR then reads. `unreadable` rows are refused when the sweep reads them as a declared row.
+ */
+function fakeWorld(pr: { body: string; headRefName: string; resolved?: number[] }, rows: RowState[], { unreadable = [] as number[] } = {}) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  for (const r of rows) world.rows.set(r.number, fakeRow(world, r.number, { title: r.title, body: r.body, labels: [...r.labels], state: r.state, milestone: { number: 1, title: "Out of release", description: null, dueOn: null } }));
+  for (const r of rows) world.tail.closing.parents.set(r.number, 500);
+  world.pulls.set(716, { number: 716, body: pr.body, headRefName: pr.headRefName, labels: [], isDraft: false, armed: false, merged: true, mergedAt: MERGED, createdAt: MERGED, comments: [],
+    closes: (pr.resolved ?? []).filter((n) => rows.some((r) => r.number === n)).map((n) => ({ number: n, labels: [] })) });
+  world.tail.closing.mergeShas.set(716, "6d2e9c1");
+  // The only declared row any case reads is the one it makes unreadable, so the world refuses the read by its operation's name.
+  if (unreadable.length > 0) world.failures.set("declaredBuildRowOf", new Error("HTTP 502"));
+  substituteCodeHost(host);
+  return world;
 }
+
+const closedIn = (world: ReturnType<typeof fakeWorld>): number[] => world.calls.filter((c) => c.startsWith("closeCompletedRow #")).map((c) => Number(c.slice("closeCompletedRow #".length)));
 
 /** Verify effects over a store keyed by the build, so a second filing finds the first: `creates` is what reached the tracker. */
 function store() {
@@ -80,19 +73,22 @@ function store() {
   return { effects, plans, calls };
 }
 
-/** One sweep of PR 716 against `repo`, with the strip and the settle as fixtures; what it printed comes back with the result. */
-function sweepPr(pr: Parameters<typeof fakeGh>[0], rows: RowState[], effects: VerifyEffects, opts: Parameters<typeof fakeGh>[2] = {}) {
+/** One sweep of PR 716 over `world`, with the strip and the settle as fixtures; what it printed comes back with the result, and the rows THIS sweep asked the world to close. */
+function sweepIn(world: ReturnType<typeof fakeWorld>, effects: VerifyEffects) {
+  const before = closedIn(world).length;
   const said: string[] = [];
   const log = console.log;
   console.log = (...parts: unknown[]) => { said.push(parts.join(" ")); };
   try {
-    const fake = fakeGh(pr, rows, opts);
-    const result = closeOnePr(716, REPO, { gh_: fake.gh_, strip: () => {}, settle: () => ({ settled: true, refused: [] }), verify: effects });
-    return { result, said, closed: fake.closed };
+    const result = closeOnePr(716, REPO, { strip: () => {}, settle: () => ({ settled: true, refused: [] }), verify: effects });
+    return { result, said, closed: closedIn(world).slice(before), world };
   } finally {
     console.log = log;
   }
 }
+
+/** One sweep of PR 716 over a world seeded from `pr` and `rows`. */
+const sweepPr = (pr: Parameters<typeof fakeWorld>[0], rows: RowState[], effects: VerifyEffects, opts: Parameters<typeof fakeWorld>[2] = {}) => sweepIn(fakeWorld(pr, rows, opts), effects);
 
 const PR = { body: BODY_716, headRefName: BRANCH };
 
@@ -125,10 +121,9 @@ test("2. CONTROL of 1, the same PR with the `Closes: none` line removed closes n
 
 test("3. NEGATIVE: `Closes: none -- docs only` closes nothing and files nothing, on the same branch and the same claimed row", () => {
   const { effects, plans, calls } = store();
-  const rows = [row()];
-  const { result, closed } = sweepPr({ ...PR, body: "Rewords the README.\n\nCloses: none -- docs only\n" }, rows, effects);
+  const { result, closed, world } = sweepPr({ ...PR, body: "Rewords the README.\n\nCloses: none -- docs only\n" }, [row()], effects);
   assert.deepEqual(closed, []);
-  assert.equal(rows[0].state, "OPEN");
+  assert.equal(world.rows.get(560)?.state, "OPEN");
   assert.deepEqual([plans.length, calls.length], [0, 0]);
   assert.deepEqual(result, { failed: [], unsettled: [], skipped: [] });
 });
@@ -151,10 +146,9 @@ test("4. NEGATIVE: a reason that names ANOTHER row than the branch's is not the 
 
 test("5. NEGATIVE: a row nobody holds (open, no claim) is left alone and said so; a row that could not be read is named and fails, never closed", () => {
   const unheld = store();
-  const rows = [row({ labels: ["lane:any"] })];
-  const a = sweepPr(PR, rows, unheld.effects);
+  const a = sweepPr(PR, [row({ labels: ["lane:any"] })], unheld.effects);
   assert.deepEqual(a.closed, []);
-  assert.equal(rows[0].state, "OPEN");
+  assert.equal(a.world.rows.get(560)?.state, "OPEN");
   assert.equal(unheld.plans.length, 0);
   assert.ok(a.said.some((l) => /open and not claimed -- nobody holds it, so it is left/.test(l)));
   const unread = store();
@@ -166,17 +160,16 @@ test("5. NEGATIVE: a row nobody holds (open, no claim) is left alone and said so
 
 test("6. NEGATIVE: GitHub's own answer outranks it -- a PR that resolved a row closes THAT one, and never the row its reason names", () => {
   const { effects } = store();
-  const rows = [row({ number: 559, title: "The other row" }), row()];
-  const { closed } = sweepPr({ ...PR, resolved: [559] }, rows, effects);
+  const { closed, world } = sweepPr({ ...PR, resolved: [559] }, [row({ number: 559, title: "The other row" }), row()], effects);
   assert.deepEqual(closed, [559]);
-  assert.equal(rows[1].state, "OPEN", "560 was not consulted");
+  assert.equal(world.rows.get(560)?.state, "OPEN", "560 was not consulted");
 });
 
 test("7. NEGATIVE: the same PR merged twice files ONE verify row, not two (the second pass finds the row closed and the marker filed)", () => {
   const { effects, plans } = store();
-  const rows = [row()];
-  const first = sweepPr(PR, rows, effects);
-  const second = sweepPr(PR, rows, effects);
+  const world = fakeWorld(PR, [row()]);
+  const first = sweepIn(world, effects);
+  const second = sweepIn(world, effects);
   assert.deepEqual(first.closed, [560]);
   assert.deepEqual(second.closed, [], "the second pass closed nothing: the row was closed");
   assert.equal(plans.length, 1, "one create across both passes");

@@ -1,5 +1,5 @@
-// no-token: gh -- `gatherChanges` and `main` here take `git` and `gh` as seams, so nothing reaches the real `gh`; the
-// defaults (`defaultGh`) are never called from this file.
+// no-token: gh -- `gatherChanges` and `main` here take `git` as a seam and read the code host's rows, which are the fake code host's (A11-160, step 9), so nothing reaches the real `gh`;
+// the default runner (`hostRun`) is never called from this file.
 /**
  * #2939 (chairman, 2026-10-01): a hand fix by the chairman's session is an org defect, and the count has a home.
  * The ledger counts changes by TWO mechanisms (the author field, and a declared `Hand-fix:` line), once each, and
@@ -10,15 +10,22 @@
  * account's PRs (the last four it authored, all 2026-09-24) and four of the workers' account's (#2927-#2934, the
  * last hour of that day).
  */
-import { test } from "node:test";
+import { afterEach, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   ORG_LOGINS, AUTOMATION_LOGINS, buildLedger, classifyLogin, declarationsIn, declarationRefusal, gatherChanges,
   judgeChange, ledgerLine, readLedger, trendOf, HAND_FIX_FORMAT,
 } from "../hand-fix-ledger.ts";
 import { main as prOpen, EXIT_NOTHING_SENT } from "../pr-open.ts";
-import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
+
+afterEach(() => forgetActivation());
 import { ORG_LOGINS as READERS_ORG_LOGINS, ORG_ACCOUNT_LOGINS, ORG_APP_SLUGS } from "../messaging/sources/readers.ts";
+
+// The code host is the fake one (A11-160, step 9): what `pr-open` asks of it is a named operation of its rows, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
 
 const EM = "—";
 
@@ -215,7 +222,7 @@ test("#2939 pr-open ACCEPTS a well-formed Hand-fix line, and a body with none is
     runAcceptance: () => 0, runMutation: () => 0, owner: () => "ceo", out: () => {}, err: () => {},
   });
   assert.equal(code, 0);
-  assert.ok(sent.some((a) => a[0] === "pr" && a[1] === "create"), "the PR was created");
+  assert.ok(sent.some((a) => a[0] === "fake-pull-write" && a[1] === "create"), "the PR was created");
 });
 
 // --- what is not a hand fix -----------------------------------------------------------------------------------------
@@ -252,8 +259,10 @@ test("#2939 a refused read is UNKNOWN, never zero; an empty read is a real zero,
 });
 
 test("#2939 the gatherer lets a refused `gh` reach the reading as unknown, not as an empty list", () => {
-  const refusing = () => { throw new Error("gh: authentication required"); };
-  const read = gatherChanges({ git: () => "", gh: refusing, repo: "o/r" });
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  host.rowsWorld.failures.set("mainShaOf", new Error("gh: authentication required"));
+  const read = gatherChanges({ git: () => "", repo: "o/r" });
   const reading = readLedger({ read, now: NOW });
   assert.equal(reading.count, null);
   assert.match(reading.why ?? "", /authentication required/);
@@ -290,17 +299,17 @@ test("#2939 the MERGER is never read: a merge commit by the chairman's account o
     if (args[0] === "log" && args[1] === `${OLD}..${BRANCH}`) return `${BRANCH}\n`;
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
-  const fakeGh = (args: string[]) => {
-    // #5076: the merged pull requests are the `pullRequests` connection, not `pr list --search`; asked first, since its argv also begins `api`.
-    if (readsRowsSince(args) !== null) return sinceAnswer(args, [{ number: 77, mergedAt: "2026-09-30T10:00:00Z", author: { login: "a11ign-ai-workers" }, title: "x", body: "" }]);
-    if (args[0] === "api" && args[1] === "repos/o/r/commits/main") return "h".repeat(40);
-    if (args[0] === "api") return `${MERGE}\tDanBeckDev\n${BRANCH}\ta11ign-ai-workers\n`;
-    throw new Error(`unexpected gh ${args.join(" ")}`);
-  };
-  const changes = gatherChanges({ git, gh: fakeGh, repo: "o/r" })({ from: new Date("2026-09-03T00:00:00Z"), to: NOW });
+  // The code host's world: `main` is where the local base is, pull request #77 was merged by the workers' account, and GitHub resolves the merge commit to the chairman's account (a merger) and the branch's to the workers'.
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { rowsWorld: world } = host;
+  fakePull(world, 77, { merged: true, mergedAt: "2026-09-30T10:00:00Z", author: "a11ign-ai-workers", title: "x", body: "" });
+  world.tail.queue.mainSha = "h".repeat(40);
+  world.tail.classes.commitLogins = [{ sha: MERGE, login: "DanBeckDev" }, { sha: BRANCH, login: "a11ign-ai-workers" }];
+  const changes = gatherChanges({ git, repo: "o/r" })({ from: new Date("2026-09-03T00:00:00Z"), to: NOW });
   assert.deepEqual(changes.map((c) => [c.key, c.actors]), [["pr:77", ["a11ign-ai-workers", "a11ign-ai-workers"]]]);
   assert.equal(buildLedger(changes).count, 0);
-  const human = gatherChanges({ git, gh: (a) => (a[0] === "api" && a[1] !== "repos/o/r/commits/main" && readsRowsSince(a) === null ? `${MERGE}\tDanBeckDev\n${BRANCH}\tDanBeckDev\n` : fakeGh(a)), repo: "o/r" })(
-    { from: new Date("2026-09-03T00:00:00Z"), to: NOW });
+  world.tail.classes.commitLogins = [{ sha: MERGE, login: "DanBeckDev" }, { sha: BRANCH, login: "DanBeckDev" }];
+  const human = gatherChanges({ git, repo: "o/r" })({ from: new Date("2026-09-03T00:00:00Z"), to: NOW });
   assert.equal(buildLedger(human).count, 1, "positive control: the same change with a human commit on the branch IS counted");
 });

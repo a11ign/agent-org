@@ -1,4 +1,4 @@
-// no-token: gh -- a fake `run` stands for `gh`; nothing reaches GitHub, git or herdr
+// no-token: gh -- the reads and writes are the fake code host's, seeded with a world (A11-160, step 9); nothing reaches GitHub, git or herdr
 /**
  * #5098: A FAILURE SHARED BY OPEN PULL REQUESTS MUST BE ONE THE PRs DID NOT CAUSE, and a hold is a reading of its incident row.
  *
@@ -10,10 +10,17 @@
  * THE FIXTURES BELOW ARE THOSE JOBS' REAL LOGS (a11ign/control runs 38142093391 and 38145327395, `gh api repos/a11ign/control/actions/jobs/<id>/logs`), trimmed to the lines
  * that decide the signature and left byte-for-byte. Every test reaches the code from `sharedFailuresNow`, the gate's own call, with the same rollup shape the gate reads.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { sharedFailuresNow } from "../work-gate/causes/org-health-github-incident.ts";
-import { connectionOf, readsRowsByLabel, type FakeRow } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
+
+/** A row as a test writes it: the fields that decide the hold, the rest are the world's defaults. */
+type SeededRow = { number: number; state: "OPEN" | "CLOSED"; createdAt: string; closedAt?: string; body: string; labels: string[] };
 
 const NOW = Date.parse("2026-10-11T17:00:00Z");
 const MINUTE = 60_000;
@@ -92,37 +99,35 @@ const pr = (repoKey: string, number: number, checks: ReturnType<typeof failing>[
 const order = (repoKey: string, number: number, session: string) =>
   ({ cause: "pr-checks-failing", subject: `pr-${repoKey}#${number}`, session, discriminator: "red", prompt: "A CHECK IS RED." });
 
-/** A `gh` fake: jobs by id, changed files by PR, incident rows by state; every write is recorded. */
-function fakeGh({ jobs = {}, changed = {}, rows = [] }: { jobs?: Record<number, Job>; changed?: Record<number, string[]>; rows?: FakeRow[] } = {}) {
-  const writes: string[][] = [];
-  const store = rows.map((row) => ({ ...row }));
-  const run = (args: string[]): string => {
-    const read = readsRowsByLabel(args);
-    if (read !== null) return connectionOf(store.filter((r) => String(r.state).toUpperCase() === read.state));
-    const path = args.find((a) => a.startsWith("repos/")) ?? "";
-    const job = /actions\/jobs\/(\d+)(\/logs)?$/.exec(path);
-    if (job !== null) {
-      const found = jobs[Number(job[1])];
-      if (found === undefined) throw new Error("404");
-      return job[2] === undefined ? JSON.stringify({ steps: [{ name: "Set up job", conclusion: "success" }, { name: found.failed, conclusion: "failure" }] }) : found.log;
-    }
-    const files = /pulls\/(\d+)\/files/.exec(path);
-    if (files !== null) return JSON.stringify((changed[Number(files[1])] ?? ["README.md"]).map((filename) => ({ filename })));
-    if (/pulls\/\d+$/.test(path)) return JSON.stringify({ state: "open", head: { sha: "abc" }, base: { ref: "main" } });
-    // #5405: the Project-membership read a board write makes first. No fixture issue is on the board, so each boarding adds it.
-    if (args.includes("graphql") && args.some((a) => a.includes("projectItems"))) return JSON.stringify({ data: { repository: { issue: { projectItems: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } } });
-    writes.push(args);
-    if (args[0] === "issue" && args[1] === "create") {
-      store.push({ number: 900 + store.length, state: "OPEN", createdAt: at(0), body: args[args.indexOf("--body") + 1], labels: ["ci-shared-failure"] });
-      return "https://github.com/a11ign/a11ign/issues/900";
-    }
-    return "";
+/**
+ * The fake code host in place, its world holding: the jobs by id (the first failed step and the log), the files each pull request changes (`changed`, a `README.md` for one a test names nothing for), and the
+ * incident rows. `run` is the `run` the caller is handed, which the fake code host never calls. What the gate wrote is the world's: rows filed, labels created, rows on the board.
+ */
+function fakeGh({ jobs = {}, changed = {}, rows = [] }: { jobs?: Record<number, Job>; changed?: Record<number, string[]>; rows?: SeededRow[] } = {}) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.now = () => NOW;
+  world.nextNumber = 900 + rows.length;
+  for (const row of rows) world.rows.set(row.number, fakeRow(world, row.number, { ...row, closedAt: row.closedAt ?? null }));
+  for (const [id, job] of Object.entries(jobs)) world.tail.classes.jobs.set(id, { failedStep: job.failed, log: job.log });
+  substituteCodeHost(host);
+  const run = (): string => { throw new Error("the fake code host acts on its own state: no run is made"); };
+  /** The pull requests' changed files are seeded as the gate meets them (a number nobody named changes `README.md`). */
+  const seedFiles = (prs: { repo: string; number: number }[]) => {
+    for (const { repo, number } of prs) if (!world.tail.classes.pullFiles.has(`${repo}#${number}`)) world.tail.classes.pullFiles.set(`${repo}#${number}`, changed[number] ?? ["README.md"]);
   };
-  return { run, writes, store };
+  const seeded = rows.length;
+  /** Everything the gate changed: the rows it filed, the labels it created, the cards it put on the board. */
+  const writes = (): string[] => [...[...world.rows.values()].slice(seeded).map((row) => `filed #${row.number}`), ...world.labelsCreated.map((label) => `label ${label}`),
+    ...[...world.rows.values()].filter((row) => row.onBoard).map((row) => `boarded #${row.number}`)];
+  return { run, world, seedFiles, writes, seededRows: seeded };
 }
-const tick = (orders: object[], prs: object[], g: ReturnType<typeof fakeGh>) => sharedFailuresNow(orders, prs, { run: g.run, nowMs: NOW }) as { subject: string; prompt: string; session: string }[];
+const tick = (orders: object[], prs: object[], g: ReturnType<typeof fakeGh>) => {
+  g.seedFiles(prs as { repo: string; number: number }[]);
+  return sharedFailuresNow(orders, prs, { run: g.run, nowMs: NOW }) as { subject: string; prompt: string; session: string }[];
+};
 const subjects = (orders: { subject: string }[]) => orders.map((o) => o.subject);
-const filed = (g: ReturnType<typeof fakeGh>) => g.writes.filter((w) => w[0] === "issue" && w[1] === "create").length;
+const filed = (g: ReturnType<typeof fakeGh>) => g.writes().filter((w) => w.startsWith("filed ")).length;
 
 /** control#53 and control#58 exactly as the gate saw them: a `checks` job with its own failing test, and the `gate` roll-up. */
 const control = () => ({
@@ -137,7 +142,7 @@ test("#5098 THE REAL LOGS: control#53 and control#58 fail different tests of the
   const g = fakeGh({ jobs, changed: { 53: ["packages/control/src/fleet-watch.test.ts"], 58: ["packages/control/src/fleet-converge.ts"] } });
   assert.deepEqual(subjects(tick(orders, prs, g)), ["pr-control#53", "pr-control#58"]);
   assert.equal(filed(g), 0, "no incident row");
-  assert.deepEqual(g.writes, [], "nothing is written");
+  assert.deepEqual(g.writes(), [], "nothing is written");
 });
 
 test("#5098 THE ROLL-UP: PRs whose only common line is the `gate` job's are not grouped, even when its log is the only one read", () => {
@@ -176,7 +181,7 @@ test("#5098 OUTSIDE THE DIFF: two PRs failing the SAME test in a file neither ch
   assert.equal(filed(touched), 0);
   // the diff cannot be read: the failure is not SHOWN to be outside it
   const unread = fakeGh(SAME_FILES);
-  unread.run = ((run) => (args: string[]) => (/\/files/.test(args.join(" ")) ? (() => { throw new Error("403"); })() : run(args)))(unread.run);
+  for (const { repo, number } of bothRed) unread.world.tail.classes.pullFiles.set(`${repo}#${number}`, new Error("403"));
   assert.deepEqual(subjects(tick(bothOrders, bothRed, unread)), ["pr-control#61", "pr-control#62"]);
 });
 
@@ -189,7 +194,7 @@ test("#5098 SETUP: two PRs failing the same install step ARE grouped, whatever t
   assert.equal(filed(g), 1);
 });
 
-const rowFor = (g: ReturnType<typeof fakeGh>) => g.store[0];
+const rowFor = (g: ReturnType<typeof fakeGh>) => g.world.rows.get(900 + g.seededRows)!;
 
 test("#5098 CLOSING THE INCIDENT RELEASES THE HOLDS AT ONCE, and the signature is not filed again for 24h", () => {
   const first = fakeGh(SETUP);
@@ -217,7 +222,7 @@ test("#5098 A HOLD WAITS FOR ITS ROW (#1557): past 15 minutes, an open row still
   const first = fakeGh(SETUP);
   tick(bothOrders, bothRed, first);
   const body = String(rowFor(first).body);
-  const row = (ageMin: number, labels: string[]): FakeRow => ({ number: 900, state: "OPEN", createdAt: at(ageMin * MINUTE), body, labels });
+  const row = (ageMin: number, labels: string[]): SeededRow => ({ number: 900, state: "OPEN", createdAt: at(ageMin * MINUTE), body, labels });
   const young = fakeGh({ ...SETUP, rows: [row(14, ["ci-shared-failure"])] });
   assert.deepEqual(tick(bothOrders, bothRed, young), [], "14 minutes: still held");
   const old = fakeGh({ ...SETUP, rows: [row(16, ["ci-shared-failure"])] });
@@ -229,7 +234,8 @@ test("#5098 A HOLD WAITS FOR ITS ROW (#1557): past 15 minutes, an open row still
 
 test("#5098 A HOLD WITH NO ROW BEHIND IT IS NOT A HOLD: when the incident row cannot be filed the orders go out", () => {
   const g = fakeGh(SETUP);
-  const refusing = (args: string[]) => (args[0] === "issue" && args[1] === "create" ? (() => { throw new Error("rate limited"); })() : g.run(args));
-  const out = sharedFailuresNow(bothOrders, bothRed, { run: refusing, nowMs: NOW, }) as { subject: string }[];
+  g.world.failures.set("fileSharedFailureRow", new Error("rate limited"));
+  g.seedFiles(bothRed);
+  const out = sharedFailuresNow(bothOrders, bothRed, { run: g.run, nowMs: NOW }) as { subject: string }[];
   assert.deepEqual(subjects(out), ["pr-control#61", "pr-control#62"]);
 });

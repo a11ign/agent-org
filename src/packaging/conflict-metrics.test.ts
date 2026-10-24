@@ -1,4 +1,4 @@
-// no-token: gh
+// no-token: gh -- `composeConflictMetrics` is driven over the fake code host's pull requests (A11-160, step 9); the live `conflictMetrics` is never called here
 /**
  * #466 (C5): conflict metrics, READ FROM THE REPOSITORY rather than reported by a session.
  *
@@ -11,16 +11,23 @@
  * against REAL commits already in this repository's history — the same idiom `board-report.test.ts` uses
  * for `whatMerged`'s real `git(["rev-parse", ...])` call, rather than mocking a wrapper this file does not
  * make injectable. #1407: `conflictMetrics` is the LIVE entry and
- * no test here calls it. `composeConflictMetrics` is the same composition with the `gh` listing handed in, and it
- * is driven with recorded listings, so a local run makes no `gh` call.
+ * no test here calls it. `composeConflictMetrics` is the same composition with the listing handed in, and it
+ * is driven over the fake code host's pull requests, so a local run makes no `gh` call.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mergeLifetimeMinutes, hotspotFiles, mergedPRNeededReconciliation, composeConflictMetrics, PR_WINDOW_LIMIT, REPO,
 } from "../board-data.ts";
 import { readFileSync } from "node:fs";
-import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import type { SinceRead } from "../plugins/contracts/code-host-rows.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { type FakeRowPull } from "../plugins/fakes/code-host-rows.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 // --- mergeLifetimeMinutes: pure ---
 
@@ -121,13 +128,13 @@ test("mergedPRNeededReconciliation: a bogus sha is unresolvable (null), not thro
   assert.equal(mergedPRNeededReconciliation({ number: 1, mergeCommit: { oid: "0".repeat(40) } }), null);
 });
 
-// --- composeConflictMetrics: THE COMPOSED FIGURE, driven with recorded `pullRequests` connection answers (#1407, #5076) ---
+// --- composeConflictMetrics: THE COMPOSED FIGURE, driven over the fake code host's pull requests (#1407, #5076; A11-160, step 9) ---
 //
 // It was live. `conflictMetrics(since)` ran `gh pr list --limit 500 --json ...files` searches on every local run
 // (worker-capture's census on #1275), and with no credentials it FAILED rather than skipped, because a refusal that
-// is not `gh auth login` was rethrown. The composition is now driven with a `run` that answers each connection read from
-// a listing this test writes, and every argv the composition sent is asserted. #5076: the three windows are `pullRequests`
-// connections (`created` newest-created first; `merged` and `closed` newest-updated first), not `--search <q>:>=<since>`.
+// is not `gh auth login` was rethrown. The composition is now driven over the fake code host's world: a case seeds the pull requests a window
+// holds, and the three windows are the code host's `readRowsSince` reads (`created` newest-created first; `merged` and `closed` newest-updated first), each asked with its states, its order and its page bound.
+// Which `gh` arguments a window is, and how GitHub's pages are read, are the plugin's tests (`plugins/github/rows/rows-since.test.ts`).
 //
 // WHAT THIS CANNOT CATCH: GitHub's real answer -- the field names the connection yields, how it orders rows it has updated.
 // That is still exercised where it always mattered: `board-report.ts` calls the live `conflictMetrics` for every board
@@ -135,56 +142,42 @@ test("mergedPRNeededReconciliation: a bogus sha is unresolvable (null), not thro
 
 const SINCE = "2026-09-08T00:00:00.000Z";
 
-/** Which of the three windows a request is: `created` reads every state by creation, `merged` the MERGED state, `closed` the CLOSED one. */
-function qualifierOf(args: string[]): string {
-  const asked = readsRowsSince(args);
-  if (asked === null) throw new Error(`no recorded listing for: ${args.join(" ")}`);
-  return asked.orderBy === "CREATED_AT" ? "created" : asked.states.join(",") === "MERGED" ? "merged" : "closed";
-}
+/** The run `composeConflictMetrics` is handed: the fake code host acts on its own state, so one that is reached is a mistake. */
+const NO_RUN = (): string => { throw new Error("the fake code host answers from its world, never through the run it is handed"); };
 
-/** The newest-first order a connection answers in: by the field the window is read by. */
-const newestFirst = (rows: Record<string, unknown>[], field: string) => [...rows].sort((a, b) => Date.parse(String(b[field])) - Date.parse(String(a[field])));
+/** A pull request as the world holds it: `merged` with its `mergedAt`, closed without merging (`closedAt` alone), or open. */
+type Seed = Partial<FakeRowPull> & { number: number; createdAt: string };
 
-/** A `run` answering each window from `byQualifier` (the pull requests that window's states hold, in the shape `gh pr list --json` gave), keeping every argv. */
-function listingRun(byQualifier: Record<string, Record<string, unknown>[]>) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    const qualifier = qualifierOf(args);
-    const answer = byQualifier[qualifier];
-    if (!answer) throw new Error(`no recorded listing for: ${args.join(" ")}`);
-    // a pull request is never updated before it merged or closed: `updatedAt` defaults to the latest of its own times
-    const stamped = answer.map((row) => ({ updatedAt: row.mergedAt ?? row.closedAt ?? row.createdAt, ...row }));
-    return sinceAnswer(args, newestFirst(stamped, qualifier === "created" ? "createdAt" : "updatedAt") as never);
-  };
-  return { run, calls };
+/** The fake code host in place with its rows WATCHED, holding `pulls`. `asks` are the windows the composition read, in order, as the code host was asked. */
+function windowWorld(pulls: Seed[]) {
+  const host = createFakeCodeHost();
+  for (const seed of pulls) fakePull(host.rowsWorld, seed.number, { title: "fixture", ...seed });
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { asks: () => watched.calls.filter((call) => call.op === "readRowsSince").map((call) => call.request.ask as SinceRead) };
 }
 
 // #503 and #502 are the REAL merge commits the reconciliation tests above already use; the rest is fixture.
-const RECONCILED = { number: 503, title: "fixture", createdAt: "2026-09-08T00:00:00Z", mergedAt: "2026-09-08T00:30:00Z",
-  closedAt: "2026-09-08T00:30:00Z", mergeCommit: { oid: "5fd57e051db0784fe23d24bf91700d8ce681f69f" },
-  files: [{ path: "a.mjs" }] };
-const CLEAN = { number: 502, title: "fixture", createdAt: "2026-09-08T00:00:00Z", mergedAt: "2026-09-08T02:00:00Z",
-  closedAt: "2026-09-08T02:00:00Z", mergeCommit: { oid: "67e4022226c35629a319d3eade62a0d6460fd784" },
-  files: [{ path: "a.mjs" }, { path: "b.mjs" }] };
-const NO_COMMIT = { number: 9001, title: "fixture", createdAt: "2026-09-08T00:00:00Z", mergedAt: "2026-09-08T00:10:00Z",
-  closedAt: "2026-09-08T00:10:00Z", mergeCommit: null, files: [{ path: "a.mjs" }] };
-const CLOSED = { number: 9002, title: "fixture", createdAt: "2026-09-08T01:00:00Z", mergedAt: null,
-  closedAt: "2026-09-08T01:05:00Z", mergeCommit: null, files: [{ path: "c.mjs" }] };
+const RECONCILED: Seed = { number: 503, createdAt: "2026-09-08T00:00:00Z", merged: true, mergedAt: "2026-09-08T00:30:00Z",
+  closedAt: "2026-09-08T00:30:00Z", mergeCommit: "5fd57e051db0784fe23d24bf91700d8ce681f69f", files: ["a.mjs"] };
+const CLEAN: Seed = { number: 502, createdAt: "2026-09-08T00:00:00Z", merged: true, mergedAt: "2026-09-08T02:00:00Z",
+  closedAt: "2026-09-08T02:00:00Z", mergeCommit: "67e4022226c35629a319d3eade62a0d6460fd784", files: ["a.mjs", "b.mjs"] };
+const NO_COMMIT: Seed = { number: 9001, createdAt: "2026-09-08T00:00:00Z", merged: true, mergedAt: "2026-09-08T00:10:00Z",
+  closedAt: "2026-09-08T00:10:00Z", files: ["a.mjs"] };
+const CLOSED: Seed = { number: 9002, createdAt: "2026-09-08T01:00:00Z", merged: false, mergedAt: null,
+  closedAt: "2026-09-08T01:05:00Z", files: ["c.mjs"] };
+/** In the CLOSED state AND carrying a `mergedAt`, as GitHub's old `closed:` listing returned merged pull requests: created before the window, so only the `closed` window reads it, and the caller must not count it as closed unmerged. */
+const CLOSED_BUT_MERGED: Seed = { number: 9003, createdAt: "2026-09-01T00:00:00Z", merged: false, mergedAt: "2026-09-08T03:00:00Z",
+  closedAt: "2026-09-08T03:00:00Z", files: ["d.mjs"] };
 
-test("composeConflictMetrics: THE COMPOSED SHAPE over recorded listings -- every connection read, and every figure", () => {
-  const { run, calls } = listingRun({
-    created: [RECONCILED, CLEAN, NO_COMMIT, CLOSED],
-    merged: [RECONCILED, CLEAN, NO_COMMIT],
-    closed: [RECONCILED, CLEAN, NO_COMMIT, CLOSED], // a listing that carries merged PRs too: the caller keeps only those with no `mergedAt`
-  });
-  const result = composeConflictMetrics(SINCE, { run });
-  assert.deepEqual(calls.map((args) => readsRowsSince(args)), [
-    { kind: "pullRequests", states: ["OPEN", "CLOSED", "MERGED"], orderBy: "CREATED_AT", label: null, repo: REPO, after: null },
-    { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", label: null, repo: REPO, after: null },
-    { kind: "pullRequests", states: ["CLOSED"], orderBy: "UPDATED_AT", label: null, repo: REPO, after: null },
-  ], "the three connection reads the live call makes, in order, each with its states and its order");
-  assert.deepEqual(calls.filter((args) => args.includes("--search") || args.includes("--label")), [], "and none is a GitHub search (#5076)");
+test("composeConflictMetrics: THE COMPOSED SHAPE over the world's pull requests -- every window read, and every figure", () => {
+  const { asks } = windowWorld([RECONCILED, CLEAN, NO_COMMIT, CLOSED, CLOSED_BUT_MERGED]);
+  const result = composeConflictMetrics(SINCE, { run: NO_RUN });
+  assert.deepEqual(asks().map(({ kind, states, orderBy, repo, since, maxPages }) => ({ kind, states, orderBy, repo, since, maxPages })), [
+    { kind: "pullRequests", states: ["OPEN", "CLOSED", "MERGED"], orderBy: "CREATED_AT", repo: REPO, since: SINCE, maxPages: PR_WINDOW_LIMIT / 100 },
+    { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo: REPO, since: SINCE, maxPages: PR_WINDOW_LIMIT / 100 },
+    { kind: "pullRequests", states: ["CLOSED"], orderBy: "UPDATED_AT", repo: REPO, since: SINCE, maxPages: PR_WINDOW_LIMIT / 100 },
+  ], "the three window reads the live call makes, in order, each with its states, its order and its page bound");
   assert.equal(result.since, SINCE);
   assert.ok(result.method.length > 20, "the method must be a real sentence, not a placeholder");
   assert.equal(result.opened, 4);
@@ -192,7 +185,7 @@ test("composeConflictMetrics: THE COMPOSED SHAPE over recorded listings -- every
   assert.equal(result.closedUnmerged, 1, "a merged PR in the `closed:` listing is not closed-unmerged");
   assert.equal(result.lifetimeMinutes.count, 3);
   assert.deepEqual(result.hotspotFiles, [{ path: "a.mjs", prCount: 3 }, { path: "b.mjs", prCount: 1 },
-    { path: "c.mjs", prCount: 1 }], "deduped by PR number across the three listings");
+    { path: "c.mjs", prCount: 1 }], "deduped by PR number across the three listings, and without the merged pull request the `closed` window also held");
   assert.equal(result.reconciliation.of, 3);
   // THE REFUSE-RATHER-THAN-ZERO PROPERTY: the merge with no commit is `unresolvable`, never clean. #503 and #502
   // resolve only with full history; a shallow checkout reads all three as unresolvable, never as clean.
@@ -210,16 +203,14 @@ test("composeConflictMetrics with no run is REFUSED by name, before any read -- 
 });
 
 test("a window that needs more than PR_WINDOW_LIMIT rows is refused as possibly cut short; one that fits its pages is read (#5076)", () => {
-  // Each row is created inside the window, newest first, so the read keeps asking for pages until the window ends.
-  const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ number: i + 1, files: [], createdAt: new Date(Date.parse(SINCE) + (n - i) * 1000).toISOString() }));
-  const pages = (n: number) => Math.ceil(n / 100);
-  const over = listingRun({ created: rows(PR_WINDOW_LIMIT + 1), merged: [], closed: [] });
-  assert.throws(() => composeConflictMetrics(SINCE, { run: over.run }), /may be cut short/);
-  assert.equal(over.calls.length, pages(PR_WINDOW_LIMIT), "it read its five pages and no more");
-  const at = listingRun({ created: rows(PR_WINDOW_LIMIT), merged: [], closed: [] });
-  assert.equal(composeConflictMetrics(SINCE, { run: at.run }).opened, PR_WINDOW_LIMIT,
+  // Each pull request is created inside the window, so the `created` window holds all of them.
+  const pulls = (n: number): Seed[] => Array.from({ length: n }, (_, i) => ({ number: i + 1, createdAt: new Date(Date.parse(SINCE) + (n - i) * 1000).toISOString() }));
+  const over = windowWorld(pulls(PR_WINDOW_LIMIT + 1));
+  assert.throws(() => composeConflictMetrics(SINCE, { run: NO_RUN }), /may be cut short/);
+  assert.deepEqual(over.asks().map((ask) => [ask.orderBy, ask.maxPages]), [["CREATED_AT", PR_WINDOW_LIMIT / 100]], "it asked for its five pages and no more, and the refusal stopped the composition at the first window");
+  windowWorld(pulls(PR_WINDOW_LIMIT));
+  assert.equal(composeConflictMetrics(SINCE, { run: NO_RUN }).opened, PR_WINDOW_LIMIT,
     "the positive control: exactly the limit is a whole window, which the connection can PROVE (no next page) where a bare list length could not");
-  assert.equal(at.calls.filter((args) => qualifierOf(args) === "created").length, pages(PR_WINDOW_LIMIT), "paged 100 at a time");
 });
 
 test("wiring: conflictMetrics is the live entry and hands in gh; the composition calls no gh of its own", () => {

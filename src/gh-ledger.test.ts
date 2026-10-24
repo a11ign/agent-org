@@ -9,14 +9,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import {
   ALARM_FRACTION, NO_CALLER, NO_VERDICT, POOL_POINTS, QUEUED_EXIT, QUEUE_DIR, alarmLine, attachFollowUps, callerScript, dueCalls, ghQueueTick, parseLedger, parseRollup,
-  perHour, perHourCallers, poolAlarms, readGroups, readQueue, recordPoolAlarms, refusalKind, renderByQuery, renderByRead, retryDue, rollupPathOf, settle, topQueries, topSpender, verdictOf, UNNAMED_QUERY, type QueuedCall, type RunQueued,
+  perHour, perHourCallers, poolAlarms, readGroups, readQueue, recordPoolAlarms, refusalKind, renderByQuery, renderByRead, retryDue, rollupPathOf, settle, spawnQueued, topQueries, topSpender, verdictOf, UNNAMED_QUERY, type QueuedCall, type RunQueued,
 } from "./gh-ledger.ts";
 
 const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
@@ -731,4 +731,33 @@ test("agent-org#1618: `--by-query` is the command that prints the table for a wi
   assert.match(all.stdout, /repository\.issue\.closedByPullRequestsReferences\n$/);
   assert.match(run("--since", "2999-01-01T00:00:00Z").stdout, /no graphql calls/, "the window bounds the table");
   assert.equal(run("--since", "not a time").status, 2);
+});
+
+// A11-160 (step 9): the process of the retry is the code host's; the account, the directory, the stdin and the bound are the retry's, and they reach `gh` as they did through `spawnSync`.
+test("A11-160: spawnQueued runs `gh` as the queue's account, from the call's directory, with its stdin and its session, and answers how it ended", () => {
+  const root = tmpDir("gh-ledger-spawn-queued-");
+  const bin = join(root, "bin");
+  const queue = join(root, "cfg", QUEUE_DIR);
+  const cwd = join(root, "work");
+  mkdirSync(bin);
+  mkdirSync(queue, { recursive: true });
+  mkdirSync(cwd);
+  writeFileSync(join(bin, "gh"), ["#!/bin/sh", "pwd", "echo \"cfg=$GH_CONFIG_DIR retry=$A11Y_GH_QUEUE_RETRY ws=$HERDR_WORKSPACE_ID session=$CLAUDE_CODE_SESSION_ID pr_open=$A11Y_PR_OPEN\"", "echo \"args=$*\"", "cat", "echo \"fatal: nope\" >&2", "exit 3", ""].join("\n"), { mode: 0o755 });
+  writeFileSync(join(queue, "5-1.stdin"), "the comment\nbody");
+  const call = (over: Partial<QueuedCall>): QueuedCall => ({ id: "5-1", dir: queue, argv: ["issue", "comment", "7", "--body-file", "-"], then: [], queuedAtS: 5, resetAtS: 6, attempts: 0, kind: "primary", resource: "graphql", cwd, workspace: "w9", session: "s1", ...over }) as QueuedCall;
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}:${saved}`;
+  try {
+    const made = spawnQueued(call({}), ["issue", "comment", "7", "--body-file", "-"]);
+    assert.equal(made.status, 3, "its exit status, as `spawnSync` gave it");
+    assert.deepEqual(made.stdout?.split("\n"), [cwd, `cfg=${join(root, "cfg")} retry=1 ws=w9 session=s1 pr_open=`, "args=issue comment 7 --body-file -", "the comment", "body"], "the call's directory, the account whose queue it is, its workspace and session, and the stdin it was queued with");
+    assert.equal(made.stderr, "fatal: nope\n", "its stderr, for the refusal the retry reads");
+    const created = spawnQueued(call({ argv: ["pr", "create", "--title", "t"], workspace: "-", session: "-" }), ["pr", "create", "--title", "t"]);
+    assert.match(created.stdout ?? "", /pr_open=1/, "a queued `pr create` carries the opener's flag (a call with no workspace or session sets neither, and the ambient ones stand, as before)");
+    assert.deepEqual(spawnQueued(call({ cwd: join(root, "gone") }), ["issue", "view", "1"]), { status: 1, stderr: `the directory the call was made from is gone: ${join(root, "gone")}` }, "a directory that is gone is a failure, and nothing is started");
+    rmSync(join(queue, "5-1.stdin"));
+    assert.match(spawnQueued(call({}), ["issue", "view", "1"]).stdout ?? "", /args=issue view 1\n$/, "a call with no stdin file is handed an empty one");
+  } finally {
+    process.env.PATH = saved;
+  }
 });

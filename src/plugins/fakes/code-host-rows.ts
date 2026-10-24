@@ -4,15 +4,17 @@
 // THE FAKE ACTS ON ITS OWN STATE (`acts: "on-its-own-state"`): an operation reads and writes the rows, pull requests and merge queue of a {@link FakeRowsWorld} and ignores the `run` its caller hands it,
 // so a core test of the code that consumes a row, a comment, a label or a queue entry seeds that world and says nothing of GitHub's own answers. It models what row mode's core logic asks of a tracker
 // and a queue: rows with labels, comments, board membership and blockers; incidents; the open pull requests and the fields asked of them; the arming seat and the merge queue. An operation whose answer is
-// GitHub's own shape (a check run's log, the reviews of a pull request, the text of a file at a ref) is NOT MODELED, and throws naming itself, so a test that needs one is written against the plugin.
+// GitHub's own shape (a check run's log, the text of a file at a ref) is NOT MODELED, and throws naming itself, so a test that needs one is written against the plugin.
 //
 // THE PORT'S VOCABULARY IS THE ROWS' LABELS: an item's state is the label among `backlog`, `ready`, `in-progress` and `parked` that it carries, and its flags are `priority`, `hold`,
 // `out-of-release`, `answer:<session>` and `lane:<owner>`, as ADR 0046 spells them. A project that spells its labels otherwise is the plugin's to map.
 import type { ApiBudget, Decision, ItemEvent, ItemRef, OpenItemSummary, PortEvent, StateChange, TicketFlag, TicketItem, TicketState } from "../../ticket-port/port.ts";
 import type { Pool } from "../../api-pool.ts";
+import { WindowCutShort } from "../../ticket-port/window-cut-short.ts";
 import type { ApprovalReview, ClosingIssue, CodeHostRows, GithubTicketAdapter, GuardCheckRun, QueueEntry, QueuePull, SinceRead } from "../contracts/code-host-rows.ts";
 import { ciOperations, emptyCi, type FakeCi } from "./code-host-ci.ts";
 import { mergeOperations } from "./code-host-merge.ts";
+import { approvedUnqueuedOperations } from "./code-host-approved-unqueued.ts";
 import { emptyGate, gateOperations, type FakeGate } from "./code-host-gate.ts";
 import { emptyClaim, claimOperations, type FakeClaim } from "./code-host-claim.ts";
 import { emptyFiling, filingOperations, type FakeFiling } from "./code-host-filing.ts";
@@ -20,6 +22,8 @@ import { emptyMisc, miscOperations, type FakeMisc } from "./code-host-misc.ts";
 import { emptyRules, rulesOperations, type FakeRules } from "./code-host-rules.ts";
 import { emptyWake, wakeOperations, type FakeWake } from "./code-host-wake.ts";
 import { emptyReports, reportOperations, type FakeReports } from "./code-host-reports.ts";
+import type { FakeTail } from "./code-host-tail.ts";
+import { emptyTail, tailOperations } from "./code-host-tail.ts";
 
 /** A row (an issue) as the fake holds it. */
 export type FakeRow = {
@@ -63,6 +67,11 @@ export type FakeRowPull = {
   /** The files it changes past the listing's first hundred, and the shas of its commits, oldest first (the gate pages the first and compares the second). */
   files?: string[];
   commits?: string[];
+  /** The sha it merged at, as a window read of merged pull requests selects it (`mergeCommit{oid}`). */
+  mergeCommit?: string;
+  /** The reviews it has (`state`, and when it was `submittedAt`) and when it entered the merge queue: what the approved-unqueued reading measures (`code-host-approved-unqueued.ts`). */
+  reviews?: { state: string; submittedAt: string }[];
+  queuedAt?: string[];
 };
 
 /** What a test seeds and reads: the rows and pull requests of the tracker's repository, the merge queue, and what the operations did. */
@@ -99,6 +108,8 @@ export type FakeRowsWorld = {
   deletedBranches: string[];
   /** Why a jump to the front of the merge queue is refused, or null. */
   jumpRefusal: string | null;
+  /** The reason the open pull requests cannot be listed (`readOpenPullHeads` then answers `read: false` with it, never an empty list), or null when they can. */
+  unreadOpenPulls?: string | null;
   /** What the work gate reads beyond rows and pull requests: a row's label history, the tracker's events, checks, runs and diffs (`code-host-gate.ts`). */
   gate: FakeGate;
   /** What wake, the claim and the filing of rows read beyond that (A11-160, step 7): `code-host-wake.ts`, `code-host-claim.ts`, `code-host-filing.ts`. */
@@ -109,6 +120,8 @@ export type FakeRowsWorld = {
   misc: FakeMisc;
   /** What the board, the health and retro readings, the DORA reader, the trace and the chairman's watch read beyond that (A11-160, step 8): `code-host-reports.ts`. */
   reports: FakeReports;
+  /** What the last callers of `src/` read beyond that (A11-160, step 9): `code-host-tail.ts`, one file per section. */
+  tail: FakeTail;
   /** The next number a created row gets, and the next id a comment gets. */
   nextNumber: number;
   nextCommentId: number;
@@ -117,7 +130,7 @@ export type FakeRowsWorld = {
 };
 
 export function emptyRowsWorld(repo: string = "fake/tracker"): FakeRowsWorld {
-  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, gate: emptyGate(), wake: emptyWake(), claim: emptyClaim(), filing: emptyFiling(), rules: emptyRules(), misc: emptyMisc(), reports: emptyReports(), nextNumber: 1, nextCommentId: 1, now: Date.now };
+  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, gate: emptyGate(), wake: emptyWake(), claim: emptyClaim(), filing: emptyFiling(), rules: emptyRules(), misc: emptyMisc(), reports: emptyReports(), tail: emptyTail(), nextNumber: 1, nextCommentId: 1, now: Date.now };
 }
 
 const STATES: readonly TicketState[] = ["backlog", "ready", "in-progress", "parked"];
@@ -220,7 +233,16 @@ const unmodeled = (operation: string) => (): never => {
 
 /** The nodes of a connection read, in the shape a caller reads them (`number`, `body`, `labels.nodes[].name`, `blockedBy.nodes[].number`). */
 const nodeOf = (row: FakeRow): any => ({ number: row.number, title: row.title, body: row.body, state: row.state, createdAt: row.createdAt, updatedAt: row.updatedAt ?? row.createdAt, closedAt: row.closedAt,
-  labels: { nodes: row.labels.map((name) => ({ name })) }, blockedBy: { nodes: row.blockedBy.map((number) => ({ number })) } });
+  labels: { nodes: row.labels.map((name) => ({ name })) }, blockedBy: { nodes: row.blockedBy.map((number) => ({ number })) }, comments: { nodes: row.comments.map(({ body }) => ({ body })) } });
+
+/**
+ * A connection read that SELECTS `comments(first:N)` is answered as GitHub answers it (A11-160, step 9): a row's first N comments, OLDEST first and whole (`id`, `body`, `createdAt`, `author`), and nothing
+ * of the rest. A row with more than N comments shows only the first N, which is the cut the claimed rows' reader re-reads the end of. A select that names no `comments(first:N)` keeps `nodeOf`'s bodies.
+ */
+const withSelectedCommentsPage = (node: any, row: FakeRow, select: string | undefined): any => {
+  const first = /comments\(first:(\d+)\)/.exec(select ?? "")?.[1];
+  return first === undefined ? node : { ...node, comments: { nodes: row.comments.slice(0, Number(first)).map((c) => ({ id: c.id, body: c.body, createdAt: c.createdAt, author: { login: c.author ?? "" } })) } };
+};
 
 const pullOf = (world: FakeRowsWorld, number: number): FakeRowPull => {
   const pull = world.pulls.get(number);
@@ -231,7 +253,7 @@ const pullOf = (world: FakeRowsWorld, number: number): FakeRowPull => {
 /** The fields of a pull request a caller names in a `--json` list, projected from what the fake holds. */
 function projected(pull: FakeRowPull, fields: string): Record<string, unknown> {
   const all: Record<string, unknown> = { number: pull.number, body: pull.body, headRefName: pull.headRefName, labels: pull.labels.map((name) => ({ name })), isDraft: pull.isDraft, state: pull.merged ? "MERGED" : "OPEN",
-    url: `https://github.com/fake/pull/${pull.number}`, comments: pull.comments.map((body) => ({ body })) };
+    url: `https://github.com/fake/pull/${pull.number}`, comments: pull.comments.map((body) => ({ body })), ...(pull.headRefOid === undefined ? {} : { headRefOid: pull.headRefOid }) };
   return Object.fromEntries(fields.split(",").filter((field) => field in all).map((field) => [field, all[field]]));
 }
 
@@ -267,14 +289,27 @@ function trackerOperations(world: FakeRowsWorld): Pick<CodeHostRows, "ticketAdap
       world.rows.set(number, fakeRow(world, number, { title, labels: [...labels], body }));
       return number;
     },
-    editComment: ({ id, body }) => {
+    // A write refused on one repository alone is `world.failures` naming `editComment <owner/name>` (the whole operation is refused by `editComment`).
+    editComment: ({ repo, id, body }) => {
+      const refused = world.failures.get(`editComment ${repo}`);
+      if (refused !== undefined) throw refused;
       const found = [...world.rows.values()].flatMap((row) => row.comments).find((c) => c.id === id);
       if (found === undefined) throw new Error(`the fake holds no comment ${id}`);
       found.body = body;
     },
     closeRowWithComment: ({ row, comment: text }) => closeWith(world, row, text),
-    commentsSince: ({ since }) => [...world.rows.values()].flatMap((row) => row.comments.filter((c) => Date.parse(c.createdAt) >= since).map((c) => ({ body: c.body, created_at: c.createdAt, issue_url: `https://api.github.com/repos/${world.repo}/issues/${row.number}` }))),
-    commentOnIssue: ({ issue, body }) => comment(Number(issue), body),
+    commentsSince: ({ repo, since }) => {
+      world.calls.push(`commentsSince ${repo}`);
+      // A tracker the world refuses (`failures` names `commentsSince <owner/name>`) is a list that could not be asked: `null`, as the real read answers a refused `run` (never `[]`).
+      if (world.failures.has(`commentsSince ${repo}`)) return null;
+      return [...world.rows.values()].flatMap((row) => row.comments.filter((c) => Date.parse(c.createdAt) >= since).map((c) => ({ body: c.body, created_at: c.createdAt, issue_url: `https://api.github.com/repos/${world.repo}/issues/${row.number}` })));
+    },
+    // A comment on a row of ANOTHER repository goes to that row, as `postRowComment` does (A11-160, step 9: the un-park comments on a keyed tracker's row).
+    commentOnIssue: ({ repo, issue, body }) => {
+      const foreign = repo === world.repo ? undefined : world.foreignRows.get(`${repo}#${issue}`);
+      if (foreign === undefined) comment(Number(issue), body);
+      else foreign.comments.push({ id: nextCommentId(world), body, createdAt: iso(world) });
+    },
     ensureTriageLabel: ({ label }) => { if (!world.labelsCreated.includes(label)) world.labelsCreated.push(label); },
     isIssueOnBoard: (number) => rowOf(world, number).onBoard,
     boardItemOf: (number) => (rowOf(world, number).onBoard ? { project: { number: 1 }, fieldValueByName: { name: rowOf(world, number).boardStatus } } : undefined),
@@ -304,12 +339,41 @@ const asListJsonOf = (node: Record<string, unknown>): Record<string, unknown> =>
 function sinceRows(world: FakeRowsWorld, ask: SinceRead): any[] {
   const field = ask.orderBy === "CREATED_AT" ? "createdAt" : "updatedAt";
   const nodes: any[] = ask.kind === "issues" ? [...world.rows.values()].map(nodeOf) : [...world.pulls.values()].map((pull) => ({ ...projected(pull, "number,body,headRefName,labels,isDraft"),
-    state: pull.merged ? "MERGED" : pull.closedAt != null ? "CLOSED" : "OPEN", createdAt: pull.createdAt, updatedAt: pull.updatedAt ?? pull.mergedAt ?? pull.closedAt ?? pull.createdAt, mergedAt: pull.mergedAt, closedAt: pull.closedAt ?? null }));
+    state: pull.merged ? "MERGED" : pull.closedAt != null ? "CLOSED" : "OPEN", createdAt: pull.createdAt, updatedAt: pull.updatedAt ?? pull.mergedAt ?? pull.closedAt ?? pull.createdAt, mergedAt: pull.mergedAt, closedAt: pull.closedAt ?? null,
+    ...sinceExtras(pull, ask.select) }));
   const from = ask.since === undefined ? 0 : Date.parse(ask.since);
   const names = (node: any): string[] => (Array.isArray(node.labels) ? node.labels : node.labels?.nodes ?? []).map((label: { name: string }) => label.name);
   const inWindow = nodes.filter((node) => (ask.states as readonly string[]).includes(node.state) && (ask.label === undefined || names(node).includes(ask.label)) && Date.parse(String(node[field])) >= from)
     .sort((a, b) => Date.parse(String(b[field])) - Date.parse(String(a[field])));
+  // A window of more rows than its pages hold is refused, as the connection refuses it (`rows-since.ts`): the rows past the last page are unseen, and a caller must not read them as absent.
+  const limit = (ask.maxPages ?? SINCE_DEFAULT_PAGES) * SINCE_PAGE_SIZE;
+  if (ask.since !== undefined && inWindow.length > limit) throw new WindowCutShort(`the ${ask.kind} of ${ask.repo} since ${ask.since}: more than ${limit} rows, so the window may be cut short`);
   return ask.newest === undefined ? inWindow : inWindow.slice(0, ask.newest);
+}
+
+/** The pages a window read may walk when its ask names no `maxPages` (the plugin's `SINCE_MAX_PAGES`). */
+const SINCE_DEFAULT_PAGES = 10;
+/** A connection page is 100 rows at most (the fake's `sincePageSize`). */
+const SINCE_PAGE_SIZE = 100;
+
+/** What a window read selects of a pull request beyond the fields every node carries: its title, the commit it merged at and the paths it changes, each only when the selection names it, in the connection's shape. */
+function sinceExtras(pull: FakeRowPull, select: string): Record<string, unknown> {
+  const asked = (field: string) => new RegExp(`\\b${field}\\b`).test(select);
+  return {
+    ...(asked("title") ? { title: pull.title ?? "" } : {}),
+    ...(asked("mergeCommit") ? { mergeCommit: pull.mergeCommit === undefined ? null : { oid: pull.mergeCommit } } : {}),
+    ...(asked("files") ? { files: { nodes: (pull.files ?? []).map((path) => ({ path })) } } : {}),
+  };
+}
+
+/**
+ * The rows `readClaimedRows` reads in `repo`: the world's own when none is named or it names the world's repository, and a keyed tracker's (`foreignRows`, keyed `<repo>#<number>`) when it names another
+ * one the world holds rows of. A repository the world holds none of reads as the world's own, as before a test could seed a second tracker's rows.
+ */
+function claimedRowsOf(world: FakeRowsWorld, repo: string | undefined): FakeRow[] {
+  const prefix = `${repo}#`;
+  const keyed = repo === undefined || repo === world.repo ? [] : [...world.foreignRows].filter(([key]) => key.startsWith(prefix)).map(([, row]) => row);
+  return keyed.length > 0 ? keyed : [...world.rows.values()];
 }
 
 /** The reads of rows by label and of windows of rows and pull requests. */
@@ -319,11 +383,11 @@ function listOperations(world: FakeRowsWorld): Pick<CodeHostRows, "forgetRefused
     forgetRefusedReads: () => undefined,
     isRowsByLabelRead: (args) => args[0] === "fake-rows-by-label",
     readUnlessRefused: ({ read }) => read(),
-    readRowsByLabel: ({ label, state, newest }) => {
+    readRowsByLabel: ({ label, state, newest, select }) => {
       const rows = [...world.rows.values()].filter((row) => row.state === state && row.labels.includes(label)).sort((a, b) => b.number - a.number);
-      return (newest === undefined ? rows : rows.slice(0, newest)).map(nodeOf);
+      return (newest === undefined ? rows : rows.slice(0, newest)).map((row) => withSelectedCommentsPage(nodeOf(row), row, select));
     },
-    readClaimedRows: () => [...world.rows.values()].filter((row) => row.state === "OPEN" && row.labels.includes("in-progress")).map((row) => ({ number: row.number, body: row.body,
+    readClaimedRows: ({ repo }) => claimedRowsOf(world, repo).filter((row) => row.state === "OPEN" && row.labels.includes("in-progress")).map((row) => ({ number: row.number, body: row.body,
       labels: row.labels.map((name) => ({ name })), blockedBy: { nodes: row.blockedBy.map((number) => ({ number })) } })),
     sincePageArgs: (ask, after) => ["fake-since-page", JSON.stringify({ ask, after })],
     isSinceRead: (args) => args[0] === "fake-since-page",
@@ -361,6 +425,7 @@ function pullOperations(world: FakeRowsWorld): Pick<CodeHostRows, "openPullField
       pull.comments.push(body);
     },
     readOpenPullHeads: (_repo, _run, limit) => {
+      if (world.unreadOpenPulls != null) return { read: false, reason: world.unreadOpenPulls };
       const pulls = open();
       if (pulls.length >= limit) return { read: false, reason: `there are ${limit} or more open pull requests, the listing limit` };
       return { read: true, pulls: pulls.map((pull) => ({ number: pull.number, url: `https://github.com/fake/pull/${pull.number}`, headRefName: pull.headRefName, labels: [...pull.labels] })) };
@@ -421,10 +486,10 @@ export function createFakeRows(world: FakeRowsWorld = emptyRowsWorld()): CodeHos
     ...rulesOperations(world),
     ...miscOperations(world),
     ...reportOperations(world),
+    ...tailOperations(world),
     latestApprovals,
     approvalFactsOf: unmodeled("approvalFactsOf"),
-    reviewsOf: unmodeled("reviewsOf"),
-    mergedWindowOf: unmodeled("mergedWindowOf"),
+    ...approvedUnqueuedOperations(world),
     redRunOfHead: unmodeled("redRunOfHead"),
     rerunFailedJobsOf: unmodeled("rerunFailedJobsOf"),
     pullTextOf: unmodeled("pullTextOf"),

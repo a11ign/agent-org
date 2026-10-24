@@ -1,4 +1,4 @@
-// no-token: gh -- nothing here runs `gh`; the pull requests are literal objects and the chairman's write is a fake `run`.
+// no-token: gh -- nothing here runs `gh`; the pull requests are literal objects and the chairman's write is made on the fake code host's world.
 /**
  * a11ign#5528, agent-org#1538: A CHECK WHOSE REMEDY IS A REVIEW IS NOT A CODE FAILURE.
  *
@@ -9,7 +9,7 @@
  * THE CONTROLS: (a) is the new routing and must FAIL on `main`, where no marker is read. (b)-(c) are the unchanged routing and must PASS on both.
  * (d) is the human marker, (e) a head that moved since the review.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { stallReasonOf, reviewGateOf } from "./pr-orders/pr-gate-readings.ts";
 import { perPullRequestOrders, fileReviewGatedHuman, reviewGatedHumanBrief, settledGreenOf, unrequiredRedOf } from "./pr-orders.ts";
@@ -17,6 +17,10 @@ import { clearedByOf, checkMarkersOf } from "./review-gate.ts";
 import { subjectRef } from "../review-attribution.ts";
 import { reviewGatedUnaskedReading, REVIEW_GATED_MINUTES } from "../org-health/overdue-readings.ts";
 import { reviewGatedFacts } from "./org-health.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");
 const HOUR = 60 * 60 * 1000;
@@ -68,22 +72,26 @@ test("(d) a failing check that says Cleared-by: human files the chairman's brief
   assert.equal(reviewerOrderFor(pr, orders), false);
   assert.equal(checksFailingOrderFor(orders), false);
 
-  const calls: string[][] = [];
+  const host = createFakeCodeHost();
+  host.rowsWorld.pulls.set(5528, { number: 5528, body: "", headRefName: "agent/x", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-16T00:00:00Z", comments: [] });
+  substituteCodeHost(host);
   const logged: string[] = [];
-  const filed = fileReviewGatedHuman([pr], { required: REQUIRED, run: (args: string[]) => { calls.push(args); return ""; }, log: (line: string) => logged.push(line) });
+  const noRun = (): string => { throw new Error("the fake code host acts on its own state: no run is made"); };
+  const filed = fileReviewGatedHuman([pr], { required: REQUIRED, run: noRun, log: (line: string) => logged.push(line) });
   assert.equal(filed, 1);
-  assert.deepEqual(calls[0].slice(0, 4), ["pr", "edit", "5528", "--repo"]);
-  assert.ok(calls[0].includes("needs:chairman"), "the brief carries the chairman's label");
-  const comment = calls[1];
-  assert.deepEqual(comment.slice(0, 3), ["pr", "comment", "5528"]);
-  const body = comment[comment.indexOf("--body") + 1];
+  // The argument lists of the two writes are the plugin's (`plugins/github/rows/chairman-brief-wire.test.ts`); here they are the world's label and comment.
+  const filedOn = host.rowsWorld.pulls.get(5528)!;
+  assert.ok(filedOn.labels.includes("needs:chairman"), "the brief carries the chairman's label");
+  assert.equal(filedOn.comments.length, 1, "and is ONE comment");
+  const body = filedOn.comments[0];
   assert.ok(body.includes("`src/a.ts` (+3 -1)"), "the brief names the diff");
   assert.ok(body.includes("`gate`"), "the brief names the check that asks for the human");
   assert.deepEqual(logged, []);
 
   // The same brief is not filed twice: its marker is on a comment already.
-  const again = fileReviewGatedHuman([{ ...pr, comments: [{ body: reviewGatedHumanBrief(pr).marker }] }], { required: REQUIRED, run: () => "", log: () => {} });
+  const again = fileReviewGatedHuman([{ ...pr, comments: [{ body: reviewGatedHumanBrief(pr).marker }] }], { required: REQUIRED, run: noRun, log: () => {} });
   assert.equal(again, 0);
+  assert.equal(filedOn.comments.length, 1, "and nothing more was written");
 });
 
 test("(e) a head that moved since the review is unmarked at the new head, so it is red again", () => {

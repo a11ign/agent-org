@@ -1,19 +1,25 @@
-// no-token: gh -- every `gh` call in this file is an injected fake tracker; the live read was run by hand and is pasted on the pull request (a11ign/a11ign#4126)
+// no-token: gh -- every read of the tracker in this file is the fake code host's (A11-160, step 9); the live read was run by hand and is pasted on the pull request (a11ign/a11ign#4126)
 // #4126 (child B of #4122): a second closed row under one `class:<id>` label is a repeat, and org-health offers it to `ceo` ONCE.
 //
-// THE FAKE TRACKER HONOURS `state` AND `labels`, because a fake that answers every argv accepts a query that asks for the wrong thing (the row's own warning).
+// THE FAKE TRACKER IS THE CODE HOST'S WORLD: its listing of closed rows honours the label the reader narrows to, the closed state and the page, because a fake that answers every query accepts one that asks for the wrong
+// thing (the row's own warning). What GitHub's REST listing is made of (an open row or a pull request handed back anyway, a body that is not a list) is the plugin's (`plugins/github/rows/class-row-reads.test.ts`).
 // POSITIVE CONTROLS: every "trips nothing" case has a twin that DOES trip, over the same tracker with one fact changed, so a reading that never trips turns
 // the twin red and one that always trips turns the case red. The mutations, both directions, are pasted in the pull request.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import {
   CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, groupByClass, parseFailureClasses, readClassRepeat, type ClassRepeatFact,
 } from "./class-repeat.ts";
 import { SIGNALS } from "./org-health/thresholds.ts";
 import { classRepeatReadings, orgHealthOrders, orgHealthReadings, orgHealthTick } from "./org-health/fleet-build-readings.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-08T14:00:00Z");
 const MINUTE = 60_000;
@@ -27,35 +33,31 @@ const REPO = "a11ign/a11ign";
 
 /** @param {number} agoMs @returns {string} */
 const closedAgo = (agoMs: number): string => new Date(NOW - agoMs).toISOString();
-/** @param {number} number @param {string[]} labels @param {number} agoMs @param {object} [over] */
-const closed = (number: number, labels: string[], agoMs: number, over: object = {}) => ({ number, state: "closed", closed_at: closedAgo(agoMs), pull_request: false, labels, ...over });
+/** A closed row of the tracker. @param {number} number @param {string[]} labels @param {number} agoMs @param {object} [over] */
+const closed = (number: number, labels: string[], agoMs: number, over: Partial<FakeRow> = {}): Partial<FakeRow> => ({ number, state: "CLOSED", closedAt: closedAgo(agoMs), labels, ...over });
+
+/** The runner the live tool hands the code host's operations. The fake acts on its world and never calls it. */
+const NO_GH = (): string => { throw new Error("the fake code host runs nothing"); };
 
 /**
- * A tracker that answers `gh api repos/<repo>/issues` the way GitHub does for the parameters the reader sends: `state` and `labels` filter, `per_page` cuts, the array is
- * newest-updated first. It records every call, and REFUSES a path it was not built for, so a reader that drifts to another endpoint is red.
- * @param {object[]} issues @param {{ hostile?: boolean, fail?: string }} [how] `hostile` ignores `state` (an open row comes back anyway); `fail` is the message every call throws
+ * The fake code host in place with `issues` as the rows of its world, newest-updated first as the tracker lists them. `calls()` is every listing of closed rows it was asked for, by the class label it narrowed to.
+ * @param {object[]} issues @param {{ notAListing?: boolean, fail?: string }} [how] `notAListing` makes the listing something that is not a list of rows; `fail` is the message every listing throws
  */
-function tracker(issues: object[], { hostile = false, fail = "" }: { hostile?: boolean; fail?: string; } = {}) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (fail) throw new Error(fail);
-    assert.equal(args[0], "api");
-    assert.equal(args.find((a) => a.startsWith("repos/")), `repos/${REPO}/issues`);
-    const param = (name: string) => args.flatMap((a, i) => (args[i - 1] === "-f" && a.startsWith(`${name}=`) ? [a.slice(name.length + 1)] : []))[0];
-    let rows = issues;
-    if (!hostile && param("state")) rows = rows.filter((r) => (r as any).state === param("state"));
-    if (param("labels")) rows = rows.filter((r) => (r as any).labels.includes(param("labels")));
-    return JSON.stringify(rows.slice(0, Number(param("per_page"))));
-  };
-  return { run, calls };
+function tracker(issues: Partial<FakeRow>[], { notAListing = false, fail = "" }: { notAListing?: boolean; fail?: string; } = {}) {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { rowsWorld: world } = host;
+  for (const issue of issues) world.rows.set(issue.number!, fakeRow(world, issue.number!, issue));
+  if (fail) world.failures.set("closedClassRowsOf", new Error(fail));
+  if (notAListing) world.tail.classes.notAListing = ["class-rows", "titled-rows"];
+  return { run: NO_GH, world, calls: () => world.calls.filter((call) => call.startsWith("closedClassRowsOf")) };
 }
 
 /** @param {object[]} issues @param {object} [io] */
-const factOf = (issues: object[], { how = {}, index = INDEX, now = NOW }: { how?: any; index?: any; now?: any } = {}) =>
+const factOf = (issues: Partial<FakeRow>[], { how = {}, index = INDEX, now = NOW }: { how?: any; index?: any; now?: any } = {}) =>
   readClassRepeat(tracker(issues, how).run, REPO, { root: "/project", read: () => index, now });
 /** @param {object[]} issues @param {object} [io] */
-const readingsOf = (issues: object[], io: object = {}) => classRepeatReadings({ now: NOW, classRepeat: factOf(issues, io) });
+const readingsOf = (issues: Partial<FakeRow>[], io: object = {}) => classRepeatReadings({ now: NOW, classRepeat: factOf(issues, io) });
 /** @param {import("./org-health.ts").Reading[]} readings */
 const orderTexts = (readings: import("./org-health/thresholds.ts").Reading[]) => orgHealthOrders(readings).map((o) => o.prompt);
 
@@ -106,8 +108,7 @@ test("a typo does not hide a repeat: the real class trips and the stranger is st
 test("a refused read of the labels or the file is unknown, never 'no repeats'", () => {
   const refusals = {
     "the labels are refused": factOf(TWO_IN_X, { how: { fail: "HTTP 403: API rate limit exceeded" } }),
-    "the listing is not JSON": readClassRepeat(() => "<html>not json</html>", REPO, { root: "/project", read: () => INDEX, now: NOW }),
-    "the listing is not a list": readClassRepeat(() => "{}", REPO, { root: "/project", read: () => INDEX, now: NOW }),
+    "the listing is not a list of rows": factOf(TWO_IN_X, { how: { notAListing: true } }),
     "the index is missing": readClassRepeat(tracker(TWO_IN_X).run, REPO, { root: "/project", read: () => { throw new Error("ENOENT"); }, now: NOW }),
     "the index is not an index": factOf(TWO_IN_X, { index: "{\"classes\": \"no\"}" }),
     "the index is not JSON": factOf(TWO_IN_X, { index: "not json" }),
@@ -123,10 +124,9 @@ test("a refused read of the labels or the file is unknown, never 'no repeats'", 
 });
 
 test("a failure on the PER-CLASS read is unknown too, not the cheap read's answer", () => {
-  let n = 0;
-  const base = tracker(TWO_IN_X).run;
-  const failsSecond = (args: string[]) => { if (++n === 2) throw new Error("HTTP 502"); return base(args); };
-  const fact = readClassRepeat(failsSecond, REPO, { root: "/project", read: () => INDEX, now: NOW });
+  const { world } = tracker(TWO_IN_X);
+  world.tail.classes.onClosedRowsRead = (_listing, classLabel) => { if (classLabel !== null) throw new Error("HTTP 502"); };
+  const fact = readClassRepeat(NO_GH, REPO, { root: "/project", read: () => INDEX, now: NOW });
   assert.ok("unreadable" in fact);
   assert.equal(classRepeatReadings({ now: NOW, classRepeat: fact })[0].status, "unknown");
 });
@@ -152,36 +152,35 @@ test("the window is strictly under the judgment TTL and its edge is exact", () =
   assert.equal(readingsOf(pastEdge)[0].status, "clear");
 });
 
-test("an OPEN row under the label is not counted, even when the tracker hands it back", () => {
-  const withOpen = [closed(11, ["class:x"], 10 * MINUTE), closed(10, ["class:x"], 3 * DAY, { state: "open", closed_at: null })];
+test("an OPEN row under the label is not counted", () => {
+  const withOpen = [closed(11, ["class:x"], 10 * MINUTE), closed(10, ["class:x"], 3 * DAY, { state: "OPEN", closedAt: null })];
   assert.equal(readingsOf(withOpen)[0].status, "clear");
-  assert.equal(readingsOf(withOpen, { how: { hostile: true } })[0].status, "clear", "a tracker that ignores `state` does not make an open row an instance");
   assert.equal(readingsOf([...withOpen, closed(9, ["class:x"], 4 * DAY)])[0].status, "tripped", "a second CLOSED row does");
 });
 
-test("a pull request carrying the label is not an instance", () => {
-  const withPr = [closed(11, ["class:x"], 10 * MINUTE), closed(10, ["class:x"], 3 * DAY, { pull_request: true })];
-  assert.equal(readingsOf(withPr)[0].status, "clear");
+test("a pull request carrying the label is not an instance: it is not a row of the tracker's world", () => {
+  const { world } = tracker([closed(11, ["class:x"], 10 * MINUTE)]);
+  world.pulls.set(10, { number: 10, body: "", headRefName: "b", labels: ["class:x"], isDraft: false, armed: false, merged: true, mergedAt: closedAgo(3 * DAY), createdAt: closedAgo(4 * DAY), comments: [] });
+  const [reading] = classRepeatReadings({ now: NOW, classRepeat: readClassRepeat(NO_GH, REPO, { root: "/project", read: () => INDEX, now: NOW }) });
+  assert.equal(reading.status, "clear");
 });
 
 test("a repeat in a class nobody has touched for days is not offered, and costs no per-class read", () => {
   const stale = [closed(11, ["class:x"], 2 * DAY), closed(10, ["class:x"], 3 * DAY)];
-  const { run, calls } = tracker(stale);
-  const fact = readClassRepeat(run, REPO, { root: "/project", read: () => INDEX, now: NOW });
+  const quiet = tracker(stale);
+  const fact = readClassRepeat(quiet.run, REPO, { root: "/project", read: () => INDEX, now: NOW });
   assert.equal(classRepeatReadings({ now: NOW, classRepeat: fact })[0].status, "clear");
-  assert.equal(calls.length, 1, "one listing and nothing else on a quiet tick");
+  assert.equal(quiet.calls().length, 1, "one listing and nothing else on a quiet tick");
   const busy = tracker(TWO_IN_X);
   readClassRepeat(busy.run, REPO, { root: "/project", read: () => INDEX, now: NOW });
-  assert.equal(busy.calls.length, 2, "one listing plus one read of the class with a recent instance");
-  assert.ok(busy.calls[1].includes("labels=class:x"));
+  assert.deepEqual(busy.calls(), ["closedClassRowsOf -", "closedClassRowsOf class:x"], "one listing plus one read of the class with a recent instance");
 });
 
 test("a class repeated over all time is counted over all time, not over the newest page", () => {
-  const old = [closed(11, ["class:x"], 5 * MINUTE), closed(2, ["class:x"], 60 * DAY), closed(1, ["class:x"], 90 * DAY)];
-  const recentPage = old.slice(0, 1);
-  const base = tracker(old).run;
-  const run = (args: string[]) => (args.some((a) => a.startsWith("labels=")) ? base(args) : JSON.stringify(recentPage));
-  const [reading] = classRepeatReadings({ now: NOW, classRepeat: readClassRepeat(run, REPO, { root: "/project", read: () => INDEX, now: NOW }) });
+  // A hundred rows closed since fill the newest page, so the two old instances are on no page of the cheap read and only the read of the class finds them.
+  const fillers = Array.from({ length: 100 }, (_, i) => closed(100 + i, ["bug"], DAY + i * MINUTE));
+  const old = [closed(11, ["class:x"], 5 * MINUTE), closed(2, ["class:x"], 60 * DAY), closed(1, ["class:x"], 90 * DAY), ...fillers];
+  const [reading] = classRepeatReadings({ now: NOW, classRepeat: readClassRepeat(tracker(old).run, REPO, { root: "/project", read: () => INDEX, now: NOW }) });
   assert.equal(reading.status, "tripped");
   assert.ok(reading.detail.includes("3 closed rows") && reading.detail.includes("#11, #2, #1"));
 });

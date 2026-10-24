@@ -1,4 +1,4 @@
-// no-token: gh -- every `gatherChanges` and `assertBaseIsLive` call below passes a fake `gh`, so nothing here reaches the real one.
+// no-token: gh -- every `gatherChanges` and `assertBaseIsLive` call below runs on the fake code host (A11-160, step 9), so nothing here reaches the real `gh`.
 /**
  * #3363: A `git` READ THAT NAMES NO CHECKOUT ASKS WHICHEVER REPOSITORY THE PROCESS HAPPENS TO BE IN. The tick's `WorkingDirectory` is the
  * TOOL's checkout (`a11ign/agent-org`) since the cut-over, and `hand-fix-ledger.ts` ran `git log origin/main` there while `gh` asked about
@@ -19,14 +19,17 @@
  * argument (a variable holding it), and a `cwd` that is named but wrong. "Names a checkout" is a statement about the call's text, not about
  * which checkout; `process.cwd()` is refused as a name, because it is exactly the unnamed case spelled out.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { assertBaseIsLive, gatherChanges } from "../hand-fix-ledger.ts";
 import { REPO } from "../project-identity.ts";
 import { toolSources, type ToolFile } from "./tool-source.ts";
-import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 // --- the parser -------------------------------------------------------------------------------------------------------------------
 
@@ -205,14 +208,13 @@ function seedRepository(box: { run(args: string[]): string; commit(message: stri
 
 const WINDOW = () => ({ from: new Date(Date.now() - 14 * DAY_MS), to: new Date() });
 
-/** `gh` answering for a project whose `main` is `liveHead` and whose every commit GitHub resolves to `login`. */
-const ghFor = (liveHead: string, shas: string[], login = "a11ign-ai-workers") => (args: string[]) => {
-  if (args[0] === "api" && args[1] === `repos/${REPO}/commits/main`) return `${liveHead}\n`;
-  if (readsRowsSince(args) !== null) return sinceAnswer(args, []); // #5076: the merged pull requests are a connection read, and none merged in this sandbox
-  if (args[0] === "api") return shas.map((sha) => `${sha}\t${login}\n`).join("");
-  if (args[0] === "pr") return "[]";
-  throw new Error(`unexpected gh ${args.join(" ")}`);
-};
+/** The fake code host in place for a project whose `main` is `liveHead` and whose every commit in `shas` it resolves to `login`; none merged in this sandbox. */
+function hostFor(liveHead: string, shas: string[], login = "a11ign-ai-workers"): void {
+  const host = createFakeCodeHost();
+  host.rowsWorld.tail.queue.mainSha = liveHead;
+  host.rowsWorld.tail.classes.commitLogins = shas.map((sha) => ({ sha, login }));
+  substituteCodeHost(host);
+}
 
 /** Run `body` with the process working directory in `dir`, restored after. */
 function inDirectory<T>(dir: string, body: () => T): T {
@@ -225,8 +227,8 @@ test("#3363 (1) BEHAVIOUR: the process is in the TOOL's repository and `gatherCh
   withGitSandbox((tool) => withGitSandbox((project) => {
     seedRepository(tool, TOOL_URL, "only the tool has this (#11)");
     const projectHead = seedRepository(project, REPO_URL, "only the project has this (#22)");
-    const gh = ghFor(projectHead, [projectHead]);
-    const changes = inDirectory(tool.dir, () => gatherChanges({ checkout: project.dir, gh })(WINDOW()));
+    hostFor(projectHead, [projectHead]);
+    const changes = inDirectory(tool.dir, () => gatherChanges({ checkout: project.dir })(WINDOW()));
     assert.deepEqual(changes.map((c) => c.key), ["pr:22"], "the commit only the project has, and not the one only the tool has");
     assert.deepEqual(changes[0].actors, ["a11ign-ai-workers"]);
   }));
@@ -236,10 +238,10 @@ test("#3363 (1) CONTROL: the same process with git run WITHOUT a checkout reads 
   withGitSandbox((tool) => withGitSandbox((project) => {
     const toolHead = seedRepository(tool, TOOL_URL, "only the tool has this (#11)");
     const projectHead = seedRepository(project, REPO_URL, "only the project has this (#22)");
-    const gh = ghFor(projectHead, [projectHead]);
+    hostFor(projectHead, [projectHead]);
     const unnamedGit = (args: string[]) => tool.run(args); // what `defaultGit` was: whichever repository the process is in
     assert.notEqual(toolHead, projectHead);
-    assert.throws(() => inDirectory(tool.dir, () => gatherChanges({ git: unnamedGit, gh })(WINDOW())), /not .*wrong checkout|wrong checkout/);
+    assert.throws(() => inDirectory(tool.dir, () => gatherChanges({ git: unnamedGit })(WINDOW())), /not .*wrong checkout|wrong checkout/);
   }));
 });
 
@@ -250,7 +252,8 @@ test("#3363 (3) a base whose repository is NOT the project's is refused as the w
     const toolHead = seedRepository(tool, TOOL_URL, "tool (#1)");
     const live = "f".repeat(40);
     assert.notEqual(toolHead, live);
-    const attempt = () => assertBaseIsLive({ git: (a) => tool.run(a), gh: ghFor(live, []), repo: REPO, base: "origin/main" });
+    hostFor(live, []);
+    const attempt = () => assertBaseIsLive({ git: (a) => tool.run(a), repo: REPO, base: "origin/main" });
     assert.throws(attempt, (e: Error) => e.message.includes(TOOL_URL) && e.message.includes(REPO) && /wrong checkout/.test(e.message)
       && !/this checkout is stale/.test(e.message) && e.message.includes(toolHead) && e.message.includes(live));
   });
@@ -260,7 +263,8 @@ test("#3363 (3)/(4) CONTROL: a base that IS the project's and genuinely behind S
   withGitSandbox((project) => {
     const head = seedRepository(project, REPO_URL, "project (#1)");
     const live = "e".repeat(40);
-    const attempt = () => assertBaseIsLive({ git: (a) => project.run(a), gh: ghFor(live, []), repo: REPO, base: "origin/main" });
+    hostFor(live, []);
+    const attempt = () => assertBaseIsLive({ git: (a) => project.run(a), repo: REPO, base: "origin/main" });
     assert.throws(attempt, (e: Error) => /this checkout is stale/.test(e.message) && !/wrong checkout/.test(e.message)
       && e.message.includes(head) && e.message.includes(live));
   });
@@ -269,7 +273,8 @@ test("#3363 (3)/(4) CONTROL: a base that IS the project's and genuinely behind S
 test("#3363 (3) CONTROL: a base that IS the live head reads, whatever the origin says", () => {
   withGitSandbox((project) => {
     const head = seedRepository(project, REPO_URL, "project (#1)");
-    assert.doesNotThrow(() => assertBaseIsLive({ git: (a) => project.run(a), gh: ghFor(head, []), repo: REPO, base: "origin/main" }));
+    hostFor(head, []);
+    assert.doesNotThrow(() => assertBaseIsLive({ git: (a) => project.run(a), repo: REPO, base: "origin/main" }));
   });
 });
 
@@ -278,14 +283,16 @@ test("#3363 (3) an origin that cannot be read claims NEITHER cause: absence is n
     if (args[0] === "rev-parse") return `${"1".repeat(40)}\n`;
     throw new Error("fatal: No such remote 'origin'");
   };
-  assert.throws(() => assertBaseIsLive({ git, gh: ghFor("2".repeat(40), []), repo: REPO, base: "origin/main" }),
+  hostFor("2".repeat(40), []);
+  assert.throws(() => assertBaseIsLive({ git, repo: REPO, base: "origin/main" }),
     (e: Error) => /could not be read/.test(e.message) && /No such remote/.test(e.message) && !/wrong checkout/.test(e.message));
 });
 
 test("#3363 (3) which remote URLs name the project: ssh and https, with or without `.git`, and never a longer or nested name", () => {
+  hostFor("2".repeat(40), []);
   const verdict = (url: string) => {
     try {
-      assertBaseIsLive({ git: (a) => (a[0] === "rev-parse" ? "1".repeat(40) : url), gh: ghFor("2".repeat(40), []), repo: REPO, base: "origin/main" });
+      assertBaseIsLive({ git: (a) => (a[0] === "rev-parse" ? "1".repeat(40) : url), repo: REPO, base: "origin/main" });
       return "no refusal";
     } catch (e) { return /wrong checkout/.test((e as Error).message) ? "wrong" : "stale"; }
   };

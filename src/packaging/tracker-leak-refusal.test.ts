@@ -37,7 +37,7 @@
  * inert to that unrelated sweep without adding a single (file, value) EXEMPT entry to a file this row's
  * own Region deliberately leaves untouched.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { GENERIC_LEAK_PATTERNS, allLeaksIn, leakPatterns, leakRefusalReason } from "../lib/leak-patterns.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
@@ -46,10 +46,16 @@ import { createIssue } from "../row-file/roadmap-and-milestone-checks.ts";
 import { checkBody } from "../pr-open.ts";
 import { editRefusal, editComment, digest } from "../tracker-comment.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 
 /** #1604: these subtests read a11ign's own leak pattern, the live `pct exec` bridge, declared in a11ign's `.agent-org/project.json` `leakPatterns` (docs/project-tree-dependency.md, row 1604). The fixture declares none, so the leak is not named there, and the subtests skip. */
 const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
   : "the fixture declares no leakPatterns: the `pct exec` leak is a11ign's own declaration in .agent-org/project.json, so these assert a11ign's tracker guard";
+
+afterEach(() => forgetActivation());
 
 const NEVER_RUN = () => { throw new Error("must never RUN a command for a body this test expects refused"); };
 
@@ -179,16 +185,19 @@ test("#891 ACCEPTANCE: tracker-comment's editRefusal refuses a leaking `next`, i
   assert.match(refusal!, /pct exec/);
 });
 
-test("#891 ACCEPTANCE: no comment is ever PATCHed for a leaking replacement, even with a correct --expect "
-  + "digest -- the PATCH call is never reached", { skip: SKIP_FIXTURE }, () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify({ id: 1, body: "old text" });
-  };
-  const result = editComment(1, { next: "run pct exec 121 -- diagnose", expect: digest("old text"), run });
+test("#891 ACCEPTANCE: no comment is ever replaced for a leaking replacement, even with a correct --expect "
+  + "digest -- the write is never reached", { skip: SKIP_FIXTURE }, () => {
+  // A11-160, step 9: the comment is the code host's. The fake holds the comment the digest names; the write it would be handed is recorded.
+  const host = createFakeCodeHost();
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  const row = fakeRow(host.rowsWorld, 1);
+  row.comments.push({ id: 1, body: "old text", createdAt: new Date(host.rowsWorld.now()).toISOString() });
+  host.rowsWorld.rows.set(1, row);
+  const result = editComment(1, { next: "run pct exec 121 -- diagnose", expect: digest("old text"), run: NEVER_RUN });
   assert.equal(result.written, false);
-  assert.ok(!calls.some((c) => c.includes("PATCH")), "no PATCH call may be issued for a leaking body");
+  assert.deepEqual(watched.calls.filter(({ op }) => op === "editComment"), [], "no write may be issued for a leaking body");
+  assert.equal(row.comments[0]!.body, "old text");
 });
 
 // --- #891 MUTATION: the check is load-bearing -- with the shared predicate emptied, detection stops too ---

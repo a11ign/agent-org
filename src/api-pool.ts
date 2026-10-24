@@ -19,16 +19,9 @@
  */
 export type Pool = {remaining: number, limit: number, used: number, resetInMinutes: number | null, resource?: string | null, resetAt?: string | null};
 
-/**
- * The GRAPHQL pool's own probe, and the cheapest one there is: one point, and the body names the account.
- *
- * `gh pr list` and `gh issue list` -- every read the gate makes -- spend GRAPHQL, so this is the pool that
- * dies when the gate goes deaf. Measured 2026-09-23: the `X-Ratelimit-*` headers ARE on the `gh pr list`
- * response (`GH_DEBUG=api` prints them) but `gh` discards them; `pr list` has no `-i`/`--include` flag,
- * and a forced non-zero `pr list` carries no `X-Ratelimit-*` on stdout OR stderr. So the pool cannot be
- * read off the call that failed, and naming it costs a call of its own.
- */
-export const GRAPHQL_POOL_PROBE = Object.freeze(["api", "graphql", "-f", "query=query { viewer { login } }", "-i"]);
+// THE GRAPHQL POOL'S PROBE IS THE CODE HOST'S (A11-160, step 9): the call that names the pool (`gh api graphql ... -i`, one point, the account in the body) is a GitHub command line, so the plugin holds it
+// (`plugins/github/rows/graphql-pool-probe.ts` says why this is the cheapest probe there is) and a caller asks for it by name (`ticket-port/graphql-pool-probe.ts`). THIS FILE STAYS A LEAF: it reads what a probe
+// answered and never sends one, so `poolDiagnosis` is handed the probe it sends, and the note below says why the probe is ONE call.
 
 /**
  * WHY THERE IS NO SECOND PROBE, THOUGH THE LOGIN IS WHAT #2003 ASKED FOR FIRST.
@@ -133,7 +126,7 @@ export function poolFromHeaders(args: string[], run: (args: string[]) => string)
 /**
  * #3448: THE GRAPHQL POOL, READ FROM A QUERY THE CALLER WAS SENDING ANYWAY. A query that carries `viewer { login }` and `rateLimit { limit remaining resetAt }`
  * names the account and its budget in the answer it already returns, for no point (`rateLimit` is never charged), where `gh pr list` discards the headers and
- * {@link GRAPHQL_POOL_PROBE} spends one. It is a real call's own answer and so is not `/rate_limit`, which has reported a full pool during a total outage (#1967).
+ * the GraphQL pool's probe spends one. It is a real call's own answer and so is not `/rate_limit`, which has reported a full pool during a total outage (#1967).
  *
  * `null` when the answer has no usable `rateLimit` (an `errors` answer, a schema change): "could not ask" and "nothing is left" stay apart, as in
  * {@link poolFromResponse}. `account` is `null` when the answer named none.
@@ -223,22 +216,24 @@ export function userIdFromResponse(raw: string | null): string | null {
  *
  * ONE CALL IS THE WHOLE CONTRACT (#2003's done-when 2), and it is a real limit rather than a happy
  * accident: a live pool's probe names all three, and a DEAD pool's names the pool and the reset but only a
- * user ID for the account. The note on `GRAPHQL_POOL_PROBE` above records every alternative that was
+ * user ID for the account. The note on the probe above records every alternative that was
  * measured and why none of them buys the login inside the budget. A refusal reports what this one call
  * said and marks the rest UNREADABLE; it never pays a second point to improve the wording of a line that
  * is already telling the reader how long the org is deaf.
  *
  * `calls` is RETURNED rather than assumed, so the price is counted by the test instead of reasoned about.
  *
- * @param {{run: (args: string[]) => string}} deps
+ * `probe` is the GraphQL pool's probe, which the code host names (`ticket-port/graphql-pool-probe.ts`): this file sends it through `run` and reads what it answered, and holds no command line of its own.
+ *
+ * @param {{run: (args: string[]) => string, probe: readonly string[]}} deps
  * @returns {{login: string | null, userId: string | null, pool: Pool | null, calls: number}}
  */
-export function poolDiagnosis({ run }: { run: (args: string[]) => string; }): { login: string | null; userId: string | null; pool: Pool | null; calls: number; } {
+export function poolDiagnosis({ run, probe }: { run: (args: string[]) => string; probe: readonly string[]; }): { login: string | null; userId: string | null; pool: Pool | null; calls: number; } {
   if (typeof run !== "function") {
     throw new Error("poolDiagnosis: no run given -- it is required, because a defaulted one is a live gh "
       + "call (#1405: apiBudget's default reached them on every run of queue-table.test.ts).");
   }
-  const raw = rawResponse(GRAPHQL_POOL_PROBE, run);
+  const raw = rawResponse(probe, run);
   return {
     login: loginFromResponse(raw),
     userId: userIdFromResponse(raw),

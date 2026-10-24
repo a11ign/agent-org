@@ -40,16 +40,22 @@
 // no-token: gh
 // no-token: git
 //
-// #827/#790. Every test here either passes its own injected `run` fixture to a fetcher
-// (`fetchOpenIssuesChecked`, `fetchRemoteBranchesChecked`) or asserts on a cited function's `typeof`/on
+// #827/#790. Every test here either reads the fake code host's rows (`fetchOpenIssuesChecked`, A11-160 step 9) or passes its own injected `run` fixture to a fetcher
+// (`fetchRemoteBranchesChecked`) or asserts on a cited function's `typeof`/on
 // this file's own text -- nothing calls the real `gh`/`git` wrappers those fetchers default to.
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { fetchOpenIssuesChecked, fetchReportedOpenIssueNumbers, labellessRows, openRowsAbsentFromBoard }
   from "../ready-label-audit.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { REPO } from "../project-identity.ts";
+
+afterEach(() => forgetActivation());
 import { fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
   from "../queue-table.ts";
 
@@ -77,9 +83,15 @@ test("#790: the issue-labels and Project-items rows' own completeness statement 
   + "of two reads -- the retry #788 later added for a live tracker moving between reads) on a genuinely "
   + "narrowed population -- re-run here so this file's claim that #788 already covers them is a fact "
   + "this suite checks, not only a sentence in its own header", () => {
-  const run = () => JSON.stringify([{ number: 1, title: "a", labels: [] }]);
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  world.rows.set(1, fakeRow(world, 1, { title: "a" }));
+  substituteCodeHost(host);
+  assert.deepEqual(fetchOpenIssuesChecked().issues.map((issue) => issue.number), [1], "CONTROL: a search index that agrees with the listing is no refusal");
+  world.tail.audit.reportedOpen.set(REPO, [1, 2, 3, 4, 5]);
   assert.throws(
-    () => fetchOpenIssuesChecked({ run, fetchReportedNumbers: () => [1, 2, 3, 4, 5] }),
+    () => fetchOpenIssuesChecked(),
     /disagree with GitHub's search index on BOTH reads/);
 });
 

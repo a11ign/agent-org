@@ -42,6 +42,8 @@ import { refreshTickSnapshot, type TickEvents } from "./tick-snapshot.ts";
 import { TICK_COST_FILE, TICK_RECORD_MARKER, TICK_RECORD_ROW_TITLE, clearOwnMarker, deliverTickOrders, killedTickOrders, phaseMarker, readKilledTick, readTickRecordState, recordSlowTick, slowThresholdSeconds,
   standingRowFor, tickMarkerPath, tickRecordPath, tickRecordRowBody, writeStartMarker, type RecordIo } from "./work-tick-health.ts";
 import { createRow, editComment, keyedCommentsOf, postRowComment } from "./ticket-port/approved-unqueued-reads.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 import { CENSUS_ENV, GATE_SPANS_ENV, childrenCpuMs, installSpawnCensus, largestSpans, readCensus, readGateSpans, setCensusPhase, summariseCensus } from "./lib/spawn-census.ts";
 
 // Where the reader now lives (the census times each spawn's CPU with it); the tick's tests and callers still import it from here.
@@ -431,7 +433,7 @@ function tickRecordIo(statePath: string): RecordIo | { refusal: string } {
   } catch (err) {
     return { refusal: `the project declaration could not be read (${String((err as any)?.message ?? err).split("\n")[0]})` };
   }
-  const run = (args: string[]) => ghRun(args);
+  const run = (args: string[]) => ghRun()(args);
   const target = standingRowFor({ declarationText, state: readTickRecordState(statePath), statePath,
     create: (repo) => createTickRecordRow(repo, run) });
   if ("refusal" in target) return target;
@@ -547,10 +549,10 @@ function whatGhSaid(err: unknown): string {
  * Two writes, each failing alone: the variable (the host's own readers) and the standing comment (the reader with no token, #3896). A write that fails is said on
  * stderr and changes nothing else, for the reason `finish` gives: the reader then sees a stale value, which is the outcome that counts. The variable must already
  * exist (`gh api -X POST repos/<repo>/actions/variables`) and so must the comment; a missing one fails here and says so.
- * @param {number} at epoch milliseconds @param {(file: string, args: string[], options: object) => unknown} [run]
+ * @param {number} at epoch milliseconds
  * @param {() => readonly { repo: string }[]} [readTrackers] the declared trackers; a seam so a test needs no project declaration @returns {void}
  */
-export function writeHeartbeat(at: number, run: (file: string, args: string[], options: object) => unknown = execFileSync, readTrackers: () => readonly { repo: string; }[] = () => homeProjectDeclaration().tracker): void {
+export function writeHeartbeat(at: number, readTrackers: () => readonly { repo: string; }[] = () => homeProjectDeclaration().tracker): void {
   let trackers: readonly { repo: string; }[];
   try {
     trackers = readTrackers();
@@ -558,43 +560,37 @@ export function writeHeartbeat(at: number, run: (file: string, args: string[], o
     process.stderr.write(`HEARTBEAT NOT WRITTEN to the tracker variable ${HEARTBEAT_VARIABLE}: ${whatGhSaid(err)}. A reader off this host will see the previous value.\n`);
     return;
   }
-  const options = { stdio: ["ignore", "ignore", "pipe"], timeout: HEARTBEAT_TIMEOUT_MS };
   // #4080: EVERY declared tracker's repository holds the variable, a refusal on one naming that repository and stopping no other write. The standing comment is
   // the FIRST tracker's alone: `HEARTBEAT_COMMENT_ID` is an object of that repository (a PATCH of it through another repository's path is a 404), and the one reader
   // of it (`gate-heartbeat.mjs` of the control repository) reads that one object, so a second comment would have no reader.
   trackers.forEach(({ repo }, index) => {
-    writeHeartbeatVariable({ at, repo, run, options });
-    if (index === 0) writeHeartbeatComment({ at, repo, run, options });
+    writeHeartbeatVariable({ at, repo });
+    if (index === 0) writeHeartbeatComment({ at, repo });
   });
 }
 
 /**
- * THE ONE PLACE THIS FILE NAMES `gh` (`gh-call-ratchet.test.ts` holds it to the calls it had): the heartbeat's two writes and the tick record's reads and writes
- * (agent-org#1208) all go through it, so the record adds no call site.
- * @param {(file: string, args: string[], options: object) => unknown} run @param {string[]} args @param {object} options
+ * THE CODE HOST'S OWN RUNNER for the heartbeat's two writes and the tick record's reads and writes (agent-org#1208): the bound a call may take, and what it prints on stderr kept to the failure (a refusal throws with
+ * `stderr` on the error, which `whatGhSaid` and `recordSlowTick` say). Asked when a call is made, so a tick that cannot reach the code host says so in the line of the write that needed it (A11-160, step 9).
+ * @returns {(args: string[]) => string}
  */
-function ghCall(run: (file: string, args: string[], options: object) => unknown, args: string[], options: object): unknown {
-  return run("gh", args, options);
+function ghRun(): RowsRun {
+  return rows().runnerWith({ timeoutMs: HEARTBEAT_TIMEOUT_MS, echo: false });
 }
 
-/** `gh` run for the tick record, answering what it printed; a refusal throws with `stderr` on the error, which `recordSlowTick` says. @param {string[]} args @returns {string} */
-function ghRun(args: string[]): string {
-  return String(ghCall(execFileSync, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: HEARTBEAT_TIMEOUT_MS }));
-}
-
-/** @param {{ at: number, repo: string, run: (file: string, args: string[], options: object) => unknown, options: object }} write @returns {void} */
-function writeHeartbeatVariable({ at, repo, run, options }: { at: number; repo: string; run: (file: string, args: string[], options: object) => unknown; options: object; }): void {
+/** @param {{ at: number, repo: string }} write @returns {void} */
+function writeHeartbeatVariable({ at, repo }: { at: number; repo: string; }): void {
   try {
-    ghCall(run, ["api", "-X", "PATCH", `repos/${repo}/actions/variables/${HEARTBEAT_VARIABLE}`, "-f", `value=${at}`], options);
+    rows().writeHeartbeatVariable({ repo, variable: HEARTBEAT_VARIABLE, value: String(at), run: ghRun() });
   } catch (err) {
     process.stderr.write(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: ${whatGhSaid(err)}. A reader off this host will see the previous value.\n`);
   }
 }
 
-/** @param {{ at: number, repo: string, run: (file: string, args: string[], options: object) => unknown, options: object }} write @returns {void} */
-function writeHeartbeatComment({ at, repo, run, options }: { at: number; repo: string; run: (file: string, args: string[], options: object) => unknown; options: object; }): void {
+/** @param {{ at: number, repo: string }} write @returns {void} */
+function writeHeartbeatComment({ at, repo }: { at: number; repo: string; }): void {
   try {
-    ghCall(run, ["api", "-X", "PATCH", `repos/${repo}/issues/comments/${HEARTBEAT_COMMENT_ID}`, "-f", `body=${heartbeatCommentBody(at)}`], options);
+    editComment({ repo, id: HEARTBEAT_COMMENT_ID, body: heartbeatCommentBody(at), run: ghRun() });
   } catch (err) {
     process.stderr.write(`HEARTBEAT COMMENT NOT WRITTEN to ${repo} comment ${HEARTBEAT_COMMENT_ID}: ${whatGhSaid(err)}. A reader with no token will see the previous value.\n`);
   }

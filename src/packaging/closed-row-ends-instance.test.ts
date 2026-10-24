@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh`, `git`, `herdr` and `row-claim` call here is an injected seam, or the fake code host's rows (A11-160, step 6); nothing imported reaches the real one
+// no-token: none -- every row read and write here is the fake code host's rows (A11-160, steps 6 and 9); `git`, `herdr` and `row-claim` are injected seams, and the one `gh` stub left is the executor's call census, which answers `[]`; nothing imported reaches the real one
 /**
  * #3535: A CLOSED ROW ENDS ITS INSTANCE.
  *
@@ -8,13 +8,22 @@
  * EVERY CASE CALLS THE GATE'S OWN DECISION FOR A CLAIMED ROW (`closedClaimsNow`, and `claimStallsNow` for the open-row control), never a copy of it, and
  * THE CONTROL EVERY "NOTHING IS ORDERED" ASSERTION IS READ AGAINST is the same fixture with the row still open: it yields neither the release nor the
  * interrupt, so the closed row's two orders are not what any claimed row yields.
+ *
+ * THE FAKE IS THE CODE HOST (A11-160, step 9; these cases stubbed `gh`'s REST answers, its closed-label connection and its `issue edit`). The world holds the closed rows and the claim labels they still carry;
+ * the strip is asserted on the rows' labels and on the request the code host was given, and the aim of each tracker's read on what core's `run` was asked. What a read SENDS and how the plugin reads
+ * GitHub's answer are the plugin's: `plugins/github/rows/{closed-claim-reads,misc-rows,rows-by-label-closed}.test.ts`. The ONE stub left is the executor's: the follow-ups' reads depend on herdr's listing and
+ * ride the first wave's batch, and `census` counts WHICH calls went out and HOW, answering `[]` to every one (core hands `run` to the operations by design; no answer's shape is read).
  */
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { holdRepository, withRepositoryReads } from "../plugins/fakes/code-host-health.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { claimStallsNow, claimStallTick, closedClaimsNow } from "../work-gate/claim-stall-tick.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { closedClaimsWhenWorkerListed } from "../work-gate/tick.ts";
 import { readOpenRowFollowUps, stripClosedClaims } from "../work-gate.ts";
 import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
@@ -23,7 +32,7 @@ import { labelsToStrip as labelsToStripOfLeaf, stripClaimLabelsVia } from "../cl
 import { labelsToStrip as labelsToStripOfCloser } from "../close-rows-for-merged-pr.ts";
 import { performRelease } from "../wake/ci-class-and-spares.ts";
 import { claimRecordComment } from "../row-claim.ts";
-import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
+import { REPO as TRACKER } from "../project-identity.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 
 type Agent = { label: string; status: string };
@@ -34,10 +43,13 @@ const REPO = "/home/agent/repos/a11y-witness";
 const BRANCH = "agent/a-closed-row-ends-3535";
 const NOW = Date.parse("2026-10-04T19:33:00Z");
 
+/** What the code under test is handed in place of `gh`: the fake code host acts on its own state, so a call that reached it would be a read or a write that went around the code host. */
+const noGh = (): string => { throw new Error("the fake code host acts on its own state: no gh is run"); };
+
 const record = (session: string) => ({ body: claimRecordComment({ session, branch: BRANCH, worktree: "../wt-3535" }),
   createdAt: "2026-10-04T19:32:06Z", author: { login: "a11ign-ai-workers" } });
 
-/** A CLOSED row as the closed `in-progress` list returns it (#5050: a by-label connection read; `connectionOf` writes the nodes from this `gh issue list` shape). */
+/** A CLOSED row as the closed `in-progress` read gives it, for the pure decision (the rows a tick reads are the fake code host's: `holdingClosedRows`). */
 const closedRow = (session: string, extra: object = {}) => ({ number: 3535, title: "a closed row ends its instance",
   labels: ["in-progress", "started", `session:${session}`].map((name) => ({ name })), comments: [record(session)], closedByPullRequestsReferences: [], ...extra });
 
@@ -144,11 +156,16 @@ test("#3535 (review of #313) a closing reference that names no head and no title
 function performer(request: object, { spare = true, interruptFails = false }: { spare?: boolean; interruptFails?: boolean } = {}) {
   const runs: string[][] = [];
   const execs: string[][] = [];
-  const comments: string[] = [];
   const cycles: { role: string; released?: string }[] = [];
   const kept: string[] = [];
   const dropped: string[] = [];
   const warns: string[] = [];
+  // The row the instance held, closed, still carrying its claim labels: the performer re-reads them before it ends anything, and leaves its comment on the row.
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = TRACKER;
+  world.rows.set(3535, fakeRow(world, 3535, { state: "CLOSED", labels: ["in-progress", "started", "session:worker-3535"] }));
+  substituteCodeHost(host);
   const deps = {
     run: (args: string[]) => { runs.push(args); if (interruptFails && args.includes("send-keys")) throw new Error("herdr: refused"); return ""; },
     exec: (_cmd: string, args: string[]) => { execs.push(args); return { status: 0, output: "DECLINED -- #3535 is unclaimed again (closed: nothing restored)\n" }; },
@@ -156,14 +173,14 @@ function performer(request: object, { spare = true, interruptFails = false }: { 
       : { status: 0, out: "" }), exists: () => true, mtime: () => NOW - 60_000, cloneOf: () => ({ clone: REPO }) },
     now: NOW, agents: [{ label: "worker-3535", status: "working" }], isSpare: () => spare,
     host: { worktreesDir: "/home/agent/repos", primary: REPO, exists: () => true }, env: {}, warn: (l: string) => { warns.push(l); },
-    gh: (a: string[]) => { if (a[1] === "view") return JSON.stringify({ labels: [{ name: "session:worker-3535" }] }); if (a[1] === "comment") comments.push(a.join(" ")); return ""; },
+    gh: noGh,
     cycle: (c: { role: string; released?: string }) => { cycles.push(c); }, dropInstance: (r: string) => { dropped.push(r); return { spawnedAt: 1, rows: [3535] }; },
     keepInstance: (r: string, row: number) => { kept.push(r); return { spawnedAt: 1, rows: [row] }; },
     remember: () => {},
   };
   const got = performRelease({ row: 3535, session: "worker-3535", why: "closed", branch: BRANCH, worktree: "/home/agent/repos/wt-3535", idleMinutes: null,
     nudgedAt: null, ...request } as never, deps as never);
-  return { got, runs, execs, comments, cycles, kept, dropped, warns };
+  return { got, runs, execs, comments: world.rows.get(3535)!.comments.map((comment) => comment.body), cycles, kept, dropped, warns };
 }
 
 test("#3535 (2) the performer STOPS a working instance with Escape and no prompt, releases the claim KEEPING the work, and does not close the workspace", () => {
@@ -200,57 +217,42 @@ test("#3535 an interrupt herdr refuses is NOT a release: nothing is changed and 
 // --- THE READ IS CONDITIONAL (Done-when 5) -----------------------------------------------------------------------------------
 
 type Call = { args: string[]; repo: string | undefined };
-const isClosedClaimRead = (args: string[]) => args[0] === "api" && /\/issues\/\d+$/.test(args.at(-1) ?? "");
 const OPEN_ROWS = [{ number: 41, title: "open row", labels: [{ name: "ready" }], body: "", blockedBy: { nodes: [] }, updatedAt: "2026-10-06T05:00:00Z" }];
 
-/** One listed worker's row as the REST reads answer it (#1113): `state` and `labels` decide which come back as a closed claim; `pulls` are its cross-referencing pull requests. */
+/** One listed worker's row as the code host holds it (#1113): `state` and `labels` decide which come back as a closed claim; `pulls` are its cross-referencing pull requests. */
 const issue = (number: number, state: string, labels: string[], pulls: { number: number; head: string; }[] = []) => ({ number, state, labels,
   comments: [record(`worker-${number}`)], pulls });
-/** What the REST reads answer for the rows handed in: `issues/<n>`, its comments and timeline, and each `pulls/<n>`. Any other path is an absent row (HTTP 404). */
-const rest = (...rows: ReturnType<typeof issue>[]) => (args: string[]) => {
-  const answers = new Map<string, unknown>();
-  for (const r of rows) {
-    answers.set(`issues/${r.number}`, { number: r.number, state: r.state.toLowerCase(), labels: r.labels.map((name) => ({ name })), comments: r.comments.length });
-    answers.set(`issues/${r.number}/comments?per_page=100&page=1`, r.comments.map((c) => ({ body: c.body, created_at: c.createdAt, user: { login: c.author.login } })));
-    answers.set(`issues/${r.number}/timeline`, r.pulls.map((p) => ({ event: "cross-referenced", source: { issue: { number: p.number, title: "t", pull_request: {} } } })));
-    for (const p of r.pulls) answers.set(`pulls/${p.number}`, { head: { ref: p.head } });
-  }
-  const path = args.at(-1)!.replace(/^repos\/[^/]+\/[^/]+\//, "");
-  if (!answers.has(path)) throw Object.assign(new Error("Command failed: gh api"), { status: 1, stderr: "gh: Not Found (HTTP 404)" });
-  return JSON.stringify(answers.get(path));
-};
 const CLAIM = ["in-progress", "started", "session:worker-3535"];
 
-/** Every `gh` call one `readOpenRowFollowUps` makes, batched or not, with herdr's listing handed in. */
-function followUps(agents: Agent[] | null, answer: (args: string[]) => string = () => "[]") {
-  const seen: Call[] = [];
-  const batches: Call[][] = [];
-  const batch = (calls: Call[]) => { batches.push(calls); return calls.map((c) => ({ stdout: answer(c.args) })); };
-  const run = (args: string[], repo?: string) => { seen.push({ args, repo }); return answer(args); };
-  const got = readOpenRowFollowUps(OPEN_ROWS, run as never, batch as never, () => agents) as { closedClaims: ReturnType<typeof closedClaimsWhenWorkerListed> };
-  const asked = [...batches.flat(), ...seen].filter((c) => isClosedClaimRead(c.args));
-  return { got, asked, batches };
+/** `readOpenRowFollowUps` over whatever code host is installed, with herdr's listing handed in; the `run` it is given is one that throws, since the code host answers. */
+const followUpsOn = (agents: Agent[] | null) => readOpenRowFollowUps(OPEN_ROWS, noGh as never, undefined, () => agents) as { closedClaims: ReturnType<typeof closedClaimsWhenWorkerListed>; closedClaimLabels: unknown };
+
+/**
+ * THE EXECUTOR'S CENSUS (rule: core's executor policy, not GitHub's answers): every `gh` call one `readOpenRowFollowUps` makes with herdr's listing `agents`, as the executor saw them. `batched` went out together in
+ * the first wave's batch, `solo` ran on its own, and `listings` is how many times herdr was asked. Every call is answered `[]`: the census counts which calls were made and how, and reads no answer.
+ */
+function census(agents: Agent[] | null) {
+  const batched: Call[] = [];
+  const solo: Call[] = [];
+  let listings = 0;
+  const batch = (calls: Call[]) => { batched.push(...calls); return calls.map(() => ({ stdout: "[]" })); };
+  const run = (args: string[], repo?: string) => { solo.push({ args, repo }); return "[]"; };
+  readOpenRowFollowUps(OPEN_ROWS, run as never, batch as never, () => { listings += 1; return agents; });
+  return { batched, solo, listings };
 }
+const callKey = (call: Call) => JSON.stringify([call.args, call.repo]);
 
-test("#3535 (5) herdr lists NO worker-<n> (only standing seats): the closed-claim read is NOT made, and the result is null (not asked)", () => {
-  const { got, asked } = followUps([{ label: "ceo", status: "working" }, { label: "orchestrator", status: "idle" }, { label: "worker-3", status: "idle" }]);
-  assert.deepEqual(asked, [], "no gh call for the closed claims (`worker-3` is below the family's first number, so it is no instance)");
-  assert.equal(got.closedClaims, null);
-  assert.equal(closedClaimsWhenWorkerListed([], () => { throw new Error("must not be asked"); }), null);
-});
-
-test("#3535 (5) CONTROL: herdr lists worker-<n>: the SAME read IS made, ONCE, for THOSE rows' numbers only, in the follow-ups' own batch", () => {
-  const agents = [{ label: "ceo", status: "idle" }, { label: "worker-3535", status: "working" }, { label: "worker-3600", status: "idle" }];
-  const { got, asked, batches } = followUps(agents, (args) => (args.at(-1)?.includes("/issues/") ? rest(issue(3535, "CLOSED", CLAIM), issue(3600, "OPEN", CLAIM))(args) : "[]"));
-  assert.deepEqual(asked.map((c) => c.args.at(-1)?.replace(/^.*\/issues\//, "")), ["3535", "3600"], "one issue read for every listed instance's row, and no other row");
-  assert.deepEqual(got.closedClaims?.rows?.map((r) => r.number), [3535], "only the CLOSED row that still carries the claim: worker-3600's row is open");
-  assert.deepEqual(got.closedClaims?.agents, agents, "with the listing the interrupt is decided from");
-  assert.ok(batches.some((b) => b.some((c) => isClosedClaimRead(c.args))), "asked together with the other follow-ups, not after them");
-});
+/** The calls herdr's listing ADDS to what a tick asks with no listing at all (`null`: herdr could not be read): the follow-ups that depend on it. */
+function addedBy(agents: Agent[]) {
+  const without = census(null);
+  const known = new Set([...without.batched, ...without.solo].map(callKey));
+  const listed = census(agents);
+  return { batched: listed.batched.filter((call) => !known.has(callKey(call))), solo: listed.solo.filter((call) => !known.has(callKey(call))), listings: listed.listings };
+}
 
 afterEach(() => forgetActivation());
 
-/** The fake code host in place, holding `rows` as the REST reads of a listed worker's rows would find them (the code host's `closedClaimedRowsOf`: A11-160, step 6); `pulls` are the pull requests that cross-reference a row. */
+/** The fake code host in place, holding `rows` as a listed worker's rows would be found (the code host's `closedClaimedRowsOf`: A11-160, step 6); `pulls` are the pull requests that cross-reference a row. `asked(op)` are the requests it was given. */
 function codeHostHolding(...rows: ReturnType<typeof issue>[]) {
   const host = createFakeCodeHost();
   const world = host.rowsWorld;
@@ -259,9 +261,34 @@ function codeHostHolding(...rows: ReturnType<typeof issue>[]) {
       comments: r.comments.map((c, at) => ({ id: at + 1, body: c.body, createdAt: c.createdAt, author: c.author.login })) }));
     world.gate.crossReferences.set(r.number, r.pulls.map((p) => ({ number: p.number, headRefName: p.head, title: "t" })));
   }
-  substituteCodeHost(host);
-  return world;
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { world, asked: (op: string) => watched.calls.filter((call) => call.op === op).map((call) => call.request) };
 }
+
+test("#3535 (5) herdr lists NO worker-<n> (only standing seats): the closed-claim read is NOT made, and the result is null (not asked)", () => {
+  const { asked } = codeHostHolding(issue(3535, "CLOSED", CLAIM));
+  const got = followUpsOn([{ label: "ceo", status: "working" }, { label: "orchestrator", status: "idle" }, { label: "worker-3", status: "idle" }]);
+  assert.deepEqual(asked("closedClaimedRowsOf"), [], "no read of the closed claims (`worker-3` is below the family's first number, so it is no instance)");
+  assert.equal(got.closedClaims, null);
+  assert.equal(closedClaimsWhenWorkerListed([], () => { throw new Error("must not be asked"); }), null);
+});
+
+test("#3535 (5) CONTROL: herdr lists worker-<n>: the SAME read IS made, ONCE, for THOSE rows' numbers only", () => {
+  const agents = [{ label: "ceo", status: "idle" }, { label: "worker-3535", status: "working" }, { label: "worker-3600", status: "idle" }];
+  const { asked } = codeHostHolding(issue(3535, "CLOSED", CLAIM), issue(3600, "OPEN", CLAIM), issue(3700, "CLOSED", CLAIM));
+  const got = followUpsOn(agents);
+  assert.equal(asked("closedClaimedRowsOf").length, 1, "one read for the home tracker's listed instances");
+  assert.deepEqual([asked("closedClaimedRowsOf")[0].numbers, asked("closedClaimedRowsOf")[0].claimLabel], [[3535, 3600], "in-progress"], "every listed instance's row, and no other row (#3700 is closed and claimed, but nothing lists it)");
+  assert.deepEqual(got.closedClaims?.rows?.map((r) => r.number), [3535], "only the CLOSED row that still carries the claim: worker-3600's row is open");
+  assert.deepEqual(got.closedClaims?.agents, agents, "with the listing the interrupt is decided from");
+});
+
+test("#3535 (5) the executor asks the closed-claim reads of a listed worker TOGETHER with the other follow-ups, once per listed instance's row, never after them", () => {
+  const { batched, solo } = addedBy([{ label: "ceo", status: "idle" }, { label: "worker-3535", status: "working" }, { label: "worker-3600", status: "idle" }]);
+  assert.equal(batched.length, 2, "one read per listed instance's row, in the follow-ups' own batch (the listing has no orchestrator, so no label read is added)");
+  assert.deepEqual(solo, [], "asked together with the other follow-ups, not after them");
+});
 
 test("#3535 (5) a listed worker's row that is closed WITHOUT the claim label, or does not exist, is not a closed claim", () => {
   const agents = [{ label: "worker-3535", status: "working" }, { label: "worker-3600", status: "working" }];
@@ -283,7 +310,7 @@ test("#3535 (5) the shape the decision reads: labels, the claim record's comment
 
 test("#3535 (5) the call is refused, or herdr is unreadable: UNREAD (rows null), never an empty list and never 'not asked'", () => {
   const agents = [{ label: "worker-9", status: "working" }];
-  codeHostHolding().failures.set("closedClaimedRowsOf", Object.assign(new Error("Command failed: gh"), { status: 1, stderr: "HTTP 502", stdout: "" }));
+  codeHostHolding().world.failures.set("closedClaimedRowsOf", Object.assign(new Error("Command failed: gh"), { status: 1, stderr: "HTTP 502", stdout: "" }));
   assert.deepEqual(closedClaimsWhenWorkerListed(agents, undefined, () => {}), { rows: null, agents });
   // an answer that is not JSON is refused by the operation itself (`plugins/github/rows/closed-claim-reads.test.ts`, #948 (2, 3))
   assert.deepEqual(closedClaimsWhenWorkerListed(null), { rows: null, agents: null });
@@ -304,45 +331,76 @@ test("#3535 the gate's `main` hands the follow-ups' closed claims to the orders:
 
 // --- #3883: THE LABELS OF A CLOSED ROW WHOSE HOLDER IS NOT LISTED ----------------------------------------------------------------------------------------
 
-/** Is this argv the gate's read of the CLOSED rows still carrying `in-progress` (#5050: the by-label connection, where it was `issue list --state closed --label`)? */
-const isClosedClaimLabelRead = (args: string[]) => {
-  const read = readsRowsByLabel(args);
-  return read !== null && read.state === "CLOSED" && read.label === "in-progress";
-};
-
 /** The org as herdr lists it: both standing panes (a COMPLETE listing) and whatever else is passed. */
 const org = (...others: string[]): Agent[] => ["ceo", "orchestrator", ...others].map((label) => ({ label, status: "idle" }));
 const stale = (number: number, ...names: string[]) => ({ number, labels: names.map((name) => ({ name })) });
 const DEBRIS = ["in-progress", "started", "session:worker-9", "was-ready", "answer:ceo"];
 
-/** One tick's act: the `gh issue edit` calls it made, what it said on its log, and how many rows it reports stripped. */
-function stripTick(asked: Parameters<typeof stripClosedClaims>[0] | { rows: unknown[] | null; agents: Agent[]; }) {
-  const edits: string[][] = [];
-  const said: string[] = [];
-  const stripped = stripClosedClaims(asked && { unread: [], ...asked } as never, { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign" });
-  return { edits, said, stripped };
+/** The home tracker's repository, and a second declared tracker's. */
+const HOME = "a11ign/a11ign";
+const OTHER = "a11ign/agent-org";
+
+/** A closed row still carrying a claim, as the strip reads it: `repo` names a tracker other than the home one. */
+type ClosedRow = { number: number; labels: ({ name?: string } | string)[]; closedAt?: string; repo?: string };
+
+/** What the code host was asked to take off a row: the repository it is in, the row, and the labels. */
+type StripRequest = { repo: string; number: number; labels: string[] };
+
+/**
+ * The fake code host holding `rows` as CLOSED rows still carrying a claim (the home tracker's, or a second tracker's where `repo` is set: `holdRepository`, `trackers` naming those that hold none), WATCHED: `edits()`
+ * are the label removals it was asked for, in order. `refuse` makes the removal on that row number fail as GitHub fails it. With `aim`, its by-label read is answered from the tracker the read's `run` was AIMED at
+ * (core aims a tracker's read by handing the operation a `run` that names the repository, which an operation over the world never calls): the test's `run` answers the repository it was aimed at, and the code host reads that tracker's rows.
+ */
+function holdingClosedRows(rows: ClosedRow[], { refuse, trackers = [], aim = false }: { refuse?: number; trackers?: string[]; aim?: boolean } = {}) {
+  const host = withRepositoryReads(createFakeCodeHost());
+  const { rowsWorld: world } = host;
+  world.repo = HOME;
+  const made = (row: ClosedRow) => fakeRow(world, row.number, { state: "CLOSED", labels: row.labels.map((label) => (typeof label === "string" ? label : String(label.name))), closedAt: row.closedAt ?? null });
+  for (const row of rows.filter((candidate) => candidate.repo === undefined)) world.rows.set(row.number, made(row));
+  for (const repo of new Set([...trackers, ...rows.flatMap((row) => (row.repo === undefined ? [] : [row.repo]))])) holdRepository(world, repo, { rows: rows.filter((row) => row.repo === repo).map(made) });
+  if (refuse !== undefined) {
+    const strip = host.rows!.removeLabelsFromRow;
+    host.rows!.removeLabelsFromRow = (request) => { if (request.number === refuse) throw new Error("HTTP 502"); return strip(request); };
+  }
+  if (aim) {
+    const read = host.rows!.readRowsByLabel;
+    host.rows!.readRowsByLabel = (ask) => read({ ...ask, repo: ask.run(["fake-aim"]) });
+  }
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  const requests = (op: string) => watched.calls.filter((call) => call.op === op).map((call) => call.request);
+  return { world, requests, edits: (): StripRequest[] => requests("removeLabelsFromRow").map(({ repo, number, labels }) => ({ repo, number, labels })) };
 }
-const removed = (args: string[]) => args.flatMap((a, i) => (args[i - 1] === "--remove-label" ? [a] : []));
+
+/** One tick's act over the code host holding what `asked` carries: the removals it made, what it said on its log, how many rows it reports stripped, and the world. */
+function stripTick(asked: Parameters<typeof stripClosedClaims>[0] | { rows: ClosedRow[] | null; agents: Agent[]; unread?: string[]; }, { nowMs, refuse }: { nowMs?: number; refuse?: number } = {}) {
+  const said: string[] = [];
+  const held = holdingClosedRows((asked?.rows ?? []) as ClosedRow[], { refuse });
+  const stripped = stripClosedClaims(asked && { unread: [], ...asked } as never, { gh: noGh, say: (l) => { said.push(l); }, repo: HOME, nowMs });
+  return { ...held, edits: held.edits(), said, stripped };
+}
 
 test("#3883 (1) a CLOSED row whose `session:` holder herdr does NOT list loses in-progress, started and session:*, and keeps was-ready and answer:*", () => {
-  const { edits, stripped } = stripTick({ rows: [stale(3866, ...DEBRIS)], agents: org("worker-1") });
+  const { edits, stripped, world } = stripTick({ rows: [stale(3866, ...DEBRIS)], agents: org("worker-1") });
   assert.equal(edits.length, 1, "one edit for the row");
-  assert.deepEqual(edits[0].slice(0, 5), ["issue", "edit", "3866", "--repo", "a11ign/a11ign"]);
-  assert.deepEqual(removed(edits[0]), ["in-progress", "started", "session:worker-9"], "the close path's own list: `answer:*` is a live debt and `was-ready` a record");
+  assert.deepEqual([edits[0].repo, edits[0].number], [HOME, 3866], "of that row, in the repository it is in");
+  assert.deepEqual(edits[0].labels, ["in-progress", "started", "session:worker-9"], "the close path's own list: `answer:*` is a live debt and `was-ready` a record");
+  assert.deepEqual(world.rows.get(3866)!.labels, ["was-ready", "answer:ceo"], "and the row keeps what the strip left");
   assert.equal(stripped, 1);
 });
 
 test("#3883 (2) a closed row whose holder IS listed (in any status) is LEFT ALONE and NAMED on the log", () => {
   const agents = [...org(), { label: "worker-9", status: "blocked" }];
-  const { edits, said, stripped } = stripTick({ rows: [stale(3000, "in-progress", "session:worker-9")], agents });
+  const { edits, said, stripped, world } = stripTick({ rows: [stale(3000, "in-progress", "session:worker-9")], agents });
   assert.deepEqual([edits, stripped], [[], 0], "nothing edited");
+  assert.deepEqual(world.rows.get(3000)!.labels, ["in-progress", "session:worker-9"], "and the row keeps its claim");
   assert.ok(said.some((l) => /#3000 keeps its claim labels: worker-9 is listed/.test(l)), `named: ${said.join("|")}`);
 });
 
 test("#3883 (3) both in ONE tick, and a row with `in-progress` but NO `session:` label has no holder to be listed: it is stripped", () => {
   const rows = [stale(1, "in-progress", "session:orchestrator"), stale(2, "in-progress", "session:worker-9"), stale(3, "in-progress", "started")];
   const { edits, stripped } = stripTick({ rows, agents: org() });
-  assert.deepEqual(edits.map((e) => e[2]), ["2", "3"], "the listed seat's row (#1) is untouched; the unlisted holder's and the holderless row go");
+  assert.deepEqual(edits.map((e) => e.number), [2, 3], "the listed seat's row (#1) is untouched; the unlisted holder's and the holderless row go");
   assert.equal(stripped, 2);
   assert.deepEqual(closedClaimDebris(rows, org()).kept, [{ number: 1, holders: ["orchestrator"] }]);
 });
@@ -352,17 +410,11 @@ test("#3883 (3) both in ONE tick, and a row with `in-progress` but NO `session:`
 const TICK = Date.parse("2026-10-07T12:00:00Z");
 const closedAgo = (hours: number) => new Date(TICK - hours * 3600_000).toISOString();
 const closed = (number: number, holder: string, closedAt: string | undefined) => ({ ...stale(number, "in-progress", "started", `session:${holder}`), closedAt });
-const tick = (rows: ReturnType<typeof closed>[]) => {
-  const edits: string[][] = [];
-  const said: string[] = [];
-  const stripped = stripClosedClaims({ rows, unread: [], agents: org("worker-3900") },
-    { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
-  return { edits, said, stripped };
-};
+const tick = (rows: ReturnType<typeof closed>[]) => stripTick({ rows, unread: [], agents: org("worker-3900") }, { nowMs: TICK });
 
 test("#3900 (1) a standing seat's row closed 3 days ago is STRIPPED, said once as stripped and never as the keeps line", () => {
   const { edits, said, stripped } = tick([closed(3164, "ceo", closedAgo(72))]);
-  assert.deepEqual(removed(edits[0]), ["in-progress", "started", "session:ceo"]);
+  assert.deepEqual(edits[0].labels, ["in-progress", "started", "session:ceo"]);
   assert.equal(stripped, 1);
   assert.ok(said.some((l) => /#3164 stripped/.test(l)), said.join("|"));
   assert.ok(!said.some((l) => /keeps its claim labels/.test(l)), "the repeating line is gone");
@@ -375,11 +427,8 @@ test("#3900 (2) the same seat's row closed 1 hour ago is KEPT and named", () => 
 });
 
 test("#3900 (3) a LISTED worker that is WORKING keeps a row closed 3 days ago: the standing seat's day does not apply to it", () => {
-  const edits: string[][] = [];
-  const said: string[] = [];
   const agents = [...org(), { label: "worker-3900", status: "working" }];
-  const stripped = stripClosedClaims({ rows: [closed(3900, "worker-3900", closedAgo(72))], unread: [], agents },
-    { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
+  const { edits, said, stripped } = stripTick({ rows: [closed(3900, "worker-3900", closedAgo(72))], unread: [], agents }, { nowMs: TICK });
   assert.deepEqual([edits, stripped], [[], 0]);
   assert.ok(said.some((l) => /#3900 keeps its claim labels: worker-3900 is listed/.test(l)), said.join("|"));
 });
@@ -393,18 +442,12 @@ test("#3900 (4) a missing or unparseable `closedAt` is KEPT: fail toward not str
 
 const minutesAgo = (minutes: number) => new Date(TICK - minutes * 60_000).toISOString();
 /** One tick over `rows`, with `worker-745` listed in `status` beside the standing panes. */
-const workerTick = (rows: ReturnType<typeof closed>[], status: string, holder = "worker-745") => {
-  const edits: string[][] = [];
-  const said: string[] = [];
-  const stripped = stripClosedClaims({ rows, unread: [], agents: [...org(), { label: holder, status }] },
-    { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
-  return { edits, said, stripped };
-};
+const workerTick = (rows: ReturnType<typeof closed>[], status: string, holder = "worker-745") => stripTick({ rows, unread: [], agents: [...org(), { label: holder, status }] }, { nowMs: TICK });
 
 test("#745 (1) POSITIVE CONTROL: a row closed 11 minutes ago, held by a LISTED IDLE worker-<n>, is stripped", () => {
   const { edits, stripped, said } = workerTick([closed(745, "worker-745", minutesAgo(11))], "idle");
   assert.equal(stripped, 1);
-  assert.deepEqual(removed(edits[0]), ["in-progress", "started", "session:worker-745"]);
+  assert.deepEqual(edits[0].labels, ["in-progress", "started", "session:worker-745"]);
   assert.ok(!said.some((l) => /keeps its claim labels/.test(l)), said.join("|"));
   assert.equal(workerTick([closed(745, "worker-745", minutesAgo(11))], "done").stripped, 1, "a DONE pane is between turns as an idle one is");
 });
@@ -438,48 +481,55 @@ test("#745 (5) a row holding BOTH a held pane and a released one keeps its label
   assert.equal(workerTick([closed(3164, "ceo", closedAgo(25))], "idle").stripped, 1);
 });
 
+/** The listed agents of the two-tracker cases: `worker-745` and `worker-9`, idle, beside the standing panes. */
+const BOTH_LISTED = [...org(), { label: "worker-745", status: "idle" }, { label: "worker-9", status: "idle" }];
+
 test("#745 (6) the read asks EVERY declared tracker, aimed at it, and a second tracker's row is stripped IN THAT REPOSITORY", () => {
-  const asked: { args: string[]; repo: string | undefined }[] = [];
-  const run = (args: string[], repo?: string) => {
-    asked.push({ args, repo });
-    if (!isClosedClaimLabelRead(args)) throw new Error(`unexpected call: ${args.join(" ")}`);
-    return connectionOf(repo === "a11ign/agent-org" ? [{ ...closed(745, "worker-745", minutesAgo(11)) }] : [closed(4437, "worker-9", minutesAgo(1))]);
-  };
-  const got = closedClaimLabelsWhenListed([...org(), { label: "worker-745", status: "idle" }, { label: "worker-9", status: "idle" }], run, [undefined, "a11ign/agent-org"])!;
-  assert.deepEqual(asked.map((a) => a.repo), [undefined, "a11ign/agent-org"], "the home tracker unaimed, as ever; the other aimed");
+  const rows = [closed(4437, "worker-9", minutesAgo(1)), { ...closed(745, "worker-745", minutesAgo(11)), repo: OTHER }];
+  const held = holdingClosedRows(rows, { aim: true });
+  const aimed: (string | undefined)[] = [];
+  const run = (_args: string[], repo?: string) => { aimed.push(repo); return repo ?? ""; };
+  const got = closedClaimLabelsWhenListed(BOTH_LISTED, run, [undefined, OTHER])!;
+  assert.deepEqual(aimed, [undefined, OTHER], "the home tracker unaimed, as ever; the other aimed");
   assert.deepEqual(got.unread, []);
-  assert.deepEqual(got.rows?.map((r) => [r.number, r.repo]), [[4437, undefined], [745, "a11ign/agent-org"]]);
-  assert.equal(asked.every((a) => readsRowsByLabel(a.args)?.state === "CLOSED"), true, "#5050: each is the closed connection read of that tracker, not a search");
-  const edits: string[][] = [];
+  assert.deepEqual(got.rows?.map((r) => [r.number, r.repo]), [[4437, undefined], [745, OTHER]]);
+  assert.equal(held.requests("readRowsByLabel").every((ask) => ask.state === "CLOSED" && ask.label === "in-progress"), true, "#5050: each is the closed claimed-label read of that tracker, not a search");
   const said: string[] = [];
-  const stripped = stripClosedClaims(got, { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
+  const stripped = stripClosedClaims(got, { gh: noGh, say: (l) => { said.push(l); }, repo: HOME, nowMs: TICK });
   assert.equal(stripped, 1);
-  assert.deepEqual(edits[0].slice(0, 5), ["issue", "edit", "745", "--repo", "a11ign/agent-org"], "the strip names the repository it acts in");
+  assert.deepEqual(held.edits(), [{ repo: OTHER, number: 745, labels: ["in-progress", "started", "session:worker-745"] }], "the strip names the repository it acts in");
+  assert.deepEqual(held.world.foreignRows.get(`${OTHER}#745`)!.labels, [], "and the second tracker's row is the one that lost them");
+  assert.deepEqual(held.world.rows.get(4437)!.labels, ["in-progress", "started", "session:worker-9"], "the home row is kept");
   assert.ok(said.some((l) => /closed #4437 keeps its claim labels: worker-9/.test(l)), "the home row's line is as it was");
-  assert.deepEqual(closedClaimDebris([{ ...closed(5, "worker-9", minutesAgo(30)), repo: "a11ign/agent-org" }], [{ label: "worker-9", status: "idle" }], TICK).strip.map((s) => s.repo), ["a11ign/agent-org"]);
+  assert.deepEqual(closedClaimDebris([{ ...closed(5, "worker-9", minutesAgo(30)), repo: OTHER }], [{ label: "worker-9", status: "idle" }], TICK).strip.map((s) => s.repo), [OTHER]);
 });
 
 test("#745 (7) a refused read stays null, never 'no debris': one tracker's refusal is named and the other's rows are still decided", () => {
   const agents = org("worker-745");
   const rows = [closed(745, "worker-9", minutesAgo(11))];
-  const refusing = (bad: (repo: string | undefined) => boolean) => (_args: string[], repo?: string) => { if (bad(repo)) throw new Error("HTTP 502"); return connectionOf(rows); };
-  const trackers = [undefined, "a11ign/agent-org"];
-  const all = closedClaimLabelsWhenListed(agents, refusing(() => true), trackers)!;
+  const run = (_args: string[], repo?: string) => repo ?? "";
+  const trackers = [undefined, OTHER];
+  const everyRead = holdingClosedRows(rows, { aim: true, trackers: [OTHER] });
+  everyRead.world.failures.set("readRowsByLabel", new Error("HTTP 502"));
+  const all = closedClaimLabelsWhenListed(agents, run, trackers)!;
   assert.equal(all.rows, null, "every read refused: null, and not []");
   const said: string[] = [];
-  assert.equal(stripClosedClaims(all, { gh: () => { throw new Error("must not be called"); }, say: (l) => { said.push(l); } }), 0);
+  assert.equal(stripClosedClaims(all, { gh: noGh, say: (l) => { said.push(l); } }), 0);
   assert.match(said.join("|"), /NOT read.*refused/);
-  const part = closedClaimLabelsWhenListed(agents, refusing((repo) => repo === "a11ign/agent-org"), trackers)!;
+  assert.deepEqual(everyRead.edits(), [], "and nothing is taken off a row");
+  const oneRead = holdingClosedRows(rows, { aim: true, trackers: [OTHER] });
+  oneRead.world.failures.set(`readRowsByLabel ${OTHER}`, new Error("HTTP 502"));
+  const part = closedClaimLabelsWhenListed(agents, run, trackers)!;
   assert.deepEqual([part.rows?.length, part.unread.length], [1, 1], "the home tracker's row is read; the second tracker is named as unread");
-  assert.equal(closedClaimLabelsWhenListed(agents, () => "{}", trackers)!.rows, null, "an answer that is no connection is a refusal too");
+  assert.deepEqual(part.unread, [OTHER]);
 });
 
 test("#745 (8) the follow-ups' wave reads each declared tracker once, from the one listing", () => {
   const trackers = declaredTrackerRepos();
   assert.equal(trackers[0], undefined, "the home tracker leads, unaimed");
-  const { batches } = followUps(org("worker-3535"), (args) => (isClosedClaimLabelRead(args) ? connectionOf([stale(5, "in-progress")]) : "[]"));
-  const asked = batches.flat().filter((c) => isClosedClaimLabelRead(c.args));
-  assert.deepEqual(asked.map((c) => c.repo), trackers, "one read per tracker the project declares, and no tracker twice");
+  const { batched, solo } = addedBy(org());
+  assert.deepEqual(batched.map((c) => c.repo), trackers, "one read per tracker the project declares, and no tracker twice");
+  assert.deepEqual(solo, [], "all of them in the first wave's batch");
 });
 
 test("#3883 (4) NOT ASKED and UNREAD are said as such and strip NOTHING -- absence of a listing is not an unlisted holder", () => {
@@ -491,40 +541,36 @@ test("#3883 (4) NOT ASKED and UNREAD are said as such and strip NOTHING -- absen
 });
 
 test("#3883 (5) a failed edit is said, counted as NOT stripped, and does not stop the next row", () => {
-  const said: string[] = [];
-  const gh = (args: string[]) => { if (args[2] === "7") throw new Error("HTTP 502"); return ""; };
-  const stripped = stripClosedClaims({ rows: [stale(7, "in-progress"), stale(8, "in-progress")], unread: [], agents: org() }, { gh, say: (l) => { said.push(l); }, repo: "r/r" });
+  const { stripped, said, edits, world } = stripTick({ rows: [stale(7, "in-progress"), stale(8, "in-progress")], unread: [], agents: org() }, { refuse: 7 });
   assert.equal(stripped, 1);
+  assert.deepEqual(edits.map((e) => e.number), [7, 8], "the refused row was asked for, and the next row was asked for after it");
+  assert.deepEqual([world.rows.get(7)!.labels, world.rows.get(8)!.labels], [["in-progress"], []]);
   assert.ok(said.some((l) => /#7 closed but COULD NOT STRIP in-progress -- HTTP 502/.test(l)));
   assert.ok(said.some((l) => /#8 stripped in-progress/.test(l)));
 });
 
 test("#3883 (6) the read: asked once, labels only, closed + in-progress, and ONLY with a COMPLETE listing (a partial listing reads every live holder as absent)", () => {
-  const seen: string[][] = [];
-  const run = (args: string[]) => { seen.push(args); return connectionOf([stale(1, "in-progress")]); };
-  assert.equal(closedClaimLabelsWhenListed(null, run), null);
-  assert.equal(closedClaimLabelsWhenListed([{ label: "worker-9", status: "idle" }], run), null, "neither standing pane listed");
-  assert.equal(seen.length, 0, "no call made for either");
-  const asked = closedClaimLabelsWhenListed(org(), run, [undefined])!;
+  const held = holdingClosedRows([stale(1, "in-progress")]);
+  assert.equal(closedClaimLabelsWhenListed(null, noGh), null);
+  assert.equal(closedClaimLabelsWhenListed([{ label: "worker-9", status: "idle" }], noGh), null, "neither standing pane listed");
+  assert.equal(held.requests("readRowsByLabel").length, 0, "no call made for either");
+  const asked = closedClaimLabelsWhenListed(org(), noGh, [undefined])!;
   assert.deepEqual(asked.rows?.map(({ number, labels }) => ({ number, labels })), [stale(1, "in-progress")], "the connection's `labels { nodes }` is back as the array the strip reads");
-  assert.equal(seen.length, 1);
-  // #5050: the premise "`issue list --state closed --label in-progress`" was a SEARCH; the same question is the closed by-label connection read, and it is NOT a search.
-  assert.deepEqual(readsRowsByLabel(seen[0]), { label: "in-progress", state: "CLOSED" });
-  assert.deepEqual(seen[0].slice(0, 2), ["api", "graphql"]);
-  assert.equal(seen[0].some((a) => a === "--search" || a.startsWith("search")), false, "a connection read, never a search");
-  const selection = String(seen[0].find((a) => a.startsWith("query="))).replace(/^.*?pageInfo\{hasNextPage endCursor\} nodes\{/, "");
-  assert.match(selection, /^number labels\(first:50\)\{nodes\{name\}\} closedAt\}/, "number, labels and closedAt");
-  assert.doesNotMatch(selection, /comments|body/, "no comments: the page is the debris and nothing else");
-  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => { throw new Error("502"); }, [undefined])?.rows, null, "a refusal is null, never []");
-  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => "{}", [undefined])?.rows, null);
+  assert.equal(held.requests("readRowsByLabel").length, 1);
+  // #5050: the premise "`issue list --state closed --label in-progress`" was a SEARCH; the same question is the closed by-label connection read (the query it sends is the plugin's: `rows-by-label-closed.test.ts`).
+  const [ask] = held.requests("readRowsByLabel");
+  assert.deepEqual([ask.label, ask.state], ["in-progress", "CLOSED"]);
+  assert.match(ask.select, /^number labels\(first:50\)\{nodes\{name\}\} closedAt$/, "number, labels and closedAt");
+  assert.doesNotMatch(ask.select, /comments|body/, "no comments: the page is the debris and nothing else");
+  held.world.failures.set("readRowsByLabel", new Error("502"));
+  assert.deepEqual(closedClaimLabelsWhenListed(org(), noGh, [undefined])?.rows, null, "a refusal is null, never []");
 });
 
 test("#3883 (7) the follow-ups' wave makes the read once, from the SAME listing it hands #3535 (a second herdr read would be a second answer)", () => {
-  const { batches } = followUps(org("worker-3535"), (args) => (isClosedClaimLabelRead(args) ? connectionOf([stale(5, "in-progress")]) : "[]"));
-  const asked = batches.flat().filter((c) => isClosedClaimLabelRead(c.args));
-  assert.equal(asked.length, declaredTrackerRepos().length, "once per declared tracker (agent-org#745), never twice for one");
-  const calls: Call[] = [];
-  const got = readOpenRowFollowUps(OPEN_ROWS, ((args: string[]) => { calls.push({ args, repo: undefined }); return "[]"; }) as never, undefined as never, undefined as never) as { closedClaimLabels: unknown };
+  const { batched, listings } = addedBy(org("worker-3535"));
+  assert.equal(listings, 1, "herdr is listed ONCE for the claims and the labels together");
+  assert.equal(batched.filter((c) => c.repo !== undefined).length, declaredTrackerRepos().length - 1, "once per declared tracker (agent-org#745), never twice for one");
+  const got = readOpenRowFollowUps(OPEN_ROWS, (() => "[]") as never, undefined as never, undefined as never) as { closedClaimLabels: unknown };
   assert.equal(got.closedClaimLabels, null, "a test's `gh` stub carries no herdr listing: not asked, so not 'unlisted'");
 });
 

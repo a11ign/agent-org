@@ -1,18 +1,24 @@
 // no-token: lookupClosingIssues
 // #4770. THE THIRD DIRECTION OF `closes-mismatch-check.ts`: a PR whose head ref IS an open claimed row's `Claimed-branch:` cannot declare
 // `Closes: none` to keep the row open (chairman, 2026-10-10: one deliverable per row). Every fact is INJECTED to the pure functions, and the CLI
-// cases run the script against a fake `gh` first on PATH that answers from files, so nothing here reaches GitHub. The claim records are written by
-// the REAL writer (`claimRecordComment`), so a change to the record's format reaches this test rather than a hand-copied string.
-import { test } from "node:test";
+// cases run the script against a fake `gh` first on PATH that answers from files (a child process cannot be handed the in-memory fake code host), and the default reads of the step run in this process on
+// the FAKE code host's rows, so nothing here reaches GitHub. The claim records are written by
+// the REAL writer (`claimRecordComment`), so a change to the record's format reaches this test rather than a hand-copied string. Three THIN CLI cases remain over a `gh` on PATH; the rest of the CLI's decisions are asserted on the fake code host.
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  claimedBranchReport, claimedBranchStep, claimedBranchVerdict, closesVerdictOf, lookupClaimedRowsOfTrackers,
-  trackerReposFor, type ClaimedRow, type PrHead,
+  claimedBranchReport, claimedBranchStep, claimedBranchVerdict, closesVerdictOf, lookupClaimedRowsOfTrackers, lookupConsumerFile, lookupOpenClaimedRows, lookupPrHead,
+  trackerReposFor, type ClaimedRow, type ClosesFacts, type PrHead,
 } from "./closes-mismatch-check.ts";
+import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
+import { CLAIM_LABEL } from "./claim-labels.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { claimRecordComment } from "./row-claim.ts";
@@ -172,9 +178,92 @@ test("#4770 step: asks GitHub only for a `none` declaration", () => {
   assert.match(verdict?.lines[0] ?? "", /REFUSED/);
 });
 
-// --- the whole CLI against a fake `gh`: the step's output on a fixture, from a real process ---
+// --- the step's own reads (A11-160, step 9: the code host's rows), on the fake code host ---
 
-const CHECK_CLI = fileURLToPath(new URL("./closes-mismatch-check.ts", import.meta.url));
+afterEach(() => forgetActivation());
+
+/** The comments of a claimed row as the world keeps them, in order. */
+const commentsOf = (comments: ClaimedRow["comments"]) => comments.map((c, i) => ({ id: i + 1, body: String(c.body), createdAt: String(c.createdAt), author: c.author?.login }));
+
+/** The fake code host the default reads ask: the tracker's repository is `REPO`, and each seeded claimed row carries the claim label and its comments in order. */
+function claimedWorld(rows: ClaimedRow[] = ROWS) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  for (const { number, comments } of rows) world.rows.set(number, fakeRow(world, number, { labels: [CLAIM_LABEL], comments: commentsOf(comments) }));
+  const pull = (number: number, headRefName: string, over: object = {}) => world.pulls.set(number, { number, body: "", headRefName, labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: AT, comments: [], ...over });
+  substituteCodeHost(host);
+  return { host, world, pull };
+}
+
+test("#4770 step on the code host: `Closes: none` on a claimed row's own branch is refused, with the default reads of the step and no reader injected", () => {
+  const { pull } = claimedWorld();
+  pull(4801, BRANCH);
+  const verdict = claimedBranchStep(NONE, { prNumber: 4801, prRepo: REPO });
+  assert.equal(verdict?.exit, 1);
+  assert.match(verdict?.lines.join("\n") ?? "", /claimed branch of open row #4770/);
+});
+
+test("#4770 step on the code host: a branch no claimed row names passes, and a released claim does not hold its branch", () => {
+  const { pull, world } = claimedWorld();
+  pull(4801, "dependabot/pnpm/yaml-2.8.0");
+  assert.match(claimedBranchStep(NONE, { prNumber: 4801, prRepo: REPO })?.lines.join("\n") ?? "", /claimed branch ok -- dependabot\/pnpm\/yaml-2\.8\.0 is no open row's claimed branch/);
+  pull(4802, BRANCH);
+  world.rows.get(4770)?.comments.push({ id: 99, body: release().body, createdAt: release().createdAt, author: "a11ign-ai-workers" });
+  assert.equal(claimedBranchStep(NONE, { prNumber: 4802, prRepo: REPO })?.exit, 0, "CONTROL: the same branch is refused until the row's claim is released");
+});
+
+test("#4770 step on the code host: a claim record beyond the comments read is `could not tell`, named, and never `no claim`", () => {
+  const { pull, world } = claimedWorld();
+  pull(4801, "agent/an-unrelated-change-9");
+  // the claim record is the OLDEST of 151 comments: the newest 100 the read takes do not hold it
+  world.rows.get(4770)!.comments = [{ id: 1, body: claim(BRANCH).body, createdAt: AT, author: "a11ign-ai-workers" },
+    ...Array.from({ length: 150 }, (_, i) => ({ id: 1000 + i, body: `noise ${i}`, createdAt: AT, author: "someone" }))];
+  const verdict = claimedBranchStep(NONE, { prNumber: 4801, prRepo: REPO });
+  assert.equal(verdict?.exit, 0);
+  assert.match(verdict?.lines.join("\n") ?? "", /the claim record of #4770 lies beyond the comments read/);
+});
+
+test("#4770 step on the code host: claimed rows the host could not read are `could not tell`, not `no claim`; a head it could not read is no verdict at all", () => {
+  const { pull, world } = claimedWorld();
+  pull(4801, BRANCH);
+  world.failures.set("claimedRowsWithComments", new Error("HTTP 502"));
+  const verdict = claimedBranchStep(NONE, { prNumber: 4801, prRepo: REPO });
+  assert.equal(verdict?.exit, 0);
+  assert.match(verdict?.lines.join("\n") ?? "", /skipped the claimed-branch comparison -- could not read the open claimed rows of /);
+  world.failures.delete("claimedRowsWithComments");
+  world.failures.set("headBranchAndForkOf", new Error("HTTP 502"));
+  assert.equal(lookupPrHead(4801, REPO), null, "a failed head read is null, never a branch");
+});
+
+test("#4770: `lookupOpenClaimedRows` returns the claimed open rows of the tracker with their comments, and null for more rows than one page holds", () => {
+  const { world } = claimedWorld();
+  world.rows.set(5000, fakeRow(world, 5000, { state: "CLOSED", labels: [CLAIM_LABEL] }));
+  world.rows.set(5001, fakeRow(world, 5001, { labels: ["ready"] }));
+  const got = lookupOpenClaimedRows(REPO);
+  assert.deepEqual(got?.map((r) => [r.number, r.repo, r.comments.length, r.unreadable]), [[4770, REPO, 2, false], [4800, REPO, 1, false]], "open and claimed only: a closed row and an unclaimed one are not in it");
+  for (let number = 6000; number < 6101; number++) world.rows.set(number, fakeRow(world, number, { labels: [CLAIM_LABEL] }));
+  assert.equal(lookupOpenClaimedRows(REPO), null, "a page that is not the whole population is a failed read, not a short list");
+});
+
+test("#4770: `lookupPrHead` is the pull request's head branch, and whether it is a fork's", () => {
+  const { pull } = claimedWorld();
+  pull(4801, BRANCH);
+  pull(4802, "someone/fix", { isCrossRepository: true });
+  assert.deepEqual(lookupPrHead(4801, REPO), { branch: BRANCH, fork: false });
+  assert.deepEqual(lookupPrHead(4802, REPO), { branch: "someone/fix", fork: true });
+  assert.equal(lookupPrHead(4999, REPO), null, "a pull request the host does not hold is a read that failed");
+});
+
+test("agent-org#873/#839: `lookupConsumerFile` reads one file of the consumer's default branch, or as a commit left it, and is null for a file it cannot read", () => {
+  const host = createFakeCodeHost();
+  host.rowsWorld.tail.closing.consumerFiles.set("o/consumer:routing.json", '{"routing":{"question":true}}');
+  host.rowsWorld.tail.closing.consumerFiles.set(`o/consumer:routing.json@${"a".repeat(40)}`, '{"routing":{}}');
+  substituteCodeHost(host);
+  assert.equal(lookupConsumerFile("o/consumer", "routing.json"), '{"routing":{"question":true}}');
+  assert.equal(lookupConsumerFile("o/consumer", "routing.json", "a".repeat(40)), '{"routing":{}}');
+  assert.equal(lookupConsumerFile("o/consumer", "absent.json"), null, "could not read is null, never an empty file");
+});
 
 // agent-org#744: the CLI's tracker list is the HOME project's declaration, read once at import, and CI's pinned project may declare one tracker
 // only. So a case that needs a second tracker runs under a host of its own: a project of nobody's, with a default tracker and a second one.
@@ -196,6 +285,98 @@ const FIXTURE_DECLARATION = {
   },
 };
 
+// --- the whole comparison as `main` asks it, in this process, on the fake code host (A11-160, step 9: what the CLI's cases below fed it as GitHub's JSON is the world's) ---
+
+/** The reads of the CLI (`cliFacts`), composed from the module's own default lookups: the pull request is #4800 of `prRepo`, the comparison is `closesVerdictOf`, and `declaration` names the trackers read. */
+function cliVerdict(body: string, { prRepo = REPO, declaration = homeProjectDeclaration() }: { prRepo?: string; declaration?: Parameters<typeof trackerReposFor>[1] } = {}) {
+  const facts: ClosesFacts = {
+    resolved: () => lookupClosingIssues(4800, prRepo),
+    claimed: { head: lookupPrHead, rows: (repo) => lookupClaimedRowsOfTrackers(trackerReposFor(repo, declaration)) },
+    acceptance: () => ({ text: "", named: "the body" }),
+    consumerFile: lookupConsumerFile,
+    recent: () => lookupRecentClosesPrs(),
+  };
+  return closesVerdictOf(body, 4800, prRepo, facts);
+}
+const linesOf = (verdict: { lines: string[] }) => verdict.lines.join("\n");
+
+/** Pull request #4800 on `branch` (with the rows GitHub resolves it as closing, `closes`) in the world of `setup`, compared as `main` does for `body`. */
+function comparedOn(setup: Pick<ReturnType<typeof claimedWorld>, "pull">, branch: string, body: string, { closes = [], ask = cliVerdict }: { closes?: { number: number; labels: string[] }[]; ask?: typeof cliVerdict } = {}) {
+  setup.pull(4800, branch, { closes });
+  return ask(body);
+}
+
+test("#4770 comparison on the code host: `Closes: none` on a claimed row's own branch exits 1 and prints the refusal", () => {
+  const verdict = comparedOn(claimedWorld(), BRANCH, "Closes: none -- the rest is a later step");
+  assert.equal(verdict.exit, 1);
+  assert.match(verdict.lines[0], /^CLOSES MISMATCH: REFUSED -- a claimed row's own pull request cannot keep the row open:/);
+  assert.match(linesOf(verdict), /claimed branch of open row #4770/);
+});
+
+test("#4770 comparison on the code host: the same branch declaring `Closes #4770` goes on to the existing comparison and passes", () => {
+  const agreed = comparedOn(claimedWorld(), BRANCH, "Closes #4770", { closes: [{ number: 4770, labels: [] }] });
+  assert.equal(agreed.exit, 0);
+  assert.match(linesOf(agreed), /declared and resolved agree/);
+  assert.equal(comparedOn(claimedWorld(), BRANCH, "Closes #4770").exit, 1, "CONTROL: the same declaration that GitHub does not resolve is not agreement");
+});
+
+test("#4770 comparison on the code host: a branch no row claimed passes with `Closes: none`", () => {
+  const verdict = comparedOn(claimedWorld(), "dependabot/pnpm/yaml-2.8.0", "Closes: none -- dependency update");
+  assert.equal(verdict.exit, 0);
+  assert.match(linesOf(verdict), /claimed branch ok -- dependabot\/pnpm\/yaml-2\.8\.0 is no open row's claimed branch/);
+  assert.match(linesOf(verdict), /declared and resolved agree/);
+});
+
+test("#4770 comparison on the code host: an unreadable claim record is skipped with its reason, and the other directions still run", () => {
+  const setup = claimedWorld();
+  setup.world.failures.set("claimedRowsWithComments", new Error("HTTP 502"));
+  const verdict = comparedOn(setup, BRANCH, "Closes: none -- the rest is a later step");
+  assert.equal(verdict.exit, 0);
+  assert.match(linesOf(verdict), /skipped the claimed-branch comparison -- could not read the open claimed rows/);
+  assert.match(linesOf(verdict), /declared and resolved agree/);
+});
+
+// agent-org#744: a project of nobody's, with a default tracker and a second one. The rows of the second tracker are the world's foreign rows.
+function twoTrackerWorld() {
+  const setup = claimedWorld();
+  setup.world.repo = FIXTURE.repo;
+  setup.world.foreignRows.set(`${FIXTURE.other}#744`, fakeRow(setup.world, 744, { labels: [CLAIM_LABEL], comments: commentsOf(OTHER_ROWS[0].comments) }));
+  return setup;
+}
+const twoTrackerVerdict = (body: string) => cliVerdict(body, { prRepo: FIXTURE.repo, declaration: { tracker: FIXTURE_DECLARATION.tracker, code: FIXTURE_DECLARATION.code } });
+const onTwoTrackers = (setup: ReturnType<typeof twoTrackerWorld>, branch: string, body: string) => comparedOn(setup, branch, body, { ask: twoTrackerVerdict });
+
+test("#744 comparison on the code host: `Closes: none` on a branch the OTHER tracker's claim record names exits 1, naming that row in full", () => {
+  const verdict = onTwoTrackers(twoTrackerWorld(), OTHER_BRANCH, "Closes: none -- the rest is a later step");
+  assert.equal(verdict.exit, 1);
+  assert.match(verdict.lines[0], /^CLOSES MISMATCH: REFUSED -- a claimed row's own pull request cannot keep the row open:/);
+  assert.ok(linesOf(verdict).includes(`claimed branch of open row ${FIXTURE.other}#744`), linesOf(verdict));
+});
+
+test("#744 comparison on the code host: a branch neither tracker's claim names passes `Closes: none`, with both trackers read", () => {
+  const verdict = onTwoTrackers(twoTrackerWorld(), "dependabot/pnpm/yaml-2.8.0", "Closes: none -- dependency update");
+  assert.equal(verdict.exit, 0);
+  assert.match(linesOf(verdict), /is no open row's claimed branch/);
+});
+
+test("#744 comparison on the code host: an unreadable other tracker is skipped with its name, never passed as `no claim`", () => {
+  const setup = twoTrackerWorld();
+  const readClaimed = setup.host.rows!.claimedRowsWithComments;
+  setup.host.rows!.claimedRowsWithComments = (request) => {
+    if (request.repo === FIXTURE.other) throw new Error("HTTP 502");
+    return readClaimed(request);
+  };
+  const verdict = onTwoTrackers(setup, "agent/an-unrelated-change-9", "Closes: none -- finishes no row");
+  assert.equal(verdict.exit, 0);
+  assert.ok(linesOf(verdict).includes(`skipped the claimed-branch comparison -- could not read the open claimed rows of ${FIXTURE.other}`), linesOf(verdict));
+});
+
+// --- the whole CLI against a fake `gh`: the step's output on a fixture, from a real process ---
+// A child process cannot be handed the in-memory fake code host, so these THIN cases keep a `gh` on PATH that answers only what the CLI must read: they prove `main` wires the reads (the tracker list of its project, an unreadable
+// read, the exit code and the printed lines). What the comparison DECIDES on each fact is asserted above, in this process, on the fake code host's rows.
+
+const CHECK_CLI = fileURLToPath(new URL("./closes-mismatch-check.ts", import.meta.url));
+
 /** A host file whose primary project declares two trackers, in a fresh directory. @param {string} dir @returns {string} */
 function twoTrackerHost(dir: string): string {
   const checkout = join(dir, "checkout");
@@ -211,7 +392,7 @@ function twoTrackerHost(dir: string): string {
   return hostFile;
 }
 
-function runCheck(world: { headRef: string; rows: ClaimedRow[] | "fail"; other?: ClaimedRow[] | "fail"; own?: number[] }, body: string) {
+function runCheck(world: { headRef: string; rows: ClaimedRow[] | "fail"; other?: ClaimedRow[] | "fail" }, body: string) {
   const dir = tmpDir("closes-claimed-branch-");
   const fake = join(dir, "gh");
   const twoTrackers = world.other !== undefined;
@@ -220,8 +401,7 @@ function runCheck(world: { headRef: string; rows: ClaimedRow[] | "fail"; other?:
   const issuesOf = (list: ClaimedRow[] | "fail" | undefined) => ({ data: { repository: { issues: { totalCount: list === undefined || list === "fail" ? 0 : list.length,
     nodes: list === undefined || list === "fail" ? [] : list.map((r) => ({ number: r.number, comments: { totalCount: r.comments.length, nodes: r.comments } })) } } } });
   const rows = issuesOf(world.rows);
-  const own = { data: { repository: { pullRequest: { closingIssuesReferences: {
-    nodes: (world.own ?? []).map((number) => ({ number, title: "t", labels: { nodes: [] } })) } } } } };
+  const own = { data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [] } } } } };
   writeFileSync(join(dir, "pull.json"), JSON.stringify(pull));
   writeFileSync(join(dir, "rows.json"), JSON.stringify(rows));
   writeFileSync(join(dir, "other.json"), JSON.stringify(issuesOf(world.other)));
@@ -248,19 +428,6 @@ test("#4770 CLI: `Closes: none` on the claimed branch exits 1 and prints the ref
   assert.match(out, /claimed branch of open row #4770/);
 });
 
-test("#4770 CLI: the same branch declaring `Closes #4770` goes on to the existing comparison and passes", () => {
-  const { status, out } = runCheck({ headRef: BRANCH, rows: ROWS, own: [4770] }, "Closes #4770");
-  assert.equal(status, 0);
-  assert.match(out, /declared and resolved agree/);
-});
-
-test("#4770 CLI: a branch no row claimed passes with `Closes: none`", () => {
-  const { status, out } = runCheck({ headRef: "dependabot/pnpm/yaml-2.8.0", rows: ROWS }, "Closes: none -- dependency update");
-  assert.equal(status, 0);
-  assert.match(out, /claimed branch ok -- dependabot\/pnpm\/yaml-2\.8\.0 is no open row's claimed branch/);
-  assert.match(out, /declared and resolved agree/);
-});
-
 test("#4770 CLI: an unreadable claim record is skipped with its reason, and the other directions still run", () => {
   const { status, out } = runCheck({ headRef: BRANCH, rows: "fail" }, "Closes: none -- the rest is a later step");
   assert.equal(status, 0);
@@ -268,23 +435,11 @@ test("#4770 CLI: an unreadable claim record is skipped with its reason, and the 
   assert.match(out, /declared and resolved agree/);
 });
 
-test("#744 CLI: `Closes: none` on a branch the OTHER tracker's claim record names exits 1, naming that row in full", () => {
+test("#744 CLI: `Closes: none` on a branch the OTHER tracker's claim record names exits 1, naming that row in full (the CLI reads every declared tracker of its project)", () => {
   const { status, out } = runCheck({ headRef: OTHER_BRANCH, rows: ROWS, other: OTHER_ROWS }, "Closes: none -- the rest is a later step");
   assert.equal(status, 1);
   assert.match(out, /^CLOSES MISMATCH: REFUSED -- a claimed row's own pull request cannot keep the row open:/);
   assert.ok(out.includes(`claimed branch of open row ${FIXTURE.other}#744`), out);
-});
-
-test("#744 CLI: a branch neither tracker's claim names passes `Closes: none`, with both trackers read", () => {
-  const { status, out } = runCheck({ headRef: "dependabot/pnpm/yaml-2.8.0", rows: ROWS, other: OTHER_ROWS }, "Closes: none -- dependency update");
-  assert.equal(status, 0);
-  assert.match(out, /is no open row's claimed branch/);
-});
-
-test("#744 CLI: an unreadable other tracker is skipped with its name, never passed as `no claim`", () => {
-  const { status, out } = runCheck({ headRef: "agent/an-unrelated-change-9", rows: ROWS, other: "fail" }, "Closes: none -- finishes no row");
-  assert.equal(status, 0);
-  assert.ok(out.includes(`skipped the claimed-branch comparison -- could not read the open claimed rows of ${FIXTURE.other}`), out);
 });
 
 // --- agent-org#1501: THE HOST GATE'S RECEIVING SIDE. What a11ign's `deliberateRefusals` job refused, asked of one pull request through the caller's `gh`.

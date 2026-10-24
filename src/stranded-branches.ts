@@ -54,6 +54,8 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 // #2619 (child 3d of #69): the `blocked` label, moved to the project's declared vocabulary.
 import { BLOCKED_LABEL } from "./project-vocabulary.ts";
 
@@ -64,6 +66,15 @@ const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string 
   return execFileSync(cmd, args,
     { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
 };
+/** What `execFileSync` let a program print before it cut it off (1 MiB), which this tool's `gh` has always been held to. */
+const EXEC_FILE_BUFFER = 1024 * 1024;
+
+/**
+ * The code host's program, run as this tool always ran `gh`: the git variables of a hook taken off (`sandboxGitEnv`), what it says on stderr kept to the failure, and the leak guard in the RUNNER, so every call
+ * is covered (#1053). A11-160: the process is the code host's, and what is asked of it is a named operation of its rows.
+ */
+const codeHostRun = (): RowsRun => rows().runnerWith({ withoutGitEnv: true, echo: false, maxBuffer: EXEC_FILE_BUFFER, guard: (args) => assertNoLeakInArgv(rows().command, [...args]) });
+
 /** @param {string} line */
 const writeOut = (line: string) => { process.stdout.write(line); };
 /** @param {string} line */
@@ -154,21 +165,21 @@ export const MAX_PR_PAGES = 100;
  * -- measured live at 402 and 399 -- so reporting the Set's size as a PR count would be a real number
  * about the quantity NEXT TO the one named, which is this repo's most-repeated reporting defect.
  *
- * @param {{ run?: typeof defaultRun }} [deps]
+ * @param {{ gh?: RowsRun }} [deps] absent: the code host's program, run as this tool runs it
  * @returns {{ refs: Set<string>, calls: number, prs: number }}
  */
-export function fetchAllPRHeadRefs({ run = defaultRun }: { run?: typeof defaultRun; } = {}): { refs: Set<string>; calls: number; prs: number; } {
+export function fetchAllPRHeadRefs({ gh }: { gh?: RowsRun; } = {}): { refs: Set<string>; calls: number; prs: number; } {
   const refs: Set<string> = new Set();
   let calls = 0;
   let prs = 0;
   for (let page = 1; page <= MAX_PR_PAGES; page += 1) {
-    const rows = fetchPRHeadRefPage({ run, page });
+    const heads = fetchPRHeadRefPage({ gh, page });
     calls += 1;
-    prs += rows.length;
-    for (const ref of rows) refs.add(ref);
+    prs += heads.length;
+    for (const ref of heads) refs.add(ref);
     // A SHORT PAGE IS THE END. A full one is not evidence of more, but asking again costs one call and
     // answers definitely; guessing costs the whole audit.
-    if (rows.length < PR_PAGE_SIZE) return { refs, calls, prs };
+    if (heads.length < PR_PAGE_SIZE) return { refs, calls, prs };
   }
   throw new Error(`stranded-branches: still receiving full pages after ${MAX_PR_PAGES} of `
     + `${PR_PAGE_SIZE} -- refusing to guess whether that is the end. Either this repo has more than `
@@ -183,38 +194,19 @@ export function fetchAllPRHeadRefs({ run = defaultRun }: { run?: typeof defaultR
  * lines, a PR whose head ref could not be read would arrive as the four characters `null` and be
  * indistinguishable from a branch actually named that.
  *
- * @param {{ run: typeof defaultRun, page: number }} deps
+ * @param {{ gh?: RowsRun, page: number }} deps
  * @returns {string[]}
  */
-function fetchPRHeadRefPage({ run, page }: { run: typeof defaultRun; page: number; }): string[] {
-  const path = `repos/${REPO}/pulls?state=all&per_page=${PR_PAGE_SIZE}`
-    + `&sort=created&direction=asc&page=${page}`;
-  let raw: string;
+function fetchPRHeadRefPage({ gh, page }: { gh?: RowsRun; page: number; }): string[] {
+  let read;
   try {
-    raw = run("gh", ["api", path, "--jq", "[.[] | {ref: .head.ref}]"]);
+    read = rows().pullHeadRefsPageOf({ repo: REPO, page, pageSize: PR_PAGE_SIZE, run: gh ?? codeHostRun() });
   } catch (cause) {
     throw new Error(`stranded-branches: could not list PRs from ${REPO} (page ${page}) -- refusing to `
       + `guess. ${(cause as Error).message}`, { cause });
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(`stranded-branches: gh's PR list (page ${page}) was not JSON -- refusing to guess. `
-      + `First 200 chars: ${raw.slice(0, 200)}`, { cause });
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error(`stranded-branches: gh's PR list (page ${page}) was not an array -- refusing to `
-      + `guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
-  }
-  return parsed.map((row: unknown, i: number) => {
-    const ref = (row as { ref?: unknown })?.ref;
-    if (typeof ref !== "string") {
-      throw new Error(`stranded-branches: PR entry ${i} on page ${page} has no head ref -- refusing to `
-        + `guess. Got: ${JSON.stringify(row).slice(0, 200)}`);
-    }
-    return ref;
-  });
+  if ("unreadable" in read) throw new Error(`stranded-branches: ${read.unreadable}`);
+  return read.refs;
 }
 
 /**
@@ -344,13 +336,10 @@ export function staleClosureComment(pr: { number: number; headRefName: string; }
  * sessions, and filed as #450. The latest run per workflow is the bounded question; this asks `gh` for the
  * PR's own mergeable state instead, which is what the merge train acts on anyway.
  *
- * @param {{run?: (cmd: string, args: string[]) => string}} options
+ * @param {{gh?: RowsRun}} options absent: the code host's program, run as this tool runs it
  */
-export function fetchOpenPRs({ run = defaultRun }: { run?: (cmd: string, args: string[]) => string; } = {}) {
-  const raw = run("gh", ["pr", "list", "--state", "open", "--limit", String(PR_LIST_LIMIT), "--json",
-    "number,headRefName,createdAt,isDraft,labels,mergeStateStatus"]);
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("gh pr list did not return an array");
+export function fetchOpenPRs({ gh }: { gh?: RowsRun; } = {}) {
+  const parsed = rows().openPullsForSweep({ limit: PR_LIST_LIMIT, run: gh ?? codeHostRun() });
   // THE SAME AT-THE-CAP REFUSAL AS THE ALL-PRs LISTING HAD. It lived at one of the two call sites of the
   // one constant, which is this repository's most expensive recurring shape; when the all-PRs listing
   // moved to pagination the guard would have left with it, so it is stated here instead. Reaching 400
@@ -420,13 +409,14 @@ function sweepFailure({ closed, number, commented, error }: { closed: number[]; 
  * nothing.
  *
  * @param {{now?: Date, maxAgeHours?: number, close?: boolean,
- *          run?: (cmd: string, args: string[]) => string}} options
+ *          gh?: RowsRun}} options
  */
-export function sweepPullRequests({ now = new Date(), maxAgeHours = 4, close = false, run = defaultRun }: {
+export function sweepPullRequests({ now = new Date(), maxAgeHours = 4, close = false, gh }: {
     now?: Date; maxAgeHours?: number; close?: boolean;
-    run?: (cmd: string, args: string[]) => string;
+    gh?: RowsRun;
 } = {}) {
-  const prs = fetchOpenPRs({ run }).map((pr) => prForDecision(pr, now));
+  const run = gh ?? codeHostRun();
+  const prs = fetchOpenPRs({ gh: run }).map((pr) => prForDecision(pr, now));
   const decided = prs.map((pr) => ({ pr, decision: decideForPR(pr, { maxAgeHours }) }));
   const closing = decided.filter((d) => d.decision.action === "close");
 
@@ -445,12 +435,12 @@ export function sweepPullRequests({ now = new Date(), maxAgeHours = 4, close = f
     // THE BRANCH IS KEPT: `gh pr close` without `--delete-branch`, said out loud because the flag's
     // absence is the whole safety property and an absent flag is invisible in review.
     try {
-      run("gh", ["pr", "comment", String(pr.number), "--body", staleClosureComment(pr, decision.why)]);
+      rows().commentOnCheckoutPull({ number: pr.number, body: staleClosureComment(pr, decision.why), run });
     } catch (error) {
       throw sweepFailure({ closed, number: pr.number, commented: false, error });
     }
     try {
-      run("gh", ["pr", "close", String(pr.number)]);
+      rows().closeCheckoutPull({ number: pr.number, run });
     } catch (error) {
       throw sweepFailure({ closed, number: pr.number, commented: true, error });
     }
@@ -464,13 +454,13 @@ export function sweepPullRequests({ now = new Date(), maxAgeHours = 4, close = f
  * The `--dry-run`/`--close` half of `main`. A throw carrying the header's exit code is `sweepFailure`'s, already
  * worded; any other throw (the `gh pr list` lookup) changed nothing, so it is CANNOT_ASK (#1480).
  * @param {string[]} argv
- * @param {{ run: typeof defaultRun, err: (line: string) => void }} deps
+ * @param {{ gh?: RowsRun, err: (line: string) => void }} deps
  * @returns {number}
  */
-function sweepCommand(argv: string[], { run, err }: { run: typeof defaultRun; err: (line: string) => void; }): number {
+function sweepCommand(argv: string[], { gh, err }: { gh?: RowsRun; err: (line: string) => void; }): number {
   const hours = flagValue(argv, "max-age-hours");
   try {
-    sweepPullRequests({ close: argv.includes("--close"), maxAgeHours: hours ? Number(hours) : 4, run });
+    sweepPullRequests({ close: argv.includes("--close"), maxAgeHours: hours ? Number(hours) : 4, gh });
   } catch (error) {
     const { exitCode, message } = (error as Error & { exitCode?: number });
     err(`${exitCode === undefined ? `COULD NOT SWEEP: ${message}` : message}\n`);
@@ -480,21 +470,21 @@ function sweepCommand(argv: string[], { run, err }: { run: typeof defaultRun; er
 }
 
 /**
- * The CLI, returning the header's exit code, with `run` injectable so a `--close` that fails part-way is driven
- * end to end without reaching GitHub (#1480).
+ * The CLI, returning the header's exit code. `run` is the one that reads git, injectable so the reads are driven without a repository; what it asks of GitHub
+ * goes to the code host's rows, so a `--close` that fails part-way is driven end to end on the fake code host without reaching GitHub (#1480).
  * @param {string[]} [argv]
- * @param {{ run?: typeof defaultRun, out?: (line: string) => void, err?: (line: string) => void }} [deps]
+ * @param {{ run?: typeof defaultRun, gh?: RowsRun, out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
-export function main(argv: string[] = process.argv.slice(2), { run = defaultRun, out = writeOut, err = writeErr }: { run?: typeof defaultRun; out?: (line: string) => void; err?: (line: string) => void; } = {}): number {
+export function main(argv: string[] = process.argv.slice(2), { run = defaultRun, gh, out = writeOut, err = writeErr }: { run?: typeof defaultRun; gh?: RowsRun; out?: (line: string) => void; err?: (line: string) => void; } = {}): number {
   refuseUnknownFlags(["--dry-run", "--close", "--max-age-hours="],
     { entry: import.meta.url, argv, command: "node packages/agent-org/src/stranded-branches.ts" });
-  if (argv.includes("--dry-run") || argv.includes("--close")) return sweepCommand(argv, { run, err });
+  if (argv.includes("--dry-run") || argv.includes("--close")) return sweepCommand(argv, { gh, err });
   let pushed: string[];
   let prs: { refs: Set<string>; calls: number; prs: number; };
   try {
     pushed = fetchPushedBranches({ run });
-    prs = fetchAllPRHeadRefs({ run });
+    prs = fetchAllPRHeadRefs({ gh });
   } catch (error) {
     err(`COULD NOT AUDIT: ${(error as Error).message}\n`);
     return EXIT.CANNOT_ASK;

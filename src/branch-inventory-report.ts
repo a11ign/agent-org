@@ -17,13 +17,18 @@ import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
+import { rows } from "./plugins/rows.ts";
 import { branchFacts, renderInventory, rowNumberFromBranch, sessionFromLabels, reconcile }
   from "./branch-inventory.ts";
 
 const MAX_BUFFER: number = 64 * 1024 * 1024; // a paginated listing is megabytes; the 1 MB default is an ENOBUFS
+/** `git`, as this report runs it: the hook's `GIT_*` variables off, stdin ignored, and a buffer for a long listing. */
 const defaultRun = (cmd: string, args: string[]): string =>
   execFileSync(cmd, args,
     { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_BUFFER });
+
+/** The code host's program, run as `defaultRun` runs `git`: the hook's `GIT_*` variables off, stdin ignored, the same buffer, and what it prints on stderr kept to the failure's message. Started when a read first needs it. */
+const ghRun = (args: string[]): string => rows().runnerWith({ withoutGitEnv: true, maxBuffer: MAX_BUFFER, echo: false })(args);
 
 /**
  * Every branch on `origin` except `main`, with the tip sha and its commit date in ONE read.
@@ -60,10 +65,8 @@ export function branchesWithTips({ run = defaultRun } = {}) {
  * This tool failed on exactly that call. A read-only inventory that cannot run when the board is busy is
  * a tool for quiet afternoons, so every call here is REST.
  */
-export function openPrHeads({ run = defaultRun } = {}) {
-  const refs = run("gh", ["api", `repos/${REPO}/pulls?state=open&per_page=100`, "--paginate",
-    "--jq", ".[].head.ref"]);
-  return new Set(refs.split("\n").filter((r) => r.trim() !== ""));
+export function openPrHeads() {
+  return new Set(rows().openPullHeadRefsOf({ repo: REPO, run: ghRun }));
 }
 
 /** How many commits this branch carries that `origin/main` does not. */
@@ -89,21 +92,14 @@ export function aheadOf(branch: string, { run = defaultRun } = {}) {
  *
  * @param {number[]} numbers the row numbers actually wanted -- the listing is indexed, never scanned
  */
-export function rowsFor(numbers: number[], { run = defaultRun } = {}) {
+export function rowsFor(numbers: number[]) {
   const wanted = new Set(numbers);
-  const rows = new Map<number, any>(numbers.map((n) => [n, null]));
-  // PROJECTED SERVER-SIDE-ISH WITH `--jq`, because the raw listing is megabytes of issue BODIES and
-  // `execFileSync` met it as `spawnSync gh ENOBUFS` -- loudly, which is the only reason this is a fixed
-  // bug rather than a silent truncation. Four fields per row, one JSON object per line.
-  const projected = run("gh", ["api", `repos/${REPO}/issues?state=all&per_page=100`, "--paginate",
-    "--jq", '.[] | {number, state, isPullRequest: has("pull_request"), labels: [.labels[].name]}']);
-  for (const line of projected.split("\n")) {
-    if (line.trim() === "") continue;
-    const issue = JSON.parse(line);
-    if (!wanted.has(issue.number)) continue;
-    rows.set(issue.number, { ...issue, state: String(issue.state).toUpperCase() });
+  const found = new Map<number, any>(numbers.map((n) => [n, null]));
+  // THE LISTING IS PROJECTED, because the raw one is megabytes of issue BODIES (it met `execFileSync` as `ENOBUFS`): four fields per row. Each is `{ number, state, isPullRequest, labels }`.
+  for (const issue of rows().issueProjectionOf({ repo: REPO, run: ghRun })) {
+    if (wanted.has(issue.number)) found.set(issue.number, issue);
   }
-  return rows; // a number the listing never produced stays null: "#N does not exist", reported as a fact
+  return found; // a number the listing never produced stays null: "#N does not exist", reported as a fact
 }
 
 /**
@@ -113,9 +109,9 @@ export function rowsFor(numbers: number[], { run = defaultRun } = {}) {
  * it -- 64 of 93 branches read UNKNOWN before this was added. The `labeled` event survives every close.
  * One call per row that needs it, never for a row that already answers.
  */
-export function timelineFor(number: number, { run = defaultRun } = {}) {
+export function timelineFor(number: number) {
   try {
-    return JSON.parse(run("gh", ["api", `repos/${REPO}/issues/${number}/timeline`, "--paginate"]));
+    return rows().rowTimelineEventsOf({ repo: REPO, number, run: ghRun });
   } catch {
     return []; // a row whose timeline cannot be read is UNKNOWN, which is a weaker claim than a wrong owner
   }
@@ -126,7 +122,7 @@ export function timelineFor(number: number, { run = defaultRun } = {}) {
  * of a sweep, because the sweep itself takes about a minute and branches land during it.
  */
 export function countsNow({ run = defaultRun } = {}) {
-  const open = openPrHeads({ run });
+  const open = openPrHeads();
   const all = branchesWithTips({ run });
   const noOpenPr = all.filter((b) => !open.has(b.branch));
   const ahead = noOpenPr.map((b) => aheadOf(b.branch, { run }));
@@ -139,15 +135,14 @@ export function countsNow({ run = defaultRun } = {}) {
 /** The whole inventory: the four facts for every branch with no open PR and commits main lacks. */
 export function inventory({ run = defaultRun } = {}) {
   const start = countsNow({ run });
-  const open = openPrHeads({ run });
+  const open = openPrHeads();
   const noOpenPr = branchesWithTips({ run }).filter((b) => !open.has(b.branch));
   const withAhead = noOpenPr.map((b) => ({ ...b, ahead: aheadOf(b.branch, { run }) }));
   const unmerged = withAhead.filter((b) => b.ahead > 0);
-  const rows = rowsFor([...new Set(unmerged.map((b) => rowNumberFromBranch(b.branch)).filter((n) => n !== null))],
-    { run });
+  const found = rowsFor([...new Set(unmerged.map((b) => rowNumberFromBranch(b.branch)).filter((n) => n !== null))]);
   const timelines = new Map();
-  for (const [number, row] of rows) {
-    if (row !== null && sessionFromLabels(row.labels) === null) timelines.set(number, timelineFor(number, { run }));
+  for (const [number, row] of found) {
+    if (row !== null && sessionFromLabels(row.labels) === null) timelines.set(number, timelineFor(number));
   }
   // THE SECOND READ, and `reconcile` is what compares them. #623: "the count at the end reconciles with
   // the count at the start, or the difference is explained" -- a sum inside one read cannot do that, and
@@ -157,7 +152,7 @@ export function inventory({ run = defaultRun } = {}) {
     counts: end,
     reconciliation: reconcile(start, end),
     facts: unmerged.map((b) => branchFacts({ ...b,
-      row: rows.get(rowNumberFromBranch(b.branch)!) ?? null,
+      row: found.get(rowNumberFromBranch(b.branch)!) ?? null,
       timeline: timelines.get(rowNumberFromBranch(b.branch)) ?? [] })),
   };
 }

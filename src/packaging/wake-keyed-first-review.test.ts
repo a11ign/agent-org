@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#3264)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; the gate's executor is an injected `run` that answers the open list under the arguments the fake code host builds for it, every per-tick read is a stub, and `git` and `herdr` are fakes, so nothing is spawned (#3264)
 /**
  * #3264: A KEYED REPOSITORY'S FIRST REVIEW CANNOT FOLLOW THE TICK'S OWN REMEDY, and a second host act the tick never names stands behind it.
  *
@@ -15,7 +15,7 @@
  * `cd <clone> && pnpm install --no-lockfile`. The assertions that follow cannot pass on that text (`doesNotMatch`), and the positive control (3b) holds
  * the old text where it is still right. POSITIVE CONTROLS ARE IN THIS FILE, each next to the assertion it serves (`.claude/rules/guards-and-assertions.md`).
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,6 +41,10 @@ const { scopesOf } = await import("../work-gate/vocabulary.ts");
 const { readLanes, scopeTick } = await import("../work-gate/tick/tick-decisions-and-flags.ts");
 const { deliver } = await import("../wake/fyi-queue.ts");
 const { linkKeyedDependencies } = await import("../wake/reviewer-tokens-and-checkouts.ts");
+const { forgetActivation, substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+
+afterEach(() => forgetActivation());
 
 // --- (1) THE DEPENDENCY REMEDY ----------------------------------------------------------------------------------------------------
 
@@ -91,8 +95,13 @@ const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip:
 
 /** The reviewer order for pull request 6 of scope `key` (`""` is the primary), made the way `main` makes it. */
 function reviewerOrder(key: string) {
+  substituteCodeHost(createFakeCodeHost());
   const scope = scopesOf([homeProjectDeclaration()]).find((s) => s.key === key)!;
-  const run = (args: string[]) => (args[0] === "pr" ? JSON.stringify([readyPr(6)]) : "[]");
+  // The gate's executor answers the open list under the arguments the code host builds for it (the fake's are a stand-in line), and nothing else.
+  const run = (args: string[]) => {
+    if (args[0] === "fake-open-pull-list") return JSON.stringify([readyPr(6)]);
+    throw new Error(`the fake code host acts on its own state: no gh is run for ${args.join(" ")}`);
+  };
   const orders = scopeTick(scope, { drain: false }, readLanes(scope, run), NO_READINGS).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
   return orders.find((o) => o.cause === "draft-awaiting-verdict")!;
 }

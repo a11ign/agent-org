@@ -59,7 +59,11 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 // here: #2008's finding was a predicate that disagreed with the claim path about what a claim means, and
 // a second spelling of the label is how that disagreement gets to happen again silently.
 import { READY_LABEL, WAS_READY_LABEL, CLAIM_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.ts";
+import { rows as hostRows } from "./plugins/rows.ts"; // the code host's operations: every GitHub read of this file (A11-160, step 9)
+import type { ListedIssue, ListedIssueField, ListedPullField } from "./plugins/contracts/code-host-rows-audit.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5076: label lists are connections, never a search
+import { asListJson } from "./ticket-port/rows-since.ts";
 // #782: THE PURE DECISION ONLY -- `labelsToStrip` classifies a label, it never calls `gh`. Importing it
 // does NOT give this file a mutation capability; the header above's ruling ("this audit REPORTS the
 // debris; it does not strip it... a bulk label mutation is product-manager's deliberate act") is
@@ -132,7 +136,11 @@ export const MUTEX_LABELS =
 
 type LabelledIssue = { number: number, title: string, labels: string[] };
 
+/** `git`, and only git (`branchAges`): the GitHub reads of this file go through the code host (A11-160, step 9), with `ghRun`. */
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
+
+/** The code host's own runner for every GitHub read of this file, with the variables a hook sets taken off as `defaultRun` took them off `gh`'s environment. Asked when a read is made. */
+const ghRun = (): RowsRun => hostRows().runnerWith({ withoutGitEnv: true });
 
 /**
  * #4080 (row 2 of #4056): WHICH TRACKER THE CHECKS ARE ABOUT. The 23 reads below named `REPO` -- the first code repository -- so a row filed in a second declared tracker was never listed, never counted and never audited. Each read now asks `trackerRepo()` (its issues) or `codeRepo()` (its pull requests), which answer for the scope `auditTrackers` has set and, with none set, for `REPO`: every exported reader called on its own (the tests, `row-claim`) behaves exactly as it did. A module-level scope and not a parameter on every reader, for the reason `work-gate.ts`'s `inRepo` gives: the checks are zero-argument closures in `CHECKS`, and 17 exported readers keep their signatures. `repo` is the tracker's repository; `codeRepo` the code repository of the SAME key, else the tracker's own
@@ -150,16 +158,33 @@ const codeRepo = (): string => activeScope?.codeRepo ?? REPO;
 const rowName = (number: number): string => (activeScope === null || activeScope.key === "" ? `#${number}` : `${activeScope.key}#${number}`);
 
 /**
+ * A read of the code host, refused in this file's words: a read that throws is `${refusal} <its message>`, and an answer that is not the shape the operation reads (`{ unreadable }`) is its own words. Neither falls
+ * through to an empty answer.
+ * @template Answer
+ * @param {() => Answer | { unreadable: string }} read @param {string} refusal
+ * @returns {Answer}
+ */
+function readRefusing<Answer extends object>(read: () => Answer | { unreadable: string; }, refusal: string): Answer {
+  let answer: Answer | { unreadable: string; };
+  try {
+    answer = read();
+  } catch (cause) {
+    throw new Error(`ready-label-audit: ${refusal} ${(cause as Error).message}`, { cause });
+  }
+  if ("unreadable" in answer) throw new Error(`ready-label-audit: ${answer.unreadable}`);
+  return answer;
+}
+
+/**
  * Reads every OPEN issue's labels from the real board. Same discipline as `row-claim.ts`'s `fetchLabels`:
  * `gh` failing, or answering with a shape this function does not recognise, THROWS -- it never falls
  * through to an empty issue list, which would report "audited: 0 violations" having examined nothing. A
  * clean sweep and a broken query must never print the same thing.
  *
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {LabelledIssue[]}
  */
-function fetchOpenIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): LabelledIssue[] {
-  return fetchIssues({ run, state: "open", limit: 200 });
+function fetchOpenIssues(): LabelledIssue[] {
+  return fetchIssues({ state: "open", limit: 200 });
 }
 
 /**
@@ -179,27 +204,11 @@ function fetchOpenIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}
  * THROWS on any failure or an unparseable number, same discipline as every other fetcher here: a silent
  * empty list would read as "no issues are open", the opposite of an honest "could not ask".
  *
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {number[]}
  */
-export function fetchReportedOpenIssueNumbers({ run = defaultRun }: { run?: typeof defaultRun; } = {}): number[] {
-  let raw: string;
-  try {
-    raw = run("gh", ["api", `search/issues?q=${encodeURIComponent(`repo:${trackerRepo()} is:issue is:open`)}`,
-      "--paginate", "--jq", ".items[].number"]);
-  } catch (cause) {
-    throw new Error(`ready-label-audit: could not read GitHub's reported open-issue numbers -- refusing `
-      + `to guess whether the examined population is complete. `
-      + `${(cause as Error).message}`, { cause });
-  }
-  return raw.split("\n").filter(Boolean).map((line) => {
-    const n = Number(line.trim());
-    if (!Number.isFinite(n)) {
-      throw new Error(`ready-label-audit: GitHub's reported open-issue numbers included a non-number `
-        + `line -- refusing to guess. Got: ${line.slice(0, 200)}`);
-    }
-    return n;
-  });
+export function fetchReportedOpenIssueNumbers(): number[] {
+  return readRefusing(() => hostRows().reportedOpenIssueNumbersOf({ repo: trackerRepo(), run: ghRun() }),
+    `could not read GitHub's reported open-issue numbers -- refusing to guess whether the examined population is complete.`).numbers;
 }
 
 /**
@@ -237,18 +246,16 @@ function openIssueSetSummary(examined: number[], reported: number[]): { agree: b
  * (which rows raced, and that a second read agreed), never silently swallowed: the audit proceeds, but
  * the fact that it needed a second look is part of the record, not folded into a plain "OK".
  *
- * @param {{ run?: typeof defaultRun, fetchReportedNumbers?: typeof fetchReportedOpenIssueNumbers }} [deps]
  * @returns {{ issues: LabelledIssue[], reportedCount: number }}
  */
-export function fetchOpenIssuesChecked(
-  { run = defaultRun, fetchReportedNumbers = fetchReportedOpenIssueNumbers }: { run?: typeof defaultRun; fetchReportedNumbers?: typeof fetchReportedOpenIssueNumbers; } = {}): { issues: LabelledIssue[]; reportedCount: number; } {
-  const issues = fetchOpenIssues({ run });
-  const reportedNumbers = fetchReportedNumbers({ run });
+export function fetchOpenIssuesChecked(): { issues: LabelledIssue[]; reportedCount: number; } {
+  const issues = fetchOpenIssues();
+  const reportedNumbers = fetchReportedOpenIssueNumbers();
   const first = openIssueSetSummary(issues.map((i) => i.number), reportedNumbers);
   if (first.agree) return { issues, reportedCount: reportedNumbers.length };
 
-  const retryIssues = fetchOpenIssues({ run });
-  const retryReportedNumbers = fetchReportedNumbers({ run });
+  const retryIssues = fetchOpenIssues();
+  const retryReportedNumbers = fetchReportedOpenIssueNumbers();
   const second = openIssueSetSummary(retryIssues.map((i) => i.number), retryReportedNumbers);
   if (second.agree) {
     process.stderr.write(`ready-label-audit: the first read disagreed with GitHub's search index -- `
@@ -298,9 +305,6 @@ function asksToCeiling(first: number): number {
   return Math.ceil(Math.log2(MAX_ISSUE_FETCH / Math.max(first, 1))) + 1;
 }
 
-/** The ONE place this file hands a list read's `run` the command `gh`; the connection readers of `ticket-port/` take the result as their `run`. */
-const gh = (run: typeof defaultRun) => (args: string[]): string => run("gh", args);
-
 /**
  * #1090: ASK FOR MORE UNTIL THE ANSWER IS SHORT -- the shared walk behind every list in this file.
  *
@@ -309,14 +313,15 @@ const gh = (run: typeof defaultRun) => (args: string[]): string => run("gh", arg
  * so they are under the cap today and will pass it silently, which is worse than the 500 cap that went
  * dark LOUDLY by refusing. **A guarded cap fails closed; an unguarded one fails quiet.**
  *
- * @param {{ run: typeof defaultRun, argv: (limit: number) => string[], what: string,
- *           first?: number, repo?: string }} spec `repo` is only what a refusal NAMES (the tracker's by default; a pull-request list passes `codeRepo()`): `argv` is what asks
- * @returns {unknown[]}
+ * @template Row
+ * @param {{ list: (limit: number, what: string) => { rows: Row[] } | { unreadable: string }, what: string,
+ *           first?: number, repo?: string }} spec `repo` is only what a refusal NAMES (the tracker's by default; a pull-request list passes `codeRepo()`): `list` is what asks, one page of `limit` at a time, and is told `what`
+ * @returns {Row[]}
  */
-function listUntilShort({ run, argv, what, first = FIRST_ASK, repo = trackerRepo() }: {
-        run: typeof defaultRun; argv: (limit: number) => string[]; what: string;
+function listUntilShort<Row>({ list, what, first = FIRST_ASK, repo = trackerRepo() }: {
+        list: (limit: number, what: string) => { rows: Row[] } | { unreadable: string }; what: string;
         first?: number; repo?: string;
-    }): unknown[] {
+    }): Row[] {
   const maxAsks = asksToCeiling(first);
   for (let limit = first, asks = 1; ; limit = Math.min(limit * 2, MAX_ISSUE_FETCH), asks++) {
     if (asks > maxAsks) {
@@ -325,25 +330,8 @@ function listUntilShort({ run, argv, what, first = FIRST_ASK, repo = trackerRepo
         + `while the doubling and the ceiling check agree, so one of them has been changed -- `
         + `refusing to loop. A hang reports no count at all, which is worse than refusing.`);
     }
-    let raw: string;
-    try {
-      raw = gh(run)(argv(limit));
-    } catch (cause) {
-      throw new Error(`ready-label-audit: could not list ${what} from ${repo} -- refusing to guess. `
-        + `${(cause as Error).message}`, { cause });
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (cause) {
-      throw new Error(`ready-label-audit: gh's ${what} response was not JSON -- refusing to guess. `
-        + `First 200 chars: ${raw.slice(0, 200)}`, { cause });
-    }
-    if (!Array.isArray(parsed)) {
-      throw new Error(`ready-label-audit: gh's ${what} response was not a list -- refusing to guess. `
-        + `Got: ${JSON.stringify(parsed).slice(0, 300)}`);
-    }
-    if (parsed.length < limit) return parsed;
+    const { rows: page } = readRefusing(() => list(limit, what), `could not list ${what} from ${repo} -- refusing to guess.`);
+    if (page.length < limit) return page;
     if (limit >= MAX_ISSUE_FETCH) {
       throw new Error(`ready-label-audit: gh returned exactly ${limit} ${what}, the ceiling this walk `
         + `will ask for. That is indistinguishable from a truncated result and the count is a LOWER `
@@ -351,6 +339,14 @@ function listUntilShort({ run, argv, what, first = FIRST_ASK, repo = trackerRepo
     }
   }
 }
+
+/** One page of the tracker's issues in `state`, as `listUntilShort` asks for it: `fields` of each, the rows of `milestone` alone when one is named. */
+const issuePages = ({ state, fields, milestone }: { state: "open" | "closed" | "all"; fields: readonly ListedIssueField[]; milestone?: string; }) =>
+  (limit: number, what: string) => hostRows().issueListingOf({ repo: trackerRepo(), state, limit, fields, what, ...(milestone === undefined ? {} : { milestone }), run: ghRun() });
+
+/** One page of the code repository's pull requests in `state`, as `listUntilShort` asks for it. */
+const pullPages = ({ state, fields }: { state: "open" | "closed"; fields: readonly ListedPullField[]; }) =>
+  (limit: number, what: string) => hostRows().pullListingOf({ repo: codeRepo(), state, limit, fields, what, run: ghRun() });
 
 /**
  * Reads issues from the real board, at the given `--state`. Shared by `fetchOpenIssues` (unchanged
@@ -360,10 +356,10 @@ function listUntilShort({ run, argv, what, first = FIRST_ASK, repo = trackerRepo
  * LISTING READ AS AN ANSWER, this repo's own most-repeated shape, and 51 open + 174 closed already exceeds
  * the audit's old 200 cap once both populations are read together.
  *
- * @param {{ run?: typeof defaultRun, state: "open" | "all", limit?: number }} args
+ * @param {{ state: "open" | "all", limit?: number }} args
  * @returns {(LabelledIssue & { state?: "OPEN" | "CLOSED" })[]}
  */
-function fetchIssues({ run = defaultRun, state, limit = FIRST_ASK }: { run?: typeof defaultRun; state: "open" | "all"; limit?: number; }): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
+function fetchIssues({ state, limit = FIRST_ASK }: { state: "open" | "all"; limit?: number; }): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
   // #1090: THE REFUSAL WAS RIGHT AND "RAISE THE LIMIT" WAS NOT A FIX.
   //
   // A hand-set cap goes stale silently the day the population passes it -- measured 2026-09-12: 472
@@ -379,46 +375,34 @@ function fetchIssues({ run = defaultRun, state, limit = FIRST_ASK }: { run?: typ
   // names the three hand-set caps in this file as the SAME defect, and a fix reaching one call site when
   // the behaviour reaches three is this repository's most expensive recurring shape. `limit` survives as
   // a parameter only because `fetchOpenIssues` starts its walk lower.
-  const parsed = listUntilShort({ run, first: limit, what: `${state} issues`,
-    argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", state, "--limit", String(ask),
-      "--json", "number,title,labels,state"] });
-  return parsed.map((entry: unknown, i: number) => {
-    const obj = (entry as { number?: unknown, title?: unknown, labels?: unknown, state?: unknown });
-    if (typeof obj?.number !== "number" || typeof obj?.title !== "string" || !Array.isArray(obj?.labels)) {
+  const listed = listUntilShort({ first: limit, what: `${state} issues`, list: issuePages({ state, fields: ["number", "title", "labels", "state"] }) });
+  return listed.map((obj: ListedIssue, i: number) => {
+    if (typeof obj.number !== "number" || typeof obj.title !== "string" || !Array.isArray(obj.labels)) {
       throw new Error(`ready-label-audit: entry ${i} is missing number/title/labels -- refusing to guess. `
-        + `Got: ${JSON.stringify(entry).slice(0, 300)}`);
+        + `Got: ${JSON.stringify(obj).slice(0, 300)}`);
     }
     // `state` is READ, not REQUIRED: `fetchOpenIssues` never asked `gh` for it before #378 and every
     // existing caller of the shared parser (including this file's own long-standing test fixtures) omits
     // it -- requiring it here would make a well-formed OLD-shape response throw. Absent reads as neither
     // OPEN nor CLOSED, which `closedDebris` treats as "not closed" -- conservative, since the one thing
     // that function must never do is report a row as closed debris on a guess.
-    const state = obj?.state === "OPEN" || obj?.state === "CLOSED" ? obj.state : undefined;
-    const names = obj.labels.map((l: unknown) => {
-      const name = (l as { name?: unknown })?.name;
-      if (typeof name !== "string") {
-        throw new Error(`ready-label-audit: issue #${obj.number} has a label with no name -- refusing to `
-          + `guess. Got: ${JSON.stringify(l)}`);
-      }
-      return name;
-    });
+    const state = obj.state === "OPEN" || obj.state === "CLOSED" ? obj.state : undefined;
     // `state` is OMITTED, not set to `undefined`, when absent -- so `fetchOpenIssues`'s existing shape
     // (no `state` key at all) is byte-identical to before #378, rather than gaining a key whose value is
     // always `undefined` for every caller that never asked `gh` for it.
     return state === undefined
-      ? { number: obj.number, title: obj.title, labels: names }
-      : { number: obj.number, title: obj.title, labels: names, state };
+      ? { number: obj.number, title: obj.title, labels: obj.labels }
+      : { number: obj.number, title: obj.title, labels: obj.labels, state };
   });
 }
 
 /**
  * Every issue, open and closed, in ONE call -- `--state all`. #378's own population: `mutexViolations`
  * keeps reading only what `fetchOpenIssues` returns, unchanged; this is additive.
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {(LabelledIssue & { state?: "OPEN" | "CLOSED" })[]}
  */
-function fetchAllIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
-  return fetchIssues({ run, state: "all" });
+function fetchAllIssues(): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
+  return fetchIssues({ state: "all" });
 }
 
 /**
@@ -687,54 +671,11 @@ function claimsNobodyIsWorking(issues: { number: number; title: string; labels: 
  * silently empty map would read as "no row is already merged", the opposite of an honest "could not ask".
  *
  * @param {number[]} issueNumbers
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {Map<number, ClosingPrRef[]>}
  */
-function fetchClosingPrRefs(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, ClosingPrRef[]> {
-  return queryAliasedRepoNodes({ repoSlug: trackerRepo(), alias: "i", numbers: issueNumbers,
-    select: (n) => `issue(number: ${n}) { number closedByPullRequestsReferences(first: 20) { nodes { number state mergedAt } } }`,
-    readNodes: (repo) => closingPrRefsFromRepoNode(repo, issueNumbers),
-    what: "closing PR references", response: "closing-references", run });
-}
-
-/**
- * One GraphQL round trip for a list of aliased sub-queries against `repoSlug`: each number becomes the
- * alias `<alias><i>` in the query, and `readNodes` reads the answers back out of the repository node.
- * Empty input makes no call at all, since an empty alias list is not valid GraphQL. `what` names the
- * question and `response` names gh's answer to it, both as they read in the error.
- * @param {{ repoSlug: string, alias: string, numbers: number[], select: (n: number) => string,
- *   readNodes: (repo: Record<string, any>) => Map<number, V>, what: string, response: string,
- *   run: typeof defaultRun }} spec
- * @returns {Map<number, V>}
- */
-function queryAliasedRepoNodes<V>({ repoSlug, alias, numbers, select, readNodes, what, response, run }: {
-  repoSlug: string; alias: string; numbers: number[]; select: (n: number) => string;
-  readNodes: (repo: Record<string, any>) => Map<number, V>; what: string; response: string; run: typeof defaultRun;
-}): Map<number, V> {
-  if (numbers.length === 0) return new Map();
-  const [owner, name] = repoSlug.split("/");
-  const fields = numbers.map((n, i) => `${alias}${i}: ${select(n)}`).join(" ");
-  const query = `{ repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
-  let raw: string;
-  try {
-    raw = run("gh", ["api", "graphql", "-f", `query=${query}`]);
-  } catch (cause) {
-    throw new Error(`ready-label-audit: could not resolve ${what} -- refusing to guess. `
-      + `${(cause as Error).message}`, { cause });
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(`ready-label-audit: gh's ${response} response was not JSON -- refusing to guess. `
-      + `First 200 chars: ${raw.slice(0, 200)}`, { cause });
-  }
-  const repo = (parsed as any)?.data?.repository;
-  if (!repo || typeof repo !== "object") {
-    throw new Error(`ready-label-audit: gh's ${response} response had no repository -- refusing to guess. `
-      + `Got: ${JSON.stringify(parsed).slice(0, 300)}`);
-  }
-  return readNodes(repo);
+function fetchClosingPrRefs(issueNumbers: number[]): Map<number, ClosingPrRef[]> {
+  return readRefusing(() => hostRows().closingReferencesOf({ repo: trackerRepo(), numbers: issueNumbers, run: ghRun() }),
+    "could not resolve closing PR references -- refusing to guess.").references;
 }
 
 /**
@@ -754,68 +695,12 @@ function queryAliasedRepoNodes<V>({ repoSlug, alias, numbers, select, readNodes,
  * guaranteed false conclusion rather than an honest refusal.
  *
  * @param {number[]} issueNumbers
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {Map<number, string | null>} issue number -> its latest reopen's ISO timestamp, or null if
  *   the issue has never been reopened
  */
-function fetchLatestReopenedAt(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, string | null> {
-  return queryAliasedRepoNodes({ repoSlug: trackerRepo(), alias: "i", numbers: issueNumbers,
-    select: (n) => `issue(number: ${n}) { number timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } } }`,
-    readNodes: (repo) => latestReopenedAtFromRepoNode(repo, issueNumbers),
-    what: "reopen history", response: "reopen-history", run });
-}
-
-/**
- * Reads each aliased `i<N>: issue(...)` node's reopen timeline back out, keyed by the real issue number
- * rather than by alias -- split out of `fetchLatestReopenedAt` purely to keep that function's complexity
- * under gate, per this repo's Stepdown Rule and the identical split `closingPrRefsFromRepoNode` already
- * makes for `fetchClosingPrRefs`; it is the same one concept written out.
- *
- * @param {Record<string, any>} repo
- * @param {number[]} issueNumbers
- * @returns {Map<number, string | null>}
- */
-function latestReopenedAtFromRepoNode(repo: Record<string, any>, issueNumbers: number[]): Map<number, string | null> {
-  const map: Map<number, string | null> = new Map();
-  for (let i = 0; i < issueNumbers.length; i++) {
-    const node = repo[`i${i}`];
-    if (!node || typeof node.number !== "number") {
-      throw new Error(`ready-label-audit: issue #${issueNumbers[i]} is missing from the reopen-history `
-        + `response -- refusing to guess. Got: ${JSON.stringify(node ?? null).slice(0, 300)}`);
-    }
-    const nodes = node.timelineItems?.nodes;
-    const latest = Array.isArray(nodes) && nodes.length > 0 ? nodes[nodes.length - 1]?.createdAt ?? null : null;
-    map.set(node.number, latest);
-  }
-  return map;
-}
-
-/**
- * Reads each aliased `i<N>: issue(...)` node back out of the GraphQL response, keyed by the real issue
- * number rather than by alias -- split out of `fetchClosingPrRefs` purely to keep that function's
- * complexity under gate, per this repo's Stepdown Rule; it is the same one concept written out.
- *
- * @param {Record<string, any>} repo
- * @param {number[]} issueNumbers
- * @returns {Map<number, ClosingPrRef[]>}
- */
-function closingPrRefsFromRepoNode(repo: Record<string, any>, issueNumbers: number[]): Map<number, ClosingPrRef[]> {
-  const map: Map<number, ClosingPrRef[]> = new Map();
-  for (let i = 0; i < issueNumbers.length; i++) {
-    const node = repo[`i${i}`];
-    if (!node || typeof node.number !== "number") {
-      // `JSON.stringify(undefined)` returns `undefined`, not a string -- a missing alias (the exact case
-      // this branch exists for) would throw INSIDE the error message rather than reporting one.
-      throw new Error(`ready-label-audit: issue #${issueNumbers[i]} is missing from the closing-references `
-        + `response -- refusing to guess. Got: ${JSON.stringify(node ?? null).slice(0, 300)}`);
-    }
-    const nodes = node.closedByPullRequestsReferences?.nodes;
-    const refs = Array.isArray(nodes)
-      ? nodes.map((r: any) => ({ number: r.number, state: r.state, mergedAt: r.mergedAt ?? null }))
-      : [];
-    map.set(node.number, refs);
-  }
-  return map;
+function fetchLatestReopenedAt(issueNumbers: number[]): Map<number, string | null> {
+  return readRefusing(() => hostRows().latestReopenedAtOf({ repo: trackerRepo(), numbers: issueNumbers, run: ghRun() }),
+    "could not resolve reopen history -- refusing to guess.").reopenedAt;
 }
 
 /** Report the OPEN-row mutex check exactly as before #378 -- unchanged population, unchanged wording. */
@@ -1110,12 +995,12 @@ type ReadyRowWithBody = { number: number, title: string, labels: string[], body:
 
 /**
  * The open rows of the tracker carrying `label`, as `readRowsByLabel` gives them, THROWN as this file's refusal when they could not be read.
- * @param {{ run: typeof defaultRun, what: string, label: string, select: string }} spec
+ * @param {{ what: string, label: string, select: string }} spec
  * @returns {any[]}
  */
-function readLabelledRows({ run, what, label, select }: { run: typeof defaultRun; what: string; label: string; select: string; }): any[] {
+function readLabelledRows({ what, label, select }: { what: string; label: string; select: string; }): any[] {
   try {
-    return readRowsByLabel({ label, state: "OPEN", select, repo: trackerRepo(), run: gh(run) });
+    return readRowsByLabel({ label, state: "OPEN", select, repo: trackerRepo(), run: ghRun() });
   } catch (cause) {
     throw new Error(`ready-label-audit: could not list ${what} from ${trackerRepo()} -- refusing to guess. ${(cause as Error).message}`, { cause });
   }
@@ -1132,12 +1017,11 @@ function readLabelledRows({ run, what, label, select }: { run: typeof defaultRun
  * a row unclaimable on the strength of a field nobody read (the same distinction `lookupIssueBody` draws
  * on the claim path).
  *
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {ReadyRowWithBody[]}
  */
-export function fetchReadyRowsWithBodies({ run = defaultRun }: { run?: typeof defaultRun; } = {}): ReadyRowWithBody[] {
-  const parsed = readLabelledRows({ run, what: "open ready rows with bodies", label: READY_LABEL, select: "number title body labels(first:50){nodes{name}}" })
-    .map((node) => ({ ...node, labels: node?.labels?.nodes })); // the shape `gh issue list --json` gave, which the checks below read
+export function fetchReadyRowsWithBodies(): ReadyRowWithBody[] {
+  const parsed = readLabelledRows({ what: "open ready rows with bodies", label: READY_LABEL, select: "number title body labels(first:50){nodes{name}}" })
+    .map(asListJson); // the shape `gh issue list --json` gave, which the checks below read
   return parsed.map((entry: unknown, i: number) => {
     const obj = (entry as { number?: unknown, title?: unknown, labels?: unknown, body?: unknown });
     const isReadyRow = (candidate: typeof obj): candidate is { number: number; title: string; labels: unknown[]; body: string } => typeof candidate.number === "number"
@@ -1313,11 +1197,10 @@ function reportLabelless() {
  * `lane:any`: "no label" is a smaller population than "no STATE label". Eight more held two (`backlog` with `parked` or `epic`).
  * The rule is `stateLabelFindings`' (the leaf), so the org-health tick reads the same one. As #788: it STATES the count examined against
  * the count GitHub reports open (`fetchOpenIssuesChecked` refuses a partial read), the half of #788 that mattered.
- * @param {Parameters<typeof fetchOpenIssuesChecked>[0]} [deps] the test's seams for `gh`
  * @returns {number} how many rows are not in exactly one state
  */
-export function reportStateLabels(deps: Parameters<typeof fetchOpenIssuesChecked>[0] = {}): number {
-  const { issues, reportedCount } = fetchOpenIssuesChecked(deps);
+export function reportStateLabels(): number {
+  const { issues, reportedCount } = fetchOpenIssuesChecked();
   const findings = stateLabelFindings(issues);
   if (findings.length === 0) {
     process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, each carries exactly one of ${STATE_LABELS.join(", ")}\n`);
@@ -1452,7 +1335,7 @@ function reportAbsentFromBoard() {
  * most of the time, so a check exercised only against it is one that has never been seen to fire.
  *
  * @param {number[]} numbers
- * @param {{ run?: typeof defaultRun }} [deps]
+ * @param {{ run?: typeof defaultRun }} [deps] `run` runs `git` (the branches' ages) and nothing else: the GitHub reads go through the code host
  */
 function fetchClaimActivity(numbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}) {
   const hasOpenPr: Map<number, boolean> = new Map();
@@ -1466,9 +1349,7 @@ function fetchClaimActivity(numbers: number[], { run = defaultRun }: { run?: typ
   // open pull requests past the hundredth and reported every row behind them as having none in flight.
   // "This row has no open PR" is what `claimsNobodyIsWorking` acts on, so a quiet under-read here does
   // not refuse; it RELEASES a claim somebody is working. Same walk as the other three.
-  const prs: { number: number; body: string; headRefName: string; }[] = (listUntilShort({ run, what: "open PRs", repo: codeRepo(),
-    argv: (ask) => ["pr", "list", "--repo", codeRepo(), "--state", "open", "--limit", String(ask),
-      "--json", "number,body,headRefName"] }) as any);
+  const prs = listUntilShort({ what: "open PRs", repo: codeRepo(), list: pullPages({ state: "open", fields: ["number", "body", "headRefName"] }) });
   for (const n of numbers) {
     // `Closes #N` in an OPEN PR is work in flight. Matching the row number anywhere in the body would
     // count a passing mention, which is the distinction #446 is about.
@@ -1482,8 +1363,7 @@ function fetchClaimActivity(numbers: number[], { run = defaultRun }: { run?: typ
   // from "never started".
   for (const n of numbers) {
     try {
-      const at = run("gh", ["api", `repos/${trackerRepo()}/issues/${n}/timeline`, "--paginate", "--jq",
-        `[.[]|select(.event=="labeled" and .label.name=="${CLAIM_LABEL}")]|last|.created_at`]).trim();
+      const at = hostRows().newestLabeledAtOf({ repo: trackerRepo(), number: n, label: CLAIM_LABEL, run: ghRun() });
       if (at) claimedMinutes.set(n, Math.floor((Date.now() - Date.parse(at)) / 60000));
     } catch { /* a row whose timeline cannot be read is left absent, never assumed fresh */ }
   }
@@ -1493,8 +1373,7 @@ function fetchClaimActivity(numbers: number[], { run = defaultRun }: { run?: typ
   // rather than the claimant's: session authorship is not observable through GitHub here.
   for (const n of numbers) {
     try {
-      const at = run("gh", ["api", `repos/${trackerRepo()}/issues/${n}/comments`, "--paginate", "--jq",
-        "[.[].created_at]|last"]).trim();
+      const at = hostRows().newestCommentAtOf({ repo: trackerRepo(), number: n, run: ghRun() });
       if (at) lastCommentMinutes.set(n, Math.floor((Date.now() - Date.parse(at)) / 60000));
     } catch { /* a row whose comments cannot be read is left absent, never assumed fresh */ }
   }
@@ -1785,15 +1664,12 @@ type ClosedIssue = { number: number, title: string, closedAt: string, stateReaso
 /**
  * Every CLOSED PR that never merged -- `mergedAt`, never `merge_commit_sha`, which is populated on both
  * states and would make this list indistinguishable from "every closed PR".
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {ClosedPr[]}
  */
-function fetchClosedUnmergedPrs({ run = defaultRun }: { run?: typeof defaultRun; } = {}): ClosedPr[] {
-  const parsed = listUntilShort({ run, what: "closed PRs", repo: codeRepo(),
-    argv: (ask) => ["pr", "list", "--repo", codeRepo(), "--state", "closed", "--limit", String(ask),
-      "--json", "number,mergedAt"] });
+function fetchClosedUnmergedPrs(): ClosedPr[] {
+  const parsed = listUntilShort({ what: "closed PRs", repo: codeRepo(), list: pullPages({ state: "closed", fields: ["number", "mergedAt"] }) });
   return parsed
-    .map((p: any) => ({ number: p.number, mergedAt: p.mergedAt ?? null }))
+    .map((p) => ({ number: p.number as number, mergedAt: p.mergedAt ?? null }))
     .filter((p) => p.mergedAt === null);
 }
 
@@ -1803,39 +1679,11 @@ function fetchClosedUnmergedPrs({ run = defaultRun }: { run?: typeof defaultRun;
  * `fetchClosingPrRefs` reads for a DIFFERENT question (`readyRowsAlreadyMerged`'s "is a merge already
  * done"), which cannot see a reference from a PR that closed without merging.
  * @param {number[]} prNumbers
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {Map<number, number[]>} PR number -> the issue numbers it would have closed
  */
-function fetchClosingIssueRefs(prNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, number[]> {
-  return queryAliasedRepoNodes({ repoSlug: codeRepo(), alias: "p", numbers: prNumbers,
-    select: (n) => `pullRequest(number: ${n}) { number closingIssuesReferences(first: 20) { nodes { number } } }`,
-    readNodes: (repo) => closingIssueRefsFromRepoNode(repo, prNumbers),
-    what: "closing issue references", response: "closing-issue-references", run });
-}
-
-/**
- * Reads each aliased `p<N>: pullRequest(...)` node's closing-issue list back out, keyed by the real PR
- * number rather than by alias -- split out of `fetchClosingIssueRefs` purely to keep that function's
- * complexity under gate, the same split `closingPrRefsFromRepoNode` already makes for `fetchClosingPrRefs`.
- * @param {Record<string, any>} repo
- * @param {number[]} prNumbers
- * @returns {Map<number, number[]>}
- */
-function closingIssueRefsFromRepoNode(repo: Record<string, any>, prNumbers: number[]): Map<number, number[]> {
-  const map: Map<number, number[]> = new Map();
-  for (let i = 0; i < prNumbers.length; i++) {
-    const node = repo[`p${i}`];
-    if (!node || typeof node.number !== "number") {
-      throw new Error(`ready-label-audit: PR #${prNumbers[i]} is missing from the closing-issue-references `
-        + `response -- refusing to guess. Got: ${JSON.stringify(node ?? null).slice(0, 300)}`);
-    }
-    const nodes = node.closingIssuesReferences?.nodes;
-    const issues = Array.isArray(nodes)
-      ? nodes.map((r: any) => r.number).filter((n) => typeof n === "number")
-      : [];
-    map.set(node.number, issues);
-  }
-  return map;
+function fetchClosingIssueRefs(prNumbers: number[]): Map<number, number[]> {
+  return readRefusing(() => hostRows().closingIssueReferencesOf({ repo: codeRepo(), numbers: prNumbers, run: ghRun() }),
+    "could not resolve closing issue references -- refusing to guess.").references;
 }
 
 type SoleUnmergedCloserRow = { number: number, title: string, closedAt: string, closedBy: number };
@@ -2010,15 +1858,12 @@ function reachableCriteriaWithoutRow(statuses: Map<string, string>, closedIssues
 /**
  * Every issue closed `COMPLETED` -- `stateReason`, never bare `state`, because a row closed
  * `NOT_PLANNED` is a decision this check has nothing to say about.
- * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {ClosedIssue[]}
  */
-function fetchClosedCompletedIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): ClosedIssue[] {
-  const parsed = listUntilShort({ run, what: "closed issues",
-    argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "closed", "--limit", String(ask),
-      "--json", "number,title,closedAt,stateReason"] });
-  return parsed.map((i: any) =>
-    ({ number: i.number, title: i.title, closedAt: i.closedAt, stateReason: i.stateReason ?? null }));
+function fetchClosedCompletedIssues(): ClosedIssue[] {
+  const parsed = listUntilShort({ what: "closed issues", list: issuePages({ state: "closed", fields: ["number", "title", "closedAt", "stateReason"] }) });
+  return parsed.map((i) =>
+    ({ number: i.number as number, title: i.title as string, closedAt: i.closedAt as string, stateReason: i.stateReason ?? null }));
 }
 
 // A floor sized below today's count, so a new "reachable" criterion joining does not fail this check --
@@ -2096,18 +1941,13 @@ function releaseDeclarationDrift(labelled: { number: number; }[], milestoned: { 
 }
 
 function reportReleaseDrift() {
-  const run = defaultRun;
   // THROUGH THE WALK, never a hand-set --limit. #1090's own guard caught the first version of this line
   // carrying `--limit 500`, an hour after I removed the last four such caps from this file: a cap goes
   // stale silently the day the population passes it, and this population only grows.
-  const list = (args: string[]) => listUntilShort({ run, what: `out-of-release rows`,
-    argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "open", "--limit", String(ask),
-      "--json", "number", ...args] });
-  const rows = (args: string[]) =>
-    ((list(args) as unknown) as {number: number}[]);
+  const inMilestone = (milestone: string) => listUntilShort({ what: `out-of-release rows`, list: issuePages({ state: "open", fields: ["number"], milestone }) }) as { number: number }[];
   // #5076: the label side is a connection read (`--label` was a GitHub SEARCH); the milestone side is a plain filtered list, which is not.
-  const labelled: { number: number; }[] = readLabelledRows({ run, what: "out-of-release rows", label: OUT_OF_RELEASE_LABEL, select: "number" });
-  const milestoned = rows(["--milestone", OUT_OF_RELEASE_MILESTONE]);
+  const labelled: { number: number; }[] = readLabelledRows({ what: "out-of-release rows", label: OUT_OF_RELEASE_LABEL, select: "number" });
+  const milestoned = inMilestone(OUT_OF_RELEASE_MILESTONE);
   const { labelOnly, milestoneOnly } = releaseDeclarationDrift(labelled, milestoned);
 
   if (labelOnly.length === 0 && milestoneOnly.length === 0) {
@@ -2237,10 +2077,7 @@ function reportGuidanceDrift() {
   const doc = readRowFilingDoc();
   let description = null;
   try {
-    const milestones = JSON.parse(defaultRun("gh",
-      ["api", `repos/${trackerRepo()}/milestones?state=all`, "--jq", "[.[]|{title,description}]"]));
-    description = milestones.find((m: { title: string; }) => m.title === OUT_OF_RELEASE_MILESTONE)
-      ?.description ?? null;
+    description = hostRows().milestoneDescriptionOf({ repo: trackerRepo(), title: OUT_OF_RELEASE_MILESTONE, run: ghRun() });
   } catch (cause) {
     void cause;
   }
@@ -2291,14 +2128,9 @@ function reportProseBlockers() {
  * SHORT PAGE is a positive statement of having reached the end; a literal is a promise about a number
  * nobody will re-check. One walk, not four.
  */
-function fetchIssuesWithWaits({ run = defaultRun } = {}) {
-  // `listUntilShort` is shared by four callers with four different `--json` field sets, so it returns
-  // `unknown[]` and each caller states the shape IT asked for. Narrowed here, once, at the call that
-  // knows the fields.
-  return (
-    listUntilShort({ run, what: "open issues with waits",
-    argv: (ask: number) => ["issue", "list", "--repo", trackerRepo(), "--state", "open",
-      "--limit", String(ask), "--json", "number,body,blockedBy"] }) as {number?: number, body?: string, blockedBy?: {totalCount?: number}}[]);
+function fetchIssuesWithWaits() {
+  // `listUntilShort` is shared by several callers with different field sets, and each row carries the fields IT asked for.
+  return listUntilShort({ what: "open issues with waits", list: issuePages({ state: "open", fields: ["number", "body", "blockedBy"] }) }) as { number?: number; body?: string; blockedBy?: { totalCount?: number } }[];
 }
 
 /**
@@ -2326,16 +2158,14 @@ export function newUmbrellaEdges({ rows, addedAt }: { rows: RowWithEdges[]; adde
 
 /** @param {number} holder @param {number} blocker @returns {string} the newest `blocked_by_added` of this edge in the holder's timeline */
 function edgeAddedAt(holder: number, blocker: number): string {
-  const events = JSON.parse(defaultRun("gh", ["api", `repos/${trackerRepo()}/issues/${holder}/timeline`, "--paginate", "--slurp"])).flat();
-  const added = events.filter((e: any) => e.event === "blocked_by_added" && e.blocked_by?.number === blocker).map((e: any) => String(e.created_at));
-  if (added.length === 0) throw new Error(`#${holder}'s timeline has no blocked_by_added event for #${blocker}, so when the edge was added is not known`);
-  return added.sort().at(-1) ?? "";
+  const added = hostRows().blockedByAddedAtOf({ repo: trackerRepo(), holder, blocker, run: ghRun() });
+  if (added === null) throw new Error(`#${holder}'s timeline has no blocked_by_added event for #${blocker}, so when the edge was added is not known`);
+  return added;
 }
 
 /** #4005: the edges onto a multi-done-when row that were added after the tool began to refuse them. NAMES THEM; the remedy is a `Waiting-for:` line or `Waits-on-done-when:`. */
 function reportNewUmbrellaEdges() {
-  const rows = (listUntilShort({ run: defaultRun, what: "open rows with edges",
-    argv: (ask: number) => ["issue", "list", "--repo", trackerRepo(), "--state", "open", "--limit", String(ask), "--json", "number,body,labels,blockedBy"] }) as RowWithEdges[]);
+  const rows = listUntilShort({ what: "open rows with edges", list: issuePages({ state: "open", fields: ["number", "body", "labels", "blockedBy"] }) }) as RowWithEdges[];
   const found = newUmbrellaEdges({ rows, addedAt: edgeAddedAt });
   for (const { holder, blocker, doneWhens, addedAt } of found) {
     process.stdout.write(`  ${rowName(holder)}: blocked-by ${rowName(blocker)} (${doneWhens} done-whens) added ${addedAt} names no done-when and no Waiting-for condition\n`);

@@ -18,6 +18,9 @@ import { matchFailureClass, recordLabelOutcome, type ClassMatch, type Incident }
 import { homeHostConfig, stateEntryPath, type HostConfig } from "./host-config.ts";
 import { processState } from "./triage-provider.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
+import type { ClosedClassRowRead, ClosedRowTitled } from "./plugins/contracts/code-host-rows-classes.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** Where the index lives under the project checkout. */
 export const FAILURE_CLASSES_PATH = ".agent-org/failure-classes.json";
@@ -38,8 +41,6 @@ const MAX_REASON_CHARS = 160;
 const MAX_TITLE_CHARS = 120;
 const CLASS_ROW_TITLE_START = "Failure class ";
 const CLASS_ROW_TITLE_END = " repeated: make its guard stop it everywhere";
-/** What `gh` is asked to keep of each row: the raw `issues` listing carries every body, which this never reads. */
-const ROW_PROJECTION = "[.[] | {number, state, closed_at, title, pull_request: (.pull_request != null), labels: [.labels[].name]}]";
 
 /**
  * `countedSince` (agent-org#1316, a11ign/a11ign#5282) is the time from which the class's ledger refs COUNT: an earlier ref is the defect the guard fixed, not a repeat of it. Absent
@@ -110,49 +111,30 @@ export function parseFailureClasses(text: string): FailureClass[] | null {
 }
 
 /**
- * ONE CLOSED ROW PER GITHUB LISTING ENTRY THAT IS ONE: a pull request is in the `issues` listing too, and an open row is never an instance -- the
- * class step happens before a row closes (child A), so the count is of what was closed. Filtered here as well as in the query, because a fake that
- * answers every query would otherwise count an open row. `null` is an entry that is not the projection's shape.
+ * ONE CLOSED ROW PER LISTED ROW THAT IS ONE: the code host's listing (`closedClassRowsOf`) holds the closed rows that are not pull requests, and an open row is never an instance -- the class step happens before a
+ * row closes (child A), so the count is of what was closed. A row that carries a `class:` label is an instance of that class.
  *
  * A CLASS ROW IS NEVER AN INSTANCE OF ITS OWN CLASS (a11ign/agent-org#570). It is the FIX filed because the class repeated, so counting it when it closes
  * makes the row that answers the alert instance N+1 and, being the newest, the discriminator of the next offer: closing it re-tripped what it answers.
  * `classRowArgv` no longer labels it, but a row is also labelled by the classifier (#4633, which labels any `defect` nobody classed) and by hand, so
  * the title says what it is whatever labels it carries. A genuine occurrence is not touched: it has no such title.
- * @param {any} entry @returns {ClassRow | null | "skip"}
+ * @param {ClosedClassRowRead} row @returns {ClassRow | "skip"}
  */
-function rowOf(entry: any): ClassRow | null | "skip" {
-  if (typeof entry?.number !== "number" || !Array.isArray(entry.labels)) return null;
-  if (entry.pull_request === true || entry.state !== "closed") return "skip";
-  if (isClassRowTitle(entry.title)) return "skip";
-  const classes = entry.labels.filter((l: unknown) => typeof l === "string" && l.startsWith(CLASS_LABEL_PREFIX)).map((l: string) => l.slice(CLASS_LABEL_PREFIX.length));
-  const closedAt = Date.parse(entry.closed_at);
-  return { number: entry.number, closedAt: Number.isFinite(closedAt) ? closedAt : null, classes };
+function rowOf(row: ClosedClassRowRead): ClassRow | "skip" {
+  if (isClassRowTitle(row.title)) return "skip";
+  const classes = row.labels.filter((label) => label.startsWith(CLASS_LABEL_PREFIX)).map((label) => label.slice(CLASS_LABEL_PREFIX.length));
+  return { number: row.number, closedAt: row.closedAt, classes };
 }
 
 /**
- * @param {string} text the projected listing @returns {ClassRow[] | null} the closed rows carrying a `class:` label, `null` for text that is not a listing
+ * @param {RowsRun} run @param {string} repo @param {string | null} classId the class to list ALL closed instances of, or `null` for the newest-updated closed rows
+ * @returns {ClassRow[] | null} the closed rows carrying a `class:` label, `null` for an answer that is not a listing
  */
-function parseRows(text: string): ClassRow[] | null {
-  try {
-    const entries = JSON.parse(text);
-    if (!Array.isArray(entries)) return null;
-    const rows = entries.map(rowOf);
-    if (rows.includes(null)) return null;
-    return (rows.filter((r) => r !== null && r !== "skip" && r.classes.length > 0) as ClassRow[]);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {(args: string[]) => string} run @param {string} repo @param {string | null} classId the class to list ALL closed instances of, or `null` for the newest-updated closed rows
- * @returns {ClassRow[] | null}
- */
-function listClosed(run: (args: string[]) => string, repo: string, classId: string | null): ClassRow[] | null {
+function listClosed(run: RowsRun, repo: string, classId: string | null): ClassRow[] | null {
   const perPage = classId === null ? RECENT_CLOSED_WINDOW : CLASS_ROWS_WINDOW;
-  const label = classId === null ? [] : ["-f", `labels=${CLASS_LABEL_PREFIX}${classId}`];
-  return parseRows(run(["api", "--method", "GET", `repos/${repo}/issues`, "-f", "state=closed", "-f", "sort=updated", "-f", "direction=desc", "-f", `per_page=${perPage}`,
-    ...label, "--jq", ROW_PROJECTION]));
+  const listed = rows().closedClassRowsOf({ repo, classLabel: classId === null ? null : `${CLASS_LABEL_PREFIX}${classId}`, perPage, run });
+  if (listed === null) return null;
+  return listed.map(rowOf).filter((row): row is ClassRow => row !== "skip" && row.classes.length > 0);
 }
 
 /**
@@ -160,10 +142,10 @@ function listClosed(run: (args: string[]) => string, repo: string, classId: stri
  * CLASS whose newest instance closed inside the window (`CLASS_REPEAT_WINDOW_MS`), to count that class's instances over all time. A class with no
  * recent instance cannot be offered this tick, so it is not listed: `gh` cannot filter a label PREFIX, and listing every class each tick would be one call
  * per class for nothing. NEVER THROWS: a refused call, an unparseable listing or a missing index is `{ unreadable }`, a stated unknown.
- * @param {(args: string[]) => string} run @param {string} repo @param {ClassRepeatIo} [io]
+ * @param {RowsRun} run @param {string} repo @param {ClassRepeatIo} [io]
  * @returns {ClassRepeatFact}
  */
-function readClosedRowRepeats(run: (args: string[]) => string, repo: string, { root = HOME_CHECKOUT, read = (path) => readFileSync(path, "utf8"), now = Date.now() }: ClassRepeatIo = {}): ClassRepeatFact {
+function readClosedRowRepeats(run: RowsRun, repo: string, { root = HOME_CHECKOUT, read = (path) => readFileSync(path, "utf8"), now = Date.now() }: ClassRepeatIo = {}): ClassRepeatFact {
   let index;
   try {
     index = parseFailureClasses(read(join(root, FAILURE_CLASSES_PATH)));
@@ -203,7 +185,7 @@ export type ClassRepeatIo = {
 /**
  * THE FACT FOR THE `class-repeat` SIGNAL (#4126, #4451): the closed rows (`readClosedRowRepeats`), then, when asked, the ledger's repeats beside them, then, when a filer is given, the row
  * each repeating class is filed as (`fileClassRepeats`). NEVER THROWS, as the closed-row read does not: a ledger that cannot be read is `{ unreadable }` inside the fact.
- * @param {(args: string[]) => string} run @param {string} repo @param {ClassRepeatIo} [io]
+ * @param {RowsRun} run @param {string} repo @param {ClassRepeatIo} [io]
  * @returns {ClassRepeatFact}
  */
 export function readClassRepeat(run: (args: string[]) => string, repo: string, io: ClassRepeatIo = {}): ClassRepeatFact {
@@ -424,7 +406,7 @@ function writeRemembered<T extends object = Remembered>(statePath: string, remem
   }
 }
 
-type FilingIo = { run: (args: string[]) => string, repo: string, fileRow: (argv: string[]) => string, now: number, statePath?: string, session?: string, log?: (line: string) => void };
+type FilingIo = { run: RowsRun, repo: string, fileRow: (argv: string[]) => string, now: number, statePath?: string, session?: string, log?: (line: string) => void };
 
 /**
  * File ONE class: make sure its label exists (a ledger kind has no closed row, so no label yet, and `org-health`'s order tells a human to put it on a row), then `row-file`, which does
@@ -432,7 +414,7 @@ type FilingIo = { run: (args: string[]) => string, repo: string, fileRow: (argv:
  */
 function fileOne(group: ClassGroup, { run, repo, fileRow, session }: Pick<FilingIo, "run" | "repo" | "fileRow" | "session">): Filing {
   try {
-    run(["label", "create", `${CLASS_LABEL_PREFIX}${group.id}`, "--repo", repo, "--force", "--description", CLASS_LABEL_DESCRIPTION]);
+    rows().ensureTriageLabel({ repo, label: `${CLASS_LABEL_PREFIX}${group.id}`, description: CLASS_LABEL_DESCRIPTION, run });
     return { filed: rowFiledAs(fileRow(classRowArgv(group, session))), covers: newestOccurrence(group).key };
   } catch (err) {
     return { refused: refusalOf(err) };
@@ -485,7 +467,6 @@ const MAX_ASKED_PER_TICK = 3;
 /** A label still on its row this long after the provider applied it is `kept`; one a human took off is `removed` at once. */
 const LABEL_KEPT_AFTER_MS = 24 * 60 * 60 * 1000;
 const CLASSIFY_FLAG = "--classify-unclassed";
-const MATCH_ROW_PROJECTION = "[.[] | {number, state, pull_request: (.pull_request != null), title, labels: [.labels[].name]}]";
 
 /** What one row is when it is asked about: its number and title, never its body. */
 export type UnclassedRow = { number: number, title: string };
@@ -495,16 +476,7 @@ type MatchTick = MatchIo & { now: number, log?: (line: string) => void };
 
 const decisionIdOf = (row: number): string => `row-${row}`;
 
-type ListedRow = { number: number, title: string, labels: string[] };
-/** The closed non-PR rows of the newest-updated window, or `null` for a listing that is not the projection's shape. */
-function listForMatch(run: (args: string[]) => string, repo: string): ListedRow[] | null {
-  const entries = JSON.parse(run(["api", "--method", "GET", `repos/${repo}/issues`, "-f", "state=closed", "-f", "sort=updated", "-f", "direction=desc",
-    "-f", `per_page=${RECENT_CLOSED_WINDOW}`, "--jq", MATCH_ROW_PROJECTION]));
-  if (!Array.isArray(entries)) return null;
-  return entries.filter((e) => e?.state === "closed" && e.pull_request !== true && typeof e.number === "number" && typeof e.title === "string" && Array.isArray(e.labels))
-    .map((e) => ({ number: e.number, title: e.title, labels: e.labels.filter((l: unknown): l is string => typeof l === "string") }));
-}
-
+type ListedRow = ClosedRowTitled;
 /** `kept` or `removed`, for each label the provider applied whose fate is now known: the row lost it, or has carried it a day. Each is recorded once. */
 function settleOutcomes(asked: Asked, listed: Map<number, ListedRow>, { now, outcome }: Pick<MatchTick, "now" | "outcome">): boolean {
   let settled = false;
@@ -524,10 +496,10 @@ function settleOutcomes(asked: Asked, listed: Map<number, ListedRow>, { now, out
  * THE TICK'S HALF: settle the outcomes of labels already applied, then take the newest closed `defect` rows with no `class:` label that were never asked about, remember them, and hand them to
  * `ask`. NEVER THROWS: a refused listing is logged and the next tick tries again, nothing remembered. Without a readable memory nothing is asked, since a row could not be told from a new one.
  */
-function queueUnclassedRows(run: (args: string[]) => string, repo: string, tick: MatchTick): void {
+function queueUnclassedRows(run: RowsRun, repo: string, tick: MatchTick): void {
   const log = tick.log ?? ((line: string) => process.stderr.write(line));
   try {
-    const listed = listForMatch(run, repo);
+    const listed = rows().closedRowsTitledOf({ repo, perPage: RECENT_CLOSED_WINDOW, run });
     if (listed === null) return log("class-repeat: the closed rows could not be read as a listing, so no incident was matched to a class (#4633)\n");
     const asked = readRemembered<Asked>(tick.statePath, log);
     const settled = settleOutcomes(asked, new Map(listed.map((row) => [row.number, row])), tick);
@@ -541,21 +513,21 @@ function queueUnclassedRows(run: (args: string[]) => string, repo: string, tick:
   }
 }
 
-type ClassifyIo = { run: (args: string[]) => string, repo: string, index: FailureClass[], deps: DecisionDeps, statePath: string, now?: () => number, log?: (line: string) => void };
+type ClassifyIo = { run: RowsRun, repo: string, index: FailureClass[], deps: DecisionDeps, statePath: string, now?: () => number, log?: (line: string) => void };
 
 /**
  * THE CHILD'S HALF: ask `classifyIncident` about each row and apply the label it names. The label is created first (a class with no closed row has none yet), then put on the row.
  * `none-of-these` writes nothing to GitHub. Each row's answer is remembered as it lands, and a refused `gh` call is logged and leaves the row remembered, not retried: it was asked about once.
  */
-export async function labelUnclassedRows(rows: UnclassedRow[], { run, repo, index, deps, statePath, now = Date.now, log = (line) => process.stderr.write(line) }: ClassifyIo): Promise<Record<number, string | null>> {
+export async function labelUnclassedRows(unclassed: UnclassedRow[], { run, repo, index, deps, statePath, now = Date.now, log = (line) => process.stderr.write(line) }: ClassifyIo): Promise<Record<number, string | null>> {
   const applied: Record<number, string | null> = {};
-  for (const row of rows) {
+  for (const row of unclassed) {
     const { label } = await classifyIncident({ kind: DEFECT_LABEL, title: row.title, cause: "" }, index, { ...deps, id: decisionIdOf(row.number) });
     applied[row.number] = null;
     try {
       if (label !== null) {
-        run(["label", "create", label, "--repo", repo, "--force", "--description", CLASS_LABEL_DESCRIPTION]);
-        run(["issue", "edit", String(row.number), "--repo", repo, "--add-label", label]);
+        rows().ensureTriageLabel({ repo, label, description: CLASS_LABEL_DESCRIPTION, run });
+        rows().addLabelToRowIn({ repo, number: row.number, label, run });
         applied[row.number] = label;
         log(`class-repeat: matched #${row.number} to ${label} (#4633)\n`);
       }
@@ -586,8 +558,8 @@ export function parseClassifyArgv(argv: string[]): { repo: string, rows: Unclass
   }
 }
 
-/** `gh` as the child runs it: the gate's own environment (and so its account), the same call shape `run` has everywhere in this file. */
-const liveGh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+/** The code host's program as the child runs it: the gate's own environment (and so its account), the same call shape `run` has everywhere in this file. What it prints on stderr stays in a failure's message. */
+const liveGh: RowsRun = (args) => rows().runnerWith({ echo: false })(args);
 
 /**
  * THE MATCH IO FOR THE LIVE GATE, or `undefined` when nothing could be asked: no `jev` provider declared, or the use `failure-class-match` not switched on in `.agent-org/decisions.json`.

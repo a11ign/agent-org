@@ -34,7 +34,7 @@ test("the async reader rejects such a page and does not answer the rows so far: 
 
 // --- the sync and the async reader walk the same pages (review of #1834: one page loop, not two) ----------------------------------
 
-const POOL = { probe: [] as string[], fromResponse: () => null, rawResponse: () => null, fromRateLimitField: () => null };
+const POOL = { fromResponse: () => null, rawResponse: () => null, fromRateLimitField: () => null };
 const THREE_PAGES = [page({ hasNextPage: true, endCursor: "c1" }, [5, 4]), page({ hasNextPage: true, endCursor: "c2" }, [3, 2]), page({ hasNextPage: false }, [1])];
 
 test("the sync and the async reader ask the same pages in the same order with the same cursors, and answer the same rows", async () => {
@@ -56,4 +56,25 @@ test("both refuse a window longer than its pages with the same error", async () 
   assert.throws(() => readRowsSince({ ask, run: () => endless(++n) }, { pool: POOL, WindowCutShort: CutShort }), (error: unknown) => error instanceof CutShort && /may be cut short/.test((error as Error).message));
   n = 0;
   await assert.rejects(() => readRowsSinceAsync({ ask, run: async () => endless(++n) }, { WindowCutShort: CutShort }), (error: unknown) => error instanceof CutShort && /may be cut short/.test((error as Error).message));
+});
+
+// --- the pull-request window of the board's conflict metrics (A11-160, step 9: moved here from `src/packaging/conflict-metrics.test.ts`, which now runs on the fake code host) ---
+
+test("a window of exactly its five pages is read whole, 100 rows a page and by a connection, never a search; one row more is cut short", () => {
+  const ask: SinceRead = { kind: "pullRequests", states: ["OPEN", "CLOSED", "MERGED"], orderBy: "CREATED_AT", repo: "o/r", select: "number title createdAt", since: "2026-09-08T00:00:00.000Z", maxPages: 5 };
+  const rowsOf = (count: number) => Array.from({ length: count }, (_, i) => ({ number: i + 1, createdAt: new Date(Date.parse(ask.since!) + (count - i) * 1000).toISOString() }));
+  const pagesOf = (rows: { number: number }[], asked: string[][]) => (args: string[]): string => {
+    asked.push(args);
+    const from = Number(args.find((arg) => arg.startsWith("after="))?.slice("after=".length).replace(/^c/, "") ?? 0);
+    const more = from + 100 < rows.length;
+    return JSON.stringify({ data: { repository: { pullRequests: { nodes: rows.slice(from, from + 100), pageInfo: { hasNextPage: more, endCursor: more ? `c${from + 100}` : null } } } } });
+  };
+  const asked: string[][] = [];
+  assert.equal(readRowsSince({ ask, run: pagesOf(rowsOf(500), asked) }, { pool: POOL, WindowCutShort: CutShort }).length, 500, "the connection PROVES the window whole: its fifth page has no next one");
+  assert.equal(asked.length, 5, "paged 100 at a time");
+  assert.deepEqual(asked.filter((args) => args.includes("--search") || args.includes("--label")), [], "and none is a GitHub search (#5076)");
+  assert.ok(asked.every((args) => args[0] === "api" && args[1] === "graphql" && args.some((arg) => /pullRequests\(states:\[OPEN,CLOSED,MERGED\],first:100,after:\$after,orderBy:\{field:CREATED_AT,direction:DESC\}/.test(arg))));
+  const over: string[][] = [];
+  assert.throws(() => readRowsSince({ ask, run: pagesOf(rowsOf(501), over) }, { pool: POOL, WindowCutShort: CutShort }), (error: unknown) => error instanceof CutShort && /may be cut short/.test((error as Error).message));
+  assert.equal(over.length, 5, "it read its five pages and no more");
 });

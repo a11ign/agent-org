@@ -1,13 +1,13 @@
 // #4750: a question under the floor on MORE than 30% of at least 20 decisions files its own improvement row, once, and a host with no provider files and asks nothing.
-// no-token: gh -- every `gh` call in this file is an injected fake tracker and every `row-file` call an injected fake filer; the CLI cases read a temporary log and never reach `gh`.
+// no-token: gh -- every call to the tracker in this file is the fake code host's (A11-160, step 9) and every `row-file` call an injected fake filer; the CLI cases read a temporary log and never reach `gh`.
 //
-// THE FAKES ARE STRICT: the tracker answers only the two calls this module makes and throws on any other, and the filer RECORDS its argv. Every "files nothing" case has a twin that DOES file over
+// THE FAKES ARE STRICT: the tracker is the fake code host's world (the rows of the class, in either state), the label it was asked to create is recorded, and the filer RECORDS its argv. Every "files nothing" case has a twin that DOES file over
 // the same facts with ONE thing changed, so a filer that never files turns the twin red and one that always files turns the case red. The mutations, both directions, are in the pull request.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { confidenceReading, type ConfidenceReading } from "./provider-confidence.ts";
 import {
   CLASS_ID, MIN_DECISIONS, MIN_UNDER_FLOOR_SHARE, fileLowConfidence, improvementArgv, improvementBody, improvementTitle, lowConfidenceQuestions, questionVerdict, regionFiles,
@@ -16,7 +16,11 @@ import {
 import { bodyFromArgv, fileRefusalReason } from "./row-file/issue-body-and-region-checks.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -87,25 +91,18 @@ const TWO_LOW = [...LOW, ...decisions("model-routing", "subsystems", { total: 22
 type Tracked = { number: number; title: string; state: string; closedAt: string | null };
 
 /**
- * A tracker that answers the one listing this module makes -- the OPEN and the CLOSED rows labelled with the class, as connection reads (#5076: `gh issue list --label` was a GitHub
- * SEARCH) -- and records `label create`; it throws on any other call, and on any argv that is a search, so a reader that drifts is red.
+ * A tracker: the fake code host in place with `rows` as the rows of its world that carry the class label (the OPEN and the CLOSED ones, as the code host lists them: #5076, `gh issue list --label` was a GitHub
+ * SEARCH). `world.calls` is what the code host was asked to read, and `world.labelsCreated` the label the filing made sure of. `listFails` makes the listing refuse. The `run` it hands the filing is the
+ * runner the live tool would hand the code host: the fake acts on its world and never calls it, so it throws if it ever is.
  */
 function tracker(rows: Tracked[], { listFails = "" }: { listFails?: string } = {}) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "label") {
-      assert.deepEqual(args.slice(0, 3), ["label", "create", `class:${CLASS_ID}`]);
-      return "";
-    }
-    assert.ok(!args.includes("--label") && !args.includes("--search"), `a search-backed list: ${args.join(" ")}`);
-    const asked = readsRowsByLabel(args);
-    assert.ok(asked !== null, `an unexpected gh call: ${args.join(" ")}`);
-    assert.equal(asked.label, `class:${CLASS_ID}`);
-    if (listFails) throw new Error(listFails);
-    return connectionOf(rows.filter((row) => row.state === asked.state));
-  };
-  return { run, calls };
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { rowsWorld: world } = host;
+  for (const row of rows) world.rows.set(row.number, fakeRow(world, row.number, { title: row.title, state: row.state as "OPEN" | "CLOSED", closedAt: row.closedAt, labels: [`class:${CLASS_ID}`] }));
+  if (listFails) world.failures.set("labelledRowsOf", new Error(listFails));
+  const run = (): string => { throw new Error("the fake code host runs nothing"); };
+  return { run, world };
 }
 
 function filer({ refuse = "", from = 5000 }: { refuse?: string; from?: number } = {}) {
@@ -131,6 +128,7 @@ test("ONE row is filed for a low question, and it names the question, its share,
   const f = filer();
   const outcomes = fileLowConfidence(readingOf(LOW), io(t, f));
   assert.deepEqual(outcomes, { "model-routing/score": { filed: "#5000" } });
+  assert.deepEqual(t.world.labelsCreated, [`class:${CLASS_ID}`], "the class label was made sure of before the row was filed");
   assert.equal(f.argvs.length, 1);
   const body = bodyFromArgv(f.argvs[0]) as string;
   assert.match(body, /model-routing\/score/);
@@ -197,7 +195,7 @@ test("NO PROVIDER, NO FILING, NO NOISE: with no use switched on, nothing is file
   const t = tracker([]);
   const f = filer();
   assert.deepEqual(fileLowConfidence(readingOf(TWO_LOW), io(t, f, new Set())), {});
-  assert.equal(t.calls.length, 0, "gh was not touched");
+  assert.deepEqual([t.world.calls, t.world.labelsCreated], [[], []], "the code host was not touched");
   assert.equal(f.argvs.length, 0);
   // The twin: the same reading with the use on files, so the empty set is what silenced it.
   assert.equal(Object.keys(fileLowConfidence(readingOf(TWO_LOW), io(tracker([]), filer()))).length, 2);
@@ -208,7 +206,7 @@ test("a use that is switched off is not filed even when another is on, and an em
   const f = filer();
   const lines = [...decisions("wake-triage", "route", { total: 30, held: 20 }), ...decisions("model-routing", "score", { total: 30, held: 2 })];
   assert.deepEqual(fileLowConfidence(readingOf(lines), io(t, f)), {});
-  assert.equal(t.calls.length, 0, "no candidate of an on use, so the tracker is not read");
+  assert.deepEqual([t.world.calls, t.world.labelsCreated], [[], []], "no candidate of an on use, so the tracker is not read");
   assert.deepEqual(Object.keys(fileLowConfidence(readingOf(lines), io(tracker([]), filer(), new Set(["wake-triage"])))), ["wake-triage/route"]);
   assert.deepEqual(fileLowConfidence(readingOf([]), io(t, f)), {});
 });

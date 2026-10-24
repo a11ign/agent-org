@@ -118,7 +118,6 @@ test("the pool a refused read names is read off the headers a refused `gh api -i
   const headers = "HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: 0\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Reset: 1790000000\n";
   const exec = () => ({ status: 1, stdout: headers, stderr: "gh: API rate limit exceeded" });
   const pool = {
-    probe: ["api", "graphql", "-i"],
     rawResponse: (args: readonly string[], run: (args: string[]) => string) => { try { return run([...args]) || null; } catch (error) { return (error as { stdout?: string }).stdout || null; } },
     fromResponse: (raw: string | null) => (raw === null ? null : { remaining: Number(/Remaining: (\d+)/.exec(raw)?.[1]), limit: 5000, used: 5000, resetInMinutes: null }),
     fromRateLimitField: () => null,

@@ -36,7 +36,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 TimeoutStartSec=10800
 
 # `/usr/bin/bash <repository-relative path>`, the shape board-report.service explains: the tree copy IS the program, not copied anywhere.
-ExecStart=/usr/bin/bash packages/agent-org/host/trace-weekly-post.sh
+ExecStart=/usr/bin/bash packages/agent-org/plugins/github/host/trace-weekly-post.sh
 
 # NO [Install] SECTION, and its absence is load-bearing: `WantedBy=default.target` would run this oneshot, and post a report, at every boot.
 # The timer is the only thing that may start it.

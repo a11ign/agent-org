@@ -9,13 +9,13 @@
  *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps.
  *       The starts are read from the wrapper's own record of its admissions, not from the stub's clock: a stub starts a little after its admission,
  *       by a lag that a loaded host makes longer than the window;
- *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks (`readUnlessRefused`, as #1523 pinned it);
+ *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks: that is the code host's `readUnlessRefused` (#1523), so its case is the plugin's (`plugins/github/rows/rows-by-label-refusal.test.ts`);
  *   (d) a queued call the gate RETRIES and sees refused again is filed as the refused pool reads now (`retryDue`, through `attemptCall`): secondary
  *       with calls left, primary at zero, and the pool is read once for an hourly phrase only;
  *   (e) the retry's reader (`poolLeftOfQueued`, run through `spawnQueued`) sends the wrapper's probe as the entry's own account, and reads the pool it answers, or nothing;
  *   (f) the gate's own tick (`ghQueueTick`) takes that reader by default: a queued call refused again on the tick is secondary with calls left, primary at zero.
  */
-import { test, beforeEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
@@ -25,10 +25,8 @@ import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
 import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 import { ghQueueTick, poolLeftOfQueued, QUEUE_DIR, readQueue, refusalKind, retryDue, spawnQueued } from "./gh-ledger.ts";
-import { GRAPHQL_POOL_PROBE } from "./api-pool.ts";
 import { corePoolProbe } from "./ticket-port/core-pool-probe.ts";
 import { poolProbeAnswer as probeOf } from "./packaging/rows-by-label-fixtures.ts";
-import { forgetRefusedReads, readUnlessRefused } from "./ticket-port/rows-by-label.ts";
 
 const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
 const WRAPPER = (() => {
@@ -184,36 +182,7 @@ test("(b) POSITIVE CONTROL: the same calls with the bound lifted overlap beyond 
   assert.ok(peakInFlight(events) > IN_FLIGHT, `unpaced, the producers overlap beyond ${IN_FLIGHT}, read a peak of ${peakInFlight(events)}`);
 });
 
-// ---- (c) a read refused for a secondary limit is not asked again that tick ---------------------------------------------
-
-beforeEach(() => forgetRefusedReads());
-
-test("(c) a read refused for a secondary limit is not asked again that tick, and the next tick asks", () => {
-  let reads = 0;
-  const run = (args: string[]): string => {
-    if (args.join(" ") === GRAPHQL_POOL_PROBE.join(" ")) return probeOf(4560);
-    throw new Error(SECONDARY_REFUSAL);
-  };
-  const read = () => {
-    reads++;
-    return run(["api", "graphql", "-f", "query=query { repository { issues { totalCount } } }"]);
-  };
-  const attempt = () => {
-    try {
-      readUnlessRefused({ what: "OPEN rows labelled ready", run, log: () => undefined, read });
-      return null;
-    } catch (error) {
-      return (error as Error).message;
-    }
-  };
-  assert.match(attempt() ?? "", /secondary rate limit/);
-  const afterFirst = reads;
-  assert.match(attempt() ?? "", /not asked again this tick/);
-  assert.equal(reads, afterFirst, "the refused read is not sent a second time in the same tick");
-  forgetRefusedReads();
-  assert.match(attempt() ?? "", /secondary rate limit/);
-  assert.equal(reads, afterFirst + 1, "the next tick sends the read again");
-});
+// ---- (c) a read refused for a secondary limit is not asked again that tick: the plugin's own rule, tested there (`plugins/github/rows/rows-by-label-refusal.test.ts` (d) and (e)) -------
 
 // ---- (d) the gate's RETRY files a refusal as the pool reads NOW --------------------------------------------------------
 
@@ -296,7 +265,7 @@ test("(e) the gate's pool reader sends the wrapper's probe as the entry's accoun
 
 // ---- (g) a code host that cannot be loaded is no reading of the pool, and never stops the retry ------------------------------
 
-test("(g) A11-160: the core pool's probe is the code host's, so a code host that cannot be loaded gives no reading, and a GraphQL refusal does not need it", () => {
+test("(g) A11-160: both pools' probes are the code host's, so a code host that cannot be loaded gives no reading for either, and nothing is sent", () => {
   const call = queuedCall(join(tmpDir("gh-secondary-no-host-"), QUEUE_DIR));
   const asked: string[][] = [];
   const reading = poolLeftOfQueued((_call, argv) => {
@@ -305,10 +274,11 @@ test("(g) A11-160: the core pool's probe is the code host's, so a code host that
   });
   try {
     substituteCodeHost({ ...createFakeCodeHost(), rows: undefined });
-    assert.equal(reading(call, INSTALLATION_REFUSAL), null, "the host asked has no rows, so there is no probe to send: no reading, not a throw");
+    assert.equal(reading(call, INSTALLATION_REFUSAL), null, "the host asked has no rows, so there is no core probe to send: no reading, not a throw");
+    assert.equal(reading(call, "GraphQL: API rate limit exceeded for user ID 1"), null, "nor a GraphQL probe: it is the code host's too, and a GraphQL refusal gets no reading, not a throw");
     assert.deepEqual(asked, [], "and nothing was sent");
-    assert.equal(reading(call, "GraphQL: API rate limit exceeded for user ID 1"), 4560, "CONTROL: the GraphQL probe is core's and is sent as before");
   } finally {
     forgetActivation();
   }
+  assert.equal(reading(call, "GraphQL: API rate limit exceeded for user ID 1"), 4560, "CONTROL: with the code host back, the same refusal reads the GraphQL pool");
 });

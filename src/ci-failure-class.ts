@@ -14,7 +14,8 @@ import { REPO } from "./project-identity.ts"; // #2616: the project's repository
 import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot-scope.ts"; // #5405: the incident row is boarded on the home board when it is filed
 import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";
 import { boardFiledRow } from "./ticket-port/board-filed-row.ts"; // #5405: the card is added only when it is not on the board yet; #1369 shares this write with the outside-idle triage row
-import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5039
+import { rows } from "./plugins/rows.ts"; // #5039: the incident rows are read without search (the code host reads them); A11-160, step 9: so is everything else this file asks of GitHub
+import type { RecentRunRead, SharedFailureRowRead } from "./plugins/contracts/code-host-rows-classes.ts";
 import { decide, MAX_STATE_BYTES, type DecisionDeps, type Question } from "./decision-provider.ts";
 import { CI_CLASS, ERROR_LINE, FAILING_ASSERTION, LOG_LINES_KEPT, LOG_TIMESTAMP, NOT_THE_FAILURE, rateLimitOrLostRunner, READS_OUTSIDE, withoutColour } from "./ci-log-lines.ts";
 
@@ -157,7 +158,7 @@ export const classLine = (d: CiFailureDecision): string => `CI failure class: ${
 // THE FACTS (#4888). Read from GitHub by CODE and handed to {@link classifyCiFailure} as state. Every read is REST (`gh api`, the core pool the gate does not lean on), a failed read is
 // `null` -- "could not determine", never "not red" -- and the caller then sends today's order unchanged.
 
-/** `gh`, as an injected seam: the arguments after `gh`, the stdout back. */
+/** The code host's program, as an injected seam: the arguments, the stdout back. The code host's operations below are run on it. */
 export type Gh = (args: string[]) => string;
 /** The pull request a red order is about: `repo` is `owner/name`, and `head8` is the head the order's cause key carries. */
 type RedPullRequest = { repo: string; number: number; head8: string };
@@ -175,16 +176,12 @@ export function failingAssertionLines(errorLines: readonly string[]): string[] {
   const named = errorLines.filter((line) => FAILING_ASSERTION.test(line));
   return (named.length > 0 ? named : errorLines.filter((line) => !NOT_THE_FAILURE.test(line))).slice(0, MAX_ASSERTIONS_NAMED).map((line) => line.trim());
 }
-const RED_CONCLUSIONS = new Set(["failure", "timed_out"]);
-const RUN_AND_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
 // agent-org#1524: the acceptance gate's own words when the merge commit it checked out has no parents, so the diff cannot be read. Both lines it prints say "could not read the diff".
 const STALE_MERGE_REF = /the diff could not be read|could not read the diff/;
 
-type CheckRun = { name?: string; conclusion?: string | null; details_url?: string | null };
-type WorkflowRun = { name?: string; conclusion?: string | null; head_branch?: string; head_sha?: string; updated_at?: string; run_attempt?: number };
+type WorkflowRun = RecentRunRead;
 
-const json = (gh: Gh, path: string): any => JSON.parse(gh(["api", path]));
-const recent = (run: WorkflowRun, now: number): boolean => now - Date.parse(String(run.updated_at)) <= SAME_TIME_MS;
+const recent = (run: WorkflowRun, now: number): boolean => now - Date.parse(String(run.updatedAt)) <= SAME_TIME_MS;
 
 /** Is the newest run of `workflow` on `main` red, and recent? The newest only: a green run since then is a repair. */
 function redOnMainNow(runs: readonly WorkflowRun[], workflow: string, now: number): boolean {
@@ -194,10 +191,8 @@ function redOnMainNow(runs: readonly WorkflowRun[], workflow: string, now: numbe
 
 /** Does another branch's recent run of `workflow` fail too? Compared by BRANCH, because a fork's run carries no pull request number. */
 function redOnOtherPrsNow(runs: readonly WorkflowRun[], { workflow, branch, now }: { workflow: string; branch: string; now: number }): boolean {
-  return runs.some((run) => run.name === workflow && run.conclusion === "failure" && run.head_branch !== branch && run.head_branch !== "main" && recent(run, now));
+  return runs.some((run) => run.name === workflow && run.conclusion === "failure" && run.headBranch !== branch && run.headBranch !== "main" && recent(run, now));
 }
-
-const ROLL_UP_CHECK = /(^|[\s/])gate$/i;
 
 /**
  * THE FACTS OF ONE RED PULL REQUEST, or `null` when they could not be read or there is nothing red at the head the order names (the head moved, or the red check is not an Actions job).
@@ -207,30 +202,21 @@ const ROLL_UP_CHECK = /(^|[\s/])gate$/i;
  * @param flags {@link CI_CLASS}: the rate-limit read of the failing assertions (#1166); the default is today's read of the whole log
  */
 export function readCiFailure({ repo, number, head8 }: RedPullRequest, gh: Gh, now: number = Date.now(), flags: { assertionsOnly: boolean } = CI_CLASS): CiFailure | null {
-  const pull = json(gh, `repos/${repo}/pulls/${number}`);
-  const sha = String(pull?.head?.sha ?? "");
-  if (!sha.startsWith(head8)) return null;
-  const checks: CheckRun[] = json(gh, `repos/${repo}/commits/${sha}/check-runs?per_page=100`)?.check_runs ?? [];
-  const reds = checks.filter((check) => RED_CONCLUSIONS.has(String(check.conclusion)));
-  const causes = reds.filter((check) => !ROLL_UP_CHECK.test(String(check.name ?? "")));
-  const red = causes[0] ?? reds[0];
-  const ids = RUN_AND_JOB.exec(String(red?.details_url ?? ""));
-  if (red === undefined || ids === null) return null;
-  const run: WorkflowRun = json(gh, `repos/${repo}/actions/runs/${ids[1]}`);
-  const workflow = String(run.name ?? "");
-  // An Actions log carries colour codes, and `gh api` exits 1 on any terminal escape sequence unless told to allow it: without the flag this read never returned and no class was ever asked
-  // (#767). The escapes are stripped HERE, once, so a coloured `##[error]` is matched by `ERROR_LINE` and `RATE_LIMIT_OR_RUNNER_LOST` as the plain line it is.
-  const log = withoutColour(gh(["api", `repos/${repo}/actions/jobs/${ids[2]}/logs`, "--allow-escape-sequences"]));
+  const red = rows().redCheckOf({ repo, number, head8, run: gh });
+  if (red === null) return null;
+  // An Actions log carries colour codes, and the log read allows them (#767: without the flag the read never returned and no class was ever asked). The escapes are stripped HERE, once, so a coloured `##[error]`
+  // is matched by `ERROR_LINE` and `RATE_LIMIT_OR_RUNNER_LOST` as the plain line it is.
+  const log = withoutColour(red.log);
   const errorLines = log.split("\n").filter((line) => ERROR_LINE.test(line)).slice(-LOG_LINES_KEPT);
-  const onMain: WorkflowRun[] = json(gh, `repos/${repo}/actions/runs?branch=main&per_page=${MAIN_RUNS_LISTED}`)?.workflow_runs ?? [];
-  const failing: WorkflowRun[] = json(gh, `repos/${repo}/actions/runs?status=failure&event=pull_request&per_page=${RUNS_LISTED}`)?.workflow_runs ?? [];
+  const onMain = rows().recentRunsOf({ repo, kind: "on-main", limit: MAIN_RUNS_LISTED, run: gh });
+  const failing = rows().recentRunsOf({ repo, kind: "failing-for-pull-requests", limit: RUNS_LISTED, run: gh });
   return {
     errorLines,
-    redOnMain: redOnMainNow(onMain, workflow, now),
-    redOnOtherPrs: redOnOtherPrsNow(failing, { workflow, branch: String(pull?.head?.ref ?? ""), now }),
+    redOnMain: redOnMainNow(onMain, red.workflow, now),
+    redOnOtherPrs: redOnOtherPrsNow(failing, { workflow: red.workflow, branch: red.branch, now }),
     readsOutsideRepository: errorLines.some((line) => READS_OUTSIDE.test(line)),
     rateLimitOrRunnerLost: rateLimitOrLostRunner(log, flags),
-    rerunAlready: Number(run.run_attempt ?? 1) > 1,
+    rerunAlready: red.runAttempt > 1,
     // present only when true, for the same reason (#1524): read from the whole log, where the acceptance gate's line is
     ...(STALE_MERGE_REF.test(log) ? { staleMergeRef: true } : {}),
   };
@@ -340,17 +326,15 @@ function failingFile(lines: readonly string[], from: number): string | null {
  * failure of its own). Normalised, so two runs compare equal.
  */
 export function readSignature(check: RedCheck, run: Run): FailureSignature | null {
-  const ids = RUN_AND_JOB.exec(check.detailsUrl);
-  const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+)\//.exec(check.detailsUrl)?.[1];
-  if (ids === null || repo === undefined || isAggregator(check)) return null;
+  const job = rows().jobOfCheckUrl(check.detailsUrl);
+  if (job === null || isAggregator(check)) return null;
   try {
-    const job = JSON.parse(run(["api", `repos/${repo}/actions/jobs/${ids[2]}`]));
-    const step = (job?.steps ?? []).find((s: { conclusion?: string }) => s.conclusion === "failure");
-    if (step === undefined || AGGREGATOR_STEP.test(String(step.name))) return null;
-    const lines = withoutColour(run(["api", `repos/${repo}/actions/jobs/${ids[2]}/logs`, "--allow-escape-sequences"])).split("\n");
+    const failedStep = rows().jobFailedStepOf({ ...job, run });
+    if (failedStep === null || AGGREGATOR_STEP.test(failedStep)) return null;
+    const lines = withoutColour(rows().jobLogTextOf({ ...job, run })).split("\n");
     const at = failureLine(lines);
     if (at < 0 || AGGREGATOR_LINE.test(lines[at])) return null;
-    return { check: check.name, step: String(step.name), line: normalise(lines[at]), file: failingFile(lines, at) };
+    return { check: check.name, step: failedStep, line: normalise(lines[at]), file: failingFile(lines, at) };
   } catch {
     return null; // a refused read: UNCLASSIFIED, never "shared"
   }
@@ -416,8 +400,8 @@ const candidates = (prs: readonly RedPr[]): RedPr[] => {
 /** The files a pull request changes, or `null` when the read was refused or the page is full (a truncated list proves nothing about a file it does not show). */
 function changedFiles(pr: RedPr, run: Run): string[] | null {
   try {
-    const files = JSON.parse(run(["api", `repos/${pr.repo}/pulls/${pr.number}/files?per_page=${CHANGED_FILES_PAGE}`]));
-    return Array.isArray(files) && files.length < CHANGED_FILES_PAGE ? files.map((f: { filename?: unknown }) => String(f.filename)) : null;
+    const files = rows().changedFilesPageOf({ repo: pr.repo, number: pr.number, perPage: CHANGED_FILES_PAGE, run });
+    return files !== null && files.length < CHANGED_FILES_PAGE ? files : null;
   } catch {
     return null; // a refused read: the diff is UNKNOWN, so the failure is not shown to be outside it
   }
@@ -483,19 +467,13 @@ const REFRESHED_LINE = /^Refreshed-at: /m;
 const CHECK_LINE = /^Check: (.*)$/m;
 const listOf = (body: string, line: RegExp): string[] => (line.exec(body)?.[1] ?? "").split(",").map((s) => s.trim()).filter((s) => s !== "");
 
-type IncidentRow = {
-  number: number; body: string; state?: string; createdAt?: string; closedAt?: string; labels?: string[];
-  closedByPullRequestsReferences?: { number: number; repository?: { nameWithOwner?: string } }[];
-};
+type IncidentRow = SharedFailureRowRead;
 /**
  * #5039: THE INCIDENT ROWS, READ WITHOUT SEARCH (see rows-by-label.ts), and a FAILED READ THROWS: it used to answer `[]`, which read as "no
  * incident row", so a tick that could not list them filed a second row for the same failure. The two callers that file or join catch it.
  */
 export const readRows = (run: Run, state: "open" | "closed"): IncidentRow[] =>
-  readRowsByLabel({ label: SHARED_FAILURE_LABEL, state: state === "open" ? "OPEN" : "CLOSED", newest: MAX_INCIDENT_ROWS, run,
-    select: "number body createdAt closedAt labels(first:20){nodes{name}} closedByPullRequestsReferences(first:10){nodes{number repository{nameWithOwner}}}" })
-    .map((row) => ({ number: Number(row.number), body: String(row.body ?? ""), createdAt: row.createdAt, closedAt: row.closedAt,
-      labels: (row.labels?.nodes ?? []).map((l: { name: string }) => String(l.name)), closedByPullRequestsReferences: row.closedByPullRequestsReferences?.nodes ?? [] }));
+  rows().sharedFailureRowsOf({ label: SHARED_FAILURE_LABEL, state, newest: MAX_INCIDENT_ROWS, run });
 
 /**
  * WHAT THE ROWS SAY ABOUT `group` (#5098). The hold used to be recomputed from the live reds every tick, so closing the row released nothing: the same signature matched again, no OPEN
@@ -542,10 +520,8 @@ function healBoard(row: IncidentRow, run: Run, log: (line: string) => void): boo
 
 /** Files the incident row and boards it. A refused board throws, so the row is NOT reported filed: the next tick finds it by its marker and boards it then. */
 function fileIncident(group: SharedGroup, run: Run): number | null {
-  run(["label", "create", SHARED_FAILURE_LABEL, "--force", "--description", "One CI failure shared by several open pull requests"]);
   const title = `CI failure shared by ${group.prs.length} PRs: ${group.signature.check}: ${group.signature.line}`.slice(0, 120);
-  const out = run(["issue", "create", "--title", title, "--label", SHARED_FAILURE_LABEL, "--body", bodyOf(group, group.noted)]);
-  const number = Number(/\/issues\/(\d+)/.exec(out)?.[1] ?? NaN) || null;
+  const number = rows().fileSharedFailureRow({ label: SHARED_FAILURE_LABEL, description: "One CI failure shared by several open pull requests", title, body: bodyOf(group, group.noted), run });
   if (number !== null) boardIncident(number, run);
   return number;
 }
@@ -557,7 +533,7 @@ export function recordIncident(group: SharedGroup, { run, log }: { run: Run; log
     if (found === undefined) return fileIncident(group, run);
     const noted = listOf(found.body, PRS_LINE);
     const merged = [...new Set([...noted, ...group.noted])];
-    if (merged.length !== noted.length) run(["issue", "edit", String(found.number), "--body", bodyOf(group, merged)]);
+    if (merged.length !== noted.length) rows().setRowBody({ number: found.number, body: bodyOf(group, merged), run });
     // #5405: a row whose board was refused is NOT filed: the caller is told so, and the next tick joins it and boards it.
     if (!healBoard(found, run, log)) return null;
     return found.number;
@@ -571,7 +547,7 @@ export function recordIncident(group: SharedGroup, { run, log }: { run: Run; log
 /** `PUT update-branch` for one pull request, `true` when GitHub accepted it, `false` when it refused (a conflict) -- never throws. */
 function updateBranch(repo: string, number: number, run: Run): boolean {
   try {
-    run(["api", "-X", "PUT", `repos/${repo}/pulls/${number}/update-branch`]);
+    rows().updatePullBranch({ repo, number, run });
     return true;
   } catch {
     return false;
@@ -610,11 +586,10 @@ export function refreshFixed({ run, log, nowMs = Date.now(), open = [] }: {
 }
 
 const mergedFixAt = (row: IncidentRow, run: Run): number | null => {
-  for (const pr of row.closedByPullRequestsReferences ?? []) {
+  for (const pr of row.closedBy) {
     try {
-      const repo = pr.repository?.nameWithOwner;
-      const read = JSON.parse(run(["api", `repos/${repo}/pulls/${pr.number}`]));
-      if (read?.merged_at) return Date.parse(read.merged_at);
+      const mergedAt = rows().pullMergedAtOf({ repo: String(pr.repo), number: pr.number, run });
+      if (mergedAt !== null) return Date.parse(mergedAt);
     } catch {
       continue;
     }
@@ -624,10 +599,7 @@ const mergedFixAt = (row: IncidentRow, run: Run): number | null => {
 
 function stillOpenAndBehind(repo: string, number: number, run: Run): boolean {
   try {
-    const pull = JSON.parse(run(["api", `repos/${repo}/pulls/${number}`]));
-    if (pull?.state !== "open") return false;
-    const cmp = JSON.parse(run(["api", `repos/${repo}/compare/${pull.base?.ref ?? "main"}...${pull.head?.sha}`]));
-    return Number(cmp?.behind_by ?? 0) > 0;
+    return (rows().openPullBehindBy({ repo, number, run }) ?? 0) > 0;
   } catch {
     return false; // could not tell: not touched
   }
@@ -649,13 +621,13 @@ function stamp(row: IncidentRow, { late, failed, run, log, nowMs }: { late: stri
     `Refreshed-at: ${new Date(nowMs).toISOString()}`,
   ];
   try {
-    run(["issue", "edit", String(row.number), "--body", `${row.body}\n\n${lines.join("\n")}`]);
+    rows().setRowBody({ number: row.number, body: `${row.body}\n\n${lines.join("\n")}`, run });
   } catch (error) {
     log(`ci-shared-failure: refreshed but could not stamp #${row.number} (${String((error as Error).message).split("\n")[0]}); the next tick tries again\n`);
   }
 }
 
-const refusedOf = (rows: readonly IncidentRow[]): string[] => rows.flatMap((row) => listOf(String(row.body), FAILED_LINE));
+const refusedOf = (incidents: readonly IncidentRow[]): string[] => incidents.flatMap((row) => listOf(String(row.body), FAILED_LINE));
 
 /**
  * THE TICK'S ONE CALL. Refresh what a merged fix owes, hold what a shared failure owes nobody, file or join the incident, and return what remains. Never throws: a tick that cannot
@@ -669,18 +641,18 @@ export function sharedFailureTick<O extends OrderLike>(
   try {
     const { refreshed, refused } = refreshFixed({ run: deps.run, log, nowMs, open: deps.prs });
     for (const ref of refreshed) log(`ci-shared-failure: updated ${ref} from main (its incident's fix merged) -- no worker woken\n`);
-    const rows = { open: readRows(deps.run, "open"), closed: readRows(deps.run, "closed"), nowMs };
+    const incidents = { open: readRows(deps.run, "open"), closed: readRows(deps.run, "closed"), nowMs };
     const standing = (group: SharedGroup): Standing => {
-      const said = standingOf(group, rows);
+      const said = standingOf(group, incidents);
       return said.hold && recordIncident(group, { run: deps.run, log }) === null ? { hold: false, why: "unrecorded" } : said;
     };
     const waiting = new Set(deps.prs.filter((pr) => refreshed.includes(notedAs(pr))).map((pr) => pr.ref)); // its CI is running again: nobody is woken for the old red
     const pending = orders.filter((o) => !(o.cause === "pr-checks-failing" && waiting.has(String(o.subject))));
-    const out = holdSharedFailures(pending, { prs: deps.prs, run: deps.run, refused: [...refused, ...refusedOf([...rows.open, ...rows.closed])], standing });
+    const out = holdSharedFailures(pending, { prs: deps.prs, run: deps.run, refused: [...refused, ...refusedOf([...incidents.open, ...incidents.closed])], standing });
     if (out.held.length > 0) log(`ci-shared-failure: holding ${out.held.length} red order(s) of a shared failure:${out.held.map((h) => ` ${h.subject}`).join("")}\n`);
     if (out.released.length > 0) log(`ci-shared-failure: released ${out.released.length} red order(s), their hold is over:${out.released.map((r) => ` ${r.subject} (${r.why})`).join("")}\n`);
     for (const key of new Set(out.held.map((h) => h.key))) { // #1557: one line per held incident that nobody has claimed past the bound; the holds themselves wait for it to close
-      const row = rows.open.find((r) => r.body.includes(markerOf(key)));
+      const row = incidents.open.find((r) => r.body.includes(markerOf(key)));
       const isOldUnclaimedRow = row !== undefined && !(row.labels ?? []).includes(CLAIM_LABEL) && nowMs - Date.parse(String(row.createdAt)) >= HOLD_MAX_MS;
       if (isOldUnclaimedRow) {
         log(`ci-shared-failure: incident #${row.number} has been open ${HOLD_MAX_MS / 60_000} minutes with no claim; its held pull requests wait for it to close, and no worker is woken\n`);

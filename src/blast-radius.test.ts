@@ -7,14 +7,17 @@
 //
 // POSITIVE CONTROLS, NAMED: the 20-file Region and the 5-overlap Region below FILE, each asserted at its measured number, so the refusals are read
 // against a measurement that is not zero. Every refusal is asserted at 21 / 6, one over, and the pair is the threshold pinned from both sides.
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   BLAST_MAX_FILES, BLAST_MAX_OVERLAP, blastRadiusGate, blastRadiusVerdict, declaresSweep, ghBlastReads, measureBlastRadius, sweepVerdict,
   type BlastReads, type OpenPr, type OpenRow,
 } from "./blast-radius.ts";
 import { createIssue } from "./row-file/roadmap-and-milestone-checks.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { noProgram, seedFiledRow } from "./packaging/fixtures/filing-world.test.support.ts";
 
 const regionOf = (...entries: string[]) => `## What it is\nx\n\n## Region\n\n\`\`\`\n${entries.join("\n")}\n\`\`\`\n\n## Acceptance\n\n\`\`\`\nnpx rstest run src/x.test.ts\n\`\`\`\n\n## Open-check\n\nn/a\n`;
 const treeOf = (count: number, under = "src/") => Array.from({ length: count }, (_, i) => `${under}file-${i}.ts`);
@@ -165,36 +168,50 @@ test("a pull request whose file list is SHORT of changedFiles is an unread pull 
   assert.match(blastRadiusGate(region, over.stub).refusal ?? "", /REFUSING/, "an over-limit floor still refuses beside a short PR");
 });
 
+/** The fake code host (A11-160, step 9) the real reads ask: `ghBlastReads` is handed a program runner that must never be reached, because the code host answers from its world. */
+function activateFakeHost() {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  return host;
+}
+const DECLARATION = { tracker: [{ key: "", repo: "a11ign/a11ign" }], code: [{ key: "", repo: "a11ign/agent-org" }] };
+
+afterEach(() => forgetActivation());
+
 test("THROUGH ghBlastReads: a pull request listing 1 of 2 files whose pagination throws is incomplete (the reviewer's reproduction)", () => {
-  const run = (_cmd: string, args: string[]) => {
-    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, changedFiles: 2, files: [{ path: "src/other.ts" }], body: "", labels: [], headRefName: "x" }]);
-    if (args[0] === "issue") return "[]";
-    if (args[0] === "api" && args.some((a) => a.includes("/pulls/9/files"))) throw new Error("pagination down");
-    return "";
-  };
-  const declaration = { tracker: [{ key: "", repo: "a11ign/a11ign" }], code: [{ key: "", repo: "a11ign/agent-org" }] };
-  const gateReads = ghBlastReads(run, declaration);
+  const { rowsWorld: world } = activateFakeHost();
+  world.rules.otherRepos.set("a11ign/agent-org", new Map([[9, { number: 9, body: "", headRefName: "x", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [], files: ["src/other.ts", "src/missing.ts"] }]]));
+  world.rules.listings.set(9, { listed: ["src/other.ts"], changedFiles: 2 });
+  world.rules.pagedFilesRefused.set(9, new Error("pagination down"));
+  const gateReads = ghBlastReads(noProgram, DECLARATION);
   const prs = gateReads.openPrs();
   assert.equal(prs?.length, 1);
   assert.equal(measureBlastRadius(regionOf("agent-org:src/missing.ts"), { ...gateReads, treeFiles: () => ["src/missing.ts"] }).overlapsComplete, false);
+  assert.ok(world.calls.includes("pullFilePathsOf a11ign/agent-org#9"), "the pages of the short list were asked for");
 });
 
-// agent-org#1005: the open rows are read over REST, the core pool, never `gh issue list`, which spends the GraphQL pool; that listing carries pull requests too, and they are not rows.
-test("THROUGH ghBlastReads: the open rows are read as `gh api repos/<tracker>/issues`, never `gh issue list`, and a pull request in that listing is not a row", () => {
-  const argvs: string[][] = [];
-  const run = (_cmd: string, args: string[]) => {
-    argvs.push(args);
-    if (args[0] === "api" && args[1].includes("/issues?")) return JSON.stringify([
-      { number: 1, labels: [{ name: "ready" }], body: regionOf("src/a.ts") },
-      { number: 2, labels: [], body: "", pull_request: { url: "https://api.github.com/repos/a11ign/a11ign/pulls/2" } },
-    ]);
-    return "[]";
-  };
-  const declaration = { tracker: [{ key: "", repo: "a11ign/a11ign" }], code: [{ key: "", repo: "a11ign/agent-org" }] };
-  const rows = ghBlastReads(run, declaration).openRows();
-  assert.deepEqual(rows?.map((open) => open.number), [1], "the pull request entry is dropped and the row is kept");
-  assert.deepEqual(argvs.filter((args) => args[0] === "issue" && args[1] === "list"), [], "no `gh issue list`: it spends the GraphQL pool");
-  assert.ok(argvs.some((args) => args[0] === "api" && args[1] === "repos/a11ign/a11ign/issues?state=open&per_page=100&page=1"), "the REST issues listing is read, paged from the first page");
+// agent-org#1005: the open rows are read over REST, the core pool, never `gh issue list`, which spends the GraphQL pool. WHAT IS ASKED (the REST path, paged from the first page) and that a pull request in that listing is not a row
+// are the plugin's (`misc-rows.test.ts`); here the gate's reads take the code host's REST listing of the tracker's open rows.
+test("THROUGH ghBlastReads: the open rows are the code host's REST listing of every declared tracker, and a pull request is not a row", () => {
+  const { rowsWorld: world } = activateFakeHost();
+  world.rows.set(1, fakeRow(world, 1, { labels: ["ready"], body: regionOf("src/a.ts") }));
+  world.rows.set(2, fakeRow(world, 2, { state: "CLOSED", body: "" }));
+  world.pulls.set(3, { number: 3, body: "", headRefName: "x", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [] });
+  const rows = ghBlastReads(noProgram, DECLARATION).openRows();
+  assert.deepEqual(rows?.map((open) => open.number), [1], "the closed row is not open and the pull request is not a row");
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("openRestListingOf")), ["openRestListingOf issues"], "the REST issues listing of the tracker is read once");
+});
+
+test("THROUGH ghBlastReads: the tree of a code repository is the code host's, and a tree it cannot read is null, never a short list", () => {
+  const { rowsWorld: world } = activateFakeHost();
+  world.tail.readouts.trees.set("a11ign/agent-org", ["src/a.ts", "src/b.ts"]);
+  const gateReads = ghBlastReads(noProgram, DECLARATION);
+  assert.deepEqual(gateReads.treeFiles(""), ["src/a.ts", "src/b.ts"]);
+  assert.equal(gateReads.treeFiles("unknown"), null, "a Region key the project declares no repository for reads nothing");
+  world.tail.readouts.trees.set("a11ign/agent-org", new Error("tree truncated"));
+  assert.equal(gateReads.treeFiles(""), null, "a refused tree read is unknown");
+  world.tail.readouts.trees.delete("a11ign/agent-org");
+  assert.equal(gateReads.treeFiles(""), null, "a repository the world holds no tree of is a refused read");
 });
 
 test("blastRadiusVerdict is pure over the reading: at each threshold files, one over refuses", () => {
@@ -203,23 +220,19 @@ test("blastRadiusVerdict is pure over the reading: at each threshold files, one 
   assert.notEqual(blastRadiusVerdict({ files: 1, filesComplete: true, overlaps: Array(6).fill("#1"), overlapsComplete: true }).refusal, null);
 });
 
-// --- THE WIRING: `createIssue` asks the gate before anything is filed, through the injected `run`. ---
+// --- THE WIRING: `createIssue` asks the gate before anything is filed, and the gate's reads are the code host's. ---
 const FILING_BODY = (extra = "") => `## Region\n\n\`\`\`\nagent-org:src/\n\`\`\`\n\n## Acceptance\n\n\`\`\`\nnpx tsx --test x\n\`\`\`\n\n## Open-check\n\n\`\`\`\ngh issue view 735 --json state\n\`\`\`\n${extra}`;
 
-/** `run` for a whole filing: the tree is `treeSize` files, no row or pull request is open, everything else answers the way `afterRun` does. */
-function filingRun(treeSize: number, body: string) {
-  return (_cmd: string, args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return connectionOf([]); // #5039: the claimed rows' by-label read -- none held
-    if (args[0] === "api" && args[1]?.includes("/issues?")) return "[]";
-    if (args[0] === "api") return treeOf(treeSize).join("\n");
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "pr" && args[1] === "list") return "[]";
-    if (args.includes("milestone")) return "CI reset";
-    return args.includes("body") ? body : "";
-  };
+/** The fake code host a whole filing runs on: the code repository's tree is `treeSize` files, no row or pull request is open, and row #900, the one `spawnGh` answers, reads back as `body`. */
+function filingHost(treeSize: number, body: string) {
+  const host = activateFakeHost();
+  host.rowsWorld.tail.readouts.trees.set("a11ign/agent-org", treeOf(treeSize));
+  seedFiledRow(host.rowsWorld, body);
+  return host;
 }
 
 function fileThroughCreateIssue(body: string, treeSize: number) {
+  filingHost(treeSize, `${body}\nFiled-by: worker-4601\n`);
   const created: string[][] = [];
   let stderr = "";
   const original = process.stderr.write;
@@ -227,7 +240,7 @@ function fileThroughCreateIssue(body: string, treeSize: number) {
   try {
     const code = createIssue(["--title", "a wide row", "--body", body, "--session=worker-4601", "--milestone", "CI reset"], {
       spawnGh: (argv) => { created.push(argv); return "https://github.com/a11ign/a11ign/issues/900"; },
-      run: filingRun(treeSize, `${body}\nFiled-by: worker-4601\n`), loadLanesConfig: () => ({ lanes: [] }),
+      run: noProgram, loadLanesConfig: () => ({ lanes: [] }),
       ensureLabels: () => {}, fetchBoardStatus: () => "Backlog", fetchLabels: () => ({ number: 900, title: "", labels: ["backlog", "lane:any"] }),
       moveStatus: () => ({ moved: true as const }),
     });

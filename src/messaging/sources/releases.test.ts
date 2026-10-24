@@ -10,9 +10,11 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 
+import { forgetActivation } from "../../plugins/active.ts";
 import { createFakeProvider } from "../fake-provider.ts";
+import { githubOverWorld } from "../github-over-world.test.support.ts";
 import { createLedger } from "../ledger.ts";
 import { RELEASES, assertReadOnlyGh, declaredCodeRepos, runWatch } from "../watch.ts";
 import { baselineKey, firstSentence, observeReleases, releaseKey, seenKeys } from "./releases.ts";
@@ -24,6 +26,7 @@ const MINUTE = 60_000;
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-releases-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 let directories = 0;
 const freshDirectory = () => mkdtempSync(join(scratch, `d${(directories += 1)}-`));
 
@@ -39,30 +42,22 @@ function release(/** @type {string} */ tag: string, /** @type {Record<string, un
 /** The body the real v0.7.8 release carries: a heading, then a changeset bullet that opens with the commit's hash and wraps. */
 const REAL_BODY = "\n### Patch Changes\n\n- 7105923: The isolation gate's copy skips an `@a11ign/*` dependency that has no sibling directory when it is spelled as a caret or tilde range (`^0.1.0`, `~0.1.0`), because that is how a package consumes one published from another repository and npm fetches it from the registry;\n  the copy no longer fails on it.\n";
 
-/** A GET-only GitHub for the source: each repository answers with its list, or throws when its answer is an `Error`. */
-function fakeApi(/** @type {Record<string, unknown>} */ answers: Record<string, unknown>) {
-  const calls: string[] = /** @type {string[]} */ ([]);
-  return {
-    calls,
-    async api(/** @type {string} */ path: string) {
-      calls.push(path);
-      const answer = answers[path.replace(/^repos\//, "").replace(/\/releases.*$/, "")];
-      if (answer instanceof Error) throw answer;
-      return answer;
-    },
-  };
-}
+/** What the source reads for a repository: one GET of its releases, at the page size that holds a long history. */
+const releasesPath = (/** @type {string} */ repo: string) => `repos/${repo}/releases?per_page=100`;
 
-/** A watcher run on a clock the test owns, over a ledger file that persists between its passes. */
+/** The REST documents the fake code host holds for these answers: each repository answers with its list, or is refused (an `Error` answer) for that repository alone. */
+const documentsOf = (/** @type {Record<string, unknown>} */ answers: Record<string, unknown>) => Object.fromEntries(Object.entries(answers).map(([repo, answer]) => [releasesPath(repo), answer]));
+
+/** A watcher run on a clock the test owns, over a ledger file that persists between its passes, reading through the real reader of the watch over the fake code host's world (which holds the answers). */
 function watcher(/** @type {Record<string, unknown>} */ answers: Record<string, unknown>, repos = [REPO]) {
   let at = NOW;
   const provider = createFakeProvider();
-  const github = fakeApi(answers);
+  const github = githubOverWorld(documentsOf(answers));
   const logged: string[] = /** @type {string[]} */ ([]);
   const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => at });
   return {
     provider, github, logged, ledger,
-    set: (/** @type {Record<string, unknown>} */ next: Record<string, unknown>) => Object.assign(answers, next),
+    set: (/** @type {Record<string, unknown>} */ next: Record<string, unknown>) => github.hold(documentsOf(next)),
     pass: async () => {
       at += MINUTE;
       return runWatch({ github, provider, ledger, now: () => at, repo: "a11ign/a11ign", summary: null, releaseRepos: repos, sources: [RELEASES], log: (line) => logged.push(line) });
@@ -222,7 +217,7 @@ describe("observeReleases", () => {
   test("the read is one GET of the repository's releases, at the page size that holds a long history", async () => {
     const run = watcher({ [REPO]: [] });
     await run.pass();
-    assert.deepEqual(run.github.calls, [`repos/${REPO}/releases?per_page=100`]);
+    assert.deepEqual(run.github.calls, [releasesPath(REPO)]);
     assert.doesNotThrow(() => assertReadOnlyGh(["api", run.github.calls[0]]));
     assert.throws(() => assertReadOnlyGh(["api", `repos/${REPO}/releases`, "-X", "POST"]), /reads only/);
     assert.throws(() => assertReadOnlyGh(["api", `repos/${REPO}/releases/1`, "-f", "name=x"]), /reads only/);

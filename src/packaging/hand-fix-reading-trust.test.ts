@@ -1,4 +1,4 @@
-// no-token: gh -- `gatherChanges` takes `git` and `gh` as seams, so nothing here reaches the real `gh`.
+// no-token: gh -- `gatherChanges` takes `git` as a seam and reads the fake code host (A11-160, step 9), so nothing here reaches the real `gh`.
 /**
  * #3096: A HAND-FIX COUNT IS A READING ONLY WHEN IT CAN BE STOOD BEHIND. The retrospective of 2026-10-03 printed
  * `25 ... of 305 changes ... 280 change(s) UNREAD` -- 92% of the population unattributable -- as a number the report then
@@ -11,14 +11,17 @@
  * POSITIVE CONTROLS, NAMED (an emptiness assertion points at its control): "a reading under the bound STILL prints its
  * count" and "a thrown read is unchanged" below, and the retro's own figures (18 of 650) in the first.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   UNREAD_SHARE_BOUND, assertBaseIsLive, gatherChanges, ledgerLine, readLedger,
 } from "../hand-fix-ledger.ts";
 import { buildReport, readingNumbers } from "../org-retro/journal-stats-and-verdicts.ts";
 import { compareReadings } from "../org-retro.ts";
-import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = new Date("2026-10-03T00:02:46Z");
 const DAY = "2026-10-02T12:00:00Z";
@@ -89,20 +92,17 @@ test("#3096 (1) the PREVIOUS window is held to the bound too, because the trend 
 const LOCAL = "1".repeat(40);
 const LIVE = "2".repeat(40);
 
-/** git and gh seams answering only what the gatherer asks; `liveHead` is what GitHub says `main` is. */
+/** The `git` seam answering only what the gatherer asks, and the fake code host in place with `liveHead` as what `main` is there (no change merged, no commit resolved). */
 function seams(liveHead: string) {
   const git = (args: string[]) => {
     if (args[0] === "rev-parse") return `${LOCAL}\n`;
     if (args[0] === "log" && args.includes("--first-parent")) return "";
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
-  const gh = (args: string[]) => {
-    if (readsRowsSince(args) !== null) return sinceAnswer(args, []); // #5076: the merged list is a connection; its argv also begins `api`
-    if (args[0] === "api" && args[1] === "repos/o/r/commits/main") return `${liveHead}\n`;
-    if (args[0] === "api") return "";
-    throw new Error(`unexpected gh ${args.join(" ")}`);
-  };
-  return { git, gh, repo: "o/r" };
+  const host = createFakeCodeHost();
+  host.rowsWorld.tail.queue.mainSha = liveHead;
+  substituteCodeHost(host);
+  return { git, repo: "o/r" };
 }
 
 test("#3096 (2) a base that is not the live head of main is `unknown`, and `why` names BOTH shas", () => {

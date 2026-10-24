@@ -18,17 +18,17 @@
 // is re-read at least that often whatever the probes say, and by the wrapper's own 150 s. An unreadable probe (anything but 200/304/404) counts as a CHANGE: fail towards reading.
 //
 // THE ETAG IS SENT WITHOUT ITS `W/` PREFIX. Measured 2026-10-08 with `gh` 2.100: `If-None-Match: W/"x"` came back 200 and cost a point, the same tag unprefixed came back 304.
-// `gh api` exits 1 on a 304 (it says `gh: HTTP 304`), so the status is read off the `-i` header block, never off the exit code.
+// `gh api` exits 1 on a 304 (it says `gh: HTTP 304`), so the code host reads the status off the `-i` header block, never off the exit code (`conditionalProbeOf`).
 //
 // IN `webhook` MODE (agent-org#981, a11ign/a11ign#5043) THE ANSWER COMES FROM THE EVENT QUEUE, NOT FROM A PROBE: `refreshTickSnapshot` is handed `events`, and while the receiver is `healthy` a
 // repository named by an event bumps its generation and every other keeps its counter, with NO `gh` call at all. Not `healthy`, it runs the probes above exactly as before: a dead receiver
 // costs the old polling, never a silent org. Without `events` nothing here changes.
 // A repository DUE for its reconcile in that mode is probed once (agent-org#982): a probe that moved with no event behind it is DRIFT and is filed once (`event-drift.ts` says what it can and cannot mean).
 
-import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { countSuppressed, driftOf, fileDrift, type Facts, type FileDrift, noContentChange, suppressedPath } from "./event-drift.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** A repository is re-read at least this often even when every probe says unchanged: what a probe cannot see (a non-Actions status) is bounded by it. */
 export const MAX_UNCHANGED_SECONDS = 300;
@@ -37,6 +37,7 @@ const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
 const HTTP_GONE = 410;
 const PROBE_TIMEOUT_MS = 15_000;
+const PROBE_MAX_BUFFER = 64 * 1024 * 1024;
 const MS = 1000;
 /** What is held for a probe whose endpoint does not exist for this repository (no Actions, issues off): no tag to send, and no change to report. */
 const ABSENT = "absent";
@@ -50,72 +51,27 @@ export const probePaths = (repo: string): string[] => [
 /** The name `plugins/github/wrapper/gh` files a repository's entries under: `a11ign/agent-org` -> `a11ign_agent-org`; the empty slug is `default` (a call that names no repository). */
 export const slugOf = (repo: string) => (repo === "" ? "default" : repo.replace(/[^A-Za-z0-9._-]/g, "_"));
 
-/** what one probe said: the HTTP status (`null` when `gh` printed none) and the tag, `W/` removed */
-export type Answer = { status: number | null, etag: string | null };
-export type GhRun = (args: string[]) => { stdout: string, status: number | null };
-
-/** @param {string} stdout @returns {Answer} the `-i` header block of a `gh api` answer */
-export function parseAnswer(stdout: string): Answer {
-  const status = stdout.match(/^HTTP\/[\d.]+ (\d{3})/m);
-  const etag = stdout.match(/^etag: *(?:W\/)?("[^"\r\n]*")/im);
-  return { status: status === null ? null : Number(status[1]), etag: etag === null ? null : etag[1] };
-}
-
-const ghRun: GhRun = (args) => {
-  const r = spawnSync("gh", args, { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
-  return { stdout: r.stdout ?? "", status: r.status };
-};
-
-/** A `GhRun` as the `Run` `recordIncident` takes: the output, and a throw on a refusal (it catches that and the caller retries). */
-const asRun = (run: GhRun) => (args: string[]): string => {
-  const { stdout, status } = run(args);
-  if (status !== 0) throw new Error(`gh ${args.slice(0, 2).join(" ")} exited ${status ?? "without a status"}`);
-  return stdout;
-};
-
-/**
- * What a 200 body says besides its tag (agent-org#1207): the newest `updated_at` of the items it lists and how many there are. The body is the array of issues, or the
- * `workflow_runs` of an Actions answer. `undefined` when the body is neither, or an item has no readable `updated_at`: nothing is then confirmed, and so nothing is drift.
- * @param {string} stdout @returns {Facts | undefined}
- */
-export function factsOf(stdout: string): Facts | undefined {
-  const split = stdout.match(/\r?\n\r?\n/);
-  if (split === null || split.index === undefined) return undefined;
-  let parsed: unknown;
+/** The runner the filing of a drift takes: the code host's, cut at the probe's bound, with what it prints on stderr kept off this process's own. */
+const incidentRunner = (args: string[]): string => {
   try {
-    parsed = JSON.parse(stdout.slice(split.index + split[0].length));
-  } catch {
-    return undefined;
+    return rows().runnerWith({ timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER, echo: false })(args);
+  } catch (cause) {
+    // Worded as the refusal always was (`recordIncident` catches it, and the caller retries): the command's first two words and how it ended.
+    throw new Error(`${rows().command} ${args.slice(0, 2).join(" ")} exited ${(cause as { status?: number | null }).status ?? "without a status"}`);
   }
-  const items: unknown = Array.isArray(parsed) ? parsed : (parsed as { workflow_runs?: unknown } | null)?.workflow_runs;
-  if (!Array.isArray(items)) return undefined;
-  let newest: string | null = null;
-  let newestMs = -Infinity;
-  for (const item of items) {
-    const at: unknown = (item as { updated_at?: unknown } | null)?.updated_at;
-    const ms = typeof at === "string" ? Date.parse(at) : NaN;
-    if (!Number.isFinite(ms)) return undefined;
-    if (ms > newestMs) {
-      newestMs = ms;
-      newest = at as string;
-    }
-  }
-  return { newest, count: items.length };
-}
+};
 
 /**
  * One probe: conditional if a tag is held. `changed` is true for a 200 whose tag is not the one held, or for an answer that is none of 200, 304, 404 and 410; a 404 or 410 is a repository
  * with no Actions (or no issues) and is a steady state, not a change. A 200 with the SAME tag is not a change either (a CDN may ignore the condition). A 200 also says what it read (`facts`).
- * @param {{ path: string, held: string | undefined, run: GhRun }} probe
+ * @param {{ path: string, held: string | undefined }} probe
  * @returns {{ changed: boolean, etag: string | undefined, why: string, facts?: Facts }}
  */
-export function probeOnce({ path, held, run }: { path: string; held: string | undefined; run: GhRun; }): { changed: boolean; etag: string | undefined; why: string; facts?: Facts; } {
-  const conditional = held === undefined || held === ABSENT ? [] : ["-H", `If-None-Match: ${held}`];
-  const { stdout } = run(["api", "-i", ...conditional, path]);
-  const answer = parseAnswer(stdout);
+export function probeOnce({ path, held }: { path: string; held: string | undefined; }): { changed: boolean; etag: string | undefined; why: string; facts?: Facts; } {
+  const answer = rows().conditionalProbeOf({ path, etag: held === ABSENT ? undefined : held, timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER });
   if (answer.status === HTTP_NOT_MODIFIED) return { changed: false, etag: held, why: "304" };
   if (answer.status === HTTP_NOT_FOUND || answer.status === HTTP_GONE) return { changed: false, etag: ABSENT, why: String(answer.status) };
-  if (answer.status === HTTP_OK && answer.etag !== null) return { changed: answer.etag !== held, etag: answer.etag, why: answer.etag === held ? "200 same tag" : "200 new tag", facts: factsOf(stdout) };
+  if (answer.status === HTTP_OK && answer.etag !== null) return { changed: answer.etag !== held, etag: answer.etag, why: answer.etag === held ? "200 same tag" : "200 new tag", facts: answer.facts };
   return { changed: true, etag: held, why: `unreadable (${answer.status ?? "no status"})` };
 }
 
@@ -160,12 +116,12 @@ function writeWhole(path: string, text: string) {
 
 /**
  * Probe each repository once and move its generation. Returns one line per repository for the tick's log.
- * @param {{ repos: string[], homeRepo: string, configDir: string, run?: GhRun, nowMs?: number, events?: TickEvents }} input
+ * @param {{ repos: string[], homeRepo: string, configDir: string, nowMs?: number, events?: TickEvents }} input
  * `homeRepo` is the repository a call that names none is about, so its generation is ALSO written under `default`.
  * `events` absent is the poll path, unchanged. With `events.healthy` no probe runs: a repository in `events.changed` (compared without case, as GitHub spells `full_name` its own way)
  * is bumped, one that is not keeps its counter, and its `verified-at` still moves, because a live receiver is what vouches for it. Not healthy, the probes run as they always did.
  */
-export function refreshTickSnapshot({ repos, homeRepo, configDir, run = ghRun, nowMs = Date.now(), events, fileDrift: file = (drift) => fileDrift(drift, { run: asRun(run) }) }: { repos: string[]; homeRepo: string; configDir: string; run?: GhRun; nowMs?: number; events?: TickEvents; fileDrift?: FileDrift; }) {
+export function refreshTickSnapshot({ repos, homeRepo, configDir, nowMs = Date.now(), events, fileDrift: file = (drift) => fileDrift(drift, { run: incidentRunner }) }: { repos: string[]; homeRepo: string; configDir: string; nowMs?: number; events?: TickEvents; fileDrift?: FileDrift; }) {
   const viaEvents = events !== undefined && events.healthy;
   if (viaEvents && !(Number.isFinite(events.reconcileEverySeconds) && events.reconcileEverySeconds > 0)) {
     throw new Error(`reconcileEverySeconds must be a positive number of seconds, not ${events.reconcileEverySeconds}: a repository would never be re-read`);
@@ -184,7 +140,7 @@ export function refreshTickSnapshot({ repos, homeRepo, configDir, run = ghRun, n
     const due = before === null || nowS - held.bumpedAt >= reconcileSeconds;
     const eventNamed = named.has(repo.toLowerCase());
     // Poll: the probes are the answer. Events: none, except ONCE when the repository is due, as the safety net for a delivery the receiver never got (agent-org#982).
-    const probes = !viaEvents || due ? probePaths(repo).map((path) => ({ path, held: held.tags[path], heldFacts: held.facts?.[path], ...probeOnce({ path, held: held.tags[path], run }) })) : [];
+    const probes = !viaEvents || due ? probePaths(repo).map((path) => ({ path, held: held.tags[path], heldFacts: held.facts?.[path], ...probeOnce({ path, held: held.tags[path] }) })) : [];
     // The baseline's read time. An event that named the repository after it has moved `bumpedAt` past it (`bumpedAt` only moves on an event or a reconcile, and a reconcile that
     // keeps the baseline does not move it), so that comparison is the question "did an event name this repository since the content was read?" (agent-org#1431).
     const readAt = held.factsReadAt ?? held.bumpedAt;

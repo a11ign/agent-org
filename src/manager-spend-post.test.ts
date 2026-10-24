@@ -1,6 +1,6 @@
 // no-token: gh -- `gh` and `agent-org` are fake executables on a PATH this file builds; the real script runs under bash against them and nothing reaches GitHub or the host
 /**
- * agent-org#912: the daily manager-spend reading (`host/manager-spend-post.sh`, `manager-spend-post.{service,timer}.in`).
+ * agent-org#912: the daily manager-spend reading (`plugins/github/host/manager-spend-post.sh`, `host/manager-spend-post.{service,timer}.in`).
  *
  * The script is run for real, under bash, with a fake `gh` that records every comment it is asked to post and a fake `agent-org` that prints a
  * fixture reading and records the arguments it was given. The store is a fixture file under the fake HOME, one JSON event per line with `at` in
@@ -15,7 +15,9 @@ import { fileURLToPath } from "node:url";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 
 const SHIPPED_DIR = fileURLToPath(new URL("../host/", import.meta.url));
-const SCRIPT = join(SHIPPED_DIR, "manager-spend-post.sh");
+// The script runs `gh`, so it is the GitHub plugin's (A11-160, step 9); the clock and the service stay in `host/`.
+const PLUGIN_HOST_DIR = fileURLToPath(new URL("../plugins/github/host/", import.meta.url));
+const SCRIPT = join(PLUGIN_HOST_DIR, "manager-spend-post.sh");
 const CLOCK = (name: string) => readFileSync(join(SHIPPED_DIR, name), "utf8");
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -192,7 +194,7 @@ test("agent-org#912: the timer fires daily at 07:45 London, catches up when asle
 test("agent-org#912: the service is a oneshot that runs the script as the org's account, and nothing but the timer starts it", () => {
   const service = CLOCK("manager-spend-post.service.in");
   assert.match(service, /^Type=oneshot$/m);
-  assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/manager-spend-post\.sh$/m);
+  assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/plugins\/github\/host\/manager-spend-post\.sh$/m);
   assert.match(service, /^Environment=GH_CONFIG_DIR=@@workersDir@@\/gh$/m, "the workers account, never the person's");
   assert.match(service, /^TimeoutStartSec=\d+$/m, "a hung run fails rather than holding the next day's slot");
   assert.doesNotMatch(service, /^\[Install\]/m, "an [Install] would post a reading at every boot");

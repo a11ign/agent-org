@@ -1,4 +1,4 @@
-// no-token: gh -- every `herdr` and `gh` call here is an injected seam; nothing imported reaches the real one
+// no-token: gh -- every `herdr` call here is an injected seam, and the rows a release strips and comments on are the fake code host's (A11-160, step 9); nothing imported reaches the real one
 /**
  * agent-org#1413: A HERDR AGENT WITH NO PANE IS ENDED, NOT A LIVE HOLDER.
  *
@@ -7,7 +7,7 @@
  * `pane_not_found`; `pane list` still carries the pane, so it cannot say so). Every case goes through the real release path (`stripClosedClaims`) or
  * the real order drop (`dropUnknownHandoffs`), never a copy of either.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +18,11 @@ import { dropUnknownHandoffs, UNKNOWN_SESSION_MS } from "./wake/session-endings.
 import { queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "./wake/seat-reset.ts";
 import { WAKEABLE } from "./wake/exit-and-limits.ts";
 import { IDLE_STATUSES } from "./idle-claimant.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-15T09:00:00Z");
 
@@ -49,33 +54,46 @@ function paneNotFound(pane: string) {
   return Object.assign(new Error(`Command failed: herdr --session org pane read ${pane}\n${json}`), { stderr: `${json}\n` });
 }
 
-const removedLabels = (args: string[]) => args.flatMap((a, i) => (args[i - 1] === "--remove-label" ? [a] : []));
+/** The `post` runner an order's drop is handed: the fake code host acts on its own rows, so a call to it would be a call to a `gh` nobody has. */
+const noGh = (args: string[]): string => { throw new Error(`no gh is run here: ${args.join(" ")}`); };
 
 /** A CLOSED row carrying the claim labels of `holder`, as the close left it. */
 const closedRow = (number: number, holder: string, minutesBeforeNow: number) => ({ number, closedAt: new Date(NOW - minutesBeforeNow * 60_000).toISOString(),
   labels: [{ name: "in-progress" }, { name: "started" }, { name: `session:${holder}` }] });
 
-/** One tick of the release, as the gate makes it: the `gh issue edit` calls, and how many rows it reports stripped. */
-function releaseTick(rows: unknown[], agents: ListedAgent[]) {
-  const edits: string[][] = [];
-  const stripped = stripClosedClaims({ rows, unread: [], agents } as never, { gh: (args) => { edits.push(args); return ""; }, say: () => {}, repo: "a11ign/agent-org", nowMs: NOW });
-  return { edits, stripped };
+/** The fake code host holding `rows` as the tracker's rows, closed and carrying the labels each lists: what a release strips is the world's row, and what it did is read off it. */
+function trackerOf(...rows: ReturnType<typeof closedRow>[]) {
+  const host = createFakeCodeHost();
+  for (const row of rows) host.rowsWorld.rows.set(row.number, fakeRow(host.rowsWorld, row.number, { state: "CLOSED", closedAt: row.closedAt, labels: row.labels.map(({ name }) => name) }));
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+
+/** One tick of the release, as the gate makes it: how many rows it reports stripped. What it did to the rows is the world's. */
+function releaseTick(rows: ReturnType<typeof closedRow>[], agents: ListedAgent[]) {
+  return stripClosedClaims({ rows, unread: [], agents } as never, { say: () => {}, repo: "fake/tracker", nowMs: NOW });
 }
 
 test("(1) a closed row held by a PANELESS listed worker loses its claim labels on the next tick, through the release path", () => {
   const { run } = herdr([{ name: "worker-5470", status: "unknown", pane: "w4N1:p1" }], ["w4N1:p1"]);
-  const { edits, stripped } = releaseTick([closedRow(5413, "worker-5470", 2)], readAgents(run)!);
+  const row = closedRow(5413, "worker-5470", 2);
+  const world = trackerOf(row);
+  const stripped = releaseTick([row], readAgents(run)!);
   assert.equal(stripped, 1);
-  assert.deepEqual(edits.map((e) => e.slice(0, 5)), [["issue", "edit", "5413", "--repo", "a11ign/agent-org"]]);
-  assert.deepEqual(removedLabels(edits[0]), ["in-progress", "started", "session:worker-5470"]);
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("removeLabelsFromRow")), ["removeLabelsFromRow #5413"], "one strip, of that row");
+  assert.deepEqual(world.rows.get(5413)!.labels, [], "in-progress, started and session:worker-5470 are all off the row");
 });
 
 test("(1) the same closed row, its holder listed with a READABLE pane and `unknown` status, keeps its labels (the pin for (3))", () => {
   const { run } = herdr([{ name: "worker-5471", status: "unknown", pane: "w4N2:p1" }]);
   const agents = readAgents(run)!;
   assert.equal(agents.find((a) => a.label === "worker-5471")?.paneless, undefined, "a readable pane is never marked");
-  const { edits, stripped } = releaseTick([closedRow(5414, "worker-5471", 2)], agents);
-  assert.deepEqual([edits, stripped], [[], 0], "unknown status with a live pane still holds the row: nothing is stripped");
+  const row = closedRow(5414, "worker-5471", 2);
+  const world = trackerOf(row);
+  const stripped = releaseTick([row], agents);
+  assert.equal(stripped, 0, "unknown status with a live pane still holds the row: nothing is stripped");
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("removeLabelsFromRow")), []);
+  assert.deepEqual(world.rows.get(5414)!.labels, ["in-progress", "started", "session:worker-5471"], "and the row keeps its claim labels");
 });
 
 test("(1) a listed agent that is NOT unknown is not asked for its pane, so a working seat whose pane is gone is not marked", () => {
@@ -109,9 +127,12 @@ test("(2) an order addressed to a PANELESS worker with an open row is dropped at
     const agents = readAgents(run)!;
     // THE ROW IS OPEN: an open row's instance may yet start, so the holder's facts alone would keep this order for ever.
     const holder = (ref: number) => (ref === 5470 ? { open: true, sessions: ["worker-5470"] } : null);
-    const posts: string[][] = [];
+    // The row the order carried is the fake code host's: the drop tells it by a comment there, and the `post` runner it is handed is never used.
+    const host = createFakeCodeHost();
+    host.rowsWorld.rows.set(5470, fakeRow(host.rowsWorld, 5470, { title: "row 5470" }));
+    substituteCodeHost(host);
     const tick = (now: number) => dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder,
-      post: (args) => { posts.push(args); return ""; }, queuePath, paused: false, now });
+      post: noGh, queuePath, paused: false, now });
 
     const first = tick(NOW);
     assert.deepEqual(first.kept.map((h) => h.id), [order.id], "the first tick that sees it starts the clock and keeps it");
@@ -120,8 +141,9 @@ test("(2) an order addressed to a PANELESS worker with an open row is dropped at
     assert.equal(dropped.lines.length, 1, "one line says so");
     assert.match(dropped.lines[0], /^DROPPED /);
     assert.deepEqual(readHandoffs(queuePath).map((h) => h.id), [], "the queue no longer holds it");
-    assert.equal(posts.length, 1, "the row the order carried is told once");
-    assert.deepEqual(posts[0].slice(0, 3), ["issue", "comment", "5470"]);
+    const told = host.rowsWorld.rows.get(5470)!.comments;
+    assert.equal(told.length, 1, "the row the order carried is told once");
+    assert.match(told[0].body, new RegExp(`Order ${order.id} was written for "worker-5470"`), "and the comment names the order and the session it was for");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -166,8 +188,8 @@ test("(3) a LIVE agent with `unknown` status and a readable pane is NOT treated 
     const agents = readAgents(run)!;
     assert.equal(agents.find((a) => a.label === "worker-5471")?.paneless, undefined);
     const holder = (ref: number) => (ref === 5471 ? { open: true, sessions: ["worker-5471"] } : null);
-    const later = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: () => "", queuePath, paused: false, now: NOW });
-    const bound = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: () => "", queuePath, paused: false, now: NOW + UNKNOWN_SESSION_MS });
+    const later = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: noGh, queuePath, paused: false, now: NOW });
+    const bound = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: noGh, queuePath, paused: false, now: NOW + UNKNOWN_SESSION_MS });
     assert.deepEqual([later.kept.map((h) => h.id), bound.kept.map((h) => h.id), bound.lines], [[order.id], [order.id], []], "kept, and not dropped, past the bound");
   } finally {
     rmSync(dir, { recursive: true, force: true });

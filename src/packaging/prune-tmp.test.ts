@@ -46,6 +46,8 @@ import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-remova
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
 
 afterEach(() => forgetActivation());
@@ -534,11 +536,14 @@ function plantWorktree(dir: string, name: string, branch: string, owner: string 
   if (owner !== null) writeFileSync(join(tree, ".a11y-owner"), `${owner}\n`);
   return tree;
 }
-const rowsGh = (rows: Record<number, string[]>) => (args: string[]) => {
-  const labels = rows[Number(args[2])];
-  if (labels === undefined) throw new Error("gh: row not found");
-  return JSON.stringify({ state: "OPEN", labels: labels.map((name) => ({ name })) });
-};
+/** The fake code host in place with the home tracker's rows `rows` (number to the labels it carries, all open): a row it does not hold is one the claim read cannot find. */
+function seededRows(rows: Record<number, string[]>): void {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = homeProjectDeclaration().tracker.find((tracker) => tracker.key === "")?.repo ?? world.repo;
+  for (const [number, labels] of Object.entries(rows)) world.rows.set(Number(number), fakeRow(world, Number(number), { labels }));
+  substituteCodeHost(host);
+}
 
 test("#2782 DONE-WHEN 3: a dead scratchpad HOLDING a worktree whose row is claimed is REFUSED whole; one holding an unclaimed row's is removed", () => {
   const root = makeRoot();
@@ -547,10 +552,10 @@ test("#2782 DONE-WHEN 3: a dead scratchpad HOLDING a worktree whose row is claim
   plantWorktree(claimed, "wt-2623", "agent/2623-followup", null);
   plantWorktree(free, "wt-2000", "agent/done-2000", "worker-2000");
   for (const path of [claimed, free]) age(path, 100);
-  const gh = rowsGh({ 2623: ["in-progress", "session:worker-2623"], 2000: [] });
+  seededRows({ 2623: ["in-progress", "session:worker-2623"], 2000: [] });
   const log = join(root, "removals.log");
   const report = pruneTmp(root, { dryRun: false, procRoot: "/proc", env: {}, run: () => "[]",
-    claim: (tree) => claimRefusal(tree, { gh }), record: (line) => recordRemoval(line, { env: { [REMOVAL_LOG_ENV]: log } }) });
+    claim: (tree) => claimRefusal(tree), record: (line) => recordRemoval(line, { env: { [REMOVAL_LOG_ENV]: log } }) });
   assert.ok(existsSync(claimed), "the scratchpad holding a claimed row's worktree is still there: with a nested `.git` file its delete takes the tree with it");
   assert.ok(report.refused.some((entry) => entry.path === claimed && /row #2623, which still carries session:worker-2623/.test(entry.reason)));
   // THE OTHER HALF: without it, "refuse everything" passes.
@@ -592,9 +597,9 @@ test("#2782: the DRY RUN lists a claimed row's scratchpad as REFUSED -- a path i
   plantWorktree(claimed, "wt-2623", "agent/2623-followup", null);
   age(claimed, 100);
   const lines: unknown[] = [];
-  const gh = rowsGh({ 2623: ["session:worker-2623"] });
+  seededRows({ 2623: ["session:worker-2623"] });
   const report = pruneTmp(root, { dryRun: true, procRoot: "/proc", env: {}, run: () => "[]",
-    claim: (tree) => claimRefusal(tree, { gh }), record: (line) => { lines.push(line); } });
+    claim: (tree) => claimRefusal(tree), record: (line) => { lines.push(line); } });
   assert.deepEqual(report.removable, []);
   assert.ok(report.refused.some((entry) => entry.path === claimed && /session:worker-2623/.test(entry.reason)));
   assert.deepEqual(lines, [], "a listing removes nothing, so it logs no removal");

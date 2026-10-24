@@ -1,5 +1,5 @@
-// no-token: gh -- `readFixRow` answers from an injected `github` seam, `trunkRedOrders` takes a fixture reading and `readTrunkRed` an injected `run`; no real `gh` is spawned (one test puts a shim named `gh` first on a child's PATH)
-import { after, test } from "node:test";
+// no-token: gh -- `readFixRow` answers from an injected `github` seam, `trunkRedOrders` takes a fixture reading and `readTrunkRed` reads the fake code host's world (A11-160, step 9); no real `gh` is spawned (one test puts a shim named `gh` first on a child's PATH)
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -7,7 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFixRow } from "./messaging/sources/readers.ts";
-import { NO_WORKFLOW_RECHECK_EVERY_MS, PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { trunkRunsKey } from "./plugins/fakes/code-host-queue.ts";
+import { NO_WORKFLOW_RECHECK_EVERY_MS, PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders, type TrunkSource } from "./trunk-red.ts";
 
 /**
  * #3449: THE TRUNK-RED ORDER NAMES WHAT `readFixRow` LOOKS FOR.
@@ -58,26 +61,44 @@ const jobsOf = (leg: string, gate = "success", own = "success") => [job("checks 
 const runOf = (id: number, event: string, conclusion: string, createdAt: string) =>
   ({ id, head_sha: `${id}`.padEnd(40, "0"), status: "completed", conclusion, html_url: `https://github.com/a11ign/lab/actions/runs/${id}`, created_at: createdAt, event });
 
-/** `push` and `schedule` answer the two runs reads by their `event=`; a read with no `event=` (the primary's) is answered from `push`. */
-function fakeGh(state: { push: unknown[], schedule?: unknown[], jobs: Record<number, unknown[]>, refuse?: string }) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    const text = args.join(" ");
-    if (state.refuse !== undefined && text.includes(state.refuse)) throw new Error("HTTP 403");
-    if (text.includes("/actions/workflows/")) return JSON.stringify({ workflow_runs: text.includes("event=schedule") ? state.schedule ?? [] : state.push });
-    const jobs = /\/actions\/runs\/(\d+)\/jobs/.exec(text);
-    if (jobs) return JSON.stringify({ jobs: state.jobs[Number(jobs[1])] ?? [] });
-    if (args[0] === "run" && args[1] === "view") return "";
-    if (text.includes("/pulls")) return JSON.stringify([{ number: 7, title: "a lab merge", labels: [{ name: "session:worker-3" }] }]);
-    throw new Error(`unexpected gh call: ${text}`);
+afterEach(() => forgetActivation());
+
+/** What `readTrunkRed` is handed as its `run`: the fake code host acts on its own state, so a read that reached it would be a read that bypassed the code host. */
+const NO_RUN = (): string => {
+  throw new Error("the fake code host acts on its own state: no run is made");
+};
+
+/**
+ * The fake code host's world for one reading: `push` and `schedule` are the runs the two event filters answer (a read with no filter, the primary's, is answered from `push`), `jobs` the jobs of each run by id (a run
+ * with none listed has an empty job list), and `refuse` is the read that is refused with a 403: all the runs reads, the `push` one only, or the jobs. The merge each run came from is #7, labelled `session:worker-3`.
+ * `read` installs the world and reads `main`'s trunk for `source`; `calls` are the code host's, and `jobsAsked` the runs whose jobs were read.
+ */
+function fakeGh(state: { push: unknown[], schedule?: unknown[], jobs: Record<number, unknown[]>, refuse?: "runs" | "push" | "jobs" }) {
+  const host = createFakeCodeHost();
+  const { tail, ci } = host.rowsWorld;
+  const jobsAsked: string[] = [];
+  const jobs = new Map<string, any[] | Error>();
+  const get = jobs.get.bind(jobs);
+  jobs.get = (id) => { jobsAsked.push(id); return get(id); };
+  ci.jobs = jobs;
+  for (const run of [...state.push, ...(state.schedule ?? [])] as { id: number, head_sha: string }[]) {
+    jobs.set(String(run.id), state.refuse === "jobs" ? new Error("HTTP 403") : (state.jobs[run.id] ?? []) as any[]);
+    tail.queue.originPulls.set(run.head_sha, { number: 7, title: "a lab merge", labels: ["session:worker-3"] });
+  }
+  const read = (source: TrunkSource = PRIMARY_TRUNK, options: Parameters<typeof readTrunkRed>[2] = {}) => {
+    for (const filter of source.eventFilters.length === 0 ? [null] : source.eventFilters) {
+      const refused = state.refuse === "runs" || (state.refuse === "push" && filter === "event=push");
+      tail.queue.trunkRuns.set(trunkRunsKey(source.repo, source.workflow, filter), refused ? new Error("HTTP 403") : (filter === "event=schedule" ? state.schedule ?? [] : state.push));
+    }
+    substituteCodeHost(host);
+    return readTrunkRed(NO_RUN, source, options);
   };
-  return { run, calls };
+  return { read, calls: host.rowsWorld.calls, jobsAsked };
 }
 
 test("a red cross-repo leg with a green gate is red main, and the order names the leg and says gate read green", () => {
   const push = [runOf(10, "push", "success", "2026-10-10T10:15:38Z")];
-  const red = readTrunkRed(fakeGh({ push, jobs: { 10: jobsOf("failure") } }).run, LAB);
+  const red = fakeGh({ push, jobs: { 10: jobsOf("failure") } }).read(LAB);
   assert.ok(red, "the leg's own conclusion is where the red is");
   assert.deepEqual([red.failedJobs, red.leg, red.runId, red.repoKey], [[LEG], LEG, 10, "lab"]);
   const [order] = trunkRedOrders(red);
@@ -87,13 +108,13 @@ test("a red cross-repo leg with a green gate is red main, and the order names th
   assert.equal(order.session, "worker-3", "a push's red goes to the merging session, as it always did, with the router as its way out");
   assert.equal(order.fallback, "product-manager");
   // NEGATIVE CONTROLS: the same run with the leg green, and a repository whose gate alone is read, are not red.
-  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 10: jobsOf("success") } }).run, LAB), null, "the leg green: nothing to say");
-  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 10: [job("checks (own)", "success"), job("gate", "success")] } }).run, LAB), null, "no leg at all: gate alone is green");
+  assert.equal(fakeGh({ push, jobs: { 10: jobsOf("success") } }).read(LAB), null, "the leg green: nothing to say");
+  assert.equal(fakeGh({ push, jobs: { 10: [job("checks (own)", "success"), job("gate", "success")] } }).read(LAB), null, "no leg at all: gate alone is green");
 });
 
 test("a leg that is red beside a red gate is read as the red run it always was, with no `leg` fact", () => {
   const push = [runOf(11, "push", "failure", "2026-10-10T10:15:38Z")];
-  const red = readTrunkRed(fakeGh({ push, jobs: { 11: jobsOf("failure", "failure", "failure") } }).run, LAB);
+  const red = fakeGh({ push, jobs: { 11: jobsOf("failure", "failure", "failure") } }).read(LAB);
   assert.ok(red);
   assert.deepEqual(red.failedJobs, ["checks (own)", LEG, "gate"], "the run page already names every failed job");
   assert.equal("leg" in red, false);
@@ -104,7 +125,7 @@ test("a red nightly is red main and goes to the router, not to the merger of the
   const push = [runOf(20, "push", "success", "2026-10-10T04:30:38Z")];
   const nightly = [runOf(21, "schedule", "success", "2026-10-10T10:38:20Z")];
   const gh = fakeGh({ push, schedule: nightly, jobs: { 20: jobsOf("success"), 21: jobsOf("failure") } });
-  const red = readTrunkRed(gh.run, LAB);
+  const red = gh.read(LAB);
   assert.ok(red);
   assert.deepEqual([red.runId, red.event, red.leg], [21, "schedule", LEG]);
   const [order] = trunkRedOrders(red);
@@ -114,25 +135,25 @@ test("a red nightly is red main and goes to the router, not to the merger of the
   assert.ok(gh.calls.some((c) => c.includes("event=schedule")) && gh.calls.some((c) => c.includes("event=push")), "both events were asked for");
   // NEGATIVE CONTROL: a nightly whose own gate failed is red too, and the same fixture read for `push` alone is green.
   const failed = fakeGh({ push, schedule: [runOf(22, "schedule", "failure", "2026-10-10T10:38:20Z")], jobs: { 20: jobsOf("success"), 22: jobsOf("success", "failure", "failure") } });
-  assert.equal(readTrunkRed(failed.run, LAB)?.event, "schedule");
-  assert.equal(readTrunkRed(gh.run, { ...LAB, eventFilters: ["event=push"] }), null, "the schedule read is what finds it");
+  assert.equal(failed.read(LAB)?.event, "schedule");
+  assert.equal(gh.read({ ...LAB, eventFilters: ["event=push"] }), null, "the schedule read is what finds it");
 });
 
 test("the newest run of either event decides: a green nightly clears a red push, and a green push clears a red nightly", () => {
   const redPush = [runOf(30, "push", "failure", "2026-10-10T02:00:00Z")];
   const jobs = { 30: jobsOf("success", "failure", "failure"), 31: jobsOf("success"), 32: jobsOf("failure") };
-  assert.ok(readTrunkRed(fakeGh({ push: redPush, schedule: [], jobs }).run, LAB), "POSITIVE CONTROL: with no nightly after it the push is red");
-  assert.equal(readTrunkRed(fakeGh({ push: redPush, schedule: [runOf(31, "schedule", "success", "2026-10-10T04:17:00Z")], jobs }).run, LAB), null, "a green nightly after it clears it");
+  assert.ok(fakeGh({ push: redPush, schedule: [], jobs }).read(LAB), "POSITIVE CONTROL: with no nightly after it the push is red");
+  assert.equal(fakeGh({ push: redPush, schedule: [runOf(31, "schedule", "success", "2026-10-10T04:17:00Z")], jobs }).read(LAB), null, "a green nightly after it clears it");
   const redNightly = [runOf(32, "schedule", "success", "2026-10-10T04:17:00Z")];
-  assert.ok(readTrunkRed(fakeGh({ push: [], schedule: redNightly, jobs }).run, LAB), "POSITIVE CONTROL: a red leg in the nightly with no push after it");
-  assert.equal(readTrunkRed(fakeGh({ push: [runOf(31, "push", "success", "2026-10-10T09:00:00Z")], schedule: redNightly, jobs }).run, LAB), null, "a green push after it clears it");
+  assert.ok(fakeGh({ push: [], schedule: redNightly, jobs }).read(LAB), "POSITIVE CONTROL: a red leg in the nightly with no push after it");
+  assert.equal(fakeGh({ push: [runOf(31, "push", "success", "2026-10-10T09:00:00Z")], schedule: redNightly, jobs }).read(LAB), null, "a green push after it clears it");
 });
 
 test("a refused runs read refuses the read: a nightly is not reported red without the push that came after it", () => {
   const gh = fakeGh({ push: [runOf(41, "push", "success", "2026-10-10T09:00:00Z")], schedule: [runOf(40, "schedule", "success", "2026-10-10T04:17:00Z")],
-    jobs: { 40: jobsOf("failure"), 41: jobsOf("success") }, refuse: "event=push" });
-  assert.equal(readTrunkRed(gh.run, LAB), undefined, "NOT READ, which is not the `null` of a green (agent-org#674)");
-  assert.ok(readTrunkRed(fakeGh({ push: [], schedule: [runOf(40, "schedule", "success", "2026-10-10T04:17:00Z")], jobs: { 40: jobsOf("failure") } }).run, LAB),
+    jobs: { 40: jobsOf("failure"), 41: jobsOf("success") }, refuse: "push" });
+  assert.equal(gh.read(LAB), undefined, "NOT READ, which is not the `null` of a green (agent-org#674)");
+  assert.ok(fakeGh({ push: [], schedule: [runOf(40, "schedule", "success", "2026-10-10T04:17:00Z")], jobs: { 40: jobsOf("failure") } }).read(LAB),
     "POSITIVE CONTROL: unrefused, and with no push after it, the same nightly is red");
 });
 
@@ -143,29 +164,30 @@ test("a refused runs read refuses the read: a nightly is not reported red withou
 test("a read that could not be made is undefined, and only a read that found main not red is null", () => {
   const push = [runOf(70, "push", "success", "2026-10-10T10:15:38Z")];
   const green = fakeGh({ push, jobs: { 70: jobsOf("success") } });
-  assert.equal(readTrunkRed(green.run, LAB), null, "POSITIVE CONTROL: read, and green");
-  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 70: jobsOf("success") }, refuse: "/actions/workflows/" }).run, LAB), undefined, "the runs read refused");
-  assert.equal(readTrunkRed(fakeGh({ push: [], jobs: {} }).run, LAB), undefined, "no completed verdict run says nothing about main");
+  assert.equal(green.read(LAB), null, "POSITIVE CONTROL: read, and green");
+  assert.equal(fakeGh({ push, jobs: { 70: jobsOf("success") }, refuse: "runs" }).read(LAB), undefined, "the runs read refused");
+  assert.equal(fakeGh({ push: [], jobs: {} }).read(LAB), undefined, "no completed verdict run says nothing about main");
   const inFlight = [{ ...runOf(71, "push", "failure", "2026-10-10T10:15:38Z"), status: "in_progress", conclusion: null }];
-  assert.equal(readTrunkRed(fakeGh({ push: inFlight, jobs: {} }).run, LAB), undefined, "a run still in flight is not a verdict");
+  assert.equal(fakeGh({ push: inFlight, jobs: {} }).read(LAB), undefined, "a run still in flight is not a verdict");
 });
 
 test("a green run whose jobs could not be read is not read as green: the red leg is visible only there", () => {
   const push = [runOf(72, "push", "success", "2026-10-10T10:15:38Z")];
-  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 72: jobsOf("failure") } }).run, LAB)?.leg, LEG, "POSITIVE CONTROL: the jobs read, the leg is red");
-  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 72: jobsOf("failure") }, refuse: "/jobs" }).run, LAB), undefined, "the jobs read refused: unknown, not green");
+  assert.equal(fakeGh({ push, jobs: { 72: jobsOf("failure") } }).read(LAB)?.leg, LEG, "POSITIVE CONTROL: the jobs read, the leg is red");
+  assert.equal(fakeGh({ push, jobs: { 72: jobsOf("failure") }, refuse: "jobs" }).read(LAB), undefined, "the jobs read refused: unknown, not green");
   const redRun = [runOf(73, "push", "failure", "2026-10-10T10:15:38Z")];
-  const red = readTrunkRed(fakeGh({ push: redRun, jobs: { 73: jobsOf("failure") }, refuse: "/jobs" }).run, LAB);
+  const red = fakeGh({ push: redRun, jobs: { 73: jobsOf("failure") }, refuse: "jobs" }).read(LAB);
   assert.deepEqual([red?.runId, red?.failedJobs], [73, []], "a red run whose jobs were not read is still red, with no job named");
 });
 
 test("the primary is read exactly as before: one call, no event, no jobs read for a green run, and a red carries no new fact", () => {
   const green = fakeGh({ push: [runOf(50, "push", "success", "2026-10-10T09:00:00Z")], jobs: { 50: jobsOf("failure") } });
-  assert.equal(readTrunkRed(green.run), null, "a red `cross-repo` job is not read for the primary, whose runs name no such leg");
-  assert.equal(readTrunkRed(green.run, PRIMARY_TRUNK), null, "omitted and explicit are one source");
-  assert.deepEqual(green.calls[0], ["api", "--method", "GET", `repos/${PRIMARY_TRUNK.repo}/actions/workflows/trunk.yml/runs`, "-f", "branch=main", "-f", "per_page=10"]);
-  assert.equal(green.calls.length, 2, "one call each for the two reads above, and nothing else");
-  const red = readTrunkRed(fakeGh({ push: [runOf(51, "push", "failure", "2026-10-10T09:00:00Z")], jobs: { 51: [job("trunkBuildTest / run", "failure")] } }).run);
+  assert.equal(green.read(), null, "a red `cross-repo` job is not read for the primary, whose runs name no such leg");
+  assert.equal(green.read(PRIMARY_TRUNK), null, "omitted and explicit are one source");
+  // The argument list of that read (no `event` filter, ten per page) is the plugin's: `plugins/github/rows/queue-rows.test.ts` holds it.
+  assert.deepEqual(green.calls, [`trunkRunsOf ${PRIMARY_TRUNK.repo} trunk.yml`, `trunkRunsOf ${PRIMARY_TRUNK.repo} trunk.yml`], "one runs read each for the two reads above, with no event filter");
+  assert.deepEqual(green.jobsAsked, [], "and nothing else: no job list is read for a green run of the primary");
+  const red = fakeGh({ push: [runOf(51, "push", "failure", "2026-10-10T09:00:00Z")], jobs: { 51: [job("trunkBuildTest / run", "failure")] } }).read();
   assert.ok(red);
   assert.deepEqual(Object.keys(red), ["runId", "url", "sha", "failedJobs", "failingTests", "recheck", "parentFailingTests", "originPr"]);
 });
@@ -173,15 +195,15 @@ test("the primary is read exactly as before: one call, no event, no jobs read fo
 test("a repository whose ci.yml has no cross-repo job is read as before, and a job that only contains the words is not the leg", () => {
   const push = [runOf(60, "push", "success", "2026-10-10T09:00:00Z")];
   const only = [job("gate", "success")];
-  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 60: only } }).run, LAB), null, "green gate, no leg");
+  assert.equal(fakeGh({ push, jobs: { 60: only } }).read(LAB), null, "green gate, no leg");
   for (const name of ["cross-repo-copies", "not-cross-repo-at-all", "cross-repository"]) {
-    assert.equal(readTrunkRed(fakeGh({ push, jobs: { 60: [...only, job(name, "failure")] } }).run, LAB), null, `${name} is not the leg`);
+    assert.equal(fakeGh({ push, jobs: { 60: [...only, job(name, "failure")] } }).read(LAB), null, `${name} is not the leg`);
   }
   // The marker finds the leg under every name GitHub gives it (a reusable-workflow call prefixes `<caller> / `), or the test above is half tested.
   for (const name of ["cross-repo", LEG, "ci / checks (cross-repo)", "ci / cross-repo"]) {
-    assert.equal(readTrunkRed(fakeGh({ push, jobs: { 60: [...only, job(name, "failure")] } }).run, LAB)?.leg, name, `${name} is the leg`);
+    assert.equal(fakeGh({ push, jobs: { 60: [...only, job(name, "failure")] } }).read(LAB)?.leg, name, `${name} is the leg`);
   }
-  const red = readTrunkRed(fakeGh({ push: [runOf(61, "push", "failure", "2026-10-10T09:00:00Z")], jobs: { 61: [job("gate", "failure")] } }).run, LAB);
+  const red = fakeGh({ push: [runOf(61, "push", "failure", "2026-10-10T09:00:00Z")], jobs: { 61: [job("gate", "failure")] } }).read(LAB);
   assert.ok(red);
   assert.deepEqual(Object.keys(red), ["runId", "url", "sha", "failedJobs", "failingTests", "recheck", "parentFailingTests", "originPr", "repo", "repoKey"]);
 });
@@ -195,9 +217,15 @@ test("a repository whose ci.yml has no cross-repo job is read as before, and a j
 const DOT_GITHUB = trunkOfCodeRepository("dot-github", "a11ign/.github");
 const NOT_FOUND = () => Object.assign(new Error("Command failed: gh api --method GET repos/a11ign/.github/actions/workflows/ci.yml/runs\ngh: Not Found (HTTP 404)\n"),
   { status: 1, stderr: "gh: Not Found (HTTP 404)\n" });
+/** A world in which every runs read of the source is refused with `error`: `read` asks it, and `calls` counts the runs reads made. */
 const refusing = (error: Error) => {
-  const calls: string[][] = [];
-  return { calls, run: (args: string[]) => { calls.push(args); throw error; } };
+  const host = createFakeCodeHost();
+  const read = (source: TrunkSource = PRIMARY_TRUNK, options: Parameters<typeof readTrunkRed>[2] = {}) => {
+    for (const filter of source.eventFilters.length === 0 ? [null] : source.eventFilters) host.rowsWorld.tail.queue.trunkRuns.set(trunkRunsKey(source.repo, source.workflow, filter), error);
+    substituteCodeHost(host);
+    return readTrunkRed(NO_RUN, source, options);
+  };
+  return { read, calls: host.rowsWorld.calls };
 };
 const NOW = Date.parse("2026-10-10T16:00:00Z");
 const told = () => {
@@ -218,7 +246,7 @@ const freshState = () => {
 test("no trunk workflow: a 404 on the runs read of a repository that never had runs is null and said once, and any other refusal is still undefined", () => {
   const said = told();
   const gh = refusing(NOT_FOUND());
-  assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir: freshState(), now: NOW, report: said.report }), null, "nothing to be red: null, not the `undefined` of a refused read");
+  assert.equal(gh.read(DOT_GITHUB, { stateDir: freshState(), now: NOW, report: said.report }), null, "nothing to be red: null, not the `undefined` of a refused read");
   assert.deepEqual(said.lines, [NO_WORKFLOW_LINE]);
   assert.equal(gh.calls.length, 1, "the second event filter would answer the same 404, so it is not asked");
   // NEGATIVE CONTROLS (done-when b): a 403, a 5xx and a timeout are NOT "no workflow", and a fault that says nothing of a 404 is not one either.
@@ -230,7 +258,7 @@ test("no trunk workflow: a 404 on the runs read of a repository that never had r
   ];
   for (const [name, error] of refusals) {
     const quiet = told();
-    assert.equal(readTrunkRed(refusing(error).run, DOT_GITHUB, { stateDir: freshState(), now: NOW, report: quiet.report }), undefined, `${name}: refused, not "no workflow"`);
+    assert.equal(refusing(error).read(DOT_GITHUB, { stateDir: freshState(), now: NOW, report: quiet.report }), undefined, `${name}: refused, not "no workflow"`);
     assert.deepEqual(quiet.lines, [], `${name}: this file says nothing of it either, as before`);
   }
 });
@@ -239,16 +267,16 @@ test("no trunk workflow: the second read inside a day makes no call and prints n
   const stateDir = freshState();
   const first = told();
   const gh = refusing(NOT_FOUND());
-  assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW, report: first.report }), null);
+  assert.equal(gh.read(DOT_GITHUB, { stateDir, now: NOW, report: first.report }), null);
   assert.deepEqual([gh.calls.length, first.lines], [1, [NO_WORKFLOW_LINE]], "POSITIVE CONTROL: the first read paid its call and said its line");
   const again = told();
   for (const later of [2 * 60_000, 60 * 60_000, NO_WORKFLOW_RECHECK_EVERY_MS - 1]) {
-    assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW + later, report: again.report }), null, "still null");
+    assert.equal(gh.read(DOT_GITHUB, { stateDir, now: NOW + later, report: again.report }), null, "still null");
   }
   assert.deepEqual([gh.calls.length, again.lines], [1, []], "no call and no line inside the day");
   // NEGATIVE CONTROL: the marker expires, and the line is then once per day, not once ever.
   const nextDay = told();
-  assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS, report: nextDay.report }), null);
+  assert.equal(gh.read(DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS, report: nextDay.report }), null);
   assert.deepEqual([gh.calls.length, nextDay.lines], [2, [NO_WORKFLOW_LINE]]);
 });
 
@@ -256,12 +284,12 @@ test("no trunk workflow: a repository the marker knows had the workflow, now 404
   const stateDir = freshState();
   const push = [runOf(80, "push", "success", "2026-10-10T09:00:00Z")];
   const had = told();
-  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 80: jobsOf("success") } }).run, DOT_GITHUB, { stateDir, now: NOW, report: had.report }), null, "POSITIVE CONTROL: it answered 200 and was green");
+  assert.equal(fakeGh({ push, jobs: { 80: jobsOf("success") } }).read(DOT_GITHUB, { stateDir, now: NOW, report: had.report }), null, "POSITIVE CONTROL: it answered 200 and was green");
   assert.deepEqual(had.lines, []);
   const gh = refusing(NOT_FOUND());
   for (const minutes of [2, 4, 6]) {
     const said = told();
-    assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW + minutes * 60_000, report: said.report }), undefined,
+    assert.equal(gh.read(DOT_GITHUB, { stateDir, now: NOW + minutes * 60_000, report: said.report }), undefined,
       "unread, not green: the failure ledger must not end a standing red on a workflow that went missing");
     assert.deepEqual(said.lines, ["a11ign/.github: ci.yml on main answered 404 though it had runs before, so its trunk is not read"], `tick +${minutes}m says it again`);
   }
@@ -269,22 +297,22 @@ test("no trunk workflow: a repository the marker knows had the workflow, now 404
   // NEGATIVE CONTROL: a repository with no marker at all, read at the same instants, is the quiet once-a-day case.
   const never = told();
   const neverAsked = refusing(NOT_FOUND());
-  for (const minutes of [2, 4, 6]) readTrunkRed(neverAsked.run, DOT_GITHUB, { stateDir: freshState(), now: NOW + minutes * 60_000, report: never.report });
+  for (const minutes of [2, 4, 6]) neverAsked.read(DOT_GITHUB, { stateDir: freshState(), now: NOW + minutes * 60_000, report: never.report });
   assert.equal(neverAsked.calls.length, 3, "three states, three first reads");
   const quiet = told();
   const sharedDir = freshState();
-  for (const minutes of [2, 4, 6]) readTrunkRed(neverAsked.run, DOT_GITHUB, { stateDir: sharedDir, now: NOW + minutes * 60_000, report: quiet.report });
+  for (const minutes of [2, 4, 6]) neverAsked.read(DOT_GITHUB, { stateDir: sharedDir, now: NOW + minutes * 60_000, report: quiet.report });
   assert.deepEqual([neverAsked.calls.length, quiet.lines], [4, [NO_WORKFLOW_LINE]], "one state directory: one call and one line for three ticks");
 });
 
 test("no trunk workflow: a workflow that appears after a 404 is read again, and a 404 after that is the loud case", () => {
   const stateDir = freshState();
-  assert.equal(readTrunkRed(refusing(NOT_FOUND()).run, DOT_GITHUB, { stateDir, now: NOW, report: told().report }), null);
+  assert.equal(refusing(NOT_FOUND()).read(DOT_GITHUB, { stateDir, now: NOW, report: told().report }), null);
   const push = [runOf(81, "push", "failure", "2026-10-10T09:00:00Z")];
-  const red = readTrunkRed(fakeGh({ push, jobs: { 81: jobsOf("success", "failure", "failure") } }).run, DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS, report: told().report });
+  const red = fakeGh({ push, jobs: { 81: jobsOf("success", "failure", "failure") } }).read(DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS, report: told().report });
   assert.equal(red?.runId, 81, "a day later the workflow exists, and its red is read");
   const said = told();
-  assert.equal(readTrunkRed(refusing(NOT_FOUND()).run, DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS + 120_000, report: said.report }), undefined);
+  assert.equal(refusing(NOT_FOUND()).read(DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS + 120_000, report: said.report }), undefined);
   assert.match(said.lines[0], /answered 404 though it had runs before/);
 });
 
@@ -292,7 +320,7 @@ test("no trunk workflow: a state directory that cannot be written is said and ne
   const notADirectory = join(freshState(), "a-file");
   writeFileSync(notADirectory, "");
   const said = told();
-  assert.equal(readTrunkRed(refusing(NOT_FOUND()).run, DOT_GITHUB, { stateDir: notADirectory, now: NOW, report: said.report }), null);
+  assert.equal(refusing(NOT_FOUND()).read(DOT_GITHUB, { stateDir: notADirectory, now: NOW, report: said.report }), null);
   assert.equal(said.lines.length, 2);
   assert.match(said.lines[0], /was not written/);
   assert.equal(said.lines[1], NO_WORKFLOW_LINE);

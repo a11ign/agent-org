@@ -40,6 +40,7 @@ import { FAILURE_LEDGER_FILE, recordFailure } from "./failure-ledger.ts";
 import type { Declaration, Gh, RowComment, RowLook } from "./worker-state.ts";
 import { DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, ghRowLook, isWorkerSession, lastDeliveredTo, readDeclarations, resolveBlockedRow, rulingOn, writeDeclaration } from "./worker-state.ts";
 import { githubTicketAdapter } from "./ticket-port/github-adapter.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** Refusals in a row for one claimed row before the stop is allowed. The chairman's number (a11ign#4957): two. */
 export const MAX_REFUSALS = 2;
@@ -299,6 +300,14 @@ function sessionFlag(argv: string[]): string | null {
 }
 
 /**
+ * The newest hundred pull requests of `repo`, in any state, each with the repository it was listed from. The code host lists them; THROWS when it cannot, which is not "no pull requests" (the hook allows the stop and
+ * says it could not read them).
+ */
+export function pullsOfRepository(repo: string, gh: Gh): StopPr[] {
+  return (rows().pullsListedForStop({ repo, limit: 100, run: gh }) as StopPr[]).map((pr) => ({ ...pr, repo }));
+}
+
+/**
  * The seams the real hook runs with, each imported when it is first needed (`worker-state.ts`'s rule): a hook that is allowed on `stop_hook_active` pays for none.
  * @param {string[]} argv @param {NodeJS.ProcessEnv} env
  */
@@ -310,20 +319,17 @@ async function liveSeams(argv: string[], env: NodeJS.ProcessEnv): Promise<Seams>
   }
   const { stateEntryPath } = await import("./host-config.ts");
   const { homeProjectDeclaration } = await import("./project-config.ts");
-  const { execFileSync } = await import("node:child_process");
   const { ownsPr } = await import("./pr-ownership.ts");
   const { closedRefsOf } = await import("./board-truth-audit.ts");
   const { declaredRegionFiles, splitRegionEntry } = await import("./region-paths.ts");
   const { ANSWER_PREFIX, SESSION_PREFIX } = await import("./project-vocabulary.ts");
-  const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 });
+  // the code host starts `gh`, with the bound this hook has always had, the 1 MiB `execFileSync` allowed, and `gh`'s stderr kept to the failure (it is a hook: nothing but its own lines is printed). Made when a call is
+  // made, so a code host that cannot be loaded is a call that failed, which every read below allows the stop on, and not a hook that failed before it asked.
+  const gh: Gh = (args) => rows().runnerWith({ timeoutMs: 20_000, maxBuffer: 1024 * 1024, echo: false })(args);
   const { code } = homeProjectDeclaration();
   return {
     session, stateDir: stateEntryPath(""), now: Date.now(), trackers: homeProjectDeclaration().tracker,
-    prs: (repo) => {
-      const listed = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "all", "--limit", "100", "--json", "number,state,headRefName,title,labels,body"]));
-      if (!Array.isArray(listed)) throw new Error("`gh pr list` did not print a list");
-      return (listed as StopPr[]).map((pr) => ({ ...pr, repo }));
-    },
+    prs: (repo) => pullsOfRepository(repo, gh),
     // the rungs `ownsPr` reads, and the `Closes` rung it does not: a pull request whose body closes the row by its reference (`Closes a11ign/agent-org#1713`), a bare
     // `#1713` naming the repository the pull request is listed in
     owns: (claim, pr) => ownsPr(claim, pr) !== null || closedRefsOf(pr.body).some((ref) => ref.number === claim.row && (ref.repo ?? pr.repo) === claim.trackerRepo),

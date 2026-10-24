@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs `pr-hold.ts` puts a fake `gh` first on its PATH.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: the tick reads the wait's referent from the fake code host's world and is handed a fake `release`, and the one test that runs `pr-hold.ts` (a CLI, so a process) puts a fake `gh` first on its PATH.
 /**
  * `src/wait-condition.ts`'s `liftableHolds` and `src/work-gate/org-health.ts`'s `liftResolvedHolds`, #3364: THE GATE LIFTS A HOLD WHOSE `Waiting-for: merged|closed` IS TRUE, instead of
  * waking a busy session to remove one label.
@@ -10,7 +10,7 @@
  * WHAT THE GATE MUST NOT DO is most of the file: an absence of a reading is never "true", an `answer:*` label's removal IS the answer, and `blocked` has no referent. Every one of
  * those is a case that must NOT lift, beside a positive control that DOES, so the negatives are not all passing because nothing ever lifts.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +20,11 @@ import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { staleWaitOrders, waitTickFacts, orgHealthNow } from "../work-gate/org-health.ts";
 import { liftResolvedHolds } from "../work-gate/org-health.ts";
+import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-03T16:00:00Z");
@@ -183,18 +188,22 @@ test("THROUGH THE HOLD MODULE'S RELEASE: a pull request that carried `rearm-on-r
 
 // --- (5) the next tick --------------------------------------------------------------------------------------------------------
 
+/**
+ * The tick over a code host whose world holds the one item the hold waits for: row #3220, closed an hour ago (`state` of the wait's referent is the world's, not a GitHub answer). Every other
+ * referent is one the world does not hold, so its read is refused, as the old `run` refused any path but #3220's.
+ */
 function tick(prRaw: Record<string, unknown>, release: (n: number, s: string) => boolean) {
-  const run = (args: string[]) => {
-    if (!args[1].endsWith("/issues/3220")) throw new Error("refused");
-    return JSON.stringify({ state: "closed", closed_at: ISO(NOW - HOUR_MS), updated_at: ISO(NOW - HOUR_MS), merged_at: null, labels: [] });
-  };
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.rows.set(3220, { number: 3220, title: "the blocker", body: "", state: "CLOSED", labels: [], createdAt: ISO(NOW - 2 * HOUR_MS), closedAt: ISO(NOW - HOUR_MS), comments: [], blockedBy: [], onBoard: false, boardStatus: null });
+  substituteCodeHost(host);
   const rows = [{ number: 11, labels: [{ name: "in-progress" }, { name: "session:worker-11" }] }];
   const prs = withPrOwners([prRaw] as never, rows as never, () => null);
   const decideArgs = { prs, required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const decided = decide({ prs, readyRows: [], openRows: rows } as never);
   const orders = orgHealthNow({ prsRead: [prRaw], readyRead: [], openRowsRead: [], decideArgs, decided } as never,
     { now: NOW, lastMergedAt: () => NOW - HOUR_MS, log: () => {}, readCaptures: (() => undefined) as never,
-      readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run })) as never, release: release as never,
+      readWaits: waitTickFacts as never, release: release as never,
       // #3672: no remote: a project that declares `teamAccess` would otherwise make the live `gh api` read here (this file's `gh` is the fake above)
       teamAccess: () => undefined });
   return orders as { session: string; subject: string; cause: string }[];

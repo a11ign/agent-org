@@ -1,18 +1,26 @@
-// no-token: gh -- `sendToGitHub` is given a `run` that throws what `plugins/github/wrapper/gh` exits with, and one case puts a stub `gh` first on PATH; no real `gh` starts.
+// no-token: gh -- `sendToGitHub` is given a `run` that throws what `plugins/github/wrapper/gh` exits with, and the code host is the fake one (A11-160, step 9): its argument builders answer
+// fake argument lists that name the step, so these cases hold the ORDER and the FACTS the caller hands the code host (the branch it read once, the arguments the author gave); what the real
+// argument lists are is `plugins/github/rows/pullwork-rows.test.ts`. No real `gh` starts.
 //
 // (#4898) A RATE-LIMITED `pr create` IS HELD, NOT FAILED. `plugins/github/wrapper/gh` exits 75 for a write it queued; pr-open must then (1) not call that a failure,
 // (2) attach the arm and the session label to the held entry so they are made after the create does, and (3) tell the author in words that stop a
 // second copy and a question to a human. The ordinary failure beside it is the positive control: a `gh` that fails for another reason is still
 // exit 1, "nothing sent", with the cause.
 
-import { test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { armAfterCreate, checkRegion, draftRefusal, EXIT_NOTHING_SENT, EXIT_QUEUED, labelAfterCreate, main, readQueuedEntry, sendToGitHub } from "./pr-open.ts";
 import { REPO } from "./project-identity.ts";
 import { QUEUED_EXIT } from "./gh-ledger.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+// The code host is the fake one: `armAfterCreate`, `labelAfterCreate` and the write of the pull request itself ask its rows for the arguments, and a fake answers `fake-...` argument lists that name the step.
+beforeEach(() => substituteCodeHost(createFakeCodeHost()));
+afterEach(() => forgetActivation());
 
 const HELD = { dir: "/q", id: "1790000000-42", resetAt: Date.parse("2026-10-10T23:15:07Z") / 1000 };
 const refusedWith = (status: number | undefined) => () => { throw Object.assign(new Error("gh refused"), { status }); };
@@ -47,17 +55,20 @@ test("#4898: the arm and the owner label are ATTACHED to the held entry, in orde
   const r = send("create", ["--head", "agent/x", "--title", "t", "--body", "b"]);
   assert.equal(r.attached.length, 1);
   assert.deepEqual(r.attached[0].entry, HELD);
-  const heads = r.attached[0].steps.map((s) => s.slice(0, 2).join(" "));
-  assert.deepEqual(heads, ["pr merge", "pr edit"], "arm first, then the session label");
+  const heads = r.attached[0].steps.map((s) => s[0]);
+  assert.deepEqual(heads, ["fake-arm", "fake-label"], "arm first, then the session label");
   assert.ok(r.attached[0].steps[1].includes("session:ceo"));
-  assert.ok(r.attached[0].steps[0].includes("--auto"), "armed to merge when green");
+  assert.ok(r.attached[0].steps[0].includes("--head"), "the arm is built from the arguments the author gave");
   assert.doesNotMatch(r.said, /NOT ATTACHED/);
 
   const draft = send("create", ["--draft", "--head", "agent/x"]);
-  assert.deepEqual(draft.attached[0].steps.map((s) => s.slice(0, 2).join(" ")), ["pr edit"], "a draft is not armed, but is still labelled");
+  assert.deepEqual(draft.attached[0].steps.map((s) => s[0]), ["fake-label"], "a draft is not armed, but is still labelled");
 
   const missing = send("create", ["--draft", "--head", "agent/x"], { labelExists: () => false });
-  assert.deepEqual(missing.attached[0].steps.map((s) => s.slice(0, 2).join(" ")), ["label create", "pr edit"], "a label the repository lacks is created first");
+  assert.deepEqual(missing.attached[0].steps.map((s) => s[0]), ["fake-label-create", "fake-label"], "a label the repository lacks is created first");
+  assert.deepEqual(missing.attached[0].steps[0], ["fake-label-create", "session:ceo", "The session that owns the pull request (pr:open)", ""], "with the name, the description and no repository");
+  const aimed = send("create", ["--draft", "--head", "agent/x", "--repo", "a11ign/second-half"], { labelExists: (name, repo) => repo === undefined || name === "" });
+  assert.equal(aimed.attached[0].steps[0][3], "a11ign/second-half", "the repository is asked about and created in is the one the author named");
 
   const edit = send("edit", ["12", "--body", "b"]);
   assert.equal(edit.code, EXIT_QUEUED);
@@ -99,26 +110,31 @@ test("#4898: the queued entry the wrapper leaves is read back; no file, or a tor
   assert.equal(readQueuedEntry(torn), null);
 });
 
-test("#4898 THROUGH THE REAL `run`: a `gh` that exits 75 and leaves its entry file is reported held, with the entry read from it", () => {
-  const bin = tmpDir("pr-open-bin-");
-  const seen = join(bin, "seen");
-  mkdirSync(join(bin, "b"));
-  writeFileSync(join(bin, "b", "gh"), `#!/bin/sh\necho "$*" >> "${seen}"\nprintf '/q\\t9-9\\t1790003600\\n' > "$A11Y_GH_QUEUED_TO"\nexit 75\n`);
-  chmodSync(join(bin, "b", "gh"), 0o755);
-  const saved = process.env.PATH;
-  process.env.PATH = `${join(bin, "b")}:${saved}`;
+test("#4898 THROUGH THE DEFAULT `run`: the code host's runner is asked for the terminal and the two variables the wrapper reads, and a held call is reported held with the entry the wrapper left", () => {
+  // The wrapper is a process, and a fake has none: the runner the code host makes for pr-open stands in for it here, leaving its entry where it was told and exiting 75 as the wrapper does for a call it queued.
+  // The real process (the status, the terminal, the variables on the child alone) is `plugins/github/rows/runners-inherit.test.ts`.
+  const asked: { request: Parameters<NonNullable<ReturnType<typeof createFakeCodeHost>["rows"]>["runnerWith"]>[0]; args: readonly string[] }[] = [];
+  const base = createFakeCodeHost();
+  const dir = tmpDir("pr-open-queued-run-");
+  const host = { ...base, rows: { ...base.rows!, runnerWith: (request: any) => (args: readonly string[]) => {
+    asked.push({ request, args });
+    writeFileSync(request.env.A11Y_GH_QUEUED_TO, `${dir}\t9-9\t1790003600\n`);
+    throw Object.assign(new Error("held"), { status: QUEUED_EXIT });
+  } } };
+  substituteCodeHost(host);
   const said: string[] = [];
   const attached: string[][][] = [];
-  try {
-    const code = sendToGitHub("create", ["--draft", "--head", "agent/x"], { git: () => "x", err: (l) => { said.push(l); }, owner: () => null,
-      attach: (_entry, steps) => { attached.push(steps); } });
-    assert.equal(code, EXIT_QUEUED);
-  } finally {
-    process.env.PATH = saved;
-  }
+  const code = sendToGitHub("create", ["--draft", "--head", "agent/x"], { git: () => "x", err: (l) => { said.push(l); }, owner: () => null,
+    attach: (_entry, steps) => { attached.push(steps); } });
+  assert.equal(code, EXIT_QUEUED);
   assert.match(said.join(""), /QUEUED, NOT FAILED.*as 9-9 after/s);
-  assert.equal(readFileSync(seen, "utf8").trim().split("\n").length, 1, "the create was made once and not repeated");
-  assert.match(readFileSync(seen, "utf8"), /^pr create --draft --head agent\/x/);
+  assert.equal(asked.length, 1, "the create was made once and not repeated");
+  const [call] = asked;
+  assert.deepEqual(call?.args, ["fake-pull-write", "create", "--draft", "--head", "agent/x"]);
+  assert.equal(call?.request?.inherit, true, "the author sees what gh says");
+  assert.equal(call?.request?.env?.A11Y_PR_OPEN, "1", "the variable the wrapper refuses a create without");
+  assert.match(call?.request?.env?.A11Y_GH_QUEUED_TO ?? "", /pr-open-queued-/, "the file the wrapper leaves its entry in");
+  assert.equal(existsSync(call?.request?.env?.A11Y_GH_QUEUED_TO ?? ""), false, "read back, and so consumed");
 });
 
 // #4968: a PR opens READY and ARMED unless the author says --draft. These run the wrapper's own success path, with a `run` that records argv.
@@ -132,13 +148,15 @@ test("#4968: a create without --draft sends no --draft and is armed straight aft
   const r = sendOk("create", ["--head", "agent/x", "--title", "t", "--body", "b"]);
   assert.equal(r.code, 0);
   assert.ok(!r.ran[0].includes("--draft"), "the wrapper never adds --draft");
-  assert.deepEqual(r.ran[1], ["pr", "merge", "--auto", "--merge", "agent/x"], "armed at creation, as a docs-and-tests PR always was");
+  assert.equal(r.ran[1][0], "fake-arm", "armed at creation, as a docs-and-tests PR always was");
+  assert.deepEqual(r.ran[1].slice(2), ["--head", "agent/x", "--title", "t", "--body", "b"], "the arm is built from the arguments the author gave");
 });
 
 test("#4968: an explicit --draft creates a draft that is NOT armed", () => {
   const r = sendOk("create", ["--draft", "--head", "agent/x", "--title", "t", "--body", "b"]);
   assert.ok(r.ran[0].includes("--draft"), "the explicit not-now is passed through");
   assert.deepEqual(r.ran.map((a) => a[1]), ["create"], "no merge step follows a draft");
+  assert.equal(r.ran.some((a) => a[0] === "fake-arm"), false);
   assert.deepEqual(armAfterCreate("create", ["--draft"]), []);
 });
 
@@ -147,6 +165,7 @@ test("#4968: edit never arms, draft or not", () => {
   assert.deepEqual(r.ran.map((a) => a[1]), ["edit"]);
   assert.deepEqual(armAfterCreate("edit", ["--head", "agent/x"]), []);
   assert.equal(armAfterCreate("create", ["--head", "agent/x"]).length, 1, "positive control: a plain create does arm");
+  assert.deepEqual(labelAfterCreate("edit", ["--head", "agent/x"], "ceo"), [], "nor does an edit label");
 });
 
 // agent-org#923: a `Closes` of a row whose Region spans two repositories is refused while another repository's open pull request names that row,
@@ -277,41 +296,26 @@ test("a11ign#5036 (NEGATIVE CONTROL): a create without --draft, and an edit, are
 // ("argument required when using the --repo flag"), so the PR was left unarmed and its session label never ran. The create was made from the
 // tree's own branch, so the arm and the label name that branch when `--repo` is given. Without `--repo` the argv is what it always was.
 const REPO_952 = "a11ign/agent-org";
-test("#952: a create with --repo and no --head arms the branch it was made from", () => {
-  assert.deepEqual(armAfterCreate("create", ["--repo", REPO_952, "--title", "t"], "agent/x"),
-    [["pr", "merge", "--auto", "--merge", "agent/x", "--repo", REPO_952]]);
+test("#952: the arm and the label are built from the tree's branch AND the arguments the author gave, which is the code host's to turn into the steps (the real argument lists: plugins/github/rows/pullwork-rows.test.ts)", () => {
+  assert.deepEqual(armAfterCreate("create", ["--repo", REPO_952, "--title", "t"], "agent/x"), [["fake-arm", "agent/x", "--repo", REPO_952, "--title", "t"]]);
+  assert.deepEqual(labelAfterCreate("create", ["--repo", REPO_952], "ceo", "agent/x"), [["fake-label", "session:ceo", "agent/x", "--repo", REPO_952]]);
 });
 
-test("#952: --head still names the pull request, and wins over the tree's branch", () => {
-  assert.deepEqual(armAfterCreate("create", ["--head", "agent/h", "--repo", REPO_952], "agent/x"),
-    [["pr", "merge", "--auto", "--merge", "agent/h", "--repo", REPO_952]]);
-});
-
-test("#952 (NEGATIVE CONTROL): with no --repo and no --head the arm is unchanged, and --draft still arms nothing with --repo", () => {
-  assert.deepEqual(armAfterCreate("create", ["--title", "t"]), [["pr", "merge", "--auto", "--merge"]]);
+test("#952 (NEGATIVE CONTROL): --draft arms nothing with --repo, and an owner who is not a live session labels nothing", () => {
   assert.deepEqual(armAfterCreate("create", ["--draft", "--repo", REPO_952], "agent/x"), []);
-});
-
-test("#952: --repo with no branch to name arms nothing, rather than the argv gh refuses", () => {
-  assert.deepEqual(armAfterCreate("create", ["--repo", REPO_952], null), []);
-});
-
-test("#952: the session label names the same branch with --repo", () => {
-  assert.deepEqual(labelAfterCreate("create", ["--repo", REPO_952], "ceo", "agent/x"),
-    [["pr", "edit", "agent/x", "--repo", REPO_952, "--add-label", "session:ceo"]]);
+  assert.deepEqual(labelAfterCreate("create", ["--repo", REPO_952], null, "agent/x"), [], "a tree nobody stamped");
+  assert.deepEqual(labelAfterCreate("create", ["--repo", REPO_952], "nobody-lives-here", "agent/x"), [], "an owner no live session answers for");
 });
 
 test("#952 THROUGH sendToGitHub: the arm and the label of a `--repo` create reach `run` naming the branch", () => {
   const ran: string[][] = [];
-  const code = sendToGitHub("create", ["--repo", REPO_952, "--title", "t", "--body", "b"], {
+  const rest = ["--repo", REPO_952, "--title", "t", "--body", "b"];
+  const code = sendToGitHub("create", rest, {
     run: (a) => { ran.push(a); }, git: (a) => (a.includes("--abbrev-ref") ? "agent/x" : "abc1234"), err: () => {},
     owner: () => "ceo", labelExists: () => true,
   });
   assert.equal(code, 0);
-  assert.deepEqual(ran.slice(1), [
-    ["pr", "merge", "--auto", "--merge", "agent/x", "--repo", REPO_952],
-    ["pr", "edit", "agent/x", "--repo", REPO_952, "--add-label", "session:ceo"],
-  ]);
+  assert.deepEqual(ran, [["fake-pull-write", "create", ...rest], ["fake-arm", "agent/x", ...rest], ["fake-label", "session:ceo", "agent/x", ...rest]]);
 });
 
 test("#952 (READ ONCE): the tree's branch is read once per create, and the arm and the label name that one read", () => {
@@ -324,10 +328,7 @@ test("#952 (READ ONCE): the tree's branch is read once per create, and the arm a
   });
   assert.equal(code, 0);
   assert.equal(reads, 1);
-  assert.deepEqual(ran.slice(1), [
-    ["pr", "merge", "--auto", "--merge", "agent/1", "--repo", REPO_952],
-    ["pr", "edit", "agent/1", "--repo", REPO_952, "--add-label", "session:ceo"],
-  ]);
+  assert.deepEqual([ran[1][1], ran[2][2]], ["agent/1", "agent/1"], "the arm and the label name one branch");
 });
 
 test("#952 (NO READ OUTSIDE CREATE): an edit reads no branch at all, so the happy path pays no git subprocess it does not use", () => {
@@ -339,5 +340,5 @@ test("#952 (NO READ OUTSIDE CREATE): an edit reads no branch at all, so the happ
   });
   assert.equal(code, 0);
   assert.equal(reads, 0);
-  assert.deepEqual(ran, [["pr", "edit", "42", "--repo", REPO_952, "--title", "t"]]);
+  assert.deepEqual(ran, [["fake-pull-write", "edit", "42", "--repo", REPO_952, "--title", "t"]]);
 });

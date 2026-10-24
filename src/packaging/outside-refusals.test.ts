@@ -1,5 +1,5 @@
 // no-token: lookup
-// agent-org#1578: the real verdict is reached once, with an injected `run` that always throws; every other case injects `verdictOf`, so no token is read and none is needed.
+// agent-org#1578: the real verdict is reached once, against the fake code host (which models none of the reads it makes, so each is refused); every other case injects `verdictOf`, so no token is read and none is needed.
 /**
  * agent-org#1578: THE OUTSIDE HOME OF a11ign's `deliberateRefusals` JOB, FLAG `outside.refusals`, SHIPPED OFF, SHADOW WHEN ON.
  *
@@ -8,7 +8,7 @@
  *   3. THE SECOND ACTOR FINDS THE WORK DONE: a head already recorded is not asked again.
  *   4. AGENT PULL REQUESTS ONLY, AND ONLY ONCE THE JOB HAS SPOKEN: a fork, a non-org author, a job still running or cancelled are skipped.
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +17,8 @@ import { OUTSIDE_REFUSALS_FLAG, outsideRefusalsOn, type DeliberateRefusal } from
 import { MAX_REFUSAL_SHADOWS_PER_TICK, REFUSALS_JOB, REFUSALS_SHADOW_FILE, refusalsJobVerdict, settleOutsideRefusals } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { ORG_LOGINS } from "../messaging/sources/readers.ts";
 import { readArmingOf } from "../work-gate/tick/tick-decisions-and-flags.ts";
+import { rows } from "../plugins/rows.ts";
+import { forgetActivation, messagingHost } from "../plugins/fakes/messaging-world.test.support.ts";
 
 const REPO = "owner/project";
 const dir = mkdtempSync(join(tmpdir(), "outside-refusals-"));
@@ -40,6 +42,7 @@ const records = (stateDir: string): any[] => (existsSync(join(stateDir, REFUSALS
   : []);
 const verdicts = (table: Record<number, DeliberateRefusal>, asked: number[] = []) =>
   ((({ number }: { number: number | string; }) => { asked.push(Number(number)); return table[Number(number)] ?? { kind: "clear" }; }) as never);
+afterEach(() => forgetActivation());
 const never = (args: string[]): string => { throw new Error(`no gh expected, got ${args.join(" ")}`); };
 const base = (stateDir: string, over: Record<string, unknown> = {}) => ({ scope: REPO, run: never, log: (line: string) => { lines.push(line); }, stateDir, now: () => "2026-10-16T12:00:00Z", ...over });
 const on = declared("on.json", '{ "outside.refusals": true }');
@@ -91,15 +94,17 @@ test("ON records the home's verdict beside the job's, with the reason line, and 
   assert.ok(lines.some((line) => line.includes("#3@") && line.includes("DISAGREE")) && lines.some((line) => line.includes("#1@") && line.includes(" AGREE")));
 });
 
-test("ON BLOCKS NOTHING: the pass returns no list for the gate to act on, and its own `gh` is only the verdict's reads", () => {
+/** The operations the real verdict reads a pull request through: the pass may ask the code host for these and for nothing else. */
+const VERDICT_READS = ["pullTextOf", "branchRefTextOf", "approvalFactsOf", "addedFilesTextOf", "fileAtTextOf", "defaultBranchFileTextOf"];
+
+test("ON BLOCKS NOTHING: the pass returns no list for the gate to act on, and what it asks of the code host is only the verdict's reads", () => {
   const stateDir = fresh();
-  const seen: string[][] = [];
-  const result = settleOutsideRefusals([pr(5, { statusCheckRollup: [jobRun("FAILURE")] })], base(stateDir, {
-    switchesPath: on, run: (args: string[]) => { seen.push(args); throw new Error("unreadable"); },
-  }));
+  const { world, calls } = messagingHost(REPO);
+  const result = settleOutsideRefusals([pr(5, { statusCheckRollup: [jobRun("FAILURE")] })], base(stateDir, { switchesPath: on }));
   assert.deepEqual(Object.keys(result), ["recorded"], "the only output is the record");
-  assert.equal(result.recorded[0].home, "refuse", "the REAL verdict, with every read failing, refuses (cannot ask) and does not throw");
-  assert.ok(seen.length > 0 && seen.every((args) => args[0] === "api"), `only reads: ${seen.map((args) => args.join(" ")).join(" | ")}`);
+  assert.equal(result.recorded[0].home, "refuse", "the REAL verdict, with every read refused, refuses (cannot ask) and does not throw");
+  assert.ok(calls.length > 0 && calls.every((call) => VERDICT_READS.includes(call.op)), `only reads: ${calls.map((call) => call.op).join(", ")}`);
+  assert.deepEqual([world.calls, world.rows.size, world.pulls.size], [[], 0, 0], "and the world it asked of was not touched");
 });
 
 // --- 3. the second actor ---------------------------------------------------------------------------------------------------------------
@@ -168,9 +173,14 @@ test("a record file that cannot be read records nothing and says so, rather than
 
 test("the host gate's own chain, `readArmingOf`, runs the pass once, records, and arms and orders exactly what it did with the flag off", () => {
   const prs = [{ ...pr(7), isDraft: false, labels: [], statusCheckRollup: [jobRun("SUCCESS"), { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] }];
-  const gh = (args: string[]): string => (args.some((arg) => arg.includes("timelineItems"))
-    ? JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [] } })
-    : JSON.stringify([{ number: 7, isDraft: false, merged: false, autoMergeRequest: { enabledAt: "2026-10-10T11:00:00Z" }, mergeQueueEntry: null }]));
+  // the pull request is armed in the code host's world; the arming read is the one read core still parses itself, with the arguments the code host builds
+  messagingHost(REPO, (world) => {
+    world.pulls.set(7, { number: 7, body: "", headRefName: "agent/seven", labels: [], isDraft: false, armed: true, merged: false, mergedAt: null, createdAt: "2026-10-10T10:00:00Z", comments: [] });
+  });
+  const gh = (args: string[]): string => {
+    if (args[0] === "fake-open-pull-nodes") return JSON.stringify(rows().readOpenPullNodes({ repo: args[1] }));
+    throw new Error(`no gh expected, got ${args.join(" ")}`);
+  };
   const tick = (refusals: Record<string, unknown>) => readArmingOf(prs, ["gate"], {
     scope: REPO, run: gh, env: {}, log: (line: string) => { lines.push(line); }, portFor: (() => { throw new Error("no port expected"); }) as never, refusals,
   });

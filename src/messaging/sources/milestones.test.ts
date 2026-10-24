@@ -10,11 +10,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 
+import { forgetActivation } from "../../plugins/active.ts";
 import { createMessenger } from "../core.ts";
 import { normalizeEvent } from "../event.ts";
 import { createFakeProvider } from "../fake-provider.ts";
+import { githubOverWorld } from "../github-over-world.test.support.ts";
 import { createLedger } from "../ledger.ts";
 import { MILESTONES, assertReadOnlyGh, runWatch } from "../watch.ts";
 import { BASELINE_KEY, MilestonesRefusal, milestoneKey, observeMilestones, parseMilestones, readMilestonesFile, seenMilestoneKeys } from "./milestones.ts";
@@ -28,6 +30,7 @@ const TOLD_BEFORE = new Set([BASELINE_KEY]);
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-milestones-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 let nextFile = 0;
 
 /** @param {unknown} contents @returns {string} a declaration file's path */
@@ -182,10 +185,12 @@ describe("the first run records what is already true and tells none of it (accep
     const provider = createFakeProvider();
     const path = join(scratch, "watch.jsonl");
     const ledger = createLedger({ path, now: () => Date.now() });
-    const run = (/** @type {Record<number, Record<string, any>>} */ issues: Record<number, Record<string, any>>) => runWatch({
-      github: { api: async (/** @type {string} */ route: string) => issues[Number(route.split("/").pop())] }, provider, ledger, now: () => Date.now(), repo: TRACKER,
-      summary: null, milestonesPath: file, sources: [MILESTONES],
-    });
+    // The rows the tracker holds are REST documents of the fake code host's world, moved between ticks as GitHub's would be.
+    const github = githubOverWorld();
+    const run = (/** @type {Record<number, Record<string, any>>} */ issues: Record<number, Record<string, any>>) => {
+      github.hold(Object.fromEntries(Object.entries(issues).map(([number, row]) => [`repos/${TRACKER}/issues/${number}`, row])));
+      return runWatch({ github, provider, ledger, now: () => Date.now(), repo: TRACKER, summary: null, milestonesPath: file, sources: [MILESTONES] });
+    };
     await run(CLOSED);
     assert.equal(provider.sent.length, 0, "already true on the first run: not told");
     assert.deepEqual(seenMilestoneKeys(ledger.read()), new Set(["milestone:split-move-1", BASELINE_KEY]));
@@ -231,13 +236,15 @@ describe("a condition that cannot be read is cannot-ask (acceptance 5)", () => {
   test("a declared file that cannot be read stops the SOURCE for the tick, loudly, and writes nothing", async () => {
     const provider = createFakeProvider();
     const ledger = createLedger({ path: join(scratch, "broken.jsonl"), now: () => Date.now() });
+    const github = githubOverWorld();
     const result = await runWatch({
-      github: { api: async () => ({}) }, provider, ledger, now: () => Date.now(), repo: TRACKER, summary: null,
+      github, provider, ledger, now: () => Date.now(), repo: TRACKER, summary: null,
       milestonesPath: join(scratch, "does-not-exist.json"), sources: [MILESTONES],
     });
     assert.equal(result.failures.length, 1);
     assert.match(result.failures[0], /milestones:.*cannot be read/);
     assert.equal(provider.sent.length, 0);
+    assert.deepEqual(github.calls, [], "and GitHub was not asked");
   });
 });
 

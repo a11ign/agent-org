@@ -1,16 +1,17 @@
-// no-token: GhRun
+// no-token: gh -- the probes and the incident rows are the fake code host's (A11-160, step 9); no program is ever run
 // agent-org#982: a repository that changed with no event behind it at a reconcile is reported as a missed delivery, once per pass.
 // agent-org#1207: the change is confirmed by the content the probe read (the newest `updated_at` and the item count), not by the tag alone.
-// Every test drives `refreshTickSnapshot` itself (the real reconcile) with `run` and the filer injected, so the default `ghRun` is never reached (hence the `no-token` line above).
-import { test } from "node:test";
+// Every test drives `refreshTickSnapshot` itself (the real reconcile) against the fake code host's probes (and, where a test files an incident, its rows) with the filer injected, so no `gh` is reached (hence the `no-token` line above).
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Run } from "./ci-failure-class.ts";
 import type { Drift } from "./event-drift.ts";
-import type { GhRun } from "./tick-snapshot.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import type { ProbeFacts } from "./plugins/contracts/code-host-rows-readouts.ts";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, as `tick-snapshot-events.test.ts` does: `event-drift.ts` imports `ci-failure-class.ts`, which resolves the checkout it serves
@@ -23,7 +24,8 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 const { countSuppressed, fileDrift, groupOf, probeName, readSuppressed, suppressedPath } = await import("./event-drift.ts");
-const { factsOf, refreshTickSnapshot, probePaths } = await import("./tick-snapshot.ts");
+const { refreshTickSnapshot, probePaths } = await import("./tick-snapshot.ts");
+const { SHARED_FAILURE_LABEL } = await import("./ci-failure-class.ts");
 
 const SEC = 1000;
 const DAY = "2026-10-11";
@@ -33,34 +35,46 @@ const RECONCILE_SECONDS = 20 * 60;
 const [ISSUES, RUNS] = probePaths(REPO);
 const healthy = (changed: string[] = []) => ({ changed: new Set(changed), healthy: true, reconcileEverySeconds: RECONCILE_SECONDS });
 
-/** What a probe reads: the tag it is answered with and the body under it. */
-type Reading = { tag: string; body: string };
-/** The body an issues list answers with: one item per `updated_at`, newest first, as `probePaths` sorts it. */
-const issuesOf = (...updated: string[]) => JSON.stringify(updated.map((updated_at, i) => ({ number: 100 - i, updated_at })));
-/** The body an Actions answer has: its `workflow_runs`, one per `updated_at`. */
-const runsOf = (...updated: string[]) => JSON.stringify({ total_count: updated.length, workflow_runs: updated.map((updated_at) => ({ updated_at })) });
-const ISSUES_BODY = issuesOf("2026-10-11T18:00:00Z", "2026-10-11T17:00:00Z");
-const ISSUES_NEW_ITEM = issuesOf("2026-10-11T19:05:00Z", "2026-10-11T18:00:00Z", "2026-10-11T17:00:00Z");
-const ISSUES_NEWER = issuesOf("2026-10-11T19:50:00Z", "2026-10-11T19:05:00Z", "2026-10-11T18:00:00Z", "2026-10-11T17:00:00Z");
-const RUNS_BODY = runsOf("2026-10-11T18:30:00Z");
-const RUNS_NEW_RUN = runsOf("2026-10-11T19:06:00Z", "2026-10-11T18:30:00Z");
+/** What a probe reads: the tag it is answered with and what its body listed (`undefined`: a body that is not the list it was asked for, which the code host reads as nothing confirmed). */
+type Reading = { tag: string; facts: ProbeFacts | undefined };
+/** What an issues list or an Actions answer lists: one item per `updated_at`; the newest of them and how many there are. */
+const listOf = (...updated: string[]): ProbeFacts => ({ newest: [...updated].sort().at(-1) ?? null, count: updated.length });
+const ISSUES_BODY = listOf("2026-10-11T18:00:00Z", "2026-10-11T17:00:00Z");
+const ISSUES_NEW_ITEM = listOf("2026-10-11T19:05:00Z", "2026-10-11T18:00:00Z", "2026-10-11T17:00:00Z");
+const ISSUES_NEWER = listOf("2026-10-11T19:50:00Z", "2026-10-11T19:05:00Z", "2026-10-11T18:00:00Z", "2026-10-11T17:00:00Z");
+const RUNS_BODY = listOf("2026-10-11T18:30:00Z");
+const RUNS_NEW_RUN = listOf("2026-10-11T19:06:00Z", "2026-10-11T18:30:00Z");
 
-/** `steady`'s reading of a path: the tag held since the baseline, and the body it was read with. */
-const steadyReading = (path: string): Reading => (path.includes("/actions/runs") ? { tag: "t1", body: RUNS_BODY } : { tag: "t1", body: ISSUES_BODY });
-/** A `gh` answering 200 with the reading chosen per path at call time. */
-const gh = (readingFor: (path: string) => Reading): GhRun => (args) => {
-  const { tag, body } = readingFor(args[args.length - 1]);
-  return { stdout: `HTTP/2.0 200 OK\r\nEtag: "${tag}"\r\n\r\n${body}`, status: 0 };
-};
+/** The fake code host of the running test: one per test, so the incident rows a reconcile files are still there at the next reconcile. */
+let host: ReturnType<typeof createFakeCodeHost> | null = null;
+const hostOfTest = () => (host ??= createFakeCodeHost());
+afterEach(() => { forgetActivation(); host = null; });
+
+/** `steady`'s reading of a path: the tag held since the baseline, and the content it was read with. */
+const steadyReading = (path: string): Reading => (path.includes("/actions/runs") ? { tag: "t1", facts: RUNS_BODY } : { tag: "t1", facts: ISSUES_BODY });
+/** The probes' answers: the reading chosen per path. Installed by a refresh, as the fake code host's world. */
+type GhRun = (path: string) => Reading;
+const gh = (readingFor: GhRun): GhRun => readingFor;
+/** Every probe asked of the code host since a test last emptied this, across the hosts it installed: the path and the tag held. */
+const asked: { path: string; etag: string | undefined }[] = [];
+
+/** Installs the test's fake code host answering 200 with the reading `readingFor` names for each path of `repos` (and refusing the probes of any other repository). */
+function answering(readingFor: GhRun, repos: string[]): void {
+  const { readouts } = hostOfTest().rowsWorld.tail;
+  readouts.probeAsks = asked;
+  readouts.probes.clear();
+  for (const repo of repos) for (const path of probePaths(repo)) readouts.probes.set(path, { status: 200, etag: `"${readingFor(path).tag}"`, facts: readingFor(path).facts });
+  substituteCodeHost(hostOfTest());
+}
 /** `steady`, but the probe at `path` answers `reading` instead. */
 const instead = (path: string, reading: Reading): GhRun => gh((p) => (p === path ? reading : steadyReading(p)));
 const steady = gh(steadyReading);
-const issuesMoved = instead(ISSUES, { tag: "t2", body: ISSUES_NEW_ITEM });
-const runsMoved = instead(RUNS, { tag: "t2", body: RUNS_NEW_RUN });
+const issuesMoved = instead(ISSUES, { tag: "t2", facts: ISSUES_NEW_ITEM });
+const runsMoved = instead(RUNS, { tag: "t2", facts: RUNS_NEW_RUN });
 /** A new ETag over the SAME items: how an anonymous and an authenticated read of one list differ (agent-org#1207). */
-const sameBodyNewTag = instead(ISSUES, { tag: "t2", body: ISSUES_BODY });
+const sameBodyNewTag = instead(ISSUES, { tag: "t2", facts: ISSUES_BODY });
 /** Every repository in `repos` has a new issue at the top of its list. */
-const everyMoved = (repos: string[]): GhRun => gh((path) => (repos.some((r) => probePaths(r)[0] === path) ? { tag: "t2", body: ISSUES_NEW_ITEM } : steadyReading(path)));
+const everyMoved = (repos: string[]): GhRun => gh((path) => (repos.some((r) => probePaths(r)[0] === path) ? { tag: "t2", facts: ISSUES_NEW_ITEM } : steadyReading(path)));
 
 /** A filer that records each pass's drifts and answers `accept` (a refused filing is `false`). */
 const filer = (accept: () => boolean = () => true) => {
@@ -68,54 +82,40 @@ const filer = (accept: () => boolean = () => true) => {
   return { filed, fileDrift: (drifts: readonly Drift[]) => { filed.push([...drifts]); return accept(); } };
 };
 
-/** An incident row as the fake keeps it: what `gh` lists for an open or a closed incident. */
-type StoredRow = { number: number; body: string; state: "OPEN" | "CLOSED"; labels: { name: string }[]; createdAt: string; closedAt: string | null };
+/** The runner `fileDrift` is handed: the fake code host acts on its world, so nothing is ever run. */
+const NO_GH: Run = () => { throw new Error("the fake code host runs nothing"); };
 
 /**
- * A fake `gh` that keeps the incident rows `fileDrift` files (agent-org#1330): the by-label read lists them, `issue create` adds one, `issue edit` changes one, and
- * every other call answers empty. `fileDrift` is the real one, run against this `gh`, so a join and a fold are read back from the rows and not assumed.
+ * The incident rows `fileDrift` files (agent-org#1330), as the fake code host's world keeps them: the open and closed rows are read from it, a filing adds one, a join edits one. `fileDrift` is the real one, run over
+ * the world, so a join and a fold are read back from the rows and not assumed. `rows` are the incident rows the world holds now, in the order they were filed.
  */
 function incidentStore() {
-  const rows: StoredRow[] = [];
-  const creates: string[][] = [];
+  const world = hostOfTest().rowsWorld;
   const logs: string[] = [];
-  const run: Run = (args) => {
-    const read = readsRowsByLabel(args);
-    if (read !== null) return connectionOf(rows.filter((row) => row.state === read.state));
-    if (args.some((arg) => arg.includes("projectItems"))) return JSON.stringify({ data: { repository: { issue: { projectItems: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } } });
-    if (args[0] === "issue" && args[1] === "create") {
-      creates.push(args);
-      const number = 1000 + rows.length + 1;
-      rows.push({ number, body: args[args.indexOf("--body") + 1], state: "OPEN", labels: [], createdAt: new Date(T0).toISOString(), closedAt: null });
-      return `https://github.com/${REPO}/issues/${number}\n`;
-    }
-    if (args[0] === "issue" && args[1] === "edit") {
-      const row = rows.find((r) => r.number === Number(args[2]))!;
-      if (args.includes("--body")) row.body = args[args.indexOf("--body") + 1];
-      for (let i = 0; i < args.length; i++) if (args[i] === "--add-label") row.labels.push({ name: args[i + 1] });
-    }
-    return "";
-  };
   return {
-    run, rows, creates, logs,
+    get rows() { return [...world.rows.values()].filter((row) => row.labels.includes(SHARED_FAILURE_LABEL)); },
+    logs,
     close: (number: number, atMs: number) => {
-      const row = rows.find((r) => r.number === number)!;
+      const row = world.rows.get(number)!;
       row.state = "CLOSED";
       row.closedAt = new Date(atMs).toISOString();
     },
-    fileDrift: (drifts: readonly Drift[]) => fileDrift(drifts, { run, log: (line) => logs.push(line) }),
+    fileDrift: (drifts: readonly Drift[]) => fileDrift(drifts, { run: NO_GH, log: (line) => logs.push(line) }),
   };
 }
 
 /** A cache directory that has been read once at T0 (baseline: no drift is possible on a first reading). */
 function baselined(repos: string[] = [REPO]) {
   const dir = tmpDir("event-drift-");
-  refreshTickSnapshot({ repos, homeRepo: REPO, configDir: dir, run: steady, nowMs: T0, events: healthy() });
+  answering(steady, repos);
+  refreshTickSnapshot({ repos, homeRepo: REPO, configDir: dir, nowMs: T0, events: healthy() });
   return dir;
 }
 type Filer = { fileDrift: (drifts: readonly Drift[]) => boolean };
-const reconcileAll = (dir: string, repos: string[], run: GhRun, at: number, f: Filer, changed: string[] = []) =>
-  refreshTickSnapshot({ repos, homeRepo: REPO, configDir: dir, run, nowMs: T0 + at * SEC, events: healthy(changed), fileDrift: f.fileDrift });
+const reconcileAll = (dir: string, repos: string[], run: GhRun, at: number, f: Filer, changed: string[] = []) => {
+  answering(run, repos);
+  return refreshTickSnapshot({ repos, homeRepo: REPO, configDir: dir, nowMs: T0 + at * SEC, events: healthy(changed), fileDrift: f.fileDrift });
+};
 const reconcile = (dir: string, run: GhRun, at: number, f: Filer, changed: string[] = []) => reconcileAll(dir, [REPO], run, at, f, changed);
 
 test("POSITIVE CONTROL: a probe whose tag AND content moved at a reconcile with no event files one incident naming the repository, the window and the probe", () => {
@@ -151,14 +151,15 @@ test("POSITIVE CONTROL (agent-org#1431): an event that named the repository afte
   assert.doesNotMatch(due[0], /MISSED DELIVERY/);
   assert.match(due[0], /CHANGED \(no event\)/);
   // The reconcile that found nothing read the content again, so a later move with no event is judged from THAT read, and its window starts there.
-  reconcile(dir, instead(ISSUES, { tag: "t3", body: ISSUES_NEWER }), 60 + 2 * RECONCILE_SECONDS, f);
+  reconcile(dir, instead(ISSUES, { tag: "t3", facts: ISSUES_NEWER }), 60 + 2 * RECONCILE_SECONDS, f);
   assert.deepEqual(f.filed, [[{ repo: REPO, probe: "issues list", windowStartS: (T0 + (60 + RECONCILE_SECONDS) * SEC) / SEC, nowS: (T0 + (60 + 2 * RECONCILE_SECONDS) * SEC) / SEC }]]);
 });
 
 test("the window of a drift starts at the time its baseline was READ, even when a later tick re-read the content on the poll path while the receiver was down (agent-org#1431)", () => {
   const dir = baselined();
   const f = filer();
-  refreshTickSnapshot({ repos: [REPO], homeRepo: REPO, configDir: dir, run: steady, nowMs: T0 + 60 * SEC, events: { ...healthy(), healthy: false }, fileDrift: f.fileDrift });
+  answering(steady, [REPO]);
+  refreshTickSnapshot({ repos: [REPO], homeRepo: REPO, configDir: dir, nowMs: T0 + 60 * SEC, events: { ...healthy(), healthy: false }, fileDrift: f.fileDrift });
   const lines = reconcile(dir, issuesMoved, RECONCILE_SECONDS, f);
   assert.deepEqual(f.filed, [[{ repo: REPO, probe: "issues list", windowStartS: (T0 + 60 * SEC) / SEC, nowS: T0 / SEC + RECONCILE_SECONDS }]], "the content was read at T0+60, not at the T0 the window was last moved");
   assert.match(lines[0], /MISSED DELIVERY inferred from the issues list probe, incident filed/);
@@ -176,7 +177,7 @@ test("NEGATIVE CONTROL: a tag that moved over the SAME content is not drift and 
 test("a tag that moved over the same content is counted for the day, not filed, and the content is carried so the next such tag is counted too", () => {
   const dir = baselined();
   reconcile(dir, sameBodyNewTag, RECONCILE_SECONDS, filer());
-  reconcile(dir, instead(ISSUES, { tag: "t3", body: ISSUES_BODY }), 2 * RECONCILE_SECONDS, filer());
+  reconcile(dir, instead(ISSUES, { tag: "t3", facts: ISSUES_BODY }), 2 * RECONCILE_SECONDS, filer());
   assert.equal(readSuppressed(suppressedPath(join(dir, "read-cache")))[DAY], 2);
 });
 
@@ -191,12 +192,13 @@ test("the tally keeps the last 14 UTC days and nothing older", () => {
 
 test("a repository not yet due is not probed at all, and a first reading is a baseline, never drift", () => {
   const dir = baselined();
-  const calls: string[][] = [];
+  asked.length = 0;
   const f = filer();
-  reconcile(dir, (args) => { calls.push(args); return issuesMoved(args); }, RECONCILE_SECONDS - 1, f);
-  assert.deepEqual([calls.length, f.filed.length], [0, 0], "inside the window a quiet tick still asks GitHub nothing");
+  reconcile(dir, issuesMoved, RECONCILE_SECONDS - 1, f);
+  assert.deepEqual([asked.length, f.filed.length], [0, 0], "inside the window a quiet tick still asks GitHub nothing");
   const fresh = filer();
-  refreshTickSnapshot({ repos: [REPO], homeRepo: REPO, configDir: tmpDir("event-drift-first-"), run: issuesMoved, nowMs: T0, events: healthy(), fileDrift: fresh.fileDrift });
+  answering(issuesMoved, [REPO]);
+  refreshTickSnapshot({ repos: [REPO], homeRepo: REPO, configDir: tmpDir("event-drift-first-"), nowMs: T0, events: healthy(), fileDrift: fresh.fileDrift });
   assert.deepEqual(fresh.filed, [], "no tag was held, so there is nothing the probe moved from");
 });
 
@@ -212,30 +214,28 @@ test("a tag held WITHOUT the content it was read with (a file written before thi
   assert.match(lines[0], /CHANGED \(no event\)/);
 });
 
-test("a moved tag whose body cannot be read as the list it was asked for is not confirmed, so it is not drift", () => {
-  for (const body of ["<html>rate limited</html>", JSON.stringify([{ number: 1 }])]) {
-    const f = filer();
-    const lines = reconcile(baselined(), instead(ISSUES, { tag: "t2", body }), RECONCILE_SECONDS, f);
-    assert.deepEqual(f.filed, [], body);
-    assert.match(lines[0], /CHANGED/);
-  }
+// HOW A BODY THAT IS NOT THE LIST IT WAS ASKED FOR IS READ (`<html>`, items with no `updated_at`) is the plugin's (`probe-reads.test.ts`): the code host answers no facts for it.
+test("a moved tag whose body listed nothing the code host could confirm is not confirmed, so it is not drift", () => {
+  const f = filer();
+  const lines = reconcile(baselined(), instead(ISSUES, { tag: "t2", facts: undefined }), RECONCILE_SECONDS, f);
+  assert.deepEqual(f.filed, []);
+  assert.match(lines[0], /CHANGED/);
 });
 
 test("the probe pair runs ONCE at a due reconcile, and the same drift is not filed again by the next ticks; a second reconcile that finds the repository moved again joins the OPEN row", () => {
   const dir = baselined();
-  const calls: string[][] = [];
+  asked.length = 0;
   const store = incidentStore();
-  const counting = (args: string[]) => { calls.push(args); return issuesMoved(args); };
-  reconcile(dir, counting, RECONCILE_SECONDS, store);
-  assert.equal(calls.length, 2);
-  assert.equal(store.creates.length, 1, "the first reconcile files one row");
+  reconcile(dir, issuesMoved, RECONCILE_SECONDS, store);
+  assert.equal(asked.length, 2);
+  assert.equal(store.rows.length, 1, "the first reconcile files one row");
   const first = store.rows[0].body;
-  reconcile(dir, counting, RECONCILE_SECONDS + 60, store);
-  reconcile(dir, counting, RECONCILE_SECONDS + 120, store);
-  assert.equal(store.creates.length, 1, "per tick it is filed once: the window moved when it was");
-  assert.equal(calls.length, 2, "and the following ticks asked nothing");
-  reconcile(dir, instead(ISSUES, { tag: "t3", body: ISSUES_NEWER }), 2 * RECONCILE_SECONDS, store);
-  assert.equal(store.creates.length, 1, "a second reconcile that finds the same repository moved again joins the open row and files no second one");
+  reconcile(dir, issuesMoved, RECONCILE_SECONDS + 60, store);
+  reconcile(dir, issuesMoved, RECONCILE_SECONDS + 120, store);
+  assert.equal(store.rows.length, 1, "per tick it is filed once: the window moved when it was");
+  assert.equal(asked.length, 2, "and the following ticks asked nothing");
+  reconcile(dir, instead(ISSUES, { tag: "t3", facts: ISSUES_NEWER }), 2 * RECONCILE_SECONDS, store);
+  assert.equal(store.rows.length, 1, "a second reconcile that finds the same repository moved again joins the open row and files no second one");
   assert.deepEqual(store.rows.map((row) => row.state), ["OPEN"]);
   assert.equal(store.rows[0].body, first, "and the join leaves the first window in the row's Step, as it was filed");
   assert.match(first, /reconcile window 2026-10-11T19:00:00Z to 2026-10-11T19:20:00Z/);
@@ -247,14 +247,14 @@ test("a repository set that moves again within the quiet window after its row CL
   reconcile(dir, issuesMoved, RECONCILE_SECONDS, store);
   const closedAt = 2 * RECONCILE_SECONDS;
   store.close(store.rows[0].number, T0 + closedAt * SEC);
-  reconcile(dir, instead(ISSUES, { tag: "t3", body: ISSUES_NEWER }), closedAt, store);
-  assert.equal(store.creates.length, 1, "inside the quiet window the closed row takes it: no row is filed");
+  reconcile(dir, instead(ISSUES, { tag: "t3", facts: ISSUES_NEWER }), closedAt, store);
+  assert.equal(store.rows.length, 1, "inside the quiet window the closed row takes it: no row is filed");
   assert.deepEqual(store.rows.map((row) => row.state), ["CLOSED"]);
   assert.match(store.logs.join(""), new RegExp(`${REPO} moved again within the quiet window after incident #${store.rows[0].number} closed; folded into it, no row filed`));
-  const ISSUES_NEWEST = issuesOf("2026-10-12T10:00:00Z", "2026-10-11T19:50:00Z");
+  const ISSUES_NEWEST = listOf("2026-10-12T10:00:00Z", "2026-10-11T19:50:00Z");
   const late = closedAt + 24 * 60 * 60 + RECONCILE_SECONDS;
-  reconcile(dir, instead(ISSUES, { tag: "t4", body: ISSUES_NEWEST }), late, store);
-  assert.equal(store.creates.length, 2, "past the quiet window the next move is a row of its own");
+  reconcile(dir, instead(ISSUES, { tag: "t4", facts: ISSUES_NEWEST }), late, store);
+  assert.equal(store.rows.length, 2, "past the quiet window the next move is a row of its own");
   assert.deepEqual(store.rows.map((row) => row.state), ["CLOSED", "OPEN"]);
 });
 
@@ -263,11 +263,11 @@ test("a DIFFERENT repository set that drifts while the first row is open files i
   const dir = baselined([REPO, OTHER]);
   const store = incidentStore();
   reconcileAll(dir, [REPO, OTHER], issuesMoved, RECONCILE_SECONDS, store);
-  assert.equal(store.creates.length, 1, "the first pass drifts one repository: one row");
+  assert.equal(store.rows.length, 1, "the first pass drifts one repository: one row");
   const first = store.rows[0].body;
-  const bothMoved = gh((path) => (path === ISSUES || path === probePaths(OTHER)[0] ? { tag: "t3", body: ISSUES_NEWER } : steadyReading(path)));
+  const bothMoved = gh((path) => (path === ISSUES || path === probePaths(OTHER)[0] ? { tag: "t3", facts: ISSUES_NEWER } : steadyReading(path)));
   reconcileAll(dir, [REPO, OTHER], bothMoved, 2 * RECONCILE_SECONDS, store);
-  assert.equal(store.creates.length, 2, "the set is not the first set, so it is a row of its own");
+  assert.equal(store.rows.length, 2, "the set is not the first set, so it is a row of its own");
   assert.equal(store.rows[0].body, first, "and the first row is not rewritten");
   assert.match(store.rows[1].body, new RegExp(`${REPO}: issues list; ${OTHER}: issues list moved`));
 });
@@ -275,10 +275,11 @@ test("a DIFFERENT repository set that drifts while the first row is open files i
 test("a closed-row read that fails files nothing and reports the filing as not made, so the next tick retries it", () => {
   const drift: Drift = { repo: REPO, probe: "issues list", windowStartS: T0 / SEC, nowS: T0 / SEC + RECONCILE_SECONDS };
   const logs: string[] = [];
-  const run: Run = () => { throw new Error("gh refused"); };
-  const filed = fileDrift([drift], { run, log: (line) => logs.push(line), record: () => { throw new Error("recorded without reading the rows"); } });
+  hostOfTest().rowsWorld.failures.set("sharedFailureRowsOf", new Error("HTTP 502"));
+  substituteCodeHost(hostOfTest());
+  const filed = fileDrift([drift], { run: NO_GH, log: (line) => logs.push(line), record: () => { throw new Error("recorded without reading the rows"); } });
   assert.equal(filed, false);
-  assert.match(logs.join(""), /could not read the incident rows \(gh refused\); the next tick retries/);
+  assert.match(logs.join(""), /could not read the incident rows \(HTTP 502\); the next tick retries/);
 });
 
 test("seven repositories drifted in one pass are filed as ONE incident naming every one of them", () => {
@@ -311,19 +312,12 @@ test("a filing `gh` refused is retried the next tick and not lost; once filed it
 test("the default filer reaches `recordIncident` with the group and reports its refusal as `false`", () => {
   const drift: Drift = { repo: REPO, probe: "issues list", windowStartS: T0 / SEC, nowS: T0 / SEC + RECONCILE_SECONDS };
   const seen: string[] = [];
-  const run = () => connectionOf([]);
+  substituteCodeHost(hostOfTest());
+  const run = NO_GH;
   assert.equal(fileDrift([drift], { run, log: () => {}, record: (group, deps) => { seen.push(group.key); assert.equal(deps.run, run); return 982; } }), true);
   assert.equal(fileDrift([drift], { run, log: () => {}, record: () => null }), false);
   assert.deepEqual(seen, [`event-drift:${REPO}`], "keyed by the repository set, with no window");
   assert.equal(probeName(ISSUES), "issues list");
-});
-
-test("factsOf reads the newest updated_at and the count of an issues list or an Actions answer, and nothing it cannot confirm", () => {
-  assert.deepEqual(factsOf(`HTTP/2.0 200 OK\r\nEtag: "t"\r\n\r\n${ISSUES_NEW_ITEM}`), { newest: "2026-10-11T19:05:00Z", count: 3 });
-  assert.deepEqual(factsOf(`HTTP/2.0 200 OK\r\n\r\n${RUNS_NEW_RUN}`), { newest: "2026-10-11T19:06:00Z", count: 2 });
-  assert.deepEqual(factsOf("HTTP/2.0 200 OK\r\n\r\n[]"), { newest: null, count: 0 });
-  assert.equal(factsOf("HTTP/2.0 200 OK\r\n\r\n<html>"), undefined);
-  assert.equal(factsOf("HTTP/2.0 200 OK\r\n"), undefined, "no blank line: no body");
 });
 
 test("the incident text names every repository, the window and the probe, says it is inferred, and names both false-drift sources (printed for the PR)", () => {

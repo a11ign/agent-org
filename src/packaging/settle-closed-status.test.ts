@@ -1,9 +1,8 @@
-// no-token: settle-closed-rows.ts -- #827, #2719. Two cases below `await import` this module for
-// `closedRowsOnProject`, whose default `gh` (execFileSync("gh", ...), settle-closed-rows.ts:74) this
-// file never lets run: every call here hands it its own fake page-returning function instead, testing the
-// cursor-walk assembly as pure data, never a real `gh`. Measured -- both cases pass with `gh` off `PATH`
-// entirely and `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset. Without this the acceptance job refuses the
-// row's own declared command and verifies NOTHING (#2106 hit exactly that).
+// no-token: settle-closed-rows.ts -- #827, #2719. Three cases below `await import` this module for
+// `closedRowsOnProject`, which asks the code host for each page of closed rows (A11-160, step 9): every call
+// here runs on the FAKE code host's pages, testing the cursor-walk assembly as pure data, never a real `gh`.
+// The query and the reading of a page are the GitHub plugin's, and its test is `plugins/github/rows/closed-row-page.test.ts`.
+// Without this the acceptance job refuses the row's own declared command and verifies NOTHING (#2106 hit exactly that).
 /**
  * #1227: the close-side Status write, tested where no token is required.
  *
@@ -12,7 +11,7 @@
  * decision under test is pure, so it lives in a pure module and is tested here. #1009's rule: the fix is
  * placement, not weakening.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -20,16 +19,19 @@ import {
   // #2081: the board-keyed pass's pure pieces, in the same pure module and for the same reason.
   closedRowsToSettle, settleBoardRows, boardReadRefusal, shortReadRefusal,
   // #2719: the floor's population read, replaced end to end -- a cursor walk, never a capped search.
-  closedRowsPageQuery, closedRowsPageFromRead, floorReadRefusal, CLOSED_ROWS_QUERY,
+  floorReadRefusal,
 } from "../settle-closed-status.ts";
 // The Project this repo actually has, from the one module that declares it -- so the query below is
 // pinned against the real identity rather than against a literal retyped in the assertion.
 // Both are pure of `gh`, which is why a test whose Acceptance runs in a token-less job may import them.
 import { PROJECT_NUMBER } from "../board-snapshot-scope.ts";
-import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 // #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
 // closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
 import { RESTING_STATUS } from "../board-status-health.ts";
+
+afterEach(() => forgetActivation());
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
@@ -351,8 +353,10 @@ test("#2081 the board-keyed command reads no PR list -- and the same check DOES 
   assert.equal(readsPrList(source("settle-closed-status.ts")), false,
     "AND the pure module the floor's own `gh` argv moved into on review -- the done-when follows the "
     + "population read wherever it is built, or the check protects the file rather than the pass");
-  assert.equal(readsPrList(source("close-rows-sweep.ts")), true,
-    "THE POSITIVE CONTROL: the sweep this pass complements does read one, so the check above is not vacuous");
+  assert.equal(readsPrList(source("../plugins/github/rows/closed-row-page.ts")), false,
+    "AND the GitHub plugin's file the floor's population read moved into (A11-160, step 9): the done-when follows the read wherever it is built");
+  assert.equal(readsPrList(source("../plugins/github/rows/closing-pull-reads.ts")), true,
+    "THE POSITIVE CONTROL: the read the sweep this pass complements makes (it moved into the plugin with the rest of the sweep's GitHub calls) does read one, so the checks above are not vacuous");
 });
 
 /**
@@ -402,140 +406,69 @@ test("#2081 the floor credits nothing to a numberless item, and an empty populat
  * own `CLOSED_ROWS_MAX_PAGES` comment says so).
  */
 
-/** One page of `closedRowsPageQuery`'s response, in the shape `gh api graphql` returns it. */
-const closedRowsPage = (
-  entries: { number: number; projectNumbers?: number[]; totalCount?: number }[],
-  { hasNextPage = false, endCursor = null as string | null } = {},
-) => JSON.stringify({
-  data: { repository: { issues: {
-    pageInfo: { hasNextPage, endCursor },
-    nodes: entries.map(({ number, projectNumbers = [PROJECT_NUMBER], totalCount }) => ({
-      number,
-      projectItems: { totalCount: totalCount ?? projectNumbers.length,
-        nodes: projectNumbers.map((n) => ({ project: { number: n } })) },
-    })),
-  } } },
-});
-
-test("#2081/#2719 the floor's population read names THIS repository, and walks by cursor", () => {
-  const [owner, name] = REPO.split("/");
-  assert.deepEqual(closedRowsPageQuery({ owner, name, after: null }), [
-    "api", "graphql", "-f", `query=${CLOSED_ROWS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`,
-  ]);
-  const withCursor = closedRowsPageQuery({ owner, name, after: "cursor-1" });
-  assert.deepEqual(withCursor.slice(-2), ["-f", "after=cursor-1"],
-    "a second page names its cursor, never re-asking for the first");
-  assert.match(withCursor.join(" "), /issues\(states: CLOSED/,
-    "CLOSED, never OPEN or ALL -- this pass's population is rows GitHub already reports closed");
-  assert.equal(withCursor.join(" ").includes("pullRequests"), false,
-    "and it is `repository.issues`, never `repository.pullRequests` -- a PR read is what makes a "
-    + "hand-closed row invisible, which is all of #2081");
-});
-
-test("#2081/#2719 a page is narrowed to THIS Project, per issue, because the connection has no `project:` filter", () => {
-  const page = closedRowsPage([
-    { number: 100, projectNumbers: [PROJECT_NUMBER] },
-    { number: 101, projectNumbers: [99] },
-    { number: 102, projectNumbers: [] },
-  ]);
-  const result = closedRowsPageFromRead(page, PROJECT_NUMBER);
-  assert.deepEqual(result.numbers, [100],
-    "an item on some OTHER project, or on none, is excluded -- membership is read PER ISSUE because "
-    + "`repository.issues` carries no `project:` qualifier the way the old search did");
-  assert.equal(result.hasNextPage, false);
-  assert.equal(result.endCursor, null);
-});
-
-test("#2081/#2719 the walk's own cursor contract: `hasNextPage`/`endCursor` pass through untouched", () => {
-  const page = closedRowsPage([{ number: 1 }], { hasNextPage: true, endCursor: "abc123" });
-  const result = closedRowsPageFromRead(page, PROJECT_NUMBER);
-  assert.equal(result.hasNextPage, true);
-  assert.equal(result.endCursor, "abc123");
-});
-
-test("#2081/#2719 an issue whose Project membership could not be read completely REFUSES rather than guesses", () => {
-  // `projectItems(first: 10)` came back with fewer nodes than `totalCount`, and none of the ones it did
-  // fetch name this Project -- the eleventh could, and guessing either way is the defect the floor exists
-  // to catch, arriving through its own per-issue read.
-  const page = closedRowsPage([{ number: 200, projectNumbers: [99], totalCount: 11 }]);
-  assert.throws(() => closedRowsPageFromRead(page, PROJECT_NUMBER),
-    /#200's Project membership could not be read completely/,
-    "NAMED by row number: a silent guess here is the same defect the old sample-vs-population bug was, "
-    + "arriving through the per-issue read instead of the per-page one");
-});
-
-test("#2727 an issue node with no `projectItems` at all REFUSES rather than defaulting to an empty, complete list", () => {
-  // reviewer-2727's blocker: `closedRowsPageFromRead` used to default a missing `projectItems` to an empty
-  // `nodes` array and a `totalCount` of 0, which reads as `complete` with zero matches -- silently reporting
-  // "not on this board" for a row whose membership was never actually fetched, undercounting the floor.
-  const page = JSON.stringify({ data: { repository: { issues: {
-    pageInfo: { hasNextPage: false, endCursor: null },
-    nodes: [{ number: 300 }],
-  } } } });
-  assert.throws(() => closedRowsPageFromRead(page, PROJECT_NUMBER),
-    /#300's Project membership came back in an unexpected shape -- refusing to default it to an empty, complete list/,
-    "NAMED by row number: a missing `projectItems` must refuse, the same as one with fewer nodes than "
-    + "`totalCount` -- both are membership this read never actually established");
-});
-
-test("#2081/#2719 the floor refuses every response shape it would otherwise have to guess at", () => {
-  assert.throws(() => closedRowsPageFromRead("not json at all", PROJECT_NUMBER),
-    /was not JSON -- refusing to guess/);
-  assert.throws(() => closedRowsPageFromRead(
-    JSON.stringify({ errors: [{ message: "rate limited" }] }), PROJECT_NUMBER),
-    /came back with errors -- refusing to guess/);
-  assert.throws(() => closedRowsPageFromRead(JSON.stringify({ data: {} }), PROJECT_NUMBER),
-    /was not the expected shape -- refusing to guess/);
-  assert.throws(() => closedRowsPageFromRead(
-    JSON.stringify({ data: { repository: { issues: {
-      pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ title: "no number" }],
-    } } } }), PROJECT_NUMBER),
-    /entry 0 has no number -- refusing to guess/,
-    "NAMED by position: this list is the only thing that can tell a complete board read from a partial "
-    + "one, so a list the parser had to guess at would make the floor report clean over a population it "
-    + "never established");
-});
+/** The fake code host the walk runs on, with the pages it will answer in order. */
+function hostWithPages(pages: ({ numbers: number[]; hasNextPage: boolean; endCursor: string | null } | Error)[] | null) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.tail.closing.closedRowPages = pages;
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
 
 test("#2719 THE ACCEPTANCE CASE: a population larger than any single page is read completely, paged rather than truncated or refused", async () => {
   const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
   // Three pages, 40 rows each -- bigger than the old FLOOR_LIMIT would have needed to fail at, and nothing
   // here is a page the connection itself would ever cap: `repository.issues` pages until `hasNextPage` is
   // false, however large the real population grows.
-  const pageOf = (from: number, hasNextPage: boolean, endCursor: string | null) => closedRowsPage(
-    Array.from({ length: 40 }, (_, i) => ({ number: from + i })), { hasNextPage, endCursor });
-  const pages = [pageOf(1000, true, "c1"), pageOf(1040, true, "c2"), pageOf(1080, false, null)];
-  let call = 0;
-  const numbers = closedRowsOnProject(() => pages[call++]);
+  const pageOf = (from: number, hasNextPage: boolean, endCursor: string | null) => ({ numbers: Array.from({ length: 40 }, (_, i) => from + i), hasNextPage, endCursor });
+  const world = hostWithPages([pageOf(1000, true, "c1"), pageOf(1040, true, "c2"), pageOf(1080, false, null)]);
+  const numbers = closedRowsOnProject();
   assert.equal(numbers.length, 120, "all three pages' rows came back -- none dropped at any page boundary");
   assert.deepEqual([numbers[0], numbers[119]], [1000, 1119],
     "the full span is present, not just the first page's worth");
-  assert.equal(call, 3, "and the walk stopped as soon as `hasNextPage` was false -- no extra call spent");
+  assert.deepEqual(world.tail.closing.pagesRead, [null, "c1", "c2"], "each page was asked from the cursor the page before it gave, and the walk stopped as soon as `hasNextPage` was false -- no extra call spent");
 });
 
 test("#2719 a cursor that does not move REFUSES rather than reading the same page forever", async () => {
   const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
-  const stuckPage = closedRowsPage([{ number: 1 }], { hasNextPage: true, endCursor: "same-cursor" });
-  assert.throws(() => closedRowsOnProject(() => stuckPage),
+  const stuckPage = { numbers: [1], hasNextPage: true, endCursor: "same-cursor" };
+  const world = hostWithPages([stuckPage, stuckPage, stuckPage]);
+  assert.throws(() => closedRowsOnProject(),
     /gave no cursor to advance to -- refusing to guess/,
     "a page that says there is more but hands back the SAME cursor (or none) cannot be walked, and "
     + "walking it anyway is the infinite loop this contract exists to refuse instead of entering");
+  assert.deepEqual(world.tail.closing.pagesRead, [null, "same-cursor"], "and it refused at the second page, asked from the cursor the first gave, without reading a third");
 });
 
 test("#2719 a population that never finishes paging REFUSES rather than looping forever", async () => {
   const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
-  let call = 0;
   // The cursor genuinely advances every call -- this is not the stuck-cursor case above -- and
   // `hasNextPage` never turns false, so this is what a page-count safety valve exists to catch.
-  const neverEnds = () => closedRowsPage([{ number: 1 }], { hasNextPage: true, endCursor: `c${call++}` });
-  assert.throws(() => closedRowsOnProject(neverEnds),
+  hostWithPages(Array.from({ length: 200 }, (_, call) => ({ numbers: [1], hasNextPage: true, endCursor: `c${call}` })));
+  assert.throws(() => closedRowsOnProject(),
     /did not finish within \d+ pages -- refusing to report a population that might still be paging/,
     "a bug that pages forever is a bug, not a bigger population -- and it must be LOUD, never a silent "
     + "truncation the way the old FLOOR_LIMIT was until the reviews caught it");
 });
 
+test("#2719 a page the code host could not read fails the walk, never a short population", async () => {
+  const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
+  hostWithPages([{ numbers: [1], hasNextPage: true, endCursor: "c1" }, new Error("HTTP 502")]);
+  assert.throws(() => closedRowsOnProject(), /HTTP 502/, "the numbers of the first page are not a population when the second could not be read");
+});
+
+test("#2719 with no pages seeded, the walk reads the closed rows of the board the world holds", async () => {
+  const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
+  const world = hostWithPages(null);
+  const row = (number: number, state: "OPEN" | "CLOSED", onBoard: boolean) => ({ number, title: `Row ${number}`, body: "", state, labels: [], createdAt: "2026-10-01T00:00:00Z", closedAt: null, comments: [], blockedBy: [], onBoard, boardStatus: null });
+  world.rows.set(1, row(1, "CLOSED", true));
+  world.rows.set(2, row(2, "CLOSED", false));
+  world.rows.set(3, row(3, "OPEN", true));
+  assert.deepEqual(closedRowsOnProject(), [1], "a closed row on the board, and not an open one or one off the board");
+});
+
 test("#2081 the live wiring supplies the declared Project and a named page-count safety valve", () => {
   const wiring = codeOnly(source("settle-closed-rows.ts"));
-  assert.match(wiring, /closedRowsPageFromRead\(raw, PROJECT_NUMBER\)/,
+  assert.match(wiring, /closedRowPageOf\(\{[^}]*projectNumber: PROJECT_NUMBER[^}]*\}\)/,
     "the one call site passes the DECLARED identity, never a literal retyped here -- the floor asking "
     + "about the wrong Project is the second review point one level up");
   const valve = wiring.match(/const CLOSED_ROWS_MAX_PAGES = (\d+);/);

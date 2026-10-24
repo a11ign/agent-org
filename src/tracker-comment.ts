@@ -24,7 +24,6 @@
 // NOTHING IS WRITTEN WHEN IT REFUSES. "It refused" and "it wrote the error and then complained" are
 // indistinguishable from an exit code, which is why the acceptance asserts the comment is byte-identical
 // afterwards rather than that the tool exited non-zero.
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -32,55 +31,44 @@ import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
 import { REPO } from "./project-identity.ts";
+import type { CommentBodyRead } from "./plugins/contracts/code-host-rows-classes.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 
-const defaultRun: (args: string[]) => string = (args): string => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
-
-/** THE REAL ENDPOINT. `issues/{issue}/comments/{id}` is not one, and asking for it returns a 404
- * DOCUMENT -- which is the whole incident. Built here so no call site spells it again. */
-export const commentPath = (id: number) => `repos/${REPO}/issues/comments/${id}`;
+/** The code host's own runner, with the buffer a long comment needs. It is what the code host's operations below are run on. */
+const defaultRun: RowsRun = (args) => rows().runnerWith({ maxBuffer: 32 * 1024 * 1024 })(args);
 
 /** A body's identity, for compare-and-swap. Short because it is read by people in a refusal message. */
 export const digest = (text: string) =>
   createHash("sha256").update(text, "utf8").digest("hex").slice(0, 12);
 
 /**
- * Pure: is this response a COMMENT, or something else that happens to be JSON?
- *
- * GitHub's error documents carry `message` and no `body`. A comment carries `body` -- possibly empty,
- * which is a real state and must not be confused with absent, so this tests for the KEY rather than for
- * truthiness. Returns the body, or throws naming what it found instead.
- * @param {string} raw @param {number} id
+ * Pure: is this answer a COMMENT, or something else that happens to be JSON? THE CODE HOST TELLS WHICH (`commentBodyOf`): GitHub's error documents carry `message` and no `body`, a comment carries `body`
+ * -- possibly empty, which is a real state and must not be confused with absent. Returns the body, or throws naming what it found instead.
+ * @param {CommentBodyRead} read @param {number} id
  * @returns {string}
  */
-export function bodyOfCommentResponse(raw: string, id: number): string {
-  let parsed: any;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
+export function bodyOfCommentRead(read: CommentBodyRead, id: number): string {
+  if (read.kind === "body") return read.body;
+  if (read.kind === "not-json") {
     throw new Error(`tracker-comment: the response for comment ${id} was not JSON -- refusing to treat it `
-      + `as a body. First 200 chars: ${raw.slice(0, 200)}`, { cause });
+      + `as a body. First 200 chars: ${read.head}`);
   }
-  const isBodyRecord = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "body" in parsed
-    && typeof parsed.body === "string";
-  if (isBodyRecord) {
-    return parsed.body;
-  }
-  const looksLikeAnError = parsed && typeof parsed === "object" && typeof parsed.message === "string";
   throw new Error(`tracker-comment: the response for comment ${id} is not a comment -- it has no \`body\`.`
-    + (looksLikeAnError ? ` GitHub said: ${parsed.message}` : ` Got: ${JSON.stringify(parsed).slice(0, 200)}`)
+    + (read.said === null ? ` Got: ${read.got}` : ` GitHub said: ${read.said}`)
     + "\nThis is the shape that became a comment's entire text on #546. Nothing was written.");
 }
 
 /**
  * Reads a comment. THROWS on a non-zero exit AND on a response that is not a comment -- both, because the
  * status is the reliable signal and the shape is the one that survives a caller who dropped it.
- * @param {number} id @param {{ run?: typeof defaultRun }} [deps]
+ * @param {number} id @param {{ run?: RowsRun }} [deps]
  * @returns {string}
  */
-export function readComment(id: number, { run = defaultRun }: { run?: typeof defaultRun; } = {}): string {
-  let raw: string;
+export function readComment(id: number, { run = defaultRun }: { run?: RowsRun; } = {}): string {
+  let read: CommentBodyRead;
   try {
-    raw = run(["api", commentPath(id)]);
+    read = rows().commentBodyOf({ repo: REPO, id, run });
   } catch (cause) {
     // `gh` wrote the error DOCUMENT to stdout before exiting non-zero. Surface it -- it names the cause --
     // but never return it, which is precisely what the incident did.
@@ -90,7 +78,7 @@ export function readComment(id: number, { run = defaultRun }: { run?: typeof def
     throw new Error(`tracker-comment: could not read comment ${id} -- refusing to treat the failure as a `
       + `body. ${detail}`, { cause });
   }
-  return bodyOfCommentResponse(raw, id);
+  return bodyOfCommentRead(read, id);
 }
 
 /**
@@ -128,14 +116,14 @@ export function editRefusal({ current, expect, next }: { current: string; expect
 /**
  * Reads, checks, then writes -- IN THAT ORDER, which is the acceptance. A refusal at any step writes
  * nothing.
- * @param {number} id @param {{ next: string, expect: string | undefined, run?: typeof defaultRun }} args
+ * @param {number} id @param {{ next: string, expect: string | undefined, run?: RowsRun }} args
  * @returns {{ written: true, from: string, to: string } | { written: false, reason: string }}
  */
-export function editComment(id: number, { next, expect, run = defaultRun }: { next: string; expect: string | undefined; run?: typeof defaultRun; }): { written: true; from: string; to: string; } | { written: false; reason: string; } {
+export function editComment(id: number, { next, expect, run = defaultRun }: { next: string; expect: string | undefined; run?: RowsRun; }): { written: true; from: string; to: string; } | { written: false; reason: string; } {
   const current = readComment(id, { run });
   const refusal = editRefusal({ current, expect, next });
   if (refusal) return { written: false, reason: refusal };
-  run(["api", "--method", "PATCH", commentPath(id), "-f", `body=${next}`]);
+  rows().editComment({ repo: REPO, id, body: next, run });
   return { written: true, from: digest(current), to: digest(next) };
 }
 

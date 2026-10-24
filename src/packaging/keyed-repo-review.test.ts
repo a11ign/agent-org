@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#2969)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; the gate's executor is an injected `run` that answers the open list under the arguments the fake code host builds for it, every per-tick read is a stub, and `git` and `herdr` are fakes, so nothing is spawned (#2969)
 /**
  * #2969: A REPOSITORY THE ORG OPENS PULL REQUESTS IN, THAT THE GATE DOES NOT DECLARE, IS INVISIBLE TO EVERY PULL-REQUEST CAUSE.
  *
@@ -17,7 +17,7 @@
  *
  * POSITIVE CONTROLS ARE IN THIS FILE, each next to the assertion it serves (`.claude/rules/guards-and-assertions.md`).
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +51,10 @@ const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
 const { deliver } = await import("../wake/fyi-queue.ts");
 const { noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake/reviewer-tokens-and-checkouts.ts");
 const { reviewerEnvironment } = await import("../wake/pull-request-spawn-orders.ts");
+const { forgetActivation, substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+
+afterEach(() => forgetActivation());
 
 const SESSION = "reviewer-agent-org-6";
 /** The refusal of a `{ clone } | { refusal }` answer, or `undefined` when it was a clone. */
@@ -84,11 +88,19 @@ type Readings = NonNullable<Parameters<typeof scopeTick>[3]>;
 const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
   tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) } as unknown as Readings;
 
-/** One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `scopeTick`. `gh` answers the pull-request list only. */
+/**
+ * One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `scopeTick`. The gate's executor (`run`) answers the open
+ * list and nothing else, under the arguments the code host builds for it (the fake's are a stand-in line), and records the repository each read was aimed at.
+ */
 function ordersOf(key: string, prs: unknown[]) {
+  substituteCodeHost(createFakeCodeHost());
   const scope = scopesOf([homeProjectDeclaration()]).find((s) => s.key === key)!;
   const aimedAt: (string | undefined)[] = [];
-  const run = (args: string[], repo?: string) => { aimedAt.push(repo); return args[0] === "pr" ? JSON.stringify(prs) : "[]"; };
+  const run = (args: string[], repo?: string) => {
+    aimedAt.push(repo);
+    if (args[0] === "fake-open-pull-list") return JSON.stringify(prs);
+    throw new Error(`the fake code host acts on its own state: no gh is run for ${args.join(" ")}`);
+  };
   const orders = scopeTick(scope, { drain: false }, readLanes(scope, run), NO_READINGS, DECLARED).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
   return { orders, aimedAt };
 }
@@ -389,9 +401,10 @@ test("(4) a keyed pull request with no `session:` label and no row falls to `ceo
 // --- THE CLAIM'S OVERLAP CHECK READS THE NEW REPOSITORY TOO ----------------------------------------------------------------------
 
 test("a consequence of declaring it: a claim's file-overlap lookup reads the open pull requests of BOTH declared repositories (#2617)", () => {
-  const asked: string[] = [];
-  const run = (args: string[]) => { asked.push(args[args.indexOf("--repo") + 1]); return "[]"; };
-  assert.deepEqual(lookupOpenPrFiles({ run, log: () => {} }), []);
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  assert.deepEqual(lookupOpenPrFiles({ log: () => {} }), []);
+  const asked = host.rowsWorld.calls.filter((call) => call.startsWith("openPullsWithFilesOf ")).map((call) => call.slice("openPullsWithFilesOf ".length));
   const declared = scopesOf([homeProjectDeclaration()]).flatMap((scope) => (scope.code ? [scope.code.repo] : []));
   assert.deepEqual(asked.slice(0, 2), ["a11ign/a11ign", "a11ign/agent-org"], "the primary's first, then `agent-org`'s: one call each");
   assert.deepEqual(asked, declared, "and every declared code repository after them, once, in declaration order");

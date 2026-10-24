@@ -17,6 +17,7 @@
 // - A READ REFUSED FOR A LIMIT IS NOT ASKED AGAIN in the same process (the tick). 593 of the 1,781 list calls in one outage hour were
 //   refused ones, so a retry is the load that keeps the limit spent. The refusal is remembered, and the line names WHICH resource.
 import type { ClaimedRow, LabelledRead as Ask, RowsHelpers, RowsRun as Run } from "../../../src/plugins/contracts/code-host-rows.ts";
+import { GRAPHQL_POOL_PROBE } from "./graphql-pool-probe.ts";
 
 /** What core knows of GitHub's rate-limit answers, handed in by the activation (`RowsHelpers.pool`). */
 export type Pool = RowsHelpers["pool"];
@@ -90,7 +91,7 @@ function exhaustedResource(error: unknown, run: Run, pool: Pool): string {
   if (/secondary rate limit/i.test(textOf(error))) return "secondary (the abuse limit, which no pool count shows)";
   const own = pool.fromResponse((error as { stdout?: string; })?.stdout ?? null);
   if (own?.resource) return `${own.resource} (${own.remaining} of ${own.limit} left, named by the refused response)`;
-  const probe = pool.fromResponse(pool.rawResponse(pool.probe, run));
+  const probe = pool.fromResponse(pool.rawResponse(GRAPHQL_POOL_PROBE, run));
   if (probe === null) return "UNREADABLE (the refusal names an account, and the follow-up read of the GraphQL pool failed too)";
   // #1523: an INSTALLATION refused while its pool reads healthy is a secondary limit, and the probe's count is the evidence for it, so the line says so.
   if (/for installation ID \d+/.test(textOf(error)) && probe.remaining > 0) {

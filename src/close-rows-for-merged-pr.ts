@@ -128,6 +128,8 @@ import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.ts";
 // imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.ts`
 // carries above.
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
+// A11-160: the code host runs `gh`; this file asks it for the operations below and keeps the policy (what a refusal means, which rows are ours to close).
+import { rows } from "./plugins/rows.ts";
 // #4641: a closed build row whose Done-when named a live reading gets its verify row filed in the same turn.
 import { fileLeftoverVerifyRow, fileVerifyRow, verifyMarker, type BuildRow, type DeclinedItem, type VerifyEffects, type VerifyOutcome } from "./verify-row.ts";
 
@@ -414,11 +416,12 @@ export function reportOrphanedRow({ branch, prNumber, sha, declaration }: { bran
   return report.number;
 }
 
-/** @param {string[]} args */
-const gh = (args: string[]) => {
-  assertNoLeakInArgv("gh", args); // #1053: guarded in the SPAWN HELPER, not per call site
-  return execFileSync("gh", args, { encoding: "utf8" }).trim();
-};
+/**
+ * The code host's runner for every call this file makes, with the leak guard (#1053) as its `guard`: guarded in the RUNNER, not per call site, so every call added tomorrow is covered too. Each answer is trimmed,
+ * as the spawn this replaced trimmed it.
+ * @param {string[]} args
+ */
+const gh = (args: string[]) => rows().runnerWith({ guard: (given) => assertNoLeakInArgv(rows().command, [...given]) })(args).trim();
 
 /**
  * #1443: was #1360's saving (no Status move for a row already Done) worth anything, MEASURED, on a real
@@ -466,12 +469,10 @@ export function rateLimitLine(label: string, httpDump: string): string {
  * the field GitHub's own docs name for exactly this, at effectively no cost against the real budget.
  * Never throws -- a rate-limit reading that fails to print must not take the sweep down with it.
  * @param {string} label
- * @param {(args: string[]) => string} [gh_]
  */
-export function logRateLimit(label: string, gh_: (args: string[]) => string = gh) {
+export function logRateLimit(label: string) {
   try {
-    console.log(rateLimitLine(label, gh_(["api", "graphql", "-f",
-      "query=query{rateLimit{limit cost remaining resetAt}}", "--include"])));
+    console.log(rateLimitLine(label, rows().rateLimitDumpOf({ run: gh })));
   } catch (cause) {
     console.error(`RATE-LIMIT ${label}: could not read -- ${cause instanceof Error ? cause.message : cause}`);
   }
@@ -545,7 +546,7 @@ export function closingComment(n: number, { prNumber, sha, owedBy = [], basis = 
 function closeOneRow(n: number, { prNumber, sha, repo, owedBy = [], basis = "github" }: { prNumber: string; sha: string; repo: string; owedBy?: string[]; basis?: ClosureBasis; }): boolean {
   const sentence = closingComment(n, { prNumber, sha, owedBy, basis });
   try {
-    gh(["issue", "close", String(n), "--repo", repo, "--comment", sentence, "--reason", "completed"]);
+    rows().closeCompletedRow({ repo, row: n, comment: sentence, run: gh });
     console.log(`CLOSE-ROWS: #${n} CLOSED${basis === "body" ? " FROM THE BODY'S DECLARATION" : basis === "closes-none" ? " FROM A `Closes: none` THAT NAMES IT" : ""} (PR ${prName(prNumber)}, merge ${sha}).`);
     return true;
   } catch (cause) {
@@ -612,8 +613,7 @@ export function liveOrphanEffects(repo: string): {
   return {
     lookupRow: (n) => {
       try {
-        const row = JSON.parse(gh(["issue", "view", String(n), "--repo", repo, "--json", "number,state,labels"]));
-        return { number: row.number, state: row.state, labels: (row.labels ?? []).map((l: { name: string; }) => l.name) };
+        return rows().rowNumberStateAndLabelsOf({ repo, number: n, run: gh });
       } catch (cause) {
         console.log(`CLOSE-ROWS: could not read #${n} to report on it -- ${cause instanceof Error ? cause.message : cause}`);
         return null;
@@ -621,7 +621,7 @@ export function liveOrphanEffects(repo: string): {
     },
     comment: (n, text) => {
       try {
-        gh(["issue", "comment", String(n), "--repo", repo, "--body", text]);
+        rows().commentOnIssue({ repo, issue: n, body: text, run: gh });
         console.log(`CLOSE-ROWS: #${n} REPORTED -- its PR merged closing no row (#2036).`);
       } catch (cause) {
         console.log(`CLOSE-ROWS: #${n} could not be reported on -- ${cause instanceof Error ? cause.message : cause}`);
@@ -723,15 +723,8 @@ export function applyClosurePlan({ close, already, skip = [], owed = [], unreada
  * @returns {{ number: number, state: string, labels: string[], reopenedAt: string | null } | null}
  */
 export function liveLookupDeclaredRow(n: number, repo: string): { number: number; state: string; labels: string[]; reopenedAt: string | null; } | null {
-  const [owner, name] = repo.split("/");
-  const query = `{repository(owner:"${owner}",name:"${name}"){issue(number:${n}){number state `
-    + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
-    + `... on ReopenedEvent{createdAt}}}}}}`;
   try {
-    const issue = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.issue"]));
-    if (issue === null) return null;
-    return { number: issue.number, state: issue.state, labels: (issue.labels?.nodes ?? []).map((l: { name: string; }) => l.name),
-      reopenedAt: issue.timelineItems?.nodes?.[0]?.createdAt ?? null };
+    return rows().declaredRowOf({ repo, number: n, run: gh });
   } catch (cause) {
     console.log(`CLOSE-ROWS: could not read declared #${n} -- ${cause instanceof Error ? cause.message : cause}`);
     return null;
@@ -795,7 +788,6 @@ const VERIFY_ROW_WINDOW = 200;
  * @returns {VerifyEffects}
  */
 export function liveVerifyEffects(repo: string): VerifyEffects {
-  const idOf = (n: number) => gh(["api", `repos/${repo}/issues/${n}`, "--jq", ".id"]);
   return {
     findExisting: (build) => {
       // #5076: the NEWEST rows, open and closed, matched by the build's marker. `--search "Verify <title>" in:title` was sent as a GitHub SEARCH, whose allowance the
@@ -805,15 +797,10 @@ export function liveVerifyEffects(repo: string): VerifyEffects {
       return found.find((row) => String(row.body ?? "").includes(verifyMarker(build.number)))?.number ?? null;
     },
     create: (plan) => {
-      const labels = plan.labels.flatMap((label) => ["--label", label]);
-      const milestone = plan.milestone === null ? [] : ["--milestone", plan.milestone];
-      const url = gh(["issue", "create", "--repo", repo, "--title", plan.title, "--body", plan.body, ...labels, ...milestone]);
-      const made = /\/issues\/(\d+)\s*$/.exec(url);
-      if (!made) throw new Error(`gh issue create answered no issue URL: ${url}`);
-      return Number(made[1]);
+      return rows().fileRowInMilestone({ repo, title: plan.title, body: plan.body, labels: plan.labels, milestone: plan.milestone, run: gh });
     },
-    blockBy: (child, build) => { gh(["issue", "edit", String(child), "--repo", repo, "--add-blocked-by", String(build)]); },
-    addSubIssue: (child, parent) => { gh(["api", "-X", "POST", `repos/${repo}/issues/${parent}/sub_issues`, "-F", `sub_issue_id=${idOf(child)}`]); },
+    blockBy: (child, build) => { rows().addBlockedByEdge({ repo, row: child, blocker: build, run: gh }); },
+    addSubIssue: (child, parent) => { rows().addSubIssueTo({ repo, parent, child, run: gh }); },
     board: (child) => {
       try {
         execFileSync(process.execPath, [fileURLToPath(new URL("./row-file.ts", import.meta.url)), `--board=${child}`], { encoding: "utf8", stdio: "pipe" });
@@ -828,13 +815,8 @@ export function liveVerifyEffects(repo: string): VerifyEffects {
 
 /** #4641: READS ONE CLOSED ROW AS A BUILD ROW -- title, Done-when body, labels, milestone and the epic above it. `null` when it cannot be read ("could not read" is not "no reading"). */
 export function liveReadBuildRow(n: number, repo: string): BuildRow | null {
-  const [owner, name] = repo.split("/");
-  const query = `{repository(owner:"${owner}",name:"${name}"){issue(number:${n}){number title body labels(first:30){nodes{name}} milestone{title} parent{number}}}}`;
   try {
-    const issue = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.issue"]));
-    if (issue === null) return null;
-    return { number: issue.number, title: issue.title, body: issue.body ?? "", labels: (issue.labels?.nodes ?? []).map((l: { name: string; }) => l.name),
-      milestone: issue.milestone?.title ?? null, parent: issue.parent?.number ?? null };
+    return rows().buildRowOf({ repo, number: n, run: gh });
   } catch (cause) {
     console.log(`VERIFY-ROW: could not read #${n} -- ${cause instanceof Error ? cause.message : cause}`);
     return null;
@@ -901,28 +883,16 @@ function exitAfterSweep(code: number): never {
  * or when the lookup fails.
  */
 function readClosingReferences(repo: string, number: string) {
-  const [owner, name] = repo.split("/");
   try {
-    // `labels(first:20){nodes{name}}` added for #754 -- the same lookup that already resolves WHICH rows
-    // to close also carries WHAT each one is still labelled, so stripping the claim needs no second
-    // round trip and reads the row's state at the same instant the close decision was made.
-    // #1877: `mergedAt` on the PR and each issue's last `ReopenedEvent` -- the one read that tells a row
-    // reopened after THIS merge apart from a row nobody has looked at yet, both off GitHub's own timeline.
-    // #2036: `headRefName` and `body` -- read ONLY on the path where nothing was closed, to name the row
-    // the branch was built for and quote the declaration that closed nothing. No extra round trip: this
-    // is the lookup that already runs on every merge.
-    const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
-      + `merged baseRefName mergedAt headRefName body mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state repository{nameWithOwner} `
-      + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
-      + `... on ReopenedEvent{createdAt}}}}}}}}`;
-    const pr = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
-      "--jq", ".data.repository.pullRequest"]));
+    // The one lookup that resolves WHICH rows to close also carries WHAT each one is still labelled (#754), when each was last reopened (#1877) and, for the path where nothing was closed, the branch and body (#2036):
+    // the code host reads them in one call, so stripping the claim needs no second round trip and reads the row's state at the same instant the close decision was made.
+    const pr = rows().mergedPullClosingOf({ repo, number, run: gh });
     // Enforced HERE, not only in the workflow's `if:` -- `workflow_dispatch` (#394) takes an arbitrary
     // PR number with no event to gate on, so a manual run against an unmerged PR, or one merged into a
     // branch other than `main`, must refuse the same way the `pull_request` path's own `if:` already
     // does. `close-merged-rows.mjs`'s own header names the risk this closes: "a tool that closed rows
     // automatically would eventually close one whose work did not actually land."
-    if (pr.merged !== true) {
+    if (!pr.merged) {
       console.error(`CANNOT ASK: #${number} is not merged -- refusing to close rows for a PR whose work `
         + "may not have landed.");
       exitAfterSweep(EXIT.CANNOT_ASK);
@@ -931,21 +901,14 @@ function readClosingReferences(repo: string, number: string) {
       console.error(`CANNOT ASK: #${number} merged into \`${pr.baseRefName}\`, not \`main\` -- refusing.`);
       exitAfterSweep(EXIT.CANNOT_ASK);
     }
-    const nodes: {
-        number: number; state: string; repository?: { nameWithOwner: string; }; labels: { nodes: { name: string; }[]; };
-        timelineItems: { nodes: { createdAt: string; }[]; };
-    }[] = pr.closingIssuesReferences.nodes;
     // #2995: only the tracker's rows are ours to close; a pull request of another repository names one in the full form.
-    const issues = nodes.filter((i) => (i.repository?.nameWithOwner ?? repo) === REPO).map((i) => ({
-      number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
-      reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
-    }));
+    const issues = pr.closing.filter((i) => (i.repo ?? repo) === REPO).map(({ number: row, state, labels, reopenedAt }) => ({ number: row, state, labels, reopenedAt }));
     return {
       issues,
-      sha: pr.mergeCommit?.oid ?? "unknown",
-      prMergedAt: pr.mergedAt ?? null,
-      headRefName: pr.headRefName ?? null,
-      prBody: pr.body ?? "",
+      sha: pr.mergeSha ?? "unknown",
+      prMergedAt: pr.mergedAt,
+      headRefName: pr.headRefName,
+      prBody: pr.body,
     };
   } catch (cause) {
     console.error(`CANNOT ASK: resolving #${number}'s closing references failed -- `

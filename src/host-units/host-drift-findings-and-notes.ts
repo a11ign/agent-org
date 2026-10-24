@@ -10,10 +10,16 @@ import { homeHostConfig, stateEntryPath } from "../host-config.ts";
 import { activeCodeHost } from "../plugins/active.ts";
 import type { CodeHostWrapper } from "../plugins/contracts/code-host.ts";
 import { wrapperInputsOf } from "../plugins/host-place.ts";
-import { INSTALLED_DIR, REPO_ROOT, RUNS_PACKAGE_SCRIPT, SHIPPED_DIR, binDirectory, entriesFromCommand, environmentDeclarations, execCommands, identityDeclarations, leadsDirectory, leadsListText, opaqueCommands, packageScripts, shellSpawnsGh, shippedContext, shippedHostScripts, shippedScriptText, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type HostConfig, type ShippedDeps, unitEntryPoints, unitPrefix, workersDirectory } from "./shipped-unit-texts-and-declarations.ts";
+import { INSTALLED_DIR, PLUGIN_HOST_DIR, REPO_ROOT, RUNS_PACKAGE_SCRIPT, SHIPPED_DIR, binDirectory, entriesFromCommand, environmentDeclarations, execCommands, identityDeclarations, leadsDirectory, leadsListText, opaqueCommands, packageScripts, shellSpawnsGh, shippedContext, shippedHostScripts, shippedScriptDir, shippedScriptText, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type HostConfig, type ShippedDeps, unitEntryPoints, unitPrefix, workersDirectory } from "./shipped-unit-texts-and-declarations.ts";
 
 /**
- * DOES STARTING THIS FILE REACH A `gh` SPAWN? Two edge kinds, because the repository uses both: local
+ * A FILE THAT ASKS THE CODE HOST FOR ITS ROWS SPAWNS `gh` IN EFFECT (A11-160, step 9). No file outside `plugins/github` holds a `gh` spawn any more (`gh-call-ratchet.test.ts`), so the spawn a unit reaches is the code
+ * host's: the process the plugin starts for a caller that imports `rows()` runs under the unit's own `GH_CONFIG_DIR`, and a unit that does not declare one gets the person's account all the same.
+ */
+const ASKS_CODE_HOST = /\bfrom\s+["'][^"']*plugins\/rows\.ts["']/;
+
+/**
+ * DOES STARTING THIS FILE REACH A `gh` SPAWN (OR THE CODE HOST'S, which is where it is)? Two edge kinds, because the repository uses both: local
  * imports, and an `pnpm run` of another script. `SPAWNS_GH` is IMPORTED rather than retyped -- it is the
  * one copy `acceptance-commands.ts` and `gh-token-jobs.test.ts` already share, so the spawns that make
  * a CI job need a token and the spawns that make a unit need an identity cannot drift apart.
@@ -49,7 +55,7 @@ export function ghSpawnReachedFrom(entry: string, { read = readFileSync, exists 
       continue;
     }
     const code = stripComments(text);
-    if (SPAWNS_GH.test(code)) return file;
+    if (SPAWNS_GH.test(code) || ASKS_CODE_HOST.test(code)) return file;
     pending.push(...imports(file));
     for (const [, name] of code.matchAll(RUNS_PACKAGE_SCRIPT)) {
       pending.push(...entriesFromCommand(`pnpm run ${name}`, { repoRoot, scripts, exists }));
@@ -701,20 +707,20 @@ export function supersededHostScripts(deps: ShippedDeps & {
   return shippedHostScripts(shippedDir, { read: readDir })
     .filter((name) => exists(join(scriptDir, name)))
     .map((name) => supersededFinding(name, scriptDir,
-      { same: textOf(join(shippedDir, name), read) === textOf(join(scriptDir, name), read) }));
+      { same: textOf(join(shippedScriptDir(shippedDir, name), name), read) === textOf(join(scriptDir, name), read), shipped: shippedScriptDir(shippedDir, name) === PLUGIN_HOST_DIR ? "plugins/github/host" : "host" }));
 }
 
 /**
  * IDENTICAL AND DIVERGED ARE DIFFERENT FINDINGS, because only one of them can be removed without
  * reading it. An identical leftover is a second copy with no check on it; a diverged one means somebody
  * edited one of the two, and which one holds the change is a question this file cannot answer.
- * @param {string} name @param {string} scriptDir @param {boolean} same @returns {Finding}
+ * @param {string} name @param {string} scriptDir @param {{ same: boolean, shipped: string }} where `shipped` is the tool's directory that holds the script @returns {Finding}
  */
-function supersededFinding(name: string, scriptDir: string, { same }: { same: boolean; }): Finding {
+function supersededFinding(name: string, scriptDir: string, { same, shipped }: { same: boolean; shipped: string; }): Finding {
   const path = `${scriptDir}/${name}`;
   return { unit: path, supersededScript: path,
     problem: same ? "SUPERSEDED COPY -- IDENTICAL FOR NOW" : "SUPERSEDED COPY -- ALREADY DIVERGED",
-    detail: `packages/agent-org/host/${name} is the copy the unit starts; this one is left over from `
+    detail: `packages/agent-org/${shipped}/${name} is the copy the unit starts; this one is left over from `
       + `before this repository shipped it, and nothing starts it. ${same
         ? "It matches the shipped file TODAY, which is the only day anything guarantees -- it is a "
         + "second copy with no check on it, and an edit to it would look like it was doing something."

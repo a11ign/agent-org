@@ -1,4 +1,4 @@
-// no-token: gh -- `gatherChanges` takes `git` and `gh` as seams, so nothing here reaches the real `gh`.
+// no-token: gh -- `gatherChanges` takes `git` as a seam and reads the fake code host (A11-160, step 9), so nothing here reaches the real `gh`.
 /**
  * agent-org#1672: a pull request opened by an Actions token reads `author: null` from GraphQL, and `gatherChanges` pushed that
  * null as the change's first actor, so `judgeChange` read it as an unknown login and called the change UNREAD, although every
@@ -7,10 +7,14 @@
  * THE RULING: a null pull-request author is SILENCE, not an actor. The carried commits' own logins are the witnesses. A change
  * whose only actors are null (no carried commit resolves) stays UNREAD: absence is not zero.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { buildLedger, gatherChanges, judgeChange } from "../hand-fix-ledger.ts";
-import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
+
+afterEach(() => forgetActivation());
 
 const MERGE = "m".repeat(40);
 const OLD = "a".repeat(40);
@@ -33,15 +37,12 @@ function changesOf({ author, carried }: { author: string | null; carried: (strin
     if (args[0] === "log" && args[1] === `${OLD}..${BRANCH}`) return shas.map((sha) => `${sha}\n`).join("");
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
-  const gh = (args: string[]) => {
-    if (readsRowsSince(args) !== null) {
-      return sinceAnswer(args, [{ number: 77, mergedAt: "2026-10-10T10:00:00Z", author: author === null ? null : { login: author }, title: "x", body: "" }]);
-    }
-    if (args[0] === "api" && args[1] === "repos/o/r/commits/main") return HEAD;
-    if (args[0] === "api") return shas.map((sha, i) => `${sha}\t${carried[i] ?? ""}\n`).join("");
-    throw new Error(`unexpected gh ${args.join(" ")}`);
-  };
-  return gatherChanges({ git, gh, repo: "o/r" })({ from: SINCE, to: NOW });
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  fakePull(host.rowsWorld, 77, { merged: true, mergedAt: "2026-10-10T10:00:00Z", author, title: "x", body: "" });
+  host.rowsWorld.tail.queue.mainSha = HEAD;
+  host.rowsWorld.tail.classes.commitLogins = shas.map((sha, i) => ({ sha, login: carried[i] ?? null }));
+  return gatherChanges({ git, repo: "o/r" })({ from: SINCE, to: NOW });
 }
 
 test("#1672 (a) a null pull-request author beside an automation commit is not an actor, so the change is not UNREAD", () => {

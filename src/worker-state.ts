@@ -22,6 +22,7 @@ import { DEFAULT_ANSWERER, MANAGER_SEATS, decidedBy } from "./decided-by.ts";
 import { herdrRun } from "./herdr-agents.ts";
 import type { BlockerWriter } from "./ticket-port/port.ts";
 import { TRACKER, githubTicketAdapter } from "./ticket-port/github-adapter.ts";
+import { rows } from "./plugins/rows.ts";
 
 /** The four states, and nothing else: a fifth is a change to this table AND to the gate's excuse rules, so it is one table. */
 export const DECLARED_STATES = Object.freeze(["waiting-ci", "waiting-review", "done", "blocked"] as const);
@@ -493,26 +494,9 @@ export function closingComment(session: string, items: string[], met: DoneWhenRe
   return [`Closed by \`${session}\`: its claim names no pull request (\`Claimed-nothing:\`), and every Done-when item is read as met:`, ...lines].join("\n");
 }
 
-/** The real {@link RowLook}: `gh issue view`, where "no such issue" is `null` and any other failure throws. @param {Gh} gh */
+/** The real {@link RowLook}: the code host reads the row in one call, where "no such issue" is `null` and any other failure throws. @param {Gh} gh */
 export function ghRowLook(gh: Gh): RowLook {
-  return (repo, number) => {
-    let out: string;
-    try {
-      out = gh(["issue", "view", String(number), "--repo", repo, "--json", "state,labels,comments,body"]);
-    } catch (err: any) {
-      if (/Could not resolve to an? (?:Issue|issue)|not found|no issue/i.test(String(err?.stderr ?? err?.message ?? ""))) return null;
-      throw err;
-    }
-    const parsed = JSON.parse(out) as { state: string; body?: string; labels?: { name: string }[]; comments?: { id: string; url: string; body: string; createdAt: string }[] };
-    // A reply with no comments cannot answer the ruling check, and "no comments" would read as "no ruling": so it THROWS (the row is unreadable, nothing is labelled).
-    if (!Array.isArray(parsed.comments)) throw new Error(`gh issue view of #${number} of ${repo} carried no comments field, so no ruling can be read`);
-    return {
-      state: parsed.state === "OPEN" ? "OPEN" : "CLOSED",
-      labels: (parsed.labels ?? []).map((label) => label.name),
-      comments: parsed.comments.map(({ id, url, body, createdAt }) => ({ id, url, body, createdAt })),
-      body: parsed.body ?? "",
-    };
-  };
+  return (repo, number) => rows().rowWithCommentsOf({ repo, number, run: gh });
 }
 
 /**
@@ -576,15 +560,15 @@ function applyLabel(declaration: Declaration, { gh, tracker, answerPrefix, comme
     return { lines: [`#${row} of ${tracker} already has a ruling on this reason: ${ruling.url} (${ruling.createdAt}); no label and no comment were written`], declaration };
   }
   const label = `${answerPrefix}${declaration.to ?? DEFAULT_ANSWERER}`;
-  gh(["label", "create", label, "--repo", tracker, "--force", "--description", "a session owes this row an answer"]);
-  gh(["issue", "edit", row, "--repo", tracker, "--add-label", label]);
+  rows().ensureTriageLabel({ repo: tracker, label, description: "a session owes this row an answer", run: gh });
+  rows().addLabelToRowIn({ repo: tracker, number: Number(row), label, run: gh });
   postReason(gh, tracker, row, `BLOCKED (\`${declaration.session}\`, declared with \`worker:state\`): ${declaration.reason}\n\nOwed by \`${declaration.to ?? DEFAULT_ANSWERER}\`; the row carries \`${label}\`.`);
   return { lines: [`labelled #${row} of ${tracker} \`${label}\` and posted the reason`], declaration };
 }
 
 /** THE ONE COMMENT CALL both paths make: the reason, with the body each path names. One call site, so the file's `gh` count does not grow with the edge. */
 function postReason(gh: Gh, tracker: string, row: string, body: string): void {
-  gh(["issue", "comment", row, "--repo", tracker, "--body", body]);
+  rows().commentOnIssue({ repo: tracker, issue: row, body, run: gh });
 }
 
 /** `--name=value` or `--name value` out of the flags, and the positionals left over. The command takes four flags (`--session`, `--to`, `--on`, `--met`) and no others. */
@@ -635,8 +619,9 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
   const { declaration } = parsed;
   const { stateEntryPath } = await import("./host-config.ts");
   const dir = `${stateEntryPath("")}/${WORKER_STATE_DIR}`;
-  const { execFileSync } = await import("node:child_process");
-  const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // The code host's runner: what `gh` prints on stderr stays in the failure's message, and is not let through to this process's own.
+  // Asked when a call is made, not here: a declaration that reads nothing of GitHub (`waiting-ci`, `done` with no reading) must not need the code host to load.
+  const gh: Gh = (args) => rows().runnerWith({ echo: false })(args);
   if (declaration.state === "done" && declaration.met !== undefined) {
     // A ROW CLOSED ON A READING: the row is closed with the reading as its comment, and the declaration is written ONLY AFTER that close has landed. The order
     // is the point: a declaration of a complete reading excuses the holder (`declarationReading`), so writing it first would excuse a worker whose row a

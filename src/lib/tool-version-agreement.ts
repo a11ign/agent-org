@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
+import { rows } from "../plugins/rows.ts";
 import { sandboxGitEnv } from "./git-env.ts";
 import { chooseReleaseTag, compareReleaseTags, isReleaseTag, LATEST } from "./release-tag.ts";
 import { liveToolVersion, gitIn } from "./tool-version.ts";
@@ -183,7 +184,7 @@ const quietGit = (cwd: string): (args: string[]) => string => (args) => execFile
  * checkout holds it (release tags are lightweight tags on the release commit, so its commit date IS the cut: measured on v0.23.0, commit 20:15:26Z, GitHub Release 20:15:29Z), else
  * the GitHub Release's `published_at`.
  */
-export function readRemoteTags({ tool }: { tool: string; }, { git = quietGit(tool), gh = defaultGh, repo = "a11ign/agent-org" }: { git?: (args: string[]) => string; gh?: (args: string[]) => string; repo?: string; } = {}): { tags: string[] | null; newestCutAt: number | null; } {
+export function readRemoteTags({ tool }: { tool: string; }, { git = quietGit(tool), repo = "a11ign/agent-org" }: { git?: (args: string[]) => string; repo?: string; } = {}): { tags: string[] | null; newestCutAt: number | null; } {
   let tags: string[];
   try {
     tags = git(["ls-remote", "--tags", "--refs", "origin"]).split("\n").map((line) => line.split("\trefs/tags/")[1]).filter(Boolean);
@@ -191,11 +192,11 @@ export function readRemoteTags({ tool }: { tool: string; }, { git = quietGit(too
     return { tags: null, newestCutAt: null };
   }
   const newest = chooseReleaseTag(tags, LATEST);
-  return { tags, newestCutAt: newest === null ? null : tagCutAt(newest, { git, gh, repo }) };
+  return { tags, newestCutAt: newest === null ? null : tagCutAt(newest, { git, repo }) };
 }
 
 /** When a tag was cut, epoch ms, or `null` when neither source could say. */
-function tagCutAt(tag: string, { git, gh, repo }: { git: (args: string[]) => string; gh: (args: string[]) => string; repo: string; }): number | null {
+function tagCutAt(tag: string, { git, repo }: { git: (args: string[]) => string; repo: string; }): number | null {
   try {
     const local = git(["for-each-ref", "--format=%(creatordate:unix)", `refs/tags/${tag}`]).trim();
     if (local !== "") return Number(local) * MS_PER_SECOND;
@@ -203,21 +204,21 @@ function tagCutAt(tag: string, { git, gh, repo }: { git: (args: string[]) => str
     // the checkout cannot say: the release below is the second source, and its own refusal is the `null`
   }
   try {
-    const published = Date.parse(JSON.parse(gh(["api", `repos/${repo}/releases/tags/${tag}`])).published_at);
-    return Number.isNaN(published) ? null : published;
+    return rows().releasePublishedAtOf({ repo, tag, run: defaultGh });
   } catch {
     return null;
   }
 }
 
 /**
- * `gh` run with `env` laid over this process's environment, with a 30 s cut and its output as text. Exported so ticket mode reads GitHub through a spawn that is
- * already counted (`gh-call-ratchet.test.ts`). A reviewer's role environment (A11-149) runs through it, so a call writes as that role.
+ * The code host's program run with `env` laid over this process's environment, with a 30 s cut and a 64 MiB buffer, its output as text and its stderr kept to the failure (`echo: false`: the spawn this replaces named its
+ * stdio, so nothing `gh` printed reached the terminal, where a `host:check` run and a tick's journal would carry it as a line that is not a fault). The process is the code host's (A11-160, step 9); the cut, the buffer and the environment are this
+ * module's. A reviewer's role environment (A11-149) runs through it, so a call writes as that role. The runner is asked for when the call is made, so a module that imports this starts nothing.
  */
 export const ghWith = (env: Readonly<Record<string, string>> = {}) => (args: string[]): string =>
-  execFileSync("gh", args, { encoding: "utf8", env: { ...process.env, ...env }, timeout: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
+  rows().runnerWith({ env, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, echo: false })(args);
 
-/** `gh` with no environment of its own, as `ghWith` runs it with none. */
+/** The code host's program with no environment of its own, as `ghWith` runs it with none. */
 export const defaultGh = ghWith();
 
 /** READING 1, THE TOOL CHECKOUT: the release tag it sits at (`liveToolVersion`, which is the board line's reader and is CALLED, not rewritten), else "at no release" and its commit. */
@@ -306,13 +307,13 @@ export function memoFile(path: string): RunMemo {
  * Its version is what its commit's LOCKFILE names while the project pins the tool (the tarball's commit, read as the `version` in the tool's own `package.json` at that commit); once it
  * holds no entry, the tag the resolver step printed in the run's log ({@link RESOLVER_LINE}). A run that names no version is `version: null`, which the comparison reports UNKNOWN.
  */
-export function readLastCiRun({ checkout, tool, repo }: { checkout: string; tool: string; repo: string; }, { gh = defaultGh, git = quietGit(checkout), toolGit = quietGit(tool), memo }: { gh?: (args: string[]) => string; git?: (args: string[]) => string; toolGit?: (args: string[]) => string; memo?: RunMemo; } = {}): RunnerFact {
+export function readLastCiRun({ checkout, tool, repo }: { checkout: string; tool: string; repo: string; }, { git = quietGit(checkout), toolGit = quietGit(tool), memo }: { git?: (args: string[]) => string; toolGit?: (args: string[]) => string; memo?: RunMemo; } = {}): RunnerFact {
   try {
-    const run = gatingRun({ gh, repo });
-    if (run === undefined) return { kind: "ci", runner: `last completed ci.yml run on ${repo} main`, unreadable: "no completed run was returned" };
-    const runner = `last completed ci.yml ${run.event} run (#${run.id}, ${String(run.head_sha).slice(0, 7)}, ${String(run.created_at).slice(0, 10)})`;
+    const run = rows().gatingCiRunOf({ repo, run: defaultGh });
+    if (run === null) return { kind: "ci", runner: `last completed ci.yml run on ${repo} main`, unreadable: "no completed run was returned" };
+    const runner = `last completed ci.yml ${run.event} run (#${run.id}, ${String(run.sha).slice(0, 7)}, ${String(run.createdAt).slice(0, 10)})`;
     try {
-      return { kind: "ci", runner, ...ciVersion({ run, repo }, { gh, git, toolGit, memo }) };
+      return { kind: "ci", runner, ...ciVersion({ run, repo }, { git, toolGit, memo }) };
     } catch (err) {
       return { kind: "ci", runner, unreadable: why(err) };
     }
@@ -321,22 +322,16 @@ export function readLastCiRun({ checkout, tool, repo }: { checkout: string; tool
   }
 }
 
-/** The newest completed `ci.yml` run that gates `main`, or `undefined` when neither question returns one. */
-function gatingRun({ gh, repo }: { gh: (args: string[]) => string; repo: string; }): { id: number; head_sha: string; created_at: string; event: string; } | undefined {
-  const newest = (filter: string) => JSON.parse(gh(["api", `repos/${repo}/actions/workflows/ci.yml/runs?${filter}&status=completed&per_page=1`])).workflow_runs?.[0];
-  return newest("event=merge_group") ?? newest("branch=main");
-}
-
 /**
  * The version a run ran, or `null`. The lockfile at the run's commit answers while the project still pins the tool (a commit with none, or one this checkout does not hold, simply has no entry);
  * when it holds no entry the log's resolver line does, and says whether it took the newest tag at run time.
  */
-function ciVersion({ run, repo }: { run: { id: number; head_sha: string; }; repo: string; }, { gh, git, toolGit, memo }: { gh: (args: string[]) => string; git: (args: string[]) => string; toolGit: (args: string[]) => string; memo?: RunMemo; }): { version: string | null; resolvesNewest?: boolean; } {
-  const commit = lockedCommit(lockfileAt(run.head_sha, git));
+function ciVersion({ run, repo }: { run: { id: number; sha: string; }; repo: string; }, { git, toolGit, memo }: { git: (args: string[]) => string; toolGit: (args: string[]) => string; memo?: RunMemo; }): { version: string | null; resolvesNewest?: boolean; } {
+  const commit = lockedCommit(lockfileAt(run.sha, git));
   if (commit !== null) return { version: JSON.parse(toolGit(["show", `${commit}:package.json`])).version ?? null };
   const memoized = memo?.get(run.id);
   if (memoized !== undefined) return fromMemo(memoized);
-  const found = RESOLVER_LINE.exec(logOf(run.id, { gh, repo }));
+  const found = RESOLVER_LINE.exec(rows().ciRunLogOf({ repo, id: run.id, run: defaultGh }));
   const resolved = { version: found?.[1] ?? null, resolvesNewest: found?.[2] !== undefined };
   memo?.set(run.id, resolved.version !== null && resolved.resolvesNewest ? `${resolved.version}${NEWEST_AT_RUN}` : resolved.version);
   return resolved;
@@ -345,16 +340,6 @@ function ciVersion({ run, repo }: { run: { id: number; head_sha: string; }; repo
 function fromMemo(memoized: string | null): { version: string | null; resolvesNewest?: boolean; } {
   if (memoized !== null && memoized.endsWith(NEWEST_AT_RUN)) return { version: memoized.slice(0, -NEWEST_AT_RUN.length), resolvesNewest: true };
   return { version: memoized };
-}
-
-/** A run's log, or "" when GitHub says it has none (expired, or never kept): that is an ANSWER about the run, where any other refusal is rethrown. */
-function logOf(id: number, { gh, repo }: { gh: (args: string[]) => string; repo: string; }): string {
-  try {
-    return gh(["run", "view", String(id), "--repo", repo, "--log"]);
-  } catch (err) {
-    if (/log not found/.test(`${(err as { stderr?: unknown } | null | undefined)?.stderr ?? ""}${(err as { message?: unknown } | null | undefined)?.message ?? ""}`)) return "";
-    throw err;
-  }
 }
 
 /** @returns the lockfile at a commit, empty when there is none */

@@ -16,6 +16,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { rows } from "./plugins/rows.ts";
 
 /** The age of the oldest unreleased commit past which the repository is behind. `ceo`'s figure (#4128); it would not have tripped on the 2 h gap of 2026-10-08, and says so on the row. */
 export const BEHIND_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -129,13 +130,6 @@ const firstLine = (err: unknown): string => String((err as any)?.message ?? err)
 export type Gh = (args: string[]) => string;
 export type Registry = (npmPackage: string) => { status: string, body: string };
 
-/** @param {string} text @param {string} what @returns {any[]} */
-function jsonList(text: string, what: string): any[] {
-  const parsed = JSON.parse(text);
-  if (!Array.isArray(parsed)) throw new Error(`${what} did not answer a list`);
-  return parsed;
-}
-
 /**
  * THE NEWEST NON-RESERVATION VERSION BY PUBLISH TIME. A 404 is a package never published and is a reading (`null`); any other status is a refusal and throws.
  * @param {Registry} registry @param {string} npmPackage @returns {Release | null}
@@ -156,9 +150,8 @@ function npmRelease(registry: Registry, npmPackage: string): Release | null {
  * @param {Gh} gh @param {string} repo @returns {Release | null}
  */
 function tagRelease(gh: Gh, repo: string): Release | null {
-  const rows = jsonList(gh(["api", "--method", "GET", `repos/${repo}/releases`, "-f", `per_page=${RELEASES_WINDOW}`,
-    "--jq", "[.[] | select(.draft | not) | {tag: .tag_name, at: .published_at}]"]), `${repo} releases`);
-  const dated = rows.map((r) => ({ version: String(r.tag), at: Date.parse(r.at) }));
+  const listed = rows().publishedReleasesOf({ repo, window: RELEASES_WINDOW, run: gh });
+  const dated = listed.map((r) => ({ version: String(r.tag), at: Date.parse(r.at as string) }));
   if (dated.some((r) => !Number.isFinite(r.at))) throw new Error(`${repo}: a release has no parseable published time`);
   const newest = dated.sort((a, b) => b.at - a.at)[0];
   return newest === undefined ? null : { name: repo, version: newest.version, at: newest.at };
@@ -172,26 +165,24 @@ function tagRelease(gh: Gh, repo: string): Release | null {
 function pathCommits(gh: Gh, repo: string, path: string, since: number | null): { commits: { sha: string; at: number; }[]; truncated: boolean; } {
   const commits: { sha: string; at: number; }[] = [];
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const rows = jsonList(gh(["api", "--method", "GET", `repos/${repo}/commits`, "-f", "sha=main", "-f", `path=${path}`, "-f", `per_page=${COMMIT_PAGE}`, "-f", `page=${page}`,
-      ...(since === null ? [] : ["-f", `since=${iso(since)}`]),
-      "--jq", "[.[] | {sha, at: .commit.committer.date, parents: (.parents | length)}]"]), `${repo} commits under ${path}`);
-    if (rows.some((r) => !Number.isFinite(Date.parse(r.at)))) throw new Error(`${repo}: a commit under ${path} has no parseable time`);
-    commits.push(...rows.filter((r) => r.parents <= 1).map((r) => ({ sha: String(r.sha), at: Date.parse(r.at) })));
-    if (rows.length < COMMIT_PAGE) return { commits, truncated: false };
+    const listed = rows().pathCommitsPageOf({ repo, path, page, perPage: COMMIT_PAGE, since: since === null ? null : iso(since), run: gh });
+    if (listed.some((r) => !Number.isFinite(Date.parse(r.at)))) throw new Error(`${repo}: a commit under ${path} has no parseable time`);
+    commits.push(...listed.filter((r) => r.parents <= 1).map((r) => ({ sha: String(r.sha), at: Date.parse(r.at) })));
+    if (listed.length < COMMIT_PAGE) return { commits, truncated: false };
   }
   return { commits, truncated: true };
 }
 
 /** @param {Gh} gh @param {string} repo @param {string} sha @param {string[]} releasablePaths @returns {boolean} the commit touches a shipped file, a cut file list counting as yes */
 function touchesShipped(gh: Gh, repo: string, sha: string, releasablePaths: string[]): boolean {
-  const files = jsonList(gh(["api", `repos/${repo}/commits/${sha}`, "--jq", "[.files[] | {filename, previous_filename}]"]), `${repo} commit ${sha}`);
+  const files = rows().commitFilesOf({ repo, sha, run: gh });
   if (files.length >= FILE_LIST_LIMIT) return true;
   return files.some((f) => [f.filename, f.previous_filename].some((p) => typeof p === "string" && isShipped(p, releasablePaths)));
 }
 
 /** @param {Gh} gh @param {string} repo @param {string} sha @returns {{ pr: number | null, declared: string | null }} the pull request(s) the commit came in by, and the first `no-release:` reason among them */
 function pullOf(gh: Gh, repo: string, sha: string): { pr: number | null; declared: string | null; } {
-  const pulls = jsonList(gh(["api", `repos/${repo}/commits/${sha}/pulls`, "--jq", "[.[] | {number, body}]"]), `${repo} pulls of ${sha}`);
+  const pulls = rows().commitPullsOf({ repo, sha, run: gh });
   const declared = pulls.map((p) => noReleaseReason(String(p.body ?? ""))).find((reason) => reason !== null) ?? null;
   return { pr: pulls[0]?.number ?? null, declared };
 }

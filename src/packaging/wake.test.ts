@@ -1,7 +1,8 @@
 // no-token: defaultGh -- `wake.ts`'s only `execFileSync("gh", ...)` (the escalation half's runner,
 // `escalateStuck`'s default `run`) lives at a private, unexported binding this file never calls: every
-// seam here is handed an injected `run`, including the three subprocess ticks at the foot of this file,
-// whose stuck array is always empty so `escalateStuck` never iterates into it.
+// herdr seam here is handed an injected `run`, including the subprocess ticks at the foot of this file,
+// whose stuck array is always empty so `escalateStuck` never iterates into it. What row mode asks of GitHub (the
+// escalation's label, the drop's comment, the rows an engineer holds) is the fake code host's world (A11-160, step 9).
 /**
  * `packages/agent-org/src/wake.ts` -- #912's remaining half: work-gate says there is work, this says who
  * takes it.
@@ -19,7 +20,7 @@
  * does not is the 2026-09-08 shape the lead-orchestrator brief records, where "every session went idle at
  * 20:52Z and nothing woke anyone for ten" hours.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -33,6 +34,7 @@ import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
 import { readAgents } from "../herdr-agents.ts";
 import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { REPO } from "../project-identity.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 import { copyToolAndProject, importClosure } from "./copied-tool-fixture.ts";
 import { isLiveSession } from "../arm-pr.ts";
@@ -57,6 +59,9 @@ import { handoffBacklog, backlogReport, fitBatch, waitedFor, staleReport, BATCH_
 import { handoffBatches, PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, targetLabelBytes } from "../wake/session-endings.ts";
 import { startedPanes } from "./started-pane.ts";
 import { dropUnknownHandoffs, UNKNOWN_SESSION_MS } from "../wake/session-endings.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRowsWorld } from "../plugins/fakes/code-host-rows.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -1153,24 +1158,39 @@ test("it names polling as the specific waste it is", () => {
  * over half an hour, every session read idle, and the only thing that noticed was the chairman saying
  * "the AI agents have all stopped completely".
  */
+/**
+ * The fake code host the escalation and the drop ask (A11-160, step 9): the rows of `numbers`, open and bare. The label and the comment are written to the world, and the `run` a caller hands is not
+ * consulted, so a test says nothing of GitHub's own answers.
+ */
+function forge(...numbers: number[]): FakeRowsWorld {
+  const host = createFakeCodeHost();
+  for (const number of numbers) host.rowsWorld.rows.set(number, fakeRow(host.rowsWorld, number));
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+
+afterEach(() => forgetActivation());
+
 test("a stuck cause labels its row answer:ceo", () => {
-  const calls: string[][] = [];
+  const world = forge(1234, 1235);
   const out: string[] = [];
-  const labelled = escalateStuck(["ceo/lane-backlog-unpromoted/row-1234: delivered 6 times"],
-    (a: string[]) => { calls.push(a); return ""; }, (l: string) => out.push(l));
+  const labelled = escalateStuck(["ceo/lane-backlog-unpromoted/row-1234: delivered 6 times"], undefined, (l: string) => out.push(l));
   assert.deepEqual(labelled, [1234]);
-  assert.deepEqual(calls, [["issue", "edit", "1234", "--add-label", "answer:ceo"]]);
+  assert.deepEqual(world.rows.get(1234)?.labels, ["answer:ceo"], "the stuck cause's row, and only it, carries the label");
+  assert.deepEqual(world.rows.get(1235)?.labels, [], "another row is left alone");
   assert.match(out.join(""), /ESCALATED #1234/);
 });
 
 test("a causeKey naming no row is reported, never guessed at", () => {
   // `chairman` and `ready-queue` are subjects, not rows. Labelling the wrong row would be worse than
   // labelling none, so it says so and moves on.
+  const world = forge(0, 1234);
   const out: string[] = [];
-  const labelled = escalateStuck(["ceo/chairman-blocked/0: delivered 6 times"],
-    () => { throw new Error("must not be called"); }, (l: string) => out.push(l));
+  const labelled = escalateStuck(["ceo/chairman-blocked/0: delivered 6 times"], undefined, (l: string) => out.push(l));
   assert.deepEqual(labelled, []);
   assert.match(out.join(""), /names no row/);
+  assert.deepEqual([...world.rows.values()].map((row) => row.labels), [[], []], "no row of the tracker was labelled");
+  assert.deepEqual(world.calls, [], "and the tracker was not asked anything");
 });
 
 test("stuckRowOf reads row- and pr- keys and nothing else", () => {
@@ -1180,12 +1200,15 @@ test("stuckRowOf reads row- and pr- keys and nothing else", () => {
   assert.equal(stuckRowOf("ceo/org-stalled/55"), null);
 });
 
-test("a gh refusal is reported, never swallowed", () => {
+test("a refused label is reported, never swallowed", () => {
   // A breaker whose alarm silently fails is the exact shape being fixed.
+  const world = forge(9);
+  world.failures.set("addLabelToRow", new Error("HTTP 403: forbidden"));
   const out: string[] = [];
-  escalateStuck(["x/y/row-9: delivered 6 times"],
-    () => { throw new Error("HTTP 403: forbidden"); }, (l: string) => out.push(l));
+  const labelled = escalateStuck(["x/y/row-9: delivered 6 times"], undefined, (l: string) => out.push(l));
   assert.match(out.join(""), /COULD NOT ESCALATE #9: HTTP 403/);
+  assert.deepEqual(labelled, [], "a row that could not be labelled is not reported as escalated");
+  assert.deepEqual(world.rows.get(9)?.labels, []);
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -2062,22 +2085,37 @@ test("#2226 (5): the recipient rides AFTER the key, so no reader counts it as a 
   assert.equal(deliveryCounts("x", () => reset).get(key), 1, "a RESET still ends the run when lines carry recipients");
 });
 
-// THE WIRING, AS A PROCESS: `deliver` is handed `engineerEligibility()` by `main`, and an injected seam is
-// exactly what a deleted call goes around (see the header of the tick section above). `gh` and `herdr` are
-// stubs on PATH; `worker-judge` is the only engineer, idle, holding #1926 -- a row in build. The Region names a path under `docs/`,
-// a directory both this repository and a11ign's tree track: `declaredRegionFiles` recognises only tracked ones, and a row
-// declaring no file is not in build (#3073).
-const GH_STUB = `#!/bin/sh
-case "$*" in
-  "api graphql"*"label=in-progress"*) printf '%s' '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":1926,"body":"## Region\\n\\n- docs/messaging.md\\n","labels":{"nodes":[{"name":"in-progress"},{"name":"session:worker-judge"}]},"blockedBy":{"nodes":[]}}]}}}}' ;; # #5039: the held rows are the in-progress ones, filtered by session client-side
-  "api graphql"*"label="*) printf '%s' '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}' ;;
-  "issue list"*) printf '%s' '[]' ;;
-  "api graphql"*) printf '%s' '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}}}' ;;
-  "issue view"*) printf '%s' '{"body":"## Region\\n\\n- docs/messaging.md\\n"}' ;;
-  "api repos/"*"/sub_issues") printf '%s' '[]' ;;
-  *) exit 1 ;;
-esac
-`;
+// THE VERDICT, OVER THE CODE HOST'S ROWS (A11-160, step 9): `engineerEligibility()` with its DEFAULT lookup asks the code host which rows `worker-judge` holds and
+// refuses the engineer holding #1926 -- a row in build. The fake code host holds that row (the in-progress row carrying `session:worker-judge`, whose Region names a path under `docs/`,
+// a directory both this repository and a11ign's tree track: `declaredRegionFiles` recognises only tracked ones, and a row declaring no file is not in build, #3073). No `gh` is stubbed.
+// The process cases below keep the WIRING: `main` hands `deliver` the precheck, and an injected seam is exactly what a deleted call goes around.
+function holdsRowInBuild() {
+  const world = forge();
+  world.repo = REPO; // the claim's lookups read the project's own tracker, which the world must be
+  world.rows.set(1926, fakeRow(world, 1926, { body: "## Region\n\n- docs/messaging.md\n", labels: ["in-progress", "session:worker-judge"] }));
+  return world;
+}
+
+test("#2226: `deliver` handed the DEFAULT eligibility refuses the engineer that holds a row in build, says why, and records nothing", () => {
+  holdsRowInBuild();
+  const h = recordingHerdr();
+  const recorded: string[] = [];
+  const got = deliver([{ ...ROW_ORDER, session: "engineers" }], agents({ "worker-judge": "idle" }), ["worker-judge"],
+    { run: h.run, record: (key) => recorded.push(key), ineligibleReason: engineerEligibility({ warn: () => {} }), claimable: () => "held" });
+  assert.match(got.refused.join("\n"), /engineers\/ready-row-unclaimed\/2131: no engineer is idle and allowed to claim \(worker-judge=holds #1926 in build\)/,
+    `the refusal must carry B2's verdict; got ${JSON.stringify(got.refused)}`);
+  assert.deepEqual(got.sent, []);
+  assert.deepEqual(h.said("agent prompt"), [], "no order reaches a session that will refuse it");
+  assert.deepEqual(recorded, [], "and nothing was recorded as delivered, so the next tick re-offers it");
+});
+
+test("#2226: the same default eligibility OFFERS the order to an engineer that holds nothing", () => {
+  forge();
+  const h = recordingHerdr();
+  const got = deliver([{ ...ROW_ORDER, session: "engineers" }], agents({ "worker-judge": "idle" }), ["worker-judge"],
+    { run: h.run, ineligibleReason: engineerEligibility({ warn: () => {} }) });
+  assert.deepEqual(got.sent, ["worker-judge <- engineers/ready-row-unclaimed/2131"], "positive control: the verdict above is the held row's, not a refusal of everything");
+});
 
 /** A cycle line that FAILED: the drain lifts itself on it (#2324), so a tick given this offers a standing engineer. */
 const FAILED_CYCLE = `${JSON.stringify({ role: "worker-4", row: 2131, at: 1, clean: false, why: "fixture" })}\n`;
@@ -2102,7 +2140,7 @@ function copyWakeWithDrainedRoster(copyRoot: string): { entry: string; env: Reco
   return copy;
 }
 
-function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | null, drainedRoster = false } = {}) {
+function runPoolTick({ cycles = FAILED_CYCLE as string | null, drainedRoster = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "wake-pool-"));
   try {
     const ledger = join(dir, "wake-ledger");
@@ -2112,7 +2150,7 @@ function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | 
     if (cycles !== null) writeFileSync(sparePathsFrom(ledger).cycles, cycles);
     const { entry, env: copyEnv } = drainedRoster ? copyWakeWithDrainedRoster(join(dir, "checkout")) : { entry: WAKE_ENTRY, env: {} };
     writeFileSync(join(dir, "herdr"), herdrStub("idle").replace("product-manager", "worker-judge"));
-    writeFileSync(join(dir, "gh"), ghStub ?? "#!/bin/sh\nexit 1\n");
+    writeFileSync(join(dir, "gh"), "#!/bin/sh\nexit 1\n"); // a `gh` that cannot answer: the tick's rows are unreadable, which is what the wiring cases below pin
     chmodSync(join(dir, "herdr"), STUB_MODE);
     chmodSync(join(dir, "gh"), STUB_MODE);
     const order = JSON.stringify({ ...ROW_ORDER, session: "engineers" });
@@ -2128,16 +2166,8 @@ function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | 
   }
 }
 
-test("#2226: THE TICK does not offer a pool order to a session B2 refuses, and says why", () => {
-  const { ran, written } = runPoolTick(GH_STUB);
-  assert.match(ran.stderr, /UNDELIVERED engineers\/ready-row-unclaimed\/2131: no engineer is idle and allowed to claim \(worker-judge=holds #1926 in build\)/,
-    `the refusal must carry B2's verdict; got ${ran.stderr}`);
-  assert.equal(ran.status, 1, "an order with nowhere to go is ATTENTION");
-  assert.equal(written, "", "and nothing was recorded as delivered, so the next tick re-offers it");
-});
-
 test("#2226 (4): THE TICK with a `gh` that cannot answer still offers the order", () => {
-  const { ran, written } = runPoolTick(null);
+  const { ran, written } = runPoolTick();
   assert.match(ran.stderr, /could not read the rows "worker-judge" holds/);
   assert.match(ran.stdout, /WOKE worker-judge <- engineers\/ready-row-unclaimed\/2131/,
     "fail OPEN: an API outage must not stop the engineers being woken");
@@ -2148,7 +2178,7 @@ test("#2226 (4): THE TICK with a `gh` that cannot answer still offers the order"
 // --- THE WIRING, AS A PROCESS: `main` hands `deliver` the drain and the precheck ---
 
 test("#2324: THE TICK with the drain in force (no ledger line) refuses a standing engineer, and says it is drained", () => {
-  const { ran, written } = runPoolTick(GH_STUB, { cycles: null, drainedRoster: true });
+  const { ran, written } = runPoolTick({ cycles: null, drainedRoster: true });
   assert.match(ran.stderr, /UNDELIVERED engineers\/ready-row-unclaimed\/2131: no engineer is idle and allowed to claim \(worker-judge=drained \(#2324\)\)/,
     `main must hand the router the drain; got ${ran.stderr}`);
   assert.equal(ran.status, 1);
@@ -2195,9 +2225,10 @@ const UNKNOWN_PROMPT = "Sent to you by `ceo` (reply on the row):\n\nThe review o
 type UnknownSeat = { label: string; status: string; };
 
 /** One tick of the drop, reading the queue the way the tick does, so a drop made on one tick is not there on the next. */
-function unknownTick(queuePath: string, posts: string[][], agents: UnknownSeat[], now: number, paused = false) {
+function unknownTick(queuePath: string, agents: UnknownSeat[], now: number, paused = false) {
+  // `post` is the `run` the drop hands the code host's `commentOnRow`; the fake ignores it and writes the comment to the row (A11-160, step 9).
   return dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder: () => null,
-    post: (args) => { posts.push(args); return ""; }, queuePath, paused, now });
+    post: () => "", queuePath, paused, now });
 }
 
 test("an order for a session the org does not know is dropped at the bound, with one line naming it and a comment on the row it carried", () => {
@@ -2205,21 +2236,22 @@ test("an order for a session the org does not know is dropped at the bound, with
   try {
     const queuePath = join(dir, HANDOFF_QUEUE_FILE);
     const order = queueHandoff(queuePath, { session: "worker-agent-org-1325", prompt: UNKNOWN_PROMPT, now: UNKNOWN_NOW });
-    const posts: string[][] = [];
-    const first = unknownTick(queuePath, posts, [], UNKNOWN_NOW);
+    const world = forge(1325);
+    const first = unknownTick(queuePath, [], UNKNOWN_NOW);
     assert.deepEqual(first.kept.map((h) => h.id), [order.id], "the first tick that sees the session unknown starts its clock and keeps the order");
     assert.deepEqual(first.lines, []);
-    const inside = unknownTick(queuePath, posts, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS - 1);
+    const inside = unknownTick(queuePath, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS - 1);
     assert.deepEqual(inside.kept.map((h) => h.id), [order.id], "one millisecond inside the bound the order is still waiting");
-    const atBound = unknownTick(queuePath, posts, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS);
+    const atBound = unknownTick(queuePath, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS);
     assert.deepEqual(atBound.kept, [], "at the bound the order leaves the queue");
     assert.equal(atBound.lines.length, 1, `one line for the drop; got ${JSON.stringify(atBound.lines)}`);
     const [line] = atBound.lines;
     assert.ok(line.startsWith(`DROPPED ${order.id}: "worker-agent-org-1325"`), line);
     assert.ok(line.includes("carrying #1325"), `the line names the row the order carried: ${line}`);
     assert.equal(line.trimEnd().includes("\n"), false, "the drop is ONE line");
-    assert.equal(posts.length, 1, "the row it carried is told once");
-    assert.deepEqual(posts[0].slice(0, 3), ["issue", "comment", "1325"]);
+    const told = world.rows.get(1325)?.comments ?? [];
+    assert.equal(told.length, 1, "the row it carried is told once");
+    assert.ok(told[0].body.includes(`Order ${order.id} was written for "worker-agent-org-1325"`), `and the comment says which order was dropped: ${told[0].body}`);
     const records = readFileSync(queuePath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     const record = records[records.length - 1];
     assert.equal(record.dropped, order.id, "the drop is a record, not a delivery");
@@ -2234,18 +2266,18 @@ test("an order for a WORKING session is not dropped, however long it waits, and 
   try {
     const queuePath = join(dir, HANDOFF_QUEUE_FILE);
     const order = queueHandoff(queuePath, { session: "worker-agent-org-1325", prompt: UNKNOWN_PROMPT, now: UNKNOWN_NOW });
-    const posts: string[][] = [];
+    const world = forge(1325);
     const working: UnknownSeat[] = [{ label: "worker-agent-org-1325", status: "working" }];
     // The first tick is the one that would START the clock if the session were unknown, so the bound is measured past it: a check on one tick alone proves nothing.
-    unknownTick(queuePath, posts, working, UNKNOWN_NOW);
-    const busy = unknownTick(queuePath, posts, working, UNKNOWN_NOW + 3 * UNKNOWN_SESSION_MS);
+    unknownTick(queuePath, working, UNKNOWN_NOW);
+    const busy = unknownTick(queuePath, working, UNKNOWN_NOW + 3 * UNKNOWN_SESSION_MS);
     assert.deepEqual(busy.kept.map((h) => h.id), [order.id], "a working session's order is kept, however long past the bound");
     assert.deepEqual(busy.lines, []);
     const late = UNKNOWN_NOW + 6 * UNKNOWN_SESSION_MS;
-    unknownTick(queuePath, posts, [], late);
-    const paused = unknownTick(queuePath, posts, [], late + UNKNOWN_SESSION_MS, true);
+    unknownTick(queuePath, [], late);
+    const paused = unknownTick(queuePath, [], late + UNKNOWN_SESSION_MS, true);
     assert.deepEqual(paused.kept.map((h) => h.id), [order.id], "an account paused by the limit keeps every order, even one unknown past the bound");
-    assert.deepEqual(posts, [], "nothing is said on a row about an order that is kept");
+    assert.deepEqual(world.rows.get(1325)?.comments, [], "nothing is said on a row about an order that is kept");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -2256,12 +2288,12 @@ test("a session that comes back starts the bound again: the clock is cleared whi
   try {
     const queuePath = join(dir, HANDOFF_QUEUE_FILE);
     const order = queueHandoff(queuePath, { session: "worker-agent-org-1325", prompt: UNKNOWN_PROMPT, now: UNKNOWN_NOW });
-    const posts: string[][] = [];
-    unknownTick(queuePath, posts, [], UNKNOWN_NOW);
-    unknownTick(queuePath, posts, [{ label: "worker-agent-org-1325", status: "idle" }], UNKNOWN_NOW + UNKNOWN_SESSION_MS / 2);
-    const again = unknownTick(queuePath, posts, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS);
+    const world = forge(1325);
+    unknownTick(queuePath, [], UNKNOWN_NOW);
+    unknownTick(queuePath, [{ label: "worker-agent-org-1325", status: "idle" }], UNKNOWN_NOW + UNKNOWN_SESSION_MS / 2);
+    const again = unknownTick(queuePath, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS);
     assert.deepEqual(again.kept.map((h) => h.id), [order.id], "unknown again at the old bound is a NEW clock, not a drop");
-    assert.deepEqual(posts, []);
+    assert.deepEqual(world.rows.get(1325)?.comments, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

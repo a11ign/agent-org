@@ -1,23 +1,25 @@
-// no-token: pure -- the verdicts are a function of values handed in, and the fact reader is given a fake `gh` and a fake registry; nothing here calls `gh`, curl, ssh or the fleet.
+// no-token: pure -- the verdicts are a function of values handed in, and the fact reader is given the fake code host (A11-160, step 9) and a fake registry; nothing here calls `gh`, curl, ssh or the fleet.
 /**
  * `src/release-behind-main.ts` and `src/org-health.ts`, #4128: A REPOSITORY WHOSE `main` HOLDS A SHIPPED-PATH COMMIT NO RELEASE CARRIES, FOR OVER 24 HOURS, IS RAISED within a tick
  * (class fix for a11ign/a11ign#4084: screenreader-worker#25 and #26 merged `src/` commits with no changeset).
  *
  * THE FIXTURE IS `ceo`'s REPLAY, with the release corrected: screenreader-worker at `@a11ign/screenreader-worker@0.3.0` (npm time 2026-10-06T05:28:37Z) against `main` with the three
- * `src/` commits of 2026-10-08 (`6a943efd3` 09:45:15Z, `057ac7742` 09:55:38Z, `b613115e3` 10:37:43Z). The world is served through the REAL reader by a fake `gh`, so the classification
+ * `src/` commits of 2026-10-08 (`6a943efd3` 09:45:15Z, `057ac7742` 09:55:38Z, `b613115e3` 10:37:43Z). The world is served through the REAL reader by the fake code host, so the classification
  * (test files, `.changeset/`, a rename out of `src/`, a merge commit, the `no-release:` line) is the reader's own and not restated here.
  *
  * POSITIVE CONTROLS: the replay trips; the same state under 24 h clears and a later release clears it, so "clear" is not what an empty reading says by default. MUTATIONS, each run by hand
  * and recorded on the row: never trip (the replay and its siblings go red), always trip (the clear cases go red, and only they), count a test file or a `.changeset/` file (their cases go red),
  * ignore `no-release:` (the declared case goes red), read a refused repository as clear (the unknown case goes red), read the cache with no age (the hour case goes red).
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-release-failed.test.ts`'s rule): the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "release-behind-"));
@@ -52,36 +54,33 @@ const REPLAY_COMMITS = [
 ];
 const NPM_TIMES = { created: "2026-09-01T00:00:00Z", modified: "2026-10-07T00:00:00Z", "0.0.0-reserved": "2026-10-07T12:00:00Z", "0.2.0": "2026-10-01T09:00:00Z", "0.3.0": "2026-10-06T05:28:37Z" };
 
-/** A fake `gh` that answers by URL from a world per repository, and records every call. Its answers are what the real `--jq` projections print. */
+afterEach(() => forgetActivation());
+
+const GH_OPERATIONS = ["publishedReleasesOf", "pathCommitsPageOf", "commitFilesOf", "commitPullsOf"];
+
+/**
+ * The fake code host holding `worlds` (one history per repository: its releases and the commits of `main` with their files and pull requests), installed as the active one, and a fake registry. `refuse` repositories
+ * answer every read with a 403. The `gh` handed to the reader is one that must never run: the code host answers from its world, and `calls` are the reads it was asked, by operation and subject.
+ */
 function fakes(worlds: Record<string, World>, { refuse = [] as string[] } = {}) {
-  const calls: string[][] = [];
+  const host = createFakeCodeHost();
+  for (const [repo, world] of Object.entries(worlds)) {
+    host.rowsWorld.tail.readouts.histories.set(repo, {
+      releases: (world.releases ?? []).map((r) => ({ tag: r.tag, publishedAt: r.at })),
+      commits: world.commits.map((c) => ({ sha: c.sha, at: c.at, parents: c.parents, files: c.files, pulls: c.pr === undefined ? [] : [{ number: c.pr, body: c.body ?? null }] })),
+    });
+  }
+  for (const repo of refuse) for (const operation of GH_OPERATIONS) host.rowsWorld.failures.set(`${operation} ${repo}`, new Error(`gh: HTTP 403 for ${repo}`));
+  substituteCodeHost(host);
   const registryCalls: string[] = [];
-  const gh = (args: string[]) => {
-    calls.push(args);
-    const url = args.find((a) => a.startsWith("repos/")) ?? "";
-    const repo = url.split("/").slice(1, 3).join("/");
-    if (refuse.includes(repo)) throw new Error(`gh: HTTP 403 for ${repo}`);
-    const world = worlds[repo];
-    if (world === undefined) throw new Error(`the fake has no world for ${repo}`);
-    const rest = url.split("/").slice(3);
-    if (rest[0] === "releases") return JSON.stringify((world.releases ?? []).map((r) => ({ tag: r.tag, at: r.at })));
-    if (rest[0] === "commits" && rest.length === 1) {
-      const path = args[args.indexOf(`path=${args.find((a) => a.startsWith("path="))?.slice(5)}`)].slice(5);
-      return JSON.stringify(world.commits.filter((c) => c.files.some((f) => f.filename.startsWith(path) || f.previous_filename?.startsWith(path)))
-        .map((c) => ({ sha: c.sha, at: c.at, parents: c.parents ?? 1 })).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)));
-    }
-    const commit = world.commits.find((c) => c.sha === rest[1]);
-    if (commit === undefined) throw new Error(`the fake has no commit ${rest[1]}`);
-    if (rest[2] === "pulls") return JSON.stringify(commit.pr === undefined ? [] : [{ number: commit.pr, body: commit.body ?? null }]);
-    return JSON.stringify(commit.files);
-  };
+  const gh = (args: string[]): string => { throw new Error(`the code host answers; no gh is run (${args.join(" ")})`); };
   const registry = (npmPackage: string) => {
     registryCalls.push(npmPackage);
     const world = Object.values(worlds).find((w) => w.time !== undefined);
     if (world?.registryStatus) return { status: world.registryStatus, body: "{}" };
     return { status: "200", body: JSON.stringify({ time: world?.time }) };
   };
-  return { gh, registry, calls, registryCalls };
+  return { gh, registry, calls: host.rowsWorld.calls, registryCalls, world: host.rowsWorld };
 }
 
 const WORKER_REPOSITORY = { repo: WORKER, release: { kind: "npm" as const, package: PACKAGE }, releasablePaths: WORKER_PATHS };
@@ -225,7 +224,7 @@ test("a `tag` repository reads the latest GitHub Release and never the registry"
   const fact = readRepoFact(io, repository) as any;
   assert.deepEqual([fact.release.name, fact.release.version, fact.release.at], ["a11ign/agent-org", "v0.82.0", at("2026-10-07T00:00:00Z")], "the newest by time, whatever order the list came in");
   assert.deepEqual(io.registryCalls, []);
-  assert.ok(io.calls.some((c) => c.some((a) => a.endsWith("/releases"))), "CONTROL: the Releases were read");
+  assert.ok(io.calls.some((call) => call.startsWith("publishedReleasesOf")), "CONTROL: the Releases were read");
   assert.equal(releaseBehindReadings({ now: at("2026-10-10T00:00:00Z"), behind: [fact] })[0].status, "tripped");
 });
 
@@ -234,7 +233,7 @@ test("an `npm` repository reads the registry and never the Releases; a registry 
   const fact = readRepoFact(io, WORKER_REPOSITORY) as any;
   assert.equal(fact.release.version, "0.3.0");
   assert.deepEqual(io.registryCalls, [PACKAGE]);
-  assert.ok(!io.calls.some((c) => c.some((a) => a.endsWith("/releases"))));
+  assert.ok(!io.calls.some((call) => call.startsWith("publishedReleasesOf")));
   const refused = factOf(replayWorld({ registryStatus: "500" })) as any;
   assert.match(refused.unreadable, /the registry answered HTTP 500 for @a11ign\/screenreader-worker/);
   assert.equal(releaseBehindReadings({ now: at("2026-10-10T00:00:00Z"), behind: [refused] })[0].status, "unknown");
@@ -256,7 +255,9 @@ test("a refused read of one repository is unknown and the OTHER repositories are
 test("an answer that is not a list is a stated gap, and so is a listing that cannot be parsed", () => {
   const world = replayWorld();
   const io = fakes({ [WORKER]: world });
-  const broken = readRepoFact({ gh: () => "<html>rate limited</html>", registry: io.registry }, WORKER_REPOSITORY) as any;
+  // WHAT A LISTING THAT IS NOT A LIST, OR NOT JSON, THROWS is the plugin's (`readouts-rows.test.ts`); here any such throw is a stated gap.
+  io.world.failures.set("pathCommitsPageOf", new SyntaxError(`Unexpected token '<', "<html>rate "... is not valid JSON`));
+  const broken = readRepoFact({ gh: io.gh, registry: io.registry }, WORKER_REPOSITORY) as any;
   assert.match(broken.unreadable, /could not be read/);
   assert.equal(releaseBehindReadings({ now: at("2026-10-10T00:00:00Z"), behind: [broken] })[0].status, "unknown");
   assert.equal(releaseBehindReadings({ now: at("2026-10-10T00:00:00Z"), behind: null })[0].status, "unknown");
@@ -307,10 +308,12 @@ test("a cache that is unreadable, from the future, or unwritable is a miss and n
 test("the calls one read spends: a release, one listing per releasable path, and two per unreleased commit", () => {
   const io = fakes({ [WORKER]: replayWorld() });
   readRepoFact(io, WORKER_REPOSITORY);
-  const named = (needle: string) => io.calls.filter((c) => c.some((a) => a.includes(needle))).length;
-  assert.equal(io.registryCalls.length, 1, "npm: the registry, no gh call for the release");
-  assert.equal(named("/commits") - named("/pulls") - 3, 2, "two listings (src/ and packages/nvda-speech/), the other three are one per-commit file read each");
-  assert.equal(named("/pulls"), 3);
+  const named = (operation: string) => io.calls.filter((call) => call.startsWith(operation)).length;
+  assert.equal(io.registryCalls.length, 1, "npm: the registry, no read of the Releases");
+  assert.equal(named("publishedReleasesOf"), 0);
+  assert.equal(named("pathCommitsPageOf"), 2, "two listings (src/ and packages/nvda-speech/), one page each");
+  assert.equal(named("commitFilesOf"), 3, "one file read per unreleased commit");
+  assert.equal(named("commitPullsOf"), 3, "and one pull request read per commit that counts");
   assert.equal(io.calls.length, 2 + 3 + 3);
 });
 
