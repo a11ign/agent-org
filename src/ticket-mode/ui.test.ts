@@ -12,6 +12,7 @@ import * as view_5 from "./board-view/update-banner.ts";
 import * as view_6 from "./board-view/ticket-change.ts";
 import * as view_7 from "./board-view/run-terminal.ts";
 import * as view_8 from "./board-view/overlap-hold.ts";
+import * as view_9 from "./board-view/reconnect.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -32,7 +33,7 @@ const SCRIPT = `(async () => {\n${MODULE.replace(IMPORTS, "")}\n})();`;
 class Node_ {
   children: Node_[] = [];
   attrs: Record<string, string> = {};
-  listeners: Record<string, ((event: { stopPropagation(): void }) => void)[]> = {};
+  listeners: Record<string, ((event: { stopPropagation(): void; preventDefault(): void }) => void)[]> = {};
   parent: Node_ | null = null;
   className = "";
   textContent = "";
@@ -55,12 +56,14 @@ class Node_ {
   scrollIntoView() { this.scrolled = true; }
   setAttribute(k: string, v: string) { this.attrs[k] = v; }
   getAttribute(k: string) { return this.attrs[k]; }
-  addEventListener(type: string, fn: (event: { stopPropagation(): void }) => void) { (this.listeners[type] ??= []).push(fn); }
+  addEventListener(type: string, fn: (event: { stopPropagation(): void; preventDefault(): void }) => void) { (this.listeners[type] ??= []).push(fn); }
   /** Dispatch `type` here and bubble it up the parents, as a browser does, until a listener stops it. */
-  fire(type: string) {
+  fire(type: string, init: Record<string, unknown> = {}): boolean {
     let stopped = false;
-    const event = { stopPropagation: () => { stopped = true; } };
+    let prevented = false;
+    const event = { stopPropagation: () => { stopped = true; }, preventDefault: () => { prevented = true; }, ...init };
     for (let node: Node_ | null = this; node !== null && !stopped; node = node.parent) for (const fn of node.listeners[type] ?? []) fn(event);
+    return prevented;
   }
   text(): string { return this.textContent + this.children.map((c) => c.text()).join(""); }
   all(): Node_[] { return [this, ...this.children.flatMap((c) => c.all())]; }
@@ -83,11 +86,17 @@ const fakeElement = (id: string) => {
 };
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
-/** A browser as the page sees it: the tabs it opens (none while `blockTabs`, as a pop-up blocker does), the timers it sets and the poll it runs, for a test to run by hand. */
+/**
+ * A browser as the page sees it: the tabs it opens (none while `blockTabs`, as a pop-up blocker does), the timers it sets, for a test to run by hand, and the clock. A timer
+ * of 1s is `openTerminalWhenReady`'s; every other is the page's poll, whose waits are recorded in `delays` and of which at most one is pending, as a chained timeout leaves.
+ */
 function browserStubs(blockTabs: boolean) {
   const tabs: { closed: boolean; location: { href: string }; close: () => void }[] = [];
   const timers: (() => void)[] = [];
-  const polls: (() => void)[] = [];
+  const polls = new Map<number, () => void>();
+  const delays: number[] = [];
+  const clock = { now: Date.now() };
+  let nextTimer = 1;
   // A tab opened under a name is the one every later open of that name finds, as a browser's named windows are (A11-171).
   const named = new Map<string, (typeof tabs)[number]>();
   const open = (_url?: string, name?: string) => {
@@ -99,8 +108,77 @@ function browserStubs(blockTabs: boolean) {
     if (name !== undefined && name !== "_blank") named.set(name, tab);
     return tab;
   };
-  return { tabs, timers, polls, open, setInterval: (fn: () => void) => { polls.push(fn); return 0; }, setTimeout: (fn: () => void) => { timers.push(fn); return 0; } };
+  const setTimeout = (fn: () => void, delay?: number) => {
+    if (delay === 1000) return timers.push(fn);
+    const id = nextTimer++;
+    polls.set(id, fn);
+    delays.push(delay ?? 0);
+    return id;
+  };
+  class FakeDate extends Date {
+    static override now() { return clock.now; }
+  }
+  const controls = {
+    /** Run the poll's pending timer, as the browser does when its wait is over, and let what it starts settle. */
+    poll: async () => { for (const [id, fn] of [...polls]) { polls.delete(id); fn(); } await settleAll(); },
+    /** Whether the poll has a read waiting on its timer. */
+    pollPending: () => polls.size > 0,
+    /** Time passes for the page's clock only (its timers are run by hand). */
+    advance: (ms: number) => { clock.now += ms; },
+    /** Run the timers the page set, and let what they start settle. */
+    runTimers: async () => { for (const fn of timers.splice(0)) fn(); await settleAll(); },
+  };
+  return { tabs, timers, polls, delays, clock, controls, open, setTimeout, clearTimeout: (id?: number) => { if (id !== undefined) polls.delete(id); }, Date: FakeDate };
 }
+
+/** The page's `document`: elements made on first request by id, and the tab's visibility and events. */
+function fakeDocument(tab: ReturnType<typeof tabEvents>) {
+  const byId = new Map<string, Node_>();
+  return {
+    get visibilityState() { return tab.visibilityState(); },
+    addEventListener: tab.onDocument,
+    // eslint-disable-next-line clean-code/names-describe-side-effects -- the DOM's getElementById, which the page script calls by this name; the fake creates and caches the node on first request
+    getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, fakeElement(id)); return byId.get(id)!; },
+    createElement: (tag: string) => new Node_(tag),
+    querySelectorAll: () => [],
+  };
+}
+
+/** What the fetch answers `path` while the instance is down (see {@link Outage}), or undefined when it is not down for that path. A rejected fetch throws. */
+function downAnswer(outage: Outage | null, path: string) {
+  if (outage === null || (outage.paths !== undefined && !outage.paths.some((suffix) => path.endsWith(suffix)))) return undefined;
+  if ("rejects" in outage) throw new TypeError("Failed to fetch");
+  if ("hangs" in outage) return new Promise<never>(() => undefined);
+  const { status, error } = outage;
+  return { ok: false, status, statusText: "", json: async () => { if (error === undefined) throw new SyntaxError("Unexpected token '<'"); return { error }; } };
+}
+
+/**
+ * The document's and window's events as a browser keeps them: the tab's visibility, the listeners the page adds, and the means for a test to fire them, each followed by letting
+ * what they start settle. `hashchange` is the page changing its own address; `focus` and `visibilitychange` are the person coming back to the tab (A11-211).
+ */
+function tabEvents() {
+  let visibilityState = "visible";
+  const listeners: Record<string, (() => void)[]> = {};
+  const listen = (type: string, fn: () => void) => { (listeners[type] ??= []).push(fn); };
+  const fire = async (...types: string[]) => { for (const type of types) for (const fn of listeners[type] ?? []) fn(); for (let i = 0; i < 10; i++) await settle(); };
+  return {
+    visibilityState: () => visibilityState,
+    onDocument: listen,
+    onWindow: listen,
+    /** The browser's `hashchange`, after the page has changed its address. */
+    hashChange: () => fire("hashchange"),
+    /** The window gains focus. */
+    focus: () => fire("focus"),
+    /** The tab is shown or hidden, and the browser says so. */
+    showTab: (shown = true) => { visibilityState = shown ? "visible" : "hidden"; return fire("visibilitychange"); },
+    /** A window switch: the tab is shown and the window focused in the same task, as a browser fires them. */
+    comeBack: () => { visibilityState = "visible"; return fire("visibilitychange", "focus"); },
+  };
+}
+
+/** What an instance does while it is down: the fetch rejects (connection refused), never answers (`hangs`, as a request does when a laptop sleeps), or answers `status`, with a JSON `error` or, without one, the HTML page a proxy sends. */
+type Outage = { paths?: string[] } & ({ rejects: true } | { hangs: true } | { status: number; error?: string });
 
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
   /** The review state the pool read of each open pull request, by url, as the queue carries it (A11-119). */
@@ -125,21 +203,19 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   /** What the instance's Plugins section reads (`/api/plugins`), and what it answers an action with; the text Copy puts on the clipboard goes to `clipboard`. */
   plugins?: unknown; pluginActions?: (body: any) => unknown; clipboard?: string[];
   /** What the instance answers a Settings edit with (`/api/settings/preview`, `save` and `restore`), by its path and body. */
-  edits?: (path: string, body: any) => unknown };
+  edits?: (path: string, body: any) => unknown;
+  /** The instance is down as the page opens (A11-211); a test ends it with `outage(null)`. */
+  down?: Outage };
 const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [], contract: [] };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children, pulls, claimWarning,
-  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits, plugins, pluginActions, clipboard = [], update }: PageOptions = {}) {
-  const byId = new Map<string, Node_>();
+  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits, plugins, pluginActions, clipboard = [], update, down }: PageOptions = {}) {
   const posts: { path: string; body: any }[] = [], requested: string[] = [];
   // A path in `hold` answers its value only once the test calls `release`, as a slow remote does.
   let release!: () => void;
   const gate = new Promise<void>((done) => { release = done; });
-  const document = {
-    // eslint-disable-next-line clean-code/names-describe-side-effects -- the DOM's getElementById, which the page script calls by this name; the fake creates and caches the node on first request
-    getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, fakeElement(id)); return byId.get(id)!; },
-    createElement: (tag: string) => new Node_(tag),
-    querySelectorAll: () => [],
-  };
+  let outage: Outage | null = down ?? null;
+  const tab = tabEvents();
+  const document = fakeDocument(tab);
   // The board's saved choice, which a POST to /api/choice changes part by part, as the server does, and its saved number of workers.
   let saved = { model: "opus", effort: "high", ...(config.choice as object | undefined) };
   let max = 3;
@@ -147,19 +223,21 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     if (init.method === "POST") posts.push({ path, body });
     requested.push(path);
+    const unanswered = downAnswer(outage, path);
+    if (unanswered !== undefined) return unanswered;
     if (path in hold) {
       await gate;
-      return { ok: true, json: async () => hold[path], statusText: "" };
+      return { ok: true, status: 200, json: async () => hold[path], statusText: "" };
     }
-    if (refused.includes(path)) return { ok: false, json: async () => ({ error: errors[path] ?? `${path} refused` }), statusText: "" };
+    if (refused.includes(path)) return { ok: false, status: 400, json: async () => ({ error: errors[path] ?? `${path} refused` }), statusText: "" };
     if (path.replace(/^\/c\/[^/]+(?=\/api\/)/, "").startsWith("/api/writer")) {
       const reply = writerReply === undefined ? writers : writerReply(path, body);
-      return { ok: true, json: async () => reply, statusText: "" };
+      return { ok: true, status: 200, json: async () => reply, statusText: "" };
     }
     const scopedQuery = path.replace(/^\/c\/[^/]+(?=\/api\/)/, "").split("/api/tickets?")[1];
     if (scopedQuery !== undefined) {
       const reply = scoped?.[scopedQuery];
-      return reply === undefined ? { ok: false, json: async () => ({ error: `no page for ${scopedQuery}` }), statusText: "" } : { ok: true, json: async () => reply, statusText: "" };
+      return reply === undefined ? { ok: false, status: 400, json: async () => ({ error: `no page for ${scopedQuery}` }), statusText: "" } : { ok: true, status: 200, json: async () => reply, statusText: "" };
     }
     // Each connection's instance answers as one instance does, under its prefix.
     const answers: Record<string, () => unknown> = {
@@ -177,16 +255,16 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       ...(edits === undefined ? {} : { "/api/settings/preview": () => edits("/api/settings/preview", body), "/api/settings/save": () => edits("/api/settings/save", body), "/api/settings/restore": () => edits("/api/settings/restore", body) }),
     };
     const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), ...(update === undefined ? {} : { update }), pulls: pulls ?? {}, ...(claimWarning === undefined ? {} : { claimWarning }) };
-    return { ok: true, json: async () => value, statusText: "" };
+    return { ok: true, status: 200, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
   const browser = browserStubs(blockTabs);
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
-  const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...view_7, ...view_8, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
-    window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } }, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
-    location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...view_7, ...view_8, ...view_9, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+    window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } },
+      addEventListener: tab.onWindow },
+    location, URLSearchParams, setTimeout: browser.setTimeout, clearTimeout: browser.clearTimeout, Date: browser.Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
   for (let i = 0; i < 10; i++) await settle();
   const $ = (id: string) => document.getElementById(id);
@@ -199,13 +277,9 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     saved = { ...saved, ...change };
     max = workers ?? max;
   };
-  /** Run the page's poll once, as its five-second interval does, and let what it starts settle. */
-  const poll = async () => { for (const fn of browser.polls) fn(); for (let i = 0; i < 10; i++) await settle(); };
-  /** Run the timers the page set, and let what they start settle. */
-  const runTimers = async () => { for (const fn of browser.timers.splice(0)) fn(); for (let i = 0; i < 10; i++) await settle(); };
-  /** The browser's `hashchange`, after the page has changed its address. */
-  const hashChange = async () => { for (const fn of hashListeners) fn(); for (let i = 0; i < 10; i++) await settle(); };
-  return { $, groups, shownKeys, chip, posts, saveElsewhere, requested, release, tabs: browser.tabs, poll, runTimers, location, hashChange };
+  /** The instance goes down (or comes back, with null) for every path, or for the paths named. */
+  const setOutage = (next: Outage | null) => { outage = next; };
+  return { $, groups, shownKeys, chip, posts, saveElsewhere, requested, release, tabs: browser.tabs, ...browser.controls, delays: browser.delays, setOutage, focus: tab.focus, showTab: tab.showTab, comeBack: tab.comeBack, location, hashChange: tab.hashChange };
 }
 
 /** Let the page's pending fetches and their handlers run. */
@@ -2775,4 +2849,367 @@ test("Talk on a machine with no terminal opens no tab, and only asks the board",
   await p.runTimers();
   assert.equal(p.tabs.length, 0, "there is no pane to point a tab at");
   assert.equal(p.posts.filter(({ path }) => path.endsWith("/api/queue/T-1/talk")).length, 1);
+});
+
+// A11-211: the board reads again when its tab comes back, and a restart is "Reconnecting...", not an error.
+
+const queueReads = (p: Page) => p.requested.filter((path) => path.endsWith("/api/queue")).length;
+const reconnecting = (p: Page) => (p.$("reconnecting").hidden ? "" : p.$("reconnecting").textContent);
+const running = (key: string, pane: string) => entry(key, { phase: "running", startedAt: 3, workspace: pane.split(":")[0], pane });
+const runNames = (p: Page) => runRows(p).map((r) => r.text().slice(0, 3));
+
+/** How many times the queue is read by `action`, run on a loaded page. */
+async function queueReadsBy(action: (p: Page) => Promise<void>) {
+  const p = await page(new Map(), { entries: [running("T-1", "w5:p1")] });
+  const before = queueReads(p);
+  await action(p);
+  return queueReads(p) - before;
+}
+
+test("A11-211: the window regaining focus, or the tab becoming visible, reads the queue at once, with no timer run", async () => {
+  assert.equal(await queueReadsBy((p) => p.focus()), 1, "focus");
+  assert.equal(await queueReadsBy((p) => p.showTab(true)), 1, "visible");
+});
+
+test("A11-211: the tab becoming hidden reads nothing", async () => {
+  assert.equal(await queueReadsBy((p) => p.showTab(false)), 0);
+});
+
+test("A11-211: the tab shown and the window focused for one switch make one read, not two", async () => {
+  assert.equal(await queueReadsBy((p) => p.comeBack()), 1);
+});
+
+test("A11-211: a read on focus draws every terminal link from the fresh pane, and keeps what the person ticked", async () => {
+  const entries = [running("T-1", "w5:p1")];
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries, tickets: ONE_PROJECT });
+  assert.equal((terminalOf(p, "T-1") as { href?: string }).href, opens("http://127.0.0.1:7318/?ws=w5&pane=w5%3Ap1&view=terminal"));
+  tickOf(p, "T-3").fire("change");
+  entries[0] = running("T-1", "w9:p2");
+  await p.comeBack();
+  assert.equal((terminalOf(p, "T-1") as { href?: string }).href, opens("http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap2&view=terminal"), "the link follows the pane the run moved to");
+  assert.equal(p.requested.filter((path) => path.endsWith("/api/config")).length, 1, "config is not read again: load() would empty the ticks");
+});
+
+test("A11-211: a restart window shows Reconnecting, never red, waits 2s, 4s and 8s, and clears by itself when the instance answers", async () => {
+  const entries = [running("T-1", "w5:p1")];
+  const p = await page(new Map(), { entries });
+  assert.equal(reconnecting(p), "", "POSITIVE CONTROL: nothing is said while the instance answers");
+  p.setOutage({ rejects: true });
+  await p.poll();
+  assert.equal(reconnecting(p), "Reconnecting…", "connection refused");
+  p.setOutage({ status: 502 });
+  await p.poll();
+  assert.equal(reconnecting(p), "Reconnecting…", "the HTML 502 of the proxy in front of the page");
+  p.setOutage({ status: 503, error: "starting" });
+  await p.poll();
+  assert.equal(reconnecting(p), "Reconnecting…", "a 503");
+  assert.equal(p.$("error").textContent, "", "no red through the whole window");
+  assert.deepEqual(p.delays.slice(-4), [5_000, 2_000, 4_000, 8_000]);
+  p.setOutage(null);
+  entries.push(running("T-2", "w6:p1"));
+  await p.poll();
+  assert.equal(reconnecting(p), "", "the line clears");
+  assert.equal(p.$("error").textContent, "");
+  assert.deepEqual(runNames(p).sort(), ["T-1", "T-2"], "and the board shows the queue the instance now has");
+  assert.equal(p.delays.at(-1), 5_000, "and the wait is back to 5s");
+});
+
+test("A11-211: the proxy's own 502 for a local instance that is down is Reconnecting too, with its sentence kept as the line's title", async () => {
+  const p = await page(new Map(), { connections: WORK_ALONE });
+  const sentence = "cannot reach work's instance at http://127.0.0.1:7317: ECONNREFUSED. Is agent-org ticket:serve running there?";
+  p.setOutage({ status: 502, error: sentence });
+  await p.poll();
+  assert.equal(reconnecting(p), "Reconnecting…");
+  assert.equal(p.$("reconnecting").title, sentence);
+  assert.equal(p.$("error").textContent, "");
+  p.setOutage(null);
+  await p.poll();
+  assert.equal(reconnecting(p), "");
+});
+
+test("A11-211: a focus during the backoff reads at once, and one more failure waits 2s again", async () => {
+  const p = await page(new Map(), { entries: [running("T-1", "w5:p1")] });
+  p.setOutage({ rejects: true });
+  for (let i = 0; i < 4; i++) await p.poll();
+  assert.deepEqual(p.delays.slice(-4), [2_000, 4_000, 8_000, 16_000], "POSITIVE CONTROL: the wait has grown");
+  const before = queueReads(p);
+  await p.focus();
+  assert.equal(queueReads(p), before + 1, "the focus read does not wait for the 32s timer");
+  assert.equal(p.delays.at(-1), 2_000, "and its failure starts the backoff over");
+  assert.equal(p.$("error").textContent, "");
+  p.setOutage(null);
+  await p.focus();
+  assert.equal(reconnecting(p), "", "a focus that finds the instance back clears the line");
+});
+
+test("A11-211: a page first opened during the restart loads by itself when the instance is back, and then draws terminal links", async () => {
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries: [running("T-1", "w5:p1")], tickets: ONE_PROJECT, down: { rejects: true } });
+  assert.equal(reconnecting(p), "Reconnecting…");
+  assert.equal(p.$("error").textContent, "");
+  assert.deepEqual(p.shownKeys(), [], "nothing is drawn yet");
+  await p.poll();
+  assert.equal(p.delays.at(-1), 4_000, "it tried again and backs off");
+  p.setOutage(null);
+  await p.poll();
+  assert.equal(reconnecting(p), "");
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"], "Pick is drawn");
+  assert.ok(terminalOf(p, "T-1"), "and the run has its terminal link, which needs the config the first load never got");
+});
+
+test("A11-211: a page first opened during the restart, before its connections were read, reads them again when the instance is back", async () => {
+  const p = await page(new Map(), { connections: WORK_AND_PERSONAL, down: { status: 502 } });
+  assert.equal(reconnecting(p), "Reconnecting…");
+  p.setOutage(null);
+  await p.poll();
+  assert.equal(p.$("connection-label").hidden, false, "the switcher is offered");
+  assert.equal(p.$("connection").value, "work");
+  assert.ok(p.requested.some((path) => path === "/c/work/api/queue"), "and the board is read under the connection");
+});
+
+/** The queue read fails with a 500 and `error`, and the poll runs. */
+async function serverError(p: Page, error: string) {
+  p.setOutage({ status: 500, error, paths: ["/api/queue"] });
+  await p.poll();
+}
+
+test("A11-211: an error the server answered with is red with its sentence and no Reconnecting line, and a good read clears it", async () => {
+  const p = await page(new Map(), { entries: [running("T-1", "w5:p1")] });
+  await serverError(p, "Linear refused the key");
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["Linear refused the key", ""]);
+  p.setOutage(null);
+  await p.poll();
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["", ""], "the next good read clears it");
+});
+
+test("A11-211: a restart takes over from the red an earlier poll set, and an answer after it is red again with no Reconnecting line", async () => {
+  const p = await page(new Map(), { entries: [running("T-1", "w5:p1")] });
+  await serverError(p, "Linear refused the key");
+  p.setOutage({ rejects: true });
+  await p.poll();
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["", "Reconnecting…"], "the instance did not answer: what a poll said of it is out of date");
+  p.setOutage({ status: 400, error: "bad request", paths: ["/api/queue"] });
+  await p.poll();
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["bad request", ""], "an instance that answers is not reconnecting");
+});
+
+test("A11-211: a press the instance refused stays on screen through a good poll", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/paused"], errors: { "/api/paused": "the pool is draining" } });
+  p.$("toggle-pause").fire("click");
+  await settleAll();
+  assert.equal(p.$("error").textContent, "the pool is draining");
+  await p.poll();
+  assert.equal(p.$("error").textContent, "the pool is draining", "a good poll does not clear a refusal of the person's press");
+});
+
+test("A11-211: a restart does not clear a refused press either, and a press that got no answer is red, not Reconnecting", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/paused"], errors: { "/api/paused": "the pool is draining" } });
+  p.$("toggle-pause").fire("click");
+  await settleAll();
+  p.setOutage({ rejects: true, paths: ["/api/queue"] });
+  await p.poll();
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["the pool is draining", "Reconnecting…"]);
+  const lost = await page(new Map(), { config: SETTINGS });
+  lost.setOutage({ rejects: true, paths: ["/api/paused"] });
+  lost.$("toggle-pause").fire("click");
+  await settleAll();
+  assert.deepEqual([lost.$("error").textContent, reconnecting(lost)], ["Failed to fetch", ""], "the press was not done, and the page says so in red");
+});
+
+test("A11-211: an SSH remote its proxy cannot reach is still red, not Reconnecting", async () => {
+  const storage = new Map([["ticket-mode.connection", JSON.stringify(["personal"])]]);
+  const reason = "cannot reach personal over SSH: agents: Permission denied (publickey).";
+  const p = await page(storage, { connections: WORK_AND_PERSONAL, down: { status: 502, error: reason, paths: ["/c/personal/api/config"] } });
+  assert.equal(p.$("error").textContent, reason);
+  assert.equal(reconnecting(p), "");
+});
+
+test("A11-211: a click on a terminal link older than one poll interval reads the queue again and opens the tab at the fresh pane", async () => {
+  const entries = [running("T-1", "w5:p1")];
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries });
+  const link = terminalOf(p, "T-1")!;
+  const before = queueReads(p);
+  assert.equal(link.fire("click"), false, "a link read just now is followed as it is");
+  assert.deepEqual([p.tabs.length, queueReads(p)], [0, before], "no tab is opened by the page and nothing is read");
+  p.advance(5_001);
+  entries[0] = running("T-1", "w9:p2");
+  assert.equal(link.fire("click"), true, "the click is taken over");
+  await settleAll();
+  assert.equal(p.tabs.length, 1, "the tab is opened in the click");
+  assert.equal(queueReads(p), before + 1);
+  assert.equal(p.tabs[0].location.href, opens("http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap2&view=terminal"), "and goes to the pane the run is on now");
+});
+
+test("A11-211: a link read 5s ago is still followed as it is, and a click with a modifier is left to the browser", async () => {
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries: [running("T-1", "w5:p1")] });
+  const link = terminalOf(p, "T-1")!;
+  p.advance(5_000);
+  assert.equal(link.fire("click"), false);
+  p.advance(1);
+  assert.equal(link.fire("click", { ctrlKey: true }), false, "a ctrl-click opens the link it has");
+  assert.equal(p.tabs.length, 0);
+});
+
+test("A11-211: a stale click on the link of a run that has ended closes the tab it opened, and a browser that blocks the tab follows the link", async () => {
+  const entries = [running("T-1", "w5:p1")];
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries });
+  p.advance(6_000);
+  entries[0] = entry("T-1", { phase: "finished", startedAt: 3, finishedAt: 9, outcome: { kind: "done", reason: "ok", evidence: [] } });
+  terminalOf(p, "T-1")!.fire("click");
+  await settleAll();
+  assert.equal(p.tabs[0].closed, true, "there is no pane to go to");
+  const blocked = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries: [running("T-1", "w5:p1")], blockTabs: true });
+  blocked.advance(6_000);
+  assert.equal(terminalOf(blocked, "T-1")!.fire("click"), false, "a blocked tab leaves the link to follow its href");
+});
+
+test("A11-211: a stale click while the instance restarts keeps the tab waiting, and it goes to the pane once the instance answers", async () => {
+  const entries = [running("T-1", "w5:p1")];
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries });
+  p.advance(6_000);
+  p.setOutage({ rejects: true });
+  terminalOf(p, "T-1")!.fire("click");
+  await settleAll();
+  assert.equal(p.tabs[0].closed, false, "a read that failed says nothing of the run");
+  p.setOutage(null);
+  await p.runTimers();
+  assert.equal(p.tabs[0].location.href, opens("http://127.0.0.1:7318/?ws=w5&pane=w5%3Ap1&view=terminal"));
+});
+
+test("A11-211: a new-ticket run's Open terminal is read again the same way when the board's state is stale", async () => {
+  let run: Record<string, unknown> = { ...RUN, phase: "running", status: "writing", workspace: "w4", pane: "w4:p1" };
+  const p = await page(new Map(), { config: { ...WRITER_CONFIG, terminal: TERMINAL }, connections: WORK_ALONE, writerReply: () => ({ runs: [run] }) });
+  const open = () => p.$("writers-list").all().find((n) => n.text() === "Open terminal" && n.className === "terminal")!;
+  assert.equal(open().fire("click"), false, "fresh: followed as it is");
+  p.advance(6_000);
+  run = { ...run, workspace: "w8", pane: "w8:p1" };
+  assert.equal(open().fire("click"), true);
+  await settleAll();
+  assert.equal(p.tabs[0].location.href, opens("http://127.0.0.1:7318/?ws=w8&pane=w8%3Ap1&view=terminal"));
+});
+
+test("A11-211: a board opened from a link to a run during a restart scrolls to the card once it has loaded", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, connections: WORK_ALONE, writers: { runs: [RUN] }, hash: "#writer-w7", down: { rejects: true } });
+  assert.equal(p.$("writer-w7").scrolled, false, "POSITIVE CONTROL: nothing is drawn while the instance is down");
+  p.setOutage(null);
+  await p.poll();
+  await p.poll();
+  assert.equal(p.$("writer-w7").scrolled, true);
+});
+
+test("A11-211: a read that hangs is dropped for a new one when the tab comes back, and its late answer changes nothing", async () => {
+  const entries = [running("T-1", "w5:p1")];
+  const p = await page(new Map(), { entries });
+  p.setOutage({ hangs: true, paths: ["/api/queue"] });
+  await p.poll();
+  const hung = queueReads(p);
+  await p.focus();
+  assert.equal(queueReads(p), hung, "a read begun a moment ago is the fresh one");
+  p.advance(5_001);
+  p.setOutage(null);
+  entries.push(running("T-2", "w6:p1"));
+  await p.focus();
+  assert.equal(queueReads(p), hung + 1, "one that has hung longer than a poll interval is not waited for");
+  assert.deepEqual(runNames(p).sort(), ["T-1", "T-2"]);
+  assert.equal(p.pollPending(), true, "and the poll goes on");
+});
+
+test("A11-211: a read the person asked for that gets no answer is red, and a good poll does not clear it", async () => {
+  const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, held: HELD, scoped: { "assignee=ana": { tickets: [], next: null } } });
+  p.setOutage({ rejects: true, paths: ["/api/tickets?assignee=ana"] });
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  await settleAll();
+  assert.equal(p.$("error").textContent, "Failed to fetch", "nothing retries it, so it is said in red");
+  assert.equal(reconnecting(p), "");
+  await p.poll();
+  assert.equal(p.$("error").textContent, "Failed to fetch", "the poll reading the queue again says nothing of the scope that was not read");
+});
+
+test("A11-211: after a switch of instance whose load failed, the poll goes on reading that instance's queue and the message stays", async () => {
+  const reason = "cannot reach personal over SSH: agents: Permission denied (publickey).";
+  const p = await page(new Map(), { connections: WORK_AND_PERSONAL, down: { status: 502, error: reason, paths: ["/c/personal/api/config"] } });
+  p.$("connection").value = "personal";
+  p.$("connection").fire("change");
+  await settleAll();
+  assert.equal(p.$("error").textContent, reason);
+  const before = p.requested.filter((path) => path === "/c/personal/api/queue").length;
+  await p.poll();
+  assert.ok(p.requested.filter((path) => path === "/c/personal/api/queue").length > before, "the queue is read, as it was before this change");
+  assert.equal(p.$("error").textContent, reason, "and a good read does not say the board is loaded");
+});
+
+/** The page's state grows older than a poll interval, and the run's Open terminal is clicked. */
+async function clickStaleTerminal(p: Page, key: string) {
+  p.advance(6_000);
+  const prevented = terminalOf(p, key)!.fire("click");
+  await settleAll();
+  return prevented;
+}
+
+/** Press Talk on the first run's card, and let its tab be pointed at the terminal. */
+async function pressTalk(p: Page) {
+  runRows(p)[0].all().find((n) => n.tag === "button" && n.className.includes("action-talk"))!.fire("click");
+  await p.runTimers();
+}
+
+test("A11-211: a stale click on a terminal link whose tab already shows the terminal points that tab at the fresh link and never closes it", async () => {
+  const talking = entry("T-1", { phase: "running", startedAt: 3, talk: true, workspace: "w5", pane: "w5:p1" });
+  const entries = [talking];
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries });
+  await pressTalk(p);
+  assert.notEqual(p.tabs[0].location.href, "", "POSITIVE CONTROL: Talk pointed its tab at the terminal");
+  entries[0] = entry("T-1", { phase: "finished", startedAt: 3, finishedAt: 9, outcome: { kind: "done", reason: "ok", evidence: [] } });
+  await clickStaleTerminal(p, "T-1");
+  assert.equal(p.tabs[0].closed, false);
+  assert.equal(p.tabs.length, 1);
+});
+
+test("A11-211: a click on a terminal link right after a press that returned the queue is fresh", async () => {
+  const entries = [running("T-1", "w5:p1")];
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries });
+  p.advance(6_000);
+  p.$("toggle-pause").fire("click");
+  await settleAll();
+  assert.equal(terminalOf(p, "T-1")!.fire("click"), false);
+  assert.equal(p.tabs.length, 0);
+});
+
+/** A page first opened while only `path` gets no answer: it says Reconnecting, with no red, and backs off. */
+async function openedWhileOnlyUnanswered(path: string, options: PageOptions) {
+  const p = await page(new Map(), { ...options, down: { rejects: true, paths: [path] } });
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["", "Reconnecting…"]);
+  assert.equal(p.delays.at(-1), 2_000, "and it backs off");
+  return p;
+}
+
+test("A11-211: a page first opened while only the new-ticket read gets no answer says Reconnecting and tries the open again, not red and loaded", async () => {
+  const p = await openedWhileOnlyUnanswered("/api/writer", { config: WRITER_CONFIG, connections: WORK_ALONE, writers: { runs: [RUN] } });
+  assert.equal(p.$("writers-list").children.length, 0, "no request is drawn yet, and the board is not taken for loaded");
+  p.setOutage(null);
+  await p.poll();
+  assert.deepEqual([p.$("error").textContent, reconnecting(p)], ["", ""]);
+  assert.equal(p.$("writers-list").children.length, 1, "the open ran again, and the request is drawn");
+});
+
+test("A11-211: a page first opened while only the parents read gets no answer tries the open again, so the tree is not left without its parents", async () => {
+  const p = await openedWhileOnlyUnanswered("/api/parents", { tickets: EPIC, parents: [ticketIn("E-1", { title: "epic" })] });
+  p.setOutage(null);
+  await p.poll();
+  assert.equal(reconnecting(p), "");
+  assert.equal(p.requested.filter((path) => path === "/api/parents").length, 2, "the parents were read again");
+});
+
+/** The person chooses another instance in the switcher, and its load settles. */
+async function switchTo(p: Page, name: string) {
+  p.$("connection").value = name;
+  p.$("connection").fire("change");
+  await settleAll();
+}
+
+test("A11-211: a load the person started (a switch of instance) still goes on without the new-ticket list when that read gets no answer, and says so in red", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, connections: WORK_AND_PERSONAL, writers: { runs: [RUN] } });
+  p.setOutage({ rejects: true, paths: ["/c/personal/api/writer"] });
+  await switchTo(p, "personal");
+  assert.equal(p.$("error").textContent, "Failed to fetch");
+  assert.equal(reconnecting(p), "");
+  assert.ok(p.shownKeys().length > 0, "and the board still loads");
 });

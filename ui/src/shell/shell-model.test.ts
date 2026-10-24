@@ -185,6 +185,11 @@ describe("ticketsView", () => {
     expect(ticketsView(view("loading", null), view("unreachable", null, "cannot reach personal")).state).toBe("unreachable");
   });
 
+  it("is reconnecting when the config cannot be read because the instance is restarting, and keeps the last good tickets when the tickets read does", () => {
+    expect(ticketsView(view("loading", null), view("reconnecting", null, "Failed to fetch"))).toEqual({ state: "reconnecting", data: null, refusal: "Failed to fetch" });
+    expect(ticketsView(view("reconnecting", [mine], "Failed to fetch"), view("ready", config()))).toEqual({ state: "reconnecting", data: [mine], refusal: "Failed to fetch" });
+  });
+
   it("shows the scope chosen, from the first list and the pages read since", () => {
     const shown = ticketsView(view("ready", [mine]), view("ready", config()), { scope: "anyone", extra: [theirs] });
     expect(shown.data?.map((t) => t.key)).toEqual(["A11-1", "A11-2"]);

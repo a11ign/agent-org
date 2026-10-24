@@ -31,6 +31,9 @@ export function ticketsInScope(tickets: readonly TicketView[], config: ConfigVie
   return tickets.filter((ticket) => inScope(ticket, scope, config.viewer));
 }
 
+/** The states of a read that failed. */
+const FAILED: readonly PollState[] = ["error", "unreachable", "reconnecting"];
+
 /** The tickets the first read gave and the pages of the scopes read since, once each by key. PURE. */
 export function mergedTickets(first: readonly TicketView[], extra: readonly TicketView[]): TicketView[] {
   const seen = new Set(first.map(({ key }) => key));
@@ -52,7 +55,7 @@ export type ScopedReads = Readonly<{ scope: string | null; extra: readonly Ticke
  * not be read (`refusal`), which is an `error` in the server's own words. PURE.
  */
 export function ticketsView(tickets: PollView<TicketView[]>, config: PollView<ConfigView>, { scope = null, extra = [], reading = null, refusal = null }: Partial<ScopedReads> = {}): PollView<TicketView[]> {
-  if (config.data === null && (config.state === "error" || config.state === "unreachable")) return { state: config.state, data: null, refusal: config.refusal };
+  if (config.data === null && FAILED.includes(config.state)) return { state: config.state, data: null, refusal: config.refusal };
   if (tickets.state === "loading" || (config.state === "loading" && tickets.data !== null)) return { state: "loading", data: null, refusal: null };
   const shown = scopeOf(config.data, scope);
   const data = tickets.data === null ? null : ticketsInScope(mergedTickets(tickets.data, extra), config.data, shown);

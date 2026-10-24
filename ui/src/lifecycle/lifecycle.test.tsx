@@ -49,6 +49,22 @@ describe("Lifecycle, driven by the polling hook's state", () => {
     expect(screen.getAllByRole("listitem").map(textOf)).toEqual(["A11-1"]);
   });
 
+  it("shows a quiet Reconnecting line, no alert and no Retry, above the last good data while the instance restarts", () => {
+    lifecycleOf(viewOf("reconnecting", ["A11-1"], "Failed to fetch"));
+    const line = screen.getByRole("status");
+    expect(textOf(line)).toBe("Reconnecting…");
+    expect(line.getAttribute("title")).toBe("Failed to fetch");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.getAllByRole("listitem").map(textOf)).toEqual(["A11-1"]);
+  });
+
+  it("shows the skeleton under the Reconnecting line before any success", () => {
+    lifecycleOf(viewOf("reconnecting", null, "Failed to fetch"));
+    expect(screen.getByText("Reconnecting…")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Loading things" }).getAttribute("aria-busy")).toBe("true");
+  });
+
   it("shows only the banner for an error before any success", () => {
     lifecycleOf(viewOf("error", null, "boom"));
     expect(textOf(screen.getByRole("alert"))).toContain("boom");

@@ -18,6 +18,7 @@
   .tab[aria-selected="true"] { background: var(--bg); color: var(--text); font-weight: 600; }
   main { padding: 16px 20px 120px; }
   .error { color: var(--bad); margin: 8px 0; white-space: pre-wrap; }
+  .reconnecting { margin: 8px 0; }
   input[type="search"] { width: 320px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
   .group { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; }
   .group > h2 { font-size: 14px; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); border-radius: 8px 8px 0 0; display: flex; gap: 10px; align-items: center;
@@ -222,6 +223,7 @@
 </dialog>
 <main>
   <div id="error" class="error" role="alert"></div>
+  <div id="reconnecting" class="hint reconnecting" role="status" hidden></div>
   <div id="connections-note" class="notice" hidden></div>
   <div id="held" class="notice" role="status" hidden></div>
   <section id="pick">
@@ -339,6 +341,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, sharedRunNote, terminalTab, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
+  POLL_MS, nextDelay, looksLikeRestart,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
   reviewLinesOf, unlistedPulls, afterMergeChecks, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, promptNote, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
@@ -404,6 +407,9 @@ const state = {
   // Whether this machine writes tickets from a request (the host file's `tickets.writer`), whether Grill is on (`tickets.terminal`), the repositories
   // and priorities its form offers, and the new-ticket requests as the board last read them. The list is read again only when it changed.
   writer: false, writerGrill: false, writerRepos: [], writerPriorities: [], writers: { runs: [] }, writersSignature: "",
+  // Whether `load()` has finished for the shown instance (a message the poll set stays until it has), and when the queue and the new-ticket requests were last read, which a
+  // click on a terminal link compares with the poll interval before it trusts the pane the link was built from.
+  loaded: false, queueAt: 0, writersAt: 0,
 };
 const setOpen = (next) => { state.open = next; remember(storage, "ticket-mode.open", next); renderPick(); };
 const setOpenParents = (next) => { state.openParents = next; remember(storage, "ticket-mode.open-parents", next); renderPick(); };
@@ -411,20 +417,70 @@ const everyOpen = (statuses) => statuses.length > 0 && statuses.every((status) =
 
 // What a call answers once another instance has been chosen: it is dropped, so one instance's answer never lands on another's view.
 const STALE = new Error("another instance was chosen");
+// What a read answers while the instance, or the service in front of it, is restarting (see `looksLikeRestart`): the page says "Reconnecting..." and reads again.
+class Restarting extends Error {}
+const RECONNECTING = "Reconnecting…";
+const NOT_JSON = Symbol("not JSON");
+const notJson = () => new Error("the instance answered with something that is not JSON");
 async function call(method, path, body) {
   const chosen = state.connection;
-  const response = await fetch(`${apiBase(chosen)}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-  const value = await response.json();
+  const reading = method === "GET";
+  let response;
+  try {
+    response = await fetch(`${apiBase(chosen)}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  } catch (err) {
+    // No answer at all: connection refused or a network error. A press that got none was not done, and is not retried, so it stays an error.
+    if (state.connection !== chosen) throw STALE;
+    throw reading ? new Restarting(err.message) : err;
+  }
+  // The status is read before the body: a proxy's 502 is an HTML page, which is not JSON.
+  const value = await response.json().catch(() => NOT_JSON);
   if (state.connection !== chosen) throw STALE;
-  if (!response.ok) throw new Error(value.error || response.statusText);
+  if (!response.ok) {
+    const refusal = (value !== NOT_JSON && value?.error) || response.statusText || `HTTP ${response.status}`;
+    if (!reading) throw new Error(refusal);
+    throw looksLikeRestart(chosen, response.status, refusal) ? new Restarting(refusal) : new Error(refusal);
+  }
+  if (value === NOT_JSON) throw notJson();
   return value;
 }
-function report(err) { if (err !== STALE) $("error").textContent = err ? String(err.message || err) : ""; }
+// Whether the red message on screen came from the poll's own read, which a later good poll clears, or from something the person did (a press, a click that reads), which only
+// their next action does.
+let redFromPoll = false;
+/**
+ * Say what went wrong. A read the poll made that got no answer (`Restarting`) is the quiet Reconnecting line, and the poll tries again; anything else, and a `Restarting` from
+ * something the person did (nothing retries it), is red.
+ */
+function report(err, polled = false) {
+  if (err === STALE) return;
+  if (err === null || err === undefined) { redFromPoll = false; $("error").textContent = ""; $("reconnecting").hidden = true; return; }
+  if (polled && err instanceof Restarting) {
+    $("reconnecting").textContent = RECONNECTING;
+    $("reconnecting").title = err.message;
+    $("reconnecting").hidden = false;
+    // The instance did not answer, so what an earlier poll said of it is out of date. A refusal of the person's own press stays.
+    if (redFromPoll) { redFromPoll = false; $("error").textContent = ""; }
+    return;
+  }
+  $("reconnecting").hidden = true;
+  redFromPoll = polled;
+  $("error").textContent = String(err.message || err);
+}
+/** The poll's read came back good: the instance answers again, so Reconnecting goes, and so does the red message an earlier poll set once the board is loaded. */
+function readSucceeded() {
+  $("reconnecting").hidden = true;
+  if (redFromPoll && state.loaded) { redFromPoll = false; $("error").textContent = ""; }
+}
 /** Scroll to the card a link names. A hash that is not a valid encoding names no card, and is not an error of the page (A11-129). */
 function scrollToNamedCard() {
   let id;
   try { id = decodeURIComponent(location.hash.slice(1)); } catch { return; }
   document.getElementById(id)?.scrollIntoView();
+}
+/** The queue as an instance last answered it, and when: a click on a terminal link compares that with the poll interval. */
+function setQueue(next) {
+  state.queue = next;
+  state.queueAt = Date.now();
 }
 const entryFor = (key) => state.queue.entries.find((e) => e.ticket.key === key);
 /** What Select all takes: every shown ticket a person can pick, so not a parent, as the parent's own checkbox picks the tickets under it. */
@@ -579,7 +635,7 @@ async function queueChildren(t) {
   const { model, effort } = batchChoice(state.choice, state.batch);
   const plan = Boolean(state.planner && state.plan && $("plan-first").checked);
   const answer = await call("POST", "/api/queue-children", { key: t.key, model, effort, plan });
-  state.queue = answer.queue;
+  setQueue(answer.queue);
   const queued = answer.keys.length === 0 ? `None of ${t.key}'s sub-issues could be queued.` : `Queued ${t.key}'s children: ${answer.keys.join(", ")}.`;
   $("children-note").textContent = answer.note ? `${queued} Note: ${answer.note}.` : queued;
   $("children-note").hidden = false;
@@ -790,11 +846,12 @@ function row(e) {
     const title = verb === "dismiss" && hasEdit(e) ? DISMISS_EDIT_TITLE : ACTION_TITLE[verb];
     const b = el("button", { className: `icon-btn action-${verb}`, title: title ?? ACTION_LABEL[verb] });
     b.append(iconSpan(ACTION_ICON[verb]), el("span", { className: "sr-only" }, ACTION_LABEL[verb]));
-    b.addEventListener("click", () => (verb === "talk" ? talkTo(e) : call("POST", `/api/queue/${e.ticket.key}/${verb}`).then((q) => { state.queue = q; render(); }, report)));
+    b.addEventListener("click", () => (verb === "talk" ? talkTo(e) : call("POST", `/api/queue/${e.ticket.key}/${verb}`).then((q) => { setQueue(q); render(); }, report)));
     actions.append(b);
   }
   const link = terminalLink(state.terminal, e) ?? publishTerminalLink(state.terminal, e, state.queue.publish);
   const terminal = link && state.connection && safeHref(link) ? el("a", { className: "terminal icon-btn", href: terminalOpenHref(state.connection, link), title: `Open this run's terminal (${link})`, target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.terminal), el("span", { className: "sr-only" }, "Open terminal")) : null;
+  terminal?.addEventListener("click", (event) => resolveStaleTerminal(event, state.queueAt, terminalTab(e), ticketTerminal(e.ticket.key)));
   const pulls = pullsOf(e);
   const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { className: "pr-link", href: safeHref(pr.url), title: `Open ${pr.repo} #${pr.url.split("/").pop()} on GitHub`, target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.pull), `#${pr.url.split("/").pop()}`, el("span", { className: "sr-only" }, ` ${pr.repo}`))])) : null;
   const note = workingNote(e);
@@ -938,7 +995,7 @@ async function readChoice() {
 }
 async function readMax() {
   const queue = await call("GET", "/api/queue").catch(() => null);
-  if (queue) state.queue = queue;
+  if (queue) setQueue(queue);
   $("max").value = String(state.queue.max);
   render();
 }
@@ -1521,7 +1578,7 @@ function saveChoice(part) {
 }
 function saveMax() {
   call("POST", "/api/max", { max: Number($("max").value) }).then((q) => {
-    state.queue = q;
+    setQueue(q);
     showSaved();
     render();
   }, (err) => {
@@ -1606,19 +1663,36 @@ function openTerminalWhenReady(tab, find) {
   };
   look();
 }
+// What a re-read of a run for its terminal answers while the instance is restarting: the tab waits for it, where any other failure ends the wait as it always did.
+const WAITING = Symbol("waiting for the instance");
+const waitsForRestart = (err) => (err instanceof Restarting ? WAITING : null);
 /** A new-ticket run's terminal link, read again from the board, for {@link openTerminalWhenReady}. */
 const writerTerminal = (id) => async () => {
-  const next = await call("GET", "/api/writer").catch(() => null);
-  const run = next?.runs.find((r) => r.id === id);
-  return { link: run === undefined ? null : runTerminalHref(run), over: run === undefined || run.phase === "finished" };
+  const next = await call("GET", "/api/writer").catch(waitsForRestart);
+  const run = next?.runs?.find((r) => r.id === id);
+  return { link: run === undefined ? null : runTerminalHref(run), over: next !== WAITING && (run === undefined || run.phase === "finished") };
 };
 /** A ticket run's terminal link, read again from the queue: its pane while it is live or parked, and over once it has ended with none (A11-171). */
 const ticketTerminal = (key) => async () => {
-  const queue = await call("GET", "/api/queue").catch(() => null);
-  const run = queue?.entries.find((r) => r.ticket.key === key);
+  const queue = await call("GET", "/api/queue").catch(waitsForRestart);
+  const run = queue?.entries?.find((r) => r.ticket.key === key);
   const live = run !== undefined && (run.phase !== "finished" || isParked(run));
-  return { link: live ? terminalLink(state.terminal, run) : null, over: run === undefined || (run.phase === "finished" && !isParked(run)) };
+  return { link: live ? terminalLink(state.terminal, run) : null, over: queue !== WAITING && (run === undefined || (run.phase === "finished" && !isParked(run))) };
 };
+/**
+ * A click on a terminal link built from state older than one poll interval: the pane it names may have moved (the instance restarted since), so the click opens the tab itself,
+ * in the click, the only moment a browser allows it, and points it at the link read afresh, or closes it when the run is over. A tab of that name that already shows a terminal
+ * is only pointed at the fresh link, never closed. A fresh link, a browser that blocks the tab, and a click that asks for something else than this tab (a modifier or another
+ * button) follow the link as it is.
+ */
+function resolveStaleTerminal(event, readAt, tabName, find) {
+  if (Date.now() - readAt <= POLL_MS || event.button || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const tab = window.open("", tabName);
+  if (!tab) return;
+  event.preventDefault();
+  if (isBlank(tab)) return openTerminalWhenReady(tab, find);
+  find().then(({ link }) => { if (link && state.connection && safeHref(link)) tab.location.href = terminalOpenHref(state.connection, link); });
+}
 /** Whether a tab is still the blank one this page opened, so one that already shows a terminal is never closed by a press that failed. */
 function isBlank(tab) {
   try { return tab.location.href === "about:blank" || tab.location.href === ""; } catch { return false; }
@@ -1631,7 +1705,7 @@ async function talkTo(e) {
   // A machine with no terminal or no connection has no pane to point a tab at: Talk then only asks the board.
   const tab = state.terminal && state.connection ? window.open("", terminalTab(e)) : null;
   try {
-    state.queue = await call("POST", `/api/queue/${e.ticket.key}/talk`);
+    setQueue(await call("POST", `/api/queue/${e.ticket.key}/talk`));
     render();
     // A tab that already shows the terminal (a second press) is left where it is.
     if (tab && isBlank(tab)) openTerminalWhenReady(tab, ticketTerminal(e.ticket.key));
@@ -1644,12 +1718,14 @@ async function talkTo(e) {
 /** The new-ticket requests as the board holds them, read again when they changed. */
 function setWriters(next) {
   state.writers = next;
+  state.writersAt = Date.now();
   state.writersSignature = JSON.stringify(next.runs);
   renderWriters();
 }
 async function refreshWriters() {
   if (!state.writer) return;
   const next = await call("GET", "/api/writer");
+  state.writersAt = Date.now();
   if (JSON.stringify(next.runs) === state.writersSignature) return;
   const before = new Set(state.writers.runs.flatMap((run) => run.tickets.map((ticket) => ticket.key)));
   const grilled = new Set(state.writers.runs.filter((run) => run.ticket !== undefined && run.phase === "finished").map((run) => run.id));
@@ -1670,6 +1746,7 @@ function writerCard(run) {
   const choice = writerChoiceLabel(run);
   const link = actions.terminal ? runTerminalHref(run) : null;
   const terminal = link && state.connection && safeHref(link) ? el("a", { className: "terminal", href: terminalOpenHref(state.connection, link), title: link, target: "_blank", rel: "noreferrer", textContent: "Open terminal" }) : null;
+  terminal?.addEventListener("click", (event) => resolveStaleTerminal(event, state.writersAt, "_blank", writerTerminal(run.id)));
   const buttons = [
     terminal,
     actions.stop ? actionButton("Stop", "Stop writing: the tickets already made stay", () => writerAction(run, "stop")) : null,
@@ -1759,7 +1836,7 @@ $("queue").addEventListener("click", async () => {
   try {
     const sent = state.batch;
     const { model, effort } = batchChoice(state.choice, sent);
-    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model, effort, plan: planningCount() > 0 });
+    setQueue(await call("POST", "/api/queue", { keys: [...state.selected], model, effort, plan: planningCount() > 0 }));
     state.selected.clear();
     // A batch's own model and effort are for that batch: the next one starts from the default again, unless it was chosen while this queued.
     if (state.batch === sent) state.batch = {};
@@ -1768,8 +1845,8 @@ $("queue").addEventListener("click", async () => {
   } catch (err) { report(err); }
 });
 $("publish").addEventListener("click", () => call("POST", "/api/publish", { keys: [...state.toPublish] })
-  .then((q) => { state.queue = q; state.toPublish = new Set(); report(null); render(); }, report));
-$("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
+  .then((q) => { setQueue(q); state.toPublish = new Set(); report(null); render(); }, report));
+$("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { setQueue(q); render(); }, report));
 $("review-changes").addEventListener("click", () => reviewChanges().catch(report));
 $("settings-search").addEventListener("input", () => {
   state.settingsSearch.query = $("settings-search").value;
@@ -1808,26 +1885,39 @@ function renderConnections(refusal) {
   $("connections-note").hidden = !refusal;
 }
 
-// The shown instance's view, read afresh. Nothing chosen on one instance carries over to another.
-async function load() {
+/**
+ * What a read the board can do without answers when it fails (`fallback`): the poll's own load lets a restart through instead, so the whole open is tried again and nothing
+ * the restart cost it is kept as if the instance had said so.
+ */
+function restartFailsPolledLoad(err, polled, fallback = {}) {
+  if (polled && err instanceof Restarting) throw err;
+  return fallback;
+}
+// The shown instance's view, read afresh. Nothing chosen on one instance carries over to another. `polled` is the poll's own first open: it leaves the message on screen as it
+// is, so Reconnecting does not blink between tries, and a read that gets no answer fails the open, to be tried again, where the person's own load goes on without it.
+async function load({ polled = false } = {}) {
   state.selected = new Set();
   state.toPublish = new Set();
   state.parents = [];
   state.held = null;
   state.read = new Set();
   state.reading = null;
+  state.loaded = false;
   const loads = ++state.loads;
   $("children-note").hidden = true;
-  report(null);
+  if (!polled) report(null);
   setup(await call("GET", "/api/config"));
-  [state.tickets, state.queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);
+  const [tickets, queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);
+  state.tickets = tickets;
+  setQueue(queue);
   // The new-ticket list is read on its own: a failure there is said, and the board still loads.
-  setWriters(state.writer ? await call("GET", "/api/writer").catch((err) => { report(err); return { runs: [] }; }) : { runs: [] });
+  setWriters(state.writer ? await call("GET", "/api/writer").catch((err) => { restartFailsPolledLoad(err, polled); report(err); return { runs: [] }; }) : { runs: [] });
   // An empty list says why, in the instance's words, which name its setting. An instance from before it could say keeps a plain line.
-  state.empty = state.tickets.length > 0 ? null : (await call("GET", "/api/pick").catch(() => null))?.empty ?? "No open tickets to list.";
+  state.empty = state.tickets.length > 0 ? null : (await call("GET", "/api/pick").catch((err) => restartFailsPolledLoad(err, polled))).empty ?? "No open tickets to list.";
   render();
+  if (loads === state.loads) state.loaded = true;
   // Parents are read after the first render, so the list never waits on them. Without them, every ticket stands on its own.
-  state.parents = await call("GET", "/api/parents").catch(() => []);
+  state.parents = await call("GET", "/api/parents").catch((err) => restartFailsPolledLoad(err, polled, []));
   renderPick();
   // The Settings page, when its address is shown, is drawn again for the instance just chosen, so nothing of another instance stays on it.
   if (onSettingsPage()) drawSettings().catch(report);
@@ -1869,29 +1959,98 @@ async function readScope(scope) {
 $("connection").addEventListener("change", () => {
   state.connection = state.connections.find((c) => c.name === $("connection").value) ?? state.connection;
   remember(storage, "ticket-mode.connection", new Set(state.connection ? [state.connection.name] : []));
+  // A read of the instance just left that is still under way no longer holds the poll up: the poll goes on, from this one.
+  dropRead();
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(readOnce, nextDelay(0));
   load().catch(report);
 });
 
-try {
-  const listed = await call("GET", "/api/connections").catch(() => null);
-  state.connections = Array.isArray(listed?.connections) ? listed.connections : [];
-  // A link from a run that has ended names the connection its run is on (A11-129): that one is chosen over the one remembered.
-  const named = new URLSearchParams(location.search).get("connection");
-  state.connection = chosenConnection(state.connections, named ?? [...recall(storage, "ticket-mode.connection")][0] ?? null);
-  renderConnections(listed?.refusal);
-  showRoute();
-  await load();
+// The first open of the page: which instances it offers, and the shown one's board. Run again by the poll until it has finished, so a page opened while the
+// instance restarts finishes loading by itself, config and terminal template included.
+let connectionsRead = false;
+let opened = false;
+async function open() {
+  if (!connectionsRead) {
+    // An instance with no such route has no connections file: the page then reads the root. A restart is not that.
+    const listed = await call("GET", "/api/connections").catch((err) => { if (err instanceof Restarting) throw err; return null; });
+    state.connections = Array.isArray(listed?.connections) ? listed.connections : [];
+    // A link from a run that has ended names the connection its run is on (A11-129): that one is chosen over the one remembered.
+    const named = new URLSearchParams(location.search).get("connection");
+    state.connection = chosenConnection(state.connections, named ?? [...recall(storage, "ticket-mode.connection")][0] ?? null);
+    renderConnections(listed?.refusal);
+    showRoute();
+    connectionsRead = true;
+  }
+  await load({ polled: true });
   // The card the link names is scrolled to, once the page has drawn it (A11-129). The Settings address names no card.
   if (location.hash && !onSettingsPage()) scrollToNamedCard();
-} catch (err) { report(err); }
+  opened = true;
+}
 window.addEventListener("hashchange", () => {
   showRoute();
   if (onSettingsPage()) drawSettings().catch(report);
 });
-setInterval(() => {
-  call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); renderHeld(); }, report);
-  refreshWriters().catch(report);
-}, 5000);
+
+// THE POLL. One read after another, the next scheduled when an answer arrives (`nextDelay`: 5 s after a good one, then 2 s doubling to 60 s after failures in a row), so a
+// slow answer cannot pile reads up. A read is the whole first open until that has finished, so a page opened while the instance restarts finishes loading by itself,
+// config and terminal template included; after that it is the queue and the new-ticket requests, which refreshes every terminal link from fresh `workspace` and `pane`
+// values. It does not call `load()` then: that empties the person's ticks and puts the Assignee scope back.
+let failuresInARow = 0;
+let pollTimer;
+let readInFlight = null;
+let readingSince = 0;
+// Counts the reads started, so a read that was dropped for a newer one can tell when its answer comes.
+let readNumber = 0;
+async function readBoard() {
+  if (!opened) return open();
+  const queue = await call("GET", "/api/queue");
+  setQueue(queue);
+  renderBoard(); renderPick(); renderHeld();
+  await refreshWriters();
+}
+/** One read of the board, then the wait for the next: a good one starts the wait over, a failure is said and lengthens it. A read that was dropped for a newer one does neither. */
+async function readAndWait(mine) {
+  try {
+    await readBoard();
+    if (mine !== readNumber) return;
+    failuresInARow = 0;
+    readSucceeded();
+  } catch (err) {
+    if (mine !== readNumber) return;
+    // An answer dropped because another instance was chosen says nothing of this one.
+    if (err !== STALE) failuresInARow += 1;
+    report(err, true);
+  }
+  readInFlight = null;
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(readOnce, nextDelay(failuresInARow));
+}
+function readOnce() {
+  if (readInFlight !== null) return readInFlight;
+  readingSince = Date.now();
+  readNumber += 1;
+  readInFlight = readAndWait(readNumber);
+  return readInFlight;
+}
+/** Drop the read under way, if any: its answer will be ignored, and the next read is made by the caller or by the timer. */
+function dropRead() {
+  readNumber += 1;
+  readInFlight = null;
+}
+/**
+ * The tab became visible or the window gained focus: read at once and forget the failures in a row, so the wait starts from 2 s again. A read begun a moment ago is the fresh
+ * one (a focus and a visibility change fire together); one that has hung for longer than a poll interval, as a request does when a laptop sleeps, is dropped for a new read.
+ */
+function readNow() {
+  clearTimeout(pollTimer);
+  failuresInARow = 0;
+  if (readInFlight !== null && Date.now() - readingSince > POLL_MS) dropRead();
+  return readOnce();
+}
+window.addEventListener("focus", readNow);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") readNow(); });
+await readOnce();
 </script>
 </body>
 </html>
