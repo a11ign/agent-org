@@ -16,6 +16,7 @@ export const MAX_TRUST_ANSWERS = 2;
 const FIRST_LINE_CHARS = 200;
 
 /** The heading of Codex's trust dialog. */
+const TRUST_HEADING = "Trust this folder?";
 const TRUST_QUESTION = /^Trust this folder\?/;
 
 /** The line of the dialog that names the root the trust applies to; the root is the path after it. */
@@ -37,7 +38,8 @@ export function readPaneDialog(pane: string, readDialogLines: ReviewerBoard["her
   const first = read.paragraph[0].slice(0, FIRST_LINE_CHARS);
   if (!TRUST_QUESTION.test(read.dialog.question)) return { first, trust: null };
   const root = TRUST_ROOT.exec(read.paragraph.join(" "))?.[1].replace(AFTER_PATH, "") ?? null;
-  return { first, trust: { root, selected: TRUST_SELECTED.test(pane) } };
+  // Only the text from the dialog's own heading down: an option line left higher on the screen is not this dialog's.
+  return { first, trust: { root, selected: TRUST_SELECTED.test(pane.slice(Math.max(0, pane.lastIndexOf(TRUST_HEADING)))) } };
 }
 
 /** Whether a dialog is a trust dialog this seat's head may be answered on: it names a root, `1. Trust and continue` is the selected option, and it has answers left. PURE. */

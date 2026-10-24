@@ -478,10 +478,12 @@ function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerD
   const key = `${seat.label}@${head}`;
   const answers = context.trustAnswers.get(key) ?? 0;
   const codex = context.seams.codexTrust;
+  let pressed = false;
   const answer = answerDialog({ seen, answers,
     ensure: codex?.ensure ?? (() => ({ kind: "refused", file: "", reason: "the port is given no Codex trust to ask" })),
-    press: () => pressEnter(board, seat.label) });
-  if ("answered" in answer) context.trustAnswers.set(key, answers + 1);
+    press: () => { pressed = true; return pressEnter(board, seat.label); } });
+  // An answer is counted when a key was tried, so a press herdr keeps refusing does not go on for ever.
+  if (pressed) context.trustAnswers.set(key, answers + 1);
   return answer;
 }
 

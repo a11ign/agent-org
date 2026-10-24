@@ -565,14 +565,15 @@ function flagStaleBlock(ctx: PoolContext, key: string): void {
 
 /**
  * Flag a finished run whose open pull request has a reviewer stopped on a dialog the board cannot answer (A11-221): the note becomes its `handedBack`, so the board reads Needs you and quotes the dialog's first line, and it goes
- * again at the first look that finds no dialog on any of the run's open pull requests. A pull request the pool has not read yet (a restart) leaves the note as it is. Written only when it changes.
+ * again at the first look that finds no dialog on any of the run's open pull requests, or when the pool has no reviewer. A pull request the pool has not read yet (a restart) leaves the note as it is. Written only when it changes.
  */
 function flagReviewerDialog(ctx: PoolContext, key: string): void {
   const { pullReads, store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   if (entry === undefined) return;
   const note = reviewerDialogNote(entry, pullReads);
-  if (note === null && openPulls(entry).some(({ url }) => !pullReads.has(url))) return;
+  // With no reviewer there is nothing to wait on and no look to come: the note goes. Otherwise a pull request not read yet keeps it.
+  if (note === null && ctx.reviewer !== undefined && openPulls(entry).some(({ url }) => !pullReads.has(url))) return;
   const next = recordReviewerDialog(store.get(), key, note);
   if (next.entries.find((e) => e.ticket.key === key)?.handedBack !== entry.handedBack) update(ctx, () => next);
 }

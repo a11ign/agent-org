@@ -59,6 +59,7 @@ function machine() {
 async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", pane = trustPane(m.clones.alpha), pressRefused = false }: { status?: string; pane?: string; pressRefused?: boolean } = {}) {
   await loadReviewerGate();
   const sent: string[][] = [];
+  const tried: string[][] = [];
   const read: string[][] = [];
   const logged: string[] = [];
   const state = { status, pane };
@@ -68,6 +69,7 @@ async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", 
       return state.pane;
     }
     if (args.includes("send-keys")) {
+      tried.push(args);
       if (pressRefused) throw new Error("agent_not_found");
       sent.push(args);
       return JSON.stringify({ type: "ok" });
@@ -78,7 +80,7 @@ async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", 
   const deps = { env: m.env, clones: m.clones, exec: () => ({ status: 1, stdout: "", stderr: "" }), log: (line: string) => logged.push(line) } as unknown as PluginDeps;
   const helpers = reviewingHelpers({ session: "tickets", run, codeHost: () => createFakeCodeHost(), clones: m.clones, instance: "work", heads: new Map([["reviewer-7", "h1"]]) });
   const port = atomicReviewerPort(helpers, { codexTrust: codexTrustSeam(deps) });
-  return { port, sent, read, logged, state };
+  return { port, sent, tried, read, logged, state };
 }
 
 const ENTER = ["--session", "tickets", "agent", "send-keys", "reviewer-7", "enter"];
@@ -157,7 +159,16 @@ test("A11-221: a trust dialog whose entry is a person's `untrusted`, or whose ke
   assert.deepEqual(made.sent, []);
   assert.equal(readFileSync(declined.file, "utf8"), before);
   const refused = await blockedPort(machine(), { pressRefused: true });
-  assert.ok("stuck" in refused.port.unblock!(REF)!);
+  for (let look = 0; look < MAX_TRUST_ANSWERS + 3; look += 1) assert.ok("stuck" in refused.port.unblock!(REF)!);
+  assert.equal(refused.tried.length, MAX_TRUST_ANSWERS, "a press herdr keeps refusing is tried no more than an answer is");
+});
+
+test("A11-221: an option line left higher on the screen does not make the current dialog's first option selected", async () => {
+  const m = machine();
+  const old = "› 1. Trust and continue\n  2. Don't trust\n";
+  const { port, sent } = await blockedPort(m, { pane: `${old}\n${trustPane(m.clones.alpha, "2")}` });
+  assert.ok("stuck" in port.unblock!(REF)!);
+  assert.deepEqual(sent, []);
 });
 
 test("A11-221: readPaneDialog reads the trust dialog's root and selection, and any other dialog by its first line", () => {

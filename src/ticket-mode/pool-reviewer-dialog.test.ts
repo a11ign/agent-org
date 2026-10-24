@@ -41,6 +41,14 @@ async function reviewedRun() {
   return { fixture, host, reviewer, pool, ref: { pr: url, head: HEAD }, url, entry: () => fixture.store.get().entries[0] };
 }
 
+/** The reviewer shows the dialog the port cannot answer, the pool looks at it and watches the run, and the run carries the note. */
+function stopAndWatch({ reviewer, pool, ref, entry }: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref" | "entry">): void {
+  reviewer.showing(ref, { stuck: STUCK });
+  pool.reviewNewHeads();
+  pool.watchFeedback();
+  assert.equal(entry().handedBack, NOTE);
+}
+
 test("A11-221: a reviewer stuck on a dialog the port cannot answer makes the run read Needs you with the dialog's first line, and the pull request's review line says it", async () => {
   const { reviewer, pool, ref, url, entry } = await reviewedRun();
   assert.equal(pool.pullReviews()[url], "reviewing");
@@ -58,11 +66,9 @@ test("A11-221: a reviewer stuck on a dialog the port cannot answer makes the run
 });
 
 test("A11-221: the next look that finds no dialog clears the line and the note, and leaves the reviewer open", async () => {
-  const { reviewer, pool, ref, url, entry } = await reviewedRun();
-  reviewer.showing(ref, { stuck: STUCK });
-  pool.reviewNewHeads();
-  pool.watchFeedback();
-  assert.equal(entry().handedBack, NOTE);
+  const made = await reviewedRun();
+  const { reviewer, pool, ref, url, entry } = made;
+  stopAndWatch(made);
   reviewer.showing(ref, null);
   pool.reviewNewHeads();
   assert.equal(pool.pullReviews()[url], "reviewing");
@@ -73,11 +79,9 @@ test("A11-221: the next look that finds no dialog clears the line and the note, 
 });
 
 test("A11-221: a pull request the pool cannot read leaves the note where it was, and the next look that reads it finds the dialog gone", async () => {
-  const { fixture, host, reviewer, pool, ref, entry } = await reviewedRun();
-  reviewer.showing(ref, { stuck: STUCK });
-  pool.reviewNewHeads();
-  pool.watchFeedback();
-  assert.equal(entry().handedBack, NOTE);
+  const made = await reviewedRun();
+  const { fixture, host, reviewer, pool, ref, entry } = made;
+  stopAndWatch(made);
   const unreadable = fixture.restart({ codeHost: { ...host, readReviewState: () => null }, reviewer });
   unreadable.watchFeedback();
   assert.equal(entry().handedBack, NOTE, "a pool that has read nothing does not clear it");
@@ -89,13 +93,32 @@ test("A11-221: a pull request the pool cannot read leaves the note where it was,
 });
 
 test("A11-221: the note goes when the pull request is merged, since no reviewer waits on it any more", async () => {
-  const { fixture, pool, reviewer, ref, url, entry } = await reviewedRun();
-  reviewer.showing(ref, { stuck: STUCK });
-  pool.reviewNewHeads();
-  pool.watchFeedback();
-  assert.equal(entry().handedBack, NOTE);
+  const made = await reviewedRun();
+  const { fixture, pool, reviewer, ref, url, entry } = made;
+  stopAndWatch(made);
   fixture.store.set({ ...fixture.store.get(), entries: [{ ...entry(), pullStates: { [url]: "merged" } }] });
   pool.watchFeedback();
+  assert.equal(entry().handedBack, undefined);
+});
+
+test("A11-221: a re-reviewing reviewer, whose head already has the reviewer's block, is looked at too", async () => {
+  const { host, reviewer, pool, ref, url } = await reviewedRun();
+  host.pullAt(url)!.reviews = [{ author: REVIEWER_LOGIN, state: "CHANGES_REQUESTED", commit: HEAD, at: 400_000 }];
+  host.pullAt(url)!.body = "Closes NBF-1\n";
+  reviewer.wrote(ref, null);
+  pool.reviewNewHeads();
+  host.pullAt(url)!.body = "Closes NBF-1\n\nOutside-Region: none\n";
+  reviewer.showing(ref, { stuck: STUCK });
+  pool.reviewNewHeads();
+  assert.equal(reviewer.started.length, 2, "the edit started a re-review");
+  assert.equal(pool.pullReviews()[url], `the reviewer stopped on a dialog it cannot answer: "${STUCK}"`);
+});
+
+test("A11-221: with no reviewer on the machine the note goes, since no look is coming to clear it", async () => {
+  const made = await reviewedRun();
+  const { fixture, host, pool, reviewer, ref, entry } = made;
+  stopAndWatch(made);
+  fixture.restart({ codeHost: host }).watchFeedback();
   assert.equal(entry().handedBack, undefined);
 });
 
