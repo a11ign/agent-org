@@ -46,7 +46,8 @@ import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
-import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
+import { defaultServiceDeps, serviceState, unitProblem, type RunResult, type ServiceName, type ServiceState } from "./service.ts";
+import { HERDR_INTEGRATIONS, HERDR_PLUGINS, herdrBehind, herdrStatusPath, herdrVersionOf, installedPlugin, integrationInstallCommand, integrationStates, isBehind, describeInstalled, pluginInstallCommand, readHerdrStatus, runHerdr, type HerdrStatusFile } from "./herdr-upkeep.ts";
 import { HOUR_MS, readUpdateStatus, updateStatusPath, type StatusFile } from "./update-safety.ts";
 import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
 import { guardsPresent } from "./interim-guards.ts";
@@ -57,7 +58,7 @@ import { mirrorGit, mirrorTags } from "./tool-install.ts";
 import { readQueue } from "./instance-queue.ts";
 import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
 import { runVersions, type PluginCopy, type RunVersion } from "../ticket-mode/queue/queue-pins.ts";
-import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
+import { DEFAULT_TERMINAL_PORT, herdrConfigDir, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { coreRowsHelpers, realExec, realPlace, realProbe } from "../plugins/active.ts";
 import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
@@ -66,9 +67,10 @@ export const MIN_NODE_MAJOR = 24;
 
 /**
  * One row of the report. `section` heads the rows of one agent-org plugin (A11-163): consecutive rows with the same section are printed under it, indented, so each plugin has a
- * section of its own. A row with no section is a machine check.
+ * section of its own. A row with no section is a machine check. A `warning` row (A11-184) is `ok`, so the exit code and every reader of `ok` are unchanged; the report prints it as `WARN`
+ * with its fix, for something to do at a person's moment that is not broken.
  */
-export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null; section?: string }>;
+export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null; section?: string; warning?: true }>;
 
 export type DoctorDeps = Readonly<{
   /** Runs one `tickets.preflight` command; a shell when absent. A test injects one so no process runs. */
@@ -104,6 +106,14 @@ export type DoctorDeps = Readonly<{
   guards: () => Readonly<{ watchdog: boolean; dropIn: boolean; readCacheDropIn: boolean }>;
   /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
   updateStatus: () => StatusFile;
+  /** `herdr integration status` run now (A11-184): its exit status and text. */
+  herdrIntegrations: () => RunResult;
+  /** The text of `herdr --version` (`herdr 0.9.3`), or null when herdr cannot run. */
+  herdrVersion: () => string | null;
+  /** The text of herdr's `plugins.json`, or null. */
+  herdrPlugins: () => string | null;
+  /** The newest herdr version and plugin tags the last `agent-org update` saw: nothing yet, a status, or a file that cannot be read (A11-184). */
+  herdrStatus: () => HerdrStatusFile;
   /** The record of a breaking update that is draining: none, a drain, or a file that cannot be read (A11-169). */
   drain: () => Drain;
   /** Each live or parked run with the version of agent-org it started on, or null when the queue cannot be read (A11-169). */
@@ -449,6 +459,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     host,
     ...aliasChecks(settings),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
+    ...(herdr === null ? [] : herdrUpkeepChecks(deps)),
     writerCheck(settings, plugins),
     ...pluginChecks(settings, plugins),
     ...await preflightChecks(settings, deps),
@@ -587,6 +598,61 @@ function drainChecks(deps: DoctorDeps): Check[] {
 }
 
 /** The hour beyond `tickets.updateMaxDeferHours` a breaking update has to apply in before `doctor` calls the install late (A11-90, A11-169). */
+const warned = (name: string, detail: string, fix: string): Check => ({ name, ok: true, detail, fix, warning: true });
+
+/** What a person does to upgrade herdr: restarting it ends every pane, so `agent-org update` never does it (A11-184, ADR 0004). */
+const UPGRADE_HERDR = "at a quiet moment, with no live run on the board, run `herdr update`, then `agent-org stop herdr` and `agent-org start herdr`: every pane restarts once";
+
+/**
+ * herdr's side of the install (A11-184), asked only when `herdr` is on PATH. The `claude` and `codex` integrations FAIL when outdated or missing: they are how herdr knows each agent's state and
+ * resumes its session. herdr itself and each plugin agent-org installed WARN when behind the newest release the last `agent-org update` recorded; the installed side is read now, so a hand fix shows
+ * at once, and no row makes a network call. An unreadable status file fails.
+ */
+function herdrUpkeepChecks(deps: DoctorDeps): Check[] {
+  const status = deps.herdrStatus();
+  const rows = [...herdrIntegrationChecks(deps), ...herdrVersionCheck(deps, status), ...herdrPluginChecks(deps, status)];
+  return status.kind === "unreadable"
+    ? [...rows, failed("herdr status", `the herdr status file cannot be read: ${status.why}`, "run `agent-org update`, which writes the file again, or check its permissions")]
+    : rows;
+}
+
+function herdrIntegrationChecks(deps: DoctorDeps): Check[] {
+  const installAll = `run ${HERDR_INTEGRATIONS.map((name) => `\`${integrationInstallCommand(name)}\``).join(" and ")}`;
+  const read = deps.herdrIntegrations();
+  if (read.status !== 0) {
+    const why = (read.stderr || read.stdout).trim().split("\n")[0] || `exit ${read.status}`;
+    return [failed("herdr integrations", `\`herdr integration status\` cannot be read: ${why}`, installAll)];
+  }
+  return integrationStates(read.stdout).map(({ name, state, detail }) => {
+    const row = `herdr ${name} integration`;
+    return state === "current" ? ok(row, detail) : failed(row, detail, `run \`${integrationInstallCommand(name)}\`, which \`agent-org update\` also runs`);
+  });
+}
+
+function herdrVersionCheck(deps: DoctorDeps, status: HerdrStatusFile): Check[] {
+  const name = "herdr version";
+  const installed = herdrVersionOf(deps.herdrVersion() ?? "");
+  if (installed === null) return [ok(name, "herdr's version could not be read")];
+  if (status.kind !== "status") return [ok(name, `herdr ${installed}; the newest release is not known until \`agent-org update\` has run`)];
+  if (!("newest" in status.status.herdr)) return [ok(name, `herdr ${installed}; the newest release could not be read at ${status.status.checkedAt}: ${status.status.herdr.why}`)];
+  const { newest } = status.status.herdr;
+  return [herdrBehind(installed, newest) ? warned(name, `herdr ${installed}, newest ${newest}`, UPGRADE_HERDR) : ok(name, `herdr ${installed}, which is the newest release`)];
+}
+
+/** One row for each plugin of `HERDR_PLUGINS` that herdr lists: it warns when it is behind its newest release tag. A plugin that is not installed has no row. */
+function herdrPluginChecks(deps: DoctorDeps, status: HerdrStatusFile): Check[] {
+  return HERDR_PLUGINS.flatMap((repo) => {
+    const plugin = installedPlugin(deps.herdrPlugins(), repo);
+    if (plugin === null) return [];
+    const [name, at] = [`herdr plugin ${repo}`, describeInstalled(plugin)];
+    const recorded = status.kind === "status" ? status.status.plugins.find((entry) => entry.repo === repo) : undefined;
+    if (recorded === undefined) return [ok(name, `at ${at}; the newest release is not known until \`agent-org update\` has run`)];
+    if (!("newest" in recorded)) return [ok(name, `at ${at}; the newest release could not be read: ${recorded.why}`)];
+    if (!isBehind(plugin, recorded.newest)) return [ok(name, `at ${at}, which is the newest release`)];
+    return [warned(name, `at ${at}, the newest release is ${recorded.newest}`, `run \`agent-org update\`, which moves it, or \`${pluginInstallCommand(repo, recorded.newest)}\``)];
+  });
+}
+
 const UPDATE_GRACE_HOURS = 1;
 
 /**
@@ -668,8 +734,11 @@ async function serviceChecks(name: ServiceName, port: number, state: ServiceStat
   ];
 }
 
-/** A row as the report prints it: `ok` or `FAIL`, its name and detail, and a failing row's fix on the line below. */
-const rowText = ({ name, ok: passed, detail, fix }: Check): string => (passed ? `ok    ${name}: ${detail}` : `FAIL  ${name}: ${detail}\n      fix: ${fix}`);
+/** A row as the report prints it: `ok`, `WARN` or `FAIL`, its name and detail, and a failing row's fix on the line below. */
+const rowText = ({ name, ok: passed, detail, fix, warning }: Check): string => {
+  if (warning === true) return `WARN  ${name}: ${detail}\n      fix: ${fix}`;
+  return passed ? `ok    ${name}: ${detail}` : `FAIL  ${name}: ${detail}\n      fix: ${fix}`;
+};
 
 /**
  * The report's text. A row with a `section` is printed under that section's header, indented, the header once for the rows that follow each other (A11-163): the plugins are sections,
@@ -768,6 +837,13 @@ export function defaultDoctorDeps(): DoctorDeps {
     herdrPlace: (session) => hostHerdrPlace(services, session),
     guards: () => guardsPresent(process.env, homedir(), pathExists),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
+    herdrIntegrations: () => runHerdr(["integration", "status"]),
+    herdrVersion: () => {
+      const result = runHerdr(["--version"]);
+      return result.status === 0 ? result.stdout.trim() : null;
+    },
+    herdrPlugins: () => readOrNull(join(herdrConfigDir(process.env, homedir()), "plugins.json")),
+    herdrStatus: () => readHerdrStatus(herdrStatusPath(process.env, homedir())),
     drain: () => readDrain(drainPath(process.env, homedir())),
     runs: () => {
       const queue = readQueue();

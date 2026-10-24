@@ -19,11 +19,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { chooseReleaseTag, compareReleaseTags, isReleaseTag, isToolVersion, LATEST } from "../lib/release-tag.ts";
-import { defaultServiceDeps, restartService, serviceState, TOOL_SERVICES, type ServiceName, type ServiceState } from "./service.ts";
+import { defaultServiceDeps, reloadService, restartService, serviceState, TOOL_SERVICES, type ServiceDeps, type ServiceName, type ServiceState } from "./service.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -42,6 +42,9 @@ import { migrateInstall } from "./tool-migrate.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { HOUR_MS } from "./update-safety.ts";
 import type { StepResult } from "../plugins/manifest.ts";
+import { findBun } from "./bun.ts";
+import { gitRemoteTags, fetchHerdrNewest, herdrStatusPath, herdrUpkeep, runHerdr, writeHerdrStatus, type HerdrNewest, type HerdrRun, type HerdrUpkeep } from "./herdr-upkeep.ts";
+import { herdrConfigDir } from "./terminal.ts";
 
 export type Channel = "release" | "main";
 
@@ -84,6 +87,8 @@ export type UpdateDeps = Readonly<{
   upkeep: () => readonly StepResult[];
   /** The conventions plugins `tickets.plugins` names, updated from their repositories (A11-145). Never throws. */
   conventions: () => ConventionsUpdate;
+  /** herdr's side kept current (A11-184): its claude and codex integrations, and the herdr plugins agent-org installed, moved to their newest release tag. Never throws. */
+  herdr: () => HerdrUpkeep;
   out: Pick<Console, "log" | "error">;
 }>;
 
@@ -100,6 +105,32 @@ export function conventionsWiring(settings: Pick<TicketSettings, "plugins"> | nu
 }
 
 /**
+ * The production wiring of herdr's upkeep (A11-184): `herdr` is run as the person, the newest release tags are read with `git ls-remote`, the terminal's unit is rewritten and restarted through the
+ * service manager, and the newest versions are written to `herdr-status.json` for `doctor`. `newestHerdr` is read before the update's lock, since it is an HTTP read. Exported so the wiring is tested
+ * with stand-in services, a stand-in `herdr` and a stand-in git.
+ */
+export function herdrWiring(newestHerdr: HerdrNewest, services: ServiceDeps, seams: { herdr?: HerdrRun; remoteTags?: (repo: string) => string } = {}): Pick<UpdateDeps, "herdr"> {
+  const { env, home } = services;
+  return {
+    herdr: () => herdrUpkeep({
+      herdr: seams.herdr ?? runHerdr,
+      pluginsJson: () => services.read(join(herdrConfigDir(env, home), "plugins.json")),
+      remoteTags: seams.remoteTags ?? gitRemoteTags,
+      bunDir: () => {
+        const bun = findBun(home, env.PATH, services.exists);
+        return bun === null ? null : dirname(bun);
+      },
+      path: env.PATH ?? "/usr/bin:/bin",
+      terminalState: () => serviceState("terminal", services),
+      restartTerminal: () => reloadService("terminal", services),
+      newestHerdr,
+      writeStatus: (status) => writeHerdrStatus(herdrStatusPath(env, home), status),
+      now: () => Date.now(),
+    }),
+  };
+}
+
+/**
  * Move to the newest release and restart what ran, unless the release is breaking and a run is live and `force` is not given: then the folder is built, the drain record written, and nothing
  * else changes. What the plugins keep true is kept whatever the move did (the code host's stacking extension, A11-106), and the conventions plugins are refreshed: a failure to do either is said, never raised.
  * @returns whether `current` moved
@@ -110,6 +141,7 @@ export function update(options: { version: string | undefined; channel: Channel;
   } finally {
     keepPlugins(deps);
     keepConventions(deps);
+    keepHerdr(deps);
   }
 }
 
@@ -123,9 +155,21 @@ function keepPlugins(deps: UpdateDeps): void {
 
 /** The conventions plugins, refreshed from their repositories at every update: a plugin that moved is said with its versions, and a step that failed is said as an error. Neither fails the update. */
 function keepConventions(deps: UpdateDeps): void {
-  const { said, failed } = deps.conventions();
+  sayUpkeep(deps, deps.conventions());
+}
+
+/** What an upkeep step did, in the update's log: a line for each change, an error line for each step that failed. */
+function sayUpkeep(deps: UpdateDeps, { said, failed }: ConventionsUpdate): void {
   for (const line of said) deps.out.log(`agent-org update: ${line}`);
   for (const line of failed) deps.out.error(`agent-org update: ${line}`);
+}
+
+/**
+ * herdr's integrations and plugins, kept current at every update (A11-184): what it changed is said, and a step that failed is an error. It runs whatever the move did, a drain included: none
+ * of it reaches a live run (ADR 0004), and only the terminal service restarts, when the web UI moved. Neither fails the update.
+ */
+function keepHerdr(deps: UpdateDeps): void {
+  sayUpkeep(deps, deps.herdr());
 }
 
 /** The release the move is to, or the main build. REFUSES when the mirror holds no such release: no fallback to `origin/main`, the host runs a release or the last one it ran. */
@@ -278,7 +322,7 @@ export function pinnedVersion(env: NodeJS.ProcessEnv = process.env): string | un
   return String(value);
 }
 
-function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"]): UpdateDeps {
+function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"], newestHerdr: HerdrNewest): UpdateDeps {
   // Corepack fetches the pinned pnpm the first time; with no person at a prompt, it must not ask.
   process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT = "0";
   const root = TOOL_ROOT;
@@ -316,6 +360,7 @@ function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"]): UpdateDeps {
     status: { write: (status) => writeUpdateStatus(statusPath, status) },
     upkeep,
     ...conventionsWiring(settings, home),
+    ...herdrWiring(newestHerdr, services),
     out: console,
   };
 }
@@ -326,7 +371,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     if (values.channel !== "release" && values.channel !== "main") throw new UpdateRefusal(`--channel ${values.channel} is not release or main`);
     const { channel } = values;
     const upkeep = await pluginUpkeep(hostSettings(), process.env, { hostText: readOrNull(hostFilePath(process.env)) });
-    withUpdateLock(toolDir(process.env, homedir()), () => update({ version: values.version, channel, force: values.force }, defaultUpdateDeps(upkeep)));
+    const newestHerdr = await fetchHerdrNewest(runHerdr);
+    withUpdateLock(toolDir(process.env, homedir()), () => update({ version: values.version, channel, force: values.force }, defaultUpdateDeps(upkeep, newestHerdr)));
   } catch (err) {
     console.error(`agent-org update: ${(err as Error).message}`);
     process.exitCode = 2;

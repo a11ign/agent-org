@@ -17,9 +17,11 @@ import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
 import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import type { HerdrPlace } from "./herdr-place.ts";
 import type { RunVersion } from "../ticket-mode/queue/queue-pins.ts";
 import { createTailscale, freshState, type TailscaleState } from "../../plugins/tailscale/stub.ts";
+import type { HerdrStatusFile } from "./herdr-upkeep.ts";
 
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
 /** Where a herdr server runs on a host that has moved it (A11-169): its own service. */
@@ -60,6 +62,10 @@ function execOf({ key = KEY, mcp = MCP_LIST, gh = ghFake(), origin = null, codex
 /** The reviewer's helpers as a doctor test sees them: the gate loads (or refuses with `refusal`), and no module is read. */
 const gateLoads = (refusal: string | null = null): ReviewerHelpers => ({ ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => refusal });
 
+/** `herdr integration status` as herdr 0.9.3 prints it (A11-184): claude and codex current, the others not installed. */
+const INTEGRATIONS = "pi: not installed (/h/.pi/agent/extensions/herdr-agent-state.ts)\nclaude: current (v10) (/h/.claude/hooks/herdr-agent-state.sh)\ncodex: current (v8) (/h/.codex/herdr-agent-state.sh)\ncopilot: not installed (/h/.copilot/hooks/herdr-agent-state.sh)\n";
+const integrationsSaying = (stdout: string): DoctorDeps["herdrIntegrations"] => () => ({ status: 0, stdout, stderr: "" });
+
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json" }, home: "/home/me",
@@ -70,6 +76,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
     platform: "linux", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
+    herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
@@ -181,7 +188,7 @@ test("A11-144: a provider row fails when a check it summarises fails, with that 
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["ticket writer", true], ["instance service", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
@@ -1147,4 +1154,72 @@ test("A11-172: doctor hands the code host the review claim's identities (reviewe
   assert.deepEqual(await claimed(withReviewer({ drafts: false })), ["reviewer:write", "scheduler:read"]);
   assert.deepEqual(await claimed(withReviewer({ drafts: true })), [], "drafts are not reviewed, so nothing is claimed");
   assert.deepEqual(await claimed(HOST), [], "a machine with no reviewer has no claim to check");
+});
+
+// A11-184: herdr's side of the install -- its claude and codex integrations fail when not current, and herdr and its plugins warn when behind.
+const web = (ref: string | null) => JSON.stringify([{ plugin_id: "devswha.herdr-web-ui", plugin_root: "/h/p/devswha.herdr-web-ui-1", source: { kind: "github", owner: "devswha", repo: "herdr-web-ui", ...(ref === null ? {} : { requested_ref: ref }), resolved_commit: "35bf28fa1234567890" } }]);
+const SEEN: HerdrStatusFile = { kind: "status", status: { checkedAt: "2026-10-24T09:50:00.000Z", herdr: { newest: "0.9.5" }, plugins: [{ repo: "devswha/herdr-web-ui", newest: "v0.4.13" }] } };
+const herdrRows = async (over: Partial<DoctorDeps>) => byName(await diagnose(deps(over)));
+
+test("A11-184: doctor fails the claude integration when outdated and the codex integration when missing, each naming its install command; both current pass", async () => {
+  const broken = await herdrRows({ herdrIntegrations: integrationsSaying("claude: outdated (v8 < v10)\ncodex: not installed (/h/.codex/herdr-agent-state.sh)\n") });
+  assert.deepEqual([broken["herdr claude integration"].ok, broken["herdr claude integration"].detail], [false, "outdated (v8 < v10)"]);
+  assert.match(broken["herdr claude integration"].fix ?? "", /run `herdr integration install claude`/);
+  assert.deepEqual([broken["herdr codex integration"].ok, broken["herdr codex integration"].detail], [false, "not installed"]);
+  assert.match(broken["herdr codex integration"].fix ?? "", /run `herdr integration install codex`/);
+  const current = await herdrRows({});
+  assert.deepEqual([current["herdr claude integration"].ok, current["herdr claude integration"].detail, current["herdr codex integration"].detail], [true, "current (v10)", "current (v8)"]);
+  assert.equal(current["herdr claude integration"].warning, undefined);
+});
+
+test("A11-184: a herdr integration status that cannot be read is one failed row naming both install commands", async () => {
+  const rows = await herdrRows({ herdrIntegrations: () => ({ status: null, stdout: "", stderr: "spawn herdr ENOENT" }) });
+  assert.equal(rows["herdr claude integration"], undefined);
+  assert.equal(rows["herdr integrations"].ok, false);
+  assert.equal(rows["herdr integrations"].detail, "`herdr integration status` cannot be read: spawn herdr ENOENT");
+  assert.equal(rows["herdr integrations"].fix, "run `herdr integration install claude` and `herdr integration install codex`");
+});
+
+test("A11-184: with no herdr on PATH the herdr row fails and the integration, version and plugin rows are not asked", async () => {
+  const rows = await herdrRows({ which: (name) => (name === "herdr" ? null : `/home/me/.local/bin/${name}`), herdrIntegrations: () => { throw new Error("not asked"); }, herdrPlugins: () => web(null) });
+  assert.equal(rows.herdr.ok, false);
+  assert.deepEqual(Object.keys(rows).filter((name) => name.startsWith("herdr ")).filter((name) => name !== "herdr service" && name !== "herdr scope"), []);
+});
+
+test("A11-184: doctor warns when herdr is behind the newest release the last update recorded, with the person's upgrade steps; a warning is ok, so the exit code is unchanged", async () => {
+  const checks = await diagnose(deps({ herdrStatus: () => SEEN }));
+  const row = byName(checks)["herdr version"];
+  assert.deepEqual([row.ok, row.warning, row.detail], [true, true, "herdr 0.9.3, newest 0.9.5"]);
+  assert.equal(row.fix, "at a quiet moment, with no live run on the board, run `herdr update`, then `agent-org stop herdr` and `agent-org start herdr`: every pane restarts once");
+  assert.ok(checks.every((check) => check.ok), "nothing else fails, so doctor exits 0");
+  assert.match(report(checks), /^WARN {2}herdr version: herdr 0\.9\.3, newest 0\.9\.5\n {6}fix: at a quiet moment, with no live run on the board, run `herdr update`/m);
+  const current = byName(await diagnose(deps({ herdrStatus: () => SEEN, herdrVersion: () => "herdr 0.9.5" })))["herdr version"];
+  assert.deepEqual([current.warning, current.detail], [undefined, "herdr 0.9.5, which is the newest release"]);
+});
+
+test("A11-184: with no status file yet, or one that could not read the newest version, herdr and its plugins are ok and say the newest is not known", async () => {
+  const absent = await herdrRows({ herdrPlugins: () => web(null) });
+  assert.deepEqual([absent["herdr version"].ok, absent["herdr version"].warning, absent["herdr version"].detail], [true, undefined, "herdr 0.9.3; the newest release is not known until `agent-org update` has run"]);
+  assert.deepEqual([absent["herdr plugin devswha/herdr-web-ui"].warning, absent["herdr plugin devswha/herdr-web-ui"].detail], [undefined, "at @35bf28fa; the newest release is not known until `agent-org update` has run"]);
+  const why: HerdrStatusFile = { kind: "status", status: { checkedAt: "2026-10-24T09:50:00.000Z", herdr: { why: "herdr.dev answered 503" }, plugins: [{ repo: "devswha/herdr-web-ui", why: "devswha/herdr-web-ui has no release tag" }] } };
+  const unread = await herdrRows({ herdrStatus: () => why, herdrPlugins: () => web(null) });
+  assert.match(unread["herdr version"].detail, /could not be read at 2026-10-24T09:50:00\.000Z: herdr\.dev answered 503$/);
+  assert.equal(unread["herdr version"].warning, undefined);
+  assert.equal(unread["herdr plugin devswha/herdr-web-ui"].warning, undefined);
+});
+
+test("A11-184: doctor warns when an installed herdr plugin is behind its newest release tag, with the command that moves it; at the newest tag it passes, and a plugin that is not installed has no row", async () => {
+  const pinned = (await herdrRows({ herdrStatus: () => SEEN, herdrPlugins: () => web(null) }))["herdr plugin devswha/herdr-web-ui"];
+  assert.deepEqual([pinned.ok, pinned.warning, pinned.detail], [true, true, "at @35bf28fa, the newest release is v0.4.13"]);
+  assert.equal(pinned.fix, "run `agent-org update`, which moves it, or `herdr plugin install devswha/herdr-web-ui --ref v0.4.13 -y`");
+  const older = (await herdrRows({ herdrStatus: () => SEEN, herdrPlugins: () => web("v0.4.12") }))["herdr plugin devswha/herdr-web-ui"];
+  assert.deepEqual([older.warning, older.detail], [true, "at v0.4.12, the newest release is v0.4.13"]);
+  const current = (await herdrRows({ herdrStatus: () => SEEN, herdrPlugins: () => web("v0.4.13") }))["herdr plugin devswha/herdr-web-ui"];
+  assert.deepEqual([current.ok, current.warning, current.detail], [true, undefined, "at v0.4.13, which is the newest release"]);
+  assert.equal((await herdrRows({ herdrStatus: () => SEEN }))["herdr plugin devswha/herdr-web-ui"], undefined, "no plugins.json lists it");
+});
+
+test("A11-184: a herdr status file that cannot be read fails one row, with the command that writes it again", async () => {
+  const row = (await herdrRows({ herdrStatus: () => ({ kind: "unreadable", why: "it is not valid JSON" }) }))["herdr status"];
+  assert.deepEqual([row.ok, row.detail, row.fix], [false, "the herdr status file cannot be read: it is not valid JSON", "run `agent-org update`, which writes the file again, or check its permissions"]);
 });

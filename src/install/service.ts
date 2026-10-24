@@ -236,7 +236,7 @@ function programFor(name: ServiceName, deps: ServiceDeps): Program {
     };
   }
   const root = pluginRoot(deps.read(join(herdrConfigDir(deps.env, deps.home), "plugins.json")));
-  if (root === null) throw new ServiceRefusal(`the terminal service runs herdr web ui, which herdr has not installed. Run \`herdr plugin install ${TERMINAL_PLUGIN} --yes\`, or \`agent-org onboard\`, which does.`);
+  if (root === null) throw new ServiceRefusal(`the terminal service runs herdr web ui, which herdr has not installed. Run \`agent-org onboard\`, which installs it at its newest release tag.`);
   const path = servicePath(deps.env.PATH);
   const bun = findBun(deps.home, path, deps.exists);
   if (bun === null) throw new ServiceRefusal("the terminal service runs on bun, and this machine has none in ~/.bun/bin or on PATH. Run `agent-org onboard`, which installs it.");
@@ -532,6 +532,25 @@ export function unitProblem(name: ServiceName, deps: ServiceDeps): string | null
   const verify = deps.run("systemd-analyze", ["--user", "verify", unit.path]);
   const lines = `${verify.stderr}\n${verify.stdout}`.split("\n").map((line) => line.trim()).filter((line) => line.includes(unit.id) && line !== "");
   return `systemd reads ${unit.id} as ${state}${lines.length > 0 ? `: ${lines.join("; ")}` : ""}`;
+}
+
+/**
+ * Write a registered service's unit again from what is installed now, and restart it (A11-184). The terminal's unit names the `plugin_root` of herdr web ui, so a plugin that moved is run only
+ * once the unit is rewritten; `restartService` alone would start the old folder again. Synchronous, as `update` is: it does not touch the exposure's entry, which is the service's port, not its process.
+ */
+export function reloadService(name: ServiceName, deps: ServiceDeps): void {
+  const unit = unitFor(name, deps);
+  if (unit.companion !== null) deps.write(unit.companion.path, unit.companion.text);
+  deps.write(unit.path, unit.text);
+  if (unit.manager === "launchd") {
+    const target = launchdTarget(unit, deps);
+    // A loaded agent keeps the plist it was loaded with, so it is booted out and in again to read the one just written.
+    if (deps.run("launchctl", ["print", target]).status === 0) deps.run("launchctl", ["bootout", target]);
+    must(deps.run("launchctl", ["bootstrap", `gui/${deps.uid}`, unit.path]), `launchctl bootstrap ${unit.path}`);
+  } else {
+    must(deps.run("systemctl", ["--user", "daemon-reload"]), "systemctl --user daemon-reload");
+    must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
+  }
 }
 
 /** Restart a registered service, so it loads the tool's `current` version again. */

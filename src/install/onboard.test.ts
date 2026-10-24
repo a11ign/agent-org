@@ -134,11 +134,12 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     ensureBun: async () => ({ path: "/h/.bun/bin/bun", installed: false }),
     herdrPlugins: () => plugins,
+    newestPluginTag: () => "v0.4.13",
     run: (file, args) => {
       const override = runOver(file, args);
       if (override !== undefined) return override;
       ran.push([file, ...args].join(" "));
-      if (file === "herdr" && args[1] === "install") plugins = PLUGINS;
+      if (file === "herdr" && args[0] === "plugin" && args[1] === "install") plugins = PLUGINS;
       return (answers2[`${file} ${args[0]} ${args[1]}`] ?? (() => OK))(args);
     },
     which: () => "/usr/local/bin/tool",
@@ -314,8 +315,9 @@ test("onboard installs herdr web ui when herdr lists it not, with bun's director
   const { deps: d, home, repo, ran, printed } = deps({ env: { PATH: "/usr/bin" }, ensureBun: async () => ({ path: "/h/.bun/bin/bun", installed: true }) });
   let pathGiven = "";
   const run = d.run;
-  await onboard(options({ repos: [repo] }), { ...d, run: (file, args, env) => { if (file === "herdr") pathGiven = env?.PATH ?? ""; return run(file, args, env); } });
-  assert.ok(ran.includes("herdr plugin install devswha/herdr-web-ui --yes"));
+  await onboard(options({ repos: [repo] }), { ...d, run: (file, args, env) => { if (file === "herdr" && args[0] === "plugin") pathGiven = env?.PATH ?? ""; return run(file, args, env); } });
+  assert.ok(ran.includes("herdr plugin install devswha/herdr-web-ui --ref v0.4.13 --yes"), "at the newest release tag, never the default branch");
+  assert.ok(!ran.includes("herdr plugin install devswha/herdr-web-ui --yes"));
   assert.equal(pathGiven, "/h/.bun/bin:/usr/bin");
   assert.ok(printed.includes("installed bun at /h/.bun/bin/bun, for the web terminal"));
   assert.equal(hostOf(home).tickets.providers.exposure.terminal, TERMINAL);
@@ -337,12 +339,12 @@ test("onboard keeps an existing terminal address, moving the old key into its bl
 test("a terminal that cannot be set up is said, writes no terminal address and starts no terminal service; --no-terminal does not try", async () => {
   const failing = deps({}, [], (file) => (file === "herdr" ? { status: 1, stdout: "", stderr: "herdr: no network\nmore" } : undefined));
   await onboard(options({ repos: [failing.repo] }), failing.deps);
-  assert.ok(failing.printed.some((line) => line.startsWith("the web terminal is not set up: `herdr plugin install devswha/herdr-web-ui --yes` failed: herdr: no network.")));
+  assert.ok(failing.printed.some((line) => line.startsWith("the web terminal is not set up: `herdr plugin install devswha/herdr-web-ui --ref v0.4.13 --yes` failed: herdr: no network.")));
   assert.equal(hostOf(failing.home).tickets.providers.exposure.terminal, undefined);
   assert.deepEqual(failing.started, ["herdr", "instance", "ui", "auto-update"]);
   const off = deps({ ensureBun: async () => { throw new Error("must not be asked"); } });
   await onboard(options({ repos: [off.repo], terminal: false, autoUpdate: false }), off.deps);
-  assert.ok(!off.ran.some((line) => line.startsWith("herdr")));
+  assert.ok(!off.ran.some((line) => line.startsWith("herdr plugin")));
   assert.deepEqual(off.started, ["herdr", "instance", "ui"]);
 });
 
@@ -499,6 +501,7 @@ function greenDoctor(home: string): DoctorDeps {
     probe: async () => 200,
     hostPlace: async () => ({ kind: "no-project" }), platform: "linux",
     herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }),
+    herdrIntegrations: () => ({ status: 0, stdout: "claude: current (v10)\ncodex: current (v8)\n", stderr: "" }), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     drain: () => ({ kind: "none" }), runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
@@ -676,7 +679,7 @@ test("A11-158: a disabled tailscale exposure and a disabled atomic reviewer ask 
     exposure: { provider: "tailscale", enabled: false }, reviewer: { provider: "atomic", enabled: false } } } }));
   await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
   assert.ok(!base.printed.some((line) => line.includes("tailscale is not on PATH")), "a disabled exposure serves nothing on the tailnet");
-  assert.ok(!base.printed.some((line) => /codex/i.test(line) && !line.includes("doctor")), "a disabled reviewer needs no Codex");
+  assert.ok(!base.printed.some((line) => /codex/i.test(line) && !line.includes("doctor") && !line.includes("integration")), "a disabled reviewer needs no Codex");
 });
 
 // ---- A11-162: the Tailscale plugin's onboard steps run when the host will enable it, and the exposure `local` asks nothing of Tailscale
@@ -832,4 +835,44 @@ test("A11-163: a host file that switched a plugin off keeps it off: onboard writ
   seedExposure(base.home, { provider: "tailscale", enabled: false });
   await onboard(options({ repos: [base.repo], keyFile: join(base.home, ".agent-org", "linear.key"), start: false }), base.deps);
   assert.equal(hostOf(base.home).tickets.providers.exposure.enabled, false);
+});
+
+// A11-184: herdr's claude and codex integrations are installed by every onboard, and the web UI at its newest release tag.
+test("A11-184: onboard installs herdr's claude and codex integrations, one line each, with or without the terminal", async () => {
+  const full = deps();
+  await onboard(options({ repos: [full.repo] }), full.deps);
+  assert.deepEqual(full.ran.filter((line) => line.startsWith("herdr integration")), ["herdr integration install claude", "herdr integration install codex"]);
+  assert.deepEqual(full.printed.filter((line) => line.includes("integration")), ["installed herdr's claude integration", "installed herdr's codex integration"]);
+  const off = deps({ ensureBun: async () => { throw new Error("must not be asked"); } });
+  await onboard(options({ repos: [off.repo], terminal: false }), off.deps);
+  assert.deepEqual(off.ran.filter((line) => line.startsWith("herdr")), ["herdr integration install claude", "herdr integration install codex"], "--no-terminal does not skip them");
+  assert.deepEqual(off.printed.filter((line) => line.includes("integration")), ["installed herdr's claude integration", "installed herdr's codex integration"]);
+});
+
+test("A11-184: an integration that does not install is said with its reason and the command to run, and onboard still finishes", async () => {
+  const w = deps({}, [], (file, args) => (file === "herdr" && args.join(" ") === "integration install codex" ? { status: 1, stdout: "", stderr: "herdr: no write access to ~/.codex\nmore" } : undefined));
+  const hostFile = await onboard(options({ repos: [w.repo] }), w.deps);
+  assert.ok(w.printed.includes("installed herdr's claude integration"));
+  assert.ok(w.printed.includes("herdr's codex integration did not install: herdr: no write access to ~/.codex. Run `herdr integration install codex`."));
+  assert.ok(existsSync(hostFile), "the host file is written");
+  assert.ok(w.printed.some((line) => line.startsWith("started")) || w.started.length > 0, "the services still start");
+});
+
+test("A11-184: with no herdr on PATH both integration lines say so, with the same commands, and nothing is run", async () => {
+  const w = deps({ which: (name) => (name === "herdr" ? null : "/usr/local/bin/tool") });
+  await onboard(options({ repos: [w.repo], terminal: false }), w.deps);
+  assert.deepEqual(w.printed.filter((line) => line.includes("integration")), [
+    "herdr's claude integration did not install: herdr is not on PATH. Install herdr, then run `herdr integration install claude`.",
+    "herdr's codex integration did not install: herdr is not on PATH. Install herdr, then run `herdr integration install codex`.",
+  ]);
+  assert.deepEqual(w.ran.filter((line) => line.startsWith("herdr")), []);
+});
+
+test("A11-184: a web UI release tag that cannot be read fails the terminal step, installs nothing, and never falls back to the default branch", async () => {
+  const w = deps({ newestPluginTag: () => { throw new Error("devswha/herdr-web-ui has no release tag, and agent-org installs a plugin only at a release tag, never a branch"); } });
+  await onboard(options({ repos: [w.repo] }), w.deps);
+  assert.ok(!w.ran.some((line) => line.startsWith("herdr plugin")), "no install at all, with or without a ref");
+  assert.ok(w.printed.some((line) => line.startsWith("the web terminal is not set up: devswha/herdr-web-ui has no release tag")));
+  assert.equal(hostOf(w.home).tickets.providers.exposure.terminal, undefined);
+  assert.ok(w.ran.includes("herdr integration install claude"), "the integrations are installed all the same");
 });
