@@ -2,7 +2,7 @@
 // from anyone but the board's own account, and its failing checks. Read through an injected `run` (the plugin's `gh`), so this file spawns nothing. It moved here from
 // `src/ticket-port/` with the rest of ticket mode's GitHub reads (A11-160). Which checks are red is core's to decide (`red-pr.ts`, #2956, which row mode shares), so this file
 // asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
-import type { FailingCheck, PullFeedback } from "../../src/plugins/contracts/code-host.ts";
+import type { FailingCheck, PullFeedback, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 
 export type { FailingCheck, PullFeedback };
@@ -15,6 +15,8 @@ export const MAX_FILE_PAGES = 10;
 
 const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
   state
+  body
+  reviewDecision
   headRefOid
   mergeable
   mergeStateStatus
@@ -39,11 +41,17 @@ const FILES_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $curs
 const FEEDBACK_REVIEWS: ReadonlySet<string> = new Set(["COMMENTED", "CHANGES_REQUESTED"]);
 /** The reviews that take a side on a commit: the newest of them on the head commit says whether it is approved. */
 const VERDICT_REVIEWS: ReadonlySet<string> = new Set(["APPROVED", "CHANGES_REQUESTED"]);
+/** GitHub's review decisions, as the board words them. */
+const REVIEW_DECISIONS: Readonly<Record<string, ReviewDecision>> = { APPROVED: "approved", CHANGES_REQUESTED: "changes-requested", REVIEW_REQUIRED: "review-required" };
+/** The conclusions of a check run that are neither a pass nor red (`red-pr.ts`'s `RED_CONCLUSIONS`): GitHub holds a merge on them, and the board does not read them as green. */
+const NOT_PASSED_CONCLUSIONS: ReadonlySet<string> = new Set(["CANCELLED", "STALE"]);
+/** The states of a commit status that have not concluded. */
+const UNCONCLUDED_STATUSES: ReadonlySet<string> = new Set(["PENDING", "EXPECTED"]);
 /** The states of a commit status that mean it failed, read as a check run's conclusion so `red-pr.ts` can decide on it. */
 const FAILED_STATUSES: ReadonlySet<string> = new Set(["FAILURE", "ERROR"]);
 
 type Login = { login?: string } | null;
-type Check = { __typename?: string; name?: string; context?: string; conclusion?: string | null; state?: string; startedAt?: string | null;
+export type Check = { __typename?: string; name?: string; context?: string; conclusion?: string | null; state?: string; startedAt?: string | null;
   completedAt?: string | null; createdAt?: string; detailsUrl?: string | null; isRequired?: boolean };
 
 /** The owner, repository and number of a GitHub pull request's web address, or null for any other address. */
@@ -67,18 +75,38 @@ const time = (value: string | null | undefined): number | null => {
   return Number.isNaN(at) ? null : at;
 };
 
+const nameOf = (check: Check): string => (check.__typename === "StatusContext" ? check.context : check.name) ?? "";
+
+/** Each context as a check run, which the red-check decider and the newest-run comparator read: a commit status is a run named for its context, failed by its state, completed when it was created. */
+const asCheckRuns = (contexts: readonly Check[]): Check[] => contexts.map((check) => (check.__typename === "StatusContext"
+  ? { name: check.context ?? "", conclusion: FAILED_STATUSES.has(check.state ?? "") ? "FAILURE" : check.state, state: check.state, completedAt: check.createdAt, isRequired: check.isRequired }
+  : check));
+
+/**
+ * The names of the checks the pull request waits on that have not passed, newest per name: a check run with no conclusion yet or that was cancelled (a cancelled gate blocks the merge, and no newer run
+ * replaced it) or went stale, and a commit status that is pending or expected. They are the required checks, or every check where none is required, as {@link failingChecks} counts them. A rerun that is
+ * under way replaces the failure it re-runs. A required check that has no run on the head yet is not in the rollup and is not named.
+ */
+function pendingRequired(contexts: readonly Check[], policy: CodeHostPolicy): string[] {
+  const newest = new Map<string, Check>();
+  for (const run of asCheckRuns(contexts)) {
+    const seen = newest.get(run.name ?? "");
+    if (seen === undefined || policy.isAtLeastAsNew(run, seen)) newest.set(run.name ?? "", run);
+  }
+  const anyRequired = contexts.some((check) => check.isRequired === true);
+  const unpassed = (run: Check): boolean => (run.state !== undefined ? UNCONCLUDED_STATUSES.has(run.state) : run.conclusion == null || NOT_PASSED_CONCLUSIONS.has(run.conclusion));
+  return [...newest.values()].filter((run) => (!anyRequired || run.isRequired === true) && unpassed(run)).map(({ name }) => name ?? "");
+}
+
 /**
  * Each check on the head commit, newest per name, that failed, as `red-pr.ts` decides it. `counted` says whether the board answers it: a pull request with required checks counts only
  * those, and one with none counts every check, because then nothing tells a gate from the rest, and the worker is told to leave every check passing. A check that is not counted
  * is still listed, so a round can name the job behind a roll-up that failed. A commit status is read as a check run: its context is its name, its failure its conclusion, and
  * its time its completion.
  */
-function failingChecks(contexts: readonly Check[], policy: CodeHostPolicy): { name: string; at: number | null; detailsUrl: string | null; counted: boolean }[] {
-  const nameOf = (check: Check): string => (check.__typename === "StatusContext" ? check.context : check.name) ?? "";
+export function failingChecks(contexts: readonly Check[], policy: CodeHostPolicy): { name: string; at: number | null; detailsUrl: string | null; counted: boolean }[] {
   const required = new Set(contexts.filter((check) => check.isRequired === true).map(nameOf));
-  const asRuns = contexts.map((check) => (check.__typename === "StatusContext"
-    ? { name: check.context ?? "", conclusion: FAILED_STATUSES.has(check.state ?? "") ? "FAILURE" : check.state, completedAt: check.createdAt }
-    : check));
+  const asRuns = asCheckRuns(contexts);
   return policy.redChecksOf({ rollup: asRuns, labels: [] }).map(({ name, failedAt }) =>
     ({ name, at: Number.isNaN(failedAt) ? null : failedAt, detailsUrl: detailsUrlOf(asRuns, name, policy), counted: required.size === 0 || required.has(name) }));
 }
@@ -143,11 +171,12 @@ type Review = { state: string; submittedAt?: string; author: Login; commit?: { o
 const rulesOn = (review: Review, head: string, counts: (author: Login) => boolean): boolean =>
   VERDICT_REVIEWS.has(review.state) && review.commit?.oid === head && counts(review.author);
 
-/** Whether the newest review that {@link rulesOn} commit `head` is an approval. */
-function approvedAt(reviews: readonly Review[], head: string, counts: (author: Login) => boolean): boolean {
+/** What the newest review that {@link rulesOn} commit `head` says, or null when none does. */
+function verdictAt(reviews: readonly Review[], head: string, counts: (author: Login) => boolean): "approved" | "changes-requested" | null {
   const at = (review: Review): number => time(review.submittedAt) ?? 0;
   const newer = (latest: Review | null, review: Review): Review => (latest === null || at(review) >= at(latest) ? review : latest);
-  return reviews.filter((review) => rulesOn(review, head, counts)).reduce<Review | null>(newer, null)?.state === "APPROVED";
+  const newest = reviews.filter((review) => rulesOn(review, head, counts)).reduce<Review | null>(newer, null);
+  return newest === null ? null : newest.state === "APPROVED" ? "approved" : "changes-requested";
 }
 
 /** The feedback in one pull request as the query returns it, its files aside. Throws on an answer of another shape, which the caller reads as no reading. */
@@ -162,7 +191,8 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
   ];
   // The branch's own head, which a review's commit is compared with: the commits connection can lag the ref by a few seconds after a push.
   const head = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-  const red = failingChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [], policy);
+  const contexts: Check[] = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const red = failingChecks(contexts, policy);
   const failing = red.filter(({ counted }) => counted);
   const newest = (times: (number | null)[]): number | null => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);
   return {
@@ -175,7 +205,13 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
     conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
     mergeable: pr.mergeable === "MERGEABLE",
     head,
-    approvedAtHead: head !== null && approvedAt(pr.reviews?.nodes ?? [], head, others),
+    approvedAtHead: head !== null && verdictAt(pr.reviews?.nodes ?? [], head, others) === "approved",
     base: typeof pr.baseRefName === "string" ? pr.baseRefName : null,
+    // A decision GitHub does not give, or gives in words this does not know, is left out: absent is not the same as null, which is a branch that requires no review.
+    ...(pr.reviewDecision === null || Object.hasOwn(REVIEW_DECISIONS, String(pr.reviewDecision)) ? { reviewDecision: pr.reviewDecision === null ? null : REVIEW_DECISIONS[String(pr.reviewDecision)] } : {}),
+    // The reviewer's own verdict counts for readiness, which is why this leaves out the workers' account alone.
+    verdictAtHead: head === null ? null : verdictAt(pr.reviews?.nodes ?? [], head, (author) => author?.login !== undefined && author.login !== self),
+    pendingRequired: pendingRequired(contexts, policy),
+    body: typeof pr.body === "string" ? pr.body : "",
   };
 }

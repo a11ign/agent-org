@@ -18,8 +18,8 @@ function answering(pull: unknown) {
 }
 
 const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
-  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], head = undefined as string | undefined } = {}) => ({
-  state, headRefOid: head, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], head = undefined as string | undefined, reviewDecision = undefined as string | null | undefined, body = undefined as string | undefined } = {}) => ({
+  state, headRefOid: head, reviewDecision, body, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
   reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
 });
@@ -35,7 +35,8 @@ test("the newest review, conversation comment or inline comment by anyone but th
     threads: [{ createdAt: at(20), author: { login: "carol" } }],
   }));
   const read = readPullFeedback(URL, "worker-bot", run);
-  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failures: [], failedAt: null, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true },
+  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failures: [], failedAt: null, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true,
+    verdictAtHead: null, pendingRequired: [], body: "" },
     "an approval and the workers' own comments are not feedback");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
   assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
@@ -144,4 +145,43 @@ test("A11-154: a job behind a required roll-up that failed is listed with the ch
   assert.deepEqual(read?.failures?.map(({ name }) => name), ["gate", "suite", "lint"], "and the jobs behind it are listed with it");
   const passing = readPullFeedback(URL, "me", answering(pullWith({ checks: [{ ...run("gate", 30, true), conclusion: "SUCCESS" }, run("suite", 20, false)] })).run);
   assert.deepEqual([passing?.failing, passing?.failures?.map(({ name }) => name)], [[], ["suite"]], "a non-required check that is red beside a required one that passed answers nothing");
+});
+
+test("A11-179: the verdict at the head counts the reviewer's account as well as anyone's, and leaves out the workers' own, where approvedAtHead leaves out the accounts it is told to", () => {
+  const review = (state: string, minute: number, oid: string, login: string) => ({ state, submittedAt: at(minute), author: { login }, commit: { oid } });
+  const read = (reviews: unknown[]) => readPullFeedback(URL, "worker-bot", answering(pullWith({ head: "h2", reviews })).run, ["a11ign-reviewer"]);
+  const approved = read([review("APPROVED", 5, "h2", "a11ign-reviewer")]);
+  assert.deepEqual([approved?.approvedAtHead, approved?.verdictAtHead], [false, "approved"], "the reviewer's approval is the board's verdict, and not a person's answer to its feedback");
+  assert.equal(read([review("APPROVED", 5, "h1", "alice")])?.verdictAtHead, null, "an approval of an earlier commit says nothing of the head");
+  assert.equal(read([review("APPROVED", 5, "h2", "alice"), review("CHANGES_REQUESTED", 9, "h2", "a11ign-reviewer")])?.verdictAtHead, "changes-requested", "the newest verdict on the head decides");
+  assert.equal(read([review("APPROVED", 5, "h2", "worker-bot")])?.verdictAtHead, null, "the workers' own account does not approve its own work");
+  assert.equal(read([review("COMMENTED", 9, "h2", "alice")])?.verdictAtHead, null, "a comment takes no side");
+  const headless = readPullFeedback(URL, "worker-bot", answering(pullWith({ reviews: [review("APPROVED", 5, "h2", "alice")] })).run);
+  assert.equal(headless?.verdictAtHead, null, "with no head there is nothing to approve");
+});
+
+test("A11-179: GitHub's review decision is read in the board's words, null for a branch that requires no review, and left out when GitHub does not say", () => {
+  const decision = (reviewDecision: string | null | undefined) => readPullFeedback(URL, "me", answering(pullWith({ reviewDecision })).run);
+  assert.deepEqual(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", null].map((value) => decision(value)?.reviewDecision), ["approved", "changes-requested", "review-required", null]);
+  assert.equal("reviewDecision" in (decision(undefined) ?? {}), false, "an answer without it is no answer: absent is not null");
+  assert.equal("reviewDecision" in (decision("SOMETHING_NEW") ?? {}), false, "nor is a word this does not know");
+});
+
+test("A11-179: the checks that have not passed are named, newest run per name: running, cancelled or stale ones, and only the required ones where any is required", () => {
+  const run = (name: string, conclusion: string | null, minute: number, isRequired: boolean) => ({ __typename: "CheckRun", name, conclusion, startedAt: at(minute), completedAt: conclusion === null ? null : at(minute), isRequired });
+  const pending = (checks: unknown[]) => readPullFeedback(URL, "me", answering(pullWith({ checks })).run)?.pendingRequired;
+  assert.deepEqual(pending([run("gate", null, 10, true), run("suite", null, 11, false), run("lint", "SUCCESS", 12, true)]), ["gate"], "a required check with no conclusion is pending; one that is not required, or has passed, is not");
+  assert.deepEqual(pending([run("gate", "CANCELLED", 10, true), run("lint", "STALE", 11, true), run("docs", "SKIPPED", 12, true), run("types", "NEUTRAL", 13, true)]), ["gate", "lint"], "GitHub holds a merge on a cancelled or stale required check, and not on a skipped or neutral one");
+  assert.deepEqual(pending([run("gate", "FAILURE", 10, true)]), [], "a failure is red, which `failing` says, and not pending");
+  assert.deepEqual(pending([run("gate", "FAILURE", 10, true), run("gate", null, 20, true)]), ["gate"], "a rerun that is under way replaces the failure it re-runs");
+  assert.deepEqual(pending([run("gate", null, 10, true), run("gate", "SUCCESS", 20, true)]), [], "and a run that finished after it replaces one still shown running");
+  assert.deepEqual(pending([run("suite", null, 10, false), run("lint", "SUCCESS", 11, false), run("docs", "CANCELLED", 12, false)]), ["suite", "docs"], "with no required check every check counts, as it does for the red ones");
+  assert.deepEqual(pending([{ __typename: "StatusContext", context: "netlify", state: "PENDING", createdAt: at(5), isRequired: true }, { __typename: "StatusContext", context: "audit", state: "SUCCESS", createdAt: at(5), isRequired: true }]), ["netlify"], "a commit status is pending while it says so");
+  assert.deepEqual(pending([]), [], "a head with no checks has none pending");
+});
+
+test("A11-179: the pull request's body is read, for the `Blocked-by:` line that names the ticket owning what it waits on", () => {
+  const read = (body: string | undefined) => readPullFeedback(URL, "me", answering(pullWith({ body })).run);
+  assert.equal(read("Refs A11-179\n\nBlocked-by: A11-127")?.body, "Refs A11-179\n\nBlocked-by: A11-127");
+  assert.equal(read(undefined)?.body, "", "a body GitHub does not give is empty");
 });

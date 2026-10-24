@@ -26,6 +26,7 @@ import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
+import { foreignRedsOf } from "./pool-foreign-checks.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
@@ -450,25 +451,27 @@ export function watchFeedback(ctx: PoolContext): void {
   ctx.ownLogin.value ??= codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   if (self === null) return log("the GitHub account the workers use could not be read, so no pull request's feedback was read");
+  // Every finished run's pull requests are read before any is answered: a red check that another run's pull request fails too is not this run's (A11-179), and that is known only once they are all read.
+  const reads = finished.map((entry) => ({ entry, reads: openPulls(entry).map((pr) => ({ url: pr.url, read: codeHost.readPullFeedback(pr.url, self, feedbackIgnores) })) }));
+  const foreign = foreignRedsOf(ctx, reads.map(({ entry, reads: pulls }) => ({ entry, open: pulls.filter((pull): pull is { url: string; read: PullFeedback } => pull.read?.state === "open") })));
   let queued = false;
-  for (const entry of finished) {
-    const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: codeHost.readPullFeedback(pr.url, self, feedbackIgnores) }));
-    const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
+  for (const { entry, reads: pulls } of reads) {
+    const unread = pulls.filter(({ read }) => read === null).map(({ url }) => url);
     if (unread.length > 0) {
       log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
       continue;
     }
-    const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
+    const readable = pulls.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
     const open = readable.filter(({ read }) => read.state === "open");
     const partial = open.filter(({ read }) => !read.filesComplete).map(({ url }) => url);
     if (partial.length > 0) log(`${entry.ticket.key}: ${partial.join(", ")} changes more than the 100 files read, so the files past those read are unknown and hold nothing`);
     const files = pullFilesOf(open);
     // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
     if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
-    recordHeads(ctx, entry, open);
+    recordHeads(ctx, entry, readable);
     clearResolvedConflict(ctx, entry, open);
     if (!resumesOnConflict(entry)) continue;
-    const checks = answerChecks(ctx, entry, open);
+    const checks = answerChecks(ctx, entry, open, foreign);
     if (isWatched(entry)) {
       // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
       const lines = [feedbackSince(readable, entry.finishedAt ?? 0), checks.feedback, ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
@@ -491,14 +494,16 @@ function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer)
 }
 
 /**
- * Record the head each open pull request is at, and whether it is approved there (`pullHeads`, A11-153): written only when it changes, as the files are. A pull
- * request the run has no outcome head for takes this head as its outcome head: the end of the run could not read it, or the run was stored before heads were
- * recorded, and the first watch is the nearest read to the end.
+ * Record the head each pull request the watch read is at, and whether it is approved there (`pullHeads`, A11-153) with what the read said of its readiness to merge (A11-179): written only when it
+ * changes, as the files are. A pull request that merged or closed since the board last asked the tracker keeps its record, so the run does not read "not read yet" for the minutes before the tracker says so.
+ * A pull request the run has no outcome head for takes this head as its outcome head: the end of the run could not read it, or the run was stored before heads were recorded, and the first watch is the nearest
+ * read to the end.
  */
-function recordHeads(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): void {
+function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
   const key = entry.ticket.key;
-  const heads = pullHeadsOf(open);
+  const heads = pullHeadsOf(readable);
   if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads));
+  const open = readable.filter(({ read }) => read.state === "open");
   const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
 }

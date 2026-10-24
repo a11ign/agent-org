@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import type { ChangeRef, CodeHost, VerdictDoor } from "../../src/plugins/contracts/code-host.ts";
 import type { PluginDeps } from "../../src/plugins/manifest.ts";
 import { readCheckLog, rerunFailedChecks } from "./check-runs.ts";
+import { readDefaultBranchRed } from "./default-branch-checks.ts";
 import { ghRunner } from "./gh.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
@@ -68,6 +69,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     repoCloneArgs,
     readOwnLogin: () => readOwnLogin(gh),
     readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, gh, deps.policy, alsoIgnore),
+    readDefaultBranchRed: (repository) => readDefaultBranchRed(repository, gh, deps.policy),
     readReplies: (url, request) => readReplies(url, request, gh),
     readReviewState: (url) => readReviewState(url, gh, deps.policy),
     readPullState: (url) => readPullState(url, gh),

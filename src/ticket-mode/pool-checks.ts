@@ -7,7 +7,9 @@ import { isRollUpCheck } from "../newest-check-run.ts";
 import type { FailingCheck, PullFeedback } from "../plugins/contracts/code-host.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
+import { NO_FOREIGN_REDS, type ForeignReds } from "./pool-foreign-checks.ts";
 import { log, messageOf } from "./pool-state.ts";
+import { ownerOfRed } from "./ticket-references.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** The most error lines a round's brief quotes from the logs of all the checks that failed at a head, and the most characters of each: a brief names the failure, it is not the log. */
@@ -20,8 +22,11 @@ const CAUSE_WINDOW = 5;
 /** The characters of a head the card names, as GitHub's own short form does. */
 const HEAD_CHARS = 8;
 
-/** A failing check with what its job's log says of it: the lines to quote, and why it is the infrastructure's and not the code's, when it is. */
-type ReadCheck = Readonly<{ name: string; lines: readonly string[]; infrastructure: string | null; readable: boolean; detailsUrl: string | null }>;
+/**
+ * A failing check with what its job's log says of it: the lines to quote, and why it is the infrastructure's and not the code's, when it is. `refusals` are the log's lines that say the check refused
+ * (A11-179): a refusal names the ticket that owns what it refuses, and its words are not an error line's.
+ */
+type ReadCheck = Readonly<{ name: string; lines: readonly string[]; refusals: readonly string[]; infrastructure: string | null; readable: boolean; detailsUrl: string | null }>;
 
 /** What a pass over a run's red checks found: the feedback a round answers, or null, and the heads the checks were answered at. */
 export type CheckAnswer = Readonly<{
@@ -32,6 +37,11 @@ export type CheckAnswer = Readonly<{
   /** The same without the answers that are a round: what is recorded when no round is queued, so a rerun already made is not made again. */
   withoutRound: Readonly<Record<string, CheckHead>>;
 }>;
+
+/** The lines of a job log that say the check refused (A11-179), without the colour codes and the runner's timestamps, the last {@link QUOTED_LINES}. PURE. */
+function refusalLinesOfLog(log: string): string[] {
+  return withoutColour(log).split("\n").map((line) => line.replace(LOG_TIMESTAMP, "").trim()).filter((line) => /refus/i.test(line)).slice(-QUOTED_LINES);
+}
 
 /**
  * Why a failing check's log shows the infrastructure and not the code failing, or null: a lost runner or a rate limit, a GitHub server error, or a network error. The log is read
@@ -59,12 +69,12 @@ function checksToAnswer(read: PullFeedback): readonly FailingCheck[] {
 
 /** One failing check, with its job's log read. A check with no Actions job, or whose log cannot be read, is `readable: false` and is the code's to answer. */
 function readCheck(ctx: PoolContext, check: FailingCheck): ReadCheck {
-  const unread = { name: check.name, lines: [], infrastructure: null, readable: false, detailsUrl: check.detailsUrl } as const;
+  const unread = { name: check.name, lines: [], refusals: [], infrastructure: null, readable: false, detailsUrl: check.detailsUrl } as const;
   if (check.detailsUrl === null) return unread;
   try {
     const text = ctx.codeHost.readCheckLog(check.detailsUrl);
     if (text === null) return unread;
-    return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), infrastructure: infrastructureCause(text), readable: true };
+    return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), refusals: refusalLinesOfLog(text), infrastructure: infrastructureCause(text), readable: true };
   } catch (err) {
     log(`the log of ${check.name} on ${check.detailsUrl} could not be read: ${messageOf(err)}`);
     return unread;
@@ -82,6 +92,10 @@ function ownLines(url: string, checks: readonly ReadCheck[]): string[] {
   });
 }
 
+/** The line that names the checks a round is not about because they fail where the run's files are not (A11-179). PURE. */
+const foreignLine = (url: string, names: readonly string[]): string =>
+  `${names.join(", ")} also failed on the head commit of ${url}, but ${names.length === 1 ? "fails" : "fail"} on the default branch or on pull requests that touch none of your files: that is not a fault in your change, so leave ${names.length === 1 ? "it" : "them"}.`;
+
 /** The line that names a check that failed for an infrastructure reason in a round that is not about it. PURE. */
 const infrastructureLine = (url: string, check: ReadCheck): string =>
   `${check.name} also failed on the head commit of ${url} for an infrastructure reason (${check.infrastructure}): that is not a fault in your change, so leave it; the next push runs it again.`;
@@ -96,37 +110,87 @@ function rerun(ctx: PoolContext, checks: readonly ReadCheck[]): string | null {
 }
 
 /**
+ * The ticket that owns a red check the run cannot mend: the one the pull request's `Blocked-by:` line names, else the one the check's own refusal text names (A11-179): a failing test's title names tickets too, and is no owner. A check that was named at this head
+ * already has its answer in `previous`, so its log is not read again on every watch. Null when no ticket is named.
+ */
+function ownerOf(ctx: PoolContext, key: string, body: string, check: FailingCheck, previous: Readonly<Record<string, string | null>>): string | null {
+  const viaBody = ownerOfRed(key, body, []);
+  if (viaBody !== null) return viaBody;
+  if (Object.hasOwn(previous, check.name)) return previous[check.name];
+  return ownerOfRed(key, "", readCheck(ctx, check).refusals);
+}
+
+/**
+ * The record for a head whose red checks are all ones the run cannot mend (A11-179): they fail on the default branch, or on pull requests that touch none of the run's files. No round is started and
+ * nothing is rerun. The card is told so, with the ticket that owns each check when one is named. Made again on every watch, and said in the log when it changes.
+ */
+function notOursAnswer(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, outside: readonly FailingCheck[], known: CheckHead | undefined): CheckHead {
+  const { read } = pull;
+  const previous = known?.head === read.head && known.step === "not-ours" ? known.notOurs ?? {} : {};
+  const owners: Record<string, string | null> = Object.fromEntries(outside.map((check) => [check.name, ownerOf(ctx, entry.ticket.key, read.body ?? "", check, previous)]));
+  // A roll-up that failed reports its jobs' results: with every job behind it elsewhere's, it is red for the same reason and belongs to the same ticket.
+  const owner = Object.values(owners).find((name) => name !== null) ?? null;
+  for (const name of read.failing.filter((failing) => isRollUpCheck(failing) && !Object.hasOwn(owners, failing))) owners[name] = owner;
+  const note = outside.map(({ name }) => `${name} is red on main / not this run's${owners[name] === null ? "" : `; owned by ${owners[name]}`}`).join("; ");
+  const answer: CheckHead = { head: read.head!, step: "not-ours", note, notOurs: owners };
+  if (JSON.stringify(known) !== JSON.stringify(answer)) log(`${entry.ticket.key}: ${note}`);
+  return answer;
+}
+
+/**
+ * What the board does about checks that failed for an infrastructure reason at `head` and that no check of the code's accompanies: rerun them once and name the rerun on the card; red again on the same
+ * head after it (`reran`), or a rerun the host refuses, they are named for a person and no worker gets them (A11-154).
+ */
+function answerInfrastructure(ctx: PoolContext, entry: Entry, { head, checks, reran }: Readonly<{ head: string; checks: readonly ReadCheck[]; reran: boolean }>): CheckHead {
+  const shown = short(head);
+  if (reran) {
+    const note = `${names(checks)} failed again on ${shown} after a rerun (${reasons(checks)}): a person decides`;
+    log(`${entry.ticket.key}: ${note}`);
+    return { head, step: "named", note };
+  }
+  const refused = rerun(ctx, checks);
+  if (refused !== null) {
+    // Asked again on every watch it would read a log and be refused for ever, and no person would hear of it: it is named for one instead.
+    const note = `${names(checks)} failed on ${shown} for an infrastructure reason (${reasons(checks)}) and could not be rerun (${refused}): a person decides`;
+    log(`${entry.ticket.key}: ${note}`);
+    return { head, step: "named", note };
+  }
+  const note = `Reran ${names(checks)} on ${shown}: ${reasons(checks)}`;
+  log(`${entry.ticket.key}: ${note}`);
+  return { head, step: "rerun", note };
+}
+
+/**
  * What the board does about the red checks of one open pull request at its head, once for each head (A11-154): `heads` for the pull request with the answer added, and the lines
  * a round answers, if any. Checks the code failed are briefed with their log lines. Checks that failed for an infrastructure reason are rerun, once, and named on the card;
  * red again on the same head after that, they are named for a person and no worker gets them. A head with a check of each kind is a round for the code's, which names the others.
+ * A check that is red where the run's files are not (`foreign`, A11-179) is the run's no more than an infrastructure failure is a fault in its change: it starts no round and is not rerun, and it is
+ * looked at again on every watch, which is why it is the one record that does not end the answer for its head.
  */
-function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined): { lines: string[]; answer: CheckHead | null } {
+function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, foreign: ForeignReds): { lines: string[]; answer: CheckHead | null } {
   const { url, read } = pull;
   const none = { lines: [], answer: null };
   if (read.head === null || read.failing.length === 0) return none;
   const reran = known?.head === read.head && known.step === "rerun";
-  if (known?.head === read.head && !reran) return none;
-  const checks = checksToAnswer(read).map((check) => readCheck(ctx, check));
+  const looked = known?.head === read.head && known.step === "not-ours";
+  if (known?.head === read.head && !reran && !looked) return none;
+  const elsewhere = foreign(entry, url);
+  const answered = checksToAnswer(read);
+  const outside = answered.filter(({ name }) => elsewhere.has(name));
+  const checks = answered.filter(({ name }) => !elsewhere.has(name)).map((check) => readCheck(ctx, check));
   const own = checks.filter((check) => check.infrastructure === null);
   const infrastructure = checks.filter((check) => check.infrastructure !== null);
-  if (own.length > 0) return { lines: [...ownLines(url, own), ...infrastructure.map((check) => infrastructureLine(url, check))], answer: { head: read.head, step: "round" } };
-  const head = short(read.head);
-  if (reran) {
-    const note = `${names(infrastructure)} failed again on ${head} after a rerun (${reasons(infrastructure)}): a person decides`;
-    log(`${entry.ticket.key}: ${note}`);
-    return { lines: [], answer: { head: read.head, step: "named", note } };
+  if (own.length > 0) {
+    const others = outside.length > 0 ? [foreignLine(url, outside.map(({ name }) => name))] : [];
+    return { lines: [...ownLines(url, own), ...infrastructure.map((check) => infrastructureLine(url, check)), ...others], answer: { head: read.head, step: "round" } };
   }
-  const refused = rerun(ctx, infrastructure);
-  if (refused !== null) {
-    // Asked again on every watch it would read a log and be refused for ever, and no person would hear of it: it is named for one instead.
-    const note = `${names(infrastructure)} failed on ${head} for an infrastructure reason (${reasons(infrastructure)}) and could not be rerun (${refused}): a person decides`;
-    log(`${entry.ticket.key}: ${note}`);
-    return { lines: [], answer: { head: read.head, step: "named", note } };
-  }
-  const note = `Reran ${names(infrastructure)} on ${head}: ${reasons(infrastructure)}`;
-  log(`${entry.ticket.key}: ${note}`);
-  return { lines: [], answer: { head: read.head, step: "rerun", note } };
+  if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: notOursAnswer(ctx, entry, pull, outside, known) };
+  return { lines: [], answer: answerInfrastructure(ctx, entry, { head: read.head, checks: infrastructure, reran }) };
 }
+
+/** Whether the record of a pull request's checks is kept as it is: there is one, it is not one of checks red elsewhere (made again from each watch's reads, A11-179), and the head has not moved. PURE. */
+const isKept = (known: CheckHead | undefined, read: PullFeedback): known is CheckHead =>
+  known !== undefined && known.step !== "not-ours" && (read.head === null || known.head === read.head);
 
 /** A record the board keeps for a head it has answered. A name for a person is dropped once nothing fails on that head any more: it was fixed, and the head stays answered. PURE. */
 function keptRecord(known: CheckHead, read: PullFeedback): CheckHead {
@@ -137,16 +201,16 @@ function keptRecord(known: CheckHead, read: PullFeedback): CheckHead {
 /**
  * Answer the red checks of a finished run's open pull requests (A11-154): each pull request whose head has checks failing that the board has not answered at that head. The pull
  * requests that are no longer open, and the heads a pull request has moved off, are dropped from the record. The effects are the rerun of an infrastructure check, and the reads of the
- * logs of the checks that failed; the record is returned, for the caller to write with the round it queues.
+ * logs of the checks that failed; the record is returned, for the caller to write with the round it queues. `foreign` says which checks fail where the run's files are not (A11-179).
  */
-export function answerChecks(ctx: PoolContext, entry: Entry, open: readonly Readonly<{ url: string; read: PullFeedback }>[]): CheckAnswer {
+export function answerChecks(ctx: PoolContext, entry: Entry, open: readonly Readonly<{ url: string; read: PullFeedback }>[], foreign: ForeignReds = NO_FOREIGN_REDS): CheckAnswer {
   const lines: string[] = [];
   let heads: Record<string, CheckHead> = {};
   let withoutRound: Record<string, CheckHead> = {};
   for (const pull of open) {
     const known = entry.checkHeads?.[pull.url];
-    const stays = known !== undefined && (pull.read.head === null || known.head === pull.read.head) ? { [pull.url]: keptRecord(known, pull.read) } : {};
-    const { lines: found, answer } = answerPull(ctx, entry, pull, known);
+    const stays = isKept(known, pull.read) ? { [pull.url]: keptRecord(known, pull.read) } : {};
+    const { lines: found, answer } = answerPull(ctx, entry, pull, known, foreign);
     lines.push(...found);
     heads = { ...heads, ...stays, ...(answer === null ? {} : { [pull.url]: answer }) };
     withoutRound = { ...withoutRound, ...stays, ...(answer === null || answer.step === "round" ? {} : { [pull.url]: answer }) };

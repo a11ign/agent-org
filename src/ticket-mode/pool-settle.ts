@@ -396,11 +396,27 @@ export function pullFilesOf(open: readonly { url: string; read: PullFeedback }[]
 }
 
 /**
- * The head of each open pull request that has one, with whether a reviewer approved it there, by URL, from the reads of them (A11-153). One that GitHub gave
- * no head for is left out: nothing can be compared with it.
+ * What a read says of a head's review for readiness (A11-179), or undefined when the code host did not say: `approved` when the newest verdict on the head approves it and GitHub's review decision
+ * is approved or needs none, `changes-requested` when either asks for changes, and `none` otherwise, which is also a branch whose decision still asks for a review. PURE.
+ */
+function reviewAtHead(read: PullFeedback): PullHead["review"] {
+  if (read.verdictAtHead === undefined || read.reviewDecision === undefined) return undefined;
+  if (read.reviewDecision === "changes-requested" || read.verdictAtHead === "changes-requested") return "changes-requested";
+  return read.verdictAtHead === "approved" && (read.reviewDecision === "approved" || read.reviewDecision === null) ? "approved" : "none";
+}
+
+/**
+ * The head of each open pull request that has one, with whether a reviewer approved it there, by URL, from the reads of them (A11-153), and what the read said of its readiness to merge at that head
+ * (A11-179: its review, its red required checks and its required checks still running, each left out when the code host did not say). One that GitHub gave no head for is left out: nothing can be
+ * compared with it.
  */
 export function pullHeadsOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, PullHead>> {
-  return Object.fromEntries(open.flatMap(({ url, read }) => (read.head === null ? [] : [[url, { head: read.head, approved: read.approvedAtHead }]])));
+  return Object.fromEntries(open.flatMap(({ url, read }) => {
+    if (read.head === null) return [];
+    const review = reviewAtHead(read);
+    return [[url, { head: read.head, approved: read.approvedAtHead, ...(review === undefined ? {} : { review }), red: read.failing,
+      ...(read.pendingRequired === undefined ? {} : { pending: read.pendingRequired }) }]];
+  }));
 }
 
 /** The commit each open pull request is at, by URL, from the reads of them (A11-153): {@link pullHeadsOf} without the approval. */

@@ -49,7 +49,9 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
 async function queueFinished(b: ReturnType<typeof board>, outcome: Outcome): Promise<void> {
   await b.api("GET", "/api/tickets", {});
   await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
-  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome })) });
+  // The pull requests read as ready to merge at their head: a reviewed outcome alone does not make a run Ready to merge (A11-179).
+  const pullHeads = Object.fromEntries(("prs" in outcome ? outcome.prs : []).map(({ url }) => [url, { head: "h1", approved: true, review: "approved" as const, red: [], pending: [] }]));
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome, pullHeads })) });
 }
 
 test("/api/parents reads the parents of the person's tickets that are not the person's own, and leaves out one it cannot read", async () => {
@@ -1199,7 +1201,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.5", "enabled"], ["github", "v1.2.3", "1.12", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.5", "enabled"], ["github", "v1.2.3", "1.13", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);

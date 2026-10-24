@@ -383,7 +383,9 @@ test("clearing a move drops the record and leaves the run as it was", () => {
   assert.deepEqual([cleared.entries[0].phase, cleared.entries[0].outcome], ["finished", { kind: "checked", reason: "r" }]);
 });
 
-const readyToMerge = (fields: Record<string, unknown> = {}) => endedWith({ kind: "reviewed", prs: [pr] }, { review: [pr], pullStates: { [pr.url]: "open" }, ...fields });
+/** The head the watch read as ready to merge (A11-179): approved at it, no required check red or running. */
+const GREEN_HEAD = { head: "h1", approved: true, review: "approved", red: [], pending: [] } as const;
+const readyToMerge = (fields: Record<string, unknown> = {}) => endedWith({ kind: "reviewed", prs: [pr] }, { review: [pr], pullStates: { [pr.url]: "open" }, pullHeads: { [pr.url]: GREEN_HEAD }, ...fields });
 const a = (queue: Queue) => queue.entries.find((e) => e.ticket.key === "A")!;
 
 test("new feedback on a run Ready to merge queues a review round at the end that answers it, resuming the worker and keeping its Slack link", () => {

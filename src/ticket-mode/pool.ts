@@ -64,8 +64,9 @@
 // through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from anyone but the account the workers
 // use, or a check failing on the head commit since then, queues another review round that resumes the same worker to answer it (`feedbackRound`),
 // up to three before a person must approve again. So does a pull request that conflicts with its base branch: a conflict is a state, not an event,
-// so it is feedback on every watch until a round clears it. The watch is for runs Ready to merge or Published, and for a parked run with a conflict (below);
-// a draft's read is kept for its footprint.
+// so it is feedback on every watch until a round clears it. The watch is for runs that ended `reviewed` (Ready to merge, or Awaiting review until their pull requests are approved at their head and
+// green there: a run is not ready because its round ended, A11-179) or Published, and for a parked run with a conflict (below); a draft's read is kept for its footprint. A red check that fails on the
+// default branch too, or on another run's pull request that touches none of the run's paths, is named on the card and starts no round (`pool-foreign-checks.ts`).
 // A PARKED RUN WITH A CONFLICT IS RESUMED TOO (A11-89). A run that parked on a question, or ended with no outcome, still has its pull requests read, and
 // a conflict alone resumes it: its workspace is closed and a round queued (`conflictRound`), within the same three. Nothing else wakes a parked run.
 //
