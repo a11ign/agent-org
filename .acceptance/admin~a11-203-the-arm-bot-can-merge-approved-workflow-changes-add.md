@@ -7,7 +7,6 @@ The diff touches only the policy and its pinning test, the policy's non-comment 
 Acceptance:
 
 ```bash
-git fetch -q origin main
 # only this step's paths (plus .acceptance/): awk exits 1 on any other path
 git diff --name-only origin/main...HEAD | awk '$0 !~ /^(\.acceptance\/|\.github\/chainguard\/auto-arm\.sts\.yaml$|src\/packaging\/auto-arm-octo-sts\.test\.ts$)/ { bad = 1 } END { exit bad }'
 # the non-comment policy diff is exactly the one added line: awk exits 1 on any other changed non-comment line, so the binding and subject pattern did not change
