@@ -36,16 +36,21 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   const talk = useTalk(inputs);
   const board = boardOf(entry, queue);
   const headerActions = headerActionsOf(entry, queue);
+  const clear = () => {
+    actions.clearRefusal();
+    talk.clear();
+  };
   const controls: HeaderControls = {
     actions: headerActions,
     terminalHref: terminalHrefOf(entry, headerActions, config?.terminal ?? null, connection),
     busy: actions.busy.has(entry.ticket.key) || talk.busy,
     disabled: unreachable !== null,
-    onPress: (verb) => (verb === "talk" ? talk.press(entry) : actions.press(entry, verb)),
-  };
-  const clear = () => {
-    actions.clearRefusal();
-    talk.clear();
+    onPress: (verb) => {
+      // A press starts again: what the last one said is not what this one says.
+      clear();
+      if (verb === "talk") talk.press(entry);
+      else actions.press(entry, verb);
+    },
   };
   return (
     <>
@@ -53,7 +58,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
       <Breadcrumb runKey={entry.ticket.key} />
       <RunHeader entry={entry} queue={queue} board={board} now={Date.now()} controls={controls} />
       <div className="run-columns">
-        <div className="run-main">
+        <div className="detail-main">
           <Callout board={board} callout={calloutOf(entry, queue, board)} open={readyPullOf(entry)} />
           <Steps steps={stepsOf(entry)} />
           <PullRequests rows={pullRowsOf(entry)} board={board} />

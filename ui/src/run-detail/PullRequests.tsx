@@ -10,8 +10,8 @@ export function PullRequests({ rows, board }: Readonly<{ rows: readonly PullRow[
         <div className="pulls-none">{noPullsText(board)}</div>
       ) : (
         <div className="pulls">
-          {rows.map(({ url, href, label, detail, state, tone }) => (
-            <div key={url} className="pull-row">
+          {rows.map(({ url, href, label, detail, state, tone }, index) => (
+            <div key={`${index}-${url}`} className="pull-row">
               <PullMark tone={tone} />
               {href === "" ? <span className="pull-label mono">{label}</span> : <a className="pull-label mono link" href={href} target="_blank" rel="noreferrer">{label}</a>}
               <span className="pull-detail">{detail}</span>

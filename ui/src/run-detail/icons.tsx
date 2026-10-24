@@ -8,8 +8,8 @@ const STEP_SIZE = 16;
 const PULL_SIZE = 16;
 
 /** The words of each board's header icon for a screen reader, as the boards name them. */
-const ICON_NAME: Readonly<Record<RunBoard, string>> = {
-  running: "Running", needs: "Needs you", handback: "Needs you", ready: "Ready to merge", done: "Completed", failed: "Failed", cancelled: "Cancelled", queued: "Queued", blocked: "Queued", awaiting: "",
+const ICON_NAME: Readonly<Record<Exclude<RunBoard, "awaiting">, string>> = {
+  running: "Running", needs: "Needs you", handback: "Needs you", ready: "Ready to merge", done: "Completed", failed: "Failed", cancelled: "Cancelled", queued: "Queued", blocked: "Queued",
 };
 
 /** The board's spinner: a ring with its track, turning (`.spin` stops for reduced motion). */
@@ -87,7 +87,7 @@ const SHAPES: Readonly<Partial<Record<RunBoard, Drawn>>> = {
 export function RunIcon({ board }: Readonly<{ board: RunBoard }>) {
   if (board === "running") return <Spinner size={MARK_SIZE} label={ICON_NAME.running} />;
   const drawn = SHAPES[board];
-  if (drawn === undefined) return null;
+  if (drawn === undefined || board === "awaiting") return null;
   return (
     <svg className={`run-icon ${drawn.tone}`} width={MARK_SIZE} height={MARK_SIZE} viewBox="0 0 18 18" fill="none" role="img" aria-label={ICON_NAME[board]}>
       {drawn.shape}

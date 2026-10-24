@@ -20,7 +20,7 @@
 }
 
 /* The header. */
-.run-head {
+.detail-head {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -89,7 +89,7 @@
   align-items: flex-start;
   gap: var(--space-20);
 }
-.run-main {
+.detail-main {
   flex: 999 1 var(--detail-main-basis);
   min-width: 0;
   max-width: var(--detail-main-max);

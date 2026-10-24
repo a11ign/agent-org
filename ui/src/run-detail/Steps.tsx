@@ -8,8 +8,8 @@ export function Steps({ steps }: Readonly<{ steps: readonly StepRow[] }>) {
     <section aria-labelledby="h-steps" className="detail-section">
       <h2 id="h-steps" className="detail-heading">What it will do <span className="detail-heading-note">· from the worker's own note</span></h2>
       <ol className="steps">
-        {steps.map(({ n, text, mark }) => (
-          <li key={n} className={`step step-${mark}`}>
+        {steps.map(({ n, text, mark }, index) => (
+          <li key={`${index}-${n}`} className={`step step-${mark}`}>
             <span className="step-mark"><StepMarkIcon mark={mark} /></span>
             <div className="step-text">{text}</div>
           </li>

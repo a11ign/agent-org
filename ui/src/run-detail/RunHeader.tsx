@@ -1,10 +1,9 @@
 import { runsHref } from "../shell/routes.ts";
 import { ActionIcon } from "../runs/icons.tsx";
-import { shownStatus } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import type { QueueView, RunAction } from "../api/types.ts";
-import { labelOf, type RunEntry } from "../runs/runs-model.ts";
+import type { RunEntry } from "../runs/runs-model.ts";
 import { RunIcon } from "./icons.tsx";
-import { STATUS_WORD_TONE, TERMINAL_TITLE, timesOf, type HeaderAction, type RunBoard } from "./run-detail-model.ts";
+import { STATUS_WORD_TONE, statusWordOf, TERMINAL_TITLE, timesOf, type HeaderAction, type RunBoard } from "./run-detail-model.ts";
 
 /** "Runs / A11-183": the way back to the list, and the run's key. */
 export function Breadcrumb({ runKey }: Readonly<{ runKey: string }>) {
@@ -44,12 +43,12 @@ function Buttons({ actions, terminalHref, busy, disabled, onPress }: HeaderContr
 export function RunHeader({ entry, queue, board, now, controls }: Readonly<{ entry: RunEntry; queue: QueueView; board: RunBoard; now: number; controls: HeaderControls }>) {
   const { timing, started } = timesOf(entry, now);
   return (
-    <div className="run-head">
+    <div className="detail-head">
       <div className="run-head-icon"><RunIcon board={board} /></div>
       <div className="run-head-title">
-        <h1 className="run-title-text">{entry.ticket.title ?? entry.ticket.key}</h1>
+        <h1 className="run-title-text">{entry.ticket.title ? entry.ticket.title : entry.ticket.key}</h1>
         <div className="run-head-line">
-          <span className={`run-head-status ${STATUS_WORD_TONE[board]}`}>{labelOf(shownStatus(entry, queue.publish, queue.entries))}</span>
+          <span className={`run-head-status ${STATUS_WORD_TONE[board]}`}>{statusWordOf(entry, queue)}</span>
           <span aria-hidden="true">·</span>
           <span>{timing}</span>
           <span aria-hidden="true">·</span>

@@ -10,7 +10,7 @@ import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
 import type { PlannedStep, QueueView, RunAction, ViewConnection } from "../api/types.ts";
 import { actionsOf, type RowAction } from "../runs/run-actions.ts";
-import { since, timingOf, tokensOf, type RunEntry } from "../runs/runs-model.ts";
+import { labelOf, since, timingOf, tokensOf, type RunEntry } from "../runs/runs-model.ts";
 
 // ---- Which board a run is drawn as ----
 
@@ -83,7 +83,7 @@ function bodyOf(entry: RunEntry, queue: QueueView, board: RunBoard): string | nu
 export function calloutOf(entry: RunEntry, queue: QueueView, board: RunBoard): Callout {
   // A running agent that was refused a safety prompt says so beside what it is doing.
   const declined = board === "running" ? promptNote(entry) : null;
-  const paragraphs = [bodyOf(entry, queue, board), declined, reasonOf(entry).question].filter(present);
+  const paragraphs = [...new Set([bodyOf(entry, queue, board), declined, reasonOf(entry).question].filter(present))];
   return { title: CALLOUT_TITLE[board], paragraphs, help: HELP[board] ?? null };
 }
 
@@ -102,6 +102,14 @@ export function timesOf(entry: RunEntry, now: number): Readonly<{ timing: string
   const { timing, started } = timingOf(entry, now);
   return { timing, started: started ?? "" };
 }
+
+/** The colour class of the status word in the header: the boards'. Ready to merge and Completed take the lighter green their callout titles do. */
+export const STATUS_WORD_TONE: Readonly<Record<RunBoard, string>> = {
+  running: "tone-warn", needs: "tone-warn", handback: "tone-warn", ready: "tone-done", done: "tone-done", failed: "tone-danger", cancelled: "tone-muted", queued: "tone-quiet", blocked: "tone-quiet", awaiting: "tone-planning",
+};
+
+/** The status word of the header: the words of the run's shown status. */
+export const statusWordOf = (entry: RunEntry, queue: Pick<QueueView, "publish" | "entries">): string => labelOf(shownStatus(entry, queue.publish, queue.entries));
 
 /** The words of each verb on a header button: `ui.html`'s, which are the Runs page's names but for Stop and Dismiss, which the Runs board names for its icons. */
 const LABEL_OF: Readonly<Partial<Record<RunAction, string>>> = { stop: "Stop", dismiss: "Dismiss" };
@@ -212,8 +220,3 @@ const workerOf = (entry: RunEntry): string | null => {
 export const propertiesOf = (entry: RunEntry, queue: QueueView): Properties => ({
   repos: repoLabel(entry), model: `${entry.model}/${entry.effort}`, plan: planOf(entry), worker: workerOf(entry), tokens: tokensOf(entry), version: versionOf(entry, queue),
 });
-
-/** The colour class of the status word in the header: the boards'. Ready to merge and Completed take the lighter green their callout titles do. */
-export const STATUS_WORD_TONE: Readonly<Record<RunBoard, string>> = {
-  running: "tone-warn", needs: "tone-warn", handback: "tone-warn", ready: "tone-done", done: "tone-done", failed: "tone-danger", cancelled: "tone-muted", queued: "tone-quiet", blocked: "tone-quiet", awaiting: "tone-planning",
-};

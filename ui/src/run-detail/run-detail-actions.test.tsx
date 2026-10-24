@@ -76,6 +76,23 @@ describe("Talk to it", () => {
   });
 });
 
+describe("the banner", () => {
+  it("shows what a Talk to it press says over a refusal an earlier press left, and nothing of it after a press that works", async () => {
+    const open = rstest.spyOn(window, "open").mockReturnValue(null);
+    const ready = RUNS_OF.ready.runs[0];
+    const answers = [{ status: 409, error: "A11-180 is not a run the board can dismiss right now" }, queueOf([ready])];
+    await pageFor("ready", detailStand("ready", { terminal: TERMINAL, post: () => answers.shift() }));
+    press("Dismiss");
+    expect(textOf(await screen.findByRole("alert"))).toContain("not a run the board can dismiss");
+    press("Talk to it");
+    await waitFor(() => expect(textOf(screen.getByRole("alert"))).toContain(TAB_BLOCKED));
+    open.mockReturnValue(blankTab() as never);
+    press("Respond to review");
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    open.mockRestore();
+  });
+});
+
 describe("Talk to it, when herdr does not open", () => {
   const readyRun = RUNS_OF.ready.runs[0];
 
