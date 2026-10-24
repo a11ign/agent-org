@@ -59,11 +59,13 @@ import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
 import { findingsMiss, parseFindingsGiven, retryAsk } from "./blocker-findings-check.ts";
+import { parseOrder } from "./batch-order.ts";
 import { checkOutcome, isStale } from "./outcome.ts";
+import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMisses, parseClaimsGiven, planClaimPaths, siblingClaims } from "./path-claims.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
-  QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+  ORDER_FILE, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, readCreatedKeys } from "./writer.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
@@ -108,9 +110,10 @@ function readyRefusal(approved: readonly string[]): Refusal {
  * outcome: a worker that wrote them would answer its own question (A11-129). The record of a new-ticket run's created tickets is the hook's own, so
  * a run could not write in a key it did not create (A11-135). The stale mark and the stop hook's own file are the board's too (A11-152): a worker that
  * wrote the first could refuse its own outcome, and one that wrote the second could hold the board off its question. A planning run's list of the pull requests its plan must name and the mark of
- * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry.
+ * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
+ * tickets hold and the mark of the retry made for a folder claim (A11-212).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -616,6 +619,13 @@ function planFileNames(planDir: string): string[] {
   });
 }
 
+/** Whether a plan check may refuse a stop once: the outcome says `planned`, the list the brief wrote for the check is there (`given`), and the mark of the retry (`retried`) is not. */
+function retryDue(outcomeText: string, io: StopIo, { given, retried }: Readonly<{ given: string; retried: string }>): boolean {
+  if (io.exists(retried) || !io.exists(given)) return false;
+  const checked = checkOutcome(outcomeText);
+  return !("problem" in checked) && checked.outcome.kind === "planned";
+}
+
 /**
  * The one automatic retry of a plan that misses a blocker pull request (A11-207): a `planned` outcome, a brief that listed pull requests (`findings-given.json`), no retry made yet (`findings-retried.json`),
  * and a plan folder, without a question, whose plan files fail the check the board's settle step applies (`blocker-findings-check.ts`). The mark is written, the outcome is marked stale, and the stop is refused with the missing
@@ -625,9 +635,7 @@ function planFileNames(planDir: string): string[] {
 function findingsRetry(ticketDir: string, { text, mtime }: OutcomeRead, io: StopIo): HookResult | null {
   const given = join(ticketDir, FINDINGS_GIVEN_FILE);
   const retried = join(ticketDir, FINDINGS_RETRIED_FILE);
-  if (io.exists(retried) || !io.exists(given)) return null;
-  const checked = checkOutcome(text);
-  if ("problem" in checked || checked.outcome.kind !== "planned") return null;
+  if (!retryDue(text, io, { given, retried })) return null;
   try {
     const rows = parseFindingsGiven(io.read(given));
     if (rows === null) return { code: 0, say: [`ticket:hook: ${given} is not a list of tickets, so the plan was not checked and the stop is ALLOWED.`] };
@@ -647,11 +655,55 @@ function findingsRetry(ticketDir: string, { text, mtime }: OutcomeRead, io: Stop
 }
 
 /**
+ * The plans of a planning run, by ticket: each ticket's plan folder and the paths its plan claims, from the list the brief wrote beside the outcome (it names every ticket of the run and its plan folder).
+ * A ticket with a question, or with no plan file, claims none. Empty when the list is missing or is not one.
+ */
+function planClaims(ticketDir: string, io: StopIo): { key: string; planDir: string; paths: string[] }[] {
+  const listed = join(ticketDir, FINDINGS_GIVEN_FILE);
+  const rows = io.exists(listed) ? parseFindingsGiven(io.read(listed)) ?? [] : [];
+  return rows.map(({ key, planDir }) => {
+    const names = io.exists(join(planDir, QUESTION_FILE)) ? [] : io.planNames(planDir);
+    return { key, planDir, paths: names.flatMap((name) => planClaimPaths(io.read(join(planDir, name)))) };
+  });
+}
+
+/**
+ * The one automatic retry of a plan that claims a folder other tickets write into (A11-212): a `planned` outcome, a brief that listed the paths other tickets hold, no retry made yet,
+ * and a plan folder, without a question, whose paths fail the check the board's settle step applies (`path-claims.ts`). For a batch the tickets are also checked against each other, unless the batch's `order.json` orders
+ * them. The mark is written, the outcome is marked stale, and the stop is refused with the folders and the narrower forms. Null when the stop stands; a result allowing the stop, out loud, when the list cannot be read, since the
+ * board's own check is the backstop.
+ */
+function claimsRetry(ticketDir: string, { text, mtime }: OutcomeRead, io: StopIo): HookResult | null {
+  const given = join(ticketDir, CLAIMS_GIVEN_FILE);
+  const retried = join(ticketDir, CLAIMS_RETRIED_FILE);
+  if (!retryDue(text, io, { given, retried })) return null;
+  try {
+    const held = parseClaimsGiven(io.read(given));
+    if (held === null) return { code: 0, say: [`ticket:hook: ${given} is not a list of held paths, so the plan was not checked and the stop is ALLOWED.`] };
+    const plans = planClaims(ticketDir, io);
+    const orderFile = plans.length > 1 ? join(dirname(plans[0].planDir), ORDER_FILE) : null;
+    const parsed = orderFile !== null && io.exists(orderFile) ? parseOrder(io.read(orderFile), plans.map(({ key }) => key)) : null;
+    const order = parsed !== null && "order" in parsed ? parsed.order : null;
+    const misses = plans.flatMap(({ key, planDir, paths }) => {
+      const folders = folderClaimMisses(paths, [...held, ...siblingClaims(key, plans, order)]);
+      return folders.length === 0 ? [] : [{ key, planDir, folders }];
+    });
+    if (misses.length === 0) return null;
+    io.write(retried, `${JSON.stringify({ at: Date.now(), folders: misses.flatMap(({ folders }) => folders.map(({ folder }) => folder)) })}\n`);
+    // The `planned` outcome stays on disk while the planner narrows its plan, so it is marked stale: the board reads a run that is idle with an outcome as over, and must not settle the plan that was just refused.
+    io.write(join(ticketDir, STALE_OUTCOME_FILE), `${mtime}\n`);
+    return refuse(claimsRetryAsk(misses, join(ticketDir, OUTCOME_FILE)));
+  } catch (err) {
+    return { code: 0, say: [`ticket:hook: could not check the plan against ${given} (${String((err as Error)?.message ?? err).split("\n")[0]}), so the stop is ALLOWED and the board's check decides.`] };
+  }
+}
+
+/**
  * The Stop verdict: allowed once the outcome file is there and passes the contract, refused with what to fix otherwise, up to
  * {@link MAX_STOP_REFUSALS} in a row. A `working` outcome allows one stop, and only while the session has live background work to wake it
  * (`transcriptPath`); a later stop on the same file, by its time, is refused the same way, so a worker its background work woke says how the run stands now.
  * A grill run that ends its turn with no outcome is waiting for the person: that stop is allowed, and its question is recorded for the board (A11-129). A `planned` outcome whose plan misses a blocker
- * pull request its brief listed is refused once, with the missing addresses (A11-207).
+ * pull request its brief listed is refused once, with the missing addresses (A11-207), and so is one that claims a folder other tickets write into, with the narrower paths to use (A11-212).
  */
 export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t),
   readOutcome = readOutcomeFile, planNames = planFileNames, transcriptPath, lastMessage }: {
@@ -680,7 +732,8 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
       : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
     if ("verdict" in judged) {
       // A plan that misses a blocker pull request is refused once, before the planner ends, and the refusal is no outcome problem: the count is left as it is (A11-207).
-      const retry = judged.verdict.code === 0 && found !== null ? findingsRetry(ticketDir, found, io) : null;
+      // So is a plan that claims a folder other tickets write into (A11-212), asked after the findings, so that each refusal names one thing to fix.
+      const retry = judged.verdict.code === 0 && found !== null ? findingsRetry(ticketDir, found, io) ?? claimsRetry(ticketDir, found, io) : null;
       if (retry?.code === 2) return retry;
       write(counter, "0");
       return retry ?? judged.verdict;

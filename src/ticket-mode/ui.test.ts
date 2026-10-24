@@ -11,6 +11,7 @@ import * as view_4 from "./board-view/pull-review-state.ts";
 import * as view_5 from "./board-view/update-banner.ts";
 import * as view_6 from "./board-view/ticket-change.ts";
 import * as view_7 from "./board-view/run-terminal.ts";
+import * as view_8 from "./board-view/overlap-hold.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -183,7 +184,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...view_7, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...view_7, ...view_8, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
     window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } }, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });

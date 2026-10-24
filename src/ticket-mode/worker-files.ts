@@ -21,6 +21,7 @@ import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
+import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { diffText, type Finding, findingsText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
@@ -369,9 +370,9 @@ const quoted = (description: string): string => (description.trim() || "(no desc
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
  */
-export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, blockers = [], findings = [], replan }: {
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, blockers = [], findings = [], claims = [], replan }: {
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
-  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; replan?: Replan;
+  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; claims?: readonly HeldClaim[]; replan?: Replan;
 }): string {
   const repos = reposText(clones);
   const instruction = plannerInstruction(run, [ticket.key], planDir);
@@ -397,6 +398,7 @@ Read them to plan, but never change them, commit in them or change their branche
 
 ${repos}
 
+${claimsSection(claims)}
 ## What to do
 
 ${instruction}
@@ -461,8 +463,8 @@ ${parentPart}${findingsText(blockers, findings).replace(/^\n## /, "\n### ")}`;
  * question) per ticket, and the batch's order, in `planDir`. `runDir` holds the run's outcome file. `run` is the host file's
  * `tickets.planner.run`, with the tickets and the folder filled in.
  */
-export function batchPlanBriefText({ tickets, runDir, planDir, clones, run, notes, connectors = [] }: {
-  tickets: readonly BatchTicket[]; runDir: string; planDir: string; clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[];
+export function batchPlanBriefText({ tickets, runDir, planDir, clones, run, notes, connectors = [], claims = [] }: {
+  tickets: readonly BatchTicket[]; runDir: string; planDir: string; clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; claims?: readonly HeldClaim[];
 }): string {
   const keys = tickets.map(({ ticket }) => ticket.key);
   return `# Plan ${keys.length} tickets together: ${keys.join(", ")}
@@ -475,6 +477,7 @@ Read them to plan, but never change them, commit in them or change their branche
 
 ${reposText(clones)}
 
+${claimsSection(claims, BATCH_CLAIMS_BULLET)}
 ## What to do
 
 ${plannerInstruction(run, keys, planDir)}
@@ -499,7 +502,7 @@ How \`wait\` says how a ticket waits on each ticket in its \`after\`:
 - With no \`wait\`, or \`"stacked"\`, the ticket is stacked. When its work lands in the same repository as its blocker and that blocker's branch is pushed there, the board starts the ticket on that branch, with or without a pull request on it, and its pull request is based on the blocker's branch. Choose this when the code builds on the blocker's diff.
 - \`"wait": "merged"\` keeps the ticket Blocked until every ticket in its \`after\` has merged, then starts it on the default branch. Choose this when the work needs the blocker's change live rather than in a diff: fleet state, a deployed or released package, a published artifact, or anything a worker checks on the running system.
 - When a plan says "wait until X merges", set \`"wait": "merged"\`, or the board contradicts the plan.
-- Tickets of one repository whose work touches the same area, directly or through a shared module, must be ordered in \`${ORDER_FILE}\` with \`after\`, so the later one stacks on or waits for the earlier one. The board holds back a run whose paths overlap a run already in progress, so this order is what keeps them in turn.
+- Order a ticket after another only when it needs that ticket's code, or both must change the same file. Tickets whose paths do not overlap get no \`after\` and run side by side: a shared folder, or the same area of the code, is no reason to order them. The board holds back a run whose paths overlap a run already in progress, so \`after\` is what keeps two tickets that change one file in turn, and a folder two tickets of the batch both claim is refused until each claims its own files.
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -513,12 +516,33 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 `;
 }
 
+/** The bullet the batch brief adds to its section on the paths other tickets hold: its own tickets are held against each other. */
+const BATCH_CLAIMS_BULLET = `- **The tickets of this batch are held against each other the same way:** a folder two of them claim is refused, unless \`${ORDER_FILE}\` orders them.\n`;
+
+/**
+ * The brief's section on the paths other tickets hold and how to plan beside them (A11-212): the list, printed from the same array the board writes to the run's claims file, and the rules that keep tickets side by side.
+ * `extra` is a bullet added after the rules. PURE.
+ */
+function claimsSection(claims: readonly HeldClaim[], extra = ""): string {
+  return `## Paths other tickets hold
+
+Every other ticket queued or running holds these paths. The board holds this ticket back for any file it shares with one of them, so plan it to run beside them:
+
+${claimsText(claims)}
+
+- **Claim the narrowest paths that hold the change:** files, or a folder only this ticket writes into. Never a shared parent such as a repository's whole \`test/\` or \`captures/\`. The board refuses a plan that claims a folder another queued or running ticket writes into, and names the narrower paths to use.
+- **Plan around the held paths where the design allows:** per-feature folders, per-feature test data beside its tests, and no edit to a shared registration point that another ticket already prepared. Say in the plan, under \`## Overlaps that remain\`, which held paths it still shares and why.
+- **A shared integration point many tickets would edit** (a route table, a registry, a fixtures file) is named in the plan of the ticket that first creates it. That ticket prepares it, with per-feature entries or placeholders, so later tickets do not edit it.
+- **Steps:** prefer steps that can be worked side by side over a chain. A step depends on another only when it needs that step's code, never just because they touch the same folder. The board queues a ticket's next step after the last one has merged, so "side by side" is between tickets, and between a step and the tickets beside it: give each step only the paths it needs.
+${extra}`;
+}
+
 /**
  * What every plan says of the paths its work touches, in its one `## Paths` section: the board's overlap wait reads it (`overlap.ts`), and `pr:open`
  * reads it as the Region its pull request's diff is checked against (A11-125). The board holds back a ticket whose paths overlap a run in progress, so
  * the list must be complete. A plan in numbered steps also lists each step's own paths in its step section, which is all the board holds for a run on that step (A11-175).
  */
-const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. That one section is what the board's overlap wait and `pr:open` both read, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says. A plan delivered in numbered steps, one pull request each, gives each step a `### Step <N> of <M>: <title>` section that ends with that step's own `- \`<repo>:<path>\`` bullets: the board holds only the current step's paths and its open pull requests' files, and gives a reviewer that step's section. `## Paths` still lists every path of every step, because `pr:open` reads it as the Region.";
+const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. That one section is what the board's overlap wait and `pr:open` both read, so list the narrowest paths that hold the work, and no more: each file the work changes, or a folder only this ticket writes into. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says. A plan delivered in numbered steps, one pull request each, gives each step a `### Step <N> of <M>: <title>` section that ends with that step's own `- \`<repo>:<path>\`` bullets: the board holds only the current step's paths and its open pull requests' files, and gives a reviewer that step's section. `## Paths` still lists every path of every step, because `pr:open` reads it as the Region.";
 
 /**
  * Step 5 of the brief, the commit. With the machine's pre-PR review skill named, the review runs after the commit, on the whole diff, before a push or a
