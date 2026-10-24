@@ -32,7 +32,7 @@ export async function readPlanSteps(ctx: PoolContext): Promise<void> {
 
 /**
  * The numbered steps, with their titles, of the plan files `planFiles` downloaded for ticket `key` (A11-219), or none when this machine names no plan, no plan file is there, or none numbers a step. Reads the
- * folder and downloads nothing, as `planStepSection` does: a plan the run was queued with is there. The first plan file, by name, that numbers any step gives them.
+ * folder and downloads nothing, as `planStepSection` does: a plan the run was queued with is there. The first plan file, by name, that numbers any step gives them. Throws, naming the file, when a plan file cannot be read: that is not a ticket with no plan (see `planTexts`).
  */
 export function plannedStepsOf(ctx: PoolContext, key: string): readonly PlannedStep[] {
   for (const text of planTexts(ctx, key)) {

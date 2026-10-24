@@ -164,8 +164,10 @@ describe("the sidebar over a stand-in instance", () => {
     await page.waitForURL("**/next/runs");
     await page.getByRole("heading", { level: 1 }).waitFor();
     await page.waitForFunction(() => (document.querySelector("select") as HTMLSelectElement | null)?.value === "personal");
-    const afterNavigation = asked.slice(asked.lastIndexOf("/api/connections") + 1);
-    expect(afterNavigation.length).toBeGreaterThan(0);
+    // The Runs page asks after the heading is drawn: wait for its first request, as for the other islands above.
+    const afterConnections = () => asked.slice(asked.lastIndexOf("/api/connections") + 1);
+    await expect.poll(() => afterConnections().length, { timeout: HYDRATION_MS }).toBeGreaterThan(0);
+    const afterNavigation = afterConnections();
     expect(afterNavigation.every((path) => path.startsWith("/c/personal/api/"))).toBe(true);
     await context.close();
   });
