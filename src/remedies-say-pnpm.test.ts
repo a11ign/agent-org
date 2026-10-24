@@ -44,6 +44,8 @@ const EXEMPT: Record<string, { lines: number; why: string }> = {
   "src/pr-open.ts": { lines: 1, why: "recogniser: a `Mutation:` line written `npm run mutate` in an older PR body still runs" },
   "src/row-file/issue-body-and-region-checks.ts": { lines: 1, why: "recogniser: a body line that starts with `npm`/`npx` looks like a command, whichever manager it names" },
   "src/host-units/shipped-unit-texts-and-declarations.ts": { lines: 2, why: "recognisers: an installed unit that still says `npm`/`npx` is followed to its program, as `pnpm` is" },
+  "src/install/pnpm.ts": { lines: 6, why: "the point of the module (A11-185): `npm exec` is the runner every npm has when no corepack sits beside node, and `npm install -g corepack` is the fix its refusal names" },
+  "src/install/doctor.ts": { lines: 3, why: "the pnpm row (A11-185) names the `npm exec` runner it tried and the `npm install -g corepack` fix, which a machine with no corepack needs" },
   "src/update-primary.ts": { lines: 2, why: "records: names `npm ci` as the one command the primary must never run (it deletes `node_modules` from under every worktree)" },
   "src/acceptance-commands/acceptance-report-and-closure.ts": { lines: 1, why: "recognisers: the closure reader matches `npm test` and `npx`/`npm` as command words in an Acceptance, which it reads and never runs" },
   "src/wake/reviewer-tokens-and-checkouts.ts": { lines: 2, why: "records: #2376 again -- the reviewer checkout's comment on the `npx` that died writing `~/.npm`, and the npm cache text the checkout prints" },

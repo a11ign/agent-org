@@ -45,7 +45,7 @@ import { existsSync as pathExists } from "node:fs";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
-import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
+import { COREPACK_FIXES, pinnedPnpm, type PnpmRunner, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type RunResult, type ServiceName, type ServiceState } from "./service.ts";
 import { HERDR_INTEGRATIONS, HERDR_PLUGINS, herdrBehind, herdrStatusPath, herdrVersionOf, installedPlugin, integrationInstallCommand, integrationStates, isBehind, describeInstalled, pluginInstallCommand, readHerdrStatus, runHerdr, type HerdrStatusFile } from "./herdr-upkeep.ts";
 import { HOUR_MS, readUpdateStatus, updateStatusPath, type StatusFile } from "./update-safety.ts";
@@ -93,8 +93,8 @@ export type DoctorDeps = Readonly<{
   unitProblem: (name: ServiceName) => string | null;
   /** Runs a program for a plugin's checks (`security` for a key, `claude mcp list`): its exit status, and what it printed. */
   exec: PluginDeps["exec"];
-  /** What `--version` the pinned pnpm prints, run as install and update run it, or null when it cannot run. */
-  pnpmVersion: () => string | null;
+  /** What `--version` the pinned pnpm prints, run as install and update run it, and the runner it went through: both null when no runner exists, the version null when the runner cannot start it. */
+  pnpmVersion: () => { version: string | null; via: PnpmRunner | null };
   /** GETs `/` of a host and port for a plugin's checks (an exposure asks whether a served port answers): the status, or null when nothing answered. */
   probe: (request: ProbeRequest) => Promise<number | null>;
   /** Where the host file says the machine keeps what the code host's `gh` wrapper is rendered from, or why there is none (A11-160). Loaded by the caller, so this file stays import-light. */
@@ -158,13 +158,21 @@ function nodeCheck(deps: DoctorDeps): Check {
   return major >= MIN_NODE_MAJOR ? ok("node", version) : failed("node", `${version} is older than ${MIN_NODE_MAJOR}`, install);
 }
 
-/** Install and update run one pinned pnpm through Node's corepack; a machine whose corepack cannot start it can install nothing. */
+/** The command that shows why a runner cannot start the pinned pnpm, as a person types it. */
+const RUNNER_COMMAND: Record<PnpmRunner, string> = {
+  "corepack beside node": `corepack pnpm@${TOOL_PNPM_VERSION} --version`,
+  "corepack on PATH": `corepack pnpm@${TOOL_PNPM_VERSION} --version`,
+  "npm exec": `npm exec --yes pnpm@${TOOL_PNPM_VERSION} -- --version`,
+};
+
+/** Install and update run one pinned pnpm through corepack beside node, a corepack on PATH, or `npm exec`; a machine where none can start it can install nothing. */
 function pnpmCheck(deps: DoctorDeps): Check {
-  const version = deps.pnpmVersion();
-  return version === TOOL_PNPM_VERSION
-    ? ok("pnpm", `${version}, which install and update use`)
-    : failed("pnpm", version === null ? `pnpm ${TOOL_PNPM_VERSION} cannot run through the corepack beside node` : `pnpm ${TOOL_PNPM_VERSION} was asked for and ${version} answered`,
-      `run \`corepack pnpm@${TOOL_PNPM_VERSION} --version\` to see why: Node ${MIN_NODE_MAJOR} ships corepack beside node, and reinstalling Node brings it back`);
+  const { version, via } = deps.pnpmVersion();
+  if (version === TOOL_PNPM_VERSION) return ok("pnpm", `${version} through ${via}, which install and update use`);
+  const addCorepack = `or add corepack with \`${COREPACK_FIXES[0]}\` or \`${COREPACK_FIXES[1]}\``;
+  if (via === null) return failed("pnpm", `pnpm ${TOOL_PNPM_VERSION} cannot run: there is no corepack beside node or on PATH, and no npm to run \`npm exec\` with`, `run \`${COREPACK_FIXES[0]}\` or \`${COREPACK_FIXES[1]}\``);
+  const detail = version === null ? `pnpm ${TOOL_PNPM_VERSION} cannot run through ${via}` : `pnpm ${TOOL_PNPM_VERSION} was asked for and ${version} answered`;
+  return failed("pnpm", detail, `run \`${RUNNER_COMMAND[via]}\` to see why, ${addCorepack}`);
 }
 
 /**
@@ -827,9 +835,13 @@ export function defaultDoctorDeps(): DoctorDeps {
     healthy: (port) => answers(port, "/api/health", { healthy: true }),
     unitProblem: (name) => unitProblem(name, services),
     pnpmVersion: () => {
-      const { command, args } = pinnedPnpm(["--version"]);
-      const result = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });
-      return result.status === 0 ? result.stdout.trim() : null;
+      try {
+        const { command, args, via } = pinnedPnpm(["--version"]);
+        const result = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });
+        return { version: result.status === 0 ? result.stdout.trim() : null, via };
+      } catch {
+        return { version: null, via: null };
+      }
     },
     probe: realProbe,
     hostPlace: realPlace,
