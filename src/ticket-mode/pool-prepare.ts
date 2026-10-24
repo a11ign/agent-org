@@ -8,7 +8,7 @@ import { ticketReadOf } from "./ticket-read.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
-import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
+import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
 import { repoOf, stackedOn } from "./board-view/pull-status-and-notes.ts";
@@ -20,6 +20,7 @@ import { type DenyRule } from "./settings.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { pluginCopiesOf } from "./pool-pin.ts";
 import { recordPluginCopy } from "./queue/queue-pins.ts";
+import { type FindingsGiven } from "./blocker-findings-check.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
@@ -105,10 +106,13 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
       connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst }));
     writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
+    const planDir = emptyPlanDir(dir);
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
-    writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir: emptyPlanDir(dir), attachments, parent, clones: settings.clones, run: settings.planner.run,
-      notes, connectors, read, findings, ...(replan ? { replan } : {}) }));
-    update(ctx, (queue) => recordFindingsGiven(queue, ticket.key, findings.map(({ url }) => url)));
+    writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, run: settings.planner.run,
+      notes, connectors, read, blockers: entry.blockers, findings, ...(replan ? { replan } : {}) }));
+    const urls = findings.map(({ url }) => url);
+    writeFindingsGiven(dir, [{ key: ticket.key, planDir, urls }]);
+    update(ctx, (queue) => recordFindingsGiven(queue, ticket.key, urls));
   } else {
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
     const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
@@ -138,9 +142,15 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   // An earlier run's outcome and stop count would end this run before it began, and an earlier review or publish run's mark would lift a
   // refusal for it. An earlier run's pre-PR review log would say the skill ran on commits this run has not made (A11-86).
   // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
+  // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207).
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
+}
+
+/** The pull requests each ticket of a planning run was told need a line in its plan, written beside the run's outcome file for the stop hook to check the plan against (A11-207). */
+function writeFindingsGiven(dir: string, given: FindingsGiven): void {
+  writeFileSync(join(dir, FINDINGS_GIVEN_FILE), `${JSON.stringify(given)}\n`);
 }
 
 /** The run's plan folder, made empty: an earlier attempt's files would be attached as this one's. */
@@ -192,10 +202,12 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
     const ticket = await current(ctx, member.ticket);
     const own = ticketDir(settings, ticket.key);
     mkdirSync(own, { recursive: true });
-    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), findings: findingsOf(member) });
+    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), blockers: member.blockers, findings: findingsOf(member) });
   }
-  writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir: emptyPlanDir(dir), clones: settings.clones, run: settings.planner.run,
+  const planDir = emptyPlanDir(dir);
+  writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir, clones: settings.clones, run: settings.planner.run,
     notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors }));
+  writeFindingsGiven(dir, tickets.map(({ ticket, findings = [] }) => ({ key: ticket.key, planDir: join(planDir, ticket.key), urls: findings.map(({ url }) => url) })));
   for (const { ticket, read, findings } of tickets) {
     update(ctx, (queue) => recordFindingsGiven(recordBriefed(queue, [ticket.key], read!), ticket.key, (findings ?? []).map(({ url }) => url)));
   }

@@ -1,5 +1,5 @@
 // @ts-check
-// module: the tracker contract, version 1.5 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
+// module: the tracker contract, version 1.6 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
 // A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
 // implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
@@ -8,6 +8,9 @@
 // 1.1 (A11-159) ADDS `TrackerWriting`, which a tracker plugin declares in its manifest (`agentOrg.tooling.writer`): the tools a new-ticket run files with, what the hook refuses of
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
+//
+// 1.6 (A11-207) ADDS the optional `titles` of a `Blocker`: the title of each pull request it links, by address, so the brief of a ticket that waits on it can list every pull request with its state, title and address. It is optional, so a
+// 1.5 tracker still passes: the brief then takes the title the board read from the merged pull request, and otherwise says the tracker gave none.
 //
 // 1.5 (A11-178) ADDS the optional `undoAutomaticCompletion` and the optional `closingWords` of `Keywords`. A tracker's own integration can complete a ticket the moment a pull request merges, partial or not, because it reads a closing
 // word anywhere in the body: `undoAutomaticCompletion` puts such a ticket back, and leaves a person's completion alone, so the board can queue the next plan step of a partial pull request. `closingWords` is every word the tracker
@@ -25,7 +28,7 @@
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.5";
+export const TRACKER_CONTRACT_VERSION = "1.6";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -149,9 +152,9 @@ export type TrackerWriting = Readonly<{
  * A ticket that blocks another, as the tracker last saw it: its state's type and name, the branch it links pull requests by, and the state of each
  * pull request it links, by URL. `branch` is absent from a blocker read before it was recorded. `head` is the commit that branch is at on the remote
  * of the repository the blocked run works in, which the pool reads (`git ls-remote`): absent when the branch is not pushed there, and it is what
- * makes a blocker stackable, since a pull request is not needed for that.
+ * makes a blocker stackable, since a pull request is not needed for that. `titles` (contract 1.6, A11-207) are the titles of the pull requests it links, by URL; a pull request the tracker has no title for is left out.
  */
-export type Blocker = Readonly<{ key: string; state: string; status: string; branch?: string; head?: string; pulls: Readonly<Record<string, PullState>> }>;
+export type Blocker = Readonly<{ key: string; state: string; status: string; branch?: string; head?: string; pulls: Readonly<Record<string, PullState>>; titles?: Readonly<Record<string, string>> }>;
 
 /**
  * A state move the board made on a ticket, by the state NAMES the tracker shows: the state the ticket was in before, and the one it moved it to.

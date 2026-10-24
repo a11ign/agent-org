@@ -23,6 +23,7 @@ test("the fake tracker passes the tracker contract suite, and the checks that ra
     "projectSummaries answers a Map, leaving out a key with no project", "keywords name the words a pull request body is read by",
     "undoAutomaticCompletion answers who completed the ticket, moves back only the integration's completion, and is refused for a key the tracker has none of",
     "updateTicketText writes the fields it is given and no others", "addBlockers records a relation once, and again without error",
+    "a blocker's titles, when it gives any, are text for pull requests it links",
     "claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing",
     "comment posts on a ticket in any state, and is refused for a key the tracker has none of", "complete finishes a ticket once and leaves a finished one alone",
     "writing grants the create and attach tools, and its filing pattern covers every one", "writing refuses a creation that names an id, which would update a ticket",
@@ -106,4 +107,23 @@ test("A11-178: undoAutomaticCompletion moves back a completion by the integratio
   assert.deepEqual([fake.ticketOf("FAKE-2")?.status, fake.comments.length], ["Done", 1], "a person's completion stays, with no comment");
   assert.equal((await fake.undoAutomaticCompletion!("FAKE-3", "put back")).by, "none");
   await assert.rejects(fake.undoAutomaticCompletion!("FAKE-404", "put back"), /no ticket/);
+});
+
+test("A11-207: a blocker's titles are optional: the fake gives a pull request's title when it was linked with one, and none otherwise", async () => {
+  const fake = createFakeTracker([fakeTicket("FAKE-1"), fakeTicket("FAKE-2"), fakeTicket("FAKE-3")]);
+  await fake.addBlockers!("FAKE-1", ["FAKE-2", "FAKE-3"]);
+  fake.linkPull("FAKE-2", "https://github.com/a11ign/x/pull/1", "merged", "feat: x");
+  fake.linkPull("FAKE-2", "https://github.com/a11ign/x/pull/2", "open");
+  fake.linkPull("FAKE-3", "https://github.com/a11ign/x/pull/3", "open");
+  const [titled, untitled] = (await fake.blockers!(["FAKE-1"])).get("FAKE-1")!;
+  assert.deepEqual(titled.titles, { "https://github.com/a11ign/x/pull/1": "feat: x" }, "only the pull request linked with a title has one");
+  assert.deepEqual(Object.keys(titled.pulls), ["https://github.com/a11ign/x/pull/1", "https://github.com/a11ign/x/pull/2"]);
+  assert.equal("titles" in untitled, false, "a blocker none of whose pull requests has a title carries no titles");
+});
+
+test("A11-207: a tracker whose blockers give a title for a pull request the blocker does not link, or a title that is no text, fails the contract suite by name", async () => {
+  const fake = seeded();
+  const lying: TicketSource = { ...fake, blockers: async (keys) => new Map(keys.map((key) => [key, [{ key: "FAKE-2", state: "unstarted", status: "Todo", pulls: {}, titles: { "https://github.com/a11ign/x/pull/9": "feat: x" } }]])) };
+  await assert.rejects(runTrackerConformance(lying, probe, FAKE_TRACKER_WRITING), (error: unknown) => error instanceof ContractError
+    && error.failures.some(({ check }) => check === "a blocker's titles, when it gives any, are text for pull requests it links"));
 });

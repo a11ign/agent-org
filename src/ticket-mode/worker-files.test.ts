@@ -833,14 +833,49 @@ test("a review round whose ticket changed since the last round says what changed
 
 const FINDING = { key: "A11-165", number: 3, url: "https://github.com/a11ign/announcement-emulator/pull/3", title: "feat: scripted replay", file: "/state/tickets/A11-166/blockers/A11-165-a11ign-announcement-emulator-3.md" };
 
-test("the planning brief names each findings file of a blocker's merged pull request, and holds the plan to a What the blockers found section naming each", () => {
-  const single = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", findings: [FINDING] });
-  for (const part of ["## What its blockers found", `- \`${FINDING.file}\`: A11-165, ${FINDING.url} (#3, "feat: scripted replay")`, "`## What the blockers found` section, before `## Paths`", "Name each by its address", "is refused"]) {
+const OPEN_PULL = "https://github.com/a11ign/announcement-emulator/pull/4";
+const UNREAD_PULL = "https://github.com/a11ign/announcement-emulator/pull/5";
+/** A blocker with a merged pull request the board read, an open one the tracker titled, and a merged one it has not read yet, and a blocker with none. */
+const BLOCKERS: Blocker[] = [
+  { key: "A11-165", state: "completed", status: "Done", pulls: { [FINDING.url]: "merged", [OPEN_PULL]: "open", [UNREAD_PULL]: "merged" }, titles: { [OPEN_PULL]: "feat: second step" } },
+  { key: "A11-170", state: "started", status: "In Progress", pulls: {} },
+];
+
+test("the planning brief lists every blocker and every pull request of each with its state, title and address, marks the ones the plan needs a line for, and shows the exact line form", () => {
+  const single = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", blockers: BLOCKERS, findings: [FINDING] });
+  for (const part of [
+    "## Its blockers and what they found",
+    "- A11-165, Done:",
+    `  - merged, "feat: scripted replay", ${FINDING.url}: needs a line. What it found is in \`${FINDING.file}\`.`,
+    `  - open, "feat: second step", ${OPEN_PULL}: needs no line.`,
+    `  - merged, "title not given by the tracker", ${UNREAD_PULL}: needs no line: the board has not read what it found yet.`,
+    "- A11-170, In Progress: no pull request linked: needs no line.",
+    "`## What the blockers found` section, before `## Paths`", "Name each by its address", "is refused", "asks you once to add what it misses",
+    `\`\`\`markdown\n## What the blockers found\n\n- ${FINDING.url}: <how this pull request's findings apply to this ticket, or why they do not>\n\`\`\``,
+  ]) {
     assert.ok(single.includes(part), `the planning brief says ${part}`);
   }
-  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null, findings: [FINDING] }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
-  assert.ok(batch.includes(`### What its blockers found`) && batch.includes(FINDING.file), "a batch's brief gives each ticket its own, under the ticket's heading");
-  assert.equal(planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" }).includes("What its blockers found"), false, "no findings, no section");
+  assert.equal(single.includes(`- ${OPEN_PULL}: <`) || single.includes(`- ${UNREAD_PULL}: <`), false, "the line form holds only the pull requests that need a line");
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null, blockers: BLOCKERS, findings: [FINDING] }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
+  assert.ok(batch.includes("### Its blockers and what they found") && batch.includes(FINDING.file) && batch.includes("- A11-170, In Progress: no pull request linked: needs no line."), "a batch's brief gives each ticket its own, under the ticket's heading");
+  assert.equal(planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" }).includes("Its blockers and what they found"), false, "no blockers and no findings, no section");
+});
+
+test("the planning brief of a ticket whose blockers have no pull request on the check's list says no section is required, and lists a blocker with no pull request as needing no line", () => {
+  const brief = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", blockers: [BLOCKERS[1], { key: "A11-171", state: "started", status: "In Progress", pulls: { [OPEN_PULL]: "open" } }] });
+  for (const part of ["- A11-170, In Progress: no pull request linked: needs no line.", `  - open, "title not given by the tracker", ${OPEN_PULL}: needs no line.`, "No pull request here needs a line, so the plan needs no `## What the blockers found` section."]) {
+    assert.ok(brief.includes(part), `the planning brief says ${part}`);
+  }
+  assert.equal(brief.includes("is refused"), false, "a plan is not held to a section nobody asked for");
+  assert.equal(brief.includes("```markdown"), false, "and no line form is shown");
+});
+
+test("a pull request the board read that its blocker no longer links is still listed, under its ticket, so the check's list is whole; a title the tracker gave wins over the one the findings read gave", () => {
+  const blocker: Blocker = { key: "A11-165", state: "completed", status: "Done", pulls: { [FINDING.url]: "merged" }, titles: { [FINDING.url]: "feat: tracker title" } };
+  const brief = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", blockers: [blocker], findings: [FINDING, { ...FINDING, key: "A11-168", url: OPEN_PULL, title: "feat: gone", file: "/state/gone.md" }] });
+  assert.ok(brief.includes(`  - merged, "feat: tracker title", ${FINDING.url}: needs a line.`));
+  assert.ok(brief.includes(`- A11-168, no longer linked by the tracker:\n  - merged, "feat: gone", ${OPEN_PULL}: needs a line.`));
+  assert.ok(brief.includes(`- ${OPEN_PULL}: <`), "the line form holds it too");
 });
 
 test("the worker brief names the findings files too, in its section on the tickets that blocked it, for a ticket queued with no planning", () => {
