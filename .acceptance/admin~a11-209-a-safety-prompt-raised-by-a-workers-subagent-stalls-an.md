@@ -2,8 +2,8 @@ A safety prompt that Claude Code raises for a worker's subagent (headed `Bash co
 
 Acceptance:
 ```bash
-# AGENT_ORG_HOST must name a host declaration (CI copies src/packaging/fixtures/project-tree/ and points it at its .agent-org/host.json)
-pnpm exec rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/safety-prompt.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/worker-files.test.ts src/pane-dialog.test.ts --testNamePattern "A11-174|A11-209"
+# The reader and the message are pure; the pool and brief tests (pool.test.ts, worker-files.test.ts) need the full suite and run in CI
+pnpm exec rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/safety-prompt.test.ts --testNamePattern "A11-174|A11-209"
 ```
 
 Consumer-declaration: `declined.agent` is a new optional field on a queue entry's declined record and on the board's view of it, written by the pool and read by the card line; an entry without it is a main-agent decline, as before.
