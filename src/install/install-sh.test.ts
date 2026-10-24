@@ -272,6 +272,15 @@ test("with neither corepack nor npm, install.sh fails in preflight with both com
   assert.equal(result.stdout.includes(ESCAPE), false, "no colour when stdout is not a terminal");
 });
 
+test("an AGENT_ORG_COREPACK that is not an executable file is refused by name in preflight, not replaced by a download through npm", () => {
+  const { home, repo, path } = fixture();
+  const result = install(home, path, repo, [], { AGENT_ORG_COREPACK: "/nonexistent/corepack" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /AGENT_ORG_COREPACK names \/nonexistent\/corepack, which is not an executable file/);
+  assert.equal(lastLine(result.stdout), "agent-org install FAILED: AGENT_ORG_COREPACK names /nonexistent/corepack, which is not an executable file. Nothing was changed.");
+  assert.equal(existsSync(join(home, ".agent-org")), false);
+});
+
 test("a Node older than 24 fails in preflight, before any clone, and lists the Node problem and the missing runner together", () => {
   const { root, home, repo } = fixture();
   const result = install(home, `${oldNodeDir(root)}:${toolsDir(root)}`, repo);

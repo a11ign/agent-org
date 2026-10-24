@@ -67,10 +67,11 @@ has() { command -v "$1" >/dev/null 2>&1; }
 
 # A path under the home folder, as a person writes it.
 tilde() {
+  local rest
   if [ -n "${HOME:-}" ]; then
     case "$1" in
       "$HOME") printf '~'; return ;;
-      "$HOME"/*) printf '~/%s' "${1#"$HOME"/}"; return ;;
+      "$HOME"/*) rest=${1#"$HOME"/}; printf '~/%s' "$rest"; return ;;
     esac
   fi
   printf '%s' "$1"
@@ -285,7 +286,14 @@ preflight() {
         detail "node $node_version"
       fi ;;
   esac
-  if find_runner; then detail "pnpm $PNPM_VERSION runs through $RUNNER_VIA"; else runner_problem; fi
+  if [ -n "${AGENT_ORG_COREPACK:-}" ] && [ ! -x "$AGENT_ORG_COREPACK" ]; then
+    # Named on purpose, so a mistyped path is said and not quietly replaced by a download.
+    problem "AGENT_ORG_COREPACK names $AGENT_ORG_COREPACK, which is not an executable file" "To fix it, run" "unset AGENT_ORG_COREPACK"
+  elif find_runner; then
+    detail "pnpm $PNPM_VERSION runs through $RUNNER_VIA"
+  else
+    runner_problem
+  fi
 }
 
 # Whether the release in $1 declares dependencies. Sets the answer in HAS_DEPENDENCIES: 0 none, 10 some.
@@ -295,44 +303,55 @@ read_dependencies() {
   (cd "$1" && node -e 'process.exit(Object.keys(require("./package.json").dependencies ?? {}).length > 0 ? 10 : 0)') || HAS_DEPENDENCIES=$?
 }
 
-# Everything runs from main, called on the last line, so a download cut short by the network runs nothing.
-main() {
-  local version="" tag launcher folder partial earlier="" clause
-  trap on_exit EXIT
+
+# The release being installed, set by resolve_release.
+VERSION=""       # what --version named, if anything
+TAG=""
+FOLDER=""
+PARTIAL=""
+EARLIER_CLAUSE="" # what is still true of the machine if the install stops: the earlier install, or that there is none
+
+parse_arguments() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --version) [ "$#" -ge 2 ] || fail "--version needs a tag, such as v0.3.0"; version="$2"; shift 2 ;;
-      --version=*) version="${1#--version=}"; shift ;;
+      --version) [ "$#" -ge 2 ] || fail "--version needs a tag, such as v0.3.0"; VERSION="$2"; shift 2 ;;
+      --version=*) VERSION="${1#--version=}"; shift ;;
       --verbose) VERBOSE=1; shift ;;
       -h|--help) trap - EXIT; usage; exit 0 ;;
       *) fail "unknown argument: $1 (see --help)" ;;
     esac
   done
-  show_header
-  if [ -n "$version" ] && ! printf '%s\n' "$version" | grep -Eq "$RELEASE_TAG"; then
-    fail "--version $version is not a release tag such as v0.3.0"
+  if [ -n "$VERSION" ] && ! printf '%s\n' "$VERSION" | grep -Eq "$RELEASE_TAG"; then
+    fail "--version $VERSION is not a release tag such as v0.3.0"
   fi
+}
 
+check_paths() {
   # The launcher holds these paths in single quotes, and the PATH line it prints holds BIN_DIR in double quotes.
   case "$AGENT_ORG_HOME$BIN_DIR" in
     *"'"*|*'"'*|*'$'*|*'`'*|*\\*|*$'\n'*) fail "AGENT_ORG_HOME and AGENT_ORG_BIN_DIR must not hold a quote, \$, a backquote, a backslash or a line break" ;;
   esac
   case "$AGENT_ORG_HOME" in /*) ;; *) fail "AGENT_ORG_HOME must be an absolute path, and it is $AGENT_ORG_HOME" ;; esac
   case "$BIN_DIR" in /*) ;; *) fail "AGENT_ORG_BIN_DIR must be an absolute path, and it is $BIN_DIR" ;; esac
+}
 
+preflight_step() {
   step_begin "Check what agent-org needs"
   preflight
   if [ "$PROBLEM_COUNT" -gt 0 ]; then exit 1; fi
   step_done_quietly "Checked what agent-org needs"
+}
 
-  step_begin "Download agent-org"
+# The bare mirror, cloned or brought up to date. This is the first thing written, so what a failure leaves behind is said from here on.
+fetch_mirror() {
+  local earlier=""
   if [ -L "$CURRENT" ]; then earlier="$(readlink "$CURRENT")"; earlier="${earlier#versions/}"; fi
-  if [ -n "$earlier" ]; then clause="Your earlier install, $earlier, still works."; else clause="Nothing is installed yet."; fi
+  if [ -n "$earlier" ]; then EARLIER_CLAUSE="Your earlier install, $earlier, still works."; else EARLIER_CLAUSE="Nothing is installed yet."; fi
   if [ ! -d "$AGENT_ORG_HOME" ]; then
     (umask 077 && mkdir -p "$AGENT_ORG_HOME")
   fi
   mkdir -p "$TOOL" "$VERSIONS"
-  CHANGED="$clause"
+  CHANGED="$EARLIER_CLAUSE"
   if [ -f "$MIRROR/HEAD" ]; then
     git --git-dir "$MIRROR" fetch --quiet --force --tags origin
     detail "updated $(tilde "$MIRROR")"
@@ -342,61 +361,75 @@ main() {
     git clone --bare --quiet -- "$REPO_URL" "$MIRROR"
     detail "cloned $REPO_URL into $(tilde "$MIRROR")"
   fi
-  CHANGED="Its download was kept in $(tilde "$TOOL"), so the next run is faster. $clause"
+  CHANGED="Its download was kept in $(tilde "$TOOL"), so the next run is faster. $EARLIER_CLAUSE"
+}
 
-  if [ -n "$version" ]; then
-    git --git-dir "$MIRROR" rev-parse --quiet --verify "refs/tags/$version" >/dev/null || fail "there is no release $version"
-    tag="$version"
+# Sets TAG, FOLDER and PARTIAL: --version's release, or the newest one.
+resolve_release() {
+  if [ -n "$VERSION" ]; then
+    git --git-dir "$MIRROR" rev-parse --quiet --verify "refs/tags/$VERSION" >/dev/null || fail "there is no release $VERSION"
+    TAG="$VERSION"
   else
     # Numeric order, field by field: v0.10.0 is newer than v0.9.0, which a plain text sort gets backwards.
-    tag="$(git --git-dir "$MIRROR" tag --list 'v*' | grep -E "$RELEASE_TAG" | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || true)"
-    [ -n "$tag" ] || fail "$REPO_URL has no release tag yet"
-    tag="v$tag"
+    TAG="$(git --git-dir "$MIRROR" tag --list 'v*' | grep -E "$RELEASE_TAG" | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || true)"
+    [ -n "$TAG" ] || fail "$REPO_URL has no release tag yet"
+    TAG="v$TAG"
   fi
+  FOLDER="$VERSIONS/$TAG"
+  PARTIAL="$FOLDER.partial"
+}
 
-  folder="$VERSIONS/$tag"
-  partial="$folder.partial"
-  if [ -f "$folder/src/bin.ts" ]; then
-    detail "$tag was built already, in $(tilde "$folder")"
-    step_done "Downloaded agent-org $tag"
-    read_dependencies "$folder"
+# The release unpacked beside its final folder, so a failed or killed install leaves no folder that looks built.
+unpack_release() {
+  rm -rf "$PARTIAL" "$FOLDER"
+  mkdir -p "$PARTIAL"
+  if ! git --git-dir "$MIRROR" archive --format=tar "refs/tags/$TAG" | tar -xf - -C "$PARTIAL"; then
+    rm -rf "$PARTIAL"
+    fail "could not unpack $TAG from $(tilde "$MIRROR")"
+  fi
+  [ -f "$PARTIAL/src/bin.ts" ] || { rm -rf "$PARTIAL"; fail "$TAG holds no src/bin.ts, so it is not a release of agent-org"; }
+  detail "built into $(tilde "$FOLDER")"
+}
+
+# The release's runtime dependencies, when its package.json declares any.
+install_dependencies() {
+  read_dependencies "$PARTIAL"
+  case "$HAS_DEPENDENCIES" in
+    0) ;;
+    10)
+      step_begin "Install its dependencies"
+      if ! (cd "$PARTIAL" && run_pnpm install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent); then
+        rm -rf "$PARTIAL"
+        fail "installing the dependencies failed, so current stays where it was. Fix what pnpm printed above, then run this again"
+      fi
+      step_done "Installed its dependencies" "$RUNNER_NOTE"
+      ;;
+    *) rm -rf "$PARTIAL"; fail "could not read $PARTIAL/package.json (node exited $HAS_DEPENDENCIES)" ;;
+  esac
+}
+
+# The release, built whole in its own folder (or found there already), with its dependencies.
+download_step() {
+  step_begin "Download agent-org"
+  fetch_mirror
+  resolve_release
+  if [ -f "$FOLDER/src/bin.ts" ]; then
+    detail "$TAG was built already, in $(tilde "$FOLDER")"
+    step_done "Downloaded agent-org $TAG"
+    read_dependencies "$FOLDER"
     if [ "$HAS_DEPENDENCIES" -eq 10 ]; then step_done "Installed its dependencies"; fi
   else
-    # Built beside, renamed into place when whole: a failed or killed install leaves no folder that looks built, and `current` where it was.
-    rm -rf "$partial" "$folder"
-    mkdir -p "$partial"
-    if ! git --git-dir "$MIRROR" archive --format=tar "refs/tags/$tag" | tar -xf - -C "$partial"; then
-      rm -rf "$partial"
-      fail "could not unpack $tag from $(tilde "$MIRROR")"
-    fi
-    [ -f "$partial/src/bin.ts" ] || { rm -rf "$partial"; fail "$tag holds no src/bin.ts, so it is not a release of agent-org"; }
-    detail "built into $(tilde "$folder")"
-    step_done "Downloaded agent-org $tag"
-
-    # The release's runtime dependencies, when its package.json declares any.
-    read_dependencies "$partial"
-    case "$HAS_DEPENDENCIES" in
-      0) ;;
-      10)
-        step_begin "Install its dependencies"
-        if ! (cd "$partial" && run_pnpm install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent); then
-          rm -rf "$partial"
-          fail "installing the dependencies failed, so current stays where it was. Fix what pnpm printed above, then run this again"
-        fi
-        step_done "Installed its dependencies" "$RUNNER_NOTE"
-        ;;
-      *) rm -rf "$partial"; fail "could not read $partial/package.json (node exited $HAS_DEPENDENCIES)" ;;
-    esac
-    mv "$partial" "$folder"
+    unpack_release
+    step_done "Downloaded agent-org $TAG"
+    install_dependencies
+    mv "$PARTIAL" "$FOLDER"
   fi
+}
 
-  step_begin "Add the agent-org command"
-  swap_current "$tag"
-  detail "$(tilde "$CURRENT") names versions/$tag"
-  CHANGED="agent-org $tag is in $(tilde "$TOOL"), but the agent-org command was not added."
-
+# The launcher, written beside its place and moved into it, so a person never finds half of it.
+write_launcher() {
   mkdir -p "$BIN_DIR"
-  launcher="$BIN_DIR/agent-org"
+  LAUNCHER="$BIN_DIR/agent-org"
   TEMPORARY="$(mktemp "$BIN_DIR/.agent-org.XXXXXX")"
   cat >"$TEMPORARY" <<EOF
 #!/bin/sh
@@ -410,12 +443,22 @@ fi
 exec node '$CURRENT/src/bin.ts' "\$@"
 EOF
   chmod 755 "$TEMPORARY"
-  mv -f "$TEMPORARY" "$launcher"
+  mv -f "$TEMPORARY" "$LAUNCHER"
   TEMPORARY=""
-  LAUNCHER="$launcher"
-  INSTALLED_TAG="$tag"
-  step_done "Added the agent-org command" "$(tilde "$launcher")"
+}
 
+add_command_step() {
+  step_begin "Add the agent-org command"
+  swap_current "$TAG"
+  detail "$(tilde "$CURRENT") names versions/$TAG"
+  CHANGED="agent-org $TAG is in $(tilde "$TOOL"), but the agent-org command was not added."
+  write_launcher
+  INSTALLED_TAG="$TAG"
+  step_done "Added the agent-org command" "$(tilde "$LAUNCHER")"
+}
+
+# What a person should read between the steps and the outcome.
+collect_notes() {
   if [ -d "$LEGACY_CHECKOUT/.git" ]; then
     NOTES="$NOTES""An earlier install's checkout at $(tilde "$LEGACY_CHECKOUT") is left as it is. agent-org update moves its services onto this install."$'\n'
   fi
@@ -427,6 +470,18 @@ EOF
       NOTES="$NOTES$(printf '  export PATH="%s:$PATH"' "$BIN_DIR")"$'\n'
       ;;
   esac
+}
+
+# Everything runs from main, called on the last line, so a download cut short by the network runs nothing.
+main() {
+  trap on_exit EXIT
+  parse_arguments "$@"
+  show_header
+  check_paths
+  preflight_step
+  download_step
+  add_command_step
+  collect_notes
 }
 
 main "$@"
