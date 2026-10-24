@@ -7,12 +7,12 @@ The diff touches only the policy and its pinning test, the policy's non-comment 
 Acceptance:
 
 ```bash
-set -e
 git fetch -q origin main
-# only this step's paths (plus .acceptance/)
-test -z "$(git diff --name-only origin/main...HEAD | grep -vE '^(\.acceptance/|\.github/chainguard/auto-arm\.sts\.yaml$|src/packaging/auto-arm-octo-sts\.test\.ts$)')"
-# the non-comment policy diff is exactly the one added line: the binding and subject pattern did not change
-test "$(diff <(git show origin/main:.github/chainguard/auto-arm.sts.yaml | grep -v '^#') <(grep -v '^#' .github/chainguard/auto-arm.sts.yaml))" = "$(printf '%s\n' '8a9' '>   workflows: write')"
+# only this step's paths (plus .acceptance/): awk exits 1 on any other path
+git diff --name-only origin/main...HEAD | awk '$0 !~ /^(\.acceptance\/|\.github\/chainguard\/auto-arm\.sts\.yaml$|src\/packaging\/auto-arm-octo-sts\.test\.ts$)/ { bad = 1 } END { exit bad }'
+# the non-comment policy diff is exactly the one added line: awk exits 1 on any other changed non-comment line, so the binding and subject pattern did not change
+git diff -U0 origin/main...HEAD -- .github/chainguard/auto-arm.sts.yaml | awk '/^[-+][^-+#]/ && $0 != "+  workflows: write" { bad = 1 } END { exit bad }'
+git diff -U0 origin/main...HEAD -- .github/chainguard/auto-arm.sts.yaml | grep -qxF '+  workflows: write'
 # the comment says why
 grep -q 'A11-203' .github/chainguard/auto-arm.sts.yaml
 grep -q '2026-10-24' .github/chainguard/auto-arm.sts.yaml
