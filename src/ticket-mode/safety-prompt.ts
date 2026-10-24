@@ -97,15 +97,21 @@ function adviceFor(warning: string): string {
   return UNRESOLVABLE_TARGET_WARNING.test(warning) ? EXPLICIT_PATH_ADVICE : "Do it another way that raises no prompt, and carry on.";
 }
 
+/** How the message names the main agent's own command. PURE. */
+const ownCommand = (command: string): string => (command === "" ? "your last command" : `your command \`${command}\``);
+
+/** How the message names a command one of the main agent's subagents ran. PURE. */
+function subagentCommand(command: string, agent: string): string {
+  const ranBy = `your \`${agent}\` subagent ran`;
+  return command === "" ? `the last command ${ranBy}` : `the command \`${command}\` that ${ranBy}`;
+}
+
 /**
  * The one message that tells the agent what was refused and why. Guard advice for the empty-variable warning, an explicit guarded path for the unresolvable-target one, and "another way"
  * for any other prompt. PURE. The warning is quoted when there is one, and the command is named. A subagent's prompt names the subagent and says it follows the same rules (A11-209).
  */
 export function declineMessage({ command, warning, agent }: { command: string; warning: string; agent?: string }): string {
-  const subagent = `your \`${agent}\` subagent`;
-  const named = agent === undefined
-    ? (command === "" ? "your last command" : `your command \`${command}\``)
-    : (command === "" ? `the last command ${subagent} ran` : `the command \`${command}\` that ${subagent} ran`);
+  const named = agent === undefined ? ownCommand(command) : subagentCommand(command, agent);
   const why = warning === "" ? "." : `: "${warning}".`;
   return `The board answered No to a Claude Code safety prompt on ${named}${why} Nobody answers prompts on an unattended run. ${adviceFor(warning)}${agent === undefined ? "" : ` ${SUBAGENT_ADVICE}`}`;
 }
