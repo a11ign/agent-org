@@ -1218,7 +1218,7 @@ test("A11-223: an install that is not a refusal (a bug, not a network) is not hi
 test("A11-223: an install that wrote herdr where PATH still cannot find it stops the same way", async () => {
   const w = deps({ which: (name) => (name === "herdr" ? null : "/usr/local/bin/tool"), installHerdr: async () => ({ path: "/h/.local/bin/herdr", version: "0.9.3" }), putOnPath: () => undefined });
   await assert.rejects(onboard(options({ repos: [w.repo] }), w.deps), OnboardRefusal);
-  assert.ok(w.printed.includes("  ✗ herdr was not installed: /h/.local/bin/herdr was written, but `herdr` is still not found on PATH"), w.printed.join("\n"));
+  assert.ok(w.printed.includes("  ✗ herdr was not installed: /h/.local/bin/herdr is there, but `herdr` is still not found on PATH"), w.printed.join("\n"));
   assert.deepEqual([w.started, w.written, w.ran], [[], [], []]);
 });
 
@@ -1236,4 +1236,21 @@ test("A11-223: with --no-start, nothing is started, so a herdr that is missing a
   const w = deps({ which: (name) => (name === "herdr" ? (asked++ < 3 ? "/usr/local/bin/herdr" : null) : "/usr/local/bin/tool") });
   await onboard(options({ repos: [w.repo], terminal: false, start: false }), w.deps);
   assert.deepEqual(w.started, []);
+});
+
+test("A11-223: a herdr in the install dir that PATH does not reach is not replaced: its directory is put on PATH and nothing is downloaded", async () => {
+  const w = noHerdr({ exists: (path) => path.endsWith("/.local/bin/herdr") });
+  const dir = join(w.home, ".local", "bin");
+  let present = false;
+  const found = { ...w.deps, which: (name: string) => (name === "herdr" ? (present ? `${dir}/herdr` : null) : "/usr/local/bin/tool"), putOnPath: (added: string) => { w.calls.push(`path ${added}`); present = true; } };
+  await onboard(options({ repos: [w.repo], start: false }), found);
+  assert.deepEqual(w.calls, [`path ${dir}`], "installHerdr is never called");
+  assert.ok(!w.printed.some((line) => line.includes("Installed herdr")));
+  assert.ok(w.printed.some((line) => line.includes(`${dir} is not on your PATH`)));
+});
+
+test("A11-223: an install that fails to write is a refusal with the hand command, not a bare error", async () => {
+  const w = noHerdr({}, async () => { throw new HerdrInstallRefusal("/h/.local/bin/herdr could not be written: EACCES"); });
+  await assert.rejects(onboard(options({ repos: [w.repo] }), w.deps), OnboardRefusal);
+  assert.ok(w.printed.includes("  ✗ herdr was not installed: /h/.local/bin/herdr could not be written: EACCES"));
 });

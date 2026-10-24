@@ -106,13 +106,26 @@ export async function installHerdr(deps: HerdrInstallDeps): Promise<{ path: stri
   const binary = await reaching(url);
   if (createHash("sha256").update(binary).digest("hex") !== sha256.toLowerCase()) throw new HerdrInstallRefusal(`the download from ${url} does not match its published checksum`);
   const path = join(herdrInstallDir(deps.env, deps.home), "herdr");
-  const side = `${path}.download`;
-  deps.writeExecutable(side, binary);
-  const printed = deps.versionOf(side);
-  if (printed === null || herdrVersionOf(printed) !== TOOL_HERDR_VERSION) {
-    deps.remove(side);
-    throw new HerdrInstallRefusal(`the download prints ${printed === null ? "nothing, so it cannot run here" : `"${printed.trim()}"`}, not herdr ${TOOL_HERDR_VERSION}`);
-  }
-  deps.place(side, path);
+  placeVerified(binary, path, deps);
   return { path, version: TOOL_HERDR_VERSION };
+}
+
+/**
+ * Write `binary` beside `path`, check that it prints the pinned version, and only then move it to `path`: a binary that is not the pin is removed and never becomes `herdr`.
+ * A directory that cannot be written is a refusal too, so onboard names the hand command instead of ending on a bare errno.
+ */
+function placeVerified(binary: Buffer, path: string, deps: HerdrInstallDeps): void {
+  const side = `${path}.download`;
+  try {
+    deps.writeExecutable(side, binary);
+    const printed = deps.versionOf(side);
+    if (printed === null || herdrVersionOf(printed) !== TOOL_HERDR_VERSION) {
+      throw new HerdrInstallRefusal(`the download prints ${printed === null ? "nothing, so it cannot run here" : `"${printed.trim()}"`}, not herdr ${TOOL_HERDR_VERSION}`);
+    }
+    deps.place(side, path);
+  } catch (err) {
+    deps.remove(side);
+    if (err instanceof HerdrInstallRefusal) throw err;
+    throw new HerdrInstallRefusal(`${path} could not be written: ${(err as Error).message.split("\n")[0]}`);
+  }
 }

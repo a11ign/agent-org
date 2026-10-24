@@ -133,3 +133,12 @@ test("A11-223: the hand command follows HERDR_INSTALL_DIR, quoted when it needs 
   assert.match(handInstallCommand("linux", "x64", { HERDR_INSTALL_DIR: "/opt/my herdr" }), /mkdir -p '\/opt\/my herdr' && /);
   assert.equal(handInstallCommand("win32", "x64", {}), "see https://herdr.dev/docs/install/");
 });
+
+test("A11-223: a directory that cannot be written is a refusal, not a bare errno, and no half-written side file is left", async () => {
+  const unwritable = setup("linux", "x64", { writeExecutable: () => { throw new Error("EACCES: permission denied, open '/h/.local/bin/herdr.download'\nmore"); } });
+  await assert.rejects(installHerdr(unwritable.deps), (error: Error) => error instanceof HerdrInstallRefusal && error.message === "/h/.local/bin/herdr could not be written: EACCES: permission denied, open '/h/.local/bin/herdr.download'");
+  assert.deepEqual(unwritable.removed, ["/h/.local/bin/herdr.download"]);
+  const unmovable = setup("linux", "x64", { place: () => { throw new Error("EXDEV: cross-device link not permitted"); } });
+  await assert.rejects(installHerdr(unmovable.deps), /could not be written: EXDEV/);
+  assert.deepEqual(unmovable.removed, ["/h/.local/bin/herdr.download"]);
+});

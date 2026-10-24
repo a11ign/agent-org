@@ -66,7 +66,7 @@ import { ensureBun } from "./bun.ts";
 import { chromiumProblems, chromiumReport, lacksLibraries, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
-import { handInstallCommand, HerdrInstallRefusal, installHerdr, TOOL_HERDR_VERSION } from "./herdr-install.ts";
+import { handInstallCommand, HerdrInstallRefusal, herdrInstallDir, installHerdr, TOOL_HERDR_VERSION } from "./herdr-install.ts";
 import { HERDR_INTEGRATIONS, integrationInstallCommand, newestPluginTag, type HerdrIntegration } from "./herdr-upkeep.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
@@ -143,7 +143,7 @@ export type OnboardDeps = Readonly<{
   ensureBun: () => Promise<{ path: string; installed: boolean }>;
   /** Put the herdr this release pins into herdr's install dir (A11-223); THROWS `HerdrInstallRefusal` with the reason when it cannot. */
   installHerdr: () => Promise<{ path: string; version: string }>;
-  /** Put `dir` first on this process's PATH, so the herdr just installed is found by the steps and services that follow. */
+  /** Put `dir` last on this process's PATH (so it shadows nothing the person already has), so the herdr just installed is found by the steps and services that follow. */
   putOnPath: (dir: string) => void;
   /** The text of herdr's `plugins.json`, or null. */
   herdrPlugins: () => string | null;
@@ -411,6 +411,9 @@ function setUpHerdrIntegrations(deps: Session): void {
 /** The words of the PATH line install.sh prints for its own directory (A11-185), for herdr's. */
 const pathNote = (dir: string): string => `${dir} is not on your PATH. Add this line to your shell's rc file (~/.zshrc or ~/.bashrc), then open a new terminal:\n  export PATH="${dir}:$PATH"`;
 
+/** How far onboard got when the herdr step stopped it. */
+const NOTHING_YET = "before anything was written or started";
+
 /**
  * Stop onboard because herdr is not here (A11-223): a ✗ line with why and the exact command to run by hand, then a refusal that says how far onboard got (`stopped`). herdr runs every
  * worker's terminal, so nothing that needs it is set up or started without it.
@@ -427,19 +430,25 @@ function refuseWithoutHerdr(why: string, stopped: string, deps: Session): never 
  */
 async function ensureHerdr(deps: Session): Promise<void> {
   if (deps.which("herdr") !== null) return;
-  let installed: { path: string; version: string };
-  try {
-    installed = await deps.installHerdr();
-  } catch (err) {
-    if (!(err instanceof HerdrInstallRefusal)) throw err;
-    refuseWithoutHerdr(err.message, "before anything was written or started", deps);
-  }
+  // A herdr already in the install dir, which PATH does not reach, is not replaced (it may be newer, or running): its directory is put on PATH instead.
+  const there = join(herdrInstallDir(deps.env, deps.home), "herdr");
+  const installed = deps.exists(there) ? { path: there, version: null } : await installOrRefuse(deps);
   const dir = dirname(installed.path);
   const onPath = (deps.env.PATH ?? "").split(delimiter).includes(dir);
   if (!onPath) deps.putOnPath(dir);
-  if (deps.which("herdr") === null) refuseWithoutHerdr(`${installed.path} was written, but \`herdr\` is still not found on PATH`, "before anything was written or started", deps);
-  deps.say.done(`Installed herdr v${installed.version}`, `at ${installed.path}`);
+  if (deps.which("herdr") === null) refuseWithoutHerdr(`${installed.path} is there, but \`herdr\` is still not found on PATH`, NOTHING_YET, deps);
+  if (installed.version !== null) deps.say.done(`Installed herdr v${installed.version}`, `at ${installed.path}`);
   if (!onPath) deps.say.note(pathNote(dir));
+}
+
+/** Install the pinned herdr, or stop onboard with the reason and the hand command. A failure that is not a refusal is a bug, and is not dressed as one. */
+async function installOrRefuse(deps: Session): Promise<{ path: string; version: string }> {
+  try {
+    return await deps.installHerdr();
+  } catch (err) {
+    if (!(err instanceof HerdrInstallRefusal)) throw err;
+    return refuseWithoutHerdr(err.message, NOTHING_YET, deps);
+  }
 }
 
 /** What a person calls each agent herdr has an integration for. */
@@ -840,7 +849,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         remove: (path) => rmSync(path, { force: true }),
         versionOf: (path) => { const result = runProgram(path, ["--version"]); return result.status === 0 ? result.stdout : null; },
       }),
-      putOnPath: (dir) => { process.env.PATH = [dir, process.env.PATH].filter(Boolean).join(delimiter); },
+      putOnPath: (dir) => { process.env.PATH = [process.env.PATH, dir].filter(Boolean).join(delimiter); },
       herdrPlugins: () => readOrNull(join(herdrConfigDir(process.env, home), "plugins.json")),
       newestPluginTag: (repo) => newestPluginTag(repo),
       run: runProgram,
