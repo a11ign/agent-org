@@ -25,6 +25,8 @@ export type PollOptions<T> = Readonly<{
   isEmpty?: (data: T) => boolean;
   /** False for a read made once per connection and not again, unless `refresh` asks (see `startPolling`). True by default. */
   repeat?: boolean;
+  /** The longest wait between reads while they fail, asked each time one is scheduled (see `startPolling`): the shell caps it while the page shows the Updating screen. */
+  maxWaitMs?: () => number;
 }>;
 
 const isEmptyList = (data: unknown): boolean => Array.isArray(data) && data.length === 0;
@@ -62,19 +64,20 @@ function viewAfter<T>(before: PollView<T>, answer: Answer<T>, isEmpty: (data: T)
  * meets waits 2s before the next read. A page that has read nothing yet and finds its SSH connection unreachable shows the proxy's last known data, if it kept any. `current` is for a click on a link built from the data (a run's terminal): the held data while it was read no
  * more than one poll interval ago, else a read made now, resolving to its data, or to null when that read fails.
  */
-export function usePoll<T>(read: (signal: AbortSignal) => Promise<Answer<T>>, { connection, isEmpty = isEmptyList, repeat = true }: PollOptions<T>): Poll<T> {
+export function usePoll<T>(read: (signal: AbortSignal) => Promise<Answer<T>>, { connection, isEmpty = isEmptyList, repeat = true, maxWaitMs }: PollOptions<T>): Poll<T> {
   const connectionKey = connection === null ? "" : `${connection.kind}:${connection.name}`;
   const [held, setHeld] = useState<Held<T>>({ connectionKey, view: LOADING, readAt: null });
   const poller = useRef<Poller<T> | undefined>(undefined);
-  const latest = useRef({ read, isEmpty, connection, held });
+  const latest = useRef({ read, isEmpty, connection, held, maxWaitMs });
   useEffect(() => {
-    latest.current = { read, isEmpty, connection, held };
+    latest.current = { read, isEmpty, connection, held, maxWaitMs };
   });
 
   useEffect(() => {
     const running = startPolling<T>({
       read: (signal) => latest.current.read(signal),
       repeat,
+      maxWaitMs: () => latest.current.maxWaitMs?.() ?? Infinity,
       onAnswer: (answer) =>
         setHeld((before) => {
           const prior = before.connectionKey === connectionKey ? before : { connectionKey, view: LOADING, readAt: null };

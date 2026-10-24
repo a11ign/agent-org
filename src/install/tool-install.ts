@@ -149,7 +149,8 @@ export function withUpdateLock<T>(tool: string, work: () => T, alive: (pid: numb
   }
 }
 
-function processAlive(pid: number): boolean {
+/** Whether a process id is running: signal 0 only asks, and a process that exists but is not this user's still counts. */
+export function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

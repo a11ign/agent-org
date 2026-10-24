@@ -98,6 +98,15 @@
   background: var(--color-danger-dot);
 }
 
+.pill-updating {
+  background: var(--color-warn-bg);
+  color: var(--color-warn-text);
+  border-color: var(--color-warn-border);
+}
+.pill-updating .pill-dot {
+  background: var(--color-warn-text);
+}
+
 .sidebar-section {
   display: flex;
   flex-direction: column;
@@ -217,6 +226,13 @@
   flex-direction: column;
   gap: var(--space-14);
   padding: var(--main-padding);
+}
+/* The page's own wrapper takes no box of its own, so its children are the main column's flex items as they were; hidden, it takes none at all. */
+.shell-page {
+  display: contents;
+}
+.shell-page[hidden] {
+  display: none;
 }
 .shell-main-detail {
   gap: var(--space-18);
