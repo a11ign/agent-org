@@ -46,29 +46,32 @@ function namesOtherStep(outcome: string, pull: string): boolean {
   return a === null || b === null ? a !== b : a.step !== b.step || a.of !== b.of;
 }
 
-/** How the board names a declaration on the card: `Closes A11-155`, or `Partial: step 1 of 3 …`. PURE. */
-const declarationLine = ({ kind, remains }: PullDeclared, closing: string, key: string): string => (kind === "closes" ? `${closing} ${key}` : `Partial: ${remains}`);
-
 /**
  * Record what `key`'s merged pull requests declared (A11-181), and let it decide the run's `partial`: `closes` drops it, `partial` replaces it with the body's words, `none` leaves the outcome's as it is.
- * Where that overrules the outcome, the outcome's words and the declaration are kept beside it: a `Closes` against an outcome that has a `partial`, or a `Partial:` against an outcome with none or one that
- * names another step. Different words for the same step are no disagreement. A run that is not finished is left as it is. PURE.
+ * Where that overrules the outcome, the outcome's words and the declaration are kept beside it (see {@link followed}). A run that is not finished is left as it is. PURE.
  */
 export function recordDeclared(queue: Queue, key: string, declared: PullDeclared, closing: string): Queue {
   return replace(queue, key, (entry) => {
     if (entry.phase !== "finished") return entry;
-    const { partial: outcome, partialOverruled: _earlier, ...rest } = entry;
-    const kept: Entry = { ...rest, declared, ...(outcome !== undefined ? { partial: outcome } : {}) };
-    if (declared.kind === "none") return kept;
-    const pull = declarationLine(declared, closing, key);
-    if (declared.kind === "closes") {
-      const { partial: _dropped, ...whole } = kept;
-      return outcome === undefined ? whole : { ...whole, partialOverruled: overruled(outcome, pull, declared) };
-    }
-    const remains = declared.remains ?? "";
-    const disagrees = outcome === undefined || namesOtherStep(outcome, remains);
-    return { ...kept, partial: remains, ...(disagrees ? { partialOverruled: overruled(outcome ?? null, pull, declared) } : {}) };
+    const { partialOverruled: _earlier, ...rest } = entry;
+    const pull = declared.kind === "partial" ? `Partial: ${declared.remains}` : `${closing} ${key}`;
+    return { ...followed(rest, declared, pull), declared };
   });
 }
 
-const overruled = (outcome: string | null, pull: string, { urls }: PullDeclared): PartialOverruled => ({ outcome, pull, urls });
+/**
+ * `entry` with its `partial` as the declaration says. A disagreement is a `Closes` against an outcome that has a `partial`, or a `Partial:` against an outcome with none or one that names another step;
+ * different words for the same step are none. `pull` is the declaration as the card names it. PURE.
+ */
+function followed(entry: Entry, declared: PullDeclared, pull: string): Entry {
+  const { partial: outcome, ...whole } = entry;
+  const overruled = (words: string | null): PartialOverruled => ({ outcome: words, pull, urls: declared.urls });
+  switch (declared.kind) {
+    case "none": return entry;
+    case "closes": return outcome === undefined ? whole : { ...whole, partialOverruled: overruled(outcome) };
+    case "partial": {
+      const agrees = outcome !== undefined && !namesOtherStep(outcome, declared.remains);
+      return { ...whole, partial: declared.remains, ...(agrees ? {} : { partialOverruled: overruled(outcome ?? null) }) };
+    }
+  }
+}

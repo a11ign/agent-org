@@ -53,6 +53,9 @@ function completedEarlyLine(entry: ViewEntry): string {
   return `Done in the tracker, but ${cause}; the board could not put it back (${entry.reopenFailure ?? "it has not been asked yet"})`;
 }
 
+/** How many characters of a worker's words, or of a declaration, one card line quotes. */
+const QUOTED_CHARS = 80;
+
 /** `text` cut to `max` characters with an ellipsis, so a worker's long list does not fill a card's line. */
 const cutAt = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max).trimEnd()} …` : text);
 
@@ -63,8 +66,8 @@ const cutAt = (text: string, max: number): string => (text.length > max ? `${tex
 function overruledNote(entry: ViewEntry): string | null {
   const overruled = entry.partialOverruled;
   if (overruled === undefined) return null;
-  const said = overruled.outcome === null ? "nothing remains" : `Partial: "${cutAt(overruled.outcome, 80)}"`;
-  return `its outcome said ${said}, but ${overruled.urls.map(pullLabel).join(", ")} said ${cutAt(overruled.pull, 80)}, so the board followed the pull request`;
+  const said = overruled.outcome === null ? "nothing remains" : `Partial: "${cutAt(overruled.outcome, QUOTED_CHARS)}"`;
+  return `its outcome said ${said}, but ${overruled.urls.map(pullLabel).join(", ")} said ${cutAt(overruled.pull, QUOTED_CHARS)}, so the board followed the pull request`;
 }
 
 /** The merged pull requests of a run, as the board names them. PURE. */

@@ -12,6 +12,7 @@ import { pullLabel } from "./board-view/pull-label.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { type PoolContext } from "./pool-context.ts";
+import type { MergedFindings } from "../plugins/contracts/code-host.ts";
 
 /**
  * Read the bodies of the merged pull requests of each finished run whose bodies are not yet read, and record what they declare, once per run (A11-181). Run on every sweep after the pull requests' states are
@@ -23,7 +24,7 @@ export function readPullDeclarations(ctx: PoolContext): void {
   const keywords = source.keywords ?? DEFAULT_KEYWORDS;
   for (const entry of declarationsDue(store.get())) {
     const key = entry.ticket.key;
-    const read = codeHost.readMergedFindings === undefined ? [] : readBodies(ctx, entry);
+    const read = codeHost.readMergedFindings === undefined ? [] : readBodies(entry, codeHost.readMergedFindings.bind(codeHost));
     if (read === null) continue;
     const declared = declare(read.map(({ url, body }): ReadDeclaration => ({ url, declaration: declarationOf(body, key, keywords) })), pullsOf(entry).length);
     update(ctx, (queue) => recordDeclared(queue, key, declared, keywords.closing));
@@ -33,11 +34,11 @@ export function readPullDeclarations(ctx: PoolContext): void {
 }
 
 /** The body of each merged pull request of `entry`, or null when any could not be read, which is asked again on the next sweep. */
-function readBodies(ctx: PoolContext, entry: Entry): { url: string; body: string }[] | null {
+function readBodies(entry: Entry, readFindings: (url: string) => MergedFindings | null): { url: string; body: string }[] | null {
   const read: { url: string; body: string }[] = [];
   for (const url of mergedPullUrls(entry)) {
     try {
-      const found = ctx.codeHost.readMergedFindings?.(url) ?? null;
+      const found = readFindings(url);
       if (found === null) return null;
       read.push({ url, body: found.body });
     } catch (err) {
