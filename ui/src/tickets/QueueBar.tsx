@@ -1,18 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { batchChoice, batchOverride, queueLabel } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import type { ConfigView } from "../api/types.ts";
 import { settingsSectionHref } from "../shell/routes.ts";
 import { OptionsIcon } from "./icons.tsx";
-import type { BatchOverride, QueueOptions } from "./tickets-model.ts";
+import type { QueueOptions } from "./tickets-model.ts";
+import type { BatchState } from "./use-queue-state.ts";
 import { useDismiss } from "./use-dismiss.ts";
-
-/** The batch's queue options as the page holds them, and how they change. */
-export type BatchState = Readonly<{
-  override: BatchOverride;
-  planFirst: boolean;
-  setOverride: Dispatch<SetStateAction<BatchOverride>>;
-  setPlanFirst: (next: boolean) => void;
-}>;
 
 type PopoverProps = Readonly<{ config: ConfigView; options: QueueOptions; batch: BatchState; close: () => void; anchor: RefObject<HTMLElement | null>; cog: RefObject<HTMLElement | null> }>;
 

@@ -43,7 +43,7 @@ export function useFilters(goal: string): FilterState {
 }
 
 /** The list the page draws: the sections the filters leave, and what the Assignee group and the count are made from. */
-export type ListView = Readonly<{ sections: readonly Section[]; source: SegmentSource | null; showsOwner: boolean; projectTickets: readonly TicketView[]; menus: readonly Menu[] }>;
+export type ListView = Readonly<{ sections: readonly Section[]; source: SegmentSource | null; showsOwner: boolean; menus: readonly Menu[] }>;
 
 /** Works the list out from what the shell has read and the filters chosen. */
 export function useList(state: FilterState): ListView {
@@ -51,9 +51,9 @@ export function useList(state: FilterState): ListView {
   const { config, allTickets, projectTickets, scope, project } = shell;
   const kept = shownTickets(projectTickets, allTickets, state.filters, planPatternOf(config));
   const projectOfAll = project === null ? allTickets : inProject(allTickets, project);
-  const source: SegmentSource | null = config === null ? null : { projectTickets: projectOfAll, all: allTickets, scope, config, held: shell.held, scopesRead: shell.scopesRead };
+  const source: SegmentSource | null = config === null ? null : { ofProject: projectOfAll, all: allTickets, scope, config, held: shell.held, scopesRead: shell.scopesRead };
   return {
-    sections: sectionsOf(projectTickets, kept, shell.contextParents), source, projectTickets,
+    sections: sectionsOf(projectTickets, kept, shell.contextParents), source,
     showsOwner: config?.viewer !== undefined && showsOwner(scope), menus: state.menus(projectTickets, allTickets, planPatternOf(config)),
   };
 }

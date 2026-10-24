@@ -76,7 +76,7 @@ export type Segment = Readonly<{ scope: string; text: string; pressed: boolean; 
 /** What the Assignee segments are made from. */
 export type SegmentSource = Readonly<{
   /** The chosen project's tickets whatever the scope (every ticket when no project is chosen), which each segment counts. */
-  projectTickets: readonly TicketView[];
+  ofProject: readonly TicketView[];
   all: readonly TicketView[];
   scope: string;
   config: ConfigView;
@@ -85,17 +85,17 @@ export type SegmentSource = Readonly<{
 }>;
 
 /** The scope chips `assignee-filter.ts` makes, for the signed-in person's own tickets, other people and the rest. PURE. */
-export const chipsOf = ({ projectTickets, all, scope, config, held }: SegmentSource): ScopeChip[] => scopeChips(projectTickets, scope, config.viewer ?? null, held, all);
+export const chipsOf = ({ ofProject, all, scope, config, held }: SegmentSource): ScopeChip[] => scopeChips(ofProject, scope, config.viewer ?? null, held, all);
 
 /** Whether the page holds the tickets of `scope`: on an instance that reads scopes on demand, a scope not read yet has no count to show. PURE. */
 const counted = (scope: string, config: ConfigView, scopesRead: ReadonlySet<string>): boolean => config.scopes !== true || scopeToRead(scope, scopesRead) === null;
 
 /** The Assignee group's segments, in order: Mine, then Anyone, Unassigned and each other person by name; only the pressed one has its count. PURE. */
 export function segmentsOf(source: SegmentSource): Segment[] {
-  const { projectTickets, config, scopesRead } = source;
+  const { ofProject, config, scopesRead } = source;
   return chipsOf(source).map(({ scope, text, pressed }) => ({
     scope, pressed, text: scope === YOU ? MINE : text,
-    count: pressed && counted(scope, config, scopesRead) ? projectTickets.filter((ticket) => inScope(ticket, scope, config.viewer ?? null)).length : undefined,
+    count: pressed && counted(scope, config, scopesRead) ? ofProject.filter((ticket) => inScope(ticket, scope, config.viewer ?? null)).length : undefined,
   }));
 }
 

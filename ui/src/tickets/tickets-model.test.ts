@@ -133,7 +133,7 @@ describe("the Assignee segments and the count", () => {
   const mine = [ticket({ key: "A11-1" }), ticket({ key: "A11-2" })];
   const theirs = [ticket({ key: "A11-3", assignee: OTHER }), ticket({ key: "A11-4", assignee: null })];
   const all = [...mine, ...theirs];
-  const source = (changes: Partial<SegmentSource> = {}): SegmentSource => ({ projectTickets: all, all, scope: YOU, config: config(), held: null, scopesRead: new Set(), ...changes });
+  const source = (changes: Partial<SegmentSource> = {}): SegmentSource => ({ ofProject: all, all, scope: YOU, config: config(), held: null, scopesRead: new Set(), ...changes });
 
   it("lists Mine, Anyone, Unassigned and each other person, with the count on the pressed one only", () => {
     expect(segmentsOf(source()).map(({ text, pressed, count }) => [text, pressed, count])).toEqual([["Mine", true, 2], ["Anyone", false, undefined], ["Unassigned", false, undefined], ["Someone", false, undefined]]);
@@ -168,7 +168,7 @@ describe("the Assignee segments and the count", () => {
 });
 
 describe("emptyPanelOf", () => {
-  const base: SegmentSource = { projectTickets: [], all: [ticket({ key: "A11-3", assignee: OTHER })], scope: YOU, config: config(), held: null, scopesRead: new Set() };
+  const base: SegmentSource = { ofProject: [], all: [ticket({ key: "A11-3", assignee: OTHER })], scope: YOU, config: config(), held: null, scopesRead: new Set() };
 
   it("is the board's panel for the signed-in person's own tickets, with its buttons", () => {
     expect(emptyPanelOf(base, null)).toEqual({ title: "Nothing is assigned to you", text: NOTHING_ASSIGNED_TEXT, offersActions: true });

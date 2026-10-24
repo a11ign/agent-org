@@ -1,6 +1,13 @@
-import { useCallback, useState } from "react";
-import type { BatchState } from "./QueueBar.tsx";
+import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 import type { BatchOverride } from "./tickets-model.ts";
+
+/** The batch's queue options as the page holds them, and how they change. */
+export type BatchState = Readonly<{
+  override: BatchOverride;
+  planFirst: boolean;
+  setOverride: Dispatch<SetStateAction<BatchOverride>>;
+  setPlanFirst: (next: boolean) => void;
+}>;
 
 /** The tickets ticked for the next Queue, by key. */
 export type Selection = Readonly<{

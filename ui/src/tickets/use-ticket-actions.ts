@@ -2,10 +2,9 @@ import { useState } from "react";
 import { batchChoice } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import type { TicketView } from "../api/types.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
-import type { BatchState } from "./QueueBar.tsx";
 import { lookAtWriterRun, openTerminalWhenReady } from "./terminal.ts";
 import { planPatternOf, type QueueOptions } from "./tickets-model.ts";
-import type { Selection } from "./use-queue-state.ts";
+import type { BatchState, Selection } from "./use-queue-state.ts";
 
 /** What the page's buttons do, and what they last said. */
 export type TicketActions = Readonly<{
