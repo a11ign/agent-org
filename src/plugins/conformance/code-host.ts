@@ -457,8 +457,16 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     reason: "the code host has no readDefaultBranchRed, which is optional (contract 1.13)",
     run: ({ host, probe }) => {
       const red = host.readDefaultBranchRed!(probe.repository);
-      expect(red === null || (isObject(red) && isString(red.branch) && isString(red.head) && Array.isArray(red.failing) && red.failing.every(isString)), `readDefaultBranchRed(${probe.repository}) must read { branch, head, failing } or be null`);
+      expect(red === null || (isObject(red) && isString(red.branch) && isString(red.head) && Array.isArray(red.failing) && red.failing.every(isString) && (red.passing === undefined || (Array.isArray(red.passing) && red.passing.every(isString)))), `readDefaultBranchRed(${probe.repository}) must read { branch, head, failing, passing? } or be null`);
       expect(host.readDefaultBranchRed!("not a repository") === null, "readDefaultBranchRed must answer null for what it cannot read: null is never 'nothing is red'");
+    },
+  },
+  "updateBranch refuses an address that is no pull request, and never throws": {
+    applies: ({ host }) => typeof host.updateBranch === "function",
+    reason: "the code host has no updateBranch, which is optional (contract 1.15)",
+    run: ({ host }) => {
+      const answer = host.updateBranch!("not a pull request", "0".repeat(40));
+      expect(isObject(answer) && answer.kind === "refused" && isString(answer.reason) && answer.reason !== "", "updateBranch must answer { kind: \"refused\", reason } for what is no pull request of the host, not throw or say it updated");
     },
   },
   "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {

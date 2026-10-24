@@ -18,7 +18,7 @@ import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLiv
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
-import { recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
+import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
 import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
 import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
@@ -507,11 +507,25 @@ function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer)
  */
 function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
   const key = entry.ticket.key;
+  followUpdatesFromMain(ctx, entry, readable);
   const heads = stampedBlocks(pullHeadsOf(readable), entry.pullHeads, ctx.now());
   if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads));
   const open = readable.filter(({ read }) => read.state === "open");
   const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
+}
+
+/**
+ * The board brought a pull request up to date with main (A11-215, the `updated` check record), and the watch now reads it at the head that push made: the run's outcome head moves with it, as it does for agent-org's own merge of a blocker's
+ * branch (A11-153), because that push is no person's answer to a run that ended `needs-human`. An outcome head at another commit was moved by someone else, and stays.
+ */
+function followUpdatesFromMain(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
+  for (const { url, read } of readable) {
+    const updated = entry.checkHeads?.[url];
+    if (updated?.step !== "updated" || read.state !== "open" || read.head === null || read.head === updated.head || entry.outcomeHeads?.[url] !== updated.head) continue;
+    const to = read.head;
+    update(ctx, (queue) => moveOutcomeHeads(queue, entry.ticket.key, updated.head, to));
+  }
 }
 
 /**

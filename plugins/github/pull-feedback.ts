@@ -111,6 +111,24 @@ export function failingChecks(contexts: readonly Check[], policy: CodeHostPolicy
     ({ name, at: Number.isNaN(failedAt) ? null : failedAt, detailsUrl: detailsUrlOf(asRuns, name, policy), counted: required.size === 0 || required.has(name) }));
 }
 
+/** The conclusions of a check run, and the states of a commit status, that are a pass: GitHub merges on them, and a skipped or neutral check does not hold a merge. */
+const PASSED_CONCLUSIONS: ReadonlySet<string> = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+
+/**
+ * The checks whose newest run is not red (`red`, as {@link failingChecks} reads the newest of each name), split into the ones that passed and the ones that have not (contract 1.15): `passing` is the newest run concluded
+ * green, `pending` is a run with no conclusion yet, a cancelled or stale one, and a commit status that is pending or expected. A name is in one of `red`, `passing` and `pending`, never two. A commit status is read as a check run, as it is there.
+ */
+export function settledChecks(contexts: readonly Check[], policy: CodeHostPolicy, red: ReadonlySet<string>): { passing: string[]; pending: string[] } {
+  const newest = new Map<string, Check>();
+  for (const run of asCheckRuns(contexts)) {
+    const seen = newest.get(run.name ?? "");
+    if (seen === undefined || policy.isAtLeastAsNew(run, seen)) newest.set(run.name ?? "", run);
+  }
+  const passed = (run: Check): boolean => run.state !== undefined ? run.state === "SUCCESS" : PASSED_CONCLUSIONS.has(run.conclusion ?? "");
+  const notRed = [...newest.values()].filter((run) => !red.has(run.name ?? ""));
+  return { passing: notRed.filter(passed).map(({ name }) => name ?? ""), pending: notRed.filter((run) => !passed(run)).map(({ name }) => name ?? "") };
+}
+
 /** The details address of the newest run of the check `name`, as the red-check decider reads the newest of each name, or null when it has none. */
 function detailsUrlOf(runs: readonly Check[], name: string, policy: CodeHostPolicy): string | null {
   const newest = runs.filter((run) => run.name === name).reduce<Check | null>((latest, run) => (latest === null || policy.isAtLeastAsNew(run, latest) ? run : latest), null);

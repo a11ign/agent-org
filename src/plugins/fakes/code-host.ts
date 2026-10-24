@@ -7,7 +7,7 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, UpdateBranchResult, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -136,6 +136,24 @@ function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<Co
       entries.push({ id: entries.length + 1, description, created: state.now() });
       state.claims.set(keyOf(repository, head), entries);
       return null;
+    },
+  };
+}
+
+/**
+ * What the fake does when asked to update a pull request's branch (contract 1.15), and what a test sets: the answer for each pull request (`answers`, by address; one it holds and was given none for is `updated`), and each update asked
+ * for, in order (`asked`). A pull request the fake does not hold is refused, as a host refuses an address that is no pull request of its own.
+ */
+export type FakeBranchUpdates = { answers: Map<string, UpdateBranchResult>; asked: { url: string; expectedHead: string }[] };
+
+/** The update of a pull request's branch over what a test seeded. */
+function branchUpdatesOf(state: FakeBranchUpdates, pulls: Pulls, calls: string[]): Pick<CodeHost, "updateBranch"> {
+  return {
+    updateBranch(url, expectedHead) {
+      calls.push(`updateBranch ${url} ${expectedHead}`);
+      state.asked.push({ url, expectedHead });
+      if (!pulls.has(url)) return { kind: "refused", reason: `fake code host: no pull request ${url}` };
+      return state.answers.get(url) ?? { kind: "updated" };
     },
   };
 }
@@ -282,8 +300,9 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const wrapperState: FakeWrapperState = { refusal: null, mintFailures: {} };
   const repositoriesWorld: FakeRepositories = { owners: login === null ? null : [{ login, kind: "account" }], byOwner: new Map(), cloneFailures: new Map(), cloned: [] };
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
+  const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -292,6 +311,8 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     rowsWorld,
     /** The checks' logs and reruns and the review claims the fake holds, for a test to seed and read (see {@link FakeChecksAndClaims}). */
     checksAndClaims,
+    /** The updates of branches the fake was asked for, and the answer it gives each pull request, for a test to seed and read (see {@link FakeBranchUpdates}). */
+    branchUpdates,
     /** The owners, repositories and clones the fake's `repositories` group holds, for a test to seed and read (see {@link FakeRepositories}). */
     repositoriesWorld,
     /** Say which owners the fake lists (the account first, as the contract says), or null for a host that cannot be asked. */
@@ -315,7 +336,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     seedRepository(repository: string) {
       repositories.add(repository);
     },
-    /** Say what fails on the head of `repository`'s default branch (`main` at head `main-head`, unless a test says otherwise): until it does, the fake cannot be asked and answers null. */
+    /** Say what fails on the head of `repository`'s default branch (`main` at head `main-head`, unless a test says otherwise; `over` may add `passing`, contract 1.15, which the fake leaves out otherwise, as a host of 1.14 does): until it does, the fake cannot be asked and answers null. */
     seedDefaultBranch(repository: string, failing: readonly string[], over: Partial<DefaultBranchRed> = {}) {
       defaultBranches.set(repository, { branch: "main", head: "main-head", failing, ...over });
     },
