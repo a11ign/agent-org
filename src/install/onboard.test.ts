@@ -13,21 +13,24 @@ import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "..
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { onboard, onboardServices, OnboardRefusal, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 import { createTailscale, freshState } from "../../plugins/tailscale/stub.ts";
-import { PAIRING_STEPS } from "./terminal.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
 import type { ProgramRunner, Program } from "./gh-account.ts";
-import { diagnose, type DoctorDeps } from "./doctor.ts";
+import { type Check, diagnose, type DoctorDeps } from "./doctor.ts";
 import type { ProfileRepo } from "./onboard-profile.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
 import type { Replacements } from "./interim-guards.ts";
 import { PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
-import { PromptCancelled, type Prompts } from "./prompts.ts";
+import { PassThrough, Writable } from "node:stream";
+import { clackPrompts, PromptCancelled, type Prompts } from "./prompts.ts";
+import { Screen } from "./screen-fixture.ts";
 
 const STACK_LISTED = "gh stack  github/gh-stack  v0.2.1\n";
 /** The GitHub CLI as the tests see it by default: the stack extension is listed, and nothing else is asked. */
 const listedGh = (): ProgramRunner => (args: string[]): Program => ({ status: 0, stdout: args[1] === "list" ? STACK_LISTED : "", stderr: "" });
 const OK: RunResult = { status: 0, stdout: "", stderr: "" };
+/** The lines onboard printed, without the indent a ✓ or ✗ line puts on its details, so a sentence is compared as it was written. */
+const trimmed = (lines: readonly string[]): string[] => lines.map((line) => line.trim());
 
 const KEY = "lin_api_SECRETSECRETSECRET";
 const PEM = "-----BEGIN PRIVATE KEY-----\nSECRETPEMSECRET\n-----END PRIVATE KEY-----\n";
@@ -35,7 +38,7 @@ const PLUGIN = "example@example-marketplace";
 const REPO = "example-org/example-plugin";
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 const options = (over: Partial<OnboardOptions> = {}): OnboardOptions => ({
-  repos: [], keychain: undefined, keyFile: undefined, profile: undefined, start: true, terminal: true, autoUpdate: true, updateChannel: undefined, ...over,
+  repos: [], keychain: undefined, keyFile: undefined, profile: undefined, start: true, terminal: true, autoUpdate: true, updateChannel: undefined, verbose: false, ...over,
 });
 const PLUGINS = JSON.stringify([{ plugin_id: "devswha.herdr-web-ui", plugin_root: "/h/.config/herdr/plugins/github/devswha.herdr-web-ui-1" }]);
 /** The contract the example plugin declares in its installed manifest (A11-137): a planner and a writer, both the same skill. */
@@ -87,6 +90,9 @@ const BROWSERS_READY: ChromiumReport = {
   unchecked: null,
 };
 
+/** Linear knows the key: it is the viewer's, and the step says whose (A11-222). */
+const linearKnowsTheKey: typeof fetch = async () => new Response(JSON.stringify({ data: { viewer: { id: "u1", name: "Casey Chairman", email: "casey@example.com" } } }), { status: 200 });
+
 /** Prompts nobody answers: a test that reaches one has asked a person something it should not have. */
 const NO_PROMPTS: Prompts = {
   pickMany: () => Promise.reject(new Error("a list was shown")), confirm: () => Promise.reject(new Error("a yes or no was asked")), text: () => Promise.reject(new Error("a line was asked")),
@@ -110,14 +116,14 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     env: {}, home, platform: "darwin", interactive: false,
     ask: async (question) => { asked.push(question); return answers.shift() ?? ""; },
     askHidden: async (question) => { hidden.push(question); return KEY; },
-    // The Keychain, as the Linear plugin's steps reach it: `security` finds a key stored under a service, and `add-generic-password` stores the one the person pastes.
-    exec: (file, args) => {
+    // The Keychain, as the Linear plugin's steps reach it: `security` finds a key stored under a service, and `security -i` stores the one the person pastes (A11-222), the command on its standard input.
+    exec: (file, args, execOptions) => {
       if (file === "security" && args[0] === "find-generic-password") {
         const key = stored.get(`keychain:${args[2]}`);
         return key === undefined ? { status: 44, stdout: "", stderr: "could not be found" } : { status: 0, stdout: `${key}\n`, stderr: "" };
       }
-      if (file === "security" && args[0] === "add-generic-password") {
-        stored.set(`keychain:${args[args.indexOf("-s") + 1]}`, KEY);
+      if (file === "security" && args[0] === "-i") {
+        stored.set(`keychain:${/-s "([^"]+)"/.exec(execOptions?.input ?? "")?.[1]}`, KEY);
         return OK;
       }
       // The code host plugin's step runs `gh` through `exec` (A11-160): by default the extension is listed, as these tests have always seen it.
@@ -160,7 +166,8 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     diagnose: async () => [],
     chromium: () => BROWSERS_READY,
     isRoot: () => false,
-    startServices: async (names) => { started.push(...names); return names.map((name) => `started the ${name} service`).join("\n"); },
+    startServices: async (names) => { started.push(...names); return names.map((name) => ({ name, ok: true, line: `started the ${name} service`, address: name === "ui" ? "http://127.0.0.1:4748/" : null })); },
+    fetch: linearKnowsTheKey, color: false,
     out: { log: (line: string) => printed.push(line) },
     ...over,
   };
@@ -190,7 +197,7 @@ test("onboard writes clones and the key source from flags, keeps the host file's
     },
   });
   assert.deepEqual(started, ["herdr", "instance", "ui", "terminal", "auto-update"]);
-  assert.ok(printed.some((line) => line === "the Linear key is readable from the Keychain service agent-org-linear"));
+  assert.ok(printed.includes("  ✓ Linear key works: signed in as Casey Chairman"), printed.join("\n"));
 });
 
 const LACKING: ChromiumReport = {
@@ -244,12 +251,56 @@ test("a Linear key flag replaces the key the host file holds, as it always has; 
   assert.deepEqual(hostOf(home).tickets.providers.tracker.key, { keychain: "new-service" }, "a run with no flag keeps the key the last run wrote");
 });
 
-test("onboard's last message says how to pair a new device, for the board and the terminal, whether or not services start", async () => {
+test("onboard ends with a clear line that this machine is set up and the commands to run next, whether or not services start", async () => {
   for (const start of [true, false]) {
     const { deps: d, repo, stored, printed } = deps();
     stored.set("keychain:agent-org-linear", KEY);
     await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start }), d);
-    assert.equal(printed.at(-1), PAIRING_STEPS, `start ${start}`);
+    const end = printed.slice(printed.indexOf("agent-org is set up on this machine."));
+    assert.deepEqual(end, ["agent-org is set up on this machine.", "\nNext:", ...(start ? ["  open the board        http://127.0.0.1:4748/"] : []),
+      "  agent-org ticket:pair pair a browser with the board (add --terminal for the worker terminal)", "  agent-org doctor      check everything works"], `start ${start}`);
+    assert.ok(!printed.some((line) => line.includes("to pair a new device")), "the old sentence is replaced by the Next: block");
+  }
+});
+
+test("a doctor check that only warns is drawn as a ! line with its fix, and does not make the machine incomplete", async () => {
+  const warned: Check[] = [{ name: "ui build", ok: true, detail: "no build is installed", fix: "run `pnpm ui:build`", warning: true }];
+  const { deps: d, repo, stored, printed } = deps({ diagnose: async () => warned });
+  stored.set("keychain:agent-org-linear", KEY);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear" }), d);
+  assert.ok(printed.includes("  ! ui build: no build is installed") && printed.includes("    run `pnpm ui:build`"), printed.join("\n"));
+  assert.ok(printed.includes("agent-org is set up on this machine."));
+});
+
+test("browsers that start but whose install reported a problem are ready, with the problem drawn as a warning", async () => {
+  const { deps: d, repo, stored, printed } = deps({}, [], (file, args) => (file === "node" && args.includes("install") ? { status: 1, stdout: "", stderr: "download interrupted" } : undefined));
+  stored.set("keychain:agent-org-linear", KEY);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear" }), d);
+  assert.ok(printed.includes("  ✓ Browsers for page captures installed"));
+  assert.ok(printed.includes("  ! Installing the browsers reported a problem") && printed.includes("    the Chromium browsers did not install: download interrupted"), printed.join("\n"));
+  assert.ok(printed.includes("agent-org is set up on this machine."), "a warning does not count");
+});
+
+test("an unattended onboard whose profile names a reviewer App with no key says so as a ✗, and does not call the machine set up", async () => {
+  const { deps: d, home, repo, stored, printed } = deps({ platform: "linux" });
+  stored.set("keychain:agent-org-linear", KEY);
+  seedProfile(home, repo);
+  await onboard(options({ profile: "example-laptop", keychain: "agent-org-linear", start: false }), d);
+  assert.ok(printed.includes("  ✗ Reviewer App key is not set"), printed.join("\n"));
+  assert.ok(printed.some((line) => line.includes("NO reviewer App key is set for example-reviewer")));
+  assert.ok(printed.includes("agent-org is not fully set up: 1 step above needs fixing.") || printed.some((line) => line.startsWith("agent-org is not fully set up")));
+});
+
+test("a doctor check that fails ends onboard with its ✗ line and fix, and says the machine is not fully set up; the full report is for --verbose", async () => {
+  const failing: Check[] = [{ name: "instance", ok: true, detail: "running", fix: null }, { name: "board key", ok: false, detail: "no key is set", fix: "run `agent-org ticket:pair`" }];
+  for (const verbose of [false, true]) {
+    const { deps: d, repo, stored, printed } = deps({ diagnose: async () => failing });
+    stored.set("keychain:agent-org-linear", KEY);
+    await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", verbose }), d);
+    assert.ok(printed.includes("  ✗ board key: no key is set") && printed.includes("    run `agent-org ticket:pair`"), printed.join("\n"));
+    assert.ok(printed.includes("agent-org is not fully set up: 1 step above needs fixing."));
+    assert.ok(!printed.includes("agent-org is set up on this machine."));
+    assert.equal(printed.some((line) => line.includes("instance: running") || line.startsWith("instance")), verbose, "the whole report only with --verbose");
   }
 });
 
@@ -279,7 +330,8 @@ test("onboard refuses no repository, a relative one and a missing one, and says 
   await assert.rejects(onboard(options({ repos: ["x=relative/path"] }), d), /must be an absolute path/);
   await assert.rejects(onboard(options({ repos: [`x=${join(home, "absent")}`] }), d), /is not a directory/);
   await onboard(options({ repos: [repo], start: false }), d);
-  assert.ok(printed.some((line) => line.startsWith("NO LINEAR KEY is readable from the Keychain service agent-org-linear. Store one with: security add-generic-password")));
+  assert.ok(trimmed(printed).some((line) => line.startsWith("NO LINEAR KEY is readable from the Keychain service agent-org-linear. Store one with: security add-generic-password")));
+  assert.ok(printed.includes("  ✗ Linear connected as the tracker"), "the plugin's line fails, with the fix beneath");
 });
 
 test("onboard refuses to write over a host file that is not JSON", async () => {
@@ -327,11 +379,12 @@ test("onboard installs herdr web ui when herdr lists it not, with bun's director
   const { deps: d, home, repo, ran, printed } = deps({ env: { PATH: "/usr/bin" }, ensureBun: async () => ({ path: "/h/.bun/bin/bun", installed: true }) });
   let pathGiven = "";
   const run = d.run;
-  await onboard(options({ repos: [repo] }), { ...d, run: (file, args, env) => { if (file === "herdr" && args[0] === "plugin") pathGiven = env?.PATH ?? ""; return run(file, args, env); } });
+  await onboard(options({ repos: [repo], verbose: true }), { ...d, run: (file, args, env) => { if (file === "herdr" && args[0] === "plugin") pathGiven = env?.PATH ?? ""; return run(file, args, env); } });
   assert.ok(ran.includes("herdr plugin install devswha/herdr-web-ui --ref v0.4.13 --yes"), "at the newest release tag, never the default branch");
   assert.ok(!ran.includes("herdr plugin install devswha/herdr-web-ui --yes"));
   assert.equal(pathGiven, "/h/.bun/bin:/usr/bin");
-  assert.ok(printed.includes("installed bun at /h/.bun/bin/bun, for the web terminal"));
+  assert.ok(printed.includes("  ✓ Worker terminal installed"));
+  assert.ok(trimmed(printed).includes("installed bun at /h/.bun/bin/bun, for the web terminal"), "the details are for --verbose");
   assert.equal(hostOf(home).tickets.providers.exposure.terminal, TERMINAL);
 });
 
@@ -351,7 +404,8 @@ test("onboard keeps an existing terminal address, moving the old key into its bl
 test("a terminal that cannot be set up is said, writes no terminal address and starts no terminal service; --no-terminal does not try", async () => {
   const failing = deps({}, [], (file) => (file === "herdr" ? { status: 1, stdout: "", stderr: "herdr: no network\nmore" } : undefined));
   await onboard(options({ repos: [failing.repo] }), failing.deps);
-  assert.ok(failing.printed.some((line) => line.startsWith("the web terminal is not set up: `herdr plugin install devswha/herdr-web-ui --ref v0.4.13 --yes` failed: herdr: no network.")));
+  assert.ok(failing.printed.includes("  ✗ Worker terminal not set up"));
+  assert.ok(trimmed(failing.printed).some((line) => line.startsWith("`herdr plugin install devswha/herdr-web-ui --ref v0.4.13 --yes` failed: herdr: no network. The board shows no terminal link until it is")));
   assert.equal(hostOf(failing.home).tickets.providers.exposure.terminal, undefined);
   assert.deepEqual(failing.started, ["herdr", "instance", "ui", "auto-update"]);
   const off = deps({ ensureBun: async () => { throw new Error("must not be asked"); } });
@@ -365,9 +419,10 @@ test("onboard registers Linear's MCP at user scope with the key as a bearer head
   const { deps: d, repo, stored, ran, printed, answers } = deps();
   stored.set("keychain:agent-org-linear", KEY);
   answers["claude mcp get"] = () => ({ status: 1, stdout: "", stderr: "No MCP server named \"linear\"" });
-  await onboard(options({ repos: [repo] }), d);
+  await onboard(options({ repos: [repo], verbose: true }), d);
   assert.ok(ran.includes(`claude mcp add --scope user --transport http linear https://mcp.linear.app/mcp --header Authorization: Bearer ${KEY}`));
-  assert.ok(printed.includes("registered Linear's MCP for Claude Code (user scope), authenticated by the key in the Keychain service agent-org-linear"));
+  assert.ok(printed.includes("  ✓ Workers can read Linear"));
+  assert.ok(trimmed(printed).includes("registered Linear's MCP for Claude Code (user scope), authenticated by the key in the Keychain service agent-org-linear"));
   for (const line of printed) assert.ok(!line.includes(KEY), `printed the key: ${line}`);
 });
 
@@ -381,7 +436,7 @@ test("onboard leaves an existing linear MCP alone, scrubs the key from a failed 
   failing.answers["claude mcp get"] = () => ({ status: 1, stdout: "", stderr: "" });
   failing.answers["claude mcp add"] = () => ({ status: 1, stdout: "", stderr: `invalid header Authorization: Bearer ${KEY}` });
   await onboard(options({ repos: [failing.repo] }), failing.deps);
-  const said = failing.printed.find((line) => line.startsWith("could not register Linear's MCP")) ?? "";
+  const said = trimmed(failing.printed).find((line) => line.startsWith("could not register Linear's MCP")) ?? "";
   assert.ok(said.includes("Bearer <key>") && !said.includes(KEY));
   const keyless = deps();
   await onboard(options({ repos: [keyless.repo] }), keyless.deps);
@@ -452,10 +507,11 @@ function stackDeps(install: Program) {
 
 test("A11-160: onboard runs the code host plugin's step, which installs the stacking extension for the workers' account when it is missing, and says so", async () => {
   const { deps: d, repo, printed, calls, workers } = stackDeps({ status: 0, stdout: "", stderr: "" });
-  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false, verbose: true }), d);
   assert.ok(calls.some(({ command }) => command === "extension install github/gh-stack"), "the extension is installed");
   assert.ok(calls.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: join(workers, "gh") })), "every call runs as the workers' account");
-  assert.ok(printed.includes("installed the github/gh-stack extension (v0.2.1), which a worker links a stacked pull request with"));
+  assert.ok(printed.includes("  ✓ GitHub stacked pull requests ready"));
+  assert.ok(trimmed(printed).includes("installed the github/gh-stack extension (v0.2.1), which a worker links a stacked pull request with"), "the extension's name and version are for --verbose");
 });
 
 test("A11-160: onboard does not install the stacking extension again where it is listed", async () => {
@@ -466,15 +522,16 @@ test("A11-160: onboard does not install the stacking extension again where it is
     commands.push(args.join(" "));
     return { status: 0, stdout: STACK_LISTED, stderr: "" };
   };
-  await onboard(options({ repos: [`netbox=${base.repo}`], keychain: "agent-org-linear", start: false }), { ...base.deps, exec });
+  await onboard(options({ repos: [`netbox=${base.repo}`], keychain: "agent-org-linear", start: false, verbose: true }), { ...base.deps, exec });
   assert.deepEqual(commands, ["extension list"], "a listed extension is not installed again");
-  assert.ok(base.printed.includes("the github/gh-stack extension is installed (v0.2.1), which a worker links a stacked pull request with"));
+  assert.ok(trimmed(base.printed).includes("the github/gh-stack extension is installed (v0.2.1), which a worker links a stacked pull request with"));
 });
 
 test("A11-160: a stacking extension that fails to install is said with its reason and the command to run, and onboard still completes", async () => {
   const { deps: d, repo, printed, workers } = stackDeps({ status: 1, stdout: "", stderr: "could not reach github.com\nmore" });
   const hostFile = await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
-  assert.ok(printed.includes(`could not install the github/gh-stack extension: could not reach github.com. Run \`GH_CONFIG_DIR=${join(workers, "gh")} gh extension install github/gh-stack\` by hand, then \`agent-org doctor\`.`));
+  assert.ok(printed.includes("  ✗ GitHub stacked pull requests are not set up"));
+  assert.ok(trimmed(printed).includes(`could not install the github/gh-stack extension: could not reach github.com. Run \`GH_CONFIG_DIR=${join(workers, "gh")} gh extension install github/gh-stack\` by hand, then \`agent-org doctor\`.`));
   assert.ok(existsSync(hostFile), "the host file is written all the same");
 });
 
@@ -573,7 +630,7 @@ test("A11-145: a complete profile sets everything but the secrets: asks for the 
   assert.equal(host.tickets.review, join(home, ".agent-org", "review-notes.md"));
 
   assert.ok(!printed.join("\n").includes(KEY) && !printed.join("\n").includes("SECRETPEMSECRET"), "no secret is printed");
-  assert.ok(printed.some((line) => line.startsWith("installed example@example-marketplace for every folder")), "the plugin was installed for every folder");
+  assert.ok(printed.includes("  ✓ Conventions plugin ready: example@example-marketplace"), "the plugin was installed for every folder");
   assert.ok(!printed.join("\n").includes("FAIL"), `doctor is green after onboard:\n${printed.join("\n")}`);
 });
 
@@ -618,7 +675,7 @@ test("A11-145: a profile that is absent, at a terminal, is asked for and written
   const saved = JSON.parse(readFileSync(profilePath, "utf8"));
   assert.deepEqual(saved.tracker, { provider: "linear", pick: { team: "ZZ" } });
   assert.deepEqual(saved.repos, [{ name: "nbl-ui-netbox", path: repo }]);
-  assert.ok(printed.some((line) => line.startsWith(`wrote the answers to ${profilePath}, mode 600`)));
+  assert.ok(printed.includes("  ✓ Answers saved to ~/.agent-org/profiles/new-laptop.json: copy it to set up another machine; it holds no secret"), printed.join("\n"));
   assert.ok(!readFileSync(profilePath, "utf8").includes(KEY), "the profile holds no secret");
 });
 
@@ -662,7 +719,7 @@ async function onboardWithGuards(replacements: Replacements) {
   const guards = guardsIn(machine.home);
   seedFiles(guards);
   machine.stored.set("keychain:agent-org-linear", KEY);
-  await onboard(options({ repos: [machine.repo], keychain: "agent-org-linear", start: false }), machine.deps);
+  await onboard(options({ repos: [machine.repo], keychain: "agent-org-linear", start: false, verbose: true }), machine.deps);
   return { guards, printed: machine.printed, ran: machine.ran };
 }
 
@@ -670,10 +727,12 @@ test("A11-145: the interim guards are retired on Linux once their replacements a
   const proven = await onboardWithGuards({ ghWrapperDeclared: true, herdrInOwnUnit: true });
   assert.ok(proven.guards.every((path) => !existsSync(path)), "every guard file is removed");
   assert.ok(proven.ran.includes("systemctl --user disable --now gh-wrapper-watchdog.timer"));
-  assert.ok(proven.printed.some((line) => line.startsWith("retired the gh-wrapper watchdog")));
+  assert.ok(proven.printed.includes("  ✓ Old workarounds retired"));
+  assert.ok(trimmed(proven.printed).some((line) => line.startsWith("retired the gh-wrapper watchdog")), "what was retired is for --verbose");
 
   const unproven = await onboardWithGuards({ ghWrapperDeclared: false, herdrInOwnUnit: false });
   assert.ok(unproven.guards.every((path) => existsSync(path)), "no guard is removed without its replacement");
+  assert.ok(unproven.printed.includes("  ✗ An old workaround is still in place"));
   assert.ok(unproven.printed.some((line) => line.includes("Run `agent-org start herdr --move`")));
 });
 
@@ -692,7 +751,9 @@ test("A11-158: a disabled tailscale exposure and a disabled atomic reviewer ask 
     exposure: { provider: "tailscale", enabled: false }, reviewer: { provider: "atomic", enabled: false } } } }));
   await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
   assert.ok(!base.printed.some((line) => line.includes("tailscale is not on PATH")), "a disabled exposure serves nothing on the tailnet");
-  assert.ok(!base.printed.some((line) => /codex/i.test(line) && !line.includes("doctor") && !line.includes("integration")), "a disabled reviewer needs no Codex");
+  assert.ok(!base.printed.some((line) => /codex/i.test(line) && !line.includes("doctor") && !line.includes("herdr") && !line.includes("switched off")), "a disabled reviewer needs no Codex");
+  assert.ok(base.printed.includes("Board served on the tailnet: switched off; onboard leaves it off"), "and each is said to be switched off, in setup words");
+  assert.ok(base.printed.includes("Codex reviewer ready: switched off; onboard leaves it off"));
 });
 
 // ---- A11-162: the Tailscale plugin's onboard steps run when the host will enable it, and the exposure `local` asks nothing of Tailscale
@@ -706,7 +767,9 @@ test("A11-162: onboarding a tailscale exposure with no Tailscale installed says 
   const base = deps({}, [], (file) => (file === "tailscale" ? { status: null, stdout: "", stderr: "ENOENT" } : undefined));
   seedExposure(base.home, { provider: "tailscale" });
   await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
-  assert.ok(base.printed.includes("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing"));
+  assert.ok(base.printed.includes("  ✗ Tailscale is not installed"));
+  assert.ok(trimmed(base.printed).includes("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing"));
+  assert.ok(base.printed.includes("  ✗ Board served on the tailnet"), "the plugin's line fails, and points at the step above rather than saying it twice");
   assert.deepEqual(hostOf(base.home).tickets.providers.exposure, { provider: "tailscale", enabled: true, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" },
     "an interactive onboard writes no ports (a profile's get the plugin's defaults, as they always did); the terminal's address is onboard's, as before");
 });
@@ -761,13 +824,15 @@ test("A11-159: onboard runs a plugin's steps in order, each given the settings t
   const { load } = plugged(steps);
   const { deps: d, home, repo, printed } = deps({ catalog: steppedCatalog, loadPlugins: load });
   seedHost(home, { mode: "slow" });
-  await onboard(options({ repos: [`netbox=${repo}`], keychain: "flagged", start: false }), d);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "flagged", start: false, verbose: true }), d);
   assert.deepEqual(seen, [
     ["one", { mode: "slow" }, { keychain: "flagged", keyFile: undefined }, false, false],
     ["two", { mode: "slow", token: "t1" }],
   ], "the block's own settings first, then the first step's; the tracker plugin is told the key flags; nobody answered the questions for it");
   assert.ok(printed.includes("step one says this") && printed.includes("step three saw token t1"));
   assert.equal(printed.indexOf("step one says this") + 1, printed.indexOf("step three saw token t1"), "the second step's empty detail is not printed between them");
+  assert.ok(printed.includes("  ✗ A tracker that steps."), "the plugin that has no setup words is said by its description, and fails because a step did");
+  assert.ok(printed.includes("    Run `agent-org doctor` to see what is missing."), "a failing step that said nothing leaves the fix doctor gives");
   assert.deepEqual(hostOf(home).tickets.providers.tracker, { provider: "stepped", enabled: true, mode: "fast", token: "t1" }, "a step replaces the setting it returns, and one it returns undefined for keeps the block's");
 });
 
@@ -812,12 +877,21 @@ const PLUGIN_STATE_LINES = /^(?:installed .* as the .*|.* is already the .*)$/;
 
 test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub plugins as blocks that `plugin list`, `disable` and `config` read, and says one line each before the plugin's steps", async () => {
   const base = deps({ platform: "linux" });
-  await onboard(options({ repos: [`netbox=${base.repo}`], keyFile: join(base.home, ".agent-org", "linear.key"), start: false }), base.deps);
+  const quiet = deps({ platform: "linux" });
+  for (const home of [quiet.home, base.home]) {
+    mkdirSync(join(home, ".agent-org"), { recursive: true });
+    writeFileSync(join(home, ".agent-org", "linear.key"), `${KEY}\n`, { mode: 0o600 });
+  }
+  await onboard(options({ repos: [`netbox=${quiet.repo}`], keyFile: join(quiet.home, ".agent-org", "linear.key"), start: false }), quiet.deps);
+  assert.deepEqual(quiet.printed.filter((line) => /installed .* as the/.test(line)), [], "the internal names are for --verbose");
+  assert.deepEqual(quiet.printed.filter((line) => /^ {2}✓ (?:Linear connected|GitHub connected|Board served)/.test(line)),
+    ["  ✓ Linear connected as the tracker", "  ✓ GitHub connected as the code host", "  ✓ Board served on this machine"], "each plugin is one line in setup words, after its steps ran");
+  await onboard(options({ repos: [`netbox=${base.repo}`], keyFile: join(base.home, ".agent-org", "linear.key"), start: false, verbose: true }), base.deps);
   const providers = hostOf(base.home).tickets.providers;
   assert.deepEqual([providers.tracker.provider, providers.tracker.enabled, providers.codeHost.provider, providers.codeHost.enabled], ["linear", true, "github", true]);
   const lines = base.printed.filter((line) => PLUGIN_STATE_LINES.test(line));
   assert.deepEqual(lines, ["installed linear as the tracker", "installed github as the code host", "installed local as the exposure"]);
-  assert.equal(base.printed.indexOf("installed linear as the tracker"), 0, "the lines come before any plugin's steps say anything");
+  assert.ok(base.printed.indexOf("installed linear as the tracker") < base.printed.indexOf("  ✓ Linear connected as the tracker"), "each comes before its own plugin's line");
   // The CLI reads them as installed and enabled: `list` shows both, and `disable github` is refused as the only code host, not as "not installed".
   const hostPath = join(base.home, ".agent-org", "host.json");
   const said: string[] = [];
@@ -837,7 +911,7 @@ test("A11-163: a profile's optional plugins other than none are installed and en
   const profile = { ...profileOf({ name: "example-app", path: base.repo }), reviewer: { provider: "atomic" }, exposure: { provider: "tailscale" } };
   writeFileSync(join(base.home, ".agent-org", "profiles", "example-laptop.json"), JSON.stringify(profile));
   writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify({ tickets: { providers: { tracker: { provider: "linear", enabled: true } } } }));
-  await onboard(options({ profile: "example-laptop", keyFile: join(base.home, ".agent-org", "linear.key"), start: false }), base.deps);
+  await onboard(options({ profile: "example-laptop", keyFile: join(base.home, ".agent-org", "linear.key"), start: false, verbose: true }), base.deps);
   assert.deepEqual(base.printed.filter((line) => PLUGIN_STATE_LINES.test(line)), ["linear is already the tracker", "installed github as the code host", "installed atomic as the reviewer", "installed tailscale as the exposure"]);
   const providers = hostOf(base.home).tickets.providers;
   assert.deepEqual([providers.publish, providers.reviewer.enabled, providers.exposure.enabled], [{ provider: "none" }, true, true], "none is left as it is");
@@ -853,20 +927,22 @@ test("A11-163: a host file that switched a plugin off keeps it off: onboard writ
 // A11-184: herdr's claude and codex integrations are installed by every onboard, and the web UI at its newest release tag.
 test("A11-184: onboard installs herdr's claude and codex integrations, one line each, with or without the terminal", async () => {
   const full = deps();
-  await onboard(options({ repos: [full.repo] }), full.deps);
+  await onboard(options({ repos: [full.repo], verbose: true }), full.deps);
   assert.deepEqual(full.ran.filter((line) => line.startsWith("herdr integration")), ["herdr integration install claude", "herdr integration install codex"]);
-  assert.deepEqual(full.printed.filter((line) => line.includes("integration")), ["installed herdr's claude integration", "installed herdr's codex integration"]);
+  assert.ok(full.printed.includes("  ✓ herdr knows Claude and Codex"), "one line for both");
+  assert.deepEqual(trimmed(full.printed.filter((line) => line.includes("integration"))), ["installed herdr's claude integration", "installed herdr's codex integration"], "and each integration under --verbose");
   const off = deps({ ensureBun: async () => { throw new Error("must not be asked"); } });
-  await onboard(options({ repos: [off.repo], terminal: false }), off.deps);
+  await onboard(options({ repos: [off.repo], terminal: false, verbose: true }), off.deps);
   assert.deepEqual(off.ran.filter((line) => line.startsWith("herdr")), ["herdr integration install claude", "herdr integration install codex"], "--no-terminal does not skip them");
-  assert.deepEqual(off.printed.filter((line) => line.includes("integration")), ["installed herdr's claude integration", "installed herdr's codex integration"]);
+  assert.ok(off.printed.includes("  ✓ herdr knows Claude and Codex"));
 });
 
 test("A11-184: an integration that does not install is said with its reason and the command to run, and onboard still finishes", async () => {
   const w = deps({}, [], (file, args) => (file === "herdr" && args.join(" ") === "integration install codex" ? { status: 1, stdout: "", stderr: "herdr: no write access to ~/.codex\nmore" } : undefined));
   const hostFile = await onboard(options({ repos: [w.repo] }), w.deps);
-  assert.ok(w.printed.includes("installed herdr's claude integration"));
-  assert.ok(w.printed.includes("herdr's codex integration did not install: herdr: no write access to ~/.codex. Run `herdr integration install codex`."));
+  assert.ok(w.printed.includes("  ✓ herdr knows Claude"));
+  assert.ok(w.printed.includes("  ✗ herdr does not know Codex yet"));
+  assert.ok(w.printed.includes("    herdr: no write access to ~/.codex. Run `herdr integration install codex`."));
   assert.ok(existsSync(hostFile), "the host file is written");
   assert.ok(w.printed.some((line) => line.startsWith("started")) || w.started.length > 0, "the services still start");
 });
@@ -875,9 +951,10 @@ test("A11-184: with no herdr on PATH both integration lines say so, with the sam
   const w = deps({ which: (name) => (name === "herdr" ? null : "/usr/local/bin/tool") });
   await onboard(options({ repos: [w.repo], terminal: false }), w.deps);
   assert.deepEqual(w.printed.filter((line) => line.includes("integration")), [
-    "herdr's claude integration did not install: herdr is not on PATH. Install herdr, then run `herdr integration install claude`.",
-    "herdr's codex integration did not install: herdr is not on PATH. Install herdr, then run `herdr integration install codex`.",
+    "    herdr is not on PATH. Install herdr, then run `herdr integration install claude`.",
+    "    herdr is not on PATH. Install herdr, then run `herdr integration install codex`.",
   ]);
+  assert.deepEqual(w.printed.filter((line) => line.startsWith("  ✗ herdr does not know")), ["  ✗ herdr does not know Claude yet", "  ✗ herdr does not know Codex yet"]);
   assert.deepEqual(w.ran.filter((line) => line.startsWith("herdr")), []);
 });
 
@@ -885,7 +962,8 @@ test("A11-184: a web UI release tag that cannot be read fails the terminal step,
   const w = deps({ newestPluginTag: () => { throw new Error("devswha/herdr-web-ui has no release tag, and agent-org installs a plugin only at a release tag, never a branch"); } });
   await onboard(options({ repos: [w.repo] }), w.deps);
   assert.ok(!w.ran.some((line) => line.startsWith("herdr plugin")), "no install at all, with or without a ref");
-  assert.ok(w.printed.some((line) => line.startsWith("the web terminal is not set up: devswha/herdr-web-ui has no release tag")));
+  assert.ok(w.printed.includes("  ✗ Worker terminal not set up"));
+  assert.ok(trimmed(w.printed).some((line) => line.startsWith("devswha/herdr-web-ui has no release tag")));
   assert.equal(hostOf(w.home).tickets.providers.exposure.terminal, undefined);
   assert.ok(w.ran.includes("herdr integration install claude"), "the integrations are installed all the same");
 });
@@ -918,7 +996,7 @@ test("A11-186: at a terminal with no --repo onboard picks the repositories in th
   const summary = printed.findIndex((text) => text.includes("Repositories\n\n"));
   assert.ok(summary >= 0, printed.join("\n"));
   assert.match(printed[summary], /✓ documents +~\/repos\/docs-site +found/);
-  assert.ok(printed.findIndex((text) => text.startsWith("wrote ")) > summary, "the summary comes before the host file is written");
+  assert.ok(printed.findIndex((text) => text.startsWith("  ✓ Settings written to ")) > summary, "the summary comes before the host file is written");
   assert.ok(!printed.some((text) => text.includes("Name the repositories a worker can choose from")), "the typed prompt is not asked");
 });
 
@@ -948,7 +1026,7 @@ test("A11-186: an absent profile at a terminal records the picked repositories w
   assert.deepEqual(hostOf(home).clones, { "agent-org": join(home, "repos", "agent-org"), documents: join(home, "repos", "docs-site") });
 });
 
-test("A11-186: a repository picked from the code host and not yet cloned is cloned where the person is, with the command the offer showed", async () => {
+test("A11-186: a repository picked from the code host and not yet cloned is cloned where the person is, and offered by name", async () => {
   const host = createFakeCodeHost("octo");
   host.seedOwners([{ login: "octo", kind: "account" }]);
   host.seedRepositories("octo", ["octo/dotfiles"]);
@@ -962,7 +1040,62 @@ test("A11-186: a repository picked from the code host and not yet cloned is clon
   await onboard(options({ start: false }), d);
   assert.deepEqual(host.repositoriesWorld.cloned, [{ fullName: "octo/dotfiles", path: join(home, "repos", "dotfiles") }]);
   assert.equal(hostOf(home).clones.dotfiles, join(home, "repos", "dotfiles"));
-  assert.deepEqual(questions, ["Found 2 repositories in ~/repos", "Add repositories not cloned here?", "Organisations to add repositories from", "Repositories to add (type to filter)", "Clone into", "Clone these repositories? Each runs the command shown"]);
+  assert.deepEqual(questions, ["Found 2 repositories in ~/repos", "Add repositories not cloned here?", "Organisations to add repositories from", "Repositories to add (type to filter)", "Clone into", "Clone 1 repository into ~/repos?"]);
+});
+
+// ---- A11-222: the whole flow, as a person sees it: the real prompts driven with the bytes a terminal sends, over a fake code host, with Linear and the programs stubbed
+
+const [DOWN, ENTER, SPACE] = ["\x1b[B", "\r", " "];
+
+test("A11-222: the whole flow reads as a setup wizard: Space ticks in both lists, the Linear key step explains itself and checks the key, each clone is one line, and it ends with the machine set up and the next commands", async () => {
+  const host = createFakeCodeHost("octo");
+  host.seedOwners([{ login: "octo", kind: "account" }, { login: "a11ign", kind: "organisation" }]);
+  host.seedRepositories("a11ign", ["a11ign/agent-org", "a11ign/documents", "a11ign/plugin", "a11ign/toolchain"]);
+  const input = new PassThrough();
+  const screen = new Screen();
+  const output = Object.assign(new Writable({ write(chunk, _encoding, done) { screen.feed(String(chunk)); done(); } }), { columns: 100, rows: 40 });
+  const world = laptop({
+    codeHost: () => host, prompts: clackPrompts({ input, output }), out: { log: (line: string) => screen.feed(`${line}\n`) },
+    askHidden: async (question) => { screen.feed(`${question}\n`); return KEY; },
+  });
+  const shown = (text: string) => screen.lines().join("\n").includes(text);
+  const answerWhenShown = async (text: string, keys: readonly string[]) => {
+    for (let waited = 0; !shown(text); waited += 10) {
+      if (waited > 5000) throw new Error(`never drawn: ${text}\n${screen.lines().join("\n")}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    for (const key of keys) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      input.write(key);
+    }
+  };
+  const flow = onboard(options({ start: true }), world.deps);
+  await answerWhenShown("Found 2 repositories in ~/repos", [DOWN, SPACE, ENTER]);
+  await answerWhenShown("Add repositories not cloned here?", ["y"]);
+  await answerWhenShown("Organisations to add repositories from", [ENTER]);
+  await answerWhenShown("Repositories to add (type to filter)", ["p", "l", "u", "g", SPACE, "\x7f", "\x7f", "\x7f", "\x7f", "t", "o", "o", "l", SPACE, ENTER]);
+  await answerWhenShown("Clone into", [ENTER]);
+  await answerWhenShown("Clone 2 repositories into ~/repos?", [ENTER]);
+  await flow;
+
+  assert.deepEqual(host.repositoriesWorld.cloned.map(({ fullName }) => fullName), ["a11ign/plugin", "a11ign/toolchain"], "space ticked both in the filtered list");
+  assert.deepEqual(Object.keys(hostOf(world.home).clones).sort(), ["agent-org", "plugin", "toolchain"], "and space unticked documents in the plain one");
+  const transcript = screen.lines();
+  const at = (line: string) => transcript.indexOf(line);
+  for (const line of ["Connect to Linear", "agent-org keeps your Linear key in a private file, ~/.agent-org/linear.key, readable only by you.",
+    "Create a personal API key at Linear → Settings → Security & access → Personal API keys, with Read and Write access.", "Paste your Linear API key (it is not shown):",
+    "  ✓ Linear key works: signed in as Casey Chairman", "  ✓ Linear connected as the tracker", "  ✓ GitHub connected as the code host", "  ✓ Board served on this machine", "agent-org is set up on this machine."]) {
+    assert.ok(at(line) >= 0, `${line}\n${transcript.join("\n")}`);
+  }
+  assert.ok(at("  ✓ a11ign/plugin  ~/repos/plugin") >= 0 && at("  ✓ a11ign/toolchain  ~/repos/toolchain") >= 0, "one progress line for each clone");
+  assert.equal(transcript.filter((line) => line === "Repositories").length, 1, "and the summary table once, after them");
+  assert.ok(at("Repositories") > at("  ✓ a11ign/toolchain  ~/repos/toolchain"));
+  assert.ok(at("Connect to Linear") < at("  ✓ Linear key works: signed in as Casey Chairman") && at("  ✓ Linear key works: signed in as Casey Chairman") < at("  ✓ Linear connected as the tracker"));
+  assert.ok(at("  ✓ Linear connected as the tracker") < at("agent-org is set up on this machine.") && at("agent-org is set up on this machine.") < at("Next:"));
+  assert.ok(!transcript.some((line) => /gh repo clone|installed linear as|Cloning|gh-stack/.test(line)), "none of the internal words");
+  assert.ok(!transcript.join("\n").includes(KEY), "and never the key");
+  const path = process.env.ONBOARD_FLOW_TRANSCRIPT;
+  if (path !== undefined && path !== "") writeFileSync(path, `${transcript.join("\n")}\n`);
 });
 
 test("A11-186: stopping a prompt refuses onboard by its sentence and writes nothing", async () => {

@@ -32,7 +32,7 @@ export const ONBOARD_STEPS: readonly OnboardStep[] = [
     name: "tailscale installed",
     explain: "Says so when Tailscale is not on PATH: the board is served on the tailnet once it is installed and `tailscale up` has run.",
     async run(_settings, deps): Promise<StepResult> {
-      return { ok: true, detail: isInstalled(deps) ? "" : NOT_ON_PATH };
+      return isInstalled(deps) ? { ok: true, detail: "" } : { ok: false, detail: NOT_ON_PATH, summary: "Tailscale is not installed" };
     },
   },
   {
@@ -42,7 +42,7 @@ export const ONBOARD_STEPS: readonly OnboardStep[] = [
       if (!isInstalled(deps)) return { ok: true, detail: "" };
       const result = deps.exec("tailscale", serveStatusArgv(), { timeoutMs: TAILSCALE_MS });
       const denied = result.status !== 0 && /access denied/i.test(result.stderr || result.stdout);
-      return denied ? { ok: false, detail: `${user(deps)} is not the operator of this machine's Tailscale, which the board's serve entries need: run \`${operatorFix(user(deps))}\`` } : { ok: true, detail: "" };
+      return denied ? { ok: false, detail: `${user(deps)} is not the operator of this machine's Tailscale, which the board's serve entries need: run \`${operatorFix(user(deps))}\``, summary: "Tailscale does not let you change what it serves" } : { ok: true, detail: "" };
     },
   },
   {
@@ -56,7 +56,7 @@ export const ONBOARD_STEPS: readonly OnboardStep[] = [
       const exposure = createExposure(settings, deps);
       const local = localPortsOf(settings);
       const taken = (["ui", "terminal"] as const).map((service) => exposure.claim(ports[service], local[service], service)).filter((why) => why !== null);
-      return { ok: taken.length === 0, detail: taken.join("; "), settings: written };
+      return { ok: taken.length === 0, detail: taken.join("; "), settings: written, ...(taken.length === 0 ? {} : { summary: "A tailnet port is already taken" }) };
     },
   },
 ];

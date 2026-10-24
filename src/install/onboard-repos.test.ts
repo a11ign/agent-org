@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { onboardOutput } from "./onboard-output.ts";
 import { pickRepositories, type PickerDeps } from "./onboard-repos.ts";
 import { PromptCancelled, type Prompts } from "./prompts.ts";
 
@@ -79,12 +80,12 @@ function listDirectory(path: string): string[] {
   }
 }
 
-function pickerOver(cwd: string, home: string, answers: Answer[]) {
+function pickerOver(cwd: string, home: string, answers: Answer[], verbose = false) {
   const host = createFakeCodeHost("octo");
   const { prompts, asked } = scripted(answers);
   const printed: string[] = [];
   const deps: PickerDeps = {
-    cwd, home, repositories: host.repositories!, prompts, out: { log: (text: string) => printed.push(text) },
+    cwd, home, repositories: host.repositories!, prompts, out: onboardOutput({ log: (text: string) => printed.push(text) }, { verbose, color: false }),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     exists: (path) => existsSync(path), readFile: (path) => readFileSync(path, "utf8"),
     listDir: (path) => listDirectory(path),
@@ -228,7 +229,7 @@ test("a repository the host file holds under its name at another path keeps that
   assert.match(printed.at(-1)!, new RegExp(`✓ lab +${old} +kept: already in the host file`));
 });
 
-test("a found checkout is used as it is and a repository without one is cloned, with the command shown first; the summary says found and cloned before anything is written", async () => {
+test("a found checkout is used as it is and a repository without one is cloned, listed by name; the summary says found and cloned before anything is written", async () => {
   const { cwd, home } = repos();
   const { host, deps, asked, printed } = pickerOver(cwd, home, [pick("a11ign/lab"), yes, pick("a11ign"), pick("a11ign/toolchain"), keep, accept]);
   host.seedOwners([{ login: "octo", kind: "account" }, { login: "a11ign", kind: "organisation" }]);
@@ -237,10 +238,15 @@ test("a found checkout is used as it is and a repository without one is cloned, 
   const [folder, offer] = [asked[4], asked[5]];
   assert.equal(folder.message, "Clone into");
   assert.equal(folder.initial, cwd, "the folder onboard runs in is the default");
-  assert.deepEqual(labels(offer), [`gh repo clone a11ign/toolchain ${cwd}/toolchain`]);
+  assert.equal(offer.message, `Clone 1 repository into ${cwd}?`);
+  assert.deepEqual(labels(offer), ["a11ign/toolchain"], "the repository's name, not the command that clones it");
+  assert.deepEqual(offer.choices.map(({ hint }) => hint), [`${cwd}/toolchain`], "and where it goes");
+  assert.ok(labels(offer).every((label) => !label.includes("gh repo clone")));
   assert.deepEqual(offer.ticked, ["a11ign/toolchain"], "all offered, so enter accepts them");
-  assert.deepEqual(host.repositoriesWorld.cloned, [{ fullName: "a11ign/toolchain", path: `${cwd}/toolchain` }], "exactly the command that was shown");
-  assert.ok(printed.includes("  Cloning a11ign/toolchain …"));
+  assert.deepEqual(host.repositoriesWorld.cloned, [{ fullName: "a11ign/toolchain", path: `${cwd}/toolchain` }]);
+  assert.ok(printed.includes(`  ✓ a11ign/toolchain  ${cwd}/toolchain`), "one line when the clone ends");
+  assert.ok(!printed.some((text) => text.includes("Cloning")), "and no line before it");
+  assert.ok(!printed.some((text) => text.includes("gh repo clone")), "the commands are for --verbose");
   assert.deepEqual(picked, [{ name: "lab", path: `${cwd}/lab`, fullName: "a11ign/lab" }, { name: "toolchain", path: `${cwd}/toolchain`, fullName: "a11ign/toolchain" }]);
   const summary = printed.at(-1)!;
   assert.match(summary, new RegExp(`✓ lab +${cwd}/lab +found`));
@@ -257,7 +263,9 @@ test("the clone folder is asked once, in ~ form, and a relative answer is asked 
   await pickRepositories({}, deps);
   assert.equal(asked[2].initial, "~/repos");
   assert.ok(printed.some((text) => text.includes("repos/elsewhere is not an absolute path")));
-  assert.equal(asked[4].choices[0].label, "gh repo clone octo/dotfiles ~/code/dotfiles");
+  assert.equal(asked[4].message, "Clone 1 repository into ~/code?");
+  assert.equal(asked[4].choices[0].label, "octo/dotfiles");
+  assert.equal(asked[4].choices[0].hint, "~/code/dotfiles");
   assert.deepEqual(host.repositoriesWorld.cloned, [{ fullName: "octo/dotfiles", path: join(home, "code", "dotfiles") }]);
 });
 
@@ -271,7 +279,7 @@ test("a destination that is already a checkout of the repository is used, and on
   host.seedOwners([{ login: "octo", kind: "account" }, { login: "a11ign", kind: "organisation" }]);
   host.seedRepositories("a11ign", ["a11ign/widgets", "a11ign/plugin", "a11ign/toolchain"]);
   const picked = await pickRepositories({}, deps);
-  assert.deepEqual(labels(asked.at(-1)!), [`gh repo clone a11ign/toolchain ${taken}/toolchain`], "only the missing one is offered");
+  assert.deepEqual(labels(asked.at(-1)!), ["a11ign/toolchain"], "only the missing one is offered");
   assert.deepEqual(picked?.map(({ name }) => name), ["toolchain", "widgets"]);
   const summary = printed.at(-1)!;
   assert.match(summary, new RegExp(`✓ widgets +${taken}/widgets +found`));
@@ -335,6 +343,10 @@ test("an unticked clone and a failing clone are left out and said with ✗, and 
   host.repositoriesWorld.cloneFailures.set("octo/a", "fatal: repository 'https://github.com/octo/a/' not found");
   const picked = await pickRepositories({}, deps);
   assert.deepEqual(picked?.map(({ name }) => name), ["c"], "neither the failed nor the declined clone is passed on");
+  assert.equal(printed.filter((text) => /^ {2}[✓✗] octo\/[abc] /.test(text)).length, 2, "one progress line for each clone that ran, and none for the one declined");
+  assert.ok(printed.some((text) => /^ {2}✗ octo\/a {2}\S+\/a$/.test(text)), printed.join("\n"));
+  assert.ok(printed.includes("    fatal: repository 'https://github.com/octo/a/' not found"), "the failed clone is a ✗ with the host's reason");
+  assert.ok(printed.some((text) => /^ {2}✓ octo\/c {2}\S+\/c$/.test(text)));
   const summary = printed.at(-1)!;
   assert.match(summary, /✗ a +\S+\/a +not cloned: fatal: repository 'https:\/\/github.com\/octo\/a\/' not found/);
   assert.match(summary, /✗ b +\S+\/b +not cloned$/m);
@@ -405,4 +417,28 @@ test("a prompt that is cancelled stops the picker", async () => {
   const { cwd, home } = repos();
   const { deps } = pickerOver(cwd, home, [() => { throw new PromptCancelled(); }]);
   await assert.rejects(pickRepositories({}, deps), PromptCancelled);
+});
+
+test("the clone commands are shown with --verbose, one for each repository, above the list, and not without it", async () => {
+  for (const verbose of [false, true]) {
+    const { cwd, home } = repos();
+    const { host, deps, printed } = pickerOver(cwd, home, [pick("a11ign/lab"), yes, pick("a11ign"), pick("a11ign/toolchain", "a11ign/plugin"), keep, accept], verbose);
+    host.seedOwners([{ login: "octo", kind: "account" }, { login: "a11ign", kind: "organisation" }]);
+    host.seedRepositories("a11ign", ["a11ign/lab", "a11ign/toolchain", "a11ign/plugin"]);
+    await pickRepositories({}, deps);
+    const commands = printed.filter((text) => text.startsWith("gh repo clone"));
+    assert.deepEqual(commands, verbose ? [`gh repo clone a11ign/plugin ${cwd}/plugin`, `gh repo clone a11ign/toolchain ${cwd}/toolchain`] : [], `verbose ${verbose}`);
+  }
+});
+
+test("the summary table is printed once, after the clone lines, and no list of the repositories is printed twice", async () => {
+  const { cwd, home } = repos();
+  const { host, deps, printed } = pickerOver(cwd, home, [pick("a11ign/lab"), yes, pick("a11ign"), pick("a11ign/toolchain", "a11ign/plugin"), keep, accept]);
+  host.seedOwners([{ login: "octo", kind: "account" }, { login: "a11ign", kind: "organisation" }]);
+  host.seedRepositories("a11ign", ["a11ign/lab", "a11ign/toolchain", "a11ign/plugin"]);
+  await pickRepositories({}, deps);
+  assert.equal(printed.filter((text) => text.includes("Repositories\n")).length, 1, "the table, once");
+  const clones = printed.flatMap((text, at) => (/^ {2}✓ a11ign\/(plugin|toolchain) /.test(text) ? [at] : []));
+  assert.equal(clones.length, 2);
+  assert.ok(clones.every((at) => at < printed.length - 1), "and it comes last, after both");
 });

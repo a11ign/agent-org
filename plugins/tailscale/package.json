@@ -8,6 +8,7 @@
     "concern": "exposure",
     "contract": "1.1",
     "description": "Serves the board and the worker terminal on the tailnet.",
+    "setUp": "Board served on the tailnet",
     "entry": "index.ts",
     "settings": {
       "port": {
