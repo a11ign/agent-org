@@ -480,8 +480,7 @@ export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished
 /** A talk session that holds its pane: its agent is starting or running in it, or waits there for the person (parked). A queued one holds none yet (A11-171). */
 const isTalking = (entry: ViewEntry): boolean => entry.talk === true && entry.phase !== "queued" && (entry.phase !== "finished" || isParked(entry));
 
-/** What a person can do to a run from the board. */
-/** A verb the board sends to one queued run: `POST /api/queue/<key>/<verb>`. */
+/** What a person can do to a run from the board: a verb the board sends to one queued run, `POST /api/queue/<key>/<verb>`. */
 export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "talk" | "dismiss" | "apply-edit" | "discard-edit" | "start-anyway";
 
 /** Why a person presses Start anyway, shown as its tooltip: the run starts beside the run that holds a path it shares, and the two may conflict on it. */

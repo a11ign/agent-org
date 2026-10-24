@@ -346,9 +346,10 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
   return fresh;
 }
 
-/** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
+/** What `/api/queue` answers, and every route that changes the queue. The UI's client names this type, so a field renamed here fails its `tsc`. */
 export type QueueView = ReturnType<typeof queueView>;
 
+/** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
 function queueView(board: Pick<Board, "store" | "pool" | "update">) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
@@ -378,9 +379,10 @@ function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
   return shown;
 }
 
-/** The new-ticket requests, each with its status, as the page shows them. */
+/** What `/api/writer` answers, and every route that changes a new-ticket request. */
 export type WritersView = ReturnType<typeof writersViewOf>;
 
+/** The new-ticket requests, each with its status, as the page shows them. */
 function writersViewOf(queue: Queue) {
   return { runs: (queue.writers ?? []).map(writerViewOf) };
 }
