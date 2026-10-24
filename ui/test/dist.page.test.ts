@@ -16,7 +16,8 @@ beforeAll(() => requireBuild());
 describe("the build, as static files", () => {
   it("holds only static assets and no server entry", () => {
     const extensions = new Set(filesUnder(DIST).map((path) => extname(path)));
-    expect([...extensions].sort()).toEqual([".css", ".html", ".js", ".woff2"]);
+    // No stylesheet file: every page carries its styles inline (see the next check).
+    expect([...extensions].sort()).toEqual([".html", ".js", ".woff2"]);
     expect(existsSync(join(DIST, "server"))).toBe(false);
     expect(existsSync(join(DIST, "_worker.js"))).toBe(false);
   });
@@ -25,6 +26,13 @@ describe("the build, as static files", () => {
     const fonts = filesUnder(DIST).filter((path) => path.endsWith(".woff2"));
     expect(fonts.some((path) => /inter-latin-wght-normal\..*\.woff2$/.test(path))).toBe(true);
     expect(fonts.some((path) => /jetbrains-mono-latin-wght-normal\..*\.woff2$/.test(path))).toBe(true);
+  });
+
+  it("links no stylesheet from any page, since the instance's page policy allows only inline styles", () => {
+    const pages = filesUnder(DIST).filter((path) => path.endsWith(".html") && !/<meta http-equiv="refresh"/.test(readFileSync(path, "utf8")));
+    expect(pages.length).toBe(6);
+    expect(pages.filter((path) => /<link[^>]+rel="stylesheet"/.test(readFileSync(path, "utf8")))).toEqual([]);
+    expect(pages.filter((path) => !/<style[ >]/.test(readFileSync(path, "utf8")))).toEqual([]);
   });
 
   it("names no http(s) address in a page or a stylesheet", () => {

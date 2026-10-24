@@ -118,6 +118,55 @@ describe("usePoll cadence", () => {
   });
 });
 
+describe("usePoll with repeat: false, a read made once", () => {
+  it("makes one read after a success and no more, however far the timers advance", async () => {
+    const { read, calls } = scripted([ok([1])]);
+    const { result } = renderHook(() => usePoll(read, { connection: LOCAL, repeat: false }));
+    await advance(0);
+    await advance(60_000);
+    expect(calls).toHaveLength(1);
+    expect(result.current.state).toBe("ready");
+  });
+
+  it("does not read again when the page is hidden and shown", async () => {
+    const { read, calls } = scripted([ok([1])]);
+    renderHook(() => usePoll(read, { connection: LOCAL, repeat: false }));
+    await advance(0);
+    act(() => setVisibility("hidden"));
+    act(() => setVisibility("visible"));
+    await advance(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("still backs off 2s, 4s, 8s after failures, and stops after the success", async () => {
+    const start = Date.now();
+    const { read, calls } = scripted<number[]>([fail(), fail(), fail(), ok([1])]);
+    renderHook(() => usePoll(read, { connection: LOCAL, repeat: false }));
+    await advance(0);
+    await advance(2_000 + 4_000 + 8_000);
+    await advance(60_000);
+    expect(seen(calls, start)).toEqual([0, 2_000, 6_000, 14_000]);
+  });
+
+  it("reads again on refresh, and then waits again", async () => {
+    const { read, calls } = scripted([ok([1]), ok([2])]);
+    const { result } = renderHook(() => usePoll(read, { connection: LOCAL, repeat: false }));
+    await advance(0);
+    act(() => result.current.refresh());
+    await advance(0);
+    await advance(60_000);
+    expect(calls).toHaveLength(2);
+    expect(result.current.data).toEqual([2]);
+  });
+
+  it("is empty for an empty list, as any read is", async () => {
+    const { read } = scripted<number[]>([ok([])]);
+    const { result } = renderHook(() => usePoll(read, { connection: LOCAL, repeat: false }));
+    await advance(0);
+    expect(result.current.state).toBe("empty");
+  });
+});
+
 describe("usePoll reads that land together", () => {
   it("starts one read when refresh and a return to the page land while a read is in flight", async () => {
     const { read, state } = held();
