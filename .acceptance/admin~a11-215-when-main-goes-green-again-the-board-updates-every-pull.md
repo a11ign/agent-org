@@ -12,7 +12,7 @@ On 2026-10-24 agent-org main's `ui` job went red and was fixed by #1853 (A11-214
 - `src/ticket-mode/pool-checks.ts`, `src/ticket-mode/board-view/view-types-and-filters.ts`: a `not-ours` record gains `waitingOnMain`; the rule `updateHeld` and the `updated` record, kept once for the head.
 - Tests, `plugins/README.md`, and the version `plugins/github/package.json` declares.
 
-## Acceptance
+## How it is checked
 
 Lint has no errors and typecheck passes. The named tests pass: `pool-checks.test.ts` (a check red on main is recorded as waited on main and one red only elsewhere is not; main's passing report updates a held pull request once and the card says so; the record stays while the new head's checks run; a conflict adds the conflict line, up-to-date leaves the failure the run's own, a refusal is asked again; a pull request with a check of its own red is not updated; no passing report from main, no update; a conflicting pull request, a host without update-branch and a hold recorded before this rule), `pool.test.ts` (two finished runs held on `ui`: main turns green, three watches, one update each, no round; a conflict queues the conflict round and the other run is still updated; an unwatched run is resumed with the conflict line), `plugins/github/update-branch.test.ts` and `default-branch-checks.test.ts`, and the conformance suites over the fake and the GitHub plugin.
 
