@@ -225,7 +225,7 @@ export type FakeRepositories = {
   cloned: { fullName: string; path: string }[];
 };
 
-const GITHUB_REMOTE = /^(?:(?:git\+)?(?:https?|ssh):\/\/(?:[^@/]+@)?github\.com\/|(?:[^@/\s]+@)?github\.com:)([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/i;
+const GITHUB_REMOTE = /^(?:(?:git\+)?(?:https?|ssh|git):\/\/(?:[^@/]+@)?github\.com(?::\d+)?\/|(?:[^@/\s]+@)?github\.com:)([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/i;
 
 /** The fake's checkout: a directory whose `.git/config` names `fullName`'s GitHub address, which is all the scan of a folder reads. */
 function makeCheckout(fullName: string, path: string): void {

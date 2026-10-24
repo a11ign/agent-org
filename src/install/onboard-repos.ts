@@ -261,7 +261,8 @@ async function askCloneFolder(context: Readonly<{ deps: PickerDeps; surroundings
 function placeFor(repository: HostRepository, folder: string, context: Readonly<{ surroundings: Surroundings; deps: PickerDeps }>): { path: string; existing: Row | null } {
   const { surroundings, deps } = context;
   const path = join(folder, repository.name);
-  if (!deps.exists(path)) return { path, existing: null };
+  // `git clone` takes a destination that is an empty directory.
+  if (!deps.exists(path) || (deps.isDirectory(path) && deps.listDir(path).length === 0)) return { path, existing: null };
   const there = surroundings.repositoryOf(path);
   const found: Row | null = there !== null && same(there.fullName, repository.fullName) ? { name: repository.name, path, fullName: repository.fullName, ok: true, how: "found", picked: true } : null;
   return { path, existing: found ?? { name: repository.name, path, fullName: repository.fullName, ok: false, how: `not cloned: ${surroundings.shown(path)} exists and is not a checkout of ${repository.fullName}`, picked: true } };

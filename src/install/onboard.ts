@@ -272,7 +272,7 @@ async function pickedRepositories(held: Readonly<Record<string, string>>, deps: 
   try {
     return await pickRepositories(held, { cwd: deps.cwd, home: deps.home, repositories, prompts: deps.prompts, out: deps.out, isDirectory: deps.isDirectory, exists: deps.exists, readFile: deps.readFile, listDir: deps.listDir });
   } catch (error) {
-    if (error instanceof PromptCancelled) throw new OnboardRefusal("onboard was stopped at the repositories, and nothing was written");
+    if (error instanceof PromptCancelled) throw new OnboardRefusal("onboard was stopped at the repositories, and its other steps did not run");
     throw error;
   }
 }
@@ -431,7 +431,8 @@ async function clonesOf(options: OnboardOptions, profile: Profile | null, host: 
   }
   const asking = profile === null && options.repos.length === 0 && deps.interactive;
   const picked = asking ? await pickedRepositories(clones, deps) : null;
-  for (const { name, path } of picked ?? []) clones[name] = path;
+  // A name the host file holds is kept as it is: the picker shows it as kept, at the path the file has.
+  for (const { name, path } of picked ?? []) clones[name] ??= path;
   for (const repo of picked === null && asking ? await askRepositories(deps) : options.repos) {
     const [name, path] = parseRepo(repo, deps);
     clones[name] = path;

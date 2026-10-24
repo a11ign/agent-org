@@ -921,6 +921,15 @@ test("A11-186: at a terminal with no --repo onboard picks the repositories in th
   assert.ok(!printed.some((text) => text.includes("Name the repositories a worker can choose from")), "the typed prompt is not asked");
 });
 
+test("A11-186: a held path is written as it was, not normalised, when the picker lists the same repository", async () => {
+  const { deps: d, home } = laptop();
+  mkdirSync(join(home, ".agent-org"), { recursive: true });
+  const trailing = `${join(home, "repos", "agent-org")}/`;
+  writeFileSync(join(home, ".agent-org", "host.json"), JSON.stringify({ clones: { "agent-org": trailing } }));
+  await onboard(options({ start: false }), d);
+  assert.equal(hostOf(home).clones["agent-org"], trailing);
+});
+
 test("A11-186: a repository the host file already holds is kept at its path, whatever the picker lists", async () => {
   const { deps: d, home } = laptop();
   mkdirSync(join(home, ".agent-org"), { recursive: true });
@@ -958,7 +967,7 @@ test("A11-186: a repository picked from the code host and not yet cloned is clon
 test("A11-186: stopping a prompt refuses onboard by its sentence and writes nothing", async () => {
   const prompts: Prompts = { ...pressEnter(), pickMany: () => Promise.reject(new PromptCancelled()) };
   const { deps: d, home, written } = laptop({ prompts });
-  await assert.rejects(onboard(options({ start: false }), d), (error: unknown) => error instanceof OnboardRefusal && error.message === "onboard was stopped at the repositories, and nothing was written");
+  await assert.rejects(onboard(options({ start: false }), d), (error: unknown) => error instanceof OnboardRefusal && error.message === "onboard was stopped at the repositories, and its other steps did not run");
   assert.deepEqual(written, []);
   assert.ok(!existsSync(join(home, ".agent-org", "host.json")));
 });

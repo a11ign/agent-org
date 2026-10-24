@@ -199,6 +199,15 @@ test("a held entry found in the folder at its own path is pre-ticked in step 1, 
   assert.match(summary, /3 repositories go into the host file\./);
 });
 
+test("a checkout the host file holds under another key is kept under that key, and not added a second time under the code host's name", async () => {
+  const { cwd, home } = repos();
+  const { deps, printed } = pickerOver(cwd, home, [accept, no]);
+  const picked = await pickRepositories({ ui: join(cwd, "agent-org") }, deps);
+  assert.deepEqual(picked?.find(({ fullName }) => fullName === "a11ign/agent-org"), { name: "ui", path: join(cwd, "agent-org"), fullName: "a11ign/agent-org" });
+  assert.ok(!picked?.some(({ name }) => name === "agent-org"));
+  assert.doesNotMatch(printed.at(-1)!, /agent-org +\S+\/agent-org/, "one line for the checkout, under the host file's key");
+});
+
 test("a repository the host file holds under its name at another path keeps that path, and step 1 says so", async () => {
   const { cwd, home } = repos();
   const old = tmpDir("onboard-repos-old-");
@@ -259,6 +268,17 @@ test("a destination that is already a checkout of the repository is used, and on
   assert.match(summary, new RegExp(`✗ plugin +${taken}/plugin +not cloned: ${taken}/plugin exists and is not a checkout of a11ign/plugin`));
   assert.equal(readFileSync(join(taken, "plugin", "keep.txt"), "utf8"), "mine");
   assert.deepEqual(host.repositoriesWorld.cloned.map(({ fullName }) => fullName), ["a11ign/toolchain"]);
+});
+
+test("an existing empty directory is cloned into, as git does", async () => {
+  const cwd = tmpDir("onboard-repos-emptydir-");
+  const home = tmpDir("onboard-repos-home-");
+  mkdirSync(join(cwd, "dotfiles"));
+  const { host, deps } = pickerOver(cwd, home, [pick("octo"), pick("octo/dotfiles"), keep, accept]);
+  host.seedRepositories("octo", ["octo/dotfiles"]);
+  const picked = await pickRepositories({}, deps);
+  assert.deepEqual(host.repositoriesWorld.cloned, [{ fullName: "octo/dotfiles", path: join(cwd, "dotfiles") }]);
+  assert.deepEqual(picked?.map(({ name }) => name), ["dotfiles"]);
 });
 
 test("a found checkout that is unticked is left out when the host file does not hold it", async () => {
