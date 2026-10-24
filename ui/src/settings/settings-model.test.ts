@@ -1,5 +1,5 @@
 import type { Row } from "../../../src/ticket-mode/settings-view.ts";
-import { baselineOf, filesStaged, idOf, inForceOfSaved, nameOf, refusedHeading, restoredWords, sentenceOf, stagedIn, stagingOf, unsavedWords, visibleGroups, searchWords } from "./settings-model.ts";
+import { baselineOf, pageOf, sameAsFile, filesStaged, idOf, inForceOfSaved, nameOf, refusedHeading, restoredWords, sentenceOf, stagedIn, stagingOf, unsavedWords, visibleGroups, searchWords } from "./settings-model.ts";
 import type { SettingsRestored, SettingsSaved } from "../api/types.ts";
 
 const row = (fields: Partial<Row> & Pick<Row, "key">): Row => ({
@@ -102,5 +102,22 @@ describe("the words of the banners", () => {
   it("says what a restore changed, or that nothing differed", () => {
     expect(restoredWords({ file: "host.json", changes: [] } as unknown as SettingsRestored)).toBe("Restored host.json from its backup. Nothing differed.");
     expect(restoredWords({ file: "host.json", changes: [{ key: "k", old: "1", new: "2", inForce: "in force now." }] } as unknown as SettingsRestored)).toBe("Restored host.json from its backup. k: 1 → 2. In force now.");
+  });
+});
+
+describe("what the file already says", () => {
+  it("is the same text, or the same value laid out another way, so a normalised save is not staged again", () => {
+    const stall = row({ key: "tickets.stallMinutes", input: "number", raw: "5" });
+    const list = row({ key: "tickets.preflight", input: "json", raw: "[1]" });
+    expect([sameAsFile(stall, "5"), sameAsFile(stall, "5.0"), sameAsFile(stall, "05"), sameAsFile(stall, "6")]).toEqual([true, true, true, false]);
+    expect([sameAsFile(list, "[ 1 ]"), sameAsFile(list, "[2]")]).toEqual([true, false]);
+    expect(stagingOf([stall, list], { [idOf(stall)]: "5.0", [idOf(list)]: "[ 1 ]" }, {}).staged).toEqual([]);
+  });
+
+  it("puts a row on the page its instance says, and decides it by the same rule for an instance that says none", () => {
+    expect(pageOf(row({ key: "tickets.drafts", page: "machine" }))).toBe("machine");
+    const old = { ...row({ key: "tickets.writer.model", group: "Conventions plugin" }), page: undefined } as unknown as Row;
+    expect(pageOf(old)).toBe("models");
+    expect(pageOf({ ...old, key: "tickets.stallMinutes", group: "Workers" } as Row)).toBe("workers");
   });
 });

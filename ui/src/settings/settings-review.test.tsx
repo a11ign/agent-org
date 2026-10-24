@@ -22,6 +22,11 @@ async function expectRefused(reasons: string): Promise<void> {
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(bar().textContent).toContain("1 unsaved change");
 }
+/** Asks for the review of what is staged and gives the dialog's Save button. */
+async function reviewed(): Promise<HTMLElement> {
+  review();
+  return screen.findByRole("button", { name: "Save to host.json" });
+}
 const DRAFTS_WHY = dangerousOf("tickets.drafts") ?? "";
 
 describe("staging a change on a row", () => {
@@ -170,6 +175,18 @@ describe("the review of one file and its dialog", () => {
     expect(screen.getByRole("region", { name: "Unsaved changes" }).textContent).toContain("host.json");
   });
 
+  it("saves what was previewed, and keeps staged what was typed over it while the dialog was open", async () => {
+    const { fetchWith } = await pageOn("workers");
+    type("tickets.stallMinutes", "60");
+    const save = await reviewed();
+    type("tickets.stallMinutes", "70");
+    fireEvent.click(save);
+    await screen.findByText("Saved to host.json.");
+    expect(posts(fetchWith, "/api/settings/save").map((request) => request.body)).toEqual([{ file: "host.json", changes: [{ key: "tickets.stallMinutes", value: 60 }], base: "base-1", confirmed: [] }]);
+    expect(bar().textContent).toContain("1 unsaved change");
+    expect(inputOf("tickets.stallMinutes").value).toBe("70");
+  });
+
   it("Back and Escape close the dialog and keep every staged change", async () => {
     const { fetchWith } = await pageOn("workers");
     type("tickets.stallMinutes", "60");
@@ -240,6 +257,15 @@ describe("a save that is not made", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Save to host.json" }));
     await expectRefused(reasons);
     expect(inputOf("tickets.stallMinutes").value).toBe("0");
+  });
+
+  it("is not said to be refused by the readers when no answer came at all", async () => {
+    await pageOn("workers", { state: settingsOf({ drops: ["/api/settings/preview"] }) });
+    type("tickets.stallMinutes", "60");
+    review();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Failed to fetch");
+    expect(bar().textContent).toContain("1 unsaved change");
   });
 
   it("is the file changing: the conflict banner keeps every change staged, and Read the file again reads the settings again", async () => {

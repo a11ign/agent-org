@@ -34,14 +34,17 @@ function SearchRow({ query, setQuery, showDefaults, setShowDefaults }: Readonly<
   );
 }
 
+/** The id of a group's heading, which names its section. */
+const headingId = (group: string): string => `h-g-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
+
 /** The groups of one file, each with its rows. */
 function Groups({ groups, editing }: Readonly<{ groups: readonly RowGroup[]; editing: Editing }>) {
   const stagedIds = new Set(editing.staged.map(({ id }) => id));
   return (
     <>
       {groups.map(({ group, rows }) => (
-        <section key={group} aria-labelledby={`h-g-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`} className="settings-section">
-          <h3 id={`h-g-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`} className="settings-section-title">{group}</h3>
+        <section key={group} aria-labelledby={headingId(group)} className="settings-section">
+          <h3 id={headingId(group)} className="settings-section-title">{group}</h3>
           <div className="settings-card">
             {rows.map((row) => {
               const id = idOf(row);

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Client } from "../api/client.ts";
 import type { EditFile, SettingsPreview } from "../api/types.ts";
 import type { Row } from "../../../src/ticket-mode/settings-view.ts";
-import { baselineOf, type Drafts, idOf, inForceOfSaved, isConflict, nameOf, restoredWords, stagedIn, stagingOf, type Staged, type Staging } from "./settings-model.ts";
+import { sameAsFile, type Drafts, idOf, inForceOfSaved, isConflict, nameOf, restoredWords, stagedIn, stagingOf, type Staged, type Staging } from "./settings-model.ts";
 
 /** A review that is open: the file, what the instance says a save of the staged changes would do, and the staged changes it was asked about. */
 export type Review = Readonly<{ file: EditFile; preview: SettingsPreview; sent: readonly Staged[] }>;
@@ -29,6 +29,11 @@ export type HostFile = Readonly<{
   clearOutcome: () => void;
 }>;
 
+/** What a failed preview or save comes to: the instance's refusal, or, when no answer came at all, only what the browser said, since nothing was refused. */
+function failure(file: EditFile, answer: Readonly<{ status: number; refusal: string }>): Outcome {
+  return answer.status === 0 ? { kind: "failed", sentence: answer.refusal } : { kind: "refused", file, sentence: answer.refusal };
+}
+
 type Inputs = Readonly<{
   client: Client;
   /** Reads the settings again, as a save and "Read the file again" do. */
@@ -53,7 +58,7 @@ export function useHostFile({ client, read, rows, drafts, discard }: Inputs): Ho
 
   // Once the file says what was sent, that is the row's value: its draft goes, and the row shows the file.
   useEffect(() => {
-    const landed = rows.filter((row) => settled[idOf(row)] !== undefined && baselineOf(row) === settled[idOf(row)]).map(idOf);
+    const landed = rows.filter((row) => settled[idOf(row)] !== undefined && sameAsFile(row, settled[idOf(row)])).map(idOf);
     if (landed.length === 0) return;
     discard(landed);
     setSettled((before) => Object.fromEntries(Object.entries(before).filter(([id]) => !landed.includes(id))));
@@ -66,7 +71,7 @@ export function useHostFile({ client, read, rows, drafts, discard }: Inputs): Ho
     const answer = await client.previewSettings(file, sent.map(({ change }) => change));
     setBusy(false);
     if (answer.ok) setReview({ file, preview: answer.data, sent });
-    else setOutcome({ kind: "refused", file, sentence: answer.refusal });
+    else setOutcome(failure(file, answer));
   }
 
   async function save(confirmed: ReadonlySet<string>) {
@@ -77,11 +82,11 @@ export function useHostFile({ client, read, rows, drafts, discard }: Inputs): Ho
     setBusy(false);
     setReview(null);
     if (!answer.ok) {
-      setOutcome(isConflict(answer.refusal) ? { kind: "conflict" } : { kind: "refused", file, sentence: answer.refusal });
+      setOutcome(isConflict(answer.refusal) ? { kind: "conflict" } : failure(file, answer));
       return;
     }
     setOutcome({ kind: "saved", file, backup: nameOf(answer.data.backup), inForce: inForceOfSaved(answer.data), note: answer.data.note });
-    setSettled((before) => ({ ...before, ...Object.fromEntries(sent.map(({ id }) => [id, drafts[id]])) }));
+    setSettled((before) => ({ ...before, ...Object.fromEntries(sent.map(({ id, draft }) => [id, draft])) }));
     read();
   }
 

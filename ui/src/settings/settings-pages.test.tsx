@@ -80,6 +80,22 @@ describe("the rows of a page", () => {
     await screen.findByText("No setting matches");
   });
 
+  it("draws a row of an instance on an older build, which says no page, on the page the same rule gives it", async () => {
+    const older = () => {
+      const view = viewOf();
+      return { ...view, groups: view.groups.map((group) => ({ ...group, rows: group.rows.map(({ page: _page, default: _default, inForce: _inForce, ...rest }) => rest) })) } as unknown as ReturnType<typeof viewOf>;
+    };
+    await pageOn("workers", { state: settingsOf({ view: older }) });
+    expect(keysShown()).toEqual(["tickets.stallMinutes", "tickets.preflight", "tickets.drafts", "tickets.capture"]);
+    expect(rowOf("tickets.drafts").textContent).toContain("Not set by default");
+  });
+
+  it("says \"not set\" for a switch whose default depends on other settings, rather than a value it does not know", async () => {
+    await pageOn("machine");
+    expect(within(rowOf("tickets.providers.reviewer.required")).getByText("not set")).toBeTruthy();
+    expect(within(rowOf("tickets.designTools")).getByText("false")).toBeTruthy();
+  });
+
   it("nests a role's keys under the role's row, and hides a role's App fields while the role uses none", async () => {
     await pageOn("machine");
     expect(keysShown()).toContain("tickets.providers.codeHost.identity.reviewer");

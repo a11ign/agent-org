@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Drafts } from "./settings-model.ts";
 
 /** The browser's `sessionStorage`, or null where it is refused (a private window, a blocked site): the drafts are then kept for this page alone. */
@@ -43,16 +43,11 @@ export type DraftState = Readonly<{
 export function useDrafts(connection: string): DraftState {
   const key = draftsKey(connection);
   const [drafts, setDrafts] = useState<Drafts>(() => recalled(key));
-  const update = useCallback((next: (before: Drafts) => Drafts) => {
-    setDrafts((before) => {
-      const after = next(before);
-      remembered(key, after);
-      return after;
-    });
-  }, [key]);
+  // What is typed is kept for the tab as it changes.
+  useEffect(() => remembered(key, drafts), [key, drafts]);
   return {
     drafts,
-    type: (id, text) => update((before) => ({ ...before, [id]: text })),
-    discard: (ids) => update((before) => Object.fromEntries(Object.entries(before).filter(([id]) => !ids.includes(id)))),
+    type: (id, text) => setDrafts((before) => ({ ...before, [id]: text })),
+    discard: (ids) => setDrafts((before) => Object.fromEntries(Object.entries(before).filter(([id]) => !ids.includes(id)))),
   };
 }

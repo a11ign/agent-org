@@ -3,8 +3,8 @@ import { baselineOf } from "./settings-model.ts";
 
 /** What the row says under its explanation: what the key is when its file does not hold it, and when a change is in force, in the schema's own words. */
 export function metaOf(row: Row): string {
-  const base = row.default === null ? "Not set by default" : `Default: ${row.default}`;
-  return row.inForce === null ? base : `${base} · ${row.inForce.replace(/\.$/, "")}`;
+  const base = row.default == null ? "Not set by default" : `Default: ${row.default}`;
+  return row.inForce == null ? base : `${base} · ${row.inForce.replace(/\.$/, "")}`;
 }
 
 type Edit = Readonly<{ draft: string | undefined; onType: (text: string) => void; readOnly: boolean }>;
@@ -14,10 +14,12 @@ function RowInput({ row, edit }: Readonly<{ row: Row; edit: Edit }>) {
   const text = edit.draft ?? baselineOf(row);
   const name = { "aria-label": row.key } as const;
   if (row.input === "boolean") {
+    // A switch whose default is a sentence (it depends on what else is set) says "not set" while the file holds none, rather than a value it does not know.
+    const unknown = row.raw === null && row.default !== "true" && row.default !== "false";
     return (
       <label className="settings-switch">
         <input type="checkbox" {...name} checked={text === "true"} disabled={edit.readOnly} onChange={(event) => edit.onType(String(event.target.checked))} />
-        <span>{text}</span>
+        <span>{unknown && edit.draft === undefined ? "not set" : text}</span>
       </label>
     );
   }

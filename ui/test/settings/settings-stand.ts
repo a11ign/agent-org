@@ -20,7 +20,7 @@ const byKey = (keys: readonly string[]): Entry[] => defaultSchema().filter((entr
 export const BOARD_KEYS: readonly string[] = [
   "tickets.writer.model", "tickets.writer.effort", "tickets.publish.model", "tickets.drafts", "tickets.capture", "tickets.max", "tickets.stallMinutes", "tickets.preflight",
   "tickets.designTools", "home", "tickets.providers.tracker.provider", "tickets.providers.codeHost.identity", "tickets.providers.codeHost.identity.<role>", "tickets.providers.codeHost.identity.<role>.mode",
-  "tickets.providers.codeHost.identity.<role>.appId", "tickets.deny", "units.prefix", "model", "effort", "planModel", "planEffort", "writerModel", "writerEffort",
+  "tickets.providers.codeHost.identity.<role>.appId", "tickets.providers.reviewer.required", "tickets.providers.reviewer.provider", "tickets.deny", "units.prefix", "model", "effort", "planModel", "planEffort", "writerModel", "writerEffort",
 ];
 
 const section = (file: string, raw: Record<string, unknown> | null, refusal: string | null = null): Section => ({ file, raw, refusal });
@@ -70,6 +70,8 @@ export type SettingsStand = {
   paused: boolean;
   /** The runs `/api/queue` lists beside `max` and `paused`, which it reads from here so a change the page makes is what the next read says. */
   entries: readonly unknown[];
+  /** Paths (by their end) whose request gets no answer at all, as when the browser cannot send it. */
+  drops?: readonly string[];
   /** Replaces the instance's own answer to a call, by route. */
   answers: Partial<{
     preview: (body: { file: string; changes: readonly Change[] }) => Answered<SettingsPreview>;
@@ -158,6 +160,7 @@ export function settingsFetch(stand: Stand, state: SettingsStand): Fetch & Reado
     const request = { method: init?.method ?? "GET", body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined };
     paths.push(path);
     requests.push({ ...request, path });
+    if (state.drops?.some((dropped) => path.endsWith(dropped)) === true) throw new TypeError("Failed to fetch");
     if (stand.holdInstance === true) return inner(input, init);
     const own = answerSettings(state, path, request);
     return own === null ? inner(input, init) : new Response(own.body, { status: own.status, headers: { "Content-Type": "application/json" } });

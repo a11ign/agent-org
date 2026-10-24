@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { Answer } from "../api/answer.ts";
 import type { Client } from "../api/client.ts";
 import type { QueueView } from "../api/types.ts";
 import type { LifecycleView } from "../lifecycle/Lifecycle.tsx";
@@ -27,7 +28,7 @@ export function usePool(client: Client, queue: LifecycleView<QueueView>): Pool {
   useEffect(() => setAnswered(null), [queue.data]);
   const current = answered ?? queue.data;
 
-  async function answer(change: Promise<Awaited<ReturnType<Client["setMax"]>>>, settle: (state: SaveState) => void) {
+  async function answer(change: Promise<Answer<QueueView>>, settle: (state: SaveState) => void) {
     settle({ kind: "saving" });
     const result = await change;
     if (result.ok) {

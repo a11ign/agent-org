@@ -4,7 +4,7 @@
 // dangerous key are the backend's. What is here is only the choosing between them.
 import type { Change, EditFile, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView } from "../api/types.ts";
 import { searchGroups } from "../../../src/ticket-mode/settings-search.ts";
-import type { Row, SettingsPage } from "../../../src/ticket-mode/settings-view.ts";
+import { settingsPageOf, type Row, type SettingsPage } from "../../../src/ticket-mode/settings-view.ts";
 
 /** The subtitle each page of the split has under its h1, as the boards word it. */
 export const PAGE_WORDS: Readonly<Record<SettingsPage, string>> = {
@@ -28,13 +28,16 @@ export const isControlRow = (row: Row): boolean => row.file === "choice.json" ||
 /** Every row of the view that a person may edit in place, whatever page it is on: what a staged edit is made from. */
 export const editableRows = (view: SettingsView): Row[] => view.groups.flatMap((group) => group.rows).filter((row) => row.editable && row.input !== null && !isControlRow(row));
 
+/** The page a row is on. An instance on an older build sends none, so it is decided here by the same rule. */
+export const pageOf = (row: Row): SettingsPage => (row.page as SettingsPage | undefined) ?? settingsPageOf(row);
+
 /** One group of rows as a page draws it. */
 export type RowGroup = Readonly<{ group: string; rows: readonly Row[] }>;
 
 /** The groups of the page's rows, in the view's order, without the rows its controls stand for. A group with no row of this page is left out. */
 export function pageGroups(view: SettingsView, page: SettingsPage): RowGroup[] {
   return view.groups
-    .map(({ group, rows }) => ({ group, rows: rows.filter((row) => row.page === page && !isControlRow(row)) }))
+    .map(({ group, rows }) => ({ group, rows: rows.filter((row) => pageOf(row) === page && !isControlRow(row)) }))
     .filter(({ rows }) => rows.length > 0);
 }
 
@@ -77,7 +80,7 @@ export function baselineOf(row: Row): string {
 }
 
 /** A change staged on a row: the row it is on, and the request that would make it. */
-export type Staged = Readonly<{ id: string; file: EditFile; row: Row; change: Change }>;
+export type Staged = Readonly<{ id: string; file: EditFile; row: Row; change: Change; draft: string }>;
 
 /** The staged changes of the typed drafts, and, for a draft that does not read, what is wrong with it (said on its row, and not staged). */
 export type Staging = Readonly<{ staged: readonly Staged[]; problems: Readonly<Record<string, string>> }>;
@@ -99,6 +102,12 @@ function readDraft(row: Row, draft: string): Read {
   return draft === "" ? { change: { key: row.key, remove: true } } : { change: { key: row.key, value: draft } };
 }
 
+/** Whether `text` says what the file already holds for the row: the same text, or the same value (`5.0` for `5`, a list laid out another way). */
+export function sameAsFile(row: Row, text: string): boolean {
+  const file = baselineOf(row);
+  return text === file || JSON.stringify(readDraft(row, text)) === JSON.stringify(readDraft(row, file));
+}
+
 /**
  * The staged changes: every row whose draft differs from what the file holds. `settled` are the drafts a save has just sent, by id: while a row's draft is still that text it is not staged, though
  * the page has not yet read the file it was saved to. Typing in the row again stages it as any other.
@@ -109,10 +118,10 @@ export function stagingOf(rows: readonly Row[], drafts: Drafts, settled: Drafts)
   for (const row of rows) {
     const id = idOf(row);
     const draft = drafts[id];
-    if (draft === undefined || draft === baselineOf(row) || settled[id] === draft) continue;
+    if (draft === undefined || sameAsFile(row, draft) || settled[id] === draft) continue;
     const read = readDraft(row, draft);
     if ("problem" in read) problems[id] = read.problem;
-    else if (row.file !== "choice.json") staged.push({ id, file: row.file, row, change: read.change });
+    else if (row.file !== "choice.json") staged.push({ id, file: row.file, row, change: read.change, draft });
   }
   return { staged, problems };
 }
