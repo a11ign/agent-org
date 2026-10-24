@@ -31,7 +31,7 @@ describe("Queue its children and Grill", () => {
   it("starts a Grill in a blank tab opened in the click, and points the tab at the run's terminal once it has one", async () => {
     const tab = { closed: false, close: rstest.fn(), location: { href: "" } };
     const open = rstest.spyOn(window, "open").mockReturnValue(tab as never);
-    const run = { id: "grill-1", phase: "running", workspace: "w1", pane: "p1" };
+    const run = { id: "grill-1", request: "Grill A11-2", mode: "grill", placement: "auto", phase: "running", status: "writing", form: {}, workspace: "w1", pane: "p1", tickets: [], ticket: "A11-2" };
     const post = (path: string) => (path === "/api/grill-ticket" ? { runs: [run] } : undefined);
     const instance = answers([decision], { config: queueingConfig({ terminal: "https://terminal.example/{workspace}/{pane}" } as never), post, writer: { runs: [run] } as never });
     const { fetchWith } = await openPage(standOf(instance));

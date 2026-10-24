@@ -1,0 +1,356 @@
+/* The New ticket dialog and the request strip, as the ten New ticket boards lay them out. Every value is a token. */
+
+/* The dialog. */
+.nt-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--dialog-top) var(--dialog-side);
+  overflow: auto;
+  background: var(--color-overlay);
+}
+.nt-dialog {
+  display: flex;
+  flex-direction: column;
+  width: var(--dialog-width);
+  max-width: 100%;
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-12);
+  background: var(--color-raised);
+  box-shadow: var(--shadow-dialog);
+}
+.nt-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-14) var(--space-18);
+  border-bottom: 1px solid var(--color-divider);
+}
+.nt-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: var(--font-size-title);
+  line-height: var(--space-24);
+  font-weight: var(--font-weight-semibold);
+}
+.nt-close {
+  display: flex;
+  padding: var(--space-4);
+  border-color: transparent;
+  color: var(--color-text-nav);
+}
+.nt-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding: var(--space-16) var(--space-18);
+}
+.nt-refused {
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-8);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-body);
+}
+.nt-refused strong {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-danger-heading);
+}
+.nt-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.nt-label {
+  font-weight: var(--font-weight-medium);
+}
+.nt-request {
+  resize: vertical;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-8);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+.nt-hint {
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+}
+
+/* How to write it: two cards, the chosen one in the accent. */
+.nt-modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--measure-mode-card), 1fr));
+  gap: var(--space-10);
+}
+.nt-mode {
+  display: flex;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-8);
+  cursor: pointer;
+}
+.nt-mode-chosen {
+  border-color: var(--color-accent);
+  background: var(--color-chosen);
+}
+.nt-mode input {
+  margin: var(--space-3) 0 0;
+  accent-color: var(--color-accent-light);
+}
+.nt-mode-name {
+  display: block;
+  font-weight: var(--font-weight-medium);
+}
+.nt-mode-text {
+  display: block;
+  font-size: var(--font-size-small);
+  color: var(--color-text-count);
+}
+
+/* Placement: the Auto and Manual toggle, and what each says or asks. */
+.nt-placement {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.nt-placement-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+}
+.nt-placement-title {
+  flex: 1 1 auto;
+  font-weight: var(--font-weight-medium);
+}
+.nt-toggle {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-surface);
+}
+.nt-toggle button {
+  padding: var(--space-2) var(--space-12);
+  border: 0;
+  border-radius: var(--radius-4);
+  background: transparent;
+  color: var(--color-text-nav);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+}
+.nt-toggle button[aria-checked="true"] {
+  background: var(--color-segment-active);
+  color: var(--color-on-accent);
+}
+.nt-auto-text {
+  margin: 0;
+  font-size: var(--font-size-small);
+  color: var(--color-text-count);
+}
+.nt-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--measure-field), 1fr));
+  gap: var(--space-12);
+}
+.nt-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  color: var(--color-text-nav);
+}
+.nt-fields select,
+.nt-fields input {
+  padding: var(--space-5) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+}
+.nt-parent {
+  grid-column: 1 / -1;
+}
+.nt-parent input {
+  max-width: var(--input-width);
+  font-family: var(--font-mono);
+}
+.nt-optional {
+  color: var(--color-text-muted);
+}
+
+/* The footer: the writer pill, Cancel and Write ticket. */
+.nt-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+  padding: var(--space-12) var(--space-18);
+  border-top: 1px solid var(--color-divider);
+}
+.nt-pill {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  max-width: max-content;
+  padding: var(--space-2) var(--space-10) var(--space-2) var(--space-8);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-nav);
+  font-size: var(--font-size-small);
+}
+.nt-pill:hover {
+  background: var(--color-hover);
+  border-color: var(--color-border-hover);
+}
+.nt-pill-choice {
+  color: var(--color-text);
+  font-family: var(--font-mono);
+}
+.nt-spacer {
+  flex: 1 1 0;
+}
+.nt-cancel {
+  padding: var(--space-5) var(--space-12);
+  font-size: var(--font-size-body);
+}
+.primary.nt-write:disabled {
+  opacity: var(--opacity-sending);
+}
+
+/* The request strip: one card per request, under the page's header. */
+.run-card {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-sidebar);
+}
+.run-card-writing {
+  border-color: var(--color-writing-border);
+}
+.run-card-waiting {
+  border-color: var(--color-warn-border);
+}
+.run-card-failed {
+  border-color: var(--color-danger-border);
+}
+.run-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-12);
+  padding: var(--space-10) var(--space-14);
+}
+.run-dot {
+  flex: 0 0 auto;
+  width: var(--dot-size-run);
+  height: var(--dot-size-run);
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+.run-card-writing .run-dot {
+  background: var(--color-accent);
+}
+.run-card-waiting .run-dot {
+  background: var(--color-warn-text);
+}
+.run-card-done .run-dot {
+  background: var(--color-success-dot);
+}
+.run-card-failed .run-dot {
+  background: var(--color-danger-dot);
+}
+.run-label {
+  font-weight: var(--font-weight-semibold);
+}
+.run-card-waiting .run-label {
+  color: var(--color-warn-text);
+}
+.run-card-done .run-label {
+  color: var(--color-done-text);
+}
+.run-card-failed .run-label {
+  color: var(--color-danger-dot);
+}
+.run-by {
+  color: var(--color-text-muted);
+}
+.run-spacer {
+  flex: 1 1 0;
+}
+.run-stop {
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+}
+.run-dismiss {
+  color: var(--color-text-nav);
+}
+.run-request {
+  max-width: var(--measure-readable);
+  padding: 0 var(--space-14) var(--space-12);
+  color: var(--color-text-nav);
+  overflow-wrap: anywhere;
+}
+.run-note {
+  margin: 0 var(--space-14) var(--space-12);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--color-warn-border);
+  border-radius: var(--radius-6);
+  background: var(--color-warn-note-bg);
+  color: var(--color-warn-soft);
+  overflow-wrap: anywhere;
+}
+.run-note-failed {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-body);
+}
+.run-made {
+  border-top: 1px solid var(--color-border);
+}
+.run-made-title {
+  padding: var(--space-8) var(--space-14) var(--space-4);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.run-ticket {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-12);
+  min-height: var(--space-32);
+  padding: var(--space-6) var(--space-14);
+}
+a.run-ticket:hover {
+  background: var(--color-row-hover);
+}
+.run-ticket-key {
+  flex: 0 0 var(--row-key-width);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  color: var(--color-accent-lighter);
+}
+.run-ticket-title {
+  flex: 1 1 var(--measure-title-basis);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-ticket-meta {
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+}

@@ -15,7 +15,7 @@ const LOOK_AGAIN_MS = 1000;
 export type TerminalLook = Readonly<{ link: string | null; over: boolean }>;
 
 /** The terminal link of a new-ticket run (a Grill is one) that is running with a workspace, or null. */
-function runLink(template: string | null, run: Readonly<{ id: string; phase: string; workspace?: string; pane?: string }>): string | null {
+export function runLink(template: string | null, run: Readonly<{ id: string; phase: string; workspace?: string; pane?: string }>): string | null {
   if (run.phase !== "running" || run.workspace === undefined) return null;
   return terminalLink(template, { ticket: { key: run.id }, phase: run.phase, workspace: run.workspace, ...(run.pane === undefined ? {} : { pane: run.pane }) });
 }
