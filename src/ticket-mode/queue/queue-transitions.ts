@@ -5,6 +5,8 @@ import { settledByPulls } from "../board-view/pull-settled.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictsIn } from "../worker-files.ts";
 import type { RunWorker } from "./queue-run-detail.ts";
+import { loggedPersonRound } from "./queue-person-round.ts";
+import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
 import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type Queue, type WorkingNote, writerLive } from "./queue-entries-and-outcomes.ts";
 
 /**
@@ -16,7 +18,8 @@ import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, repla
 export function approve(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.outcome?.kind !== "draft-pr" || !reviewable(entry)) return queue;
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, openPulls(entry), now)] };
+  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, openPulls(entry), now)] };
+  return loggedPersonRound(queued, entry, "approve", now, null);
 }
 
 /**
@@ -50,7 +53,8 @@ export function respond(queue: Queue, key: string, now: number): Queue {
   if (entry === undefined || isParked(entry)) throw new Error(`${key}'s workspace is open: it is closed before Respond acts`);
   if (entry.outcome?.kind === "draft-pr") return approve(queue, key, now);
   const conflict = conflictsIn(entry.handedBack ?? "");
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, openPulls(entry), now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
+  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, openPulls(entry), now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
+  return loggedPersonRound(queued, entry, "respond", now, conflict === null ? null : shortReason(conflict));
 }
 
 /**
@@ -81,7 +85,7 @@ export const MAX_FEEDBACK_ROUNDS = 3;
 export function feedbackRound(queue: Queue, key: string, feedback: string, now: number, heads?: CheckHeads): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || !isWatched(entry)) return queue;
-  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now);
+  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now, "feedback");
 }
 
 /** What the board has answered the red checks of a run's pull requests at, by URL (A11-154). */
@@ -90,12 +94,16 @@ type CheckHeads = Readonly<Record<string, CheckHead>>;
 /** `entry` with the heads its red checks were answered at, or as it is when there are none to record. PURE. */
 const withHeads = (entry: Entry, heads: CheckHeads | undefined): Entry => (heads === undefined ? entry : { ...entry, checkHeads: heads });
 
-/** A round for `entry` that answers `feedback`, or, once the board has started {@link MAX_FEEDBACK_ROUNDS} of its own, the run handed to a person with the latest feedback named. */
-function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: number): Queue {
+/**
+ * A round for `entry` that answers `feedback`, for `cause`, or, once the board has started {@link MAX_FEEDBACK_ROUNDS} of its own, the run handed to a person with the latest feedback named, which logs that it needs them
+ * when the words of the hand-back are new (A11-219).
+ */
+function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue {
   const rounds = entry.rounds ?? 0;
-  if (rounds < MAX_FEEDBACK_ROUNDS) return queueRound(queue, entry, feedback, now);
+  if (rounds < MAX_FEEDBACK_ROUNDS) return queueRound(queue, entry, feedback, now, cause);
   const handedBack = `The pull requests keep getting feedback: the board answered ${rounds} rounds on its own and stopped. Respond to review starts another. The latest: ${feedback}`;
-  return replace(queue, entry.ticket.key, (e) => ({ ...e, handedBack, ...(entry.checkHeads === undefined ? {} : { checkHeads: entry.checkHeads }) }));
+  const handed = replace(queue, entry.ticket.key, (e) => ({ ...e, handedBack, ...(entry.checkHeads === undefined ? {} : { checkHeads: entry.checkHeads }) }));
+  return entry.handedBack === handedBack ? handed : logEvent(handed, entry.ticket.key, now, { kind: "needs-you", reason: shortReason(handedBack) ?? handedBack });
 }
 
 /**
@@ -107,7 +115,7 @@ function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: numb
 export function checkRound(queue: Queue, key: string, feedback: string, now: number, heads: CheckHeads): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || !resumesOnConflict(entry)) return queue;
-  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now);
+  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now, "checks");
 }
 
 /** Record what the board did about the red checks of a finished run's pull requests, when it started no round for it: a rerun, or checks named for a person (A11-154). */
@@ -118,10 +126,11 @@ export function recordCheckHeads(queue: Queue, key: string, heads: CheckHeads): 
 /** Whether the board may start one more round of its own on `entry`: it has started fewer than {@link MAX_FEEDBACK_ROUNDS} since a person approved. */
 export const roundsLeft = (entry: Entry): boolean => (entry.rounds ?? 0) < MAX_FEEDBACK_ROUNDS;
 
-/** `entry` goes back on the queue, at the end, as a review round that answers `feedback` and counts as one of the board's own rounds. */
-function queueRound(queue: Queue, entry: Entry, feedback: string, now: number): Queue {
+/** `entry` goes back on the queue, at the end, as a review round that answers `feedback`, for `cause`, and counts as one of the board's own rounds. */
+function queueRound(queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue {
   const round: Entry = { ...reviewRound(entry, openPulls(entry), now), feedback, rounds: (entry.rounds ?? 0) + 1 };
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== entry.ticket.key), round] };
+  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== entry.ticket.key), round] };
+  return logEvent(queued, entry.ticket.key, now, { kind: "round", cause, reason: shortReason(feedback) });
 }
 
 /**
@@ -133,7 +142,7 @@ export function conflictRound(queue: Queue, key: string, feedback: string, now: 
   const entry = find(queue, key);
   const cannotResume = entry === undefined || entry.phase !== "finished" || isWatched(entry) || !resumesOnConflict(entry) || !roundsLeft(entry);
   if (cannotResume) return queue;
-  return queueRound(queue, entry, feedback, now);
+  return queueRound(queue, entry, feedback, now, "conflict");
 }
 
 /**
@@ -177,7 +186,8 @@ export function publishDone(queue: Queue, links: readonly string[], now: number)
   if (publish === undefined) return queue;
   const published = { link: links[0] ?? null, at: now };
   const ended: PublishRun = { ...withoutWorkspace(publish), ...lastTerminalOf(publish), phase: "finished", finishedAt: now };
-  return { ...queue, publish: ended, entries: queue.entries.map((e) => (publish.keys.includes(e.ticket.key) ? { ...e, published } : e)) };
+  const done = { ...queue, publish: ended, entries: queue.entries.map((e) => (publish.keys.includes(e.ticket.key) ? { ...e, published } : e)) };
+  return publish.keys.reduce<Queue>((next, key) => logEvent(next, key, now, { kind: "published", link: published.link }), done);
 }
 
 /** The publish run failed: its runs stay as they were, and the board says why. */
@@ -239,18 +249,29 @@ export function recordRepos(queue: Queue, key: string, repos: readonly string[])
 }
 
 export function markRunning(queue: Queue, key: string, workspace: string, pane: string): Queue {
-  return replace(queue, key, (entry) => ({ ...entry, phase: "running", workspace, pane }));
+  const before = find(queue, key);
+  const running = replace(queue, key, (entry) => ({ ...entry, phase: "running", workspace, pane }));
+  if (before?.phase !== "starting" || before.startedAt === undefined) return running;
+  // The start is logged here, once its agent is open, at the time it began: a start that is put back on the queue (its plan reached the ticket, or it plans again) or refused never ran. A planning run starts on the
+  // choice its plan was asked with, and any other on the entry's own.
+  const { model, effort } = before.plan ?? before;
+  return logEvent(running, key, before.startedAt, { kind: "started", model, effort, instance: before.worker?.instance ?? null });
 }
 
 /**
  * What herdr says the agent is doing: `working` marks it seen, and any status but the four ordinary ones means it is waiting on a person. `prompt` is the first line of
  * the dialog its pane shows, kept while it waits and dropped when it does not (A11-174).
  */
-export function observe(queue: Queue, key: string, status: string, prompt?: string): Queue {
-  return replace(queue, key, ({ prompt: _earlier, ...entry }) => {
-    const waiting = !["working", "idle", "done", "unknown"].includes(status);
-    return { ...entry, seenWorking: entry.seenWorking === true || status === "working", waiting, ...(waiting && prompt !== undefined ? { prompt } : {}) };
-  });
+export function observe(queue: Queue, key: string, status: string, prompt?: string, now?: number): Queue {
+  const waiting = !["working", "idle", "done", "unknown"].includes(status);
+  const before = find(queue, key);
+  const was = before?.waiting === true;
+  const observed = replace(queue, key, ({ prompt: _earlier, ...entry }) =>
+    ({ ...entry, seenWorking: entry.seenWorking === true || status === "working", waiting, ...(waiting && prompt !== undefined ? { prompt } : {}) }));
+  // A change of whether the run waits is the event: the pool observes it on every pass (A11-219).
+  if (before === undefined) return observed;
+  if (waiting && !was) return logEvent(observed, key, now, { kind: "needs-you", reason: shortReason(prompt ?? "") ?? status });
+  return !waiting && was ? logEvent(observed, key, now, { kind: "answered", by: "terminal" }) : observed;
 }
 
 /**
@@ -327,7 +348,22 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
 
 /** The run has ended and its workspace is gone. */
 export function finish(queue: Queue, key: string, outcome: Outcome, now: number, record: RunRecord = {}): Queue {
-  return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), ...lastTerminalOf(entry), workspace: undefined, pane: undefined }));
+  const finished = replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), ...lastTerminalOf(entry), workspace: undefined, pane: undefined }));
+  return loggedEnd(queue, finished, key, outcome, now);
+}
+
+/**
+ * The events of a run that ended on `outcome`, after the queue `finished` is made from `before`: each pull request the outcome names that the log has not seen opened, that it finished, and that it needs a person when it asked one.
+ * A run already finished on this very outcome logs nothing, so a run parked and then finished on the same word is one ending (A11-219). PURE.
+ */
+function loggedEnd(before: Queue, finished: Queue, key: string, outcome: Outcome, now: number): Queue {
+  const was = find(before, key);
+  if (was === undefined || (was.phase === "finished" && JSON.stringify(was.outcome) === JSON.stringify(outcome))) return finished;
+  const opened = ("prs" in outcome ? outcome.prs : []).filter(({ url }) => !logHas(finished, key, (event) => event.kind === "pr-opened" && event.url === url));
+  const withPulls = opened.reduce<Queue>((next, { url }) => logEvent(next, key, now, { kind: "pr-opened", url }), finished);
+  const reason = "reason" in outcome ? shortReason(outcome.reason) : null;
+  const ended = logEvent(withPulls, key, now, { kind: "finished", outcome: outcome.kind, ...(reason === null ? {} : { reason }) });
+  return outcome.kind === "needs-human" ? logEvent(ended, key, now, { kind: "needs-you", reason: reason ?? outcome.kind }) : ended;
 }
 
 /**
@@ -336,19 +372,23 @@ export function finish(queue: Queue, key: string, outcome: Outcome, now: number,
  * ends for good, or its workspace is closed ({@link unpark}).
  */
 export function park(queue: Queue, key: string, outcome: Outcome, now: number, record: RunRecord = {}): Queue {
-  return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), ...(entry.talk === true ? { talk: true, ...(entry.talkFrom ? { talkFrom: entry.talkFrom } : {}) } : {}) }));
+  const parked = replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), ...(entry.talk === true ? { talk: true, ...(entry.talkFrom ? { talkFrom: entry.talkFrom } : {}) } : {}) }));
+  return loggedEnd(queue, parked, key, outcome, now);
 }
 
 /**
  * The ticket has its plan: it goes back on the queue, where it was, to be worked with its own model and effort. A planning run leaves nothing
  * behind but the mark that its plan was decided for the person; `unattended` is false for a plan that reached the ticket some other way.
  */
-export function planDone(queue: Queue, key: string, { unattended = true }: { unattended?: boolean; } = {}): Queue {
+export function planDone(queue: Queue, key: string, { unattended = true, now }: { unattended?: boolean; now?: number } = {}): Queue {
   // The choice it was planned with and what its blockers gave its planner are kept (A11-167): a plan that goes stale is written again on the same choice, and the findings are not read twice. What their pull requests declared is kept too (A11-206), so a run does not wait a sweep for it again.
   // A stale plan written again leaves a run that had these before it: the record of the move it made, the plan steps merged and the overlap a person started it past (A11-167).
-  return replace(queue, key, ({ ticket, repos, model, effort, queuedAt, blockers, plan, learned, blockersDeclared, plannedAgainst, movedFrom, steps, overlapOverride }) =>
+  const planned = replace(queue, key, ({ ticket, repos, model, effort, queuedAt, blockers, plan, learned, blockersDeclared, plannedAgainst, movedFrom, steps, overlapOverride }) =>
     ({ ticket, repos, model, effort, ...(unattended ? { planned: true } : {}), ...(plan ? { plannedWith: plan } : {}), ...(learned ? { learned } : {}), ...(blockersDeclared ? { blockersDeclared } : {}), ...(plannedAgainst ? { plannedAgainst } : {}),
       ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}), ...(overlapOverride ? { overlapOverride } : {}), phase: "queued", queuedAt, ...(blockers ? { blockers } : {}) }));
+  const entry = find(queue, key);
+  // The plan is attached to the ticket's own page, so that is the link (the tracker contract does not return the attachment's address).
+  return entry === undefined ? planned : logEvent(planned, key, now, { kind: "planned", link: entry.ticket.url ?? null });
 }
 
 /**
@@ -356,8 +396,8 @@ export function planDone(queue: Queue, key: string, { unattended = true }: { una
  * planner said to wait on to merge (`waitMerged`, when there are any). Its blockers are read again before it starts, because the board has just
  * written its batch's order to the tracker.
  */
-export function batchPlanDone(queue: Queue, key: string, repo: string | null, waitMerged: readonly string[] = []): Queue {
-  return replace(planDone(queue, key), key, ({ blockers: _stale, ...entry }) => ({ ...entry, plannedRepo: repo, ...(waitMerged.length > 0 ? { waitMerged } : {}) }));
+export function batchPlanDone(queue: Queue, key: string, repo: string | null, waitMerged: readonly string[] = [], now?: number): Queue {
+  return replace(planDone(queue, key, { now }), key, ({ blockers: _stale, ...entry }) => ({ ...entry, plannedRepo: repo, ...(waitMerged.length > 0 ? { waitMerged } : {}) }));
 }
 
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */
@@ -398,11 +438,18 @@ const isUnsettled = (entry: Entry): boolean => !SETTLED.has(entry.trackerState ?
 const completedBeforeMerge = (entry: Entry): boolean => entry.partial !== undefined && entry.trackerState === "completed" && entry.completedBy === undefined && settledByPulls(entry) === null;
 
 /** Record the state of each finished run's pull requests, for each run the tracker named. */
-export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readonly<Record<string, PullState>>>): Queue {
-  return { ...queue, entries: queue.entries.map((entry) => {
+export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readonly<Record<string, PullState>>>, now?: number): Queue {
+  const recorded = { ...queue, entries: queue.entries.map((entry) => {
     const states = pulls.get(entry.ticket.key);
     return entry.phase === "finished" && states !== undefined ? { ...entry, pullStates: states } : entry;
   }) };
+  // A pull request that turns merged is logged once: it was not merged in the record before, and the log has not seen it merge.
+  return queue.entries.reduce<Queue>((next, entry) => {
+    const states = entry.phase === "finished" ? pulls.get(entry.ticket.key) : undefined;
+    const turned = Object.entries(states ?? {}).filter(([url, state]) => state === "merged" && entry.pullStates?.[url] !== "merged"
+      && !logHas(next, entry.ticket.key, (event) => event.kind === "merged" && event.url === url));
+    return turned.reduce<Queue>((logged, [url]) => logEvent(logged, entry.ticket.key, now, { kind: "merged", url }), next);
+  }, recorded);
 }
 
 /**

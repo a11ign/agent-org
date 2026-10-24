@@ -109,7 +109,7 @@ async function completeDone(ctx: PoolContext, entry: Entry, outcome: Extract<Out
     update(ctx, (queue) => clearMove(queue, key));
     end(ctx, entry, outcome);
     // Recorded once the run is finished, which is when the card reads them: it says what completed the ticket without waiting for the next refresh.
-    if (Object.keys(mergedStates).length > 0) update(ctx, (queue) => recordPullStates(queue, new Map([[key, mergedStates]])));
+    if (Object.keys(mergedStates).length > 0) update(ctx, (queue) => recordPullStates(queue, new Map([[key, mergedStates]]), ctx.now()));
   } catch (err) {
     if (sameRun(ctx, entry)) end(ctx, entry, { kind: "needs-human", reason: `${key} could not be completed (${messageOf(err)}): ${outcome.reason}` });
   } finally {
@@ -321,7 +321,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
     if (!sameRun(ctx, entry)) return;
     if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
     forgetRun(ctx, name);
-    update(ctx, (queue) => planDone(stamp === null ? queue : recordStampedPlan(queue, key, stamp), key));
+    update(ctx, (queue) => planDone(stamp === null ? queue : recordStampedPlan(queue, key, stamp), key, { now: ctx.now() }));
   } catch (err) {
     attachFailed(ctx, entry, { err, failed: "the plan could not be attached", files: `its files are in ${planDir}` });
   } finally {
@@ -385,9 +385,9 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
       const outcome = handedBack.get(key);
       const refused = misplaced.get(key);
       if (outcome !== undefined) return (parks ? park : finish)(queue, key, outcome, now(), id === undefined ? {} : { session: id });
-      if (refused !== undefined) return finish(batchPlanDone(queue, key, null), key, { kind: "needs-human", reason: refused }, now());
+      if (refused !== undefined) return finish(batchPlanDone(queue, key, null, [], now()), key, { kind: "needs-human", reason: refused }, now());
       const place = order.get(key);
-      return batchPlanDone(queue, key, place?.repo ?? null, mergeWaits(place));
+      return batchPlanDone(queue, key, place?.repo ?? null, mergeWaits(place), now());
     });
   } catch (err) {
     const [still] = members.filter((member) => sameRun(ctx, member));

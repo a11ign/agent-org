@@ -9,6 +9,7 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeReviewer } from "../plugins/fakes/reviewer.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
+import { logOf } from "./queue/run-log.ts";
 import { MAX_FEEDBACK_ROUNDS } from "./queue/queue-transitions.ts";
 import { loadReviewerGate, noReviewerMemory, readReviewerMemory, REVIEWER_LOGIN, reviewerMemoryPath, writeReviewerMemory } from "./reviewer-port.ts";
 
@@ -211,4 +212,23 @@ test("A11-235: a run handed back at the cap reads no replies on the sweeps that 
   pool.reviewNewHeads();
   pool.reviewNewHeads();
   assert.equal(reads(), before, "the hand-back stands, so nothing is asked of GitHub for it again");
+});
+
+test("A11-219: a re-review is logged as a round of the run's own, with how the block was answered, and a hand-back at the cap is logged once as needing a person", async () => {
+  const { fixture, pool, pull, reply, settleRereview } = await blockedRun({ rounds: MAX_FEEDBACK_ROUNDS - 1 });
+  // The fixture's own queueing is the first event: this test is about what follows it.
+  const events = () => logOf(fixture.store.get(), "NBF-1").map(({ at: _at, ...event }) => event).slice(1);
+  pull.body = FIXED;
+  pool.reviewNewHeads();
+  settleRereview();
+  assert.deepEqual(events(), [{ kind: "round", cause: "rereview", reason: "the block was answered by editing the description" }]);
+  pool.reviewNewHeads();
+  assert.equal(events().length, 1, "the same answer read again is no new round");
+  clock.ms += 10 * MINUTE;
+  reply("done, the line is in the description", clock.ms / MINUTE);
+  pool.reviewNewHeads();
+  pool.reviewNewHeads();
+  const logged = events();
+  assert.deepEqual(logged.map((event) => event.kind), ["round", "needs-you"], "no round was left, so the run was handed to a person, once");
+  assert.match(logged[1].kind === "needs-you" ? logged[1].reason : "", /^The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped/);
 });

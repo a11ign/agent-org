@@ -489,7 +489,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     if (!isPlanning(ctx, entry)) recordPlan(ctx, [entry.ticket.key]);
     if (isPlanning(ctx, entry) && await planReached(ctx, entry.ticket)) {
       // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
-      update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false }));
+      update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false, now: now() }));
       return;
     }
     // A work run held by an open decision ends needs-human with its reason (A11-134); a review round may wait on its stacked base instead. Only a work run
@@ -531,7 +531,7 @@ async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<vo
   try {
     const members: Entry[] = [];
     for (const entry of batch) {
-      if (await planReached(ctx, entry.ticket)) update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false }));
+      if (await planReached(ctx, entry.ticket)) update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false, now: now() }));
       else members.push(entry);
     }
     if (members.length < 2) {
