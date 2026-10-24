@@ -17,7 +17,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, fsyncSync, openSync, closeSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { type Applies, type SchemaEntry } from "./config-schema.ts";
+import { type Applies, inForceOf, type SchemaEntry } from "./config-schema.ts";
 import { defaultSchema } from "../plugins/schema.ts";
 import { type Edit as JsonEdit, spliceJson } from "./json-edit.ts";
 import { projectPathOf } from "./settings-read.ts";
@@ -163,15 +163,6 @@ function wordsOf(entry: SchemaEntry, value: unknown, fs: FileSystem): string {
 function removedWords(entry: SchemaEntry): string {
   if (entry.absent === "default") return `the built-in default: ${entry.default ?? "none"}`;
   return entry.absent === "off" ? "off, as the key is absent" : "not set, as the key is absent";
-}
-
-/** The in-force sentence of a change, from the key's `applies`: what must restart before the value is read. */
-function inForceOf(edit: Extract<SchemaEntry["edit"], { editable: true }>, applies: Applies): string {
-  const note = edit.note === undefined ? "" : ` ${edit.note}.`;
-  if (applies === "now") return `in force now.${note}`;
-  if (applies === "board") return `in force after the board restarts: ticket:serve and ticket:ui.${note}`;
-  if (applies === "unit") return `in force after you reinstall and restart ${edit.unit ?? "the units this machine installs"}.${note}`;
-  return "not in force: the queue keeps the number of workers it already has, so change it with Workers at once";
 }
 
 /** The parsed object of a file's text, or the refusal that it is not one. */

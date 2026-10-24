@@ -1,9 +1,10 @@
 ---
-import { App } from "../../shell/App.tsx";
+import "../../settings/settings.css";
+import { SettingsApp } from "../../settings/SettingsApp.tsx";
 import { TITLES } from "../../shell/routes.ts";
 import Shell from "../../layouts/Shell.astro";
 ---
 
 <Shell title={TITLES.models}>
-  <App client:load section="models" />
+  <SettingsApp client:load section="models" />
 </Shell>

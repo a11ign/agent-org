@@ -1,9 +1,10 @@
 ---
-import { App } from "../../shell/App.tsx";
+import "../../settings/settings.css";
+import { SettingsApp } from "../../settings/SettingsApp.tsx";
 import { TITLES } from "../../shell/routes.ts";
 import Shell from "../../layouts/Shell.astro";
 ---
 
 <Shell title={TITLES.workers}>
-  <App client:load section="workers" />
+  <SettingsApp client:load section="workers" />
 </Shell>

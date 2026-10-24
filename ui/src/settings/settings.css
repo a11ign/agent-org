@@ -1,0 +1,468 @@
+/* The Settings pages (Models, Workers, Machine): the page column, its sections and cards, the host-file rows, the unsaved-changes bar, the review dialog and the banners of a save, as the Settings boards lay them out. Every value is a token. */
+
+.settings {
+  width: 100%;
+  max-width: var(--measure-settings);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-24);
+}
+.settings-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.settings-lede {
+  margin: 0;
+  max-width: var(--measure-lede);
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+
+/* A heading with a rule beneath: "Defaults for new work", "Host file host.json". */
+.settings-divider {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-8);
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-divider-file {
+  margin-top: var(--space-8);
+}
+.settings-heading {
+  margin: 0;
+  font-size: var(--font-size-16);
+  font-weight: var(--font-weight-semibold);
+}
+.settings-file {
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-muted);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.settings-section-title {
+  margin: 0;
+  font-size: var(--font-size-14);
+  font-weight: var(--font-weight-semibold);
+}
+.settings-section-words {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+
+.settings-card {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-sidebar);
+}
+.settings-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8) var(--space-24);
+  padding: var(--space-12) var(--space-16);
+}
+.settings-card-row + .settings-card-row {
+  border-top: 1px solid var(--color-card-divider);
+}
+.settings-label {
+  font-weight: var(--font-weight-medium);
+}
+.settings-label-block {
+  display: block;
+}
+
+/* A control with the quiet state of its last save beside it. */
+.settings-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-8) var(--space-12);
+}
+.save-state {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+.save-state:empty {
+  display: none;
+}
+.save-state-failed {
+  color: var(--color-danger-body);
+}
+
+.settings-select,
+.settings-input {
+  box-sizing: border-box;
+  padding: var(--space-5) var(--space-10);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+}
+.settings-select {
+  min-width: var(--control-min-width);
+}
+.settings-input {
+  width: var(--input-width);
+  max-width: 100%;
+  font-family: var(--font-mono);
+}
+.settings-input-number {
+  width: var(--input-width-number);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.settings-input-json {
+  width: 100%;
+  resize: vertical;
+}
+
+/* The search above the host file's keys. */
+.settings-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-10) var(--space-20);
+}
+.settings-search {
+  position: relative;
+  display: block;
+  flex: 1 1 var(--measure-search-basis);
+  max-width: var(--measure-search-max);
+}
+.settings-search-icon {
+  position: absolute;
+  left: var(--space-10);
+  top: var(--space-8);
+  color: var(--color-text-muted);
+}
+.settings-search input {
+  width: 100%;
+  padding: var(--space-5) var(--space-10) var(--space-5) var(--space-28);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-sidebar);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--color-text-nav);
+}
+.settings-check input,
+.settings-switch input,
+.review-tick input {
+  flex: 0 0 auto;
+  width: var(--icon-15);
+  height: var(--icon-15);
+  margin: 0;
+  accent-color: var(--color-accent-light);
+}
+.settings-search-status {
+  margin: calc(var(--space-12) * -1) 0 0;
+  color: var(--color-text-muted);
+}
+.settings-search-status:empty {
+  display: none;
+}
+.settings-remote {
+  margin: 0;
+  color: var(--color-text-count);
+}
+
+/* A key of the host file. */
+.setting-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-10) var(--space-24);
+  padding: var(--space-12) var(--space-16);
+}
+.setting-row + .setting-row {
+  border-top: 1px solid var(--color-card-divider);
+}
+.setting-row-staged {
+  background: var(--color-staged);
+}
+.setting-row-nested {
+  padding-left: calc(var(--space-16) + var(--space-24));
+}
+.setting-text {
+  flex: 1 1 var(--measure-banner-basis);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.setting-key {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-small);
+  color: var(--color-accent-lighter);
+}
+.setting-words {
+  color: var(--color-text-count);
+  text-wrap: pretty;
+}
+.setting-meta {
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+}
+.setting-problem {
+  font-size: var(--font-size-small);
+  color: var(--color-danger-body);
+}
+.setting-control {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding-top: var(--space-2);
+}
+.setting-control-wide {
+  flex: 1 1 100%;
+}
+.setting-value {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-small);
+  color: var(--color-text-nav);
+  text-align: right;
+}
+.settings-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+/* The bar that follows the page while changes are staged. */
+.unsaved-stack {
+  position: sticky;
+  bottom: var(--bar-offset);
+  align-self: stretch;
+  margin-top: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.unsaved-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-16);
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-10);
+  background: var(--color-hover);
+  box-shadow: var(--shadow-bar);
+}
+.unsaved-count {
+  font-weight: var(--font-weight-semibold);
+}
+.unsaved-file {
+  color: var(--color-text-muted);
+}
+.unsaved-spacer {
+  flex: 1 1 0;
+}
+
+/* The review of the staged changes. */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--dialog-top) var(--dialog-side);
+  overflow: auto;
+  background: var(--color-overlay);
+}
+.dialog {
+  width: var(--dialog-width);
+  max-width: 100%;
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-12);
+  background: var(--color-raised);
+  box-shadow: var(--shadow-dialog);
+}
+.dialog-head {
+  padding: var(--space-14) var(--space-18);
+  border-bottom: 1px solid var(--color-divider);
+}
+.dialog-title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  line-height: var(--space-24);
+  font-weight: var(--font-weight-semibold);
+}
+.dialog-file {
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-muted);
+}
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  padding: var(--space-16) var(--space-18);
+}
+.dialog-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-18);
+  border-top: 1px solid var(--color-divider);
+}
+.ghost-body {
+  padding: var(--space-5) var(--space-12);
+  font-size: var(--font-size-body);
+}
+.review-change {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-8);
+}
+.review-values {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  overflow-wrap: anywhere;
+}
+.review-old {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+}
+.review-arrow {
+  color: var(--color-text-muted);
+}
+.review-new {
+  font-weight: var(--font-weight-medium);
+}
+.review-force {
+  font-size: var(--font-size-small);
+  color: var(--color-text-count);
+}
+.review-note {
+  margin: 0;
+  font-size: var(--font-size-small);
+  color: var(--color-text-count);
+}
+.review-danger {
+  margin-top: var(--space-4);
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-6);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-body);
+  font-size: var(--font-size-small);
+}
+.review-danger-heading {
+  color: var(--color-danger-heading);
+}
+.review-tick {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+  color: var(--color-danger-heading);
+}
+.review-tick input {
+  accent-color: var(--color-danger-dot);
+}
+
+/* The banners that say how a save went. The error and warning ones are the shared patterns; saved is the success one. */
+.success-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-14);
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid var(--color-success-border);
+  border-radius: var(--radius-8);
+  background: var(--color-success-bg);
+}
+.success-banner-text {
+  flex: 1 1 var(--measure-banner-basis);
+  min-width: 0;
+  color: var(--color-success-body);
+}
+.banner-heading {
+  font-weight: var(--font-weight-semibold);
+}
+.banner-heading-success {
+  color: var(--color-success-heading);
+}
+.banner-heading-warn {
+  color: var(--color-warn-link);
+}
+.banner-line {
+  margin: 0;
+}
+.alert-banner-column {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: var(--space-4);
+  color: var(--color-danger-body);
+}
+.banner-button {
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid;
+  border-radius: var(--radius-6);
+  background: transparent;
+  font-size: var(--font-size-small);
+}
+.banner-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.banner-button-success {
+  color: var(--color-success-heading);
+  border-color: var(--color-success-border-strong);
+}
+.banner-button-warn {
+  color: var(--color-warn-link);
+  border-color: var(--color-warn-border-strong);
+}
+.banner-button:hover:enabled {
+  background: var(--color-hover);
+}
+
+/* Loading: the title and the four cards of the Settings Loading board. */
+.skeleton-settings {
+  gap: var(--space-16);
+  width: 100%;
+}
+.skeleton-settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.sk-settings-title {
+  width: var(--skeleton-subtitle-width);
+  height: var(--skeleton-settings-title-height);
+}
+.sk-settings-panel {
+  height: var(--skeleton-settings-card-height);
+  border-radius: var(--radius-10);
+}

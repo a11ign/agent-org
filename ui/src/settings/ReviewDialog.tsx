@@ -1,0 +1,79 @@
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { dangerousIn, sentenceOf } from "./settings-model.ts";
+import type { Review } from "./use-host-file.ts";
+
+const FOCUSABLE = "button:not(:disabled), input:not(:disabled), a[href], select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+
+/** Takes the focus into the dialog while it is open, keeps Tab inside it, closes on Escape, and gives the focus back to the control that opened it. */
+function useModalFocus(close: () => void) {
+  const dialog = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const opener = document.activeElement;
+    dialog.current?.focus();
+    return () => {
+      if (opener instanceof HTMLElement) opener.focus();
+    };
+  }, []);
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") return close();
+    if (event.key !== "Tab" || dialog.current === null) return;
+    const inside = [...dialog.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
+    const [first, last] = [inside[0], inside[inside.length - 1]];
+    if (first === undefined || last === undefined) return;
+    const edge = event.shiftKey ? first : last;
+    if (document.activeElement === edge || document.activeElement === dialog.current) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    }
+  };
+  return { dialog, onKeyDown };
+}
+
+/**
+ * The review of the staged changes of one file: each change's key, what it was and what it becomes and when it is in force, from the instance's own preview. A dangerous change says why and
+ * must be ticked by its key before Save is offered; the save names exactly the ticked keys. Back keeps every staged change.
+ */
+export function ReviewDialog({ review, busy, onBack, onSave }: Readonly<{ review: Review; busy: boolean; onBack: () => void; onSave: (confirmed: ReadonlySet<string>) => void }>) {
+  const { file, preview } = review;
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
+  const { dialog, onKeyDown } = useModalFocus(onBack);
+  const dangerous = dangerousIn(preview);
+  const ready = dangerous.every((key) => ticked.has(key));
+  const toggleTick = (key: string) => setTicked((before) => new Set(before.has(key) ? [...before].filter((name) => name !== key) : [...before, key]));
+  return (
+    <div className="dialog-overlay">
+      <div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Review changes" className="dialog" onKeyDown={onKeyDown}>
+        <div className="dialog-head">
+          <h2 className="dialog-title">Review changes <span className="dialog-file">· {file}</span></h2>
+        </div>
+        <div className="dialog-body">
+          {preview.changes.map((change) => (
+            <div key={change.key} className="review-change">
+              <code className="setting-key">{change.key}</code>
+              <div className="review-values">
+                <span className="review-old">{change.old}</span>
+                <span aria-hidden="true" className="review-arrow">→</span>
+                <span className="review-new">{change.new}</span>
+              </div>
+              <span className="review-force">{sentenceOf(change.inForce)}</span>
+              {dangerous.includes(change.key) ? (
+                <div className="review-danger">
+                  <strong className="review-danger-heading">Dangerous.</strong> {change.dangerous}
+                  <label className="review-tick">
+                    <input type="checkbox" checked={ticked.has(change.key)} onChange={() => toggleTick(change.key)} />
+                    <span>I am changing <code>{change.key}</code></span>
+                  </label>
+                </div>
+              ) : null}
+            </div>
+          ))}
+          {preview.note === null ? null : <p className="review-note">{preview.note}</p>}
+        </div>
+        <div className="dialog-foot">
+          <button type="button" className="ghost ghost-body" onClick={onBack}>Back</button>
+          <button type="button" className="primary" disabled={!ready || busy} onClick={() => onSave(ticked)}>Save to {file}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
