@@ -9,6 +9,7 @@ import { FINDINGS_RETRIED_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FIL
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { findingsMiss, findingsRefusal, retriedUrls } from "./blocker-findings-check.ts";
+import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, folderClaimMisses, folderClaimRefusal, folderClaimRetriedRefusal, type HeldClaim, parseClaimsGiven, planClaimPaths } from "./path-claims.ts";
 import { type PlanStamp, stampedPlan, urlsNamedIn } from "./plan-stamp.ts";
 import { type TicketRead } from "./ticket-read.ts";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, recordPullStates, unpark } from "./queue/queue-transitions.ts";
@@ -164,10 +165,16 @@ function doneRefusal(ctx: PoolContext, entry: Entry): string | null {
 const settleFailed = (entry: Entry) => (err: unknown): void => log(`${entry.batch ?? entry.ticket.key}: ${messageOf(err)}`);
 
 /**
- * The files a planning run left in `planDir` to attach, or why they cannot be. Only plain markdown files are taken: a planning run is
- * unattended, so a link in its folder could point the board at a secret it would then upload. `retried` are the addresses the stop hook's one automatic retry named (A11-207), which the refusal says were asked for.
+ * What a plan is checked against besides its files being plain markdown: the pull requests its brief listed and the addresses the stop hook's one automatic retry named for them (A11-207), and the paths other
+ * tickets held when the brief was written and whether the retry for a folder claim was made (A11-212).
  */
-function planFiles(planDir: string, given: readonly string[] = [], retried: readonly string[] = []): { files: string[] } | { refusal: string } {
+type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly string[]; claims?: readonly HeldClaim[]; claimsProblem?: string; claimsRetried?: boolean }>;
+
+/**
+ * The files a planning run left in `planDir` to attach, or why they cannot be. Only plain markdown files are taken: a planning run is
+ * unattended, so a link in its folder could point the board at a secret it would then upload. A plan that claims a folder another queued or running ticket writes into is refused, naming the narrower paths (A11-212).
+ */
+function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false }: PlanChecks = {}): { files: string[] } | { refusal: string } {
   const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
   if (names.length === 0) return { refusal: `the planning run wrote no plan in ${planDir}` };
   const odd = names.find((name) => {
@@ -182,6 +189,11 @@ function planFiles(planDir: string, given: readonly string[] = [], retried: read
   }
   const miss = findingsMiss(names.map((name) => readFileSync(join(planDir, name), "utf8")), given);
   if (miss !== null) return { refusal: findingsRefusal(miss, given, retried) };
+  // A claims file that is there and cannot be read is no list of nothing: the plan is not attached unchecked.
+  if (claimsProblem !== undefined) return { refusal: claimsProblem };
+  const texts = names.map((name) => readFileSync(join(planDir, name), "utf8"));
+  const folders = folderClaimMisses(texts.flatMap(planClaimPaths), claims);
+  if (folders.length > 0) return { refusal: claimsRetried ? folderClaimRetriedRefusal(folders) : folderClaimRefusal(folders) };
   return { files: names.map((name) => join(planDir, name)) };
 }
 
@@ -197,6 +209,25 @@ function retriedFor(runDir: string, key: string): readonly string[] {
     return [];
   }
 }
+
+/**
+ * The paths other tickets held when the run's brief was written (A11-212), from the list beside its outcome file in `runDir`. None when the file is missing: a run briefed before it, or one that was not a planning
+ * run, is not checked. A file that is there but cannot be read, or is not a list, is a problem the plan is refused for, since the board wrote it and the folder claims cannot be checked without it.
+ */
+function claimsFor(runDir: string): Pick<PlanChecks, "claims" | "claimsProblem"> {
+  const path = join(runDir, CLAIMS_GIVEN_FILE);
+  if (!existsSync(path)) return {};
+  try {
+    const claims = parseClaimsGiven(readFileSync(path, "utf8"));
+    return claims === null ? { claimsProblem: `the list of paths other tickets held (${path}) is not a list, so the plan's folder claims cannot be checked` } : { claims };
+  } catch (err) {
+    return { claimsProblem: `the list of paths other tickets held (${path}) cannot be read (${messageOf(err)}), so the plan's folder claims cannot be checked` };
+  }
+}
+
+/** What the plan of the ticket `key`, written by the run whose files are in `runDir`, is checked against; `given` are the pull requests its entry was briefed with. */
+const checksFor = (runDir: string, key: string, given: readonly string[] | undefined): PlanChecks =>
+  ({ ...(given === undefined ? {} : { given }), retried: retriedFor(runDir, key), ...claimsFor(runDir), claimsRetried: existsSync(join(runDir, CLAIMS_RETRIED_FILE)) });
 
 /** The entry of the ticket `key`, as the queue has it now: the planning run's own, which holds the text it was briefed with. */
 const entryOf = (ctx: PoolContext, key: string): Entry | undefined => ctx.store.get().entries.find((e) => e.ticket.key === key);
@@ -233,7 +264,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   const planDir = join(ticketDir(settings, key), PLAN_DIR);
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
-    const found = planFiles(planDir, entry.findingsGiven, retriedFor(runPlace(ctx, entry).dir, key));
+    const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven));
     if ("refusal" in found) return end(ctx, entry, { kind: "needs-human", reason: found.refusal });
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const stamp = stampPlan(ctx, found.files, entry.briefedAgainst);
@@ -255,7 +286,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
 async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<Outcome | null> {
   const { settings, source } = ctx;
   const member = entryOf(ctx, key);
-  const found = planFiles(dir, member?.findingsGiven, member === undefined ? [] : retriedFor(runPlace(ctx, member).dir, key));
+  const found = planFiles(dir, member === undefined ? {} : checksFor(runPlace(ctx, member).dir, key, member.findingsGiven));
   if ("refusal" in found) return { kind: "needs-human", reason: found.refusal };
   if (source.attachPlan === undefined) return { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${dir} by hand` };
   try {

@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/pull-status-and-notes.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
-import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
+import { cutListNote, footprintOf, overlapWait, pathsOverlap } from "./board-view/overlap-hold.ts";
+import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { isReadyToMerge, mergeWaitLine } from "./board-view/pull-readiness.ts";
 import type { PullHead } from "./board-view/view-types-and-filters.ts";
@@ -1012,7 +1013,7 @@ test("A11-117: a pull request whose file list was cut short holds only the files
   assert.equal(overlapWait(waiting, [cut, waiting]), null, "a path it was not listed in is not held: the files past the list are unknown, not untouched");
   assert.equal(cutListNote(waiting, [cut, waiting]), "APP-1 #3 lists only part of its changed files, so a clash in the rest shows only as a conflict on the pull request.");
   const overlapping = waitingOn(["agent-org:src/a.ts"]);
-  assert.deepEqual(overlapWait(overlapping, [cut, overlapping]), { key: "APP-1", pull: "3", path: "src/a.ts" }, "a file it lists still holds the run");
+  assert.deepEqual(overlapWait(overlapping, [cut, overlapping]), { key: "APP-1", pull: "3", path: "src/a.ts", overlaps: [{ path: "src/a.ts", folderOf: null, folder: null }] }, "a file it lists still holds the run");
   assert.equal(cutListNote(overlapping, [cut, overlapping]), cutListNote(waiting, [cut, waiting]), "the note is the same whatever the path");
   assert.equal(overlapWait(waitingOn(["nbl-ui-netbox:docs/unrelated.md"]), [cut]), null, "another repository is not");
   assert.equal(cutListNote(waitingOn(["nbl-ui-netbox:docs/unrelated.md"]), [cut]), null, "and its cut list is no note for that repository");
@@ -1072,9 +1073,9 @@ test("A11-82: a run's footprint is its plan's paths and the files each open pull
 test("A11-82: a queued run waits on a path a live run holds in its repository, names it, and starts once nothing holds it", () => {
   const live = holderOf("APP-1", { phase: "running", paths: ["agent-org:src/ticket-mode/"] });
   const waiting = waitingOn(["agent-org:src/ticket-mode/pool.ts"]);
-  assert.deepEqual(overlapWait(waiting, [live, waiting]), { key: "APP-1", pull: null, path: "src/ticket-mode/pool.ts" });
+  assert.deepEqual(overlapWait(waiting, [live, waiting]), { key: "APP-1", pull: null, path: "src/ticket-mode/pool.ts", overlaps: [{ path: "src/ticket-mode/pool.ts", folderOf: "APP-1", folder: "src/ticket-mode/" }] });
   assert.equal(runStatus(waiting, [live, waiting]), "blocked");
-  assert.equal(waitNote(waiting, [live, waiting]), "Waits on APP-1: both touch src/ticket-mode/pool.ts");
+  assert.equal(waitNote(waiting, [live, waiting]), "Waits on APP-1: both touch src/ticket-mode/pool.ts; a folder claim, not a shared file: narrow APP-1's `src/ticket-mode/` in its plan");
   assert.equal(overlapWait(waiting, [waiting]), null, "a queued run holds nothing");
   assert.equal(runStatus(waiting, [waiting]), "queued");
   const other = waitingOn(["agent-org:src/ticket-port/a.ts"]);
@@ -1098,7 +1099,7 @@ test("A11-82: a run whose ticket ended holds nothing, and a queued review round 
   const canceled = holderOf("APP-1", { phase: "finished", paths: ["agent-org:src/a.ts"], trackerState: "canceled", outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullStates: {} });
   assert.equal(overlapWait(waiting, [canceled, waiting]), null, "a canceled ticket's run is done with its pull request, whatever GitHub says");
   const round = holderOf("APP-1", { phase: "queued", paths: ["agent-org:src/a.ts"], review: [pulled(url)] });
-  assert.deepEqual(overlapWait(waiting, [round, waiting]), { key: "APP-1", pull: "2", path: "src/a.ts" }, "a queued review round still has its pull request open");
+  assert.deepEqual(overlapWait(waiting, [round, waiting]), { key: "APP-1", pull: "2", path: "src/a.ts", overlaps: [{ path: "src/a.ts", folderOf: null, folder: null }] }, "a queued review round still has its pull request open");
 });
 
 test("A11-82: a run is not held by its own blockers, by a run that is blocked by it, or by a review round, planning run or unread plan", () => {
@@ -1692,7 +1693,7 @@ test("A11-175: a finished step-3 run holds its step's paths and its pull request
     assert.equal(runStatus(waiting, [run, waiting]), "queued");
   }
   const sharing = waitingOn(["agent-org:plugins/github/pull-feedback.ts"], { ticket: { key: "A11-173" } });
-  assert.deepEqual(overlapWait(sharing, [run, sharing]), { key: "A11-160", pull: "1824", path: "plugins/github/pull-feedback.ts" }, "a file in its step's directory still holds");
+  assert.deepEqual(overlapWait(sharing, [run, sharing]), { key: "A11-160", pull: "1824", path: "plugins/github/pull-feedback.ts", overlaps: [{ path: "plugins/github/pull-feedback.ts", folderOf: "A11-160", folder: "plugins/github/" }] }, "a file in its step's directory still holds");
   const touched = waitingOn(["agent-org:src/ticket-mode/reviewer-port.ts"], { ticket: { key: "A11-173" } });
   assert.equal(overlapWait(touched, [run, touched])?.key, "A11-160", "and so does a file its pull request changes");
 });
@@ -1706,11 +1707,11 @@ test("A11-175: a step with no paths of its own holds only its open pull request'
     assert.equal(waitNote(waiting, [run, waiting]), null);
   }
   const touching = waitingOn(["agent-org:src/ticket-mode/reviewer-port.ts"]);
-  assert.deepEqual(overlapWait(touching, [run, touching]), { key: "A11-160", pull: "1824", path: "src/ticket-mode/reviewer-port.ts" });
+  assert.deepEqual(overlapWait(touching, [run, touching]), { key: "A11-160", pull: "1824", path: "src/ticket-mode/reviewer-port.ts", overlaps: [{ path: "src/ticket-mode/reviewer-port.ts", folderOf: null, folder: null }] });
   const unread = stepThree({ pullFiles: undefined });
   assert.deepEqual(footprintOf(unread), [], "a pull request whose files are not read holds none by name");
   const waiting = waitingOn(["agent-org:src/ticket-mode/pool-settle.ts"]);
-  assert.deepEqual(overlapWait(waiting, [unread, waiting]), { key: "A11-160", pull: "1824", path: null }, "but its repository is held until a watch reads them (A11-125)");
+  assert.deepEqual(overlapWait(waiting, [unread, waiting]), { key: "A11-160", pull: "1824", path: null, overlaps: [] }, "but its repository is held until a watch reads them (A11-125)");
   const review = stepThree({ phase: "queued", review: [pulled(STEP_PULL)] });
   assert.deepEqual(footprintOf(review), footprintOf(run), "a review round of the step holds the same");
   const merged = stepThree({ pullStates: { [STEP_PULL]: "merged" } });
@@ -1752,7 +1753,7 @@ test("A11-175: a queued later step contests only its step's paths, so it waits o
   const other = holderOf("A11-190", { phase: "running", paths: ["agent-org:src/ticket-mode/pool.ts"] });
   assert.equal(overlapWait(later(), [other, later()]), null, "the whole plan's src/ would hold this run behind A11-190; its step 3 does not");
   const alike = holderOf("A11-191", { phase: "running", paths: ["agent-org:plugins/github/reviews.ts"] });
-  assert.deepEqual(overlapWait(later(), [alike, later()]), { key: "A11-191", pull: null, path: "plugins/github/" }, "and a holder of its step's path still holds it");
+  assert.deepEqual(overlapWait(later(), [alike, later()]), { key: "A11-191", pull: null, path: "plugins/github/", overlaps: [{ path: "plugins/github/reviews.ts", folderOf: "A11-160", folder: "plugins/github/" }] }, "and a holder of its step's path still holds it");
   assert.equal(overlapWait(later({ steps: [{ step: 1, of: 9, prs: [] }, { step: 2, of: 9, prs: [] }, { step: 3, of: 9, prs: [] }] }), [alike]), null, "step 4 contests step 4's paths, not step 3's");
   const noPaths = later({ stepPaths: undefined });
   assert.equal(overlapWait(noPaths, [other, noPaths])?.key, "A11-190", "a step whose plan lists no paths for it contests the whole plan: its files are unknown");

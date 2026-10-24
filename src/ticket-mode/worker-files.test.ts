@@ -576,7 +576,7 @@ test("A11-117: both planner briefs tell the planner not to list the scaffolding,
   }
 });
 
-test("A11-82: both planner briefs tell the planner the ## Paths section, and a batch's brief also tells it to order tickets that touch one area in order.json", () => {
+test("A11-82: both planner briefs tell the planner the ## Paths section, and a batch's brief also tells it to order a ticket after another only when it needs that ticket's code or both change one file (A11-212)", () => {
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
   const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
   for (const brief of [plan, batch]) {
@@ -584,7 +584,7 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
     assert.ok(brief.includes("`- \`<repo>:<path>\``"), "its bullet form");
     assert.ok(brief.includes("That one section is what the board's overlap wait and `pr:open` both read"));
   }
-  assert.match(batch, /Tickets of one repository whose work touches the same area, directly or through a shared module, must be ordered in `order\.json` with `after`/);
+  assert.match(batch, /Order a ticket after another only when it needs that ticket's code, or both must change the same file\. Tickets whose paths do not overlap get no `after` and run side by side/);
   assert.equal(plan.includes("order.json"), false, "a ticket planned alone writes no order");
 });
 
