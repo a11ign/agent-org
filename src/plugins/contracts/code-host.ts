@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.13 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.14 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,8 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.14 (A11-186): `repositories`, an OPTIONAL group: the accounts and organisations a person can pick repositories from, the repositories of each, the repository a git remote names, and the clone of one, which `onboard` offers at a terminal. A code host without it keeps onboard's typed
+// prompt. A plugin of 1.13 is read as one that has none.
 // 1.13 (A11-179): `PullFeedback` gains four OPTIONAL fields, `reviewDecision`, `verdictAtHead`, `pendingRequired` and `body`, which the board reads to say whether a pull request is ready to merge (approved at its head, its required checks green there)
 // and who owns a red check, and the base contract gains `readDefaultBranchRed`, OPTIONAL: the checks failing on the head of a repository's default branch. A plugin of 1.12 is read as one that says none of them, and the board then reads its pull requests as not proven ready.
 // 1.12 (A11-160, step 9): `rows` gains the operations of the last callers of `gh` in `src/`, `scripts/` and `host/`, in seven sections (`code-host-rows-{pullwork,audit,closing,classes,queue,readouts,plumbing}.ts`): opening, holding and sweeping pull requests, the label audit, the closing of rows, the CI failure class and the ledgers, the queue and trunk readings, the read-only reporters, and the tool-version agreement, the ledger's retry and the host's scripts. After it no file outside `plugins/github` calls `gh`. A plugin of 1.11 is read as one whose `rows` lack them, which a 1.11 plugin would have to be updated for; while plugins are in-repo that is the same pull request.
@@ -42,7 +44,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.13";
+export const CODE_HOST_CONTRACT_VERSION = "1.14";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -201,6 +203,29 @@ export interface CodeHostWrapper {
   mintFailure(inputs: WrapperInputs, role: string): string | null;
 }
 
+/** An account or organisation whose repositories a person can pick (contract 1.14). The signed-in account is `kind: "account"`. */
+export type RepositoryOwner = Readonly<{ login: string; kind: "account" | "organisation" }>;
+
+/** A repository on the code host (contract 1.14): its name, which is the clone's name in the host file, and `owner/name`. */
+export type HostRepository = Readonly<{ name: string; fullName: string }>;
+
+/**
+ * The repositories a person can pick at onboard (contract 1.14). Every operation is synchronous and acts as the person who runs onboard: their own login, with no role environment, as `repoViewArgs` and `repoCloneArgs` do.
+ * A read answers `null` for "could not ask", never for "there is none".
+ */
+export interface CodeHostRepositories {
+  /** The signed-in account first, then the organisations it belongs to, by login. Null: could not ask. */
+  readOwners(): readonly RepositoryOwner[] | null;
+  /** The owner's repositories the account can reach, archived ones left out, by name. Null: could not ask, or a list cut off at its limit. */
+  readRepositories(owner: RepositoryOwner): readonly HostRepository[] | null;
+  /** The repository a git remote URL names on this host, or null for another host's URL. Pure: it reads nothing. */
+  repositoryOfRemote(url: string): HostRepository | null;
+  /** The command {@link CodeHostRepositories.cloneRepository} runs, as a person would type it, for onboard to show before it runs. */
+  cloneCommand(fullName: string, path: string): string;
+  /** Clones `fullName` to `path` as the signed-in account. Answers null once cloned, else the host's own first line of why not. */
+  cloneRepository(fullName: string, path: string): string | null;
+}
+
 /**
  * A code host plugin. Every read answers `null` for "could not ask", never for "there is none": a caller that acts on `null` acts on a guess.
  */
@@ -262,4 +287,6 @@ export interface CodeHost extends CodeHostPort {
   readonly wrapper?: CodeHostWrapper;
   /** Row mode's GitHub operations (contract 1.7), or absent for a code host that serves ticket mode only. */
   readonly rows?: CodeHostRows;
+  /** The accounts, organisations and repositories a person can pick at onboard, and the clone of one (contract 1.14), or absent for a code host that lists none. */
+  readonly repositories?: CodeHostRepositories;
 }

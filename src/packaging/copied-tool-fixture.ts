@@ -68,6 +68,11 @@ export function installedPlaywrightCore(): string {
   return realpathSync(dirname(createRequire(import.meta.url).resolve("playwright-core/package.json")));
 }
 
+/** The directory of the `@clack/prompts` this checkout resolves: an offline install of the tool is given it, as it is given the toolchain (A11-186, onboard's pickers). */
+export function installedClackPrompts(): string {
+  return realpathSync(dirname(createRequire(import.meta.url).resolve("@clack/prompts/package.json")));
+}
+
 function copyInto(target: string, source: string): void {
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(source, target);

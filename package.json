@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@a11ign/toolchain": "^0.7.0",
+    "@clack/prompts": "1.8.1",
     "playwright-core": "1.63.0"
   },
   "devDependencies": {

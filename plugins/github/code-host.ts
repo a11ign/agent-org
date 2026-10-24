@@ -13,6 +13,7 @@ import { readCheckLog, rerunFailedChecks } from "./check-runs.ts";
 import { readDefaultBranchRed } from "./default-branch-checks.ts";
 import { ghRunner } from "./gh.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
+import { createRepositories } from "./repositories.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
 import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
@@ -92,6 +93,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     },
     subscribe: () => () => undefined,
     wrapper: createWrapper(deps),
+    repositories: createRepositories(deps),
     rows: createRows(deps.rows, rowsRunners(deps)),
   };
 }

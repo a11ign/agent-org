@@ -7,6 +7,10 @@
 // of it sets up another machine; without one, it is refused by name. A profile holds the answers, the flags override them, and the ONLY questions asked of a
 // complete profile are for the secrets: the tracker's key, and the reviewer App's private key when its file is not there yet.
 //
+// THE REPOSITORIES ARE PICKED, NOT TYPED (A11-186), at a terminal with no `--repo`: onboard lists the code host's checkouts in the folder it runs in (matched by their remote), pre-ticked and named as the code host names them, then
+// offers to add repositories not cloned there from the account's organisations and repositories, cloning each pick that has no checkout with the command shown. A summary of each repository, its path and found, cloned or kept
+// comes before the host file is written (`onboard-repos.ts`). A code host without a `repositories` group, or one that cannot list while the folder holds none, is asked for paths as it always was; without a terminal nothing is asked.
+//
 // WITHOUT `--profile`, onboard keeps what it did before: `--repo <name>=<path>` (repeated) names the checkouts a worker can choose from, and
 // `--linear-keychain <service>` or `--linear-key-file <path>` names where the Linear key is read from. Without a terminal, what no flag gave is kept from the
 // existing host file or refused by name.
@@ -37,7 +41,7 @@
 // App's key is copied and never printed.
 //
 // IT ENDS BY DIAGNOSING: the same checks `agent-org doctor` runs are printed, so the person sees whether the machine is ready.
-import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -72,6 +76,10 @@ import { replacementsNow, retireGuards, type Replacements } from "./interim-guar
 import { defaultDoctorDeps, diagnose, report, type Check } from "./doctor.ts";
 import { defaultMoveDeps, startHerdr } from "./herdr-move.ts";
 import { repoCloneArgs } from "../ticket-port/repo-args.ts";
+import { loadedCodeHost } from "../plugins/code-host-slot.ts";
+import type { CodeHost } from "../plugins/contracts/code-host.ts";
+import { pickRepositories, type PickedRepository } from "./onboard-repos.ts";
+import { clackPrompts, PromptCancelled, type Prompts } from "./prompts.ts";
 
 export type OnboardOptions = Readonly<{
   repos: readonly string[];
@@ -110,6 +118,14 @@ export type OnboardDeps = Readonly<{
   /** Removes a file an interim guard leaves behind, once its replacement is proven. */
   removeFile: (path: string) => void;
   isDirectory: (path: string) => boolean;
+  /** The names in a directory, or [] when it cannot be read: the checkouts onboard finds in the folder it runs in (A11-186). */
+  listDir: (path: string) => string[];
+  /** The folder onboard runs in (A11-186): where it looks for checkouts first, and where it clones to by default. */
+  cwd: string;
+  /** The code host, loaded only when a person is asked for repositories at a terminal (A11-186). */
+  codeHost: () => CodeHost;
+  /** Picking from a list, yes or no, and a prefilled line: how a terminal is asked for repositories (A11-186). */
+  prompts: Prompts;
   now: () => Date;
   /** The `bun` this machine has, installed into `~/.bun/bin` when it has none. */
   ensureBun: () => Promise<{ path: string; installed: boolean }>;
@@ -214,7 +230,7 @@ function fill(block: unknown, values: Readonly<Record<string, unknown>>): Record
  * The profile to set up from: read when its file is there, else asked for at a terminal and written there (mode 600), else refused by name. The questions
  * are asked of the repositories `--repo` names, or asked for when none was given.
  */
-async function profileFor(options: OnboardOptions, deps: OnboardDeps): Promise<Profile> {
+async function profileFor(options: OnboardOptions, held: Readonly<Record<string, string>>, deps: OnboardDeps): Promise<Profile> {
   const path = profilePathOf(options.profile ?? "", deps.env, deps.home);
   if (deps.exists(path)) {
     try {
@@ -227,12 +243,51 @@ async function profileFor(options: OnboardOptions, deps: OnboardDeps): Promise<P
   if (!deps.interactive) {
     throw new OnboardRefusal(`there is no profile at ${path}. A profile is the answers onboard asks, saved as JSON with no secret in it; run \`agent-org onboard --profile ${options.profile}\` at a terminal to answer them and write it there, or copy one from another machine to ${path}.`);
   }
-  const repos = options.repos.length > 0 ? options.repos : await askRepositories(deps);
-  const pairs = repos.map((text) => parseRepo(text, deps));
-  const profile = await askProfile({ ask: deps.ask }, pairs.map(([name, repoPath]) => ({ name, path: repoPath })), deps.catalog());
+  const profile = await askProfile({ ask: deps.ask }, await profileRepos(options, held, deps), deps.catalog());
   deps.writeFile(path, profileText(profile));
   deps.out.log(`wrote the answers to ${path}, mode 600: a copy of it sets up another machine, and holds no secret`);
   return profile;
+}
+
+/** What the profile records of the repositories: `--repo`'s, else those picked from the folder and the code host (each with its repository, so a copy of the profile clones them), else those named by path. */
+async function profileRepos(options: OnboardOptions, held: Readonly<Record<string, string>>, deps: OnboardDeps): Promise<ProfileRepo[]> {
+  const picked = options.repos.length > 0 ? null : await pickedRepositories(held, deps);
+  if (picked !== null) return picked.map(({ name, path, fullName }) => ({ name, remote: fullName, path: pathInHome(path, deps.home) }));
+  const repos = options.repos.length > 0 ? options.repos : await askRepositories(deps);
+  return repos.map((text) => parseRepo(text, deps)).map(([name, path]) => ({ name, path }));
+}
+
+/** `path` as `~/…` when it is under the home folder, so a profile copied to another machine finds it there. */
+const pathInHome = (path: string, home: string): string => (path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path);
+
+/**
+ * The repositories a person picks at a terminal (A11-186): the checkouts in the folder onboard runs in, and more from the code host's organisations. `held` is the host file's clones, kept as they are.
+ * @returns null when the code host lists no repositories or nothing was found to pick from: the caller asks for paths, as it always did
+ * @throws OnboardRefusal when the person stops a prompt
+ */
+async function pickedRepositories(held: Readonly<Record<string, string>>, deps: OnboardDeps): Promise<PickedRepository[] | null> {
+  const repositories = deps.codeHost().repositories;
+  if (repositories === undefined) return null;
+  try {
+    return await pickRepositories(held, { cwd: deps.cwd, home: deps.home, repositories, prompts: deps.prompts, out: deps.out, isDirectory: deps.isDirectory, exists: deps.exists, readFile: deps.readFile, listDir: deps.listDir });
+  } catch (error) {
+    if (error instanceof PromptCancelled) throw new OnboardRefusal("onboard was stopped at the repositories, and nothing was written");
+    throw error;
+  }
+}
+
+/** The host file's clones, read leniently: a file that is absent, not JSON or holds no clones holds none (the host file itself is read, and refused, later). */
+function heldClones(hostFile: string, deps: OnboardDeps): Record<string, string> {
+  const text = readHostText(hostFile, deps);
+  if (text === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(text);
+    const clones = isObject(parsed) && isObject(parsed.clones) ? parsed.clones : {};
+    return Object.fromEntries(Object.entries(clones).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch (error) {
+    void error; // `currentHost` refuses a host file that is not JSON, by name
+    return {};
+  }
 }
 
 /** The repositories a person names at a terminal, one per line, until an empty line. */
@@ -373,8 +428,10 @@ async function clonesOf(options: OnboardOptions, profile: Profile | null, host: 
     const [name, path] = repoOfProfile(repo, deps);
     clones[name] = path;
   }
-  const repos = profile === null && options.repos.length === 0 && deps.interactive ? await askRepositories(deps) : options.repos;
-  for (const repo of repos) {
+  const asking = profile === null && options.repos.length === 0 && deps.interactive;
+  const picked = asking ? await pickedRepositories(clones, deps) : null;
+  for (const { name, path } of picked ?? []) clones[name] = path;
+  for (const repo of picked === null && asking ? await askRepositories(deps) : options.repos) {
     const [name, path] = parseRepo(repo, deps);
     clones[name] = path;
   }
@@ -510,7 +567,7 @@ async function finishOnboard({ next, options, terminal }: Readonly<{ next: Recor
 /** Write the host file and the notes, install the conventions plugin, and start the services. @returns the host file's path */
 export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promise<string> {
   const hostFile = hostFilePath(deps.env, deps.home, (path) => readHostText(path, deps));
-  const profile = options.profile === undefined ? null : await profileFor(options, deps);
+  const profile = options.profile === undefined ? null : await profileFor(options, heldClones(hostFile, deps), deps);
   const host = await currentHost(hostFile, deps);
   const tickets = ticketsOf(host);
   const clones = await clonesOf(options, profile, host, deps);
@@ -592,7 +649,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       ask, askHidden, exec: realExec, catalog: defaultCatalog, loadPlugins: (providers, pluginDeps) => loadEnabled(providers, defaultCatalog(), pluginDeps),
       readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
       exists: (path) => existsSync(path), removeFile: (path) => rmSync(path, { force: true }),
-      isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(), now: () => new Date(),
+      isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(),
+      listDir: (path) => { try { return readdirSync(path); } catch { return []; } },
+      cwd: process.cwd(), codeHost: () => loadedCodeHost(process.env), prompts: clackPrompts(), now: () => new Date(),
       ensureBun: () => ensureBun({
         home, env: process.env, platform: process.platform, arch: process.arch, exists: existsSync,
         download: async (url) => {

@@ -11,7 +11,7 @@ import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import type { OnboardStep } from "../plugins/manifest.ts";
 import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "../plugins/registry.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
-import { onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
+import { onboard, onboardServices, OnboardRefusal, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 import { createTailscale, freshState } from "../../plugins/tailscale/stub.ts";
 import { PAIRING_STEPS } from "./terminal.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
@@ -21,6 +21,8 @@ import type { ProfileRepo } from "./onboard-profile.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
 import type { Replacements } from "./interim-guards.ts";
 import { PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { PromptCancelled, type Prompts } from "./prompts.ts";
 
 const STACK_LISTED = "gh stack  github/gh-stack  v0.2.1\n";
 /** The GitHub CLI as the tests see it by default: the stack extension is listed, and nothing else is asked. */
@@ -85,6 +87,11 @@ const BROWSERS_READY: ChromiumReport = {
   unchecked: null,
 };
 
+/** Prompts nobody answers: a test that reaches one has asked a person something it should not have. */
+const NO_PROMPTS: Prompts = {
+  pickMany: () => Promise.reject(new Error("a list was shown")), confirm: () => Promise.reject(new Error("a yes or no was asked")), text: () => Promise.reject(new Error("a line was asked")),
+};
+
 function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: (file: string, args: string[]) => RunResult | undefined = () => undefined) {
   const home = tmpDir("onboard-");
   const repo = join(home, "src", "nbl-ui-netbox");
@@ -132,6 +139,11 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     removeFile: (path) => rmSync(path, { force: true }),
     now: () => new Date("2026-10-20T10:00:00.000Z"),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
+    listDir: (path) => { try { return readdirSync(path); } catch { return []; } },
+    // The folder onboard runs in holds nothing, and the code host lists nothing: at a terminal the picker finds nothing to offer and onboard asks for paths, as it always did (A11-186).
+    cwd: join(home, "repos"),
+    codeHost: () => { const host = createFakeCodeHost(); host.seedOwners(null); return host; },
+    prompts: NO_PROMPTS,
     ensureBun: async () => ({ path: "/h/.bun/bin/bun", installed: false }),
     herdrPlugins: () => plugins,
     newestPluginTag: () => "v0.4.13",
@@ -875,4 +887,103 @@ test("A11-184: a web UI release tag that cannot be read fails the terminal step,
   assert.ok(w.printed.some((line) => line.startsWith("the web terminal is not set up: devswha/herdr-web-ui has no release tag")));
   assert.equal(hostOf(w.home).tickets.providers.exposure.terminal, undefined);
   assert.ok(w.ran.includes("herdr integration install claude"), "the integrations are installed all the same");
+});
+
+// A11-186: at a terminal, with no --repo, the repositories are picked from the folder onboard runs in and from the code host.
+
+/** Makes a main checkout at `path` whose `origin` is `url`. */
+function checkoutAt(path: string, url: string): void {
+  mkdirSync(join(path, ".git"), { recursive: true });
+  writeFileSync(join(path, ".git", "config"), `[remote "origin"]\n\turl = ${url}\n`);
+}
+
+/** Prompts that answer each list with what it starts ticked, every yes or no with No, and every line with what it starts as. */
+function pressEnter(): Prompts {
+  return { pickMany: async ({ ticked }) => [...ticked], confirm: async () => false, text: async ({ initial }) => initial };
+}
+
+/** The folder onboard runs in, with two checkouts the code host knows. */
+function laptop(over: Partial<OnboardDeps> = {}, answers: string[] = []) {
+  const world = deps({ interactive: true, platform: "linux", prompts: pressEnter(), ...over }, answers);
+  checkoutAt(join(world.home, "repos", "agent-org"), "https://github.com/a11ign/agent-org.git");
+  checkoutAt(join(world.home, "repos", "docs-site"), "git@github.com:a11ign/documents.git");
+  return world;
+}
+
+test("A11-186: at a terminal with no --repo onboard picks the repositories in the folder it runs in, writes the code host's names, and prints the summary before it writes the host file", async () => {
+  const { deps: d, home, printed } = laptop();
+  await onboard(options({ start: false }), d);
+  assert.deepEqual(hostOf(home).clones, { "agent-org": join(home, "repos", "agent-org"), documents: join(home, "repos", "docs-site") });
+  const summary = printed.findIndex((text) => text.includes("Repositories\n\n"));
+  assert.ok(summary >= 0, printed.join("\n"));
+  assert.match(printed[summary], /✓ documents +~\/repos\/docs-site +found/);
+  assert.ok(printed.findIndex((text) => text.startsWith("wrote ")) > summary, "the summary comes before the host file is written");
+  assert.ok(!printed.some((text) => text.includes("Name the repositories a worker can choose from")), "the typed prompt is not asked");
+});
+
+test("A11-186: a repository the host file already holds is kept at its path, whatever the picker lists", async () => {
+  const { deps: d, home } = laptop();
+  mkdirSync(join(home, ".agent-org"), { recursive: true });
+  writeFileSync(join(home, ".agent-org", "host.json"), JSON.stringify({ clones: { documents: join(home, "src", "nbl-ui-netbox"), legacy: join(home, "src") } }));
+  await onboard(options({ start: false }), d);
+  assert.deepEqual(hostOf(home).clones, { documents: join(home, "src", "nbl-ui-netbox"), legacy: join(home, "src"), "agent-org": join(home, "repos", "agent-org") });
+});
+
+test("A11-186: an absent profile at a terminal records the picked repositories with their repository and a ~/ path, so a copy clones them on another machine", async () => {
+  const answers = ["ZZ", "none", "none", "none", "local"];
+  const { deps: d, home } = laptop({}, answers);
+  await onboard(options({ profile: "new-laptop", start: false }), d);
+  const saved = JSON.parse(readFileSync(join(home, ".agent-org", "profiles", "new-laptop.json"), "utf8"));
+  assert.deepEqual(saved.repos, [{ name: "agent-org", remote: "a11ign/agent-org", path: "~/repos/agent-org" }, { name: "documents", remote: "a11ign/documents", path: "~/repos/docs-site" }]);
+  assert.deepEqual(hostOf(home).clones, { "agent-org": join(home, "repos", "agent-org"), documents: join(home, "repos", "docs-site") });
+});
+
+test("A11-186: a repository picked from the code host and not yet cloned is cloned where the person is, with the command the offer showed", async () => {
+  const host = createFakeCodeHost("octo");
+  host.seedOwners([{ login: "octo", kind: "account" }]);
+  host.seedRepositories("octo", ["octo/dotfiles"]);
+  const questions: string[] = [];
+  const prompts: Prompts = {
+    pickMany: async ({ message, choices, ticked }) => { questions.push(message); return message.startsWith("Organisations") || message.startsWith("Repositories to add") ? choices.map(({ value }) => value) : [...ticked]; },
+    confirm: async ({ message }) => { questions.push(message); return true; },
+    text: async ({ message, initial }) => { questions.push(message); return initial; },
+  };
+  const { deps: d, home } = laptop({ codeHost: () => host, prompts });
+  await onboard(options({ start: false }), d);
+  assert.deepEqual(host.repositoriesWorld.cloned, [{ fullName: "octo/dotfiles", path: join(home, "repos", "dotfiles") }]);
+  assert.equal(hostOf(home).clones.dotfiles, join(home, "repos", "dotfiles"));
+  assert.deepEqual(questions, ["Found 2 repositories in ~/repos", "Add repositories not cloned here?", "Organisations to add repositories from", "Repositories to add (type to filter)", "Clone into", "Clone these repositories? Each runs the command shown"]);
+});
+
+test("A11-186: stopping a prompt refuses onboard by its sentence and writes nothing", async () => {
+  const prompts: Prompts = { ...pressEnter(), pickMany: () => Promise.reject(new PromptCancelled()) };
+  const { deps: d, home, written } = laptop({ prompts });
+  await assert.rejects(onboard(options({ start: false }), d), (error: unknown) => error instanceof OnboardRefusal && error.message === "onboard was stopped at the repositories, and nothing was written");
+  assert.deepEqual(written, []);
+  assert.ok(!existsSync(join(home, ".agent-org", "host.json")));
+});
+
+test("A11-186: a code host without the repositories group is asked for paths, as it always was", async () => {
+  const answers: string[] = [];
+  const { deps: d, home, repo } = laptop({ codeHost: () => { const { repositories, ...bare } = createFakeCodeHost(); void repositories; return bare as ReturnType<OnboardDeps["codeHost"]>; } }, answers);
+  answers.push(repo, "");
+  await onboard(options({ start: false }), d);
+  assert.deepEqual(hostOf(home).clones, { "nbl-ui-netbox": repo });
+});
+
+test("A11-186: without a terminal --repo and a profile behave as they did: no list, no question, and no read of the code host's repositories", async () => {
+  const host = createFakeCodeHost("octo");
+  const { deps: d, home, repo, printed } = laptop({ interactive: false, codeHost: () => host, prompts: NO_PROMPTS });
+  await onboard(options({ repos: [repo], start: false }), d);
+  assert.deepEqual(hostOf(home).clones, { "nbl-ui-netbox": repo });
+  assert.ok(!printed.some((text) => text.includes("Repositories\n\n")), "no summary without a terminal");
+  assert.deepEqual(host.calls.filter((call) => /^(readOwners|readRepositories|cloneRepository)/.test(call)), [], "the code host's repositories are not read");
+  await assert.rejects(onboard(options({ profile: "absent", start: false }), d), (error: unknown) => error instanceof OnboardRefusal && /there is no profile at/.test(error.message));
+  assert.deepEqual(host.calls.filter((call) => /^(readOwners|readRepositories|cloneRepository)/.test(call)), []);
+});
+
+test("A11-186: with --repo at a terminal the picker is not used", async () => {
+  const { deps: d, home, repo } = laptop({ prompts: NO_PROMPTS });
+  await onboard(options({ repos: [repo], start: false }), d);
+  assert.deepEqual(hostOf(home).clones, { "nbl-ui-netbox": repo });
 });

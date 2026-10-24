@@ -4,7 +4,7 @@
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
 // (`repository`), a pull request address it holds nothing for (`missing`), and the login the host acts as (`self`). A code host is synchronous, as every reader of it is.
-import type { ChangeRef, CodeHost, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeRef, CodeHost, HostRepository, WrapperInputs } from "../contracts/code-host.ts";
 import type { CodeHostRows } from "../contracts/code-host-rows.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 import { refused, throws, withRows, withRunRows, type Subject } from "./rows-support.ts";
@@ -20,6 +20,8 @@ export type CodeHostProbe = Readonly<{
   check?: Readonly<{ detailsUrl: string; log: string }>;
   /** A head a claim may be written on: the repository, the head, and the environment the claim is written with. Writing one is not undone, so a caller seeds a head it can discard. */
   claim?: Readonly<{ repository: string; head: string; environment: Readonly<Record<string, string>> }>;
+  /** Remote URLs of one repository the host holds, in the forms a checkout's `origin` takes, and the repository each names (contract 1.14). A host without a `repositories` group is not asked. */
+  remote?: Readonly<{ urls: readonly string[]; repository: HostRepository }>;
 }>;
 
 /** The operations of the optional `rows` group (contract 1.11), as a function each; the other members are values. */
@@ -154,6 +156,10 @@ const withCheck = (reason: string, run: (subject: Subject & { check: NonNullable
 
 const withClaim = (reason: string, run: (subject: Subject & { claim: NonNullable<CodeHostProbe["claim"]> }) => unknown): Conditional<Subject> => ({
   applies: ({ probe }) => probe.claim !== undefined, reason: `the probe names no head to claim, so ${reason}`, run: (subject) => run({ ...subject, claim: subject.probe.claim! }),
+});
+
+const withRepositories = (reason: string, run: (subject: Subject & { repositories: NonNullable<CodeHost["repositories"]> }) => unknown): Conditional<Subject> => ({
+  applies: ({ host }) => host.repositories !== undefined, reason: `the code host has no repositories group, which is optional (contract 1.14), so ${reason}`, run: (subject) => run({ ...subject, repositories: subject.host.repositories! }),
 });
 
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
@@ -455,6 +461,19 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(host.readDefaultBranchRed!("not a repository") === null, "readDefaultBranchRed must answer null for what it cannot read: null is never 'nothing is red'");
     },
   },
+  "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {
+    expect(hasFunctions(repositories, ["readOwners", "readRepositories", "repositoryOfRemote", "cloneCommand", "cloneRepository"]), "the repositories group has readOwners, readRepositories, repositoryOfRemote, cloneCommand and cloneRepository functions");
+    const owners = repositories.readOwners();
+    expect(owners === null || (Array.isArray(owners) && owners.length > 0 && owners[0].kind === "account" && owners.slice(1).every((owner) => owner.kind === "organisation") && owners.every((owner) => isString(owner.login) && owner.login !== "")),
+      "readOwners() must be null (could not ask), or the signed-in account first and then the organisations, each with a login");
+    expect(repositories.readRepositories({ login: "no-such-owner-on-this-host", kind: "organisation" }) === null, "readRepositories must answer null for an owner it cannot ask about: null is never 'it has no repositories'");
+  }),
+  "repositoryOfRemote names the repository of its own remote URLs, and of no other host's": withRepositories("the repositories a person can pick are not asked", ({ repositories, probe }) => {
+    for (const url of probe.remote?.urls ?? []) expect(JSON.stringify(repositories.repositoryOfRemote(url)) === JSON.stringify(probe.remote!.repository), `repositoryOfRemote(${url}) must name ${probe.remote!.repository.fullName}`);
+    expect(repositories.repositoryOfRemote("https://example.com/owner/name") === null, "repositoryOfRemote must answer null for another host's URL");
+    expect(repositories.repositoryOfRemote("") === null, "repositoryOfRemote must answer null for what is no remote");
+    expect(isString(repositories.cloneCommand("owner/name", "/work/name")) && repositories.cloneCommand("owner/name", "/work/name").includes("owner/name") && repositories.cloneCommand("owner/name", "/work/name").includes("/work/name"), "cloneCommand must name the repository and the path");
+  }),
   "readChange reads a change, and answers null for one it cannot": withChange("the port's reads are not asked", ({ host, change }) => {
     const facts = host.readChange(change);
     expect(isObject(facts) && isString(facts.head) && Array.isArray(facts.checks) && Array.isArray(facts.reviews) && isObject(facts.merge), "readChange must read { ref, head, checks, reviews, merge }");
