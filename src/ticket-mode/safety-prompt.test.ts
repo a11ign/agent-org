@@ -1,11 +1,11 @@
 // no-token: gh -- pure reader, handed pane text
 // A11-174: what a running agent's pane shows when Claude Code stops to ask a person, and the one message that tells the agent its prompt was answered No.
 //
-// The panes are in `safety-prompt-fixture.ts`, reconstructions and not captures.
+// The panes are in `safety-prompt-fixture.ts`: reconstructions, and the two captures of Claude Code 2.1.310 (A11-209).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { declineMessage, readSafetyPrompt } from "./safety-prompt.ts";
-import { ASK_USER, BOX, DANGEROUS_RM, DANGEROUS_RM_CLOSE, EDIT, IDLE, IMPORTS, MOVED_PAST, TRUST, WORKING } from "./safety-prompt-fixture.ts";
+import { ASK_USER, BOX, DANGEROUS_RM, DANGEROUS_RM_CLOSE, EDIT, IDLE, IMPORTS, MAIN_RM, MOVED_PAST, SUBAGENT_RM, TRUST, WORKING } from "./safety-prompt-fixture.ts";
 
 test("A11-174: the dangerous-rm pane reads as a safety prompt, with its command and its warning", () => {
   assert.deepEqual(readSafetyPrompt(DANGEROUS_RM), {
@@ -58,4 +58,59 @@ test("A11-174: any other safety prompt is told to do it another way, with no gua
   const message = declineMessage({ command: "src/app.ts", warning: "" });
   assert.equal(message, "The board answered No to a Claude Code safety prompt on your command `src/app.ts`. Nobody answers prompts on an unattended run. Do it another way that raises no prompt, and carry on.");
   assert.ok(!declineMessage({ command: "curl x", warning: "Some other warning" }).includes("${VAR:?}"));
+});
+
+const RM_COMMAND = 'S=/tmp/scratch/cap; cd "$S/x" && rm -rf *';
+const RM_WARNING = "Dangerous rm operation on statically-unresolvable target: /tmp/scratch/cap/*";
+
+test("A11-209: a subagent's captured prompt reads as a safety prompt with its command, its warning and the subagent's name", () => {
+  assert.deepEqual(readSafetyPrompt(SUBAGENT_RM), { kind: "safety", command: RM_COMMAND, warning: RM_WARNING, agent: "general-purpose", firstLine: "Do you want to proceed?" });
+});
+
+test("A11-209: the main agent's captured prompt reads the same, with no agent key and without the auto-deny notice in its warning", () => {
+  assert.deepEqual(readSafetyPrompt(MAIN_RM), { kind: "safety", command: RM_COMMAND, warning: RM_WARNING, firstLine: "Do you want to proceed?" });
+});
+
+test("A11-209: a subagent's name is kept whatever it is, and a heading without ` from the ... agent` has none", () => {
+  const agentOf = (heading: string): string | undefined => {
+    const prompt = readSafetyPrompt(SUBAGENT_RM.replace("Bash command · from the general-purpose agent", heading));
+    assert.equal(prompt?.kind, "safety");
+    return prompt?.kind === "safety" ? prompt.agent : undefined;
+  };
+  assert.equal(agentOf("Bash command · from the code-reviewer agent"), "code-reviewer");
+  assert.equal(agentOf("Bash command · from the Plan agent"), "Plan");
+  assert.equal(agentOf("Bash command"), undefined);
+});
+
+test("A11-209: a bare `No` is a safety prompt's only in a tool's ruled box: a heading-like line, a start dialog or a longer No elsewhere stays unrecognised", () => {
+  const headless = SUBAGENT_RM.replace("Bash command · from the general-purpose agent", "Something else");
+  assert.equal(readSafetyPrompt(headless)?.kind, "unrecognised", "no tool heading");
+  const unrecognised = (name: string, pane: string): void => assert.equal(readSafetyPrompt(pane)?.kind, "unrecognised", name);
+  unrecognised("a question with no heading", BOX("Do you want to leave?", "❯ 1. Yes", "  2. No"));
+  unrecognised("a heading far above an unrelated question", ["Read file", "notes.md", "", "● Done reading.", "", "Do you want to use the staging database?", "❯ 1. Yes", "  2. No", "Esc to cancel"].join("\n"));
+  unrecognised("a prose block that starts with a heading word", ["Fetch", "the release notes then summarise", "", "Do you want to ship it today?", "❯ 1. Yes", "  2. No"].join("\n"));
+  unrecognised("a trust question whose No means exit", ["Tool use", "", "Do you want to trust this folder?", "1. Yes, proceed", "2. No, exit", "Enter to confirm · Esc to cancel"].join("\n"));
+  unrecognised("a No that is longer than No, under a ruled box", SUBAGENT_RM.replace("  2. No", "  2. No (recommended)"));
+  unrecognised("an edit with a bare No and no ruled box", BOX("Edit file", "", "  src/app.ts", "", "Do you want to make this edit to app.ts?", "❯ 1. Yes", "  2. No"));
+});
+
+test("A11-209: a rule that closes the command itself leaves the command where it was, and the text after it is the warning", () => {
+  const prompt = readSafetyPrompt(["Bash command", "  rm -rf $X/y", "╌╌╌╌╌╌╌╌", "Dangerous rm operation on possibly-empty variable path", "", "Do you want to proceed?", "❯ 1. Yes", "  2. No"].join("\n"));
+  assert.deepEqual(prompt, { kind: "safety", command: "rm -rf $X/y", warning: "Dangerous rm operation on possibly-empty variable path", firstLine: "Do you want to proceed?" });
+});
+
+test("A11-209: the message for a subagent's prompt names the subagent and the command, quotes the warning, says to name a guarded path and that subagents follow the same rules", () => {
+  assert.equal(declineMessage({ command: RM_COMMAND, warning: RM_WARNING, agent: "general-purpose" }),
+    `The board answered No to a Claude Code safety prompt on the command \`${RM_COMMAND}\` that your \`general-purpose\` subagent ran: "${RM_WARNING}". Nobody answers prompts on an unattended run. `
+    + 'Name an explicit path guarded with ${VAR:?}, for example rm -rf "${S:?}/x", never a bare * after cd, run it again that way, and carry on. '
+    + "Subagents follow the same rules on an unattended run: tell your subagent, or run the command yourself, guarded.");
+  assert.equal(declineMessage({ command: "", warning: "", agent: "Plan" }),
+    "The board answered No to a Claude Code safety prompt on the last command your `Plan` subagent ran. Nobody answers prompts on an unattended run. Do it another way that raises no prompt, and carry on. "
+    + "Subagents follow the same rules on an unattended run: tell your subagent, or run the command yourself, guarded.");
+});
+
+test("A11-209: the main agent's message gives the explicit-path advice for the unresolvable-target warning, and no word of subagents", () => {
+  const message = declineMessage({ command: RM_COMMAND, warning: RM_WARNING });
+  assert.ok(message.includes('Name an explicit path guarded with ${VAR:?}, for example rm -rf "${S:?}/x", never a bare * after cd'));
+  assert.ok(!message.includes("subagent"));
 });
