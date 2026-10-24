@@ -21,14 +21,14 @@ test("A11-179: the checks failing on the head of the default branch are named on
     run("refusalOwners", "FAILURE", 10), run("refusalOwners", "FAILURE", 20), run("typecheck", "FAILURE", 5), run("typecheck", "SUCCESS", 15), run("lint", "CANCELLED", 30), run("suite", null, 31),
     { __typename: "StatusContext", context: "netlify", state: "ERROR", createdAt: at(35) },
   ]));
-  assert.deepEqual(readDefaultBranchRed("a11ign/a11ign", ask), { branch: "main", head: "c0ffee", failing: ["refusalOwners", "netlify"] },
+  assert.deepEqual(readDefaultBranchRed("a11ign/a11ign", ask), { branch: "main", head: "c0ffee", failing: ["refusalOwners", "netlify"], passing: ["typecheck"], pending: ["lint", "suite"] },
     "a re-run that passed replaces its failure, a cancelled or running check is not red, and a commit status is read as a check run");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
   assert.ok(calls[0].includes("owner=a11ign") && calls[0].includes("repo=a11ign"), "the repository is asked by its owner and name");
 });
 
 test("A11-179: a default branch whose head has no check on it has nothing failing, which is not 'could not ask'", () => {
-  assert.deepEqual(readDefaultBranchRed("a11ign/a11ign", answering({ name: "trunk", target: { __typename: "Commit", oid: "abc", statusCheckRollup: null } }).run), { branch: "trunk", head: "abc", failing: [] });
+  assert.deepEqual(readDefaultBranchRed("a11ign/a11ign", answering({ name: "trunk", target: { __typename: "Commit", oid: "abc", statusCheckRollup: null } }).run), { branch: "trunk", head: "abc", failing: [], passing: [], pending: [] });
 });
 
 test("A11-179: a repository gh refuses, one with no default branch, an answer of another shape and a name that is no repository's are null, never 'nothing is red'", () => {
@@ -41,4 +41,19 @@ test("A11-179: a repository gh refuses, one with no default branch, an answer of
   const calls: string[][] = [];
   assert.equal(readDefaultBranchRed("not a repository", (args) => { calls.push(args); return "{}"; }), null);
   assert.deepEqual(calls, [], "and nothing is asked for it");
+});
+
+test("A11-215: the checks passing on the head of the default branch are the ones whose newest run concluded green, each once, and never one that is failing, running, cancelled or missing", () => {
+  const { run: ask } = answering(head([
+    run("ui", "FAILURE", 10), run("ui", "SUCCESS", 20), run("ui", "SUCCESS", 21), run("typecheck", "SUCCESS", 5), run("typecheck", "FAILURE", 15), run("lint", "CANCELLED", 30), run("suite", null, 31),
+    run("docs", "SKIPPED", 12), run("labels", "NEUTRAL", 13),
+    { __typename: "StatusContext", context: "netlify", state: "SUCCESS", createdAt: at(35) }, { __typename: "StatusContext", context: "deploy", state: "PENDING", createdAt: at(36) },
+    { __typename: "StatusContext", context: "audit", state: "ERROR", createdAt: at(37) },
+  ]));
+  const red = readDefaultBranchRed("a11ign/a11ign", ask);
+  assert.deepEqual(red?.passing, ["ui", "docs", "labels", "netlify"], "a re-run that passed replaces its failure; skipped and neutral pass; a commit status passes by its state");
+  assert.deepEqual(red?.failing, ["typecheck", "audit"], "and a pass that a newer failure replaced is failing, not passing");
+  assert.deepEqual(red?.pending, ["lint", "suite", "deploy"], "a cancelled run, one with no conclusion and a pending commit status have not passed, and are not failing either");
+  const names = [...(red?.failing ?? []), ...(red?.passing ?? []), ...(red?.pending ?? [])];
+  assert.deepEqual([names.length, new Set(names).size], [9, 9], "a name is failing, passing or pending, never two of them, and a name main reports no run of is none");
 });

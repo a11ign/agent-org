@@ -127,8 +127,10 @@ export type PullHead = Readonly<{ head: string; approved: boolean; review?: "app
  * infrastructure reason were rerun (`rerun`), or they failed again on that head after their rerun and are named for a person (`named`). `note` is the line the
  * card shows for the last two. `not-ours` (A11-179) is a head whose red checks are all ones the run cannot mend, because they fail on the default branch or on pull requests that touch none of the
  * run's files: no round is started and nothing is rerun, `notOurs` names them, each with the ticket that owns it or null, and the record is made again on every watch, so it lasts only as long as the checks are red elsewhere.
+ * `waitingOnMain` (A11-215) is which of `notOurs` were red on the default branch when the record was made: the checks the pull request waits on main to mend. When main reports them all passing the board brings the pull request up to date with main
+ * and records `updated`, a head it did that from, whose `note` the card keeps showing until the new head's checks have run.
  */
-export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named" | "not-ours"; note?: string; notOurs?: Readonly<Record<string, string | null>> }>;
+export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named" | "not-ours" | "updated"; note?: string; notOurs?: Readonly<Record<string, string | null>>; waitingOnMain?: readonly string[] }>;
 
 /**
  * The branch a run was branched from: the blocker's key, the repository and branch, the commit it has the blocker's branch merged in up to (`sha`), and what

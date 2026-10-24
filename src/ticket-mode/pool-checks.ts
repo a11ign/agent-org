@@ -4,12 +4,13 @@
 import { CI_CLASS, errorLinesOfLog, LOG_TIMESTAMP, rateLimitOrLostRunner, READS_OUTSIDE, withoutColour } from "../ci-log-lines.ts";
 import { rerunOn5xx } from "../ci-rerun-on-5xx.ts";
 import { isRollUpCheck } from "../newest-check-run.ts";
-import type { FailingCheck, PullFeedback } from "../plugins/contracts/code-host.ts";
+import type { FailingCheck, PullFeedback, UpdateBranchResult } from "../plugins/contracts/code-host.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
-import { NO_FOREIGN_REDS, type ForeignReds } from "./pool-foreign-checks.ts";
+import { NO_FOREIGN_REDS, type ForeignReds, type ForeignRedsRead } from "./pool-foreign-checks.ts";
 import { log, messageOf } from "./pool-state.ts";
 import { ownerOfRed } from "./ticket-references.ts";
+import { conflictLine } from "./worker-files.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** The most error lines a round's brief quotes from the logs of all the checks that failed at a head, and the most characters of each: a brief names the failure, it is not the log. */
@@ -120,19 +121,26 @@ function ownerOf(ctx: PoolContext, key: string, body: string, check: FailingChec
   return ownerOfRed(key, "", readCheck(ctx, check).refusals);
 }
 
+/** The card's note for checks held as red on main, with the ticket that owns each when one is named. PURE. */
+const heldNote = (names: readonly string[], owners: Readonly<Record<string, string | null>>): string =>
+  names.map((name) => `${name} is red on main / not this run's${(owners[name] ?? null) === null ? "" : `; owned by ${owners[name]}`}`).join("; ");
+
 /**
  * The record for a head whose red checks are all ones the run cannot mend (A11-179): they fail on the default branch, or on pull requests that touch none of the run's files. No round is started and
- * nothing is rerun. The card is told so, with the ticket that owns each check when one is named. Made again on every watch, and said in the log when it changes.
+ * nothing is rerun. The card is told so, with the ticket that owns each check when one is named. Made again on every watch, and said in the log when it changes. It records which of the checks are red on
+ * the default branch (`waitingOnMain`, A11-215), and keeps those an earlier record at this head recorded, so a watch that cannot read main does not forget what the pull request waits on.
  */
-function notOursAnswer(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, outside: readonly FailingCheck[], known: CheckHead | undefined): CheckHead {
+function notOursAnswer(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, outside: readonly FailingCheck[], known: CheckHead | undefined, reds: ForeignRedsRead): CheckHead {
   const { read } = pull;
-  const previous = known?.head === read.head && known.step === "not-ours" ? known.notOurs ?? {} : {};
+  const sameHead = known?.head === read.head && known.step === "not-ours";
+  const previous = sameHead ? known.notOurs ?? {} : {};
   const owners: Record<string, string | null> = Object.fromEntries(outside.map((check) => [check.name, ownerOf(ctx, entry.ticket.key, read.body ?? "", check, previous)]));
   // A roll-up that failed reports its jobs' results: with every job behind it elsewhere's, it is red for the same reason and belongs to the same ticket.
   const owner = Object.values(owners).find((name) => name !== null) ?? null;
   for (const name of read.failing.filter((failing) => isRollUpCheck(failing) && !Object.hasOwn(owners, failing))) owners[name] = owner;
-  const note = outside.map(({ name }) => `${name} is red on main / not this run's${owners[name] === null ? "" : `; owned by ${owners[name]}`}`).join("; ");
-  const answer: CheckHead = { head: read.head!, step: "not-ours", note, notOurs: owners };
+  const note = heldNote(outside.map(({ name }) => name), owners);
+  const waiting = [...new Set([...(sameHead ? known.waitingOnMain ?? [] : []), ...Object.keys(owners).filter((name) => reds.onMain.has(name))])].filter((name) => Object.hasOwn(owners, name));
+  const answer: CheckHead = { head: read.head!, step: "not-ours", note, notOurs: owners, ...(waiting.length === 0 ? {} : { waitingOnMain: waiting }) };
   if (JSON.stringify(known) !== JSON.stringify(answer)) log(`${entry.ticket.key}: ${note}`);
   return answer;
 }
@@ -160,12 +168,82 @@ function answerInfrastructure(ctx: PoolContext, entry: Entry, { head, checks, re
   return { head, step: "rerun", note };
 }
 
+/** What the board said on the card of a pull request it brought up to date with main (A11-215). */
+const UPDATED_NOTE = "main is green again: updated from main";
+
+/** Whether the known record is the hold (`not-ours`) at the pull request's head, with checks recorded as waited on main. PURE. */
+const isHeldOnMain = (known: CheckHead | undefined, head: string): known is CheckHead & { waitingOnMain: readonly string[] } =>
+  known?.step === "not-ours" && known.head === head && (known.waitingOnMain ?? []).length > 0;
+
+/**
+ * What main says of the checks a held pull request has red: `failing` when any still fails on it, or on another run's pull request; `unsaid` when the host cannot say which checks pass, which is no evidence that any does;
+ * `unsettled` when any is neither failing nor passing there and may still conclude (it is running, or main could not be read); `absent` when main was read and reports no run of one, so the pull request no longer waits on main for it;
+ * and `passing` only when every one is reported passing. PURE.
+ */
+function mainSays(checks: readonly FailingCheck[], reds: ForeignRedsRead): "failing" | "unsaid" | "unsettled" | "absent" | "passing" {
+  const { mainPassing, mainPending } = reds;
+  if (checks.some(({ name }) => reds.names.has(name))) return "failing";
+  if (mainPassing === null) return "unsaid";
+  const notPassing = checks.filter(({ name }) => !mainPassing.has(name));
+  if (notPassing.length === 0) return "passing";
+  return reds.mainBranch === null || mainPending === null || notPassing.some(({ name }) => mainPending.has(name)) ? "unsettled" : "absent";
+}
+
+/** The update from main of a held pull request that main's checks have mended, answered by what the code host did: `null` is an update that found nothing to take, which leaves the failure the run's own. */
+function updateFromMain(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead & { waitingOnMain: readonly string[] }, checks: readonly FailingCheck[]): { lines: string[]; answer: CheckHead } | null {
+  const { url, read } = pull;
+  const head = read.head!;
+  const result = askUpdate(ctx, url, head);
+  if (result.kind === "updated") {
+    log(`${entry.ticket.key}: ${UPDATED_NOTE} (${url})`);
+    return { lines: [], answer: { head, step: "updated", note: UPDATED_NOTE } };
+  }
+  if (result.kind === "conflict") {
+    log(`${entry.ticket.key}: ${url} could not be updated from main: it conflicts with its base`);
+    return { lines: [conflictLine(url, read.base)], answer: known };
+  }
+  if (result.kind === "up-to-date") return null;
+  const note = `${heldNote(checks.map(({ name }) => name), known.notOurs ?? {})}; could not update from main (${result.reason}), asked again next watch`;
+  if (known.note !== note) log(`${entry.ticket.key}: ${note}`);
+  return { lines: [], answer: { ...known, note } };
+}
+
+/** The update of a branch, as the code host answers it, or a refusal when the host throws, which the contract says it does not. */
+function askUpdate(ctx: PoolContext, url: string, head: string): UpdateBranchResult {
+  try {
+    return ctx.codeHost.updateBranch!(url, head);
+  } catch (err) {
+    return { kind: "refused", reason: messageOf(err) };
+  }
+}
+
+/**
+ * THE RULE OF A11-215: a pull request held as red on main is brought up to date with main once main reports the checks it waits on passing, and not before. It applies when the known record is the hold (`not-ours`) at the pull
+ * request's head with checks recorded as waited on main, every check the pull request has red now is one of them, and the host can update a branch. Main is read for those checks now ({@link mainSays}): still failing, or a host that cannot
+ * say which checks pass, or main reports no run of one of them, and the pull request is answered as it was before A11-215; neither failing nor passing, and the hold is kept as it is with no round; every one passing, and the update is made, once for the head ({@link updateFromMain}).
+ * A pull request that conflicts is not sent to the update: the conflict round the watch starts for it is the answer. One stacked on another branch, or whose run holds a workspace, is not updated either. Returns null when the rule does not apply or is done with the pull request.
+ */
+function updateHeld(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, reds: ForeignRedsRead): { lines: string[]; answer: CheckHead | null } | null {
+  const { read } = pull;
+  if (read.head === null || !isHeldOnMain(known, read.head) || ctx.codeHost.updateBranch === undefined) return null;
+  const checks = checksToAnswer(read);
+  if (checks.length === 0 || !checks.every(({ name }) => known.waitingOnMain.includes(name))) return null;
+  const says = mainSays(checks, reds);
+  if (says === "failing" || says === "unsaid" || says === "absent") return null;
+  if (says === "unsettled" || read.conflicting) return { lines: [], answer: known };
+  // A pull request stacked on another branch would be given that branch and not main: it is answered as it was before A11-215.
+  if (read.base !== reds.mainBranch) return null;
+  // The board does not push to the branch of a run whose worker holds its workspace (the guard agent-org's own merge of a blocker's branch keeps): the worker's next push would be refused. That is a run parked on a question, which a person answers first.
+  if (entry.workspace !== undefined) return { lines: [], answer: known };
+  return updateFromMain(ctx, entry, pull, known, checks);
+}
+
 /**
  * What the board does about the red checks of one open pull request at its head, once for each head (A11-154): `heads` for the pull request with the answer added, and the lines
  * a round answers, if any. Checks the code failed are briefed with their log lines. Checks that failed for an infrastructure reason are rerun, once, and named on the card;
  * red again on the same head after that, they are named for a person and no worker gets them. A head with a check of each kind is a round for the code's, which names the others.
  * A check that is red where the run's files are not (`foreign`, A11-179) is the run's no more than an infrastructure failure is a fault in its change: it starts no round and is not rerun, and it is
- * looked at again on every watch, which is why it is the one record that does not end the answer for its head.
+ * looked at again on every watch, which is why it is the one record that does not end the answer for its head. A pull request held as red on main whose checks main now passes is brought up to date with main instead ({@link updateHeld}).
  */
 function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, foreign: ForeignReds): { lines: string[]; answer: CheckHead | null } {
   const { url, read } = pull;
@@ -174,23 +252,28 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
   const reran = known?.head === read.head && known.step === "rerun";
   const looked = known?.head === read.head && known.step === "not-ours";
   if (known?.head === read.head && !reran && !looked) return none;
-  const elsewhere = foreign(entry, url);
+  const reds = foreign(entry, url);
+  const mended = updateHeld(ctx, entry, pull, known, reds);
+  if (mended !== null) return mended;
   const answered = checksToAnswer(read);
-  const outside = answered.filter(({ name }) => elsewhere.has(name));
-  const checks = answered.filter(({ name }) => !elsewhere.has(name)).map((check) => readCheck(ctx, check));
+  const outside = answered.filter(({ name }) => reds.names.has(name));
+  const checks = answered.filter(({ name }) => !reds.names.has(name)).map((check) => readCheck(ctx, check));
   const own = checks.filter((check) => check.infrastructure === null);
   const infrastructure = checks.filter((check) => check.infrastructure !== null);
   if (own.length > 0) {
     const others = outside.length > 0 ? [foreignLine(url, outside.map(({ name }) => name))] : [];
     return { lines: [...ownLines(url, own), ...infrastructure.map((check) => infrastructureLine(url, check)), ...others], answer: { head: read.head, step: "round" } };
   }
-  if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: notOursAnswer(ctx, entry, pull, outside, known) };
+  if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: notOursAnswer(ctx, entry, pull, outside, known, reds) };
   return { lines: [], answer: answerInfrastructure(ctx, entry, { head: read.head, checks: infrastructure, reran }) };
 }
 
-/** Whether the record of a pull request's checks is kept as it is: there is one, it is not one of checks red elsewhere (made again from each watch's reads, A11-179), and the head has not moved. PURE. */
+/**
+ * Whether the record of a pull request's checks is kept as it is: there is one, it is not one of checks red elsewhere (made again from each watch's reads, A11-179), and the head has not moved. The record of an update
+ * from main (A11-215) is also kept once the head has moved, while the new head's checks have not all concluded, so the card goes on saying why they run. PURE.
+ */
 const isKept = (known: CheckHead | undefined, read: PullFeedback): known is CheckHead =>
-  known !== undefined && known.step !== "not-ours" && (read.head === null || known.head === read.head);
+  known !== undefined && known.step !== "not-ours" && (read.head === null || known.head === read.head || (known.step === "updated" && (read.pendingRequired ?? []).length > 0));
 
 /** A record the board keeps for a head it has answered. A name for a person is dropped once nothing fails on that head any more: it was fixed, and the head stays answered. PURE. */
 function keptRecord(known: CheckHead, read: PullFeedback): CheckHead {

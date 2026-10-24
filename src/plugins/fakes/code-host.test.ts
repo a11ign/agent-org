@@ -57,7 +57,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -218,4 +218,16 @@ test("A11-175: the fake reports the unrequired red checks it is told of, and the
   const liar = { ...host, readReviewState: (pull: string) => ({ ...host.readReviewState(pull)!, unrequiredRed: "checks (cross-repo)" as unknown as readonly string[] }) };
   await assert.rejects(runCodeHostConformance(liar, probe), (error: unknown) => error instanceof ContractError
     && error.failures.some(({ check }) => check === "readReviewState reads the head, the reviews and whether the checks settled"));
+});
+
+test("A11-215: the fake answers an update of a branch as the test says, records each one asked, and refuses a pull request it does not hold", () => {
+  const { host } = seeded();
+  const held = fakePullUrl("owner/repo", 7);
+  assert.deepEqual(host.updateBranch!(held, "h7"), { kind: "updated" }, "a held pull request updates unless the test says otherwise");
+  host.branchUpdates.answers.set(held, { kind: "conflict" });
+  assert.deepEqual(host.updateBranch!(held, "h7"), { kind: "conflict" });
+  const missing = fakePullUrl("owner/repo", 999);
+  assert.equal(host.updateBranch!(missing, "h").kind, "refused");
+  assert.deepEqual(host.branchUpdates.asked.map(({ url, expectedHead }) => [url, expectedHead]), [[held, "h7"], [held, "h7"], [missing, "h"]]);
+  assert.ok(host.calls.includes(`updateBranch ${held} h7`), "and it is in the calls");
 });

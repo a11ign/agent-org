@@ -1,9 +1,9 @@
-// The checks failing on the head of a repository's default branch (contract 1.13): what the board compares a pull request's red check with, to tell a check main fails too, which no diff of the run's can mend,
+// The checks failing on the head of a repository's default branch (contract 1.13), and the ones passing there (contract 1.15): what the board compares a pull request's red check with, to tell a check main fails too, which no diff of the run's can mend,
 // from one the run caused. Read through an injected `run` (the plugin's `gh`), so this file spawns nothing. Which checks are red is core's to decide, so it asks the `policy` it is given, as `pull-feedback.ts`
 // does, and a commit status is read as a check run there.
 import type { DefaultBranchRed } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
-import { failingChecks, type Check } from "./pull-feedback.ts";
+import { failingChecks, settledChecks, type Check } from "./pull-feedback.ts";
 
 const QUERY = `query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { defaultBranchRef { name target {
   __typename
@@ -21,7 +21,7 @@ function repositoryOf(repository: string): { owner: string; name: string } | nul
 }
 
 /**
- * THE CHECKS FAILING ON THE HEAD OF `repository`'S DEFAULT BRANCH, or null for "could not ask": a repository that is not `owner/name`, a refused `run`, a repository with no default branch or a branch whose
+ * THE CHECKS FAILING ON THE HEAD OF `repository`'S DEFAULT BRANCH, and those whose newest run passed there (`passing`, which is positive evidence: a check still running or never run is in neither, and `pending`, those still to conclude), or null for "could not ask": a repository that is not `owner/name`, a refused `run`, a repository with no default branch or a branch whose
  * head is not a commit, and an answer of another shape. A head with no check run on it is a branch with nothing failing, not null.
  */
 export function readDefaultBranchRed(repository: string, run: (args: string[]) => string, policy: CodeHostPolicy): DefaultBranchRed | null {
@@ -33,7 +33,9 @@ export function readDefaultBranchRed(repository: string, run: (args: string[]) =
     const commit = branch?.target;
     if (typeof branch?.name !== "string" || commit?.__typename !== "Commit" || typeof commit.oid !== "string") return null;
     const contexts: Check[] = commit.statusCheckRollup?.contexts?.nodes ?? [];
-    return { branch: branch.name, head: commit.oid, failing: [...new Set(failingChecks(contexts, policy).map(({ name }) => name))] };
+    const failing = [...new Set(failingChecks(contexts, policy).map(({ name }) => name))];
+    const { passing, pending } = settledChecks(contexts, policy, new Set(failing));
+    return { branch: branch.name, head: commit.oid, failing, passing: [...new Set(passing)], pending: [...new Set(pending)] };
   } catch {
     // An answer of an unexpected shape is no reading either.
     return null;

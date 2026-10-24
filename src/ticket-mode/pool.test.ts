@@ -5402,7 +5402,7 @@ test("A11-179: a pull request that merged is not read as 'not read yet' in the m
   assert.deepEqual([runStatus(ctx.entry("NBF-1")), reasonOf(ctx.entry("NBF-1")).line], ["ready-to-merge", null], "the tracker has not been asked yet; the run does not flicker to 'not read yet'");
 });
 
-test("A11-179: a check red on the default branch starts no fix round, is not rerun, and is named on the card as red on main with the ticket that owns it; once main is green it is the run's again", async () => {
+test("A11-179: a check red on the default branch starts no fix round, is not rerun, and is named on the card as red on main with the ticket that owns it; once main is green without a passing report it is the run's again", async () => {
   const roll = { ...redCheck("gate", 40), isRequired: true };
   const owned = stamped(["refusal: refusalOwners is retired by NBF-127", "##[error]Process completed with exit code 1."]);
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [roll, redCheck("refusalOwners", 41)], reviews: [approvalAt(HEAD_1)] }) };
@@ -5413,7 +5413,7 @@ test("A11-179: a check red on the default branch starts no fix round, is not rer
   const run = ctx.entry("NBF-1");
   const note = "refusalOwners is red on main / not this run's; owned by NBF-127";
   assert.deepEqual([run.phase, run.rounds, run.feedback, ci.reruns], ["finished", undefined, undefined, []], "no round and no rerun");
-  assert.deepEqual(run.checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "not-ours", note, notOurs: { refusalOwners: "NBF-127", gate: "NBF-127" } } });
+  assert.deepEqual(run.checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "not-ours", note, notOurs: { refusalOwners: "NBF-127", gate: "NBF-127" }, waitingOnMain: ["refusalOwners", "gate"] } });
   assert.equal(checkNote(run), note, "the card names it, and the ticket that owns it");
   assert.deepEqual([runStatus(run), reasonOf(run).line], ["awaiting-review", "checks red: gate (not this run's)"], "and it is still red there, so the run is not Ready to merge");
   assert.deepEqual(ci.logReads, [41], "the log that names the owner is read once, for the check behind the gate");
@@ -5421,8 +5421,88 @@ test("A11-179: a check red on the default branch starts no fix round, is not rer
   assert.deepEqual([ctx.entry("NBF-1").rounds, ci.logReads], [undefined, [41]], "looked at again on the next watch, it is the same: nothing more is read or started");
   ci.host.seedDefaultBranch("x/nbl-ui-netbox", []);
   await watchRound(ctx.pool);
-  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").checkHeads], ["running", 1, { [approvedPr.url]: { head: HEAD_1, step: "round" } }], "main is green: the check is the run's, and gets its round");
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").checkHeads], ["running", 1, { [approvedPr.url]: { head: HEAD_1, step: "round" } }], "main stops failing it but reports nothing passing (as a host of 1.14 does): the check is the run's, and gets its round (A11-215: with a passing report the pull request is updated from main instead)");
   assert.match(ctx.entry("NBF-1").feedback ?? "", /^refusalOwners failed on the head commit of /);
+});
+
+// A11-215: the pull requests held as red on main are brought up to date with main when main reports the check green again.
+const PR_2 = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/2" };
+const MAIN = "x/nbl-ui-netbox";
+const HELD_NOTE = "ui is red on main / not this run's";
+
+/** NBF-1 ended needs-human on a pull request whose `ui` is red, held by a first watch because `ui` is red on main. */
+async function needsHumanRunHeldOnMain() {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("ui", 41)] }) };
+  const ci = withCi(ghFor(pulls), { 41: TEST_FAILED });
+  ci.host.seedDefaultBranch(MAIN, ["ui"], { passing: [], pending: [] });
+  const ctx = await needsHumanRun(ci);
+  await watchRound(ctx.pool);
+  return { pulls, ci, ctx };
+}
+
+/** Two finished runs, each Awaiting review on a pull request whose `ui` is red, held by a first watch because `ui` is red on main. */
+async function twoRunsHeldOnMain() {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("ui", 41)] }), 2: feedbackPull({ head: HEAD_2, checks: [redCheck("ui", 42)] }) };
+  const ci = withCi(ghFor(pulls), { 41: TEST_FAILED, 42: TEST_FAILED });
+  ci.host.seedDefaultBranch(MAIN, ["ui"], { passing: ["typecheck"], pending: [] });
+  const ctx = setup(2, ["NBF-1", "NBF-2"], {}, { gh: ci });
+  await ctx.pool.tick();
+  ctx.store.set(finish(finish(ctx.store.get(), "NBF-1", { kind: "reviewed", prs: [approvedPr] }, 100), "NBF-2", { kind: "reviewed", prs: [PR_2] }, 100));
+  await watchRound(ctx.pool);
+  for (const [key, pr, head] of [["NBF-1", approvedPr, HEAD_1], ["NBF-2", PR_2, HEAD_2]] as const) {
+    assert.deepEqual(ctx.entry(key).checkHeads, { [pr.url]: { head, step: "not-ours", note: HELD_NOTE, notOurs: { ui: null }, waitingOnMain: ["ui"] } }, `${key} is held as red on main, and records which check it waits on`);
+    assert.deepEqual([ctx.entry(key).phase, ctx.entry(key).rounds], ["finished", undefined], `${key} has no round`);
+  }
+  return { ...ctx, ci, pulls };
+}
+const asked = (ci: { host: { branchUpdates: { asked: { url: string; expectedHead: string }[] } } }) => ci.host.branchUpdates.asked.map(({ url, expectedHead }) => [url, expectedHead]);
+
+test("A11-215: when main reports the check green again, every pull request held on it is updated from main once, with no round and no rerun, and its card says so", async () => {
+  const { ci, entry, pool } = await twoRunsHeldOnMain();
+  assert.deepEqual(asked(ci), [], "while ui is red on main nothing is updated");
+  await watchRound(pool);
+  assert.deepEqual(asked(ci), [], "nor when main has stopped failing it but has not said it passes");
+  ci.host.seedDefaultBranch(MAIN, [], { passing: ["ui"], pending: [] });
+  await watchRound(pool);
+  await watchRound(pool);
+  await watchRound(pool);
+  assert.deepEqual(asked(ci), [[approvedPr.url, HEAD_1], [PR_2.url, HEAD_2]], "each pull request is updated once, for the head it was read at, however many watches read it");
+  for (const [key, pr, head] of [["NBF-1", approvedPr, HEAD_1], ["NBF-2", PR_2, HEAD_2]] as const) {
+    assert.deepEqual([entry(key).phase, entry(key).rounds, entry(key).feedback], ["finished", undefined, undefined], `${key}: no worker turn`);
+    assert.deepEqual(entry(key).checkHeads, { [pr.url]: { head, step: "updated", note: "main is green again: updated from main" } });
+    assert.equal(checkNote(entry(key)), "main is green again: updated from main", `${key}: the card says why its checks run again`);
+  }
+  assert.deepEqual(ci.reruns, [], "a rerun builds the same merge ref: none is made");
+});
+
+test("A11-215: a held pull request whose update conflicts gets the conflict round, and the other is still updated", async () => {
+  const { ci, entry, pool } = await twoRunsHeldOnMain();
+  ci.host.seedDefaultBranch(MAIN, [], { passing: ["ui"], pending: [] });
+  ci.host.branchUpdates.answers.set(approvedPr.url, { kind: "conflict" });
+  await watchRound(pool);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").feedback], ["running", 1, `${approvedPr.url} conflicts with its base branch main.`], "NBF-1 is queued the conflict round, and the brief names no check");
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").checkHeads?.[PR_2.url]?.step], ["finished", "updated"], "NBF-2 is updated");
+  assert.deepEqual(asked(ci), [[approvedPr.url, HEAD_1], [PR_2.url, HEAD_2]]);
+});
+
+test("A11-215: a run the board does not watch, parked on a question, is resumed with the conflict line when its held pull request cannot be updated from main", async () => {
+  const { pulls, ci, ctx } = await needsHumanRunHeldOnMain();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.waitingOnMain], ["finished", ["ui"]], "held on main, with no round");
+  ci.host.seedDefaultBranch(MAIN, [], { passing: ["ui"], pending: [] });
+  ci.host.branchUpdates.answers.set(approvedPr.url, { kind: "conflict" });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").feedback], ["running", 1, `${approvedPr.url} conflicts with its base branch main.`]);
+});
+
+test("A11-215: the push the board makes to a run that ended needs-human is no person's answer: once the watch reads the new head, the question is still open", async () => {
+  const { pulls, ci, ctx } = await needsHumanRunHeldOnMain();
+  ci.host.seedDefaultBranch(MAIN, [], { passing: ["ui"], pending: [] });
+  await watchRound(ctx.pool);
+  assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.step, "updated");
+  pulls[1] = feedbackPull({ head: HEAD_2, checks: [] });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").pullHeads?.[approvedPr.url]?.head, ctx.entry("NBF-1").outcomeHeads?.[approvedPr.url]], [HEAD_2, HEAD_2], "the outcome head followed the update");
+  assert.notEqual(reasonOf(ctx.entry("NBF-1")).line, "Answered: awaiting review", "and the run does not read as answered");
 });
 
 test("A11-154: a conflict and a rerun in one watch queue the conflict round and still record the rerun, so it is not made twice", async () => {

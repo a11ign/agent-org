@@ -21,6 +21,7 @@ import { readReplies } from "./replies.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
+import { updateBranch } from "./update-branch.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
 import { createRows, type RowsRunners } from "./rows/index.ts";
 import { gateRunner, runGhTogether } from "./rows/gate-runner.ts";
@@ -79,6 +80,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh }),
     readCheckLog: (detailsUrl) => readCheckLog(detailsUrl, gh, deps.log),
     rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
+    updateBranch: (url, expectedHead) => updateBranch(url, expectedHead, gh),
     readReviewClaims: (repository, head) => readReviewClaims(repository, head, gh),
     // The claim is written as the reviewer role: the environment it is given (the account folder and token the reviewer acts with) is laid over this process's for the one call.
     writeReviewClaim: (write) => writeReviewClaim(write, ghRunner(deps, write.environment)),

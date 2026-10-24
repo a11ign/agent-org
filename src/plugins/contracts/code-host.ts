@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.14 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.15 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,8 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.15 (A11-215): `DefaultBranchRed` gains OPTIONAL `passing` and `pending`, the checks whose newest run on the default branch's head concluded green and those whose newest run has not concluded, and the base contract gains `updateBranch`, OPTIONAL: bring a pull request's branch up to date with its base, which is how the board
+// mends a pull request it held as red on main once main is green again. A plugin of 1.14 is read as one with neither, and the board then keeps a held pull request as A11-179 holds it.
 // 1.14 (A11-186): `repositories`, an OPTIONAL group: the accounts and organisations a person can pick repositories from, the repositories of each, the repository a git remote names, and the clone of one, which `onboard` offers at a terminal. A code host without it keeps onboard's typed
 // prompt. A plugin of 1.13 is read as one that has none.
 // 1.13 (A11-179): `PullFeedback` gains four OPTIONAL fields, `reviewDecision`, `verdictAtHead`, `pendingRequired` and `body`, which the board reads to say whether a pull request is ready to merge (approved at its head, its required checks green there)
@@ -44,7 +46,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.14";
+export const CODE_HOST_CONTRACT_VERSION = "1.15";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -54,9 +56,17 @@ export type ReviewDecision = "approved" | "changes-requested" | "review-required
 
 /**
  * The checks failing on the head of a repository's default branch (contract 1.13): the branch, its head commit, and the names of the checks failing there, check runs and commit statuses both,
- * the newest of each name as the red-check decider reads it.
+ * the newest of each name as the red-check decider reads it. `passing` (contract 1.15) is the positive side: the names whose newest run concluded green there, and `pending` the names whose newest run has not
+ * concluded (running, queued, cancelled or stale). A check that is pending, missing or not read is in neither of `failing` and `passing`, so "not failing" is not "passing"; a name in none of the three is a check the head reports no run of.
+ * Both are absent for a host of 1.14, which is read as one that names none.
  */
-export type DefaultBranchRed = Readonly<{ branch: string; head: string; failing: readonly string[] }>;
+export type DefaultBranchRed = Readonly<{ branch: string; head: string; failing: readonly string[]; passing?: readonly string[]; pending?: readonly string[] }>;
+
+/**
+ * What {@link CodeHost.updateBranch} did (contract 1.15): the branch was brought up to date (`updated`), it conflicts with its base and was left as it was (`conflict`), it already has its base (`up-to-date`), or the host
+ * refused for another reason, in its own first line (`refused`), such as a head that moved since it was read.
+ */
+export type UpdateBranchResult = Readonly<{ kind: "updated" }> | Readonly<{ kind: "conflict" }> | Readonly<{ kind: "up-to-date" }> | Readonly<{ kind: "refused"; reason: string }>;
 
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{
@@ -246,6 +256,11 @@ export interface CodeHost extends CodeHostPort {
    * null. Null is never "nothing is red". A host without it is read as one that names none, and no red check is called main's.
    */
   readDefaultBranchRed?(repository: string): DefaultBranchRed | null;
+  /**
+   * Brings the branch of the pull request at `url` up to date with its base (contract 1.15), as the workers' account, provided its head is still `expectedHead`: a head that moved since the caller read it is `refused`, not raced. Never throws: a host that cannot say
+   * answers `refused` with a reason, and an address that is no pull request of the host is `refused`. A host without it cannot update a branch, and the board then holds a pull request as it did before.
+   */
+  updateBranch?(url: string, expectedHead: string): UpdateBranchResult;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
   /**
