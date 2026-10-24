@@ -8,12 +8,29 @@ import { pullOf } from "./pull-feedback.ts";
 const LAST = 50;
 
 const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
-  reviews(last: ${LAST}) { nodes { state submittedAt body url author { login } } }
-  comments(last: ${LAST}) { nodes { createdAt body url author { login } } }
-  reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt body url author { login } } } } }
+  reviews(last: ${LAST}) { nodes { state submittedAt body url author { login __typename } } }
+  comments(last: ${LAST}) { nodes { createdAt body url author { login __typename } } }
+  reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt body url author { login __typename } } } } }
 } } }`;
 
-type Node = { author?: { login?: string } | null; body?: unknown; url?: unknown; createdAt?: string; submittedAt?: string; state?: string };
+type Node = { author?: { login?: string; __typename?: string } | null; body?: unknown; url?: unknown; createdAt?: string; submittedAt?: string; state?: string };
+
+/** The suffix GitHub gives an app's login: REST and `gh api user` spell an app's account `name[bot]`, and GraphQL spells the same account `name`. */
+const BOT_SUFFIX = /\[bot\]$/i;
+
+/** A login with the `[bot]` suffix removed, in the case GitHub compares it. */
+const withoutBotSuffix = (login: string): string => login.replace(BOT_SUFFIX, "").toLowerCase();
+
+/**
+ * Whether `node` was written by one of the accounts the caller `named` (A11-235). A bot is named by the spelling `gh api user` gives (`a11ign-workers[bot]`) and GraphQL answers with the other (`a11ign-workers`), so a
+ * named `[bot]` account matches the node's author without the suffix, but only when GraphQL says the author is a Bot: a person who holds the bare name is not the app.
+ */
+function writtenByNamed(node: Node, named: readonly string[]): boolean {
+  const author = node.author?.login;
+  if (typeof author !== "string") return false;
+  const bot = node.author?.__typename === "Bot" || BOT_SUFFIX.test(author);
+  return named.some((login) => (BOT_SUFFIX.test(login) ? bot && withoutBotSuffix(login) === withoutBotSuffix(author) : login.toLowerCase() === author.toLowerCase()));
+}
 
 /** The text of a node, or null when it has none a reviewer could read: not a string, or only whitespace. */
 const textOf = (node: Node): string | null => (typeof node.body === "string" && node.body.trim() !== "" ? node.body.trim() : null);
@@ -43,9 +60,9 @@ export function readReplies(url: string, request: RepliesRequest, run: (args: st
       ...(pr.reviews?.nodes ?? []).filter((review: Node) => review.state === "COMMENTED").map((review: Node): [Node, string | undefined] => [review, review.submittedAt]),
       ...[...(pr.comments?.nodes ?? []), ...threaded].map((node: Node): [Node, string | undefined] => [node, node.createdAt]),
     ];
-    const named = new Set(request.authors.map((login) => login.toLowerCase()));
-    return nodes.flatMap(([node, at]) => replyOf(node, at) ?? [])
-      .filter((reply) => reply.at > request.since && named.has(reply.author.toLowerCase()))
+    return nodes.filter(([node]) => writtenByNamed(node, request.authors))
+      .flatMap(([node, at]) => replyOf(node, at) ?? [])
+      .filter((reply) => reply.at > request.since)
       .sort((a, b) => a.at - b.at);
   } catch {
     // An answer of an unexpected shape is no reading either.

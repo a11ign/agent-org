@@ -20,7 +20,7 @@ import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import type { Providers } from "./providers.ts";
 import { enableReviewerCommand } from "./concern-states.ts";
-import { gateReviewJudge, readReviewerMemory, reviewerMemoryPath, reviewPostedAt, reviewWordAt, type ReviewerPort, type ReviewState, writeReviewerMemory } from "./reviewer-port.ts";
+import { gateReviewJudge, type Look, readReviewerMemory, reviewerMemoryPath, reviewPostedAt, reviewWordAt, type ReviewerPort, type ReviewState, writeReviewerMemory } from "./reviewer-port.ts";
 import { claimantOf, readTicketSettings } from "./settings.ts";
 
 /** A pull request's address as GitHub prints it: `https://github.com/<owner>/<repo>/pull/<number>`. */
@@ -43,12 +43,14 @@ export async function reviewerToStart(active: Pick<Awaited<ReturnType<typeof act
  * a head with no reviewer and no posted review; a start is passed to `record`, so the pool reads it. PURE but for `port`, `readState`, `record`,
  * which a test injects.
  */
-export function reviewOnDemand({ url, head, port, readState, started, record }: {
+export function reviewOnDemand({ url, head, port, readState, started, record, now = Date.now }: {
   url: string; head?: string; port: ReviewerPort; readState: (url: string) => ReviewState | null;
   /** The `url@head` keys the pool remembers as started, as read before this start. */
   started: ReadonlySet<string>;
   /** Records a start in the pool's memory file, so the pool sees it on its next sweep: the seat's label, and the `url@head` key. */
-  record: (label: string, key: string, head: string, unclaimed?: string) => void;
+  record: (label: string, key: string, head: string, unclaimed: string | undefined, look: Look) => void;
+  /** The clock a start's look is stamped with (A11-235). */
+  now?: () => number;
 }): { code: number; out: string } {
   if (!PULL_URL.test(url)) return { code: 2, out: `ticket:review: ${JSON.stringify(url)} is not a pull request address (https://github.com/<owner>/<repo>/pull/<number>)` };
   const state = readState(url);
@@ -60,7 +62,8 @@ export function reviewOnDemand({ url, head, port, readState, started, record }: 
   if (started.has(`${url}@${at}`)) return { code: 0, out: `ticket:review: a reviewer was already started for ${url} at ${at.slice(0, 8)}, so none is started again` };
   const launched = port.start({ pr: url, head: at });
   if ("refusal" in launched) return { code: 1, out: `ticket:review: ${launched.refusal}` };
-  record(launched.label, `${url}@${at}`, at, launched.unclaimed);
+  // The look is what this start was made against (A11-235): the pool re-reviews the head when the body, or a reply after this time, answers a block.
+  record(launched.label, `${url}@${at}`, at, launched.unclaimed, { at: now(), body: String(state?.view.body ?? "") });
   const takeover = launched.tookOver === undefined ? "" : `; ${launched.tookOver}`;
   // A reviewer started without a claim (A11-172) says so here as the board does, since nothing on GitHub shows it.
   const unclaimed = launched.unclaimed === undefined ? "" : `; started without a claim on GitHub, because no other instance is seen: ${launched.unclaimed}`;
@@ -88,10 +91,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   }
   const port = chosen.reviewer;
   const codeHost = active.codeHost();
-  const { code, out } = reviewOnDemand({ url, head, port, readState: (u) => codeHost.readReviewState(u), started: memory.started, record: (label, key, at, unclaimed) => {
+  const { code, out } = reviewOnDemand({ url, head, port, readState: (u) => codeHost.readReviewState(u), started: memory.started, record: (label, key, at, unclaimed, look) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
     latest.heads.set(label, at);
+    latest.looks.set(key, look);
     if (unclaimed !== undefined) latest.unclaimed.set(key, unclaimed);
     // What this start saw of other instances (A11-172), beside what the pool wrote since this command read the file.
     for (const [instance, seenAt] of memory.seen) latest.seen.set(instance, Math.max(seenAt, latest.seen.get(instance) ?? seenAt));

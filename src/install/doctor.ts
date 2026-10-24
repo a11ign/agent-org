@@ -50,6 +50,7 @@ import { defaultServiceDeps, serviceState, unitProblem, type RunResult, type Ser
 import { HERDR_INTEGRATIONS, HERDR_PLUGINS, herdrBehind, herdrStatusPath, herdrVersionOf, installedPlugin, integrationInstallCommand, integrationStates, isBehind, describeInstalled, pluginInstallCommand, readHerdrStatus, runHerdr, type HerdrStatusFile } from "./herdr-upkeep.ts";
 import { HOUR_MS, readUpdateStatus, updateStatusPath, type StatusFile } from "./update-safety.ts";
 import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
+import { handInstallCommand, TOOL_HERDR_VERSION } from "./herdr-install.ts";
 import { guardsPresent } from "./interim-guards.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { drainPath, readDrain, type Drain } from "./update-drain.ts";
@@ -113,6 +114,8 @@ export type DoctorDeps = Readonly<{
   updateStatus: () => StatusFile;
   /** `herdr integration status` run now (A11-184): its exit status and text. */
   herdrIntegrations: () => RunResult;
+  /** The CPU (`process.arch`): which herdr build the hand command downloads (A11-223). */
+  arch: string;
   /** The text of `herdr --version` (`herdr 0.9.3`), or null when herdr cannot run. */
   herdrVersion: () => string | null;
   /** The text of herdr's `plugins.json`, or null. */
@@ -473,7 +476,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
       : ok("launcher", launcher),
     host,
     ...aliasChecks(settings),
-    herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
+    herdr === null ? failed("herdr", "`herdr` is not on PATH", `run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, or by hand: \`${handInstallCommand(deps.platform, deps.arch, deps.env)}\``) : ok("herdr", herdr),
     ...(herdr === null ? [] : herdrUpkeepChecks(deps)),
     writerCheck(settings, plugins),
     ...pluginChecks(settings, plugins),
@@ -631,8 +634,12 @@ function drainChecks(deps: DoctorDeps): Check[] {
 /** The hour beyond `tickets.updateMaxDeferHours` a breaking update has to apply in before `doctor` calls the install late (A11-90, A11-169). */
 const warned = (name: string, detail: string, fix: string): Check => ({ name, ok: true, detail, fix, warning: true });
 
-/** What a person does to upgrade herdr: restarting it ends every pane, so `agent-org update` never does it (A11-184, ADR 0004). */
-const UPGRADE_HERDR = "at a quiet moment, with no live run on the board, run `herdr update`, then `agent-org stop herdr` and `agent-org start herdr`: every pane restarts once";
+/**
+ * What a person does to bring herdr to the version this release pins: restarting it ends every pane, so `agent-org update` never does it (A11-184, ADR 0004). Not `herdr update`, which installs the
+ * newest version and not the pin (A11-223).
+ */
+const pinnedHerdrStep = (deps: DoctorDeps): string =>
+  `at a quiet moment, with no live run on the board, run \`${handInstallCommand(deps.platform, deps.arch, deps.env)}\`, then \`agent-org stop herdr\` and \`agent-org start herdr\`: every pane restarts once`;
 
 /**
  * herdr's side of the install (A11-184), asked only when `herdr` is on PATH. The `claude` and `codex` integrations FAIL when outdated or missing: they are how herdr knows each agent's state and
@@ -660,14 +667,15 @@ function herdrIntegrationChecks(deps: DoctorDeps): Check[] {
   });
 }
 
+/** herdr's version against the one this release pins (A11-223): a different one, older or newer, warns. The newest release the last `agent-org update` saw is told for information only. */
 function herdrVersionCheck(deps: DoctorDeps, status: HerdrStatusFile): Check[] {
   const name = "herdr version";
   const installed = herdrVersionOf(deps.herdrVersion() ?? "");
   if (installed === null) return [ok(name, "herdr's version could not be read")];
-  if (status.kind !== "status") return [ok(name, `herdr ${installed}; the newest release is not known until \`agent-org update\` has run`)];
-  if (!("newest" in status.status.herdr)) return [ok(name, `herdr ${installed}; the newest release could not be read at ${status.status.checkedAt}: ${status.status.herdr.why}`)];
-  const { newest } = status.status.herdr;
-  return [herdrBehind(installed, newest) ? warned(name, `herdr ${installed}, newest ${newest}`, UPGRADE_HERDR) : ok(name, `herdr ${installed}, which is the newest release`)];
+  if (installed !== TOOL_HERDR_VERSION) return [warned(name, `herdr ${installed}, this release pins ${TOOL_HERDR_VERSION}`, pinnedHerdrStep(deps))];
+  const newest = status.kind === "status" && "newest" in status.status.herdr ? status.status.herdr.newest : null;
+  const out = newest !== null && herdrBehind(installed, newest) ? ` (herdr ${newest} is out; the pin moves with an agent-org release)` : "";
+  return [ok(name, `herdr ${installed}, the version this release pins${out}`)];
 }
 
 /** One row for each plugin of `HERDR_PLUGINS` that herdr lists: it warns when it is behind its newest release tag. A plugin that is not installed has no row. */
@@ -869,6 +877,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     probe: realProbe,
     hostPlace: realPlace,
     platform: process.platform,
+    arch: process.arch,
     herdrPlace: (session) => hostHerdrPlace(services, session),
     guards: () => guardsPresent(process.env, homedir(), pathExists),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),

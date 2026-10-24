@@ -56,3 +56,18 @@ test("A11-156: logins are compared as GitHub does, without regard to case", () =
   const { run } = answering(pullOf({ comments: [node("Worker-Bot", 20, "mixed case")] }));
   assert.deepEqual(readReplies(URL, request, run)?.map(({ author }) => author), ["Worker-Bot"]);
 });
+
+test("A11-235: an app named as `gh api user` spells it, with `[bot]`, matches the Bot GraphQL answers without it; a person with the bare name, and a stranger's bot, do not", () => {
+  const bot = (login: string, minute: number, body: string) => node(login, minute, body, { author: { login, __typename: "Bot" } });
+  const person = (login: string, minute: number, body: string) => node(login, minute, body, { author: { login, __typename: "User" } });
+  const { run } = answering(pullOf({ comments: [bot("a11ign-workers", 20, "from the workers' app"), person("a11ign-workers", 21, "from a person with the bare name"), bot("a-stranger", 22, "from another app")] }));
+  const replies = readReplies(URL, { since: ms(10), authors: ["a11ign-workers[bot]", "chairman"] }, run);
+  assert.deepEqual(replies?.map(({ author, text }) => [author, text]), [["a11ign-workers", "from the workers' app"]]);
+});
+
+test("A11-235: the `[bot]` suffix is also removed from GraphQL's side and the case is ignored, and a plain named login still needs the exact login", () => {
+  const { run } = answering(pullOf({ comments: [node("A11ign-Workers[bot]", 20, "spelled as REST does"), node("worker-bot", 21, "a plain login")] }));
+  assert.deepEqual(readReplies(URL, { since: ms(10), authors: ["a11ign-workers[BOT]", "worker-bot"] }, run)?.map(({ text }) => text), ["spelled as REST does", "a plain login"]);
+  const { run: other } = answering(pullOf({ comments: [node("worker-bot[bot]", 20, "an app named like a person")] }));
+  assert.deepEqual(readReplies(URL, { since: ms(10), authors: ["worker-bot"] }, other), [], "a plain login names a person, not an app");
+});

@@ -386,7 +386,7 @@ export async function replanStale(ctx: PoolContext, entry: Entry, fresh: Ticket)
     throw new Error(`its stale plan could not be written again: ${messageOf(err)}`);
   }
   const change = why === "description" ? changeOf(ctx, stamp.description, fresh.description) : undefined;
-  update(ctx, (queue) => replan(queue, entry.ticket.key, entry.plannedWith ?? { model: entry.model, effort: entry.effort }, copies, change));
+  update(ctx, (queue) => replan(queue, entry.ticket.key, entry.plannedWith ?? { model: entry.model, effort: entry.effort }, copies, change, ctx.now()));
   log(`${entry.ticket.key}: its plan is stale (${why === "description" ? "the ticket changed since it was written" : "a blocker's findings reached it after it was written"}), so it is planned again before it starts`);
   return store.get().entries.find((e) => e.ticket.key === entry.ticket.key) ?? entry;
 }

@@ -592,6 +592,20 @@ test("A11-213: the ticket's decisions in the brief reach the prompt a reviewer i
   assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(decisions) && again.prompted().includes(DECISION_RULE), "the re-review carries them too");
 });
 
+test("A11-235: a re-review brief whose description changed reaches the prompt with the changed lines, with or without a reply", async () => {
+  await loadReviewerGate();
+  const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
+  const body = [{ kind: "removed", text: "Outside-Region: none" }, { kind: "added", text: "Outside-Region: src/a.ts — the reason" }] as const;
+  const only = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
+  assert.deepEqual(only.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [], body } }), { label: "reviewer-7" });
+  const words = only.prompted();
+  assert.ok(words.startsWith("This is a re-review of #7") && words.includes("- Outside-Region: none\n+ Outside-Region: src/a.ts — the reason"), words);
+  assert.ok(!words.includes("The replies posted since that review"), "and no replies are listed when there are none");
+  const both = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
+  both.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY], body } });
+  assert.ok(both.prompted().includes("+ Outside-Region: src/a.ts — the reason") && both.prompted().includes(`- worker-bot (${PR_URL}#issuecomment-9):`), "a description edit and a reply are both quoted");
+});
+
 /** A port whose Codex trust is `answer` for the root `rootOf` finds, with the order in which the trust, the claim and the spawn happened. */
 function trustingPort({ root = "/repos/alpha" as string | null, answer }: { root?: string | null; answer: (root: string) => import("./codex-trust.ts").Ensured }) {
   const herd = herdr(new Map());

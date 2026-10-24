@@ -6,7 +6,8 @@
 import type { BlockerPullDeclared } from "../board-view/pull-declared.ts";
 import type { PlanStamp } from "../plan-stamp.ts";
 import type { TicketRead } from "../ticket-read.ts";
-import { replace, type Queue, type RunChoice } from "./queue-entries-and-outcomes.ts";
+import { find, replace, type Queue, type RunChoice } from "./queue-entries-and-outcomes.ts";
+import { logEvent } from "./run-log.ts";
 
 /** A change to a ticket's description the board noticed (A11-167): when, the description before and the description after. */
 export type TicketChange = Readonly<{ at: number; from: string; to: string }>;
@@ -76,7 +77,8 @@ export function recordFindingsGiven(queue: Queue, key: string, urls: readonly st
  * A queued run's plan is written again (A11-167): it becomes a planning run on `plan`, with its stale plan's paths (and the paths of its steps) and stamp dropped, since the plan they were read from is detached. The mark of what
  * changed stays, so the run says why it plans again.
  */
-export function replan(queue: Queue, key: string, plan: RunChoice, previous: readonly string[], change: TicketChange | undefined): Queue {
-  return replace(queue, key, ({ paths: _paths, stepPaths: _stepPaths, pathsFailure: _failed, plannedAgainst: _stamp, planned: _planned, ticketChange: _before, ...entry }) =>
+export function replan(queue: Queue, key: string, plan: RunChoice, previous: readonly string[], change: TicketChange | undefined, now?: number): Queue {
+  const planned = replace(queue, key, ({ paths: _paths, stepPaths: _stepPaths, pathsFailure: _failed, plannedAgainst: _stamp, planned: _planned, ticketChange: _before, ...entry }) =>
     ({ ...entry, plan, previousPlan: previous, ...(change ? { ticketChange: change } : {}) }));
+  return find(queue, key) === undefined ? planned : logEvent(planned, key, now, { kind: "requeued", why: "replan" });
 }

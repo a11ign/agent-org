@@ -57,7 +57,7 @@ export function loadQueue(path: string, max: number): Queue {
   if (!existsSync(path)) return emptyQueue(max);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Omit<Queue, "writers"> & { writers?: readonly LegacyRun[] };
   return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}),
-    ...(parsed.writers ? { writers: parsed.writers.map(writerAsRead) } : {}) };
+    ...(parsed.writers ? { writers: parsed.writers.map(writerAsRead) } : {}), ...(parsed.runLog ? { runLog: parsed.runLog } : {}) };
 }
 
 /** Replace the file whole: write beside it, then rename over it. */

@@ -10,7 +10,8 @@ import { completedEarly, settledByPulls } from "../board-view/pull-settled.ts";
 import { afterPartialMerge, stepNamed, type MergedStep, type PlanStep } from "../board-view/plan-steps.ts";
 import { pullLabel } from "../board-view/pull-label.ts";
 import { pullsOf } from "../board-view/view-types-and-filters.ts";
-import { replace, SETTLED, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
+import { find, replace, SETTLED, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
+import { logEvent } from "./run-log.ts";
 
 /**
  * The run for the next step of a plan, queued at `now` in place of `entry`, whose partial pull requests merged and finished `step` (A11-168): the same ticket, model, effort,
@@ -53,7 +54,8 @@ export const recordPlanSteps = (queue: Queue, key: string, planSteps: number): Q
 
 /** Queue the next plan step of `key`'s run at `now`, in place of its finished run (A11-168): see {@link nextStepRun}. A run that is not finished is left as it is. */
 export function queueNextStep(queue: Queue, key: string, step: MergedStep, now: number): Queue {
-  return replace(queue, key, (entry) => (entry.phase === "finished" ? nextStepRun(entry, step, now) : entry));
+  const queued = replace(queue, key, (entry) => (entry.phase === "finished" ? nextStepRun(entry, step, now) : entry));
+  return find(queue, key)?.phase === "finished" ? logEvent(queued, key, now, { kind: "requeued", why: "next-step" }) : queued;
 }
 
 /** Drop the declaration of what remains of `key`'s ticket (A11-173): a worker's `done` says nothing remains to build, and a round that ends as `reviewed` instead keeps it unless this is called. */
