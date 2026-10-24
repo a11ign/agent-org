@@ -168,6 +168,23 @@
   --skeleton-settings-title-height: 30px;
   --skeleton-settings-card-height: 84px;
 
+  /* Plugins (A11-201): the values the eight Plugins boards use that the tokens above do not hold. */
+  --color-warn-note-text: #ecd9a0;
+  --measure-plugins: 880px;
+  --measure-plugins-lede: 680px;
+  --measure-plugin-name: 120px;
+  --measure-plugin-purpose: 200px;
+  --measure-plugin-status: 150px;
+  --measure-plugin-choice: 280px;
+  --measure-skill-select: 240px;
+  --measure-add-basis: 280px;
+  --measure-add-max: 420px;
+  --dialog-width-confirm: 520px;
+  --dialog-top-confirm: 96px;
+  --skeleton-plugin-title-width: 180px;
+  --skeleton-plugin-title-height: 14px;
+  --skeleton-plugin-pill-width: 90px;
+
   /* Icons and marks. */
   --icon-10: 10px;
   --icon-12: 12px;
