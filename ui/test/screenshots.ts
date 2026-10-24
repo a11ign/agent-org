@@ -25,8 +25,11 @@ export function overflowProblem({ route, width, scrollWidth, clientWidth }: Fit)
 }
 
 
-/** Opens `url` at `screen`, and measures it and takes a full-page PNG once the network is idle. */
-export async function look(browser: Browser, route: string, url: string, screen: Size): Promise<{ fit: Fit; png: Buffer }> {
+/** A route of the site at an address: `url` is what is opened, `route` is how it is named in a file and in a failure. */
+export type Page = Readonly<{ route: string; url: string }>;
+
+/** Opens `page` at `screen`, and measures it and takes a full-page PNG once the network is idle. */
+export async function look(browser: Browser, { route, url }: Page, screen: Size): Promise<{ fit: Fit; png: Buffer }> {
   const context = await browser.newContext({ viewport: screen, deviceScaleFactor: 1 });
   try {
     const page = await context.newPage();
@@ -40,11 +43,11 @@ export async function look(browser: Browser, route: string, url: string, screen:
 }
 
 /** Captures `route` of the site at `origin` at each screen, writes `<route>-<W>x<H>.png` into `outDir`, and REFUSES a page wider than a screen or a PNG not as wide as asked. @returns the files written. */
-export async function captureScreens(browser: Browser, origin: string, route: string, outDir: string = SCREENSHOT_DIR): Promise<string[]> {
+export async function captureScreens(browser: Browser, { origin, route }: Readonly<{ origin: string; route: string }>, outDir: string = SCREENSHOT_DIR): Promise<string[]> {
   mkdirSync(outDir, { recursive: true });
   const written: string[] = [];
   for (const screen of SCREENS) {
-    const { fit, png } = await look(browser, route, `${origin}${route}`, screen);
+    const { fit, png } = await look(browser, { route, url: `${origin}${route}` }, screen);
     const problem = overflowProblem(fit);
     if (problem !== null) throw new Error(problem);
     const made = pngSize(png);

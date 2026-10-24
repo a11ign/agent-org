@@ -13,13 +13,13 @@ const pageWide = (width: number) => `data:text/html,<body style="margin:0"><div 
 
 describe("the screenshot helper's overflow check, on a fixture page", () => {
   it("fails a page 500px wide at 390px, naming both widths", async () => {
-    const { fit } = await look(browser, "/fixture", pageWide(500), PHONE);
+    const { fit } = await look(browser, { route: "/fixture", url: pageWide(500) }, PHONE);
     expect(fit).toEqual({ route: "/fixture", width: 390, scrollWidth: 500, clientWidth: 390 });
     expect(overflowProblem(fit)).toBe("/fixture overflows horizontally at 390px: scrollWidth 500 is wider than clientWidth 390");
   });
 
   it("passes a page that fits", async () => {
-    const { fit } = await look(browser, "/fixture", pageWide(300), PHONE);
+    const { fit } = await look(browser, { route: "/fixture", url: pageWide(300) }, PHONE);
     expect(overflowProblem(fit)).toBeNull();
   });
 });

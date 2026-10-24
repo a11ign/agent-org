@@ -82,27 +82,32 @@ function answerJson(res: ServerResponse, status: number, value: unknown): void {
 /** Whether a request is one of the instance's: a path of `/api/`. */
 export const isApiCall = (url: string | undefined): boolean => url?.startsWith("/api/") === true;
 
+/** The dev server's way in: `handle` is the middleware, and `warm` reads the instance when the dev server starts. */
+export type InstanceProxy = Readonly<{ handle: (req: IncomingMessage, res: ServerResponse, next: () => void) => void; warm: () => void }>;
+
 /**
  * The middleware that passes `/api/*` on. The instance is read from `ticket:remote-info` when the dev server starts (`warm`), and again on a call when that
  * failed or when the instance refused the key, so starting the instance or its key later needs no restart. The dev server starts without an instance: a call
  * then answers 502 with `remote-info`'s own error.
  */
-export function instanceProxy(readRemoteInfo: ReadRemoteInfo): { handle: (req: IncomingMessage, res: ServerResponse, next: () => void) => void; warm: () => void } {
+export function instanceProxy(readRemoteInfo: ReadRemoteInfo): InstanceProxy {
   let known: Promise<Instance> | null = null;
   const instance = (): Promise<Instance> => (known ??= readRemoteInfo().then(parseRemoteInfo));
-  const forget = () => { known = null; };
+  // Only the read a call used is forgotten: a call that fails late must not drop a newer read another call made since.
+  const forget = (used: Promise<Instance>) => { if (known === used) known = null; };
   async function pass(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const used = instance();
     let target: Instance;
     try {
-      target = await instance();
+      target = await used;
     } catch (err) {
-      forget();
+      forget(used);
       return answerJson(res, BAD_GATEWAY, { error: `cannot reach the instance: ${(err as Error).message}` });
     }
     try {
       const answer = await send(target, req, await readBody(req));
       if (answer.status === UNAUTHORIZED) {
-        forget();
+        forget(used);
         return answerJson(res, BAD_GATEWAY, { error: "the instance refused the key, which is read again on the next call" });
       }
       res.writeHead(answer.status, { "content-type": answer.contentType });
@@ -113,7 +118,7 @@ export function instanceProxy(readRemoteInfo: ReadRemoteInfo): { handle: (req: I
   }
   return {
     handle: (req, res, next) => (isApiCall(req.url) ? void pass(req, res) : next()),
-    warm: () => void instance().catch(forget),
+    warm: () => { const used = instance(); used.catch(() => forget(used)); },
   };
 }
 

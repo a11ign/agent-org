@@ -45,7 +45,7 @@ describe("the placeholder page, built", () => {
   });
 
   it("is captured at 1440px and at 390px, each PNG as wide as asked, with no horizontal overflow", async () => {
-    const written = await captureScreens(browser, site.origin, "/next/");
+    const written = await captureScreens(browser, { origin: site.origin, route: "/next/" });
     expect(written.map((path) => path.slice(SCREENSHOT_DIR.length + 1)).sort()).toEqual(["next-1440x900.png", "next-390x844.png"]);
     expect(written.map((path) => pngSize(readFileSync(path))?.width)).toEqual([1440, 390]);
     expect(readdirSync(SCREENSHOT_DIR)).toEqual(expect.arrayContaining(["next-1440x900.png", "next-390x844.png"]));

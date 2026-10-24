@@ -3,7 +3,7 @@ import { createServer, request, type IncomingHttpHeaders, type Server } from "no
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { instanceProxy, parseRemoteInfo, runRemoteInfo, type ReadRemoteInfo } from "./instance-proxy.ts";
+import { instanceProxy, parseRemoteInfo, runRemoteInfo, type InstanceProxy, type ReadRemoteInfo } from "./instance-proxy.ts";
 
 const KEY = "0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -26,7 +26,7 @@ async function fakeInstance(status: number, answer: unknown): Promise<{ server: 
 }
 
 /** The dev server's middleware on a free port, as Vite mounts it: `/api/*` is passed on, anything else reaches `next`. */
-async function devServer(readRemoteInfo: ReadRemoteInfo): Promise<{ server: Server; port: number; proxy: ReturnType<typeof instanceProxy> }> {
+async function devServer(readRemoteInfo: ReadRemoteInfo): Promise<{ server: Server; port: number; proxy: InstanceProxy }> {
   const proxy = instanceProxy(readRemoteInfo);
   const server = createServer((req, res) => proxy.handle(req, res, () => { res.writeHead(200).end("next"); }));
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
