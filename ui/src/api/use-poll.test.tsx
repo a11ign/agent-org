@@ -259,6 +259,15 @@ describe("usePoll connections", () => {
     expect(signals[0].aborted).toBe(true);
   });
 
+  it("does not poll on after an unmount whose read was still in flight", async () => {
+    const { read, state } = held();
+    const { unmount } = await polling(read);
+    unmount();
+    await act(async () => { state.release(ok([1])); });
+    await advance(60_000);
+    expect(state.started).toBe(1);
+  });
+
   it("stops polling when it unmounts", async () => {
     const { read, calls } = scripted([ok([1])]);
     const { unmount } = renderHook(() => usePoll(read, { connection: LOCAL }));
