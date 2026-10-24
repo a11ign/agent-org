@@ -75,11 +75,14 @@ test("start writes the unit and enables and starts it; status reads running; sto
 });
 
 test("on launchd, start boots a loaded agent out before bootstrapping the new plist", async () => {
-  const { deps: d, calls } = deps("darwin", { "launchctl print": () => done("state = running\n") });
+  // Loaded when start looks, gone when the wait after the bootout looks, running once it is bootstrapped.
+  const prints = [done("state = running\n"), absent];
+  const { deps: d, calls } = deps("darwin", { "launchctl print": () => prints.shift() ?? done("state = running\n") }, { pause: () => {} });
   await startService("instance", d);
   assert.deepEqual(calls, [
     "launchctl enable gui/501/io.github.agent-org.instance", "launchctl print gui/501/io.github.agent-org.instance",
-    "launchctl bootout gui/501/io.github.agent-org.instance", `launchctl bootstrap gui/501 ${unitFor("instance", d).path}`,
+    "launchctl bootout gui/501/io.github.agent-org.instance", "launchctl print gui/501/io.github.agent-org.instance",
+    `launchctl bootstrap gui/501 ${unitFor("instance", d).path}`,
   ]);
   assert.equal(serviceState("instance", d), "running");
 });
@@ -262,12 +265,13 @@ test("A11-184: reloading the terminal writes its unit from the plugin_root insta
   reloadService("terminal", linux.deps);
   assert.match(linux.files.get(unit.path) ?? "", /devswha\.herdr-web-ui-NEW/);
   assert.deepEqual(linux.calls, ["systemctl --user daemon-reload", "systemctl --user restart agent-org-terminal.service"]);
-  const mac = withTerminal("darwin");
+  const prints = [done("state = running\n"), absent];
+  const mac = withTerminal("darwin", {}, { "launchctl print": () => prints.shift() ?? absent });
   moved(mac);
   const plist = unitFor("terminal", mac.deps);
-  reloadService("terminal", mac.deps);
+  reloadService("terminal", { ...mac.deps, pause: () => {} });
   assert.match(mac.files.get(plist.path) ?? "", /devswha\.herdr-web-ui-NEW/);
-  assert.deepEqual(mac.calls.map((call) => call.split(" ").slice(0, 2).join(" ")), ["launchctl print", "launchctl bootout", "launchctl bootstrap"]);
+  assert.deepEqual(mac.calls.map((call) => call.split(" ").slice(0, 2).join(" ")), ["launchctl print", "launchctl bootout", "launchctl print", "launchctl bootstrap"]);
   assert.throws(() => reloadService("terminal", { ...linux.deps, run: () => ({ status: 1, stdout: "", stderr: "Failed to restart" }) }), /systemctl --user daemon-reload failed: Failed to restart/);
 });
 
