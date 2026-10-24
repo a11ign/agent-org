@@ -45,16 +45,20 @@ export async function planFiles(ctx: PoolContext, ticket: Ticket): Promise<reado
  * that step (A11-175). Reads the folder and downloads nothing: a reviewer is briefed without a round trip to the tracker, and a plan the run was queued with is there.
  */
 export function planStepSection(ctx: PoolContext, key: string, step: number): string | null {
-  for (const text of planTexts(ctx, key)) {
-    const section = stepSectionText(text, step);
-    if (section !== null) return section;
+  try {
+    for (const text of planTexts(ctx, key)) {
+      const section = stepSectionText(text, step);
+      if (section !== null) return section;
+    }
+  } catch {
+    // A plan file that cannot be read has no plan to quote: the reviewer is told so.
   }
   return null;
 }
 
 /**
- * The text of each plan file `planFiles` downloaded for ticket `key`, by file name: none when this machine names no plan, the folder cannot be read, or a file is over {@link PLAN_FILE_BYTES}; a file that
- * cannot be read is logged and left out. Reads the folder and downloads nothing; a folder that cannot be read holds no plan to quote.
+ * The text of each plan file `planFiles` downloaded for ticket `key`, by file name: none when this machine names no plan, no plan folder is there, or a file is over {@link PLAN_FILE_BYTES}. Reads the folder
+ * and downloads nothing. THROWS, naming the file, when a plan file or the folder cannot be read: a plan the board cannot read is not a ticket with no plan, and a caller that must not mistake the two lets it through.
  */
 export function* planTexts(ctx: PoolContext, key: string): Generator<string> {
   const { settings } = ctx;
@@ -64,22 +68,22 @@ export function* planTexts(ctx: PoolContext, key: string): Generator<string> {
   let names: string[];
   try {
     names = readdirSync(dir).sort();
-  } catch {
-    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error(`its plan folder could not be read (${messageOf(err)})`);
   }
-  for (const name of names) {
-    const text = pattern.test(name) ? readPlanFile(key, join(dir, name)) : null;
+  for (const name of names.filter((each) => pattern.test(each))) {
+    const text = readPlanFile(join(dir, name));
     if (text !== null) yield text;
   }
 }
 
-/** A plan file's text, or null for one over {@link PLAN_FILE_BYTES}. One that cannot be read is null too, and the log says so: the run starts without its steps, and a person can see why. */
-function readPlanFile(key: string, path: string): string | null {
+/** A plan file's text, or null for one over {@link PLAN_FILE_BYTES}. Throws, naming the file, for one that cannot be read. */
+function readPlanFile(path: string): string | null {
   try {
     return statSync(path).size > PLAN_FILE_BYTES ? null : readFileSync(path, "utf8");
   } catch (err) {
-    log(`${key}: its plan file ${basename(path)} could not be read (${messageOf(err)}), so it is read as no plan`);
-    return null;
+    throw new Error(`its plan file ${basename(path)} could not be read (${messageOf(err)})`);
   }
 }
 

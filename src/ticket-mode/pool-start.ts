@@ -402,7 +402,7 @@ const openDecisionHold = (fresh: Ticket): string | null => needsDecision(fresh)?
 /** Where a run starts (A11-219): this instance's name and this machine's host name. Over an SSH connection the page reads the remote instance's own queue, so the instance there is the remote's. */
 const workerOf = ({ settings }: PoolContext): RunWorker => ({ instance: settings.instance, host: hostname() });
 
-/** Record the numbered steps of the plan each of `keys` starts with, read from the plan files the run was queued with, before its brief is written (A11-219). A planning run has no plan yet and records none. */
+/** Record the numbered steps of the plan each of `keys` starts with, read from the plan files the run was queued with, before its brief is written (A11-219). A planning run has no plan yet and records none. Throws when a plan file cannot be read, so the run does not start as if it had no plan. */
 function recordPlan(ctx: PoolContext, keys: readonly string[]): void {
   for (const key of keys) {
     const steps = plannedStepsOf(ctx, key);
@@ -432,8 +432,8 @@ async function startTalk(ctx: PoolContext, members: readonly Entry[]): Promise<v
   const { key } = entry.ticket;
   const keys = members.map(({ ticket }) => ticket.key);
   updateEach(ctx, members, (queue, member) => markStarting(queue, member, now(), workerOf(ctx)));
-  recordPlan(ctx, keys);
   try {
+    recordPlan(ctx, keys);
     const place = runPlace(ctx, entry);
     const resume = talkSession(ctx, entry);
     if (resume === undefined) throw new Error(`${key} has no saved session to resume`);
@@ -485,8 +485,8 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
   const { batch: _alone, ...entry } = queued;
   // The copy of agent-org this start writes its hooks and commands for is recorded as the start is, before any file names it (A11-169).
   update(ctx, (queue) => recordToolPin(markStarting(queue, entry.ticket.key, now(), workerOf(ctx)), [entry.ticket.key], toolPinOf(ctx)));
-  if (!isPlanning(ctx, entry)) recordPlan(ctx, [entry.ticket.key]);
   try {
+    if (!isPlanning(ctx, entry)) recordPlan(ctx, [entry.ticket.key]);
     if (isPlanning(ctx, entry) && await planReached(ctx, entry.ticket)) {
       // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
       update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false }));
