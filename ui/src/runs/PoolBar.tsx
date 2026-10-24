@@ -8,7 +8,7 @@ import { poolOf, poolWords } from "./runs-model.ts";
  * The worker pool bar: whether workers are started, a square for each slot with one filled for each run holding one (the planning colour for a Planning run), what that comes to in words, what happens to
  * queued tickets, the way to the limit, and the button that pauses or starts workers. The numbers are the queue's own.
  */
-export function PoolBar({ queue, pool }: Readonly<{ queue: QueueView; pool: Pool }>) {
+export function PoolBar({ queue, pool, disabled }: Readonly<{ queue: QueueView; pool: Pool; disabled: boolean }>) {
   const words = poolWords(pool.paused === true ? "paused" : "started");
   const { slots, text } = poolOf(queue);
   return (
@@ -28,7 +28,7 @@ export function PoolBar({ queue, pool }: Readonly<{ queue: QueueView; pool: Pool
       <span className="pool-note">{words.note}</span>
       <div className="pool-spacer" />
       <a className="pool-link" href={settingsSectionHref("workers")}>Change limit</a>
-      <button type="button" className="ghost ghost-medium" disabled={pool.pauseState.kind === "saving"} onClick={pool.togglePause}>
+      <button type="button" className="ghost ghost-medium" disabled={disabled || pool.pauseState.kind === "saving"} onClick={pool.togglePause}>
         <PauseIcon />
         {words.button}
       </button>

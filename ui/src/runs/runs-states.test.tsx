@@ -1,7 +1,7 @@
 import { render } from "@testing-library/react";
 import { PERSONAL, queueingConfig, standFetch, type InstanceAnswers } from "../../test/fixtures.ts";
 import { boardRuns, completed, queueWith, runsStand, working } from "../../test/runs/runs-stand.ts";
-import { fireEvent, headings, keysShown, pageOn, posts, rail, screen, textOf, waitFor, within } from "./runs-harness.tsx";
+import { fireEvent, headings, keysShown, pageOn, posts, rail, rowOf, screen, textOf, waitFor, within } from "./runs-harness.tsx";
 import { RunsApp } from "./RunsApp.tsx";
 
 const MINUTE = 60_000;
@@ -35,8 +35,10 @@ describe("the empty state", () => {
 
 describe("the paused state", () => {
   it("says Workers paused and Nothing queued will start, draws the list and the rail, and Start workers posts /api/paused", async () => {
-    const started = queueWith(boardRuns(), { paused: false });
-    const { fetchWith } = await pageOn(runsStand({ paused: true, post: () => started }));
+    // The instance holds what it was last told, as the real one does: the queue read after the press says started.
+    let paused = true;
+    const instance: InstanceAnswers = { config: queueingConfig(), get queue() { return queueWith(boardRuns(), { paused }); }, post: () => { paused = false; return queueWith(boardRuns(), { paused }); } };
+    const { fetchWith } = await pageOn({ connections: [PERSONAL], instances: { personal: instance } });
     expect(await screen.findByText("Workers paused")).toBeTruthy();
     expect(screen.getByText("Nothing queued will start.")).toBeTruthy();
     expect(rail().getByRole("button", { name: /^All runs/ })).toBeTruthy();
@@ -102,6 +104,59 @@ describe("the error state", () => {
     expect(await screen.findByText("Can't reach personal over SSH.", {}, { timeout: 10_000 })).toBeTruthy();
     expect(keysShown()).toHaveLength(50);
   }, 30_000);
+});
+
+describe("the page while an SSH instance cannot be reached or an answer fails", () => {
+  const DOWN = { status: 502, error: "cannot reach personal: ssh: timed out" };
+
+  /** The page over an SSH instance whose queue read fails once `link.down` is set; a press on a row is answered, and the read after it is what finds the instance down. */
+  function sshPage(): { down: boolean } {
+    const link = { down: false };
+    const instance: InstanceAnswers = { config: queueingConfig(), queue: queueWith(boardRuns()), get queueFails() { return link.down ? DOWN : undefined; }, post: () => queueWith(boardRuns()) };
+    render(<RunsApp fetchWith={standFetch({ connections: [PERSONAL], instances: { personal: instance } })} />);
+    return link;
+  }
+
+  it("keeps the rows Load more drew, in the frame and after it", async () => {
+    const link = sshPage();
+    await waitFor(() => expect(keysShown()).toHaveLength(50));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(keysShown()).toHaveLength(90);
+    link.down = true;
+    fireEvent.click(within(rowOf("A11-179")).getByRole("button", { name: "Dismiss from list" }));
+    expect(await screen.findByText("Can't reach personal over SSH.", {}, { timeout: 10_000 })).toBeTruthy();
+    expect(keysShown()).toHaveLength(90);
+    link.down = false;
+    fireEvent.click(within(rowOf("A11-179")).getByRole("button", { name: "Dismiss from list" }));
+    await waitFor(() => expect(screen.queryByText("Can't reach personal over SSH.")).toBeNull(), { timeout: 15_000 });
+    expect(keysShown()).toHaveLength(90);
+  }, 40_000);
+
+  it("presses nothing on the last known rows, and Pause waits too", async () => {
+    const link = sshPage();
+    await waitFor(() => expect(keysShown()).toHaveLength(50));
+    link.down = true;
+    fireEvent.click(within(rowOf("A11-179")).getByRole("button", { name: "Dismiss from list" }));
+    await screen.findByText("Can't reach personal over SSH.", {}, { timeout: 10_000 });
+    expect((within(rowOf("A11-181")).getByRole("button", { name: "Stop run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Pause" }) as HTMLButtonElement).disabled).toBe(true);
+  }, 30_000);
+
+  it("is No runs yet, not the filter's line, when the last known queue holds no run", async () => {
+    let down = false;
+    const instance: InstanceAnswers = { config: queueingConfig(), queue: queueWith([]), get queueFails() { return down ? { status: 500, error: "the queue file is unreadable" } : undefined; }, post: () => { down = true; return queueWith([]); } };
+    render(<RunsApp fetchWith={standFetch({ connections: [PERSONAL], instances: { personal: instance } })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(textOf(await screen.findByRole("alert"))).toContain("the queue file is unreadable");
+    expect(screen.getByText("No runs yet")).toBeTruthy();
+    expect(screen.queryByText("No runs in this status right now.")).toBeNull();
+  });
+
+  it("draws no count skeleton when the first read fails", async () => {
+    render(<RunsApp fetchWith={standFetch(runsStand({ queueFails: { status: 500, error: "the queue file is unreadable" } }))} />);
+    await screen.findByRole("alert");
+    expect(document.querySelector(".page-header .sk")).toBeNull();
+  });
 });
 
 describe("a filter", () => {
@@ -187,14 +242,14 @@ describe("the list", () => {
     const ready = document.getElementById("run-A11-180") as HTMLElement;
     expect(within(ready).getByRole("img", { name: "Ready to merge" })).toBeTruthy();
     expect(textOf(ready.querySelector(".run-meta"))).toBe("Ready to merge·lab·sonnet/high on an unattended plan·74.2M in · 189k out");
-    expect(within(ready).getByRole("link", { name: "#150" }).getAttribute("href")).toBe("https://github.com/a11ign/lab/pull/150");
+    expect(within(ready).getByRole("link", { name: "#150 a11ign/lab" }).getAttribute("href")).toBe("https://github.com/a11ign/lab/pull/150");
     expect(textOf(ready.querySelector(".run-timing"))).toBe("Ran 14m");
     expect(textOf(ready.querySelector(".run-started"))).toBe("Started 20 min ago");
     expect(ready.querySelector(".run-note")?.getAttribute("title")).toBe("a11ign/lab #150: approved at 1f6009d");
     const planningRow = document.getElementById("run-A11-184") as HTMLElement;
     expect(within(planningRow).getByRole("img", { name: "Planning" })).toBeTruthy();
     expect(textOf(planningRow.querySelector(".run-meta"))).toContain("plan on opus/high, then sonnet/high");
-    expect(within(document.getElementById("run-A11-127") as HTMLElement).getAllByRole("link", { name: /^#\d+$/ }).map((link) => link.textContent)).toEqual(["#149", "#5718"]);
+    expect(within(document.getElementById("run-A11-127") as HTMLElement).getAllByRole("link", { name: /^#\d+/ }).map((link) => link.textContent?.split(" ")[0])).toEqual(["#149", "#5718"]);
   });
 
   it("links a row's key and title to Run detail, encoded", async () => {

@@ -120,11 +120,11 @@
 .pool-link {
   font-size: var(--font-size-small);
 }
-.ghost-medium {
+.ghost.ghost-medium {
   border-color: var(--color-border-hover);
   font-weight: var(--font-weight-medium);
 }
-.ghost-footer {
+.ghost.ghost-footer {
   padding: var(--space-3) var(--space-12);
 }
 

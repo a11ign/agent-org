@@ -80,6 +80,14 @@ describe("the list, over a stand-in instance in Chromium", () => {
     await context.close();
   });
 
+  it("styles the pool bar's button and Load more as the board does, over the shared ghost button", async () => {
+    const { page, context } = await open({ stand: runsStand() });
+    await page.locator(".run-row").first().waitFor();
+    expect(await page.locator(".pool-bar .ghost").evaluate((element) => getComputedStyle(element).borderTopColor)).toBe("rgb(58, 62, 71)");
+    expect(await page.getByRole("button", { name: "Load more" }).evaluate((element) => getComputedStyle(element).padding)).toBe("3px 12px");
+    await context.close();
+  });
+
   it("opens a run at its address in Run detail", async () => {
     const { page, context } = await open({ stand: runsStand() });
     expect(await page.locator("#run-A11-184 .run-title").getAttribute("href")).toBe("/next/runs/A11-184");

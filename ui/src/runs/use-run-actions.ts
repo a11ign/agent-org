@@ -62,10 +62,10 @@ export function useRunActions({ client, connection, config, refresh }: ActionInp
     stopWaiting(key);
     setRefusal(answer.ok ? null : answer.refusal);
     if (answer.ok) refresh();
-    if (tab === null) return;
-    if (!answer.ok) return isBlank(tab) ? tab.close() : undefined;
-    // A tab that already shows the terminal (a second press) is left where it is.
-    if (isBlank(tab)) openTerminalWhenReady(tab, connection, lookAtRun(client, template, key));
+    // A tab that already shows the terminal (a second press) is left where it is; a blank one is pointed at the terminal, or closed when the post was refused.
+    if (tab === null || !isBlank(tab)) return;
+    if (answer.ok) openTerminalWhenReady(tab, connection, lookAtRun(client, template, key));
+    else tab.close();
   };
 
   return { busy, refusal, clearRefusal: () => setRefusal(null), press: (entry, verb) => void run(entry, verb) };

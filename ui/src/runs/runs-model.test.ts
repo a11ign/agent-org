@@ -158,6 +158,12 @@ describe("a row's note", () => {
     expect(noteOf(entryOf(ready), { queue: queueOf([ready]), publisher: undefined })).toBe("a11ign/lab #150: approved at 1f6009d");
   });
 
+  it("reads a queue from an older instance that sends no update and no pulls, as the legacy board does", () => {
+    const older = { entries: [], max: 10, paused: false } as unknown as QueueView;
+    const entry = entryOf({ ...working({ key: "A11-5", title: "t", startedAgo: MINUTE }), phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "a11ign/lab", url: "https://github.com/a11ign/lab/pull/9" }] } });
+    expect(() => noteLines(entry, { queue: older, publisher: undefined })).not.toThrow();
+  });
+
   it("is null for a run with nothing to say", () => {
     expect(noteOf(entryOf(working({ key: "A11-3", title: "t", startedAgo: MINUTE })), context)).toBeNull();
   });

@@ -17,30 +17,30 @@ import type { RowContext } from "./RunRow.tsx";
 import { useFailure } from "./use-failure.ts";
 import { useRunActions } from "./use-run-actions.ts";
 
-/** The header: the h1 and the count line, which is the board's skeleton while the queue is read. */
-function Header({ count }: Readonly<{ count: string | null }>) {
+/** The header: the h1 and the count line, which is the board's skeleton while the queue is read and nothing when it could not be read. */
+function Header({ count, loading }: Readonly<{ count: string | null; loading: boolean }>) {
   return (
     <div className="page-header">
       <div className="page-header-title">
         <h1 className="page-heading">Runs</h1>
-        {count === null ? <SkeletonBlock shape="count" /> : <span className="page-count">{count}</span>}
+        {count !== null ? <span className="page-count">{count}</span> : loading ? <SkeletonBlock shape="count" /> : null}
       </div>
     </div>
   );
 }
 
-/** The runs of the status the rail chose, under their headings, 50 at a time. A new choice starts the page again at 50, because the list is keyed by it. */
-function Listing({ queue, filter, context }: Readonly<{ queue: QueueView; filter: RunStatus | null; context: RowContext }>) {
-  const [limit, setLimit] = useState(PAGE_SIZE);
-  const page = paged(groupsOf(queue, filteredRuns(queue, filter)), limit);
-  return <RunsList page={page} context={context} onMore={() => setLimit((before) => before + PAGE_SIZE)} />;
+/** How many rows are drawn: 50, and 50 more for each Load more. It starts again at 50 when the rail chooses another status, and is kept while the list is replaced by a reconnecting or unreachable frame. */
+function useLimit(filter: RunStatus | null): Readonly<{ limit: number; more: () => void }> {
+  const [state, setState] = useState({ filter, limit: PAGE_SIZE });
+  const limit = state.filter === filter ? state.limit : PAGE_SIZE;
+  return { limit, more: () => setState({ filter, limit: limit + PAGE_SIZE }) };
 }
 
 /** The panel of a queue with no run: the pool bar over the board's "No runs yet". */
-function NoRuns({ queue, pool }: Readonly<{ queue: QueueView; pool: Pool }>) {
+function NoRuns({ queue, pool, disabled }: Readonly<{ queue: QueueView; pool: Pool; disabled: boolean }>) {
   return (
     <>
-      <PoolBar queue={queue} pool={pool} />
+      <PoolBar queue={queue} pool={pool} disabled={disabled} />
       <EmptyState title="No runs yet" text="Queue tickets from the Tickets page and each one shows up here as it runs." actions={<a className="empty-link" href={ticketsHref}>Go to Tickets</a>} />
     </>
   );
@@ -49,25 +49,28 @@ function NoRuns({ queue, pool }: Readonly<{ queue: QueueView; pool: Pool }>) {
 /** The queue as the lifecycle draws it: a failed read is the page's banner above the last list, so the lifecycle sees it as ready. */
 const lifecycleOf = (queue: LifecycleView<QueueView>): LifecycleView<QueueView> => (queue.state === "error" ? { ...queue, state: "ready" } : queue);
 
-/** The page once the connections are read. */
+/** The page once the connections are read. While an SSH instance cannot be reached the rows and the pool's button are the last known ones, and nothing on them is pressed. */
 function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
-  const { queue, client, config, connection } = useShell();
+  const { queue, client, config, connection, unreachable } = useShell();
   const pool = usePool(client, queue);
   const actions = useRunActions({ client, connection, config, refresh: queue.refresh });
   const failure = useFailure(queue, actions, pool);
+  const paging = useLimit(filter);
+  const disabled = unreachable !== null;
   const count = queue.data === null ? null : countText(queue.data.entries.length, runningCount(queue.data));
-  const context = (data: QueueView): RowContext => ({ queue: data, publisher: config?.publisher, now: Date.now(), busy: actions.busy, press: actions.press });
+  const context = (data: QueueView): RowContext => ({ queue: data, publisher: config?.publisher, now: Date.now(), busy: actions.busy, disabled, press: actions.press });
   return (
     <>
-      <Header count={count} />
+      <Header count={count} loading={queue.state === "loading"} />
       <FailureBanner sentence={failure.sentence} onRetry={failure.retry} onDismiss={failure.dismiss} />
-      <Lifecycle view={lifecycleOf(queue)} skeleton={<RunsSkeleton />} empty={queue.data === null ? null : <NoRuns queue={queue.data} pool={pool} />} connection={connection?.name ?? ""}>
-        {(data) => (
-          <>
-            <PoolBar queue={data} pool={pool} />
-            <Listing key={filter ?? "all"} queue={data} filter={filter} context={context(data)} />
-          </>
-        )}
+      <Lifecycle view={lifecycleOf(queue)} skeleton={<RunsSkeleton />} empty={queue.data === null ? null : <NoRuns queue={queue.data} pool={pool} disabled={disabled} />} connection={connection?.name ?? ""}>
+        {(data) =>
+          data.entries.length === 0 ? <NoRuns queue={data} pool={pool} disabled={disabled} /> : (
+            <>
+              <PoolBar queue={data} pool={pool} disabled={disabled} />
+              <RunsList page={paged(groupsOf(data, filteredRuns(data, filter)), paging.limit)} context={context(data)} onMore={paging.more} />
+            </>
+          )}
       </Lifecycle>
     </>
   );
@@ -77,7 +80,7 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
 function Pending() {
   return (
     <>
-      <Header count={null} />
+      <Header count={null} loading />
       <RunsSkeleton />
     </>
   );

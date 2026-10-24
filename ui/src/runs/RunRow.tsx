@@ -5,14 +5,16 @@ import type { QueueView, RunAction } from "../api/types.ts";
 import { runsHref } from "../shell/routes.ts";
 import { actionsOf } from "./run-actions.ts";
 import { ActionIcon, PullIcon, StatusIcon, STATUS_TONE } from "./icons.tsx";
-import { labelOf, noteOf, timingOf, tokensOf, type RunEntry } from "./runs-model.ts";
+import { labelOf, noteOf, timingOf, tokensOf, type NoteContext, type RunEntry } from "./runs-model.ts";
 
 /** What a row needs of the page: the queue it is a row of, the machine's publisher, the time, and what the row's buttons do. */
 export type RowContext = Readonly<{
   queue: QueueView;
-  publisher: "on" | "off" | "none" | undefined;
+  publisher: NoteContext["publisher"];
   now: number;
   busy: ReadonlySet<string>;
+  /** True while the instance cannot be reached: the rows are the last known ones, and nothing on them is pressed. */
+  disabled: boolean;
   press: (entry: RunEntry, verb: RunAction) => void;
 }>;
 
@@ -33,6 +35,7 @@ function PullPill({ pull }: Readonly<{ pull: PullRef }>) {
     <a className="pr-pill" href={href} target="_blank" rel="noreferrer" title={title}>
       <PullIcon />
       {label}
+      {pull.repo === undefined ? null : <span className="visually-hidden"> {pull.repo}</span>}
     </a>
   );
 }
@@ -43,7 +46,7 @@ function Buttons({ entry, context }: Readonly<{ entry: RunEntry; context: RowCon
   return (
     <div className="run-actions">
       {actionsOf(entry, context.queue).map(({ verb, name, title }) => (
-        <button key={verb} type="button" className={`icon-button action-${verb}`} aria-label={name} title={title} disabled={held} onClick={() => context.press(entry, verb)}>
+        <button key={verb} type="button" className={`icon-button action-${verb}`} aria-label={name} title={title} disabled={held || context.disabled} onClick={() => context.press(entry, verb)}>
           <ActionIcon verb={verb} />
         </button>
       ))}
