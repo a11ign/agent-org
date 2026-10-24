@@ -43,6 +43,25 @@ const ROUTES = [
   { path: "/next/settings/plugins", h1: "Plugins", title: "Atomaut: Plugins", current: ["Plugins", "Settings"] },
 ] as const;
 
+/** How long a page may take to hydrate before the check gives up on it. */
+const HYDRATION_MS = 10_000;
+
+/** A hold on the build's scripts: they wait for `release` before they are passed on, and `held` counts the requests waiting. */
+type ScriptHold = Readonly<{ release: () => void; held: () => number }>;
+
+/** Holds every script of the build until `release`, so the page can be read before its island hydrates. Registered after `serveInstance`, so it runs first and `fallback` hands the request on to it. */
+async function holdScripts(context: BrowserContext): Promise<ScriptHold> {
+  let held = 0;
+  let release = (): void => undefined;
+  const released = new Promise<void>((done) => { release = done; });
+  await context.route("**/next/_astro/*.js", async (route) => {
+    held += 1;
+    await released;
+    return route.fallback();
+  });
+  return { release, held: () => held };
+}
+
 /** A page of a new context at `width`, its instance calls answered by `serving`. Returns the page and the paths of the calls. */
 async function open(path: string, serving: Serving = { stand: STAND }, width = 1440): Promise<{ page: Page; asked: string[]; context: BrowserContext }> {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
@@ -50,6 +69,25 @@ async function open(path: string, serving: Serving = { stand: STAND }, width = 1
   const page = await context.newPage();
   await page.goto(`${site.origin}${path}`);
   return { page, asked, context };
+}
+
+/** A page of a new context whose scripts are held, so it can be read before the island hydrates. */
+async function openWithHeldScripts(path: string): Promise<{ page: Page; context: BrowserContext; hold: ScriptHold }> {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await serveInstance(context, { stand: STAND });
+  const hold = await holdScripts(context);
+  const page = await context.newPage();
+  await page.goto(`${site.origin}${path}`);
+  return { page, context, hold };
+}
+
+/** The text of the page's level-1 heading, read now. */
+const headingOf = (page: Page): Promise<string | null> => page.getByRole("heading", { level: 1 }).textContent();
+
+/** Waits until the page's level-1 heading reads `h1` and its document title is `title`, and fails with the text it saw. A one-shot read of either races the island. */
+async function expectSettled(page: Page, { h1, title }: { h1: string; title: string }): Promise<void> {
+  await expect.poll(() => headingOf(page), { timeout: HYDRATION_MS }).toBe(h1);
+  await expect.poll(() => page.title(), { timeout: HYDRATION_MS }).toBe(title);
 }
 
 const sidebarOf = (page: Page): Locator => page.getByRole("complementary", { name: "Atomaut" });
@@ -60,10 +98,25 @@ describe("every route renders inside the shell", () => {
   it.each(ROUTES)("$path: the sidebar, the page's heading, its title, and the active items marked", async ({ path, h1, title, current }) => {
     const { page, context } = await open(path);
     await sidebarOf(page).waitFor();
-    expect(await page.getByRole("heading", { level: 1 }).textContent()).toBe(h1);
-    await page.waitForFunction((expected) => document.title === expected, title);
+    // The sidebar is in the static HTML, but `/next/runs/<key>` is served as the runs page: its heading and title name the run only once the island has hydrated.
+    await expectSettled(page, { h1, title });
     expect((await currentItems(page)).sort()).toEqual([...current].sort());
     await context.close();
+  });
+
+  it("names the run once the island hydrates, though the page was served as the runs list", async () => {
+    const { page, context, hold } = await openWithHeldScripts("/next/runs/A11-1");
+    try {
+      await sidebarOf(page).waitFor();
+      await expect.poll(hold.held, { timeout: HYDRATION_MS }).toBeGreaterThan(0);
+      expect(await headingOf(page)).toBe("Runs");
+      expect(await page.title()).toBe("Atomaut: Runs");
+      hold.release();
+      await expectSettled(page, { h1: "A11-1", title: "Atomaut: Run detail" });
+    } finally {
+      hold.release();
+      await context.close();
+    }
   });
 
   it("sends /next/ to Tickets and /next/settings to Models", async () => {

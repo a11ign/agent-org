@@ -74,10 +74,10 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
     "exposure: tailscale (from tickets.providers.exposure)",
     "messaging: none (this machine declares no project, so messaging is not configured)",
   ]);
-  assert.match(out, /^ {2}fake-reviewer +available +contract 1\.3 +fake/m);
+  assert.match(out, /^ {2}fake-reviewer +available +contract 1\.4 +fake/m);
   for (const fake of ["fake-publisher", "fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.1 +fake`, "m"), fake);
   assert.match(out, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m, "the publisher is a bundled package since A11-161");
-  assert.match(out, /^ {2}atomic +available +contract 1\.3 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
+  assert.match(out, /^ {2}atomic +available +contract 1\.4 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
   assert.match(out, /^ {2}fake-tracker +available +contract 1\.6 +fake/m);
   assert.match(out, /^ {2}fake-codeHost +available +contract 1\.14 +fake/m);
   assert.match(out, /^ {2}linear +enabled +contract 1\.6 +plugins\/linear$/m);
@@ -535,7 +535,7 @@ test("A11-161: `plugin list` shows slack and atomic as bundled plugins, from the
   const host = scratch(WITH_REVIEWER);
   const { out } = await host.run("list");
   for (const line of [/^publisher: slack \(from tickets\.providers\.publish\)$/m, /^reviewer: atomic \(from tickets\.providers\.reviewer\)$/m, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m,
-    /^ {2}atomic +enabled +contract 1\.3 +plugins\/atomic-reviewer$/m]) assert.match(out, line);
+    /^ {2}atomic +enabled +contract 1\.4 +plugins\/atomic-reviewer$/m]) assert.match(out, line);
 });
 
 test("A11-161: the publisher is switched off and on, keeping its settings, and each change is read back from the file", async () => {

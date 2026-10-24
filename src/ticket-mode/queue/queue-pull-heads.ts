@@ -1,7 +1,9 @@
 // @ts-check
-// module: the heads of a finished run's pull requests, as the pool records them (A11-153)
+// module: the heads of a finished run's pull requests, as the pool records them (A11-153), and the note a stale block leaves on the run (A11-213)
 //
 // WHAT A `needs-human` RUN'S PULL REQUEST WAS AT WHEN IT ENDED, AND WHAT IT IS AT NOW, IS HOW THE BOARD TELLS THAT ITS QUESTION WAS ANSWERED (`pull-answer.ts`).
+import { runStatus } from "../board-view/pull-status-and-notes.ts";
+import { isStaleBlockNote } from "../board-view/stale-block.ts";
 import type { PullHead } from "../board-view/view-types-and-filters.ts";
 import { replace, type Queue } from "./queue-entries-and-outcomes.ts";
 
@@ -24,4 +26,26 @@ export function moveOutcomeHeads(queue: Queue, key: string, from: string, to: st
 /** Record each open pull request's head now and whether it is approved there, by URL, as the watch read them (A11-153). */
 export function recordPullHeads(queue: Queue, key: string, heads: Readonly<Record<string, PullHead>>): Queue {
   return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, pullHeads: heads } : entry));
+}
+
+/** The statuses a stale-block note may be written over: a run that waits on a review or a merge. Any other has its own reason, or is over (A11-213). */
+const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
+
+/**
+ * The board's note on a finished run whose pull request has sat changes requested with no new push and no run (A11-213, {@link staleBlockNote}): it becomes the run's `handedBack`, which reads Needs you and which
+ * Respond to review acts on, and a null note (a push, an approval, a round) clears a `handedBack` this wrote, recognised by its sentence form as a conflict's is. It never replaces another `handedBack`, and it
+ * is written only over a run that waits on a review or a merge ({@link NOTEABLE}): one that reads Needs you for its own reason (a disputed review the worker handed back), one that failed or concluded, and one that is over keep their own words. PURE.
+ */
+export function recordStaleBlock(queue: Queue, key: string, note: string | null): Queue {
+  return replace(queue, key, (entry) => {
+    if (entry.phase !== "finished") return entry;
+    if (note === null) {
+      const { handedBack: _cleared, ...rest } = entry;
+      return isStaleBlockNote(entry.handedBack) ? rest : entry;
+    }
+    const other = entry.handedBack !== undefined && !isStaleBlockNote(entry.handedBack);
+    const { handedBack: _own, ...without } = entry;
+    if (other || !NOTEABLE.has(runStatus(without))) return entry;
+    return { ...entry, handedBack: note };
+  });
 }
