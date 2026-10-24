@@ -5,6 +5,7 @@
 @import "./styles/tokens.css";
 @import "./lifecycle/lifecycle.css";
 @import "./shell/shell.css";
+@import "./tickets/tickets.css";
 
 *,
 *::before,

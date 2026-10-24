@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { config, HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type Stand } from "../../test/fixtures.ts";
+import { HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type Stand } from "../../test/fixtures.ts";
+import { TicketsPage } from "../tickets/TicketsPage.tsx";
 import { Placeholder } from "./Placeholder.tsx";
 import type { Page } from "./routes.ts";
 import { ShellFrame } from "./ShellFrame.tsx";
@@ -16,7 +17,7 @@ async function shellOn(page: Page, stand: Stand = {}) {
   const view = render(
     <ShellProvider fetchWith={fetchWith}>
       <ShellFrame page={page}>
-        <Placeholder page={page} runKey={page === "run" ? "A11-7" : null} />
+        {page === "tickets" ? <TicketsPage /> : <Placeholder page={page} runKey={page === "run" ? "A11-7" : null} />}
       </ShellFrame>
     </ShellProvider>,
   );
@@ -118,7 +119,7 @@ describe("the connections list", () => {
 
   it("leaves an empty list when the connections cannot be read, and reads /api at the root", async () => {
     const fetchWith = standFetch({ connectionsFail: true });
-    render(<ShellProvider fetchWith={fetchWith}><ShellFrame page="tickets"><Placeholder page="tickets" runKey={null} /></ShellFrame></ShellProvider>);
+    render(<ShellProvider fetchWith={fetchWith}><ShellFrame page="tickets"><TicketsPage /></ShellFrame></ShellProvider>);
     await waitFor(() => expect(fetchWith.paths).toContain("/api/queue"));
     expect(within(screen.getByLabelText("Instance")).queryAllByRole("option")).toHaveLength(0);
     expect(screen.queryByRole("alert")).toBeNull();

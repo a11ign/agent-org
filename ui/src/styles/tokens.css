@@ -16,11 +16,14 @@
   --color-active: #1e2027;
   --color-skeleton-highlight: #22252c;
   --color-selection: rgba(91, 99, 217, 0.14);
+  --color-row-hover: #15171c;
+  --color-segment-active: #2a2d36;
 
   /* Borders: hairlines, controls, and a control under the pointer. */
   --color-border: #23252b;
   --color-border-strong: #2e3138;
   --color-border-hover: #3a3e47;
+  --color-divider: #2a2d34;
 
   /* Text: body, navigation, counts, muted labels, disabled. */
   --color-text: #e7e8ec;
@@ -57,13 +60,21 @@
   --color-warn-soft: #f0d98a;
   --color-warn-bg: #1a1608;
   --color-warn-border: #5a4a1a;
+  --color-warn-border-strong: #6b5a22;
+  --color-warn-link: #f6e3a3;
 
   --color-planning: #a78bfa;
+
+  /* Shadows: the queue bar's, and the popover and menus that open from it. */
+  --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.6);
 
   /* Type. Inter for text and JetBrains Mono for keys and code, both bundled (A11-188). */
   --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
   --font-size-label: 11px;
+  --font-size-pill: 11px;
+  --line-height-pill: 18px;
   --line-height-label: 16px;
   --font-size-small: 12px;
   --line-height-small: 18px;
@@ -84,6 +95,7 @@
 
   /* Spacing. */
   --space-2: 2px;
+  --space-3: 3px;
   --space-4: 4px;
   --space-5: 5px;
   --space-6: 6px;
@@ -95,6 +107,8 @@
   --space-18: 18px;
   --space-20: 20px;
   --space-24: 24px;
+  --space-28: 28px;
+  --space-32: 32px;
   --space-40: 40px;
   --space-48: 48px;
   --space-56: 56px;
@@ -115,10 +129,28 @@
   --main-padding: var(--space-20) var(--space-24) var(--space-24);
   --main-padding-tall: var(--space-20) var(--space-24) var(--space-40);
   --measure-alert-text: 320px;
+  --measure-header-basis: 240px;
+  --measure-banner-basis: 360px;
+  --measure-search-basis: 240px;
+  --measure-search-max: 360px;
+  --measure-title-basis: 280px;
+  --measure-readable: 900px;
+  --popover-width: 300px;
+  --popover-select-width: 140px;
+  --menu-min-width: 220px;
+  --row-height: var(--space-40);
+  --row-key-width: 52px;
+  --row-project-width: 44px;
+  --bar-offset: var(--space-16);
+  --z-popover: 5;
+  /* How many steps in a row under a parent is; each row sets its own, and a head of the list is 0. */
+  --depth: 0;
   --measure-empty: 460px;
   --measure-empty-narrow: 440px;
 
   /* Icons and marks. */
+  --icon-10: 10px;
+  --icon-12: 12px;
   --icon-14: 14px;
   --icon-15: 15px;
   --icon-16: 16px;
@@ -151,6 +183,8 @@
   --skeleton-avatar-size: 28px;
   --skeleton-side-height: 260px;
   --skeleton-pill-width: 60px;
+  --skeleton-key-width: 48px;
+  --skeleton-section-label-width: 90px;
   --detail-main-basis: 520px;
   --detail-main-max: 760px;
   --detail-side-basis: 280px;

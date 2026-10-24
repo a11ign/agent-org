@@ -4,7 +4,7 @@
 // `chosenProject`, and a goal is a label of the `Goal` group. They are used here, never restated.
 import { defaultScope, inScope } from "../../../src/ticket-mode/assignee-filter.ts";
 import type { PollState, PollView } from "../api/use-poll.ts";
-import type { ConfigView, QueueView, TicketView } from "../api/types.ts";
+import type { ConfigView, QueueView, Ticket, TicketView } from "../api/types.ts";
 
 export type Pill = Readonly<{ tone: "connected" | "unreachable"; label: string }>;
 
@@ -19,30 +19,59 @@ export function pillOf(state: PollState): Pill {
 /** How many runs are running now: the Runs badge. A run is running while its `phase` is `running`. PURE. */
 export const runningCount = (queue: QueueView): number => queue.entries.filter((entry) => entry.phase === "running").length;
 
+/** The Assignee scope the list shows: the one chosen, else the setting's default (`defaultScope`). An instance that names no viewer lists as it did, whatever the scope. PURE. */
+export const scopeOf = (config: ConfigView | null, chosen: string | null): string => chosen ?? defaultScope(config?.pickDefault ?? "you", config?.viewer ?? null);
+
 /**
- * The tickets the list starts on: the default Assignee scope, as `ui.html`'s `inView` applies it. An instance that names no viewer (an older one) lists as it did, so every
- * ticket shows; so does a page whose config could not be read. PURE.
+ * The tickets in the Assignee scope, as `ui.html`'s `inView` applies it. An instance that names no viewer (an older one) lists as it did, so every ticket shows; so does a page whose
+ * config could not be read. `scope` is the one chosen, else the setting's default. PURE.
  */
-export function ticketsInScope(tickets: readonly TicketView[], config: ConfigView | null): TicketView[] {
+export function ticketsInScope(tickets: readonly TicketView[], config: ConfigView | null, scope: string = scopeOf(config, null)): TicketView[] {
   if (config === null || config.viewer === undefined) return [...tickets];
-  const scope = defaultScope(config.pickDefault ?? "you", config.viewer);
   return tickets.filter((ticket) => inScope(ticket, scope, config.viewer));
 }
 
 /** The states of a read that failed. */
 const FAILED: readonly PollState[] = ["error", "unreachable", "reconnecting"];
 
+/** The tickets the first read gave and the pages of the scopes read since, once each by key. PURE. */
+export function mergedTickets(first: readonly TicketView[], extra: readonly TicketView[]): TicketView[] {
+  const seen = new Set(first.map(({ key }) => key));
+  const added = extra.filter(({ key }) => {
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return [...first, ...added];
+}
+
+/** What the Tickets read has beyond its first answer: the scope chosen, the tickets of the scopes read on demand, the scope being read now, and why the last such read failed. */
+export type ScopedReads = Readonly<{ scope: string | null; extra: readonly TicketView[]; reading: string | null; refusal: string | null }>;
+
 /**
- * The Tickets read as the shell shows it: only the tickets in the default scope, which needs the config; so until the config has answered the tickets are still `loading`, and a
+ * The Tickets read as the shell shows it: only the tickets in the chosen Assignee scope, which needs the config; so until the config has answered the tickets are still `loading`, and a
  * config that cannot be read is the page's failure (`ui.html` reports it the same way), with nothing shown until it can. A read that came back with tickets none of which are in scope
- * is `empty` ("Nothing is assigned to you"). A tickets failure keeps the last good tickets. PURE.
+ * is `empty` ("Nothing is assigned to you"), except while that scope is still being read, which is `loading`. A tickets failure keeps the last good tickets, and so does a scope that could
+ * not be read (`refusal`), which is an `error` in the server's own words. PURE.
  */
-export function ticketsView(tickets: PollView<TicketView[]>, config: PollView<ConfigView>): PollView<TicketView[]> {
+export function ticketsView(tickets: PollView<TicketView[]>, config: PollView<ConfigView>, { scope = null, extra = [], reading = null, refusal = null }: Partial<ScopedReads> = {}): PollView<TicketView[]> {
   if (config.data === null && FAILED.includes(config.state)) return { state: config.state, data: null, refusal: config.refusal };
   if (tickets.state === "loading" || (config.state === "loading" && tickets.data !== null)) return { state: "loading", data: null, refusal: null };
-  const data = tickets.data === null ? null : ticketsInScope(tickets.data, config.data);
+  const shown = scopeOf(config.data, scope);
+  const data = tickets.data === null ? null : ticketsInScope(mergedTickets(tickets.data, extra), config.data, shown);
+  if (data?.length === 0 && reading === shown) return { state: "loading", data: null, refusal: null };
+  if (refusal !== null && (tickets.state === "ready" || tickets.state === "empty")) return { state: "error", data, refusal };
   const state = tickets.state === "ready" || tickets.state === "empty" ? (data?.length === 0 ? "empty" : "ready") : tickets.state;
   return { state, data, refusal: tickets.refusal };
+}
+
+/**
+ * The tickets the tree may nest under: a ticket outside the scope that a ticket in it hangs from is shown as context, so the child keeps its place, and so is each parent the instance
+ * names (`/api/parents`). On an instance that names no viewer there is no scope to be outside of. PURE.
+ */
+export function contextParentsOf(all: readonly TicketView[], parents: readonly Ticket[], config: ConfigView | null, scope: string): TicketView[] {
+  const outside = config === null || config.viewer === undefined ? [] : all.filter((ticket) => !inScope(ticket, scope, config.viewer));
+  return [...outside, ...parents];
 }
 
 /** What a goal entry of the sidebar stands for. The ids are opaque: a label is never mistaken for "All goals" or "(no Goal)". */

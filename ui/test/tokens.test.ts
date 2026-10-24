@@ -63,7 +63,7 @@ describe("the design tokens are the one file that holds values", () => {
 
   it("imports the tokens and the stylesheets from styles.css, which the layout loads", () => {
     const styles = read(join(SRC, "styles.css"));
-    for (const sheet of ["./styles/tokens.css", "./lifecycle/lifecycle.css", "./shell/shell.css"]) expect(styles).toContain(`@import "${sheet}"`);
+    for (const sheet of ["./styles/tokens.css", "./lifecycle/lifecycle.css", "./shell/shell.css", "./tickets/tickets.css"]) expect(styles).toContain(`@import "${sheet}"`);
     expect(read(join(SRC, "layouts", "Shell.astro"))).toContain('import "../styles.css"');
   });
 });
