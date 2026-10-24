@@ -16,7 +16,7 @@ import { REPO } from "../../src/project-identity.ts";
 import { loadReviewerGate } from "../../src/ticket-mode/reviewer-port.ts";
 import { homeProjectDeclaration } from "../../src/project-config.ts";
 import { HOST_CONFIG_ENV, hostConfigPath } from "../../src/host-config.ts";
-import { NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, unrequiredRedWords } from "./prompt.ts";
+import { DECISION_RULE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, unrequiredRedWords } from "./prompt.ts";
 import { REVIEW_CAUSE, atomicReviewerPort as portOver, clonedSeatOf, type Seams, verdictFileIn as verdictFileOver } from "./port.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -575,4 +575,19 @@ test("A11-175: a brief that names the plan step a pull request finishes reaches 
   assert.ok(first.includes(`The ticket's Done-when, for the last step (step 9 of 9), as the ticket states it:\n\n${DONE_WHEN}`) && first.endsWith(POST_MERGE_RULE));
   assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, brief), { prompted: true });
   assert.equal(prompted(), first, "the reprompt says what the first prompt did");
+});
+
+test("A11-213: the ticket's decisions in the brief reach the prompt a reviewer is started with, the one a reprompt sends, and the re-review's", async () => {
+  await loadReviewerGate();
+  const decisions = "This step widens the policy's permissions by the chairman's decision on 2026-10-24.";
+  const { port, prompted } = startingPort();
+  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions }), { label: "reviewer-7" });
+  const first = prompted();
+  assert.ok(first.includes(`The ticket's explicit decisions, as the ticket states them:\n\n${decisions}`) && first.includes(DECISION_RULE), first);
+  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions }), { prompted: true });
+  assert.equal(prompted(), first, "the reprompt says what the first prompt did");
+  const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
+  const again = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
+  assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(decisions) && again.prompted().includes(DECISION_RULE), "the re-review carries them too");
 });

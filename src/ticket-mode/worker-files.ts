@@ -738,6 +738,16 @@ Check your pull requests against the new text, and say in your reply what the ch
 
 type Round = Readonly<{ title: string; opening: string; steps: string; reviewed: string }>;
 
+/**
+ * What a round does with a review that requests changes when its worker judges the request wrong, or already settled by the ticket (A11-213). Nothing is changed for it, and the run does NOT end `reviewed`: the pull
+ * request stays blocked, and a reviewed run reads as waiting for a review that is not coming. It ends `needs-human`, so the request reaches a person, who reads the worker's reply and decides.
+ */
+const DISPUTED_REVIEW = "When a review requests changes and you judge the request wrong, or already settled by the ticket: make no change for it, reply on that pull request saying why and quoting the ticket's line, "
+  + "and end the round with a `needs-human` outcome whose reason names the pull request's URL and the disputed finding.";
+
+/** The line a round's `reviewed` condition carries so that a disputed review never ends quietly (A11-213). */
+const NEVER_REVIEWED_DISPUTED = "Never write `reviewed` while a review you disputed still requests changes on the head.";
+
 /** The round a person started by approving the draft pull requests: mark them ready, then see them through their checks and review. */
 function approvedRound(who: string, prReview: string | null): Round {
   const wait = REVIEW_WAIT_MINUTES;
@@ -748,11 +758,11 @@ function approvedRound(who: string, prReview: string | null): Round {
 
 1. Mark each pull request ready with \`gh pr ready <url>\`.
 2. Wait for each one's checks and its review, as "How this machine reviews" says. Wait at most ${wait} minutes for each. If a check or the review has not finished by then, write a \`needs-human\` outcome that names what you waited for.
-3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. Run the repository's checks on what you changed.
+3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. ${DISPUTED_REVIEW} Run the repository's checks on what you changed.
 4. ${roundPushStep(prReview)}
 5. Reply on each pull request with one comment: each finding, and what you did about it.
 6. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again. Do not wait for a second review: the board starts another round when new feedback comes.`,
-    reviewed: "Write `reviewed` only when every pull request is ready, every finding is answered, and every check passed on its last commit.",
+    reviewed: `Write \`reviewed\` only when every pull request is ready, every finding is answered, and every check passed on its last commit. ${NEVER_REVIEWED_DISPUTED}`,
   };
 }
 
@@ -781,7 +791,7 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
   const [first, ...rest] = why.split("\n\n");
   const items = [
     "Read that feedback and everything else on each pull request since your last reply: its reviews, its conversation comments, its inline review comments and its failed checks. The pull requests are ready already: do not run `gh pr ready`.",
-    "Fix each finding that is right in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: answer it with the evidence instead. Run the repository's checks on what you changed.",
+    `Fix each finding that is right in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: answer it with the evidence instead. ${DISPUTED_REVIEW} Run the repository's checks on what you changed.`,
     roundPushStep(prReview),
     "Reply on each pull request with one comment: each finding, and what you did about it.",
     `Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
@@ -790,7 +800,7 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
     title: "feedback round",
     opening: [`${first} ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`, ...rest].join("\n\n"),
     steps: (merge === null ? items : [merge, ...items]).map((item, index) => `${index + 1}. ${item}`).join("\n"),
-    reviewed: "Write `reviewed` only when every finding is answered and every check passed on the last commit you pushed.",
+    reviewed: `Write \`reviewed\` only when every finding is answered and every check passed on the last commit you pushed. ${NEVER_REVIEWED_DISPUTED}`,
   };
 }
 

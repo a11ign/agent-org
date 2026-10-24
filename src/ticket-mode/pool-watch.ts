@@ -18,7 +18,8 @@ import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLiv
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
-import { recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
+import { recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
+import { staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
 import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
@@ -469,6 +470,7 @@ export function watchFeedback(ctx: PoolContext): void {
     // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
     if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
     recordHeads(ctx, entry, readable);
+    flagStaleBlock(ctx, entry.ticket.key);
     clearResolvedConflict(ctx, entry, open);
     if (!resumesOnConflict(entry)) continue;
     const checks = answerChecks(ctx, entry, open, foreign);
@@ -501,11 +503,23 @@ function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer)
  */
 function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
   const key = entry.ticket.key;
-  const heads = pullHeadsOf(readable);
+  const heads = stampedBlocks(pullHeadsOf(readable), entry.pullHeads, ctx.now());
   if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads));
   const open = readable.filter(({ read }) => read.state === "open");
   const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
+}
+
+/**
+ * Flag a finished run whose pull request has sat changes requested for more than the stale-block limit minutes with no new push and no run (A11-213): the note becomes its `handedBack`, so the board reads Needs you, and
+ * it goes again once a push, an approval or a round ends the block. Written only when it changes, as the heads are. A run's heads are those the watch has just recorded.
+ */
+function flagStaleBlock(ctx: PoolContext, key: string): void {
+  const { now, store } = ctx;
+  const entry = store.get().entries.find((e) => e.ticket.key === key);
+  if (entry === undefined) return;
+  const next = recordStaleBlock(store.get(), key, staleBlockNote(entry, now()));
+  if (next.entries.find((e) => e.ticket.key === key)?.handedBack !== entry.handedBack) update(ctx, () => next);
 }
 
 /**

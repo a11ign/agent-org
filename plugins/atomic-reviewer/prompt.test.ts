@@ -1,7 +1,7 @@
 // no-token: none -- pure text
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { NO_SECTION_LINE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, unrequiredRedWords } from "./prompt.ts";
+import { DECISION_RULE, decisionWords, NO_SECTION_LINE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, unrequiredRedWords } from "./prompt.ts";
 
 const GATE = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
 const DONE_WHEN = "## Done-when\n\n### Before merge\n\n- a test\n\n### After merge (who runs it)\n\n- the chairman, after 0.9.0";
@@ -89,4 +89,37 @@ test("A11-175: a step brief with no section says so, and the reviewer goes by th
 test("A11-175: with no step in the brief the prompt is the one it was: the whole ticket's Done-when under its own heading", () => {
   const words = reviewWords(GATE, { doneWhen: DONE_WHEN });
   assert.equal(words, `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`);
+});
+
+// A11-213: an explicit decision in the ticket overrides a general direction the reviewer holds, and the reviewer is told so wherever it reads the ticket.
+const DECISION = "This step widens the policy's permissions by the chairman's decision on 2026-10-24.";
+const STEP = { step: 4, of: 8, section: SECTION };
+const REPLY = [{ author: "worker-bot", url: "https://github.com/o/r/pull/7#c1", text: "The ticket settles this." }];
+
+test("A11-213: a ticket decision and a contrary general rule: the prompt quotes the decision, says it overrides the ratchets' direction, and says to quote it and not request changes", () => {
+  const words = reviewWords(GATE, { doneWhen: DONE_WHEN, decisions: DECISION, step: STEP });
+  assert.ok(words.includes(`The ticket's explicit decisions, as the ticket states them:\n\n${DECISION}`), "the decision, as the ticket words it");
+  assert.ok(words.includes(DECISION_RULE), "and the rule that it comes first");
+  assert.match(DECISION_RULE, /explicit decision in the ticket \(a line marked as the chairman's decision, or a `## Decisions` or `## Behaviour` section\) overrides a general direction/);
+  assert.match(DECISION_RULE, /your role file, the gate's rules or the ratchets' direction/);
+  assert.match(DECISION_RULE, /say so in your review, quote the decision, and do not request changes for it/);
+  assert.match(DECISION_RULE, /beyond what the decision allows is still a defect/);
+  assert.match(RATCHET_RULE, /a change the other way is a defect, unless the ticket's explicit decision says otherwise\.$/, "and the ratchet rule itself yields to it");
+  const order = [GATE, "The ticket's explicit decisions", DECISION, DECISION_RULE, "This pull request is step 4 of 8", RATCHET_RULE, "for the last step", POST_MERGE_RULE].map((part) => words.indexOf(part));
+  assert.ok(order.every((at) => at >= 0), `every part is there: ${order}`);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), "the decisions come after the gate's words and before the step and the Done-when");
+});
+
+test("A11-213: the decision and its rule are in a re-review too, so the reply to a block that held a rule against the decision can be corrected", () => {
+  const again = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "https://github.com/o/r/pull/7", roleFile: "r.md", replies: REPLY, doneWhen: DONE_WHEN, decisions: DECISION, step: STEP });
+  const order = ["re-review of #7", "The ticket settles this.", DECISION, DECISION_RULE, "step 4 of 8", POST_MERGE_RULE, "Corrects review: Review of #7 at `a1b2c3d4`"].map((part) => again.indexOf(part));
+  assert.ok(order.every((at) => at >= 0), `every part is there: ${order}`);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), "after the replies, before the post-merge rule and the verdict instructions");
+});
+
+test("A11-213: a ticket with no decision gets the prompt it always got, and a long decision is cut with the length said", () => {
+  assert.equal(decisionWords(undefined), "");
+  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`, "a brief with no decisions reads as one from before them");
+  assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN }).includes(DECISION_RULE), "and there is no rule about a decision that is not there");
+  assert.match(decisionWords("z".repeat(9000)), /\[cut: 1000 more characters on the pull request\]/);
 });
