@@ -436,13 +436,19 @@ async function withGithub() {
   return { ...f, server, env: { AGENT_ORG_RELEASES_URL: server.url } };
 }
 
+/** `withGithub()` with v0.2.0 installed and current, and the UI-declaring release v0.13.0 cut after it. */
+async function withEarlierInstall() {
+  const github = await withGithub();
+  assert.equal(install(github.home, github.path, github.repo, ["--version", "v0.2.0"], github.env).status, 0);
+  uiRelease(github.root, github.repo);
+  return github;
+}
+
 const versionsOf = (home: string) => readdirSync(join(home, ".agent-org", "tool", "versions")).toSorted();
 const LAUNCHER_AT = "~/.local/bin/agent-org";
 
 test("a release that ships a UI build has it downloaded, checked and unpacked into its folder before current moves, and the report has the step", async () => {
-  const { root, home, repo, path, server, env } = await withGithub();
-  assert.equal(install(home, path, repo, ["--version", "v0.2.0"], env).status, 0);
-  uiRelease(root, repo);
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
   publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
   const result = install(home, `${join(home, ".local", "bin")}:${path}`, repo, [], env);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -489,9 +495,7 @@ test("a release before the marker installs exactly as it did: no UI step, and no
 });
 
 test("a release whose UI build is not attached yet fails with the FAILED line, says to try again in a few minutes, and leaves current where it was", async () => {
-  const { root, home, repo, path, env } = await withGithub();
-  assert.equal(install(home, path, repo, ["--version", "v0.2.0"], env).status, 0);
-  uiRelease(root, repo);
+  const { home, repo, path, env } = await withEarlierInstall();
   const result = install(home, path, repo, [], env);
   assert.equal(result.status, 1);
   assert.match(result.stdout, /^ {2}FAILED Download its UI build$/m);
@@ -502,9 +506,7 @@ test("a release whose UI build is not attached yet fails with the FAILED line, s
 });
 
 test("a checksum that does not match fails the install, names it, and leaves current where it was", async () => {
-  const { root, home, repo, path, server, env } = await withGithub();
-  assert.equal(install(home, path, repo, ["--version", "v0.2.0"], env).status, 0);
-  uiRelease(root, repo);
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
   const { checksum } = publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
   writeFileSync(checksum, `${"0".repeat(64)}  agent-org-ui-v0.13.0.tar.gz\n`);
   const result = install(home, path, repo, [], env);
@@ -543,9 +545,7 @@ test("a download that cannot reach the server fails the install naming curl's wo
 });
 
 test("a folder that was built already, and is not current, is given its build, and a failure there stops the move", async () => {
-  const { root, home, repo, path, server, env } = await withGithub();
-  assert.equal(install(home, path, repo, ["--version", "v0.2.0"], env).status, 0);
-  uiRelease(root, repo);
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
   const folder = join(home, ".agent-org", "tool", "versions", "v0.13.0");
   mkdirSync(join(folder, "src"), { recursive: true });
   writeFileSync(join(folder, "src", "bin.ts"), "console.log(\"fixture v0.13.0\");\n");
@@ -609,9 +609,7 @@ test("on a terminal the UI step has the mark and the colour of the others", { sk
 });
 
 test("a build that unpacks but cannot be moved into place fails the install and leaves current where it was, where the move is not a step set -e would catch", async () => {
-  const { root, home, repo, path, server, env } = await withGithub();
-  assert.equal(install(home, path, repo, ["--version", "v0.2.0"], env).status, 0);
-  uiRelease(root, repo);
+  const { root, home, repo, path, server, env } = await withEarlierInstall();
   publishUiAsset(server.root, "v0.13.0", uiDist(root, "thirteen"));
   const failing = join(root, "failing-mv");
   mkdirSync(failing);
