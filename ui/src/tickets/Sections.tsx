@@ -52,4 +52,3 @@ export function Sections({ sections, context }: Readonly<{ sections: readonly Se
     </>
   );
 }
-

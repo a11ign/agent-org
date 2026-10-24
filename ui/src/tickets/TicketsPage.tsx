@@ -114,4 +114,3 @@ function Pending() {
 export function TicketsPage() {
   return useShell().connectionsReady ? <TicketsContent /> : <Pending />;
 }
-
