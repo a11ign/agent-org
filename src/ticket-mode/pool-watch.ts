@@ -14,12 +14,12 @@ import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
-import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, SETTLED, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
 import { recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
-import { staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
+import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
 import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
@@ -447,6 +447,7 @@ export async function tick(ctx: PoolContext): Promise<void> {
  */
 export function watchFeedback(ctx: PoolContext): void {
   const { codeHost, feedbackIgnores, now, store } = ctx;
+  clearOverStaleBlocks(ctx);
   const finished = store.get().entries.filter((entry) => entry.phase === "finished" && openPulls(entry).length > 0);
   if (finished.length === 0) return;
   ctx.ownLogin.value ??= codeHost.readOwnLogin();
@@ -456,6 +457,7 @@ export function watchFeedback(ctx: PoolContext): void {
   const reads = finished.map((entry) => ({ entry, reads: openPulls(entry).map((pr) => ({ url: pr.url, read: codeHost.readPullFeedback(pr.url, self, feedbackIgnores) })) }));
   const foreign = foreignRedsOf(ctx, reads.map(({ entry, reads: pulls }) => ({ entry, open: pulls.filter((pull): pull is { url: string; read: PullFeedback } => pull.read?.state === "open") })));
   let queued = false;
+  const recorded: string[] = [];
   for (const { entry, reads: pulls } of reads) {
     const unread = pulls.filter(({ read }) => read === null).map(({ url }) => url);
     if (unread.length > 0) {
@@ -470,7 +472,7 @@ export function watchFeedback(ctx: PoolContext): void {
     // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
     if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
     recordHeads(ctx, entry, readable);
-    flagStaleBlock(ctx, entry.ticket.key);
+    recorded.push(entry.ticket.key);
     clearResolvedConflict(ctx, entry, open);
     if (!resumesOnConflict(entry)) continue;
     const checks = answerChecks(ctx, entry, open, foreign);
@@ -487,6 +489,8 @@ export function watchFeedback(ctx: PoolContext): void {
     }
     if (resumeUnwatched(ctx, entry, readable, checks)) queued = true;
   }
+  // After every run's round was decided: a run that was handed a round has left `finished`, and a note does not change what the loop above decided for the run.
+  for (const key of recorded) flagStaleBlock(ctx, key);
   if (queued) void tick(ctx);
 }
 
@@ -508,6 +512,17 @@ function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: s
   const open = readable.filter(({ read }) => read.state === "open");
   const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
+}
+
+/**
+ * Clear the stale-block note (A11-213) of a finished run that has no pull request left open, or whose ticket the tracker settled: the watch below reads only runs with an open pull request, so a pull
+ * request merged or closed since the note was set would leave it on the card. The status is already Completed or Cancelled; this keeps the card from quoting a block that is gone.
+ */
+function clearOverStaleBlocks(ctx: PoolContext): void {
+  for (const entry of ctx.store.get().entries) {
+    const over = entry.phase === "finished" && isStaleBlockNote(entry.handedBack) && (openPulls(entry).length === 0 || SETTLED.has(entry.trackerState ?? ""));
+    if (over) update(ctx, (queue) => recordStaleBlock(queue, entry.ticket.key, null));
+  }
 }
 
 /**

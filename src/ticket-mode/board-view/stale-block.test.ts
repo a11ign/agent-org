@@ -90,14 +90,28 @@ test("A11-213: a note becomes the run's handedBack and reads Needs you; a null n
   assert.equal(isStaleBlockNote("a11ign/control #132 conflicts with its base branch main."), false);
 });
 
-test("A11-213: a run that already reads Needs you for its own reason keeps its worker's words, and a run the tracker closed is not flagged", () => {
+test("A11-213: a run that already reads Needs you for its own reason keeps its worker's words, and a failed, concluded or settled run is not flagged", () => {
   const disputed = finishedQueue({ kind: "needs-human", reason: `${PR} is blocked by a rule the ticket overrides` });
   assert.equal(handedBackOf(recordStaleBlock(disputed, "A11-203", NOTE)), undefined, "the worker's reason is the card's line");
+  for (const outcome of [{ kind: "crashed", reason: "the pool restarted" }, { kind: "checked", reason: "nothing to change" }] as const) {
+    assert.equal(handedBackOf(recordStaleBlock(finishedQueue(outcome), "A11-203", NOTE)), undefined, `${outcome.kind} keeps its own reading`);
+  }
   const completed = { ...finishedQueue(), entries: [{ ...finishedQueue().entries[0], trackerState: "completed" }] } as Queue;
   assert.equal(handedBackOf(recordStaleBlock(completed, "A11-203", NOTE)), undefined);
+  const published = { ...finishedQueue(), entries: [{ ...finishedQueue().entries[0], published: { link: null, at: 1 } }] } as Queue;
+  assert.equal(handedBackOf(recordStaleBlock(published, "A11-203", NOTE)), NOTE, "a published run waits on a merge, and is flagged");
 });
 
 // The pool: its watch reads the pull request, stamps the block from its own clock, and sets the run's handedBack once the block is stale.
+/** The blocked pool, watched at the first read and again at 31 minutes, when the pull request is flagged. */
+function flaggedPool() {
+  const made = blockedPool();
+  made.pool.watchFeedback();
+  made.clock.now = NOW + 31 * MINUTE;
+  made.pool.watchFeedback();
+  return made;
+}
+
 function blockedPool() {
   const clock = { now: NOW };
   const host = createFakeCodeHost("worker-bot");
@@ -138,10 +152,7 @@ test("A11-213: the watch flags a pull request blocked for 31 minutes as Needs yo
 });
 
 test("A11-213: the flag goes when the reviewer approves the same head, and a pull request blocked again counts its 30 minutes from when it was blocked again", () => {
-  const { clock, host, pool, entry } = blockedPool();
-  pool.watchFeedback();
-  clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
+  const { clock, host, pool, entry } = flaggedPool();
   assert.equal(entry().handedBack, NOTE);
   const pull = host.pullAt(PR)!;
   pull.feedback = { reviewDecision: "approved", verdictAtHead: "approved" };
@@ -151,6 +162,26 @@ test("A11-213: the flag goes when the reviewer approves the same head, and a pul
   pull.feedback = { reviewDecision: "changes-requested", verdictAtHead: "changes-requested" };
   pool.watchFeedback();
   assert.equal(entry().pullHeads?.[PR]?.blockedSince, NOW + 40 * MINUTE, "blocked again, counted from now");
+  assert.equal(entry().handedBack, undefined);
+});
+
+test("A11-213: a flag set on a run whose pull request then merges or whose ticket the tracker settles is cleared, so the card does not quote a block that is gone", () => {
+  for (const settled of [{ pullStates: { [PR]: "merged" } }, { pullStates: { [PR]: "closed" } }, { trackerState: "completed" }, { trackerState: "canceled" }]) {
+    const { pool, entry, store } = flaggedPool();
+    assert.equal(entry().handedBack, NOTE);
+    store.set({ ...store.get(), entries: store.get().entries.map((e) => ({ ...e, ...settled })) } as Queue);
+    pool.watchFeedback();
+    assert.equal(entry().handedBack, undefined, JSON.stringify(settled));
+  }
+});
+
+test("A11-213: a round the same watch starts is not lost to the flag: new feedback on a pull request that goes stale in that watch starts its round, and the round carries no note", () => {
+  const { clock, host, pool, entry } = blockedPool();
+  pool.watchFeedback();
+  clock.now = NOW + 31 * MINUTE;
+  Object.assign(host.pullAt(PR)!.feedback, { authors: ["alice"], feedbackAt: clock.now - 1000 });
+  pool.watchFeedback();
+  assert.deepEqual([entry().phase, entry().rounds], ["queued", 1], "the round was queued from the feedback");
   assert.equal(entry().handedBack, undefined);
 });
 

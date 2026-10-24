@@ -28,13 +28,13 @@ export function recordPullHeads(queue: Queue, key: string, heads: Readonly<Recor
   return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, pullHeads: heads } : entry));
 }
 
-/** The statuses that already ask a person, or need none: a stale-block note is not written over them (A11-213). */
-const NEEDS_NO_NOTE: ReadonlySet<string> = new Set(["needs-you", "completed", "cancelled"]);
+/** The statuses a stale-block note may be written over: a run that waits on a review or a merge. Any other has its own reason, or is over (A11-213). */
+const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
 
 /**
  * The board's note on a finished run whose pull request has sat changes requested with no new push and no run (A11-213, {@link staleBlockNote}): it becomes the run's `handedBack`, which reads Needs you and which
  * Respond to review acts on, and a null note (a push, an approval, a round) clears a `handedBack` this wrote, recognised by its sentence form as a conflict's is. It never replaces another `handedBack`, and it
- * is not written over a run that already reads Needs you for its own reason (a disputed review the worker handed back, say) or that is over, since the worker's words are the better reason. PURE.
+ * is written only over a run that waits on a review or a merge ({@link NOTEABLE}): one that reads Needs you for its own reason (a disputed review the worker handed back), one that failed or concluded, and one that is over keep their own words. PURE.
  */
 export function recordStaleBlock(queue: Queue, key: string, note: string | null): Queue {
   return replace(queue, key, (entry) => {
@@ -45,7 +45,7 @@ export function recordStaleBlock(queue: Queue, key: string, note: string | null)
     }
     const other = entry.handedBack !== undefined && !isStaleBlockNote(entry.handedBack);
     const { handedBack: _own, ...without } = entry;
-    if (other || NEEDS_NO_NOTE.has(runStatus(without))) return entry;
+    if (other || !NOTEABLE.has(runStatus(without))) return entry;
     return { ...entry, handedBack: note };
   });
 }

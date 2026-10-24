@@ -39,15 +39,18 @@ export function decisionsOf(description: string | null | undefined): string | nu
   if (!description) return null;
   const lines = linesOf(description);
   const quoted: string[] = [];
-  for (let at = 0; at < lines.length; at += 1) {
+  let at = 0;
+  while (at < lines.length) {
     const { text, fenced } = lines[at];
-    if (fenced) continue;
-    const heading = DECISION_HEADING.exec(text);
+    const heading = fenced ? null : DECISION_HEADING.exec(text);
     if (heading !== null) {
       const end = sectionEnd(lines, at, heading[1].length);
       quoted.push(lines.slice(at, end).map((line) => line.text).join("\n").trim());
-      at = end - 1;
-    } else if (CHAIRMAN_DECISION.test(text)) quoted.push(text.trim());
+      at = end;
+      continue;
+    }
+    if (!fenced && CHAIRMAN_DECISION.test(text)) quoted.push(text.trim());
+    at += 1;
   }
   const once = [...new Set(quoted)];
   return once.length === 0 ? null : once.join("\n\n");
