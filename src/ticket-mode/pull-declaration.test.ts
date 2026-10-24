@@ -9,7 +9,8 @@ import { poolFixture } from "./pool-fixture.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import type { PullState, TicketSource } from "./source.ts";
-import type { Entry, Queue } from "./queue/queue-entries-and-outcomes.ts";
+import type { Entry, Outcome, Queue } from "./queue/queue-entries-and-outcomes.ts";
+import { finish } from "./queue/queue-transitions.ts";
 import { declare, declarationsDue, recordDeclared, type ReadDeclaration } from "./queue/queue-declarations.ts";
 import { emptyQueue } from "./queue.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
@@ -96,6 +97,7 @@ test("A11-181: Closes with an outcome partial, the ticket still open: the board'
   finishedOn(made, { partial: DONE_LIST });
   await made.pool.refreshTracker();
   assert.equal(made.tracker.ticketOf("NBF-1")?.status, "Done", "completed by the board, which the outcome's partial would have forbidden");
+  assert.match(made.tracker.comments.map(({ text }) => text).join("\n"), /merged and its body completes NBF-1/, "and its comment does not say the body failed to close the ticket");
   const left = run(made);
   assert.deepEqual([left.closedByBoard, left.partial, left.steps, runStatus(left)], [true, undefined, undefined, "completed"]);
   assert.match(reasonOf(left).line ?? "", /^completed: a11ign\/announcement-emulator #2 merged; its outcome said Partial: ".*", but a11ign\/announcement-emulator #2 said Closes NBF-1, so the board followed the pull request$/);
@@ -242,6 +244,15 @@ test("A11-181: what a declaration does to a run's partial, and when it is a disa
   const none = { kind: "none", urls: [PR] } as const;
   assert.deepEqual([recorded({ partial: "mine" }, none).partial, recorded({ partial: "mine" }, none).partialOverruled, recorded({ partial: "mine" }, none).declared], ["mine", undefined, none], "a body that declares nothing leaves the outcome as it is");
   assert.equal(recorded({ phase: "running" } as Partial<Entry>, closing).declared, undefined, "a run that is not finished is left alone");
+});
+
+test("A11-181: what the merged pull requests declared goes with the partial it decided: a round that ends on reviewed keeps both, and a new pull request outcome or a done sets them afresh", () => {
+  const held = queueOf({ partial: undefined, declared: { kind: "closes", urls: [PR] }, partialOverruled: { outcome: "all of it", pull: "Closes NBF-1", urls: [PR] } });
+  const ended = (outcome: Outcome) => finish(held, "NBF-1", outcome, 20).entries[0];
+  assert.deepEqual([ended({ kind: "reviewed", prs: [{ repo: "r", url: PR }] }).declared?.kind, ended({ kind: "reviewed", prs: [{ repo: "r", url: PR }] }).partialOverruled?.pull], ["closes", "Closes NBF-1"]);
+  for (const outcome of [{ kind: "ready-pr", prs: [{ repo: "r", url: PR }] }, { kind: "done", reason: "nothing to build", evidence: ["e"] }] as Outcome[]) {
+    assert.deepEqual([ended(outcome).declared, ended(outcome).partialOverruled], [undefined, undefined], outcome.kind);
+  }
 });
 
 // ---- The card ----

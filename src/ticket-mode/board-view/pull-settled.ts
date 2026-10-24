@@ -30,10 +30,3 @@ export function completedEarly(entry: ViewEntry): boolean {
   const laterStepOpen = (entry.steps ?? []).length > 0 && pullsOf(entry).length > 0 && settled === null;
   return partialMerged || laterStepOpen;
 }
-
-
-/**
- * Whether a run's outcome declares `partial`, its pull requests merged, and the board has not yet read what their bodies declare (A11-181): the merged pull request's own `Closes` or `Partial:` decides over the
- * outcome's words, so nothing acts on `partial` until it has been read. A run with no `partial` does not wait. PURE.
- */
-export const awaitingDeclaration = (entry: ViewEntry): boolean => entry.partial !== undefined && entry.declared === undefined && settledByPulls(entry) === "completed";

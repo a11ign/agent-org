@@ -138,7 +138,8 @@ async function completeMerged(ctx: PoolContext): Promise<void> {
   for (const entry of completableRuns(store.get())) {
     const { ticket } = entry;
     const merged = pullsOf(entry).map(({ url }) => url).filter((url) => entry.pullStates?.[url] === "merged");
-    const comment = `${merged.join(", ")} merged without closing ${ticket.key}, so the ticket board completed it.`;
+    const comment = entry.declared?.kind === "closes" ? `${merged.join(", ")} merged and its body completes ${ticket.key}, which the tracker had not yet done, so the ticket board completed it.`
+      : `${merged.join(", ")} merged without closing ${ticket.key}, so the ticket board completed it.`;
     try {
       const note = await complete(ticket.key, comment);
       update(ctx, (queue) => recordClosedByBoard(queue, ticket.key));
