@@ -117,6 +117,20 @@ describe("the dev proxy with no instance", () => {
     expect(answer.text).not.toContain(KEY);
   });
 
+  it("reads the instance again on the call after one that could not reach it, so a restart on another port is followed", async () => {
+    const gone = await fakeInstance(200, {});
+    const deadPort = gone.port;
+    gone.server.close();
+    const restarted = track(await fakeInstance(200, { ok: true }));
+    const ports = [deadPort, restarted.port];
+    let reads = 0;
+    const dev = track(await devServer(async () => JSON.stringify({ port: ports[reads++], key: KEY })));
+    expect((await call(dev.port, "GET", "/api/config")).status).toBe(502);
+    expect(await call(dev.port, "GET", "/api/config")).toEqual({ status: 200, text: JSON.stringify({ ok: true }) });
+    expect(reads).toBe(2);
+    expect(restarted.seen).toHaveLength(1);
+  });
+
   it("answers 502 when the instance refuses the key, and reads the key again next time", async () => {
     const refusing = track(await fakeInstance(401, { error: "unauthorized" }));
     let reads = 0;

@@ -113,6 +113,8 @@ export function instanceProxy(readRemoteInfo: ReadRemoteInfo): InstanceProxy {
       res.writeHead(answer.status, { "content-type": answer.contentType });
       res.end(answer.body);
     } catch (err) {
+      // The instance may have restarted on another port, with another key: the next call reads it again.
+      forget(used);
       answerJson(res, BAD_GATEWAY, { error: `cannot reach the instance at ${LOCALHOST}:${target.port}: ${(err as Error).message}. Is agent-org ticket:serve running?` });
     }
   }
