@@ -314,7 +314,10 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   const { review: _borrowed, ...unborrowed } = kept;
   const rest = borrowed ? unborrowed : kept;
   const partial = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" ? outcome.partial : outcome.kind === "done" ? undefined : entry.partial;
-  return { ...rest, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}),
+  // What the merged pull requests declared goes with the `partial` it decided (A11-181): a pull request outcome or a `done` sets `partial` afresh, and any other keeps both.
+  const resets = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" || outcome.kind === "done";
+  const { declared: _pulled, partialOverruled: _overruled, ...fresh } = rest;
+  return { ...(resets ? fresh : rest), phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}),
     ...(partial !== undefined ? { partial } : {}) };
 }
 

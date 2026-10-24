@@ -96,8 +96,9 @@ export function afterPartialMerge(partial: string, merged: readonly PlanStep[], 
   const size = named?.of ?? (merged.at(-1)?.of ?? planSteps ?? 0);
   const step = named?.step ?? stepNumberNamed(partial) ?? last + 1;
   if (counted && size === 0) {
-    const why = planSteps === 0 ? "It names no step, and the plan has no numbered steps" : "It names no step";
-    return { stalled: `${said} ${why}, so nothing was queued: Dismiss it and queue the ticket` };
+    // A plan with no numbered steps has nothing to queue, and a ticket queued again would run finished work again (A11-181): the remainder is its own ticket.
+    if (planSteps === 0) return { stalled: `${said} It names no step, and the plan has no numbered steps, so nothing was queued: close the ticket, and file what remains as its own ticket, starting from: "${partial}"` };
+    return { stalled: `${said} It names no step, so nothing was queued: Dismiss it and queue the ticket` };
   }
   if (step >= size) return { stalled: `${said} ${beyondPlan({ step, size, counted })}` };
   if (step <= last) return { stalled: `${said} Step ${step} is not after step ${last}: nothing was queued` };

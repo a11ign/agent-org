@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { poolFixture } from "./pool-fixture.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import type { PullState, TicketSource } from "./source.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
@@ -30,10 +31,17 @@ function world(over: Partial<TicketSource> = {}) {
       return tracker.undoAutomaticCompletion!(key, text);
     }, ...over };
   const made = poolFixture({ keys: ["NBF-1"] });
-  return { ...made, tracker, undone, refusal, pool: made.restart({ source }) };
+  const codeHost = createFakeCodeHost();
+  return { ...made, tracker, codeHost, undone, refusal, pool: made.restart({ source, codeHost }) };
 }
 
 type World = ReturnType<typeof world>;
+
+/** The merged pull request at `url`, held by `codeHost` with `body`, as GitHub holds it once it merges. */
+function seedBody(codeHost: World["codeHost"], url: string, body: string): void {
+  const [, repository, number] = /github\.com\/(.+)\/pull\/(\d+)$/.exec(url)!;
+  codeHost.seedPull(repository, Number(number), { state: "merged", findings: { title: `Pull request ${number}`, number: Number(number), body, sections: [] } });
+}
 
 type Finished = Readonly<{ url?: string; partial?: string | null; state?: PullState; by?: "integration" | "person"; fields?: Partial<Entry> }>;
 
@@ -41,8 +49,10 @@ type Finished = Readonly<{ url?: string; partial?: string | null; state?: PullSt
  * NBF-1's run, finished on a ready pull request at `url` (step 1's) that says `partial` (a pull request that completes the ticket for `partial: null`), whose state is `state`, over a ticket completed by `by`
  * (not at all when none): the pool as it is when the sweep reads the merge.
  */
-function finishedOn({ store, tracker }: World, { url = STEP_1_PR, partial = PARTIAL, state = "merged", by, fields = {} }: Finished = {}): void {
+function finishedOn({ store, tracker, codeHost }: World, { url = STEP_1_PR, partial = PARTIAL, state = "merged", by, fields = {} }: Finished = {}): void {
   const [entry] = store.get().entries;
+  // The pull request on the code host, with the body its worker wrote for that outcome: the board reads what a merged body declares before it acts on the merge (A11-181).
+  seedBody(codeHost, url, partial === null ? `Closes NBF-1` : `Refs NBF-1\n\nPartial: ${partial}`);
   const outcome = { kind: "ready-pr" as const, prs: [{ repo: "agent-org", url }], ...(partial === null ? {} : { partial }) };
   store.set({ ...store.get(), entries: [{ ...entry, phase: "finished", outcome, finishedAt: 100, ...(partial === null ? {} : { partial }), ...fields }] });
   tracker.linkPull("NBF-1", url, state);

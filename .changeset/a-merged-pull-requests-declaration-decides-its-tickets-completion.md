@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A merged pull request's own `Closes` or `Partial:` declaration decides whether its ticket is complete, not the outcome's `partial` (A11-181). On A11-155 the outcome's `partial` listed what was done while the body said `Closes`, and the board put the ticket back after the tracker's integration closed it. Once a run's pull requests merge, the board reads their bodies through the code host's `readMergedFindings` and records what they declare: `Closes <KEY>` drops the outcome's `partial`, a `Partial:` line (naming a plan step, or on a run with one pull request) replaces it, and a body that declares nothing leaves it. A run whose outcome has a `partial` is not put back or queued a next step until its bodies are read, and a disagreement between outcome and pull request is shown on the card, naming both. The worker's brief says `partial` names what is still owed and is absent when the body says `Closes`. A merged `Partial:` under a plan with no numbered steps now says to close the ticket and file what remains.

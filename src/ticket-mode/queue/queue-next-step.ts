@@ -25,7 +25,7 @@ function nextStepRun(entry: Entry, step: MergedStep, now: number): Entry {
 }
 
 /**
- * The finished runs whose partial pull requests merged and whose next plan step the board queues itself (A11-168): declared partial, not parked, whose pull requests have all
+ * The finished runs whose partial pull requests merged and whose next plan step the board queues itself (A11-168): declared partial, with the merged bodies read (A11-181), not parked, whose pull requests have all
  * merged or closed with one merged, whose ticket the tracker has not finished, and whose step, named or counted by the board (A11-173), is below the plan's last and past every step
  * already merged. Each is paired with the step it finished. PURE.
  */
@@ -33,7 +33,7 @@ export function nextStepRuns(queue: Queue): { entry: Entry; step: MergedStep }[]
   return queue.entries.flatMap((entry) => {
     const { partial } = entry;
     const finished = entry.phase === "finished" && !isParked(entry) && !SETTLED.has(entry.trackerState ?? "") && settledByPulls(entry) === "completed";
-    if (!finished || partial === undefined) return [];
+    if (!finished || partial === undefined || entry.declared === undefined) return [];
     const after = afterPartialMerge(partial, entry.steps ?? [], entry.planSteps);
     if ("stalled" in after) return [];
     const prs = pullsOf(entry).map(({ url }) => url).filter((url) => entry.pullStates?.[url] === "merged");
@@ -42,11 +42,11 @@ export function nextStepRuns(queue: Queue): { entry: Entry; step: MergedStep }[]
 }
 
 /**
- * The finished runs whose plan's step count the board has to read (A11-173): declared partial, not parked, whose pull requests merged and whose ticket the tracker has not
+ * The finished runs whose plan's step count the board has to read (A11-173): declared partial (the merged bodies read, A11-181), not parked, whose pull requests merged and whose ticket the tracker has not
  * finished, whose declaration gives no `of <M>`, with no `of` in the record of steps already merged, and no count recorded yet. PURE.
  */
 export const planStepsUnread = (queue: Queue): Entry[] => queue.entries.filter((entry) => entry.phase === "finished" && !isParked(entry) && !SETTLED.has(entry.trackerState ?? "")
-  && entry.partial !== undefined && entry.planSteps === undefined && (entry.steps ?? []).length === 0 && stepNamed(entry.partial) === null && settledByPulls(entry) === "completed");
+  && entry.partial !== undefined && entry.declared !== undefined && entry.planSteps === undefined && (entry.steps ?? []).length === 0 && stepNamed(entry.partial) === null && settledByPulls(entry) === "completed");
 
 /** Record how many numbered steps `key`'s plan has, on its finished run; 0 is recorded too, so a plan with none is not read again. */
 export const recordPlanSteps = (queue: Queue, key: string, planSteps: number): Queue => replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, planSteps } : entry));

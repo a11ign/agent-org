@@ -8,6 +8,7 @@ import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdi
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { isReadyToMerge, mergeWaitLine } from "./board-view/pull-readiness.ts";
 import type { PullHead } from "./board-view/view-types-and-filters.ts";
+import type { PullDeclared } from "./board-view/pull-declared.ts";
 import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
@@ -1376,6 +1377,8 @@ test("A11-161: a run says \"publishing off\" only when it is Ready to merge on a
 });
 
 const STEP_PR = "https://github.com/a11ign/agent-org/pull/1811";
+/** The merged bodies were read and declared nothing that overrules the outcome (A11-181): a run's `partial` is then acted on, and shown, as the worker wrote it. */
+const READ: PullDeclared = { kind: "none", urls: [STEP_PR] };
 const queuedStep = (fields: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key: "A11-160" }, phase: "queued", steps: [{ step: 1, of: 9, prs: [STEP_PR] }], ...fields });
 
 test("A11-168: a next-step run's line says step 1 of 9 merged; step 2 queued, and running once it started", () => {
@@ -1390,7 +1393,7 @@ test("A11-168: a worker's own note on a running next step is not hidden by the s
 });
 
 test("A11-168: a merged partial run the board did not queue a step for reads Needs you with the reason as its line, and the tracker's word on the ticket wins", () => {
-  const merged = (fields: Partial<ViewEntry>): ViewEntry => run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, ...fields });
+  const merged = (fields: Partial<ViewEntry>): ViewEntry => run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, declared: READ, ...fields });
   const stalled = merged({ partial: "step 9 of 9: the docs" });
   assert.equal(runStatus(stalled), "needs-you");
   assert.equal(reasonOf(stalled).line, "Partial merged: step 9 of 9: the docs. It names step 9 of 9, the last, with Partial: the last step closes the ticket");
@@ -1403,7 +1406,7 @@ test("A11-168: a merged partial run the board did not queue a step for reads Nee
 });
 
 test("A11-178: a ticket the tracker completed while the run's work was partial reads Needs you, with the declaration and why the board could not put it back, until a person is found to have completed it", () => {
-  const merged = (fields: Partial<ViewEntry>): ViewEntry => run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, partial: "step 1 of 9: the board", trackerState: "completed", ...fields });
+  const merged = (fields: Partial<ViewEntry>): ViewEntry => run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, declared: READ, partial: "step 1 of 9: the board", trackerState: "completed", ...fields });
   const early = merged({});
   assert.deepEqual([runStatus(early), reasonOf(early).line], ["needs-you", "Done in the tracker, but its last merged pull request declared Partial: step 1 of 9: the board; the board could not put it back (it has not been asked yet)"]);
   const refused = merged({ reopenFailure: "Linear answered 502: bad gateway" });
@@ -1530,7 +1533,7 @@ test("A11-173: a Completed run's line says completed: a11ign/agent-org #1815, a1
   assert.deepEqual(reasonOf(doneAfterReview), { line: "completed: a11ign/agent-org #1815 merged", question: "PR #1815 is merged" }, "a done's reason stays one click away");
   const doneAlone = run({ outcome: { kind: "done", reason: "nothing to build", evidence: ["e"] } as never });
   assert.deepEqual(reasonOf(doneAlone), { line: "nothing to build", question: null }, "a done with no merged pull request keeps its reason as the line");
-  const partial = { ...both, partial: "step 1 of 3" };
+  const partial = { ...both, partial: "step 1 of 3", declared: READ };
   assert.deepEqual([runStatus(partial), reasonOf(partial).line], ["needs-you", null], "a partial run is not Completed, and does not say it was");
 });
 

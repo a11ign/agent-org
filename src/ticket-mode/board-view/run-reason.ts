@@ -53,6 +53,26 @@ function completedEarlyLine(entry: ViewEntry): string {
   return `Done in the tracker, but ${cause}; the board could not put it back (${entry.reopenFailure ?? "it has not been asked yet"})`;
 }
 
+/** How many characters of a worker's words, or of a declaration, one card line quotes. */
+const QUOTED_CHARS = 80;
+
+/** `text` cut to `max` characters with an ellipsis, so a worker's long list does not fill a card's line. */
+const cutAt = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max).trimEnd()} …` : text);
+
+/**
+ * That a merged pull request's declaration disagreed with the run's outcome, naming both, or null when it did not (A11-181): `its outcome said Partial: "…", but a11ign/announcement-emulator #2 said Closes A11-155,
+ * so the board followed the pull request`. The outcome's words are quoted as written, cut at a sensible length. PURE.
+ */
+function overruledNote(entry: ViewEntry): string | null {
+  const overruled = entry.partialOverruled;
+  if (overruled === undefined) return null;
+  const said = overruled.outcome === null ? "nothing remains" : `Partial: "${cutAt(overruled.outcome, QUOTED_CHARS)}"`;
+  return `its outcome said ${said}, but ${overruled.urls.map(pullLabel).join(", ")} said ${cutAt(overruled.pull, QUOTED_CHARS)}, so the board followed the pull request`;
+}
+
+/** The merged pull requests of a run, as the board names them. PURE. */
+const mergedLabels = (entry: ViewEntry): string[] => pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] === "merged").map(({ url }) => pullLabel(url));
+
 /**
  * What the card says of a plan's steps (A11-168), or null: that a step merged and the next is queued, or running once it started; and, on a finished run whose partial pull
  * requests merged with no next step to queue, why nothing was queued. The tracker's own word on the ticket comes first, as it does for the run's status. PURE.
@@ -63,20 +83,25 @@ function stepNote(entry: ViewEntry): string | null {
   if (completedEarly(entry)) return completedEarlyLine(entry);
   const settled = entry.trackerState === "completed" || entry.trackerState === "canceled" || entry.trackerState === "duplicate";
   if (entry.partial === undefined || settled || settledByPulls(entry) !== "completed") return null;
+  // Its outcome's words are not acted on until the merged bodies are read against them: said, so a run held on a read that cannot be answered is not a silent Needs you (A11-181).
+  if (entry.declared === undefined) return `reading what ${mergedLabels(entry).join(", ")} declared (Closes or Partial:) before acting on its merge`;
   const after = afterPartialMerge(entry.partial, merged, entry.planSteps);
-  return "stalled" in after ? after.stalled : null;
+  const disagreement = overruledNote(entry);
+  if ("stalled" in after) return disagreement === null ? after.stalled : `${after.stalled}. ${disagreement}`;
+  return disagreement;
 }
 
 /**
  * What completed a Completed run (A11-173), or null: `completed: a11ign/agent-org #1815, a11ign/plugin #9 merged`, with `; 2 after-merge checks listed` once the board listed the
- * ticket's After-merge lines. A run Completed without a merged pull request of its own (a `done`, or the tracker's word) says nothing here. PURE.
+ * ticket's After-merge lines. A merged pull request that overruled the outcome's `partial` says so, naming both (A11-181). A run Completed without a merged pull request of its own (a `done`, or the tracker's word) says nothing here. PURE.
  */
 export function completedLine(entry: ViewEntry): string | null {
   if (entry.phase !== "finished" || runStatus(entry) !== "completed") return null;
   const merged = pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] === "merged");
   if (merged.length === 0) return null;
   const listed = entry.afterMerge?.length ?? 0;
-  return `completed: ${merged.map(({ url }) => pullLabel(url)).join(", ")} merged${listed > 0 ? `; ${listed} after-merge check${listed === 1 ? "" : "s"} listed` : ""}`;
+  const disagreement = overruledNote(entry);
+  return `completed: ${merged.map(({ url }) => pullLabel(url)).join(", ")} merged${disagreement === null ? "" : `; ${disagreement}`}${listed > 0 ? `; ${listed} after-merge check${listed === 1 ? "" : "s"} listed` : ""}`;
 }
 
 /** What a reviewed run that is Awaiting review waits on (A11-179): its review, its red checks, its running checks, from the heads the watch read. Null for any other run, and for one that waits on nothing. PURE. */

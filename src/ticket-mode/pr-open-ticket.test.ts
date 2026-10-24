@@ -19,6 +19,7 @@ import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
+import { declarationOf } from "./ticket-references.ts";
 import { CI_BODY_REPORTS } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { main, runFromCli, EXIT_NOTHING_SENT, sendToGitHub } from "../pr-open.ts";
 import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
@@ -146,6 +147,18 @@ test("A11-74: the closes report names the verb it found, and refuses Closes: non
   assert.equal(ticketClosesReport(`Refs A11-31\n`, KEY, DEFAULT_KEYWORDS).ok, false, "a body with only another ticket names none of its own");
   assert.equal(ticketClosesReport(`Closes ${KEY} -- done with the first half\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a reason after a dash is not a key");
   assert.equal(ticketClosesReport(`Closes ${KEY}\nRefs A11-31\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a Refs of another ticket is no refusal");
+});
+
+test("A11-181: declarationOf reads what a merged body declares of its ticket: Closes, a Partial line (whatever closing words it carries), or nothing", () => {
+  const declared = (body: string, key = KEY) => declarationOf(body, key, DEFAULT_KEYWORDS);
+  assert.deepEqual(declared(`Closes ${KEY}\n`), { kind: "closes" });
+  assert.deepEqual(declared(`**Closes** ${KEY} -- done\n`), { kind: "closes" }, "bold and a reason after a dash, as a worker writes it");
+  assert.deepEqual(declared(`Refs ${KEY}\n\nPartial: step 1 of 3: the reader\n`), { kind: "partial", remains: "step 1 of 3: the reader" });
+  assert.deepEqual(declared(`Refs ${KEY}\n\nPartial: the docs; \`Closes ${KEY}\` is quoted in a test\n`), { kind: "partial", remains: `the docs; \`Closes ${KEY}\` is quoted in a test` }, "a quoted closing word beside a Partial line is still partial (A11-127)");
+  assert.equal(declared(`Refs ${KEY}\n`), null, "Refs alone declares nothing");
+  assert.equal(declared(""), null, "an empty body declares nothing");
+  assert.equal(declared(`Closes A11-31\n`), null, "a closing line of another ticket declares nothing of this one");
+  assert.equal(declared(`Refs ${KEY}\n\nPartial: <what remains>\n`), null, "the brief's placeholder is no declaration");
 });
 
 test("A11-92: a body that links its ticket with the non-closing keyword is refused unless it says the pull request is partial, and the refusal names both fixes", () => {

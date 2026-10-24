@@ -878,6 +878,12 @@ test("A11-173: rule 6 and the outcome section say partial is build work a later 
   assert.ok(brief.includes("`partial` is what remains of the ticket once every pull request of this run has merged, and only build work a later run does. It is not what one pull request leaves to its sibling in this run, and not an After-merge line of the Done-when: a run whose pull requests finish the ticket together has no `partial`."), "the outcome section says the same");
 });
 
+test("A11-181: the outcome section says partial names what is still owed, never what was done, is absent when the pull request says Closes, and the board follows the pull request's declaration", () => {
+  const sentence = (keywords?: { closing: string; nonClosing: string }) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", ...(keywords ? { keywords } : {}) });
+  assert.ok(sentence().includes("`partial` names what is still owed, never what was done: when the pull request's body says `Closes NBF-1270`, the outcome has no `partial` at all. The board follows the merged pull request's own `Closes` or `Partial:` declaration when the two disagree, and shows the disagreement on the card."));
+  assert.ok(sentence({ closing: "Resolves", nonClosing: "Relates" }).includes("when the pull request's body says `Resolves NBF-1270`, the outcome has no `partial` at all. The board follows the merged pull request's own `Resolves` or `Partial:` declaration"), "a source with its own words is briefed with them");
+});
+
 test("A11-173: a counted step's brief says the board counted it and asks for step N of M", () => {
   const brief = (steps: { step: number; of: number; prs: string[]; counted?: true }[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], steps, clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   const counted = brief([{ step: 2, of: 9, prs: ["https://github.com/a11ign/agent-org/pull/1816"], counted: true }]);
