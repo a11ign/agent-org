@@ -89,6 +89,8 @@ export type ServiceDeps = Readonly<{
    * programs through `run`; a test passes its own.
    */
   exposure?: (host: Record<string, unknown>) => Promise<Exposure>;
+  /** Waits `ms` milliseconds, synchronously (`reloadService` and `restartService` are, as `update` is): the wait for launchd to finish a bootout. The default blocks the thread; a test passes a no-op. */
+  pause?: (ms: number) => void;
 }>;
 
 export class ServiceRefusal extends Error {}
@@ -363,6 +365,90 @@ function must(result: RunResult, what: string) {
   if (result.status !== 0) throw new ServiceRefusal(`${what} failed: ${(result.stderr || result.stdout).trim() || `exit ${result.status}`}`);
 }
 
+const BOOTOUT_WAIT_SECONDS = 25;
+/** How long a bootout is waited for: launchd gives a job `ExitTimeOut` (20 s by default) to exit before it kills it, so a little longer than that. */
+const BOOTOUT_WAIT_MS = BOOTOUT_WAIT_SECONDS * 1000;
+const BOOTOUT_POLL_MS = 250;
+/** `launchctl bootout` exits with these when the label is not loaded (3: no such process, 113: could not find service): the state it was asked for. */
+const LABEL_NOT_LOADED: readonly (number | null)[] = [3, 113];
+/** The line launchctl ends a failed bootstrap with, which sends a person to `sudo` for what a user agent never needs it for. */
+const ROOT_ADVICE = /^Try re-running the command as root for richer errors\.?$/im;
+
+const sleepSync = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
+/** The service a launchctl step acts on: its name, its plist, and the machine's seams. */
+type LaunchdAgent = Readonly<{ name: ServiceName; unit: Unit; deps: ServiceDeps }>;
+
+/** What a launchd failure was doing, which picks the sentence that says what did not happen and the one command that undoes the failure. */
+type LaunchdStep = "enable" | "disable" | "stop" | "restart" | "register";
+const LAUNCHD_PROBLEM: Readonly<Record<LaunchdStep, string>> = { enable: "could not be enabled", disable: "could not be disabled", stop: "did not stop", restart: "did not restart", register: "did not load" };
+
+/** A launchctl command that failed: the step it was part of, the command line, and what launchctl said. */
+type LaunchdFailure = Readonly<{ step: LaunchdStep; command: string; said: string }>;
+
+/** The refusal for a failed launchctl step: which service, what launchctl said, and the one line that fixes it by hand. Never "re-run as root". PURE. */
+function launchdRefusal({ name, unit, deps }: LaunchdAgent, { step, command, said }: LaunchdFailure): ServiceRefusal {
+  const target = launchdTarget(unit, deps);
+  const byHand = `launchctl bootout ${target}; launchctl bootstrap gui/${deps.uid} ${unit.path}`;
+  const fix = {
+    enable: `launchctl enable ${target}`,
+    disable: `launchctl disable ${target}`,
+    stop: `launchctl bootout ${target}`,
+    restart: byHand,
+    register: byHand,
+  }[step];
+  return new ServiceRefusal(`the ${name} service (${unit.id}) ${LAUNCHD_PROBLEM[step]}: ${command}: ${said.replace(/\.$/, "")}. To fix it by hand, run: ${fix}`);
+}
+
+/** What launchctl said to a command that failed, without the advice to run as root, or its exit status when it said nothing. */
+function failureOf(step: LaunchdStep, args: string[], result: RunResult): LaunchdFailure {
+  const said = (result.stderr || result.stdout).replace(ROOT_ADVICE, "").trim();
+  return { step, command: `launchctl ${args.join(" ")} failed`, said: said || `exit ${result.status}` };
+}
+
+/** Runs `launchctl <args>`. REFUSES, in {@link launchdRefusal}'s words, any exit but 0. */
+function launchctlMust(agent: LaunchdAgent, step: LaunchdStep, args: string[]): void {
+  const result = agent.deps.run("launchctl", args);
+  if (result.status !== 0) throw launchdRefusal(agent, failureOf(step, args, result));
+}
+
+const isLoaded = ({ unit, deps }: LaunchdAgent) => deps.run("launchctl", ["print", launchdTarget(unit, deps)]).status === 0;
+
+/** Boots the label out and waits until launchd no longer lists it, because a bootstrap sent while it is listed fails with `Bootstrap failed: 5`. REFUSES a label still listed after the wait. */
+function bootoutAndWait(agent: LaunchdAgent): void {
+  const { unit, deps } = agent;
+  const target = launchdTarget(unit, deps);
+  const args = ["bootout", target];
+  const booted = deps.run("launchctl", args);
+  if (booted.status !== 0 && !LABEL_NOT_LOADED.includes(booted.status)) throw launchdRefusal(agent, failureOf("register", args, booted));
+  const pause = deps.pause ?? sleepSync;
+  for (let waited = 0; isLoaded(agent); waited += BOOTOUT_POLL_MS) {
+    if (waited >= BOOTOUT_WAIT_MS) throw launchdRefusal(agent, { step: "register", command: `launchctl bootout ${target} did not finish`, said: `the service is still loaded after ${BOOTOUT_WAIT_SECONDS} s` });
+    pause(BOOTOUT_POLL_MS);
+  }
+}
+
+const bootstrap = (agent: LaunchdAgent) => launchctlMust(agent, "register", ["bootstrap", `gui/${agent.deps.uid}`, agent.unit.path]);
+
+/**
+ * Loads the agent's plist into the user's launchd domain, whatever is there already (A11-224): `launchctl bootstrap` refuses a label that is loaded. A label not loaded is bootstrapped. A loaded
+ * one is booted out, waited for, and bootstrapped when its plist differs from the `previous` text on disk (a loaded agent keeps the plist it was loaded with; a plist that was not there is
+ * different), and kickstarted with `-k` when it does not. herdr is the exception: it is only kickstarted without `-k`, because a restart ends every worker's pane.
+ */
+function loadLaunchd(agent: LaunchdAgent, previous: string | null): void {
+  const { name, unit, deps } = agent;
+  const target = launchdTarget(unit, deps);
+  if (isLoaded(agent)) {
+    // A loaded herdr job that exited (a `server stop` is a successful exit, which `KeepAlive` leaves alone) is started again; one that runs is left running by a kickstart without `-k`.
+    if (name === "herdr") launchctlMust(agent, "restart", ["kickstart", target]);
+    else if (previous === unit.text) launchctlMust(agent, "restart", ["kickstart", "-k", target]);
+    else {
+      bootoutAndWait(agent);
+      bootstrap(agent);
+    }
+  } else bootstrap(agent);
+}
+
 /** Whether `name` is registered, and if so whether it runs. A service this version or this platform cannot run is not registered. */
 export function serviceState(name: ServiceName, deps: ServiceDeps): ServiceState {
   let unit: Unit;
@@ -469,18 +555,14 @@ export async function startService(name: ServiceName, deps: ServiceDeps): Promis
     const taken = served.exposure.claim(served.port, served.local, served.name);
     if (taken !== null) throw new ServiceRefusal(taken);
   }
+  const previous = deps.read(unit.path);
   if (unit.companion !== null) deps.write(unit.companion.path, unit.companion.text);
   deps.write(unit.path, unit.text);
   if (unit.manager === "launchd") {
     mkdirSync(dirname(unit.log as string), { recursive: true, mode: 0o700 });
-    const target = launchdTarget(unit, deps);
-    must(deps.run("launchctl", ["enable", target]), `launchctl enable ${target}`);
-    // A loaded agent keeps the plist it was loaded with, so it is booted out and in again to read the one just written. herdr's is left loaded: booting it out ends every pane.
-    const loaded = deps.run("launchctl", ["print", target]).status === 0;
-    if (loaded && name !== "herdr") deps.run("launchctl", ["bootout", target]);
-    if (!loaded || name !== "herdr") must(deps.run("launchctl", ["bootstrap", `gui/${deps.uid}`, unit.path]), `launchctl bootstrap ${unit.path}`);
-    // A loaded herdr job that exited (a `server stop` is a successful exit, which `KeepAlive` leaves alone) is started again; one that runs is left running by a kickstart without `-k`.
-    else must(deps.run("launchctl", ["kickstart", target]), `launchctl kickstart ${target}`);
+    const agent = { name, unit, deps };
+    launchctlMust(agent, "enable", ["enable", launchdTarget(unit, deps)]);
+    loadLaunchd(agent, previous);
   } else {
     must(deps.run("systemctl", ["--user", "daemon-reload"]), "systemctl --user daemon-reload");
     must(deps.run("systemctl", ["--user", "enable", unit.id]), `systemctl --user enable ${unit.id}`);
@@ -505,8 +587,9 @@ export async function stopService(name: ServiceName, deps: ServiceDeps): Promise
   if (!deps.exists(unit.path)) throw new ServiceRefusal(`the ${name} service is not registered. \`agent-org start ${name}\` registers and starts it.`);
   if (unit.manager === "launchd") {
     const target = launchdTarget(unit, deps);
-    if (deps.run("launchctl", ["print", target]).status === 0) must(deps.run("launchctl", ["bootout", target]), `launchctl bootout ${target}`);
-    must(deps.run("launchctl", ["disable", target]), `launchctl disable ${target}`);
+    const agent = { name, unit, deps };
+    if (isLoaded(agent)) launchctlMust(agent, "stop", ["bootout", target]);
+    launchctlMust(agent, "disable", ["disable", target]);
   } else {
     must(deps.run("systemctl", ["--user", "disable", "--now", unit.id]), `systemctl --user disable --now ${unit.id}`);
   }
@@ -540,24 +623,29 @@ export function unitProblem(name: ServiceName, deps: ServiceDeps): string | null
  */
 export function reloadService(name: ServiceName, deps: ServiceDeps): void {
   const unit = unitFor(name, deps);
+  const previous = deps.read(unit.path);
   if (unit.companion !== null) deps.write(unit.companion.path, unit.companion.text);
   deps.write(unit.path, unit.text);
   if (unit.manager === "launchd") {
-    const target = launchdTarget(unit, deps);
-    // A loaded agent keeps the plist it was loaded with, so it is booted out and in again to read the one just written.
-    if (deps.run("launchctl", ["print", target]).status === 0) deps.run("launchctl", ["bootout", target]);
-    must(deps.run("launchctl", ["bootstrap", `gui/${deps.uid}`, unit.path]), `launchctl bootstrap ${unit.path}`);
+    loadLaunchd({ name, unit, deps }, previous);
   } else {
     must(deps.run("systemctl", ["--user", "daemon-reload"]), "systemctl --user daemon-reload");
     must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
   }
 }
 
-/** Restart a registered service, so it loads the tool's `current` version again. */
+/**
+ * Restart a registered service, so it loads the tool's `current` version again. Writes no unit: the plist names `<tool>/current`, which an update does not change. On launchd a service that
+ * is registered but not loaded is bootstrapped, and one that is not registered is refused.
+ */
 export function restartService(name: ServiceName, deps: ServiceDeps): void {
   const unit = unitFor(name, deps);
-  if (unit.manager === "launchd") must(deps.run("launchctl", ["kickstart", "-k", launchdTarget(unit, deps)]), `launchctl kickstart -k ${unit.id}`);
-  else must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
+  if (unit.manager === "launchd") {
+    const agent = { name, unit, deps };
+    if (isLoaded(agent)) launchctlMust(agent, "restart", ["kickstart", "-k", launchdTarget(unit, deps)]);
+    else if (deps.exists(unit.path)) bootstrap(agent);
+    else throw new ServiceRefusal(`the ${name} service is not registered. \`agent-org start ${name}\` registers and starts it.`);
+  } else must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
 }
 
 /**
@@ -566,7 +654,7 @@ export function restartService(name: ServiceName, deps: ServiceDeps): void {
  */
 export function runAutoUpdateNow(deps: ServiceDeps): void {
   const unit = unitFor("auto-update", deps);
-  if (unit.manager === "launchd") must(deps.run("launchctl", ["kickstart", launchdTarget(unit, deps)]), `launchctl kickstart ${unit.id}`);
+  if (unit.manager === "launchd") launchctlMust({ name: "auto-update", unit, deps }, "restart", ["kickstart", launchdTarget(unit, deps)]);
   // `--no-block`: the oneshot service runs `update`, which restarts the instance that asked for it, so waiting for it would hold the instance's loop while it is stopped.
   else must(deps.run("systemctl", ["--user", "start", "--no-block", unit.companion?.path ? basename(unit.companion.path) : unit.id]), "systemctl --user start --no-block agent-org-auto-update.service");
 }

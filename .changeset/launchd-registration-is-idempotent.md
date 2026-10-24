@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+Registering a service on macOS no longer fails with `Bootstrap failed: 5: Input/output error` when its label is already loaded, so `agent-org onboard` can be run again on a Mac that has run it once (A11-224). `agent-org start <service>` and update's restarts go through the same routine. A label that is not loaded is bootstrapped, as before. A loaded one is kickstarted with `-k` when its plist is the text already on disk, and booted out, waited for (up to 25 s, polling `launchctl print`, because `bootout` returns before launchd has let go of the label) and bootstrapped when the plist changed. herdr is still only kickstarted without `-k`. Update's restart of a registered service that is not loaded now bootstraps it, and of one that is not registered says `agent-org start <name>` registers it. A launchctl failure names the service, the launchctl command and its error, and the one line that fixes it by hand (`launchctl bootout …; launchctl bootstrap …`), and no longer repeats launchctl's "Try re-running the command as root" advice. The systemd path is unchanged.
