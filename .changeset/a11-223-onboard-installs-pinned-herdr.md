@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`agent-org onboard` installs herdr when it is not on PATH, at the version the release pins (0.9.3, `TOOL_HERDR_VERSION`, held to `install.sh`'s `HERDR_VERSION` by a test), and says `✓ Installed herdr v0.9.3`. It runs the steps of herdr's own installer against the pinned entry of `herdr.dev/latest.json`, never the newest version, and checks the download's SHA-256 and that the binary prints the pinned version before it is put in place. It is the first step, before the profile, the clones and every write: when the install fails, onboard stops with `✗`, the exact command to run by hand and nothing written, run or started, and the herdr, instance, ui and terminal services are not started without herdr. A herdr that is already there is left alone. `install.sh` notes that onboard installs herdr when it is missing, and still ends OK. `doctor`'s `herdr` fix gives the command (onboard, and the pinned download for the machine) and its `herdr version` row compares with the pin: a different version warns with the pinned step in place of `herdr update`. Auto-update never installs, upgrades or restarts herdr.

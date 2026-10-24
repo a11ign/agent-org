@@ -42,6 +42,7 @@ import { resolveProviders } from "../ticket-mode/providers.ts";
 import { uiPortOf } from "../ticket-mode/settings.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { MS_PER_SECOND } from "./time-limit.ts";
+import { TOOL_HERDR_VERSION } from "./herdr-install.ts";
 
 /** Service name -> the `agent-org` command it runs, and the arguments after it. */
 export const SERVICE_COMMANDS = Object.freeze({
@@ -221,7 +222,7 @@ function programFor(name: ServiceName, deps: ServiceDeps): Program {
   };
   if (name === "herdr") {
     const herdr = herdrBinary(servicePath(deps.env.PATH), deps.exists);
-    if (herdr === null) throw new ServiceRefusal("the herdr service runs `herdr`, and this machine has none on PATH. Install herdr and put it on PATH, then start the herdr service again.");
+    if (herdr === null) throw new ServiceRefusal(`the herdr service runs \`herdr\`, and this machine has none on PATH. Run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, then start the herdr service again.`);
     const session = herdrSessionOfHost(deps);
     // The workers' panes inherit this environment (they inherited the instance's), and its working directory is the home: a version folder can be pruned under a server that sat in it.
     return { description: `herdr server for the ${session} herdr session (the workers' terminals)`, argv: [herdr, "--session", session, "server"], environment: toolEnvironment(),

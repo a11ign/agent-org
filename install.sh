@@ -27,6 +27,9 @@ MIN_NODE_MAJOR=24
 # holds the same value and the same order: the corepack beside node, then a corepack on PATH, then `npm exec`, which every npm has (A11-185). A test holds the
 # version, release.yml and CI to one value.
 PNPM_VERSION=10.34.5
+# The herdr that `agent-org onboard` installs when the machine has none (A11-223): the version the agents host runs, the same on every machine of this release. `src/install/herdr-install.ts`
+# holds the same value, and a test holds the two to one. herdr is not needed to install agent-org, so install.sh only says onboard installs it.
+HERDR_VERSION=0.9.3
 REPO_URL="${AGENT_ORG_REPO:-https://github.com/a11ign/agent-org.git}"
 # Where a release's assets are downloaded from, when it is not the repository's GitHub releases (a test, a mirror).
 RELEASES_OVERRIDE="${AGENT_ORG_RELEASES_URL:-}"
@@ -55,6 +58,7 @@ INSTALLED_TAG=""
 LAUNCHER=""
 RUNNER_VIA=""    # how the pinned pnpm runs: "corepack beside node", "corepack on PATH" or "npm exec"
 RUNNER_NOTE=""   # the dependency line's note: empty for the usual corepack beside node
+HERDR_MISSING=0  # herdr is not on PATH: said in the notes, and installed by onboard
 
 if [ -t 1 ]; then
   TTY=1
@@ -280,6 +284,8 @@ preflight() {
   if has tar; then detail "tar found"; else tool_problem tar "tar is not installed, and the release is unpacked with it"; fi
   if has gzip; then detail "gzip found"; else tool_problem gzip "gzip is not installed, and a release's UI build is unpacked with it"; fi
   if has curl; then detail "curl found"; else tool_problem curl "curl is not installed, and a release's UI build is downloaded with it"; fi
+  # herdr runs every worker's terminal. Onboard installs it, so a machine without it is not a problem here, only a note.
+  if has herdr; then detail "$(herdr --version 2>/dev/null || echo "herdr found")"; else HERDR_MISSING=1; fi
   if ! has node; then
     node_problem "Node.js $MIN_NODE_MAJOR or newer is needed, and there is no \`node\` on PATH" missing
     return 0
@@ -608,6 +614,9 @@ add_command_step() {
 collect_notes() {
   if [ -d "$LEGACY_CHECKOUT/.git" ]; then
     NOTES="$NOTES""An earlier install's checkout at $(tilde "$LEGACY_CHECKOUT") is left as it is. agent-org update moves its services onto this install."$'\n'
+  fi
+  if [ "$HERDR_MISSING" -eq 1 ]; then
+    NOTES="$NOTES""herdr is not installed. agent-org onboard installs herdr $HERDR_VERSION, which runs every worker's terminal."$'\n'
   fi
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
