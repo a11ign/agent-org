@@ -17,8 +17,12 @@
 // connection's own terminal address (`sameTerminal`), so the redirect cannot carry a code to another site. A failed mint sends the plain link.
 // A LINK WHOSE RUN HAS ENDED says so instead (A11-129): herdr web ui's page spins for a terminal that is gone, so the board answers a page of its own,
 // with a link to the run, and no code is minted. A failed lookup of the run redirects as it always has.
+//
+// THE BUILT UI IS SERVED AT `/next/` BESIDE TODAY'S PAGE (A11-190). It is paired the same way as `/` (an unpaired browser's `GET` gets the pairing page), and it reaches an instance through
+// the same `/api/connections` and `/c/<connection>/api/...` routes, so nothing of the remote proxy changes. Where the build is looked for, and which file a path maps to, is `ui-build.ts`.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stripTypeScriptTypes } from "node:module";
 import { constants } from "node:os";
@@ -36,6 +40,7 @@ import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 import type { TerminalRun } from "./terminal-pair.ts";
+import { afterNext, buildCandidates, fileHeaders, findBuild, isAssetPath, isNextPath, isPage, locate } from "./ui-build.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(HERE, "ui.html");
@@ -148,6 +153,34 @@ function sendEnded(response: ServerResponse, connection: string, ended: EndedRun
   response.end(endedPage(connection, ended));
 }
 
+/** The page's content security policy: its own origin's scripts and images, and inline styles and scripts, which both the board and the built UI's island bootstrap use. */
+const PAGE_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";
+
+/** What `/next` shows when no build is found: that it is missing, how to get it, and where it was looked for. Every value is escaped. PURE. */
+export function missingBuildPage(searched: readonly string[]): string {
+  const places = searched.map((dir) => `<li><code>${escapeHtml(dir)}</code></li>`).join("\n");
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The UI build is missing</title>
+<style>body { font-family: system-ui, sans-serif; margin: 16px; line-height: 1.5; max-width: 40rem; } code { font-family: ui-monospace, monospace; }</style>
+</head>
+<body>
+<h1>The UI build is missing</h1>
+<p>This agent-org has no built UI to show here.</p>
+<p>A release carries the build, so updating agent-org (<code>install.sh</code>, or its auto-update) fetches it.</p>
+<p>In a checkout, <code>pnpm ui:build</code> makes it.</p>
+<p>It was looked for in:</p>
+<ul>
+${places}
+</ul>
+</body>
+</html>
+`;
+}
+
 export type UiDeps = Readonly<{
   port: number;
   /** This machine's board key, which a request for a pairing code carries. */
@@ -162,6 +195,8 @@ export type UiDeps = Readonly<{
    * loopback, so a hostile one costs no call. Absent, or an exposure that serves nothing, the page answers on loopback only.
    */
   exposure?: Exposure;
+  /** The directories the built UI is looked for in, in order, each counted when it holds `index.html`. Absent, `ui-build/` beside the running version, then the checkout's `ui/dist/` (A11-190). */
+  uiBuilds?: readonly string[];
 }>;
 
 /**
@@ -216,13 +251,50 @@ export function pairedBy(request: Pick<IncomingMessage, "headers">, key: string,
 }
 
 function sendHtml(response: ServerResponse, path: string): void {
-  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:" });
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": PAGE_CSP });
   response.end(readFileSync(path, "utf8"));
+}
+
+function redirect(response: ServerResponse, location: string): void {
+  response.writeHead(302, { Location: location, "Cache-Control": "no-store" });
+  response.end();
+}
+
+function sendNotFound(response: ServerResponse): void {
+  response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+  response.end("not found");
+}
+
+/** Whether `path` is a page of the built UI, which a browser opens: under `/next` and not an asset. An unpaired browser is shown the pairing page for it, and a script or image gets the 401. */
+const isNextPagePath = (path: string): boolean => isNextPath(path) && !isAssetPath(afterNext(path));
+
+function sendMissingBuild(response: ServerResponse, searched: readonly string[]): void {
+  response.writeHead(503, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
+  response.end(missingBuildPage(searched));
+}
+
+/** A paired request's `GET` or `HEAD` of `/next` or a path under it: a file of the built UI, the page that says there is no build, or a plain 404. Never a stack trace. */
+async function sendNext(response: ServerResponse, url: URL, candidates: readonly string[]): Promise<void> {
+  const root = findBuild(candidates);
+  if (root === null) return sendMissingBuild(response, candidates);
+  // Relative asset addresses on the page resolve against `/next/`, so the bare address goes there.
+  if (url.pathname === "/next") return redirect(response, `/next/${url.search}`);
+  try {
+    const located = locate(root, afterNext(url.pathname));
+    if (located === null) return sendNotFound(response);
+    const body = await readFile(located.file);
+    const csp = isPage(located.relative) ? { "Content-Security-Policy": PAGE_CSP } : {};
+    response.writeHead(200, { ...fileHeaders(located.relative), ...csp, "Content-Length": String(body.length) });
+    response.end(body);
+  } catch {
+    // A file that vanished or cannot be read, or a build that was removed under the request: not found, and nothing of the machine's paths or errors.
+    sendNotFound(response);
+  }
 }
 
 /** What a request that has not paired may do: see the pairing page, and trade a live code at `POST /pair` for a session of its own. */
 async function pairBrowser(request: IncomingMessage, response: ServerResponse, path: string, { port, pairing, sessions }: Readonly<{ port: number; pairing: Pairing; sessions: BrowserSessions }>): Promise<void> {
-  if (request.method === "GET" && path === "/") return sendHtml(response, PAIR_PAGE);
+  if (request.method === "GET" && (path === "/" || isNextPagePath(path))) return sendHtml(response, PAIR_PAGE);
   if (request.method !== "POST" || path !== "/pair") {
     return sendJson(response, 401, { error: `this browser is not paired: open http://127.0.0.1:${port}/ and type the code agent-org ticket:pair prints` });
   }
@@ -310,6 +382,7 @@ export function createUi(deps: UiDeps) {
       response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
       return void response.end(script());
     }
+    if ((request.method === "GET" || request.method === "HEAD") && isNextPath(url.pathname)) return sendNext(response, url, deps.uiBuilds ?? buildCandidates());
     if (request.method === "GET" && url.pathname === "/") return sendHtml(response, PAGE);
     if (request.method === "GET" && url.pathname === "/api/connections") {
       return sendJson(response, 200, { connections: read.connections.map(({ name, kind }) => ({ name, kind })), refusal: read.refusal });
