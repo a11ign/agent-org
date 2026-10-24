@@ -1074,7 +1074,8 @@ const PR_2 = "https://github.com/a11ign/agent-org/pull/1812";
 const mergedPartial = (partial: string, over: Partial<Queue["entries"][number]> = {}) => {
   let queue = finish(markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1"), "A", { kind: "ready-pr", prs: [{ repo: "agent-org", url: PR_1 }], partial }, 9);
   queue = recordPullStates(recordMove(queue, "A", { from: "Todo", to: "In Progress" }), new Map([["A", { [PR_1]: "merged" as const }]]));
-  return { ...queue, entries: queue.entries.map((e) => ({ ...e, session: "session-1", planned: true, paths: ["agent-org:src/a.ts"], plannedRepo: "agent-org", projectRepo: "agent-org", ...over })) };
+  // The merged pull request's body was read and declared nothing that overrules the outcome (A11-181): the run's partial is acted on as the worker wrote it.
+  return { ...queue, entries: queue.entries.map((e) => ({ ...e, session: "session-1", planned: true, paths: ["agent-org:src/a.ts"], plannedRepo: "agent-org", projectRepo: "agent-org", declared: { kind: "none" as const, urls: [PR_1] }, ...over })) };
 };
 
 test("A11-168: queueNextStep appends the merged step and its pull requests, and drops partial, session, outcome, pull states and movedFrom", () => {
@@ -1148,6 +1149,12 @@ test("A11-168: no next step is due for a run with no declaration, an unmerged or
     const steps = partial === "step 1 of 9" ? [{ step: 1, of: 9, prs: [PR_2] }] : undefined;
     assert.deepEqual(nextStepRuns(mergedPartial(partial, { steps })), [], partial);
   }
+});
+
+test("A11-181: no next step is due, and no plan is counted, for a partial run whose merged bodies the board has not read yet", () => {
+  assert.deepEqual(nextStepRuns(mergedPartial("step 1 of 9", { declared: undefined })), [], "the outcome's words are not acted on before the pull request's are read");
+  assert.deepEqual(planStepsUnread(mergedPartial("the identity work", { declared: undefined })), []);
+  assert.equal(nextStepRuns(mergedPartial("step 1 of 9")).length, 1, "and once read, it is due");
 });
 
 test("A11-168: a merged partial run is not Completed: it needs a person while nothing is queued for it, and a queued entry is untouched by queueNextStep unless finished", () => {

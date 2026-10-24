@@ -19,6 +19,21 @@ const PARTIAL_LINE = /^\s*(?:[-*]\s+)?(?:\*\*|__)?Partial:(?:\*\*|__)?[ \t]*(\S.
 /** What the body's `Partial:` line says remains of the ticket, or null when the body declares the pull request complete. PURE. */
 const partialOf = (body: string): string | null => declaredRemains(PARTIAL_LINE.exec(body)?.[1] ?? "");
 
+/** What a pull request's body declares of its ticket (A11-181): that it leaves `remains` to do, or that it completes the ticket. */
+export type Declaration = Readonly<{ kind: "partial"; remains: string } | { kind: "closes" }>;
+
+/**
+ * What one pull request's body declares of the ticket `key`, or null when it declares nothing: the `Partial:` line's words when it has one, whatever closing words the same body carries (a partial body that
+ * quoted one is still partial, A11-127); else `closes` when a reference line with the tracker's closing keyword names `key`. `Refs <KEY>` alone, a body that names no ticket, an empty body and a closing
+ * keyword of another ticket declare nothing. It reads the grammar `pr:open` and CI's `closes` report read, and adds none (A11-181). PURE.
+ */
+export function declarationOf(body: string, key: string, keywords: Keywords): Declaration | null {
+  const remains = partialOf(body);
+  if (remains !== null) return { kind: "partial", remains };
+  const closes = referencesIn(body, keywords).some(({ verb, names }) => verb === keywords.closing && names.some((name) => sameKey(name, key)));
+  return closes ? { kind: "closes" } : null;
+}
+
 /** A ticket's key, as the tracker writes it, inside a longer text. */
 const KEY_IN_TEXT = "[A-Za-z][A-Za-z0-9]*-\\d+\\b";
 

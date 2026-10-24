@@ -20,11 +20,12 @@ import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBase
 import { worktreePath } from "./worktree.ts";
 import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
 import { readPlanSteps } from "./pool-plan-steps.ts";
+import { readPullDeclarations } from "./pool-pull-declarations.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
- * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed, except a partial run whose ticket the tracker's integration completed, which is put back (A11-178), and which
- * tickets block each queued run, so a relation changed in the tracker and a blocker finished outside the queue both count. A refused read
+ * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed, except a partial run whose ticket the tracker's integration completed, which is put back (A11-178) once the merged bodies are read, since a merged `Closes` or `Partial:` decides over the outcome's `partial`
+ * (A11-181), and which tickets block each queued run, so a relation changed in the tracker and a blocker finished outside the queue both count. A refused read
  * changes nothing.
  */
 export async function refreshTracker(ctx: PoolContext): Promise<void> {
@@ -49,6 +50,8 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       // the tracker could not be asked: the next refresh asks again
     }
   }
+  // What each merged pull request's body declares decides over the outcome's `partial`, so it is read before anything acts on the merge (A11-181).
+  readPullDeclarations(ctx);
   // A ticket the tracker's integration completed on a partial merge is put back first, so the same sweep queues the next step (A11-178).
   for (const entry of earlyCompletions(store.get())) await undoEarlyCompletion(ctx, entry);
   await readPlanSteps(ctx);

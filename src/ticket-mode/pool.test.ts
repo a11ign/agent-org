@@ -92,8 +92,8 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort, preflight, now = () => 100, clones, wait }:
-    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: World;
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, codeHost, reviewerPort, preflight, now = () => 100, clones, wait }:
+    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: World; codeHost?: ReturnType<typeof createFakeCodeHost>;
       reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string>; wait?: (ms: number) => Promise<void> } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: clones ?? { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
@@ -105,7 +105,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const screen = { text: "" };
   const h = herdr(status, screen);
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? createFakeCodeHost(), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? codeHost ?? createFakeCodeHost(), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
     // The publisher plugin, as the fake: what the host file names as its connectors, model and effort (A11-161).
     ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
   const pool = createPool(store, deps);
@@ -5716,8 +5716,24 @@ function stepsTracker() {
 const STEP_1_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/811";
 const STEP_2_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/812";
 
-/** NBF-1 runs to the end on `outcome`, and its worker writes it. */
-const finishedOn = (outcome: Record<string, unknown>, tracker: TicketSource) => endedOn(outcome, 1, ["NBF-1"], {}, { source: tracker });
+/**
+ * The merged pull requests of `outcome` (its `prs`), each held by `host` with the body its worker writes for that outcome: `Refs` and the same `Partial:` words when the outcome says `partial`, `Closes` when it does
+ * not. The board reads what a merged body declares before it acts on the merge (A11-181), and the fake code host answers null for a pull request it was never given.
+ */
+function mergedWith(outcome: Record<string, unknown>, host = createFakeCodeHost()) {
+  const body = typeof outcome.partial === "string" ? `Refs NBF-1\n\nPartial: ${outcome.partial}` : "Closes NBF-1";
+  for (const { url } of outcome.prs as { url: string }[]) {
+    const [, repository, number] = /github\.com\/(.+)\/pull\/(\d+)$/.exec(url)!;
+    host.seedPull(repository, Number(number), { state: "merged", findings: { title: `Pull request ${number}`, number: Number(number), body, sections: [] } });
+  }
+  return host;
+}
+
+/** NBF-1 runs to the end on `outcome`, and its worker writes it; its pull requests are held by `codeHost`, merged, with the bodies that match it. */
+async function finishedOn(outcome: Record<string, unknown>, tracker: TicketSource) {
+  const codeHost = mergedWith(outcome);
+  return { ...(await endedOn(outcome, 1, ["NBF-1"], {}, { source: tracker, codeHost })), codeHost };
+}
 
 /** Step 1's pull request merges and the board queues step 2, whose run starts and ends on `outcome` with its own pull request merged: the pool as it is once step 2 is settled. */
 async function throughStepTwo(made: Awaited<ReturnType<typeof finishedOn>>, tracker: ReturnType<typeof stepsTracker>["tracker"], outcome: Record<string, unknown>) {
@@ -5727,7 +5743,9 @@ async function throughStepTwo(made: Awaited<ReturnType<typeof finishedOn>>, trac
   await pool.tick();
   status.set(herdrName("NBF-1"), "working");
   await pool.tick();
-  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_2_PR }], ...outcome }));
+  const stepTwo = { kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_2_PR }], ...outcome };
+  mergedWith(stepTwo, made.codeHost);
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify(stepTwo));
   status.set(herdrName("NBF-1"), "idle");
   await pool.tick();
   tracker.linkPull("NBF-1", STEP_2_PR, "merged");
@@ -6666,7 +6684,8 @@ async function stepTwoMerged(partial: string, plan = NINE_STEPS) {
     writeFileSync(file, plan);
     return [file];
   } };
-  const made = await endedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_2_PR }], partial }, 1, ["NBF-1"], { plan: "-plan-[^/]*\\.md$" }, { source: withPlan });
+  const outcome = { kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_2_PR }], partial };
+  const made = await endedOn(outcome, 1, ["NBF-1"], { plan: "-plan-[^/]*\\.md$" }, { source: withPlan, codeHost: mergedWith(outcome) });
   tracker.linkPull("NBF-1", STEP_2_PR, "merged");
   return { ...made, tracker };
 }
@@ -6690,7 +6709,7 @@ test("A11-173: an unnumbered Partial on a plan with no numbered steps, or on its
   const none = await stepTwoMerged("the docs", "# Plan\n\nJust do it.\n");
   await none.pool.refreshTracker();
   assert.deepEqual([none.entry("NBF-1").phase, none.entry("NBF-1").planSteps, runStatus(none.entry("NBF-1"))], ["finished", 0, "needs-you"], "0 is recorded, so the plan is not read again");
-  assert.equal(reasonOf(none.entry("NBF-1")).line, "Partial merged: the docs. It names no step, and the plan has no numbered steps, so nothing was queued: Dismiss it and queue the ticket");
+  assert.equal(reasonOf(none.entry("NBF-1")).line, "Partial merged: the docs. It names no step, and the plan has no numbered steps, so nothing was queued: close the ticket, and file what remains as its own ticket, starting from: \"the docs\"");
   const last = await stepTwoMerged("step 9 of the plan");
   await last.pool.refreshTracker();
   assert.deepEqual([last.entry("NBF-1").phase, runStatus(last.entry("NBF-1"))], ["finished", "needs-you"]);

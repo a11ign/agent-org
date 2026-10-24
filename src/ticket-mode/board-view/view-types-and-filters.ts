@@ -1,4 +1,5 @@
 import type { MergedStep } from "./plan-steps.ts";
+import type { PartialOverruled, PullDeclared } from "./pull-declared.ts";
 
 export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
@@ -56,6 +57,10 @@ export type ViewEntry = Readonly<{
   talk?: boolean;
   /** What remains of the ticket, when the worker declared its pull requests partial: the run's merge does not finish the ticket (A11-92, A11-168). */
   partial?: string;
+  /** What the run's merged pull requests declared of the ticket in their bodies, recorded once they are read (A11-181): see {@link PullDeclared}. Unset until read. */
+  declared?: PullDeclared;
+  /** Set when the merged pull request's declaration overruled the outcome's `partial`: the card names both and the board followed the pull request (A11-181). */
+  partialOverruled?: PartialOverruled;
   /** The plan steps of this ticket whose pull requests merged, in order, with the pull requests that finished each: the run is the next step (A11-168). */
   steps?: readonly MergedStep[];
   /** Set when a person moved the ticket to its completed state while the run's work was partial: the person's move wins and the run reads Completed (A11-178). */

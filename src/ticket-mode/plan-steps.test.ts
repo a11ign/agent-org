@@ -39,7 +39,7 @@ test("A11-173: a declaration naming step N without of M, or no step at all, take
   assert.deepEqual(afterPartialMerge("the identity work", [], 9), { next: { step: 2, of: 9, counted: true } }, "an empty record: step 1 finished");
   assert.deepEqual(afterPartialMerge("step 3 of 9", [], 4), { next: { step: 4, of: 9 } }, "a declaration that names step N of M is read as before, not counted, whatever the plan holds");
   // Only a plan with no remaining step stops.
-  assert.deepEqual(afterPartialMerge("the docs", [], 0), { stalled: "Partial merged: the docs. It names no step, and the plan has no numbered steps, so nothing was queued: Dismiss it and queue the ticket" }, "a plan with no numbered steps");
+  assert.deepEqual(afterPartialMerge("the docs", [], 0), { stalled: "Partial merged: the docs. It names no step, and the plan has no numbered steps, so nothing was queued: close the ticket, and file what remains as its own ticket, starting from: \"the docs\"" }, "a plan with no numbered steps: the remainder is its own ticket, not a run of finished work again (A11-181)");
   assert.deepEqual(afterPartialMerge("the docs", []), { stalled: "Partial merged: the docs. It names no step, so nothing was queued: Dismiss it and queue the ticket" }, "a plan not counted (yet) stops as before");
   assert.deepEqual(afterPartialMerge("the docs", [{ step: 8, of: 9 }], 9), { stalled: "Partial merged: the docs. The board counted it as step 9 of 9, the last, with Partial: the last step closes the ticket" }, "the step counted is the plan's last");
   assert.deepEqual(afterPartialMerge("step 9 of the plan", [], 9), { stalled: "Partial merged: step 9 of the plan. The board counted it as step 9 of 9, the last, with Partial: the last step closes the ticket" });

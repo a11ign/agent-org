@@ -1,6 +1,7 @@
 import { CONCLUDED, openPulls, RESULT_KINDS, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "../board-view/plan-steps.ts";
+import type { PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import { needsDecision } from "../open-decisions.ts";
@@ -192,6 +193,13 @@ export type Entry = Readonly<{
    * through a review round, whose `reviewed` outcome does not say it, and dropped by a retry, which starts a fresh worker.
    */
   partial?: string;
+  /**
+   * What the run's merged pull requests declared of the ticket in their bodies (A11-181), recorded once, when the board read them: `closes`, `partial` or `none`. A merged pull request's own declaration decides
+   * over the outcome's `partial` (see {@link recordDeclared}). A run with a `partial` and no `declared` is not acted on at its merge: the board has not yet checked the words it would act on. Dropped when a run ends again.
+   */
+  declared?: PullDeclared;
+  /** Set when the declaration overruled the outcome's `partial` (A11-181): the outcome's own words, and the declaration the board followed. The card names both. */
+  partialOverruled?: PartialOverruled;
   /**
    * The plan steps of this ticket whose pull requests merged, in order, each with the pull requests that finished it (A11-168): set on the run the board queued for the next
    * step ({@link nextStepRun}), and carried through its review, talk and check rounds, so each step's run knows which it is on. Unset on a run that is the first step, or no step.
@@ -603,12 +611,12 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, briefedAgainst, plannedWith } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, briefedAgainst, plannedWith } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
@@ -650,11 +658,11 @@ export function talkRound(entry: Entry, now: number): Entry {
 }
 
 /**
- * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration, merged plan steps, the plan's step count, the After-merge lines listed and posted, and the heads its red checks were answered at: only those the run has set. PURE.
+ * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration and what its pull requests declared, merged plan steps, the plan's step count, the After-merge lines listed and posted, and the heads its red checks were answered at: only those the run has set. PURE.
  */
-const carriedFields = ({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }: Pick<Entry, "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "briefedAgainst">) => ({
+const carriedFields = ({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }: Pick<Entry, "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "briefedAgainst">) => ({
   ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
-  ...(partial !== undefined ? { partial } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}),
+  ...(partial !== undefined ? { partial } : {}), ...(declared ? { declared } : {}), ...(partialOverruled ? { partialOverruled } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */
