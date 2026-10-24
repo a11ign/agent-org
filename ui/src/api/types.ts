@@ -14,3 +14,5 @@ export type SettingsSaved = Awaited<ReturnType<typeof saveEdit>>;
 export type SettingsRestored = Awaited<ReturnType<typeof restoreBackup>>;
 export type { PluginsAnswer } from "../../../src/ticket-mode/plugins-api.ts";
 export type { ActionDone as PluginActionDone, ActionRequest as PluginActionRequest } from "../../../src/plugins/page-actions.ts";
+export type { PlannedStep } from "../../../src/ticket-mode/plan-step-sections.ts";
+export type { RunWorker } from "../../../src/ticket-mode/queue/queue-run-detail.ts";

@@ -1,7 +1,7 @@
 // no-token: none -- pure: the plan texts are given here, and nothing is read
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stepPathsOf, stepSectionsOf, stepSectionText } from "./plan-step-sections.ts";
+import { planStepList, stepPathsOf, stepSectionsOf, stepSectionText } from "./plan-step-sections.ts";
 
 // A11-175: a plan's steps, as the overlap guard and the reviewer read them.
 const HEADINGS = [
@@ -66,4 +66,22 @@ test("A11-175: a table under a heading that only mentions steps is not the plan'
   const next = "## Next steps\n\n| Step | What |\n| - | - |\n| 1. Tell the team | later |\n";
   assert.deepEqual(stepSectionsOf(next), []);
   assert.deepEqual(stepSectionsOf(next.replace("## Next steps", "## Steps")).map(({ step }) => step), [1]);
+});
+
+// A11-219: the numbered steps of a plan, with their titles, for the board's run detail.
+test("A11-219: planStepList gives each step heading's number and title, and not a fenced heading", () => {
+  const plan = ["## Approach", "", "### Step 1 of 3: Read the queue", "", "text", "", "### Step 2 of 3 — Record it", "", "```md", "### Step 9 of 9: an example", "```", "",
+    "### Step 3 of 3 - The **docs**", "", "#### Step 4", ""].join("\n");
+  assert.deepEqual(planStepList(plan), [{ n: 1, title: "Read the queue" }, { n: 2, title: "Record it" }, { n: 3, title: "The docs" }, { n: 4, title: "Step 4" }]);
+});
+
+test("A11-219: planStepList gives each row of a Steps table its number and title, from the first cell or else the second", () => {
+  assert.deepEqual(planStepList(ROWS), [{ n: 1, title: "The plugin and ticket mode" }, { n: 2, title: "Identity" }, { n: 3, title: "Reviews, checks and the verdict door" }]);
+  const bare = "## Steps\n\n| Step | What |\n| - | - |\n| 1 | Read the queue |\n| Step 2 | Record it |\n";
+  assert.deepEqual(planStepList(bare), [{ n: 1, title: "Read the queue" }, { n: 2, title: "Record it" }]);
+});
+
+test("A11-219: planStepList is empty for a plan with no numbered steps", () => {
+  assert.deepEqual(planStepList("## Approach\n\nDo it.\n\n## Paths\n\n- `agent-org:src/`\n"), []);
+  assert.deepEqual(planStepList(""), []);
 });

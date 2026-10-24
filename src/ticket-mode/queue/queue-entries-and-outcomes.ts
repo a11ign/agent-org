@@ -1,6 +1,8 @@
 import { CONCLUDED, openPulls, RESULT_KINDS, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "../board-view/plan-steps.ts";
+import type { PlannedStep } from "../plan-step-sections.ts";
+import type { RunWorker } from "./queue-run-detail.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
@@ -220,6 +222,18 @@ export type Entry = Readonly<{
    * record gives none either (A11-173). 0 is recorded too, so a plan with no numbered steps is not read again. Carried to the run queued for the next step.
    */
   planSteps?: number;
+  /**
+   * The numbered steps of the ticket's plan with their titles, read from the plan files when the run starts (A11-219): what the run detail lists as what the run will do. Unset for a run with no plan or a plan
+   * with no numbered steps. Not `steps`, which is the merged ones, nor `planSteps`, which is a count. Read again at every start, so it is not carried to the next round.
+   */
+  plannedSteps?: readonly PlannedStep[];
+  /**
+   * The plan step the run is on (A11-219): the board's own step for a multi-pull-request plan when the run starts, then the number the worker writes as `currentStep` in its outcome file as it moves on, as it wrote
+   * it (it may be past the last planned step). Unset until there is one.
+   */
+  currentStep?: number;
+  /** Where the run ran, recorded when it started (A11-219). Unset on a run that started before it was recorded. */
+  worker?: RunWorker;
   /**
    * Set once the board has acted on the ticket for a merged pull request its body did not complete (A11-92): it completed the ticket, or found it
    * already finished, or its team has no completed state to move it to, which the log says once.

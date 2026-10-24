@@ -181,6 +181,12 @@ const PROPOSE_EDIT = "A ticket's own title or description may be what is wrong: 
 
 
 /**
+ * The brief's paragraph for a plan with numbered steps (A11-219): the board shows the step the run is on, from the `currentStep` its worker writes in the outcome file as it moves on. A `working` written for it is a
+ * progress note, written and carried on from in the same turn, so it says it is the one `working` that is not about background work.
+ */
+const STEP_NOTES = "The plan has numbered steps, and the board shows which one you are on. As you begin each step, write the outcome file with `{ \"kind\": \"working\", \"reason\": \"<the step you are on>\", \"currentStep\": <N> }` and carry on in the same turn. That is the one `working` that is not about background work: it is only a progress note, and your turn still ends on a real outcome, which may carry `currentStep` too. `currentStep` is a whole number of 1 or more, the number of the plan's step.";
+
+/**
  * When a worker writes `working` rather than `needs-human` (A11-80). A worker that ends its turn while its own background work runs on, a long
  * Ansible run watched by a Monitor say, must still write an outcome, and `needs-human` put the run in Needs you though nothing was asked of
  * anyone. `working` keeps the run In progress, with its reason as the run's note. It is never a way to park a question: that is `needs-human`.
@@ -600,13 +606,14 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * waited on, and `stackedOn` the ones it starts on top of. `drafts` false (`tickets.drafts`) has the worker open its pull requests ready for review.
  * `prReview` is the skill `tickets.prReview` names, which the worker runs on its whole diff before any push or pull request, or null for none.
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
+ * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [] }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], numberedSteps = false }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
-  read?: TicketRead; findings?: readonly Finding[];
+  read?: TicketRead; findings?: readonly Finding[]; numberedSteps?: boolean;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -671,7 +678,7 @@ ${DONE_CHECKED_OR_NEEDS_HUMAN}
 ${PROPOSE_EDIT}
 
 ${WORKING_OR_NEEDS_HUMAN}
-
+${numberedSteps ? `\n${STEP_NOTES}\n` : ""}
 A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
 `;
 }

@@ -9,6 +9,9 @@ import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
+import { plannedStepsOf } from "./pool-plan-steps.ts";
+import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
+import { hostname } from "node:os";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal, herdrServiceOf } from "./pool-herdr.ts";
 import { defaultServiceDeps } from "../install/service.ts";
@@ -396,6 +399,17 @@ function stoppedWhileStarting(ctx: PoolContext, key: string, workspace: string):
  */
 const openDecisionHold = (fresh: Ticket): string | null => needsDecision(fresh)?.reason ?? null;
 
+/** Where a run starts (A11-219): this instance's name and this machine's host name. Over an SSH connection the page reads the remote instance's own queue, so the instance there is the remote's. */
+const workerOf = ({ settings }: PoolContext): RunWorker => ({ instance: settings.instance, host: hostname() });
+
+/** Record the numbered steps of the plan each of `keys` starts with, read from the plan files the run was queued with, before its brief is written (A11-219). A planning run has no plan yet and records none. Throws when a plan file cannot be read, so the run does not start as if it had no plan. */
+function recordPlan(ctx: PoolContext, keys: readonly string[]): void {
+  for (const key of keys) {
+    const steps = plannedStepsOf(ctx, key);
+    update(ctx, (queue) => recordPlannedSteps(queue, key, steps));
+  }
+}
+
 /**
  * Open the run's workspace and start its agent there, and record the run as running: every one of `members`, the tickets that share the one pane (`entry` alone, unless it is
  * a batch's talk session). False when a person stopped it while it started.
@@ -417,8 +431,9 @@ async function startTalk(ctx: PoolContext, members: readonly Entry[]): Promise<v
   const [entry] = members;
   const { key } = entry.ticket;
   const keys = members.map(({ ticket }) => ticket.key);
-  updateEach(ctx, members, (queue, member) => markStarting(queue, member, now()));
+  updateEach(ctx, members, (queue, member) => markStarting(queue, member, now(), workerOf(ctx)));
   try {
+    recordPlan(ctx, keys);
     const place = runPlace(ctx, entry);
     const resume = talkSession(ctx, entry);
     if (resume === undefined) throw new Error(`${key} has no saved session to resume`);
@@ -469,8 +484,9 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
   if (queued.batch !== undefined) update(ctx, (queue) => leaveBatch(queue, queued.ticket.key));
   const { batch: _alone, ...entry } = queued;
   // The copy of agent-org this start writes its hooks and commands for is recorded as the start is, before any file names it (A11-169).
-  update(ctx, (queue) => recordToolPin(markStarting(queue, entry.ticket.key, now()), [entry.ticket.key], toolPinOf(ctx)));
+  update(ctx, (queue) => recordToolPin(markStarting(queue, entry.ticket.key, now(), workerOf(ctx)), [entry.ticket.key], toolPinOf(ctx)));
   try {
+    if (!isPlanning(ctx, entry)) recordPlan(ctx, [entry.ticket.key]);
     if (isPlanning(ctx, entry) && await planReached(ctx, entry.ticket)) {
       // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
       update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false }));
@@ -511,7 +527,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
  */
 async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<void> {
   const { now } = ctx;
-  updateEach(ctx, batch, (queue, key) => recordToolPin(markStarting(queue, key, now()), [key], toolPinOf(ctx)));
+  updateEach(ctx, batch, (queue, key) => recordToolPin(markStarting(queue, key, now(), workerOf(ctx)), [key], toolPinOf(ctx)));
   try {
     const members: Entry[] = [];
     for (const entry of batch) {

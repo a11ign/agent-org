@@ -7,19 +7,23 @@
 // - A STEP HEADING, `## Step 3`, `### Step 3 of 9: Reviews, checks and the verdict door`, or `#### Step 3`: a heading of level 2 to 4 whose text begins `Step <N>`. The section runs to the next heading of
 //   the same or a higher level, and its paths are the `` - `<repo>:<path>` `` bullets inside it, read as `## Paths` reads them. This is the shape planners are told to write (`worker-files.ts`).
 // - A STEP ROW: in a plan with no step heading, a row of a table under a heading named `Steps` or `The steps`, as `plan-step-count.ts` reads them,
-//   whose first cell begins `<N>.` or `Step <N>`. The row, with the table's header, is the step's text. A row declares no paths: the plan's own `## Paths` is the only list a plan with rows has.
+//   whose first cell is `<N>`, or begins `<N>.` or `Step <N>`. The row, with the table's header, is the step's text. A row declares no paths: the plan's own `## Paths` is the only list a plan with rows has.
 //
 // A line inside a code fence is nothing: a fenced `# Step 2` is an example, not a heading.
 import { bulletPaths } from "./overlap.ts";
 
-/** One step of a plan: its number, the plan's text for it, and the paths its section lists (none for a row). */
-export type StepSection = Readonly<{ step: number; text: string; paths: readonly string[] }>;
+/** One step of a plan: its number, its title as the plan words it (empty when the plan gives none), the plan's text for it, and the paths its section lists (none for a row). */
+export type StepSection = Readonly<{ step: number; title: string; text: string; paths: readonly string[] }>;
+
+/** One step of a plan as the board's run detail lists it (A11-219): its number and its title. */
+export type PlannedStep = Readonly<{ n: number; title: string }>;
 
 const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
 const STEP_HEADING = /^step\s+(\d{1,2})\b/i;
 const STEPS_SECTION = /^(?:the\s+)?steps\b/i;
 const FENCE = /^\s*(```|~~~)/;
-const ROW_STEP = /^\**\s*(?:step\s+(\d{1,2})\b|(\d{1,2})\.(?=\s|\*|$))/i;
+const ROW_STEP = /^\**\s*(?:step\s+(\d{1,2})\b|(\d{1,2})(?:\.(?=\s|\*|$)|\**$))/i;
+const HEADING_TITLE = /^step\s+\d{1,2}\b(?:\s+of\s+\d{1,2}\b)?\s*(?:[:\u2014\u2013-]\s*)?/i;
 const SHALLOWEST_STEP_HEADING = 2;
 const DEEPEST_STEP_HEADING = 4;
 
@@ -51,6 +55,12 @@ function stepHeadingOf(line: string): { level: number; step: number } | null {
   return heading.level >= SHALLOWEST_STEP_HEADING && heading.level <= DEEPEST_STEP_HEADING ? { level: heading.level, step: Number(numbered[1]) } : null;
 }
 
+/** A title as the page shows it: without the bold marks a plan puts round a step's number or name, and without the separators left at its ends. PURE. */
+const tidyTitle = (text: string): string => text.replace(/\*\*|__/g, "").replace(/^[\s:\u2014\u2013.-]+|\s+$/g, "");
+
+/** The title a step heading gives: its text after `Step <N>`, an optional `of <M>` and a separator, or "" for a heading that is only the step's number. PURE. */
+const headingTitleOf = (line: string): string => tidyTitle((headingOf(line)?.text ?? "").replace(HEADING_TITLE, ""));
+
 /** The step sections written as headings: each runs to the next heading of the same or a higher level, with the paths its bullets list. The first section of a number is the step's. */
 function headingSections(markdown: string): StepSection[] {
   const all = markdown.split(/\r?\n/);
@@ -66,7 +76,7 @@ function headingSections(markdown: string): StepSection[] {
     });
     const end = next?.index ?? all.length;
     const listed = lines.filter((inside) => inside.index > index && inside.index < end).map((inside) => inside.line);
-    if (!sections.has(step)) sections.set(step, { step, text: all.slice(index, end).join("\n").trimEnd(), paths: bulletPaths(listed) });
+    if (!sections.has(step)) sections.set(step, { step, title: headingTitleOf(line), text: all.slice(index, end).join("\n").trimEnd(), paths: bulletPaths(listed) });
   });
   return [...sections.values()];
 }
@@ -78,6 +88,13 @@ const cellsOf = (row: string): string[] => row.trim().replace(/^\|/, "").replace
 function rowStepOf(row: string): number | null {
   const found = ROW_STEP.exec(cellsOf(row)[0] ?? "");
   return found === null ? null : Number(found[1] ?? found[2]);
+}
+
+/** The title a step row gives: the rest of its first cell after the step's number, else its second cell, or "" for a row with neither. PURE. */
+function rowTitleOf(row: string): string {
+  const [first = "", second = ""] = cellsOf(row);
+  const rest = tidyTitle(first.slice(ROW_STEP.exec(first)?.[0].length ?? 0));
+  return rest === "" ? tidyTitle(second) : rest;
 }
 
 /** The step sections written as rows of a table under a heading named `Steps` or `The steps`: the table's header, its rule line and the row make the step's text. */
@@ -96,7 +113,7 @@ function rowSections(markdown: string): StepSection[] {
     const step = rowStepOf(line);
     // The first two table lines are its header and its rule line, and the rows follow.
     if (header.length < 2) header.push(line);
-    else if (step !== null && !sections.has(step)) sections.set(step, { step, text: [...header, line].join("\n"), paths: [] });
+    else if (step !== null && !sections.has(step)) sections.set(step, { step, title: rowTitleOf(line), text: [...header, line].join("\n"), paths: [] });
   }
   return [...sections.values()];
 }
@@ -117,4 +134,12 @@ export function stepPathsOf(markdown: string): Record<string, string[]> {
 /** The plan's text for step `step`, or null when the plan has no such step section. PURE. */
 export function stepSectionText(markdown: string, step: number): string | null {
   return stepSectionsOf(markdown).find((section) => section.step === step)?.text ?? null;
+}
+
+/**
+ * The numbered steps of a plan with their titles, in step order (A11-219): what the board's run detail lists as "what it will do". A step the plan gives no title is listed under `Step <N>`.
+ * Empty for a plan with no numbered steps. PURE.
+ */
+export function planStepList(markdown: string): PlannedStep[] {
+  return stepSectionsOf(markdown).map(({ step, title }) => ({ n: step, title: title === "" ? `Step ${step}` : title }));
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkOutcome, OUTCOME_EXAMPLES, OUTCOME_KINDS, outcomeExamples } from "./outcome.ts";
+import { checkOutcome, OUTCOME_EXAMPLES, OUTCOME_KINDS, outcomeExamples, writtenStep } from "./outcome.ts";
 
 const PR = "https://github.com/a11ign/control/pull/119";
 const KINDS = "ready-pr, draft-pr, done, checked, wrong-repo, needs-human, working, planned, reviewed, published, drafted";
@@ -116,4 +116,41 @@ test("A11-118: every outcome kind has one example, the example is the contract's
   assert.equal(rendered.split("\n").length, OUTCOME_KINDS.length, "one line each");
   assert.doesNotMatch(rendered, /<[a-z ]+>/, "no placeholder");
   assert.ok(outcomeExamples(["ready-pr"]).includes("\"prs\": [{\"repo\":\"example/app\""), "the pull request example names prs, as an array");
+});
+
+// A11-219: the plan step a worker says it is on.
+const WITH_STEP: Record<string, Record<string, unknown>> = {
+  "ready-pr": { kind: "ready-pr", prs: [{ repo: "a11ign/control", url: PR }] }, "draft-pr": { kind: "draft-pr", prs: [{ repo: "a11ign/control", url: PR }] },
+  done: { kind: "done", reason: "r", evidence: ["e"] }, checked: { kind: "checked", reason: "r" }, "wrong-repo": { kind: "wrong-repo", where: "a11ign/control" },
+  "needs-human": { kind: "needs-human", reason: "r" }, working: { kind: "working", reason: "r" }, planned: { kind: "planned" }, reviewed: { kind: "reviewed" },
+  published: { kind: "published" }, drafted: { kind: "drafted" },
+};
+
+test("A11-219: a currentStep that is a whole number of 1 or more is accepted on every kind, exactly as the contract asks", () => {
+  assert.deepEqual(Object.keys(WITH_STEP), [...OUTCOME_KINDS], "the table names every kind");
+  for (const [kind, outcome] of Object.entries(WITH_STEP)) {
+    const checked = checkOutcome(JSON.stringify({ ...outcome, currentStep: 2 }));
+    assert.ok(checked.ok && checked.exact, `${kind} with currentStep 2 is accepted: ${JSON.stringify(checked)}`);
+  }
+});
+
+test("A11-219: a currentStep of 0, \"2\", 1.5, null or a list is refused for every kind, naming currentStep and what was written", () => {
+  for (const [kind, outcome] of Object.entries(WITH_STEP)) {
+    for (const [bad, wrote] of [[0, "0"], ["2", "\"2\""], [1.5, "1.5"], [-1, "-1"], [null, "null"], [[2], "a list"]] as const) {
+      assert.equal(refusal(JSON.stringify({ ...outcome, currentStep: bad })), `currentStep needs a whole number of 1 or more, the number of the plan step you are on, you wrote ${wrote}`, `${kind} with ${JSON.stringify(bad)}`);
+    }
+  }
+});
+
+test("A11-219: writtenStep reads the step an outcome file names, and none from a file that names no valid one", () => {
+  assert.equal(writtenStep(JSON.stringify({ kind: "working", reason: "r", currentStep: 3 })), 3);
+  assert.equal(writtenStep(JSON.stringify({ kind: "ready-pr", prs: [], currentStep: 1 })), 1);
+  for (const text of [JSON.stringify({ kind: "working", reason: "r" }), JSON.stringify({ currentStep: 0 }), JSON.stringify({ currentStep: "2" }), JSON.stringify({ currentStep: 1.5 }), "[2]", "not json", ""]) {
+    assert.equal(writtenStep(text), null, text);
+  }
+});
+
+test("A11-219: a refusal of the contract's own field does not name currentStep as an extra", () => {
+  assert.equal(refusal(JSON.stringify({ kind: "checked", currentStep: 2 })), "checked needs reason: a string, you wrote no reason");
+  assert.equal(refusal(JSON.stringify({ kind: "ready-pr", currentStep: 2 })), "ready-pr needs prs: [{repo, url}], you wrote no prs");
 });

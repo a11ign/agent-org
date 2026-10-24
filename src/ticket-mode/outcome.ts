@@ -21,11 +21,14 @@ export type Checked =
   | Readonly<{ ok: true; exact: false; outcome: CheckedOutcome; problem: string }>
   | Readonly<{ ok: false; problem: string }>;
 
+/** The field every kind may carry beside its own: the plan step the worker is on (A11-219). */
+const STEP_KEY = "currentStep";
+
 /** The fields a pull request outcome's contract names, and the one a near miss may carry instead of `prs`. */
-const PULL_KEYS = ["prs", "reason", "partial"];
+const PULL_KEYS = ["prs", "reason", "partial", STEP_KEY];
 
 /** The fields a reason-bearing outcome's contract names: its reason, and the edit a kind may carry. */
-const REASON_KEYS = ["reason", "edit"];
+const REASON_KEYS = ["reason", "edit", STEP_KEY];
 
 /** The kinds that may carry a proposed edit (A11-91): the three in which the worker has read its ticket closely. */
 const EDIT_KINDS: ReadonlySet<string> = new Set(["done", "checked", "needs-human"]);
@@ -75,6 +78,28 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 
 /** Whether a value names one of {@link OUTCOME_KINDS}. */
 const isKind = (value: unknown): value is OutcomeKind => (OUTCOME_KINDS as readonly unknown[]).includes(value);
+
+/** Whether a value is a plan step's number: a whole number of 1 or more. */
+const isStepNumber = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1;
+
+/** What a file with a `currentStep` that is no plan step's number is refused with: the number it wrote as written, or what else it wrote. PURE. */
+function stepProblem(written: unknown): string {
+  const wroteAs = typeof written === "number" || typeof written === "string" ? JSON.stringify(written) : wrote(written);
+  return `${STEP_KEY} needs a whole number of 1 or more, the number of the plan step you are on, you wrote ${wroteAs}`;
+}
+
+/**
+ * The plan step a worker's outcome file says it is on (A11-219), or null when the file is no JSON object, writes none, or writes one that is not a whole number of 1 or more: the board
+ * records what the worker wrote, and `checkOutcome` is what refuses the rest. PURE over the file's text.
+ */
+export function writtenStep(text: string): number | null {
+  try {
+    const value: unknown = JSON.parse(text);
+    return isObject(value) && isStepNumber(value[STEP_KEY]) ? value[STEP_KEY] : null;
+  } catch {
+    return null;
+  }
+}
 
 /** A refusal, with the problem the Stop hook names and the pool records. PURE. */
 const refuse = (problem: string): Checked => ({ ok: false, problem });
@@ -178,7 +203,7 @@ function withReason(kind: OutcomeKind, object: Record<string, unknown>, outcome:
  * A `done`: a reason, and evidence with one non-empty line per Done-when item (ADR 0021/0047: a prediction never fills an evidence field). PURE.
  */
 function doneOutcome(object: Record<string, unknown>, edit: ProposedEdit | undefined): Checked {
-  const known = ["reason", "evidence", "edit"];
+  const known = ["reason", "evidence", "edit", STEP_KEY];
   const { reason, evidence } = object;
   if (!nonEmpty(reason)) return refuse(`done needs reason: a string, ${wroteInstead(object, "reason", known)}`);
   if (!Array.isArray(evidence)) return refuse(`done needs evidence: a list of lines, one per Done-when item, ${wroteInstead(object, "evidence", known)}`);
@@ -206,6 +231,7 @@ export function checkOutcome(text: string): Checked {
   if (!isKind(kind)) {
     return refuse(kind === undefined ? `the file has no "kind": write one of ${OUTCOME_KINDS.join(", ")}` : `kind ${JSON.stringify(kind)} is not one of ${OUTCOME_KINDS.join(", ")}`);
   }
+  if (value[STEP_KEY] !== undefined && !isStepNumber(value[STEP_KEY])) return refuse(stepProblem(value[STEP_KEY]));
   const edit = EDIT_KINDS.has(kind) && value.edit !== undefined ? readEdit(value.edit) : undefined;
   if (typeof edit === "string") return refuse(`${kind} edit ${edit}`);
   switch (kind) {
@@ -220,7 +246,7 @@ export function checkOutcome(text: string): Checked {
     case "working":
       return withReason(kind, value, (reason) => ({ kind, reason }));
     case "wrong-repo":
-      return nonEmpty(value.where) ? accept({ kind, where: value.where }) : refuse(`wrong-repo needs where: a string, ${wroteInstead(value, "where", ["where"])}`);
+      return nonEmpty(value.where) ? accept({ kind, where: value.where }) : refuse(`wrong-repo needs where: a string, ${wroteInstead(value, "where", ["where", STEP_KEY])}`);
     case "reviewed":
       // A review run's pull requests are the ones the person approved, which the pool holds: `settle` puts them in.
       return accept({ kind, prs: [] });
