@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 // @ts-check
-// command: start, stop and status -- run an agent-org service (`herdr`, `instance`, `ui`, `terminal` or `auto-update`) as a launchd user agent on macOS or a systemd user unit on Linux
+// module: start, stop and status -- run an agent-org service (`herdr`, `instance`, `ui`, `terminal` or `auto-update`) as a launchd user agent on macOS or a systemd user unit on Linux
 //
 // A SERVICE IS A NAME AND THE PROGRAM IT RUNS. `instance` runs `ticket:serve` (the queue and the workers) and `ui` runs `ticket:ui` (the page), each
 // looked up in `commands.ts`'s table: a service whose command the table does not hold is refused by name, so a checkout older than the split says so
@@ -24,11 +23,10 @@
 //
 // NO SECRET IS IN A UNIT. The unit names the host file, and the board reads the tracker key from where the host file says.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import { pathToFileURL } from "node:url";
 import { COMMANDS } from "../commands.ts";
 import { agentOrgHome, hostFilePath, hostGhConfigDir, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { findBun } from "./bun.ts";
@@ -43,6 +41,7 @@ import type { MoveDeps } from "./herdr-move.ts";
 import { resolveProviders } from "../ticket-mode/providers.ts";
 import { uiPortOf } from "../ticket-mode/settings.ts";
 import { writeAtomic } from "./write-atomic.ts";
+import { MS_PER_SECOND } from "./time-limit.ts";
 
 /** Service name -> the `agent-org` command it runs, and the arguments after it. */
 export const SERVICE_COMMANDS = Object.freeze({
@@ -104,11 +103,18 @@ type Served = Readonly<{ name: "ui" | "terminal"; port: number; local: number; e
 /** What `startService` returns: the unit, and the address it is served at, or null when it is served on loopback only. */
 export type Started = Unit & Readonly<{ address: string | null }>;
 
-const defaultRun: Run = (file, args) => {
-  const result = spawnSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+/** The longest one `launchctl`, `systemctl` or `herdr` call may take: the limit `agent-tool-update.ts` gives herdr. A call that passes it is killed and answers a non-zero result that says so. */
+const RUN_TIMEOUT_MS = 120_000;
+
+/** `spawnSync` with a time limit (A11-225): a call that does not finish in `timeoutMs` is a failed result whose `stderr` names it, never a wait without an end. */
+export function runWithin(file: string, args: readonly string[], timeoutMs: number): RunResult {
+  const result = spawnSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return { status: null, stdout: "", stderr: `\`${[file, ...args].join(" ")}\` did not finish within ${timeoutMs / MS_PER_SECOND}s` };
   if (result.error) return { status: null, stdout: "", stderr: result.error.message };
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-};
+}
+
+const defaultRun: Run = (file, args) => runWithin(file, args, RUN_TIMEOUT_MS);
 
 export function defaultServiceDeps(): ServiceDeps {
   return Object.freeze({
@@ -674,10 +680,11 @@ export async function main(argv: string[], deps: ServiceDeps = defaultServiceDep
     if (values.move && !(action === "start" && name === "herdr")) throw new ServiceRefusal("--move is for `agent-org start herdr`, which moves a herdr server that runs outside its unit");
     if (action === "start" && name === "herdr") {
       // Its own path: a server outside the unit is refused unless `--move`, and a start never restarts the one in the unit.
+      // A DYNAMIC import, and `herdr-move.ts` imports this file: this file must never be an entry module again (`service-cli.ts` is), or the import waits on the entry's own `await main()` and nothing settles (A11-225).
       const { defaultMoveDeps, startHerdr } = await import("./herdr-move.ts");
-      const { started, lines } = await startHerdr({ move: values.move }, moveDeps ?? defaultMoveDeps(deps));
-      for (const line of lines) out.log(line);
-      out.log(`started the herdr service (${started.manager} ${started.id}), logging to ${started.log ?? "`journalctl --user -u agent-org-herdr`"}`);
+      const started = await startHerdr({ move: values.move }, moveDeps ?? defaultMoveDeps(deps), (line) => out.log(line));
+      // `--move` ends on its own result line, said by `startHerdr` after its four steps.
+      if (!values.move) out.log(`started the herdr service (${started.manager} ${started.id}), logging to ${started.log ?? "`journalctl --user -u agent-org-herdr`"}`);
       return 0;
     }
     if (action === "start") {
@@ -706,5 +713,3 @@ export async function main(argv: string[], deps: ServiceDeps = defaultServiceDep
     return REFUSED;
   }
 }
-
-if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) process.exitCode = await main(process.argv.slice(2));

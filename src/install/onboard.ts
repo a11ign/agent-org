@@ -792,7 +792,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       chromium: () => chromiumReport(),
       isRoot: () => process.getuid?.() === 0,
       // herdr is started the way `agent-org start herdr` starts it: a server that runs outside its unit is refused, and said, never started beside (`--move` moves it, at a quiet moment).
-      startServices: (names) => startEach(names, async (name) => (name === "herdr" ? (await startHerdr({ move: false }, defaultMoveDeps(services))).started : startService(name, services))),
+      startServices: (names) => startEach(names, async (name) => (name === "herdr" ? startHerdr({ move: false }, defaultMoveDeps(services)) : startService(name, services))),
       out: console,
     });
   } catch (err) {
