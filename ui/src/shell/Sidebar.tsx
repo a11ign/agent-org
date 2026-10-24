@@ -22,10 +22,10 @@ function InstanceSwitcher() {
   );
 }
 
-/** The connection status pill, driven by the queue poll: Unreachable only for an SSH instance its proxy cannot reach, Connected otherwise (see `pillOf`). */
+/** The connection status pill, driven by the queue poll: Unreachable only for an SSH instance its proxy cannot reach, Updating while the page shows the Updating screen, Connected otherwise (see `pillOf`). */
 function ConnectionPill() {
-  const { queue } = useShell();
-  const { tone, label } = pillOf(queue.state);
+  const { queue, update } = useShell();
+  const { tone, label } = pillOf(queue.state, update);
   return (
     <div role="status" className={`pill pill-${tone}`}>
       <span className="pill-dot" />

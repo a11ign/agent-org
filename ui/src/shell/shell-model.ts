@@ -5,15 +5,18 @@
 import { defaultScope, inScope } from "../../../src/ticket-mode/assignee-filter.ts";
 import type { PollState, PollView } from "../api/use-poll.ts";
 import type { ConfigView, QueueView, Ticket, TicketView, ViewConnection } from "../api/types.ts";
+import { NO_UPDATE, type UpdateView } from "../updating/update-model.ts";
 
-export type Pill = Readonly<{ tone: "connected" | "unreachable"; label: string }>;
+export type Pill = Readonly<{ tone: "connected" | "unreachable" | "updating"; label: string }>;
 
 /**
- * The connection pill for the queue poll's state. Unreachable is only for an SSH connection its proxy cannot reach (the poll's `unreachable`); every other state is
- * Connected, `loading` and `error` included, as the boards draw them (BRIEF: "Unreachable applies only to SSH remote connections"). PURE.
+ * The connection pill for the queue poll's state and the update the page is in (A11-217). Unreachable is only for an SSH connection its proxy cannot reach (the poll's `unreachable`) and always wins;
+ * Updating is amber while the page shows the Updating screen; every other state is Connected, `loading`, `error` and the Back screen included, as the boards draw them (BRIEF: "Unreachable applies only
+ * to SSH remote connections"). PURE.
  */
-export function pillOf(state: PollState): Pill {
-  return state === "unreachable" ? { tone: "unreachable", label: "Unreachable · retrying" } : { tone: "connected", label: "Connected" };
+export function pillOf(state: PollState, update: UpdateView = NO_UPDATE): Pill {
+  if (state === "unreachable") return { tone: "unreachable", label: "Unreachable · retrying" };
+  return update.kind === "updating" ? { tone: "updating", label: "Updating" } : { tone: "connected", label: "Connected" };
 }
 
 /** Whether a read has answered with the instance's own data, as opposed to loading, failing, or showing the last known data of a failure. PURE. */
