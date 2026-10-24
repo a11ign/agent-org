@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { claudePlugin, failing, answerOf, pluginsFetch, standOf as pluginsOf, type PluginsStand } from "../../test/plugins/plugins-stand.ts";
 import { HERE, PERSONAL, type Stand } from "../../test/fixtures.ts";
 import { MIN_BACKOFF_MS } from "../api/poll-schedule.ts";
@@ -6,7 +6,7 @@ import { ShellFrame } from "../shell/ShellFrame.tsx";
 import { ShellProvider } from "../shell/ShellProvider.tsx";
 import type { Page } from "../shell/routes.ts";
 import { attentionWords } from "./AttentionBadge.tsx";
-import { PluginsRead } from "./PluginsRead.tsx";
+import { PluginsRead, useProvidedPluginsRead } from "./PluginsRead.tsx";
 
 beforeEach(() => {
   localStorage.clear();
@@ -122,5 +122,30 @@ describe("the read behind the badge", () => {
     const { fetchWith, link } = await subNav("plugins", { shared: true, plugins: pluginsOf({ answer: () => answerOf({ checks: FAILING }) }) });
     await waitFor(() => expect(link().textContent).toContain("needs attention"));
     expect(asked(fetchWith)).toEqual(["/c/here/api/plugins"]);
+  });
+
+  it("is not tried again on a backoff when the Plugins page's shared read fails either, and is read again only when asked", async () => {
+    let fails = true;
+    const plugins = pluginsOf({ answer: () => answerOf({ checks: FAILING }) });
+    const flaky = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (fails && String(input).endsWith("/api/plugins")) {
+        flaky.paths.push(String(input));
+        return new Response(JSON.stringify({ error: "the doctor checks fell over" }), { status: 500 });
+      }
+      return inner(input, init);
+    }, { paths: [] as string[], requests: [] as unknown[] });
+    const inner = pluginsFetch(NOTHING_WRONG, plugins);
+    function AskAgain() {
+      const read = useProvidedPluginsRead();
+      return <button onClick={() => read?.refresh()}>Read the plugins again</button>;
+    }
+    render(<ShellProvider fetchWith={flaky as never}><PluginsRead><ShellFrame page="plugins"><AskAgain /></ShellFrame></PluginsRead></ShellProvider>);
+    await waitFor(() => expect(flaky.paths).toEqual(["/c/here/api/plugins"]));
+    await new Promise((later) => setTimeout(later, POLL_MS_OF_BACKOFF));
+    expect(flaky.paths).toEqual(["/c/here/api/plugins"]);
+    expect(screen.getByRole("link", { name: /^Plugins/ }).textContent).toBe("Plugins");
+    fails = false;
+    fireEvent.click(screen.getByRole("button", { name: "Read the plugins again" }));
+    await waitFor(() => expect(screen.getByRole("link", { name: /^Plugins/ }).textContent).toBe("Plugins 1 needs attention"));
   });
 });
