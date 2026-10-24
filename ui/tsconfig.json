@@ -9,7 +9,8 @@
     "erasableSyntaxOnly": true,
     "types": ["node", "@rstest/core/globals"]
   },
-  // `../src/ticket-mode/capture.ts` is reached by the screenshot helper (A11-151's `captureName` and `pngSize`), so the program names it by import only.
+  // The program reaches `../src/` by import only: the screenshot helper takes `captureName` and `pngSize` from `../src/ticket-mode/capture.ts` (A11-151), and `src/api/` imports the instance API's types and `apiBase` from the server's
+  // modules (A11-189), so `tsc` checks every file those reach with these options, and a server change that breaks a page fails here. A server file these options reject is fixed or its import narrowed, never copied into `ui/`.
   "include": [".astro/types.d.ts", "astro.config.ts", "rstest.config.ts", "dev/**/*", "src/**/*", "test/**/*"],
   "exclude": ["dist", "node_modules", "screenshots"]
 }

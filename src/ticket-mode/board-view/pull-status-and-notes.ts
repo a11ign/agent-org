@@ -481,7 +481,8 @@ export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished
 const isTalking = (entry: ViewEntry): boolean => entry.talk === true && entry.phase !== "queued" && (entry.phase !== "finished" || isParked(entry));
 
 /** What a person can do to a run from the board. */
-type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "talk" | "dismiss" | "apply-edit" | "discard-edit" | "start-anyway";
+/** A verb the board sends to one queued run: `POST /api/queue/<key>/<verb>`. */
+export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "talk" | "dismiss" | "apply-edit" | "discard-edit" | "start-anyway";
 
 /** Why a person presses Start anyway, shown as its tooltip: the run starts beside the run that holds a path it shares, and the two may conflict on it. */
 export const START_ANYWAY_TITLE = "Start this run now, beside the run that holds a path it shares: the two may conflict on that path";

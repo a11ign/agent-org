@@ -104,7 +104,7 @@ export function holdsKey(request: Pick<IncomingMessage, "headers">, key: string)
  * The settings' choices: the model and effort a ticket queued from now on runs with, those a ticket planned first is planned with, and those a
  * new-ticket request is written with. The writer's are absent until one is chosen, and the host file's are in force then.
  */
-type SavedChoice = RunChoice & Readonly<{ planModel: string; planEffort: string; writerModel?: string; writerEffort?: string }>;
+export type SavedChoice = RunChoice & Readonly<{ planModel: string; planEffort: string; writerModel?: string; writerEffort?: string }>;
 
 /** A rule that also accepts "", which clears the part: the host file's value is in force again. */
 const clearable = (check: (value: string) => void) => (value: string) => { if (value !== "") check(value); };
@@ -233,11 +233,30 @@ const holdsRun = ({ store }: Pick<Board, "store">, key: string): boolean => stor
  * A ticket as the page is sent it, with `taken` where another instance holds it (A11-144, A11-168): the tracker shows it in a taken state and its latest claim, as the board
  * last read it, names another instance. A ticket this instance holds a run for is never taken. Pick shows the state and does not let the ticket be queued here.
  */
-function withTaken(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: Ticket): Ticket & Readonly<{ taken?: string }> {
+function withTaken<T extends Ticket>(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: T): T & Readonly<{ taken?: string }> {
   const held = holdsRun(board, ticket.key);
   const state = held ? null : takenState(ticket, board.settings.takenStates, board.known.claims.get(ticket.key), board.claimant());
   return state === null ? ticket : { ...ticket, taken: state };
 }
+
+/** A ticket as `/api/tickets` answers it: with `needsDecision` and `taken` where they hold. The UI's client names this type, so a field renamed here fails its `tsc`. */
+export type TicketView = ReturnType<typeof ticketView>;
+
+function ticketView(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: Ticket) {
+  return withTaken(board, withDecision(ticket));
+}
+
+/** One page of a scope's tickets as `/api/tickets?assignee=` answers it: each ticket as `/api/tickets` shows it, and the cursor of the next page or null. */
+export type TicketsPageView = Readonly<{ tickets: readonly TicketView[]; next: string | null }>;
+
+/** What `/api/choice` answers: the choice as saved. */
+export type ChoiceView = Readonly<{ choice: SavedChoice }>;
+
+/** What `/api/pick` answers: the words an empty Pick list says. */
+export type PickView = Readonly<{ empty: ReturnType<typeof pickEmptyText> }>;
+
+/** What `/api/queue-children` answers: the queue after, the keys it queued, and a note on any it left out or ordered by identifier, or null. */
+export type QueueChildrenView = Readonly<{ queue: QueueView; keys: readonly string[]; note: string | null }>;
 
 /**
  * Read the claim of each of `tickets` a claim could matter for: in a taken state, with no run here. The answer replaces what the board kept for them. A source with no
@@ -328,6 +347,8 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
 }
 
 /** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
+export type QueueView = ReturnType<typeof queueView>;
+
 function queueView(board: Pick<Board, "store" | "pool" | "update">) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
@@ -358,22 +379,30 @@ function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
 }
 
 /** The new-ticket requests, each with its status, as the page shows them. */
+export type WritersView = ReturnType<typeof writersViewOf>;
+
 function writersViewOf(queue: Queue) {
   return { runs: (queue.writers ?? []).map(writerViewOf) };
 }
 
+/** What `/api/config` answers: the board's choices and capabilities. The UI's client names this type, so a field renamed here fails its `tsc`. */
+export type ConfigView = Awaited<ReturnType<typeof configView>>;
+
+async function configView(board: Board) {
+  const { deps, settings, store, plans } = board;
+  // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
+  // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
+  return { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
+    publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
+    pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
+    writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
+    writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: board.update().version, updateNote: board.update().note };
+}
+
 /** The GET routes: the board's config, the Pick lists, the queue and the new-ticket requests. `undefined` when no route here names the request. */
 async function readRoute(board: Board, method: string, path: string, query: URLSearchParams): Promise<[number, unknown] | undefined> {
-  const { deps, settings, source, store, known, plans } = board;
-  if (method === "GET" && path === "/api/config") {
-    // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
-    // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
-    return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
-      publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
-      pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
-      writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
-      writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: board.update().version, updateNote: board.update().note }];
-  }
+  const { deps, settings, source, store, known } = board;
+  if (method === "GET" && path === "/api/config") return [200, await configView(board)];
   if (method === "GET" && path === "/api/settings") {
     // The read-only Settings page: each file read fresh, so a refusal names its field, and the instance's own queue and choice (A11-131).
     return [200, await readSettingsView({ hostPath: deps.hostPath ?? hostFilePath(), settings, queuePath: deps.queuePath, queueMax: store.get().max,
@@ -387,7 +416,8 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
     // say whose key it is, or cannot be asked, leaves the text saying "you": the empty list still names its setting.
     const user = settings.pick === "assigned" && source.viewer ? await source.viewer().catch(() => null) : null;
-    return [200, { empty: pickEmptyText(settings.pick, user) }];
+    const view: PickView = { empty: pickEmptyText(settings.pick, user) };
+    return [200, view];
   }
   if (method === "GET" && path === "/api/people") {
     if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so it counts nobody separately" }];
@@ -399,14 +429,15 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     const page = await source.scoped!(query.get("assignee") ?? "", query.get("after"));
     for (const ticket of page.tickets) known.tickets.set(ticket.key, ticket);
     await readClaims(board, page.tickets);
-    return [200, { ...page, tickets: page.tickets.map((ticket) => withTaken(board, withDecision(ticket))) }];
+    const view: TicketsPageView = { ...page, tickets: page.tickets.map((ticket) => ticketView(board, ticket)) };
+    return [200, view];
   }
   if (method === "GET" && path === "/api/tickets") {
     const tickets = await source.assigned();
     known.tickets = new Map(tickets.map((ticket) => [ticket.key, ticket]));
     known.claims = new Map();
     await readClaims(board, tickets);
-    return [200, tickets.map((ticket) => withTaken(board, withDecision(ticket)))];
+    return [200, tickets.map((ticket) => ticketView(board, ticket))];
   }
   if (method === "GET" && path === "/api/parents") {
     // The parents of the listed tickets that are not listed themselves, so the Pick list can nest under them whatever scope it shows. One the
@@ -474,7 +505,8 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
     const held = undecided.length === 0 ? null : `${undecided.join(", ")} ${undecided.length === 1 ? "holds" : "hold"} an open decision, so not queued: Grill ${undecided.length === 1 ? "it" : "them"} first`;
     const note = [order.note, left, held].filter((part) => part !== null).join("; ") || null;
-    return [200, { queue: queueView(board), keys: taken.tickets.map((ticket) => ticket.key), note }];
+    const view: QueueChildrenView = { queue: queueView(board), keys: taken.tickets.map((ticket) => ticket.key), note };
+    return [200, view];
   }
   if (method === "POST" && path === "/api/choice") {
     // Only the part named is changed, so two pages open at once cannot undo each other's other half.
@@ -482,7 +514,8 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     if (Object.keys(change).length === 0) throw new Error("name a model or an effort to change");
     const choice = applyChange(readChoice(deps.choicePath), change);
     writeChoice(deps.choicePath, choice);
-    return [200, { choice }];
+    const view: ChoiceView = { choice };
+    return [200, view];
   }
   if (method === "POST" && path === "/api/publish") {
     if (settings.publish === null) throw new Error("this machine names no tickets.publish (or its publisher is disabled), so it publishes nothing");

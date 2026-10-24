@@ -321,6 +321,13 @@ async function servedFor(exposure: Exposure | undefined, request: IncomingMessag
   return { hosts: exposure.hosts(address), origins: exposure.origins(address) };
 }
 
+/** What `/api/connections` answers: each connection's name and how it is reached, and why the connections file was refused, or null. The UI's client names this type. */
+export type ConnectionsView = ReturnType<typeof connectionsView>;
+
+function connectionsView(read: Pick<ConnectionsRead, "connections" | "refusal">) {
+  return { connections: read.connections.map(({ name, kind }) => ({ name, kind })), refusal: read.refusal };
+}
+
 /** The request handler, with every dependency named, so a test drives it without a socket. */
 export function createUi(deps: UiDeps) {
   const { port, key, sessions, read, connections } = deps;
@@ -385,7 +392,7 @@ export function createUi(deps: UiDeps) {
     if ((request.method === "GET" || request.method === "HEAD") && isNextPath(url.pathname)) return sendNext(response, url, deps.uiBuilds ?? buildCandidates());
     if (request.method === "GET" && url.pathname === "/") return sendHtml(response, PAGE);
     if (request.method === "GET" && url.pathname === "/api/connections") {
-      return sendJson(response, 200, { connections: read.connections.map(({ name, kind }) => ({ name, kind })), refusal: read.refusal });
+      return sendJson(response, 200, connectionsView(read));
     }
     const call = CONNECTION_PATH.exec(url.pathname);
     if (call !== null) return proxyConnection(request, response, by, call[1], `${call[2]}${url.search}`);
