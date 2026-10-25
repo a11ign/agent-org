@@ -34,8 +34,18 @@ function sayOnce(ctx: PoolContext, topic: string, line: string): void {
 /** How long a finished run's CI is left unread once all of its workflow runs are settled: its pushes are done, and only a new push or a re-run changes what it cost. */
 export const FINISHED_READ_MS = 15 * 60_000;
 
-/** When each ticket's CI was last read, by pool: kept in memory, since a restart reading everything once is cheap. */
+/** When each ticket's CI was last read IN FULL (every repository answered), by pool: kept in memory, since a restart reading everything once is cheap. A read that failed is not one: the next sweep asks again. */
 const lastRead = new WeakMap<PoolContext, Map<string, number>>();
+
+/** When each ticket's CI was last asked for, read or not, by pool: the order the tickets not yet read are tried in, so one that keeps failing does not take the first reads of the others. */
+const lastTried = new WeakMap<PoolContext, Map<string, number>>();
+
+/** Record `key` at `now` in the pool's `times`. */
+function noteTime(times: WeakMap<PoolContext, Map<string, number>>, ctx: PoolContext, key: string, now: number): void {
+  const held = times.get(ctx) ?? new Map<string, number>();
+  times.set(ctx, held);
+  held.set(key, now);
+}
 
 /**
  * Whether the sweep reads this run's CI now. A live run is read every sweep: its pushes are what cost. A finished run is read when it has not been read since the board started, while any of its workflow runs is not completed, and otherwise once every
@@ -85,19 +95,23 @@ async function readTicket(ctx: PoolContext, entry: Entry, readBranchCi: NonNulla
   const { store, now } = ctx;
   const key = entry.ticket.key;
   const read: BranchCiRun[] = [];
+  let complete = true;
+  noteTime(lastTried, ctx, key, now());
   for (const repo of entry.repos ?? []) {
     const repository = await fullNameOf(ctx, repo);
     if (repository === null) {
       sayOnce(ctx, `${key} ${repo} clone`, `${key}: ${repo} names no repository on the code host, so its CI was not read`);
+      complete = false;
       continue;
     }
     const runs = readBranchCi(repository, entry.ticket.branch, settledIds(store.get(), key));
-    if (runs === null) sayOnce(ctx, `${key} ${repository} read`, `${key}: the workflow runs on ${entry.ticket.branch} in ${repository} could not be read, so its CI was not counted; the next sweep asks again`);
-    else read.push(...runs);
+    if (runs === null) {
+      sayOnce(ctx, `${key} ${repository} read`, `${key}: the workflow runs on ${entry.ticket.branch} in ${repository} could not be read, so its CI was not counted; the next sweep asks again`);
+      complete = false;
+    } else read.push(...runs);
   }
-  const times = lastRead.get(ctx) ?? new Map<string, number>();
-  lastRead.set(ctx, times);
-  times.set(key, now());
+  // Only a read that every repository answered keeps a finished run's CI from being asked again for a while: a failed one is tried by the next sweep, as the log says.
+  if (complete) noteTime(lastRead, ctx, key, now());
   const held = store.get().ciSpend?.[key]?.runs ?? {};
   // Written only when a run changed, so a sweep that finds the same runs does not rewrite the queue.
   if (JSON.stringify(mergedRuns(held, read)) !== JSON.stringify(held)) update(ctx, (queue) => recordRuns(queue, key, read, now()));
@@ -161,10 +175,11 @@ function act(ctx: PoolContext, key: string): void {
   else if (step.kind === "hold") hold(ctx, entry, weighted, step.multiple);
 }
 
-/** The entries due to be read, with no more than {@link FIRST_READS_PER_SWEEP} of the tickets this board has not read since it started. */
+/** The entries due to be read, with no more than {@link FIRST_READS_PER_SWEEP} of the tickets this board has not read in full since it started, the ones tried longest ago first. */
 function firstReadsLimited(ctx: PoolContext, due: readonly Entry[]): Entry[] {
   const unread = (entry: Entry): boolean => lastRead.get(ctx)?.has(entry.ticket.key) !== true;
-  const allowed = new Set(due.filter(unread).slice(0, FIRST_READS_PER_SWEEP));
+  const tried = (entry: Entry): number => lastTried.get(ctx)?.get(entry.ticket.key) ?? Number.NEGATIVE_INFINITY;
+  const allowed = new Set(due.filter(unread).sort((a, b) => tried(a) - tried(b)).slice(0, FIRST_READS_PER_SWEEP));
   return due.filter((entry) => !unread(entry) || allowed.has(entry));
 }
 

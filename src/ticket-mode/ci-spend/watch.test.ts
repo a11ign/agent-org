@@ -287,3 +287,28 @@ test("A11-261: a finished run whose branch ran nothing is asked about once, not 
   assert.equal(b.fake.branchCi.asked.length, 1);
   assert.equal(b.store.get().ciSpend, undefined, "and nothing is recorded for it");
 });
+
+test("A11-261: a finished run whose branch could not be read is asked again by the next sweep, not left for the quiet time, and is counted once it can be", async () => {
+  const b = await board({ budget: 10, finished: true, runs: [run(1, [job(["macos-14"], 3)])] });
+  b.fake.branchCi.runs.delete(branchCiKey(REPOSITORY, BRANCH));
+  await b.sweep();
+  assert.equal(b.fake.branchCi.asked.length, 1);
+  assert.equal(b.record(), undefined, "nothing is counted from a read that failed");
+  b.fake.branchCi.runs.set(branchCiKey(REPOSITORY, BRANCH), [run(1, [job(["macos-14"], 3)])]);
+  await b.sweep();
+  assert.equal(b.fake.branchCi.asked.length, 2, "the next sweep asked again");
+  assert.deepEqual(ciViewOf(b.store.get(), b.entry(KEY), 10)?.ticket, { pushes: 1, jobs: 1, weighted: 30 });
+  await b.sweep();
+  assert.equal(b.fake.branchCi.asked.length, 2, "and once it was read in full, the quiet time holds");
+});
+
+test("A11-261: a ticket whose branch keeps failing does not take the first reads of the others", async () => {
+  const b = await board({ budget: 0, finished: true, others: 4, runs: [] });
+  b.fake.branchCi.runs.delete(branchCiKey(REPOSITORY, BRANCH));
+  for (let n = 2; n <= 5; n++) b.fake.branchCi.runs.set(branchCiKey(REPOSITORY, `nbf-${n}`), [run(10 * n, [job(["ubuntu-latest"], 1)])]);
+  await b.sweep();
+  await b.sweep();
+  const readBranches = new Set(b.fake.branchCi.asked.map(({ branch }) => branch));
+  assert.deepEqual([...readBranches].sort(), ["nbf-1", "nbf-2", "nbf-3", "nbf-4", "nbf-5"], "nbf-1 failed twice, and the other four were all read in two sweeps");
+  assert.equal(b.store.get().ciSpend?.["NBF-5"] !== undefined, true);
+});
