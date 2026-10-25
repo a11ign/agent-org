@@ -13,6 +13,11 @@ export function recordOutcomeHeads(queue: Queue, key: string, heads: Readonly<Re
   return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, outcomeHeads: { ...entry.outcomeHeads, ...heads } } : entry));
 }
 
+/** Record the open pull requests a finished `needs-human` run ended with changes requested at their head (A11-258): none records nothing, so a run that stopped on something else carries no record. */
+export function recordOutcomeBlocks(queue: Queue, key: string, urls: readonly string[]): Queue {
+  return urls.length === 0 ? queue : replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, outcomeBlocks: urls } : entry));
+}
+
 /**
  * Agent-org pushed a merge to a finished run's branch, moving it from `from` to `to`: each outcome head at `from` moves with it. That push is not a person's
  * answer, so it must not read as one (A11-153). An outcome head at another commit was already moved on by someone else, and stays. PURE.

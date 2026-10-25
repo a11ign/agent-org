@@ -5,8 +5,11 @@
 // when the run ended (`outcomeHeads`) and the head it is at now, with whether a reviewer approved it there (`pullHeads`); this reads the two.
 import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
 
-/** How a pull request answers a `needs-human` run's question: a reviewer approved it at its head, or its head moved on from the one the run ended at. */
-export type PullAnswer = "approved" | "answered";
+/**
+ * How a pull request answers a `needs-human` run's question: a reviewer approved it at its head, its head moved on from the one the run ended at, or the requested changes the run stopped on were lifted without a push and
+ * the pull requests merge (A11-258).
+ */
+export type PullAnswer = "approved" | "answered" | "cleared";
 
 /**
  * Whether the pull requests of a finished `needs-human` run answer its question (A11-153), from the heads the pool read: `approved` when every open pull
@@ -25,5 +28,21 @@ export function pullAnswer(entry: ViewEntry): PullAnswer | null {
     const then = entry.outcomeHeads?.[url];
     return now !== undefined && then !== undefined && now !== then;
   });
-  return moved ? "answered" : null;
+  if (moved) return "answered";
+  return liftedBlocks(entry).length > 0 ? "cleared" : null;
+}
+
+/**
+ * The open pull requests a finished `needs-human` run stopped on a requested change (`outcomeBlocks`) whose review is lifted now (A11-258): each still reads, at the head the run ended at, a review other than
+ * changes requested (dismissed, or approved). Empty unless every one of them is lifted and every open pull request of the run reads mergeable: a pull request not read yet, or one GitHub is still computing
+ * (`UNKNOWN` is not mergeable), clears nothing. A run that recorded no requested change is never cleared by this, whatever its pull requests read now: it stopped on something else. PURE.
+ */
+export function liftedBlocks(entry: ViewEntry): string[] {
+  const open = openPulls(entry);
+  const blocked = open.filter(({ url }) => entry.outcomeBlocks?.includes(url) === true).map(({ url }) => url);
+  const lifted = blocked.every((url) => {
+    const read = entry.pullHeads?.[url];
+    return read?.review !== undefined && read.review !== "changes-requested" && read.head === entry.outcomeHeads?.[url];
+  });
+  return lifted && open.every(({ url }) => entry.pullHeads?.[url]?.mergeable === true) ? blocked : [];
 }

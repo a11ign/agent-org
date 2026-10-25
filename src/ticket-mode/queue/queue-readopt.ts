@@ -32,7 +32,7 @@ export function adoptCrashed(queue: Queue, key: string, workspace: string, pane:
   return replace(queue, key, (entry) => {
     if (entry.phase !== "finished" || entry.outcome?.kind !== "crashed" || entry.workspace !== undefined) return entry;
     // What the end recorded goes as it does when a person answers a parked run (`markResumed`): the tracker state, the pull request states and heads, and a hand-back belong to the outcome it replaces.
-    const { outcome, finishedAt: _ended, lastTerminal: _closed, trackerState: _tracked, pullStates: _pulls, outcomeHeads: _outcomeHeads, pullHeads: _heads, handedBack: _handed, ...rest } = entry;
+    const { outcome, finishedAt: _ended, lastTerminal: _closed, trackerState: _tracked, pullStates: _pulls, outcomeHeads: _outcomeHeads, outcomeBlocks: _outcomeBlocks, pullHeads: _heads, handedBack: _handed, ...rest } = entry;
     return { ...rest, phase: "running", workspace, pane, seenWorking: true, readopted: { at: now, from: "crashed", reason: outcome.reason } };
   });
 }
