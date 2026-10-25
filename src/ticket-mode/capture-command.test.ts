@@ -51,6 +51,7 @@ function harness(over: Partial<CaptureDeps> = {}, start: () => Child = () => chi
     checkout: "/work/agent-org",
     env: { HOME: "/home/me", PATH: "/usr/bin:/bin" },
     chromium: () => READY,
+    build: () => "/work/agent-org/ui/dist",
     tmp: () => dir,
     freePort: async () => { port += 1; return port; },
     spawn: (file, args, env) => {
@@ -83,6 +84,12 @@ test("a capture refuses before anything starts when a Chromium build is missing,
   await assert.rejects(captureRoute(h.request, h.deps), (err: Error) => err instanceof CaptureRefusal && err.message === chromiumProblems(missing).join("\n"));
   assert.equal(h.spawned.length, 0, "no child starts");
   assert.equal(existsSync(h.dir), true, "nothing was made, so nothing needed removing");
+});
+
+test("A11-202: a capture refuses before anything starts when the checkout has no UI build, and names the command that makes it", async () => {
+  const h = harness({ build: () => null });
+  await assert.rejects(captureRoute(h.request, h.deps), (err: Error) => err instanceof CaptureRefusal && /no board UI build/.test(err.message) && /pnpm ui:build/.test(err.message));
+  assert.equal(h.spawned.length, 0, "no child starts");
 });
 
 test("a capture starts the throwaway instance and board, pairs, shoots the route at the size, and writes the file named for it", async () => {

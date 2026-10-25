@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type InstanceAnswers, type Stand } from "../../test/fixtures.ts";
 import { TicketsPage } from "../tickets/TicketsPage.tsx";
 import { EmptyState } from "../lifecycle/EmptyState.tsx";
@@ -78,6 +78,17 @@ describe("the instance switcher", () => {
     history.replaceState(null, "", "/tickets?connection=personal");
     await shellOn("tickets", stand);
     expect((screen.getByLabelText("Instance") as HTMLSelectElement).value).toBe("personal");
+  });
+
+  it("remembers the connection a link names, so the page a click goes to opens on it too, and remembers no name it does not list", async () => {
+    localStorage.setItem("ticket-mode.connection", JSON.stringify(["work"]));
+    history.replaceState(null, "", "/runs/A11-1?connection=personal");
+    await shellOn("tickets", stand);
+    expect(JSON.parse(localStorage.getItem("ticket-mode.connection") ?? "[]")).toEqual(["personal"]);
+    cleanup();
+    history.replaceState(null, "", "/tickets?connection=nowhere");
+    await shellOn("tickets", stand);
+    expect(JSON.parse(localStorage.getItem("ticket-mode.connection") ?? "[]")).toEqual(["personal"]);
   });
 
   it("opens on the connection this browser remembers", async () => {

@@ -124,6 +124,18 @@ test("a browser that has not paired gets the pairing page and no API, and a code
   }
 });
 
+test("A11-202: the pairing page takes a paired browser back to the address it was asked for, with its query and anchor", async () => {
+  const u = await ui([WORK], { uiBuilds: [builtUi().root] });
+  try {
+    const page = await (await fetch(`${u.base}/runs/A11-1?connection=work`)).text();
+    assert.match(page, /<title>Pair this browser<\/title>/);
+    assert.ok(page.includes("location.replace(location.pathname + location.search + location.hash)"), "the page returns to its own address and not to /");
+    assert.equal(page.includes('location.replace("/")'), false);
+  } finally {
+    await u.close();
+  }
+});
+
 test("a wrong code, a pairing request that is too big or not an object, and a browser asking for a code are each refused", async () => {
   const u = await ui([WORK]);
   try {
