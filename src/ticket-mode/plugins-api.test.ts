@@ -19,7 +19,7 @@ const declared = (needs: object = {}) => JSON.stringify({ name: "a11ign", metada
  * The page's API over a scratch host file that lists `plugins`, with Claude Code's install record holding `record` and the plugin's manifest `manifest`. An action that releases a plugin's
  * serve (disabling the exposure) is released by a stand-in, which notes it in `released`: no test reaches the machine's own `tailscale` (A11-270).
  */
-function apiOver(host: Record<string, unknown>, claude: Readonly<{ record?: unknown; manifest?: string; onPath?: boolean }> = {}, seam: PluginsSeam = {}) {
+function apiOver(host: Record<string, unknown>, claude: Readonly<{ record?: unknown; manifest?: string; onPath?: boolean }> = {}, seam: PluginsSeam = {}, options: Readonly<{ warm?: boolean }> = {}) {
   const dir = tmpDir("plugins-api-");
   const hostPath = join(dir, "host.json");
   const write = (over: Record<string, unknown>) => writeFileSync(hostPath, JSON.stringify({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets: { providers: BLOCKS, ...over } }));
@@ -27,7 +27,7 @@ function apiOver(host: Record<string, unknown>, claude: Readonly<{ record?: unkn
   const files: Record<string, string> = { [RECORD]: JSON.stringify(claude.record ?? { version: 2, plugins: {} }), ...(claude.manifest === undefined ? {} : { [MANIFEST]: claude.manifest }) };
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets: { providers: BLOCKS } });
   const released: string[] = [];
-  const api = pluginsApi({ hostPath, settings, seam: {
+  const api = pluginsApi({ hostPath, settings, warm: options.warm, seam: {
     outgoing: async (plugin) => ({ machineName: null, release: () => { released.push(plugin.name); return { ok: true, detail: "" }; } }),
     load: async () => ({ loaded: [], unbuilt: [], refusals: [] }),
     messaging: { state: async () => ({ provider: null, why: "off" }) as const, checks: async () => [] },
@@ -125,6 +125,13 @@ async function finish(gate: Gate): Promise<void> {
   gate.release();
   await settle();
 }
+/** Checks that one run of the checks started, for `why`, lets it finish, and answers the read after it. */
+async function readAfterTheFirstRun(api: ReturnType<typeof pluginsApi>, gate: Gate, why: string) {
+  await settle();
+  assert.equal(gate.runs, 1, why);
+  await finish(gate);
+  return api.read();
+}
 
 test("A11-270: a read never waits on the checks: a cold read answers at once with checkedAt null, no check rows and checking true", async () => {
   const clock = { at: Date.parse("2026-10-25T14:00:00Z") };
@@ -134,12 +141,17 @@ test("A11-270: a read never waits on the checks: a cold read answers at once wit
   const cold = await api.read();
   assert.ok(Date.now() - started < 300, `answered in ${Date.now() - started} ms while the checks run`);
   assert.deepEqual([cold.checkedAt, cold.checking, linearChecks(cold)], [null, true, []]);
-  await settle();
-  assert.equal(gate.runs, 1, "the read started the checks");
-  await finish(gate);
-  const warm = await api.read();
+  const warm = await readAfterTheFirstRun(api, gate, "the read started the checks");
   assert.deepEqual([warm.checkedAt, warm.checking, linearChecks(warm).map(({ name }) => name), warm.attention], ["2026-10-25T14:00:00.000Z", false, ["token"], 1]);
   assert.equal(gate.runs, 1, "fresh checks are answered from memory, not run again");
+});
+
+test("A11-270: an API made warm, as the board makes it at its start, starts the checks before any read, so the first read finds them", async () => {
+  const { seam, gate } = gatedSeam({ at: Date.parse("2026-10-25T14:00:00Z") });
+  const { api } = apiOver({}, {}, seam, { warm: true });
+  const first = await readAfterTheFirstRun(api, gate, "started with no read");
+  assert.deepEqual([first.checkedAt, first.checking, linearChecks(first).map(({ name }) => name)], ["2026-10-25T14:00:00.000Z", false, ["token"]]);
+  assert.equal(gate.runs, 1, "the first read answers the checks already run");
 });
 
 test("A11-270: only one run of the checks at a time: reads while they run share it", async () => {

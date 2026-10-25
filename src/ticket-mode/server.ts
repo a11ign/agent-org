@@ -95,6 +95,8 @@ export type BoardDeps = Readonly<{
   next?: () => string | null;
   /** What the Settings page's Plugins section reads and runs through (A11-163): the real catalog, loader and programs unless a test replaces them. */
   plugins?: PluginsSeam;
+  /** Whether the plugins' checks start when the board is made, so the first page read finds them (A11-270): `serve` sets it; a test's board starts none. */
+  warmPlugins?: boolean;
 }>;
 
 /** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
@@ -814,7 +816,7 @@ export function createBoard(deps: BoardDeps) {
       batch: plansInBatches(settings.planner) };
   }
 
-  const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins });
+  const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins, warm: deps.warmPlugins });
   const update = updateReader(deps, store);
   const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, update, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
 
@@ -931,7 +933,7 @@ async function serve(): Promise<void> {
   if (reviewer !== undefined && startsReviewers(settings)) await reviewer.load();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(),
+  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(), warmPlugins: true,
     poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } };
   const board = createBoard(boardDeps);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));

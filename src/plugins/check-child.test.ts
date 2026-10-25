@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { type CheckRequest, checksInChild, checksOfRequest, runInGroup } from "./check-child.ts";
+import { type CheckRequest, foundInChild, foundOf, runInGroup } from "./check-child.ts";
 
 /** A request for `plugin`'s checks over a scratch host file whose exposure is the local plugin. */
 function requestOf(plugin: string | null, hostPath?: string): CheckRequest {
@@ -16,20 +16,25 @@ function requestOf(plugin: string | null, hostPath?: string): CheckRequest {
 
 test("A11-270: a plugin's checks run in a process of their own say what they say in this one", async () => {
   const request = requestOf("local");
-  const here = await checksOfRequest(request);
-  assert.ok(here.length > 0, "the local plugin has checks");
-  assert.deepEqual(await checksInChild(request, 60_000), here);
+  const here = await foundOf(request);
+  assert.ok(here.checks.length > 0, "the local plugin has checks");
+  assert.deepEqual(await foundInChild(request, 60_000), here);
+});
+
+test("A11-270: the messaging plugin is read in the child too: a host that declares no project enables none, and has no checks", async () => {
+  const request = requestOf(null);
+  assert.deepEqual(await foundInChild(request, 60_000), { provider: null, checks: [] });
+  assert.deepEqual(await foundOf(request), { provider: null, checks: [] });
 });
 
 test("A11-270: checks that throw in the child are thrown here with their own message", async () => {
-  const request = requestOf(null, "/no/such/host.json");
-  const here = await checksOfRequest(request).then(() => "answered", (error: Error) => error.message);
-  assert.match(here, /ENOENT/);
-  await assert.rejects(checksInChild(request, 60_000), (error: Error) => error.message === here);
+  const program = join(tmpDir("check-child-throws-"), "throws.mjs");
+  writeFileSync(program, `process.stdout.write(JSON.stringify({ error: "no keychain" }));`);
+  await assert.rejects(foundInChild(requestOf("local"), 60_000, program), (error: Error) => error.message === "no keychain");
 });
 
 test("A11-270: a child still running at its limit is stopped, and the reason says so", async () => {
-  await assert.rejects(checksInChild(requestOf("local"), 1), /^Error: the checks were stopped after 0\.001 seconds$/);
+  await assert.rejects(foundInChild(requestOf("local"), 1), /^Error: the checks were stopped after 0\.001 seconds$/);
 });
 
 test("A11-270: stopping a child at its limit stops the programs its checks started too", async () => {

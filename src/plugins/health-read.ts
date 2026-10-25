@@ -7,8 +7,9 @@
 //
 // THE PAGE'S CHECKS RUN TOGETHER, EACH WITHIN A TIME LIMIT (A11-270). On a loaded host one after another took 13 s. With `limitMs` (the board's page sets it), every plugin's checks start at
 // once, and a plugin whose checks do not finish in time is one failing row of its own, as one whose checks throw is, so one hung program never holds up the rest. A plugin's checks are
-// synchronous (`spawnSync`), so the board runs each out of its process (`checkOf`: a child, `check-child.ts`). Without a limit (doctor) they run here one after another, to the end, as
-// they always have. Loading and checking are separate calls too, so the page can answer from loading alone while the checks run.
+// synchronous (`spawnSync`), so the board runs each out of its process (`checkEnabled`, with a child per plugin, `check-child.ts`), naming the plugins from the host file and importing none
+// here. Without a limit (doctor) they run here one after another, to the end, as they always have. Loading and checking are separate calls too, so the page can answer from loading alone
+// while the checks run.
 import { liveToolVersion } from "../lib/tool-version.ts";
 import { TOOL_ROOT } from "../install/paths.ts";
 import { versionNameOf } from "../install/tool-versions.ts";
@@ -17,6 +18,7 @@ import { blockOf, type ProviderBlock } from "./concerns.ts";
 import { type Failure, pluginHealth, type PluginHealth } from "./health.ts";
 import { type LoadResult, settingsOfBlock } from "./loader.ts";
 import type { Catalog, PluginCheck, PluginDeps } from "./manifest.ts";
+import { pluginNamed } from "./registry.ts";
 import type { MessagingState } from "./view.ts";
 
 export type HealthSources = Readonly<{
@@ -31,9 +33,19 @@ export type HealthSources = Readonly<{
   version: string;
   /** How long one plugin's checks may run, all of them at once, before they are reported as not finished (the board's page: `CHECK_MS`). Absent: they run one after another, to the end. */
   limitMs?: number;
-  /** Runs one loaded plugin's checks out of this process, by its name. Absent: the loaded module's checks run here. */
-  checkOf?: (plugin: string) => Promise<readonly PluginCheck[]>;
 }>;
+
+/**
+ * How the board runs the checks out of its process: one plugin's by its name, and the messaging plugin's, which answers the plugin the project enables (null for none) with its checks:
+ * the project's declaration is read there too.
+ */
+export type OutOfProcess = Readonly<{
+  checkOf: (plugin: string) => Promise<readonly PluginCheck[]>;
+  messagingOf: () => Promise<Readonly<{ provider: string | null; checks: readonly PluginCheck[] }>>;
+}>;
+
+/** A plugin whose checks are asked for, and how they are run. */
+type Target = Readonly<{ name: string; run: () => PluginCheck[] | readonly PluginCheck[] | Promise<readonly PluginCheck[]> }>;
 
 /** What loading read: the plugins and the project's messaging key. Cheap: no plugin's checks have run. */
 export type Loaded = Readonly<{ load: LoadResult; messaging: MessagingState }>;
@@ -101,10 +113,23 @@ async function messagingChecksOf(sources: HealthSources, state: MessagingState, 
   }
 }
 
+const messagingStateOf = async (sources: HealthSources): Promise<MessagingState> => (sources.messaging === undefined ? NOT_READ : sources.messaging.state());
+
+/** The messaging plugin's checks, run out of this process: the provider it names keys them, and checks that throw, or do not finish in time, are the messaging failure. */
+async function messagingFoundOf(run: OutOfProcess["messagingOf"], ms: number | undefined): Promise<MessagingChecked> {
+  try {
+    const found = await within(run, ms);
+    if (found === LATE) return { failure: { why: `its checks did not finish within ${(ms ?? 0) / 1000} seconds`, fix: "run agent-org doctor to see them" } };
+    return found.provider === null ? null : { provider: found.provider, checks: found.checks };
+  } catch (error) {
+    return { failure: { why: messageOf(error), fix: MESSAGING_FIX } };
+  }
+}
+
 /** Loads the plugins the host enables and reads the project's messaging key, running no plugin's checks. */
 export async function loadPlugins(sources: HealthSources): Promise<Loaded> {
   const load = await sources.load(sources.providers, sources.catalog, sources.deps, sources.blocks);
-  return { load, messaging: sources.messaging === undefined ? NOT_READ : await sources.messaging.state() };
+  return { load, messaging: await messagingStateOf(sources) };
 }
 
 /** Runs `tasks` all at once. */
@@ -117,20 +142,37 @@ async function inTurn<T>(tasks: readonly (() => Promise<T>)[]): Promise<T[]> {
   return done;
 }
 
-/** Asks every loaded plugin, then the messaging plugin, for its checks: all at once, each within the limit, when there is one. */
-export async function checkPlugins(sources: HealthSources, loaded: Loaded): Promise<Checked> {
-  const { providers, deps, checkOf, limitMs } = sources;
-  const own = [...loaded.load.loaded, ...loaded.load.unbuilt].flatMap(({ plugin, module }) => {
-    const block = blockOf(plugin.concern);
-    if (block === null) return [];
-    const run = checkOf === undefined ? () => module.doctorChecks(settingsOfBlock(providers.blocks[block]), deps) : () => checkOf(plugin.name);
-    return [() => checksOf(plugin.name, run, limitMs).then((checks) => [plugin.name, checks] as const)];
-  });
-  const messagingOf = () => messagingChecksOf(sources, loaded.messaging, limitMs);
+/** Asks each target, then the messaging plugin, for its checks: all at once, each within the limit, when there is one. */
+async function checkTargets(sources: HealthSources, targets: readonly Target[], messagingOf: () => Promise<MessagingChecked>): Promise<Checked> {
+  const { limitMs } = sources;
+  const own = targets.map(({ name, run }) => () => checksOf(name, run, limitMs).then((checks) => [name, checks] as const));
   const [rows, messaging] = limitMs === undefined ? [await inTurn(own), await messagingOf()] : await Promise.all([together(own), messagingOf()]);
   const checks: Record<string, readonly PluginCheck[]> = Object.fromEntries(rows);
   if (messaging !== null && "checks" in messaging) checks[messaging.provider] = messaging.checks;
   return { checks, messagingFailure: messaging !== null && "failure" in messaging ? messaging.failure : null };
+}
+
+/** Asks every loaded plugin, then the messaging plugin, for its checks, run here. */
+export function checkPlugins(sources: HealthSources, loaded: Loaded): Promise<Checked> {
+  const { providers, deps } = sources;
+  const targets = [...loaded.load.loaded, ...loaded.load.unbuilt].flatMap(({ plugin, module }): Target[] => {
+    const block = blockOf(plugin.concern);
+    return block === null ? [] : [{ name: plugin.name, run: () => module.doctorChecks(settingsOfBlock(providers.blocks[block]), deps) }];
+  });
+  return checkTargets(sources, targets, () => messagingChecksOf(sources, loaded.messaging, sources.limitMs));
+}
+
+/**
+ * Asks every bundled plugin the host file enables, then the messaging plugin, for its checks, each run out of this process. The plugins are named from the host file alone, as the
+ * loader names them, and the messaging plugin is read out of it too, so no plugin's module and no project reader is loaded here: the board can run them at its start (A11-270).
+ */
+export function checkEnabled(sources: HealthSources, outOfProcess: OutOfProcess): Promise<Checked> {
+  const targets = sources.blocks.flatMap((block): Target[] => {
+    const report = sources.providers.blocks[block];
+    const plugin = report.enabled ? pluginNamed(sources.catalog, report.provider) : undefined;
+    return plugin?.where === "bundled" ? [{ name: plugin.name, run: () => outOfProcess.checkOf(plugin.name) }] : [];
+  });
+  return checkTargets(sources, targets, () => messagingFoundOf(outOfProcess.messagingOf, sources.limitMs));
 }
 
 /** The account of every concern and plugin from what loading read and what the checks found. */

@@ -19,12 +19,12 @@
 // meanwhile says `checking`. Everything else (loading, the Claude plugins, the bases, the note) is read fresh on every read, as before: it is cheap, and an action must see the files as they are.
 // Each plugin's checks run in a child process of their own (`check-child.ts`), all at once: they run programs synchronously, which in this process would hold every other request still.
 import { readFileSync } from "node:fs";
-import { checksInChild, type CheckScope, pageDeps } from "../plugins/check-child.ts";
+import { type CheckScope, foundInChild, pageDeps } from "../plugins/check-child.ts";
 import type { PluginCliDeps } from "../plugins/cli.ts";
 import { type ActionDone, actionRequestOf, runAction } from "../plugins/page-actions.ts";
 import { attentionOf, type ClaudePlugins } from "../plugins/attention.ts";
 import { type PluginHealth } from "../plugins/health.ts";
-import { CHECK_MS, type Checked, checkPlugins, healthOf, type HealthSources, loadPlugins, toolVersionOf } from "../plugins/health-read.ts";
+import { CHECK_MS, checkEnabled, type Checked, checkPlugins, healthOf, type HealthSources, loadPlugins, type OutOfProcess, toolVersionOf } from "../plugins/health-read.ts";
 import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import type { Catalog, PluginCheck, PluginDeps } from "../plugins/manifest.ts";
 import { messagingStateOfFile } from "../plugins/messaging-state.ts";
@@ -134,32 +134,41 @@ export function claudePluginsOf({ states, contracts, rows }: PluginProblems): Cl
   };
 }
 
-export function pluginsApi(options: Readonly<{ hostPath: string; settings: TicketSettings; seam?: PluginsSeam }>) {
+/**
+ * The page's plugins: `read` and `act`, and `check` to run the checks now. With `warm` (the board, at its start) the first run of the checks starts when this is made, so the first read
+ * normally finds them; the board's checks import no plugin's module in its process, so starting them there loads nothing the instance would not load.
+ */
+export function pluginsApi(options: Readonly<{ hostPath: string; settings: TicketSettings; seam?: PluginsSeam; warm?: boolean }>) {
   const { hostPath, settings, seam = {} } = options;
   const catalog = seam.catalog ?? defaultCatalog();
   const scope: CheckScope = { stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones };
   const deps = seam.deps ?? pageDeps(scope);
   const load = seam.load ?? ((providers, cat, pluginDeps) => loadEnabled(providers, cat, pluginDeps));
   const limitMs = seam.limitMs ?? CHECK_MS;
-  const inChild = (plugin: string | null) => checksInChild({ ...scope, hostPath, plugin }, limitMs + KILL_GRACE_MS);
-  const messaging = seam.messaging ?? { state: () => messagingStateOfFile(hostPath, seam.projectPath), checks: () => inChild(null) };
+  const inChild = (plugin: string | null) => foundInChild({ ...scope, hostPath, plugin }, limitMs + KILL_GRACE_MS);
+  const messaging = seam.messaging ?? { state: () => messagingStateOfFile(hostPath, seam.projectPath), checks: async () => (await inChild(null)).checks };
   // The plugins the host enables are checked in child processes; a test's stand-in modules (`seam.load`) are checked here.
-  const checkOf = seam.load === undefined ? (plugin: string) => inChild(plugin) : undefined;
+  const outOfProcess: OutOfProcess | null = seam.load === undefined ? { checkOf: async (plugin) => (await inChild(plugin)).checks, messagingOf: () => inChild(null) } : null;
   const now = seam.now ?? Date.now;
   let held: Held | null = null;
   let running: Promise<void> | null = null;
   let asks = 0;
 
   const sourcesOf = (text: string | null): HealthSources => ({ catalog, providers: providersOfText(text, catalog), blocks: PROVIDER_BLOCKS, deps, load: (providers, cat, pluginDeps) => load(providers, cat, pluginDeps),
-    messaging, version: seam.version ?? toolVersionOf(), limitMs, checkOf });
+    messaging, version: seam.version ?? toolVersionOf(), limitMs });
+
+  /** What the checks find on the host file's `text`: the board's in child processes, a test's stand-in modules here. */
+  async function checksOn(text: string | null): Promise<Checked> {
+    const sources = sourcesOf(text);
+    return outOfProcess === null ? checkPlugins(sources, await loadPlugins(sources)) : checkEnabled(sources, outOfProcess);
+  }
 
   /** Runs the checks on the host file as it is now, and keeps what they found. A run that fails keeps the last checks: the read that loads the plugins says why. */
   async function runChecks(): Promise<void> {
     const text = readText(hostPath);
     const started = asks;
     try {
-      const sources = sourcesOf(text);
-      held = { checked: await checkPlugins(sources, await loadPlugins(sources)), at: now(), text, asks: started };
+      held = { checked: await checksOn(text), at: now(), text, asks: started };
     } catch {
       // Loading failed: every read fails on it too, with its reason.
     }
@@ -206,6 +215,7 @@ export function pluginsApi(options: Readonly<{ hostPath: string; settings: Ticke
     return done;
   }
 
+  if (options.warm === true) void check();
   return { read, act, check };
 }
 

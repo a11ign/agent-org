@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PROVIDER_BLOCKS, providersOfText } from "../ticket-mode/providers.ts";
-import { type HealthSources, readPluginHealth } from "./health-read.ts";
+import { checkEnabled, checkPlugins, type HealthSources, loadPlugins, readPluginHealth } from "./health-read.ts";
 import type { PluginCheck, PluginDeps, PluginModule } from "./manifest.ts";
 import { defaultCatalog } from "./registry.ts";
 
@@ -65,4 +65,39 @@ test("A11-163: without a time limit (doctor), the checks run one after another a
   const health = await readPluginHealth(sourcesOf({ linear: slow("token"), github: slow("app"), tailscale: slow("serve") }));
   assert.equal(most, 1, "one plugin's checks at a time");
   assert.deepEqual(["linear", "github", "tailscale"].map((name) => checksOfPlugin(health, name).map(({ name: check }) => check)), [["token"], ["app"], ["serve"]]);
+});
+
+test("A11-270: the board's checks name the plugins from the host file and import none here: each enabled bundled plugin's checks run through checkOf, all at once", async () => {
+  const asked: string[] = [];
+  const sources = sourcesOf({}, { limitMs: 10_000, load: async () => { throw new Error("no plugin is loaded in this process"); } });
+  const started = Date.now();
+  const checkOf = (plugin: string) => { asked.push(plugin); return later(300, [row(`${plugin} answers`)]); };
+  const { checks, messagingFailure } = await checkEnabled(sources, { checkOf, messagingOf: () => later(300, { provider: "slack", checks: [row("paired")] }) });
+  assert.ok(Date.now() - started < 600, "together, not one after another");
+  assert.deepEqual(asked.sort(), ["github", "linear", "tailscale"], "the plugins the host file enables, and no other");
+  assert.deepEqual([checks.linear, checks.slack, messagingFailure], [[row("linear answers")], [row("paired")], null], "the messaging plugin's checks under the provider the child read");
+});
+
+test("A11-270: out of this process, messaging checks that throw are the messaging failure, as they are here, and so are checks that do not finish in time", async () => {
+  const sources = sourcesOf({}, { limitMs: 200 });
+  const checkOf = async () => [];
+  const thrown = await checkEnabled(sources, { checkOf, messagingOf: async () => { throw new Error("project.json is malformed"); } });
+  assert.deepEqual(thrown.messagingFailure, { why: "project.json is malformed", fix: "fix the messaging key of project.json: `agent-org messaging:check` says what is wrong with it" });
+  const hung = await checkEnabled(sources, { checkOf, messagingOf: () => new Promise(() => undefined) });
+  assert.deepEqual(hung.messagingFailure, { why: "its checks did not finish within 0.2 seconds", fix: "run agent-org doctor to see them" });
+  const none = await checkEnabled(sources, { checkOf, messagingOf: async () => ({ provider: null, checks: [] }) });
+  assert.deepEqual([none.messagingFailure, Object.keys(none.checks).sort()], [null, ["github", "linear", "tailscale"]], "a project with no messaging plugin has no messaging rows");
+});
+
+test("A11-270: why the board runs the checks out of its process: a synchronous check here can neither run beside another nor be cut by the limit", async () => {
+  const busy = (ms: number, name: string) => () => {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { /* what `spawnSync` does to this process while a program runs */ }
+    return [row(name)];
+  };
+  const sources = sourcesOf({ linear: busy(200, "token"), github: busy(200, "app"), tailscale: busy(200, "serve") }, { limitMs: 50 });
+  const started = Date.now();
+  const { checks } = await checkPlugins(sources, await loadPlugins(sources));
+  assert.ok(Date.now() - started >= 600, "one after another, though asked all at once");
+  assert.deepEqual(checks.linear, [row("token")], "the 50 ms limit did not cut a check that held the process for 200 ms");
 });
