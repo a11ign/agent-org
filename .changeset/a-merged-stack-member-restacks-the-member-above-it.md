@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+When the member below a finished stacked run's pull request merges, the board merges the default branch into that pull request (A11-248). Nothing did before: `#14` of a11ign/announcement-emulator sat 8 commits behind `main` and conflicting after its two blockers merged. `retargetStacked` reads the stacked blocker's pull requests live (`readPullState`), and for the open member whose base is the default branch now it calls the code host's `updateBranch` once for each merged member, as the workers' account, never by a rebase and never by a force-push (A11-150, the house rules). A conflict starts the run's conflict round, whose feedback names the stack, the merged member and the default branch; at the round cap it starts none. The card shows `#N restacked on main after #M merged`, the conflict, or GitHub's refusal, which is tried again on the next sweep. The members above follow when the restacked branch moves (`rebaseStacked`). The stacked worker's brief says so. `pool-tracker.ts` shares one `stackMergeFactsOf` read between the restack and the stack merge, and a branch the restack moved is not handed to the arm bot in the same pass.

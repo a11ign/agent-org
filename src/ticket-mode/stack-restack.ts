@@ -14,7 +14,7 @@ export type RestackBelow = Readonly<{ key: string; url: string; state: string | 
 export type RestackDone = Readonly<{ merged: string; head?: string }>;
 
 export type RestackStepInput = Readonly<{
-  facts: Pick<StackMergeFacts, "base" | "defaultBranch" | "head">;
+  facts: Pick<StackMergeFacts, "base" | "defaultBranch" | "head" | "settled">;
   below: RestackBelow;
   done: RestackDone | undefined;
   previousNote: string | undefined;
@@ -35,11 +35,11 @@ const AFTER_MERGED = /^#(\d+)( restacked on | conflicts with | could not be rest
 const numberOf = (url: string): string => url.replace(/\/+$/, "").split("/").pop() ?? url;
 
 /**
- * Whether the default branch is to be merged into a pull request: the member below it has merged, the pull request's base is the default branch now (a base that is still the merged member's branch has not been retargeted, and a
+ * Whether the default branch is to be merged into a pull request: the member below it has merged, the pull request is neither queued to merge nor merged, its base is the default branch now (a base that is still the merged member's branch has not been retargeted, and a
  * note about it comes first), and the board has not already done it for that member. PURE.
  */
 function isDue({ facts, below, done }: Pick<RestackStepInput, "facts" | "below" | "done">): boolean {
-  return below.state === "MERGED" && facts.base === facts.defaultBranch && done?.merged !== below.url;
+  return below.state === "MERGED" && facts.settled === null && facts.base === facts.defaultBranch && done?.merged !== below.url;
 }
 
 /**

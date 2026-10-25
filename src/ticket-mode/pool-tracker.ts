@@ -25,7 +25,7 @@ import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
 import { readPlanSteps } from "./pool-plan-steps.ts";
 import { readPullDeclarations } from "./pool-pull-declarations.ts";
 import { askUpdate } from "./pool-checks.ts";
-import { isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
+import { isRestackedNote, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
@@ -345,70 +345,86 @@ function factsOf(ctx: PoolContext, url: string, read: Map<string, StackMergeFact
 /** What {@link sweepRestacks} decided for a run: the note of each pull request, the pull requests whose branch it moved or found conflicting, and the feedback of the conflict round to start. */
 type RestackSweep = Readonly<{ notes: Record<string, string>; moved: ReadonlySet<string>; feedback: readonly string[] }>;
 
+/** What the restack decided for one pull request: its note (null clears it), whether its branch moved or conflicts, and the feedback of the conflict round it earns. */
+type MemberRestack = Readonly<{ note: string | null; moved: boolean; feedback: string | null }>;
+
+/** The restack notes a run has now, for the pull requests it still holds open. */
+const restackNotesOf = (entry: Entry, urls: readonly string[]): Record<string, string> =>
+  Object.fromEntries(urls.flatMap((url) => (entry.retargets?.[url] !== undefined && isRestackNote(entry.retargets[url]) ? [[url, entry.retargets[url]]] : [])));
+
+/** The notes that stay true whatever happens next: that a pull request was restacked. A note about a conflict or a refusal is only said while the sweep can see it. PURE. */
+const restackedOnly = (notes: Readonly<Record<string, string>>): Record<string, string> => Object.fromEntries(Object.entries(notes).filter(([, note]) => isRestackedNote(note)));
+
 /**
  * The open member of a stack above one that merged is brought up to date with the default branch (A11-248, `stack-restack.ts`). It applies to a finished run stacked on a blocker's branch, whose pull requests in the stack's repository are open, once for each
  * merged member below, and only when no workspace is open in the run and no merge of the blocker's branch is under way (the guards of {@link mergeable} and `rebasing`). The member below is read live (`readPullState`), so a merge is seen on the first sweep after it, before
- * the conflict watch can read the conflict. The merge is the code host's `updateBranch`: no rebase and no force-push. A conflict starts the run's conflict round, where the run resumes on one and has rounds left, and the round names the stack and the member that merged.
- * What a pull request needs said is its note; one the sweep cannot decide for keeps the restack note it had.
+ * the conflict watch can read the conflict. The merge is the code host's `updateBranch`: no rebase and no force-push. Where the run resumes on a conflict and has rounds left, the conflicts of one sweep share one conflict round, whose feedback names the stack and the member that merged.
+ * What a pull request needs said is its note. One the sweep cannot decide for keeps the restack note it had; one it will never decide for (no stack, no blocker pull request, a code host that cannot) keeps only the note that it was restacked.
  */
 function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, told }: { urls: readonly string[]; bases: Readonly<Record<string, string>>; facts: Map<string, StackMergeFacts | null>; told: { unsupported: boolean } }): RestackSweep {
-  const { codeHost } = ctx;
-  const key = entry.ticket.key;
-  const previous = entry.retargets ?? {};
-  const notes: Record<string, string> = Object.fromEntries(urls.flatMap((url) => (previous[url] !== undefined && isRestackNote(previous[url]) ? [[url, previous[url]]] : [])));
+  const stack = entry.stackBase;
+  const kept = restackNotesOf(entry, urls);
+  const members = stack === undefined ? [] : openPulls(entry).filter((pr) => pr.repo === stack.repo && bases[pr.url] === undefined);
+  const blocker = stack === undefined ? undefined : ctx.store.get().entries.find((e) => e.ticket.key === stack.key);
+  const candidates = stack === undefined || blocker === undefined ? [] : pullsOf(blocker).filter((pr) => pr.repo === stack.repo).map((pr) => pr.url);
+  if (stack === undefined || members.length === 0 || candidates.length === 0 || !canRestack(ctx, told)) return { notes: restackedOnly(kept), moved: new Set(), feedback: [] };
+  if (!mergeable(entry) || ctx.rebasing.has(entry.ticket.key)) return { notes: kept, moved: new Set(), feedback: [] };
+  const round = !resumesOnConflict(entry) ? "none" : roundsLeft(entry) ? "started" : "capped";
+  const notes = { ...kept };
   const moved = new Set<string>();
   const feedback: string[] = [];
-  const stack = entry.stackBase;
-  const members = stack === undefined ? [] : openPulls(entry).filter((pr) => pr.repo === stack.repo && bases[pr.url] === undefined);
-  if (stack === undefined || members.length === 0) return { notes, moved, feedback };
-  if (codeHost.updateBranch === undefined || codeHost.stackMergeFactsOf === undefined) {
-    if (!told.unsupported) log("the code host cannot update a branch or read a stack, so a stacked pull request is not brought up to date after the one below it merged");
-    told.unsupported = true;
-    return { notes, moved, feedback };
-  }
-  const blocker = ctx.store.get().entries.find((e) => e.ticket.key === stack.key);
-  const candidates = blocker === undefined ? [] : pullsOf(blocker).filter((pr) => pr.repo === stack.repo).map((pr) => pr.url);
-  if (candidates.length === 0 || !mergeable(entry) || ctx.rebasing.has(key)) return { notes, moved, feedback };
-  let roundsLeftNow = roundsLeft(entry);
-  const roundable = resumesOnConflict(entry);
   for (const { url } of members) {
-    const done = ctx.restacked.get(url) ?? doneFromNote(previous[url], url);
-    const below = belowOf(ctx, stack.key, candidates, done);
-    if (below === null) continue;
-    const read = factsOf(ctx, url, facts);
-    if (read === null) continue;
-    const step = restackStep({ facts: read, below, done, previousNote: previous[url] });
-    if (!step.restack) {
-      if (step.note === null) delete notes[url];
-      else notes[url] = step.note;
-      continue;
-    }
-    const result = askUpdate(ctx, url, read.head);
-    const started = result.kind === "conflict" && roundable && roundsLeftNow;
-    const outcome: RestackOutcome = result.kind === "conflict" ? { kind: "conflict", round: started ? "started" : roundable ? "capped" : "none" } : result;
-    notes[url] = restackNote({ url, defaultBranch: read.defaultBranch, below, outcome });
-    if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head });
-    if (result.kind === "updated" || result.kind === "conflict") moved.add(url);
-    if (result.kind === "updated") followHead(ctx, key, url, read.head);
-    if (started) {
-      feedback.push(restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }));
-      roundsLeftNow = false;
-    }
-    log(`${key}: ${notes[url]}`);
+    const decided = restackMember(ctx, entry, { url, stack, candidates, facts, round });
+    if (decided === null) continue;
+    if (decided.note === null) delete notes[url];
+    else notes[url] = decided.note;
+    if (decided.moved) moved.add(url);
+    if (decided.feedback !== null) feedback.push(decided.feedback);
   }
   return { notes, moved, feedback };
 }
 
-/** The restack a pull request's note says was made, if it names a merged member: the note stands in for the memory a restart lost. */
+/** Whether the code host can update a branch and read a stack, which the restack needs. A host that cannot is said so once for the sweep. */
+function canRestack(ctx: PoolContext, told: { unsupported: boolean }): boolean {
+  const { codeHost } = ctx;
+  if (codeHost.updateBranch !== undefined && codeHost.stackMergeFactsOf !== undefined) return true;
+  if (!told.unsupported) log("the code host cannot update a branch or read a stack, so a stacked pull request is not brought up to date after the one below it merged");
+  told.unsupported = true;
+  return false;
+}
+
+/** One open member of a stack: merge the default branch into it when the member below has merged and it has not been done, and say what happened. Null: nothing is decided for it, so its note stands. */
+function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates, facts, round }: {
+  url: string; stack: StackBaseRecord; candidates: readonly string[]; facts: Map<string, StackMergeFacts | null>; round: "started" | "capped" | "none";
+}): MemberRestack | null {
+  const key = entry.ticket.key;
+  const previous = entry.retargets?.[url];
+  const done = ctx.restacked.get(url) ?? doneFromNote(previous, url);
+  const below = belowOf(ctx, stack.key, candidates, done);
+  const read = below === null ? null : factsOf(ctx, url, facts);
+  if (below === null || read === null) return null;
+  const step = restackStep({ facts: read, below, done, previousNote: previous });
+  if (!step.restack) return { note: step.note, moved: false, feedback: null };
+  const result = askUpdate(ctx, url, read.head);
+  const outcome: RestackOutcome = result.kind === "conflict" ? { kind: "conflict", round } : result;
+  const note = restackNote({ url, defaultBranch: read.defaultBranch, below, outcome });
+  if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head });
+  if (result.kind === "updated") followHead(ctx, key, url, read.head);
+  log(`${key}: ${note}`);
+  const feedback = result.kind === "conflict" && round === "started" ? restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }) : null;
+  return { note, moved: result.kind === "updated" || result.kind === "conflict", feedback };
+}
+
+/** The restack a pull request's note says was made: the note stands in for the memory a restart lost. A note about a conflict or a refusal does not, so the restack is made again and finds the conflict, or finds it resolved. */
 function doneFromNote(note: string | undefined, url: string): { merged: string } | undefined {
-  const merged = note === undefined ? null : restackedAfter(note, url);
+  const merged = note === undefined || !isRestackedNote(note) ? null : restackedAfter(note, url);
   return merged === null ? undefined : { merged };
 }
 
 /** The member below that merged: the one the restack was made after, or else the first of the blocker's pull requests in the repository that the code host says is merged now, or null when none is. */
-function belowOf(ctx: PoolContext, key: string, candidates: readonly string[], done: Readonly<{ merged: string }> | undefined): RestackBelow | null {
+function belowOf(ctx: PoolContext, blockerKey: string, candidates: readonly string[], done: Readonly<{ merged: string }> | undefined): RestackBelow | null {
   const merged = done !== undefined && candidates.includes(done.merged) ? done.merged : candidates.find((url) => ctx.codeHost.readPullState(url) === "MERGED");
-  return merged === undefined ? null : { key, url: merged, state: "MERGED" };
+  return merged === undefined ? null : { key: blockerKey, url: merged, state: "MERGED" };
 }
 
 /** A merge pushed to a finished run's pull request moves its head: the head the run ended at moves with it, so the push is not read as a person's (A11-153). */

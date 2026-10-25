@@ -128,6 +128,45 @@ test("A11-248: a conflict note is dropped once a round has moved the head", () =
   assert.equal(run().retargets, undefined);
 });
 
+test("A11-248: a pull request queued to merge, or already merged, is not updated", () => {
+  const { host, sweep } = world();
+  host.stackMerges.facts.set(NEXT, { settled: "queued" });
+  sweep();
+  assert.deepEqual(host.branchUpdates.asked, []);
+});
+
+test("A11-248: two conflicting members of one run share one round that names both, and neither is told the rounds are used up", () => {
+  const second = fakePullUrl(REPOSITORY, 4);
+  const { host, sweep, run } = world({ next: { outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: NEXT }, { repo: "agent-org", url: second }] }, pullStates: { [NEXT]: "open", [second]: "open" } } });
+  host.seedPull(REPOSITORY, 4, { head: "e".repeat(40), base: BOTTOM_BRANCH });
+  host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
+  host.branchUpdates.answers.set(second, { kind: "conflict" });
+  sweep();
+  assert.equal(host.branchUpdates.asked.length, 2);
+  assert.equal(run().rounds, 1, "one round, not one for each");
+  assert.match(run().feedback!, new RegExp(`${NEXT} conflicts with its base branch main[\\s\\S]*${second} conflicts with its base branch main`));
+});
+
+test("A11-248: after a restart a conflict note does not stand in for the restack: the branch is updated again, and a conflict a person resolved reads as restacked", () => {
+  const note = "#2 conflicts with main after #1 merged, and the conflict rounds are used up: Respond to review starts another";
+  const { host, sweep, run } = world({ next: { rounds: 3, retargets: { [NEXT]: note } } });
+  host.branchUpdates.answers.set(NEXT, { kind: "up-to-date" });
+  sweep();
+  assert.equal(host.branchUpdates.asked.length, 1);
+  assert.equal(run().retargets![NEXT], "#2 restacked on main after #1 merged");
+});
+
+test("A11-248: a conflict note is dropped when the blocker leaves the queue, and a restacked note stays", () => {
+  const conflict = "#2 conflicts with main after #1 merged: a conflict round resolves it";
+  const gone = world({ entries: ({ next }) => [next], next: { retargets: { [NEXT]: conflict } } });
+  gone.sweep();
+  assert.equal(gone.run().retargets, undefined);
+  const restacked = "#2 restacked on main after #1 merged";
+  const stays = world({ entries: ({ next }) => [next], next: { retargets: { [NEXT]: restacked } } });
+  stays.sweep();
+  assert.deepEqual(stays.run().retargets, { [NEXT]: restacked });
+});
+
 test("A11-248: a refusal is the card's note with GitHub's reason, and the next sweep tries again", () => {
   const { host, sweep, run, updates } = world();
   host.branchUpdates.answers.set(NEXT, { kind: "refused", reason: "expected head sha didn't match current head ref" });

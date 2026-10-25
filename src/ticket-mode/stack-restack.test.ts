@@ -7,7 +7,7 @@ import { CONFLICT_LINE } from "./worker-files.ts";
 const PULL = "https://github.com/a11ign/announcement-emulator/pull/14";
 const MERGED_BELOW = "https://github.com/a11ign/announcement-emulator/pull/13";
 const below = (state: string | null = "MERGED"): RestackBelow => ({ key: "A11-228", url: MERGED_BELOW, state });
-const facts = (over: Partial<{ base: string; defaultBranch: string; head: string }> = {}) => ({ base: "main", defaultBranch: "main", head: "a".repeat(40), ...over });
+const facts = (over: Partial<Parameters<typeof restackStep>[0]["facts"]> = {}) => ({ base: "main", defaultBranch: "main", head: "a".repeat(40), settled: null, ...over });
 const step = (over: Partial<Parameters<typeof restackStep>[0]> = {}) => restackStep({ facts: facts(), below: below(), done: undefined, previousNote: undefined, ...over });
 
 test("A11-248: a pull request whose base is the default branch and whose member below merged is restacked", () => {
@@ -20,6 +20,10 @@ test("A11-248: nothing is asked while the member below is open or closed, or the
 
 test("A11-248: a pull request whose base is still the merged member's branch is not restacked: its base has not reached the default branch", () => {
   assert.deepEqual(step({ facts: facts({ base: "a11-228-the-bottom" }) }), { restack: false, note: null });
+});
+
+test("A11-248: a pull request that is queued to merge or merged is not restacked", () => {
+  for (const settled of ["queued", "merged"] as const) assert.deepEqual(step({ facts: facts({ settled }) }), { restack: false, note: null }, settled);
 });
 
 test("A11-248: a pull request already restacked after that member is not restacked again, and keeps its note", () => {
