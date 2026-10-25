@@ -4,9 +4,9 @@
 //
 // It starts this checkout's instance on a free port from a throwaway host file and state folder, with stand-ins first on PATH: a `gh` that sleeps 2 s per call and then answers
 // an empty list, and a `herdr` and a `tailscale` that log their arguments and exit 0, so nothing reaches GitHub, a herdr server or the real tailnet. The instance's `fetch` is the
-// suite's offline one, so the tracker's reads fail at once and nothing reaches Linear. The sweeps run every SWEEP_MS, so one is in progress from the first seconds; the script waits for the first `gh` call, then reads every `GET /api/*` route ROUNDS times,
+// suite's offline one, so the tracker's reads fail at once and nothing reaches Linear. The sweeps run every SWEEP_MS, so one is in progress from the first seconds; the script waits for the first `gh` call, then reads every `GET /api/*` route ROUNDS times (starting none after READS_FOR_MS),
 // each round all at once, and prints each route's p50, p99 and max, the instance's own loop reading (`/api/health`) and the five call sites that held it the longest.
-// It exits 1 when any route's p99 is READ_LIMIT_MS or more. The throwaway folder and the instance are removed on every exit.
+// It exits 1 when any route's p99 is READ_LIMIT_MS or more, or when the rounds did not all fit in READS_FOR_MS. The throwaway folder and the instance are removed on every exit.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -27,12 +27,20 @@ const GH_SECONDS = 2;
 const SWEEP_MS = 1_000;
 const ROUNDS = 20;
 const ROUND_GAP_MS = 250;
+/** No round starts after this long, so a run against an instance that holds every read still ends within its caller's few minutes: it then fails, with the rounds it made. */
+export const READS_FOR_MS = 90_000;
 /** A route whose p99 is this or more fails the run: the ticket's bound on a read. */
 export const READ_LIMIT_MS = 200;
 const START_WAIT_MS = 60_000;
-const READ_TIMEOUT_MS = 90_000;
-/** Every read route of the instance, and its health. */
-const ROUTES = ["/api/config", "/api/settings", "/api/plugins", "/api/pick", "/api/tickets", "/api/parents", "/api/queue", "/api/writer", "/api/health"];
+/** A read that takes this long is given up on, and counts as this long with no answer. */
+const READ_TIMEOUT_MS = 15_000;
+/**
+ * Every read route of the instance, and its health: each `GET /api/*` route of `server.ts` and its route modules, and the Assignee scope's page of `/api/tickets`.
+ * `loop-load-routes.test.ts` holds this list to the routes the source answers. `/api/people` and the scope's page answer 404 on this throwaway host, which lists every
+ * ticket at once, and are timed all the same: a 404 waits behind a held loop as long as any answer.
+ */
+export const ROUTES = ["/api/config", "/api/settings", "/api/plugins", "/api/pick", "/api/people", "/api/tickets", "/api/tickets?assignee=me", "/api/parents", "/api/queue", "/api/writer",
+  "/api/session-asks", "/api/health"];
 
 /** A free port on 127.0.0.1, found by binding port 0 and letting it go. */
 function freePort(): Promise<number> {
@@ -101,7 +109,7 @@ async function waitFor(what: string, holds: () => boolean | Promise<boolean>): P
 }
 
 type RouteTimes = Readonly<{ route: string; p50Ms: number; p99Ms: number; maxMs: number; statuses: readonly number[] }>;
-type Result = Readonly<{ routes: readonly RouteTimes[]; health: HealthView | null; ghCalls: number; pass: boolean }>;
+type Result = Readonly<{ routes: readonly RouteTimes[]; health: HealthView | null; rounds: number; ghCalls: number; pass: boolean }>;
 
 /** A throwaway instance of this checkout, answering on `port`: its environment (whose `AGENT_ORG_HOST` names its host file), the stand-in `gh`'s log, and how to stop it. */
 export type Throwaway = Readonly<{ port: number; env: NodeJS.ProcessEnv; ghLog: string; stop: () => void }>;
@@ -124,11 +132,19 @@ export async function startThrowawayInstance(dir: string): Promise<Throwaway> {
   return { port, env, ghLog, stop };
 }
 
-/** Every read route's times and statuses over ROUNDS rounds, each round all at once, and the last health the instance answered. */
-async function readRounds(port: number): Promise<Readonly<{ routes: readonly RouteTimes[]; health: HealthView | null }>> {
+/** How many rounds `readRounds` makes, and for how long it starts them: ROUNDS and READS_FOR_MS unless a test asks for fewer. */
+export type RoundLimits = Readonly<{ rounds: number; forMs: number }>;
+
+/**
+ * Every read route's times and statuses over up to `rounds` rounds, each round all at once, the last health the instance answered, and how many rounds were made. No round
+ * starts after `forMs`.
+ */
+export async function readRounds(port: number, { rounds, forMs }: RoundLimits = { rounds: ROUNDS, forMs: READS_FOR_MS }): Promise<Readonly<{ routes: readonly RouteTimes[]; health: HealthView | null; rounds: number }>> {
   const times = new Map<string, { ms: number[]; statuses: number[] }>(ROUTES.map((route) => [route, { ms: [], statuses: [] }]));
   let health: HealthView | null = null;
-  for (let done = 0; done < ROUNDS; done += 1) {
+  const until = Date.now() + forMs;
+  let done = 0;
+  for (; done < rounds && Date.now() < until; done += 1) {
     const reads = await Promise.all(ROUTES.map(async (route) => [route, await timedRead(port, route)] as const));
     for (const [route, read] of reads) {
       times.get(route)?.ms.push(read.ms);
@@ -141,7 +157,7 @@ async function readRounds(port: number): Promise<Readonly<{ routes: readonly Rou
     const { ms, statuses } = times.get(route) ?? { ms: [], statuses: [] };
     return { route, p50Ms: round(percentile(ms, 50)), p99Ms: round(percentile(ms, 99)), maxMs: round(Math.max(...ms)), statuses: [...new Set(statuses)] };
   });
-  return { routes, health };
+  return { routes, health, rounds: done };
 }
 
 /** Starts the throwaway instance, waits for a sweep's first `gh` call, and reads every route while the sweeps run. */
@@ -149,25 +165,26 @@ async function measure(dir: string): Promise<Result> {
   const { port, ghLog, stop } = await startThrowawayInstance(dir);
   try {
     await waitFor("a sweep's first gh call", () => existsSync(ghLog));
-    const { routes, health } = await readRounds(port);
+    const { routes, health, rounds } = await readRounds(port);
     const ghCalls = readFileSync(ghLog, "utf8").split("\n").filter(Boolean).length;
-    return { routes, health, ghCalls, pass: routes.every((route) => route.p99Ms < READ_LIMIT_MS) };
+    return { routes, health, rounds, ghCalls, pass: rounds === ROUNDS && routes.every((route) => route.p99Ms < READ_LIMIT_MS) };
   } finally {
     stop();
   }
 }
 
 /** The result as a person reads it: a line per route, the loop's reading and the worst sites. PURE. */
-export function report({ routes, health, ghCalls, pass }: Result): string {
-  const lines = [`${ROUNDS} rounds of every read, with a ${GH_SECONDS} s gh and the sweeps every ${SWEEP_MS} ms (${ghCalls} gh calls):`, "", "route              p50 ms   p99 ms   max ms   status"];
+export function report({ routes, health, rounds, ghCalls, pass }: Result): string {
+  const lines = [`${rounds} of ${ROUNDS} rounds of every read in ${READS_FOR_MS / 1000} s, with a ${GH_SECONDS} s gh and the sweeps every ${SWEEP_MS} ms (${ghCalls} gh calls):`, "",
+    "route                     p50 ms   p99 ms   max ms   status"];
   for (const { route, p50Ms, p99Ms, maxMs, statuses } of routes) {
-    lines.push(`${route.padEnd(18)} ${String(p50Ms).padStart(6)}   ${String(p99Ms).padStart(6)}   ${String(maxMs).padStart(6)}   ${statuses.join(",")}${p99Ms >= READ_LIMIT_MS ? "   OVER" : ""}`);
+    lines.push(`${route.padEnd(25)} ${String(p50Ms).padStart(6)}   ${String(p99Ms).padStart(6)}   ${String(maxMs).padStart(6)}   ${statuses.join(",")}${p99Ms >= READ_LIMIT_MS ? "   OVER" : ""}`);
   }
   const loop = health?.loop.board;
   lines.push("", loop === undefined ? "the instance answered no /api/health" : `the instance's loop: p50 ${loop.p50Ms} ms, p99 ${loop.p99Ms} ms, max ${loop.maxMs} ms over ${Math.round(loop.windowMs / 1000)} s`);
   lines.push("", "the five sites that held the loop the longest:");
   for (const site of health?.blocking.slice(0, 5) ?? []) lines.push(`  ${site.site} (${site.program}): ${site.count} calls, ${site.totalMs} ms in all, the longest ${site.maxMs} ms`);
-  lines.push("", pass ? `PASS: every read's p99 is under ${READ_LIMIT_MS} ms` : `FAIL: a read's p99 is ${READ_LIMIT_MS} ms or more`);
+  lines.push("", pass ? `PASS: every read's p99 is under ${READ_LIMIT_MS} ms` : `FAIL: a read's p99 is ${READ_LIMIT_MS} ms or more, or the rounds did not all fit in ${READS_FOR_MS / 1000} s`);
   return `${lines.join("\n")}\n`;
 }
 

@@ -7,15 +7,16 @@ Acceptance:
 ```bash
 # loop-delay.test.ts: the window so far, idle and empty histograms reading 0, a kept minute, the worst since start, stop, and a real 300 ms stall
 # blocking-ledger.test.ts: a wrapper answers and throws what the original did, counts against the call site past Node and the seams, logs a slow call, and reaches a named import taken before install (a real Node child)
+# loop-load-routes.test.ts: the load script times every GET route the source answers, and starts no round after 90 s, so it always ends
 # health-route.test.ts and ui-server-health.test.ts: the instance's and the page service's /api/health, unpaired refused, absent before, and passed on by the proxy
 # ui: loop-line.test.ts (the words, the warning, the tooltip, hidden when unread) and test/shell-loop/loop.page.test.ts (Chromium, 1440 and 390 wide, writes ui/captures/shell-loop/)
 bash -c 'set -euo pipefail
-pnpm --dir ui install --frozen-lockfile --ignore-scripts >/dev/null
+[ -d ui/node_modules ] || pnpm --dir ui install --frozen-lockfile --ignore-scripts >/dev/null
 npm run typecheck
 pnpm ui:typecheck
 T=$(mktemp -d); printf "#!/bin/sh\nexit 0\n" > "$T/tailscale"; chmod +x "$T/tailscale"
 P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture
-PATH="$T:$PATH" AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/loop-delay.test.ts src/ticket-mode/blocking-ledger.test.ts src/ticket-mode/health-route.test.ts src/ticket-mode/ui-server-health.test.ts src/ticket-mode/remote-proxy.test.ts src/ticket-mode/ui-server.test.ts
+PATH="$T:$PATH" AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/loop-delay.test.ts src/ticket-mode/blocking-ledger.test.ts src/ticket-mode/health-route.test.ts src/ticket-mode/ui-server-health.test.ts src/ticket-mode/remote-proxy.test.ts src/ticket-mode/ui-server.test.ts src/ticket-mode/loop-load-routes.test.ts
 pnpm ui:build >/dev/null
 pnpm --dir ui exec rstest run --config rstest.config.ts src/shell/loop-line.test.ts test/shell-loop/ test/shell.page.test.ts
 # The before: every read waits on the sweeps, so the script exits 1, and the ledger names the 2 s stand-in gh's call site among the sites that held the loop.
