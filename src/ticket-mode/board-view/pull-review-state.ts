@@ -36,6 +36,9 @@ export const reviewerDialogLine = (first: string): string => `the reviewer stopp
 /** What each open pull request's line says on a machine where reviews are required and the reviewer is off (A11-161). */
 export const REVIEWER_OFF_LINE = "waiting on the reviewer (off)";
 
+/** What a pull request the board opened says while the reviewer is on and has not read it yet (A11-286): the map of pull requests lists every open pull request of a ticket in any phase. */
+export const NOT_READ_LINE = "not read yet";
+
 /** What each of a run's open pull requests says on a machine that is not required to have a reviewer and has none: people review there (A11-161). */
 export const AWAITING_PERSON_LINE = "awaiting your review";
 

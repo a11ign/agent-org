@@ -2450,6 +2450,8 @@ function ghFor(pulls: Record<number, unknown>): World {
   };
   const codeHost: CodeHost = {
     ...host,
+    // A pull request that reads conflicting is one GitHub refuses to merge the base into here, so its conflict goes straight to a round, as it did before A11-286 (`pool-base-merge.test.ts` has the host that merges, and the one that finds the conflict real).
+    updateBranch: (url, expectedHead) => (described(url)?.mergeable === "CONFLICTING" || described(url)?.mergeStateStatus === "DIRTY" ? { kind: "refused", reason: "this world's host does not merge into a conflicting pull request" } : host.updateBranch!(url, expectedHead)),
     readPullFeedback: (url, self, ignored = []) => {
       const pull = described(url);
       if (pull === undefined || !hold(url, feedbackOfDescribed(pull, self, ignored))) {

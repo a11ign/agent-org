@@ -11,6 +11,7 @@
 /** The fields of a ticket the board shows. */
 import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
+import type { RunEvent } from "./queue/run-log.ts";
 import { followUpText, roleOf, type CheckRecord, type ChecksFile } from "./after-merge/checks.ts";
 import { personItemOf, runnerSentTo } from "./after-merge/dispatch.ts";
 
@@ -132,10 +133,12 @@ export function reviewLinesOf(entry: ViewEntry, reviews: Readonly<Record<string,
 
 /**
  * The open pull requests the pool has read that no run lists (A11-119): what the runs tab's "Pull requests" section shows for a person's pull request with
- * no run. Each is its label, its url and its review line. Empty when every one the pool has read belongs to a run.
+ * no run. Each is its label, its url and its review line. Empty when every one the pool has read belongs to a run, or was opened by the board for one (`runLog`).
  */
-export function unlistedPulls(entries: readonly ViewEntry[], reviews: Readonly<Record<string, string>>): { url: string; label: string; text: string }[] {
-  const listed = new Set(entries.flatMap((entry) => pullsOf(entry).map(({ url }) => url)));
+export function unlistedPulls(entries: readonly ViewEntry[], reviews: Readonly<Record<string, string>>, runLog: Readonly<Record<string, readonly RunEvent[]>> = {}): { url: string; label: string; text: string }[] {
+  // A pull request the board opened for a ticket on the queue is that run's, though no entry holds it now (A11-286): the log of its ticket says it opened it.
+  const opened = Object.values(runLog).flatMap((events) => events.flatMap((event) => (event.kind === "pr-opened" ? [event.url] : [])));
+  const listed = new Set([...entries.flatMap((entry) => pullsOf(entry).map(({ url }) => url)), ...opened]);
   return Object.entries(reviews).filter(([url]) => !listed.has(url)).map(([url, text]) => ({ url, label: pullLabel(url), text }));
 }
 

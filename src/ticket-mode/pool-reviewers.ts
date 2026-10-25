@@ -25,7 +25,8 @@ import { recordReviewerRefusal } from "./queue/queue-reviewer-refusal.ts";
 import { countRereview, handBackRereview } from "./queue/queue-rereview.ts";
 import { diffLines } from "./board-view/ticket-change.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { AWAITING_PERSON_LINE, claimWarning, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
+import { AWAITING_PERSON_LINE, claimWarning, NOT_READ_LINE, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
+import { boardPullsOf } from "./kept-pulls.ts";
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import { herdrStartRefusalReason } from "../herdr-agents.ts";
@@ -660,8 +661,8 @@ function listWhileOff(ctx: PoolContext): void {
   for (const url of listed) offPulls.add(url);
 }
 
-/** The line each of the queue's runs' open pull requests reads as, with no read of GitHub: `text` for each. */
-const queueLines = (ctx: PoolContext, text: string): [string, string][] => ctx.store.get().entries.flatMap((entry) => openPulls(entry).map(({ url }): [string, string] => [url, text]));
+/** The line each open pull request the board opened for a ticket on the queue reads as, with no read of GitHub: `text` for each, whatever phase its run is in (A11-286, `boardPullsOf`). */
+const queueLines = (ctx: PoolContext, text: string): [string, string][] => boardPullsOf(ctx.store.get(), ctx.settledPulls).map(({ url }): [string, string] => [url, text]);
 
 /**
  * The review line of each open pull request, by its url, as the board words it (A11-119, A11-161). With a reviewer on, the review state the pool read. With reviews required and the reviewer
@@ -670,7 +671,8 @@ const queueLines = (ctx: PoolContext, text: string): [string, string][] => ctx.s
  */
 export function pullReviewsOf(ctx: PoolContext): Record<string, string> {
   switch (ctx.reviewerState) {
-    case "on": return Object.fromEntries([...ctx.pullReads].map(([url, read]) => [url, pullReviewText(read)]));
+    // A pull request of the board's the reviewer has not read yet is listed too, so the map has every open pull request of every ticket in any phase (A11-286).
+    case "on": return Object.fromEntries([...queueLines(ctx, NOT_READ_LINE), ...[...ctx.pullReads].map(([url, read]): [string, string] => [url, pullReviewText(read)])]);
     case "off-required": return Object.fromEntries([...[...ctx.offPulls].map((url): [string, string] => [url, REVIEWER_OFF_LINE]), ...queueLines(ctx, REVIEWER_OFF_LINE)]);
     case "none": return Object.fromEntries(queueLines(ctx, AWAITING_PERSON_LINE));
   }

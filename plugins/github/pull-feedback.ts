@@ -251,6 +251,7 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
     failures: red.map(({ name, detailsUrl }) => ({ name, detailsUrl })),
     failedAt: newest(failing.map(({ at }) => at)),
     conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
+    behind: pr.mergeStateStatus === "BEHIND",
     mergeable: pr.mergeable === "MERGEABLE",
     head,
     approvedAtHead: head !== null && verdictAt(pr.reviews?.nodes ?? [], head, others) === "approved",
