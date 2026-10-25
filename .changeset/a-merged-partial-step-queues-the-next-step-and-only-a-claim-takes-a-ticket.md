@@ -1,7 +1,0 @@
----
-"agent-org": minor
----
-
-Ticket mode: a ticket whose plan has numbered steps queues its next step by itself. A worker begins a `Partial:` line (and its outcome's `partial`) with `step <N> of <M>`; when that pull request merges, the board replaces the finished run with a queued one for step N + 1 on the same plan (a fresh worker whose brief lists the steps already merged), and the card says `step 1 of 9 merged; step 2 queued`. A merged `Partial` run is no longer read as Completed: where no step can be queued (it names no step, the last step, or one not past the last merged) it reads Needs you with the reason. The last step's `Closes` pull request ends the ticket as before.
-
-A ticket is taken by another instance only when that instance's claim says so. The tracker contract is 1.2: the optional `claim` and `claims` record and read the latest claimant of a ticket, which the Linear plugin writes as a comment `agent-org: claimed by <instance>.<install id>` when a run starts on it. A ticket In Progress after this instance's own finished run, or with no claim at all (moved by hand, or by an instance from before this release), is no longer taken, so it can be queued. Before the queue refuses a ticket as taken it reads the ticket and its claim again, so one moved to Todo since the list was read is queued, and a tracker that cannot be asked answers 503 instead of "another instance holds it".
