@@ -49,7 +49,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { COREPACK_FIXES, pinnedPnpm, type PnpmRunner, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type RunResult, type ServiceName, type ServiceState } from "./service.ts";
-import { HERDR_INTEGRATIONS, HERDR_PLUGINS, herdrBehind, herdrStatusPath, herdrVersionOf, installedPlugin, integrationInstallCommand, integrationStates, isBehind, describeInstalled, pluginInstallCommand, readHerdrStatus, runHerdr, type HerdrStatusFile } from "./herdr-upkeep.ts";
+import { HERDR_INTEGRATIONS, HERDR_PLUGINS, herdrBehind, herdrStatusPath, herdrVersionOf, integrationInstallCommand, integrationStates, isBehind, describeInstalled, pluginEntries, pluginInstallCommand, pluginUninstallCommand, readHerdrStatus, runHerdr, type HerdrStatusFile, type InstalledPlugin } from "./herdr-upkeep.ts";
 import { HOUR_MS, readUpdateStatus, updateStatusPath, type StatusFile } from "./update-safety.ts";
 import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
 import { handInstallCommand, TOOL_HERDR_VERSION } from "./herdr-install.ts";
@@ -706,18 +706,33 @@ function herdrVersionCheck(deps: DoctorDeps, status: HerdrStatusFile): Check[] {
   return [ok(name, `herdr ${installed}, the version this release pins${out}`)];
 }
 
-/** One row for each plugin of `HERDR_PLUGINS` that herdr lists: it warns when it is behind its newest release tag. A plugin that is not installed has no row. */
+/**
+ * One row for each plugin of `HERDR_PLUGINS` that herdr lists (A11-287). It FAILS while the last `agent-org update` recorded a step that did not take for the newest release (the update said so once and
+ * holds it quiet), WARNS when the plugin is behind that release or an older copy of it is still listed, and is ok at the newest release with one copy. A plugin that is not installed has no row.
+ */
 function herdrPluginChecks(deps: DoctorDeps, status: HerdrStatusFile): Check[] {
   return HERDR_PLUGINS.flatMap((repo) => {
-    const plugin = installedPlugin(deps.herdrPlugins(), repo);
-    if (plugin === null) return [];
-    const [name, at] = [`herdr plugin ${repo}`, describeInstalled(plugin)];
+    const found = pluginEntries(deps.herdrPlugins(), repo);
+    if (found === null) return [];
+    const [name, at] = [`herdr plugin ${repo}`, describeInstalled(found.current)];
     const recorded = status.kind === "status" ? status.status.plugins.find((entry) => entry.repo === repo) : undefined;
-    if (recorded === undefined) return [ok(name, `at ${at}; the newest release is not known until \`agent-org update\` has run`)];
-    if (!("newest" in recorded)) return [ok(name, `at ${at}; the newest release could not be read: ${recorded.why}`)];
-    if (!isBehind(plugin, recorded.newest)) return [ok(name, `at ${at}, which is the newest release`)];
-    return [warned(name, `at ${at}, the newest release is ${recorded.newest}`, `run \`agent-org update\`, which moves it, or \`${pluginInstallCommand(repo, recorded.newest)}\``)];
+    const stale = herdrStaleCheck(name, at, found.stale);
+    if (recorded === undefined) return [stale ?? ok(name, `at ${at}; the newest release is not known until \`agent-org update\` has run`)];
+    if (!("newest" in recorded)) return [stale ?? ok(name, `at ${at}; the newest release could not be read: ${recorded.why}`)];
+    if (recorded.failed?.tag === recorded.newest) {
+      const { command, output } = recorded.failed;
+      return [failed(name, `at ${at}, the newest release is ${recorded.newest}, and \`${command}\` did not take: ${output.split("\n")[0]}`, `run \`${command}\` by hand and read its output; \`agent-org update\` clears this once the plugin is current`)];
+    }
+    if (isBehind(found.current, recorded.newest)) return [warned(name, `at ${at}, the newest release is ${recorded.newest}`, `run \`agent-org update\`, which moves it, or \`${pluginInstallCommand(repo, recorded.newest)}\``)];
+    return [stale ?? ok(name, `at ${at}, which is the newest release`)];
   });
+}
+
+/** The warning for older copies of a plugin that a renamed manifest id left listed, or undefined when there are none. */
+function herdrStaleCheck(name: string, at: string, stale: readonly InstalledPlugin[]): Check | undefined {
+  if (stale.length === 0) return undefined;
+  const ids = stale.map(({ pluginId }) => pluginId);
+  return warned(name, `at ${at}, and an older copy is still listed: ${ids.join(", ")}`, `run ${ids.map((id) => `\`${pluginUninstallCommand(id)}\``).join(" and ")}, which \`agent-org update\` also runs`);
 }
 
 const UPDATE_GRACE_HOURS = 1;

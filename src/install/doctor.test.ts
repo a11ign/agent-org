@@ -1265,6 +1265,41 @@ test("A11-184: doctor warns when an installed herdr plugin is behind its newest 
   assert.equal((await herdrRows({ herdrStatus: () => SEEN }))["herdr plugin devswha/herdr-web-ui"], undefined, "no plugins.json lists it");
 });
 
+// A11-287: the web UI's manifest id changed at v0.4.16 and herdr kept both entries; the row reads the current copy by its source, warns on an older copy, and fails on a recorded failure.
+const copy = (id: string, ref: string, at: number) => ({ plugin_id: id, plugin_root: `/h/p/${id}-1`, source: { kind: "github", owner: "devswha", repo: "herdr-web-ui", requested_ref: ref, resolved_commit: "35bf28fa1234567890", installed_unix_ms: at } });
+const WEB = "herdr plugin devswha/herdr-web-ui";
+const newestSeen = (newest: string, failed?: { command: string; tag: string; output: string; at: string }): HerdrStatusFile => ({
+  kind: "status", status: { checkedAt: "2026-10-25T09:50:00.000Z", herdr: { newest: "0.9.5" }, plugins: [{ repo: "devswha/herdr-web-ui", newest, ...(failed === undefined ? {} : { failed }) }] },
+});
+
+test("A11-287: with the old and the renamed entry listed, doctor reads the newest one and is ok once it is at the newest release and the old one is gone", async () => {
+  const renamed = JSON.stringify([copy("devswha.ovis", "v0.4.16", 2)]);
+  const row = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.16"), herdrPlugins: () => renamed }))[WEB];
+  assert.deepEqual([row.ok, row.warning, row.detail, row.fix], [true, undefined, "at v0.4.16, which is the newest release", null]);
+  const both = JSON.stringify([copy("devswha.herdr-web-ui", "v0.4.13", 1), copy("devswha.ovis", "v0.4.16", 2)]);
+  const behindRow = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.17"), herdrPlugins: () => both }))[WEB];
+  assert.deepEqual([behindRow.warning, behindRow.detail], [true, "at v0.4.16, the newest release is v0.4.17"], "the old entry at v0.4.13 is not the one read");
+});
+
+test("A11-287: an older copy still listed beside the newest one is a warning naming the uninstall of each", async () => {
+  const both = JSON.stringify([copy("devswha.herdr-web-ui", "v0.4.13", 1), copy("devswha.ovis", "v0.4.16", 2)]);
+  const row = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.16"), herdrPlugins: () => both }))[WEB];
+  assert.deepEqual([row.ok, row.warning, row.detail], [true, true, "at v0.4.16, and an older copy is still listed: devswha.herdr-web-ui"]);
+  assert.equal(row.fix, "run `herdr plugin uninstall devswha.herdr-web-ui`, which `agent-org update` also runs");
+  const unknown = (await herdrRows({ herdrPlugins: () => both }))[WEB];
+  assert.deepEqual([unknown.warning, unknown.detail], [true, "at v0.4.16, and an older copy is still listed: devswha.herdr-web-ui"], "whether or not the newest release is known");
+});
+
+test("A11-287: a step the last update recorded as not taking for the newest release is a failed row naming the command and the first line of herdr's output; for an older release it is not", async () => {
+  const failed = { command: "herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y", tag: "v0.4.16", output: "bun install failed\nsecond line", at: "2026-10-25T09:50:00.000Z" };
+  const old = JSON.stringify([copy("devswha.herdr-web-ui", "v0.4.13", 1)]);
+  const row = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.16", failed), herdrPlugins: () => old }))[WEB];
+  assert.deepEqual([row.ok, row.detail], [false, "at v0.4.13, the newest release is v0.4.16, and `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` did not take: bun install failed"]);
+  assert.equal(row.fix, "run `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` by hand and read its output; `agent-org update` clears this once the plugin is current");
+  const newer = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.17", failed), herdrPlugins: () => old }))[WEB];
+  assert.deepEqual([newer.ok, newer.warning], [true, true], "a newer release is out: the update tries it, so this is the ordinary warning");
+});
+
 test("A11-184: a herdr status file that cannot be read fails one row, with the command that writes it again", async () => {
   const row = (await herdrRows({ herdrStatus: () => ({ kind: "unreadable", why: "it is not valid JSON" }) }))["herdr status"];
   assert.deepEqual([row.ok, row.detail, row.fix], [false, "the herdr status file cannot be read: it is not valid JSON", "run `agent-org update`, which writes the file again, or check its permissions"]);
