@@ -62,8 +62,8 @@ export function reviewOnDemand({ url, head, port, readState, started, record, no
   if (started.has(`${url}@${at}`)) return { code: 0, out: `ticket:review: a reviewer was already started for ${url} at ${at.slice(0, 8)}, so none is started again` };
   const launched = port.start({ pr: url, head: at });
   if ("refusal" in launched) return { code: 1, out: `ticket:review: ${launched.refusal}` };
-  // The look is what this start was made against (A11-235): the pool re-reviews the head when the body, or a reply after this time, answers a block. It is started with no brief, so no decisions (A11-250).
-  record(launched.label, `${url}@${at}`, at, launched.unclaimed, { at: now(), body: String(state?.view.body ?? ""), decisions: "" });
+  // The look is what this start was made against (A11-235): the pool re-reviews the head when the body, or a reply after this time, answers a block. It is started with no brief, so the decisions it was told are unknown, and the head is not re-reviewed for them (A11-250).
+  record(launched.label, `${url}@${at}`, at, launched.unclaimed, { at: now(), body: String(state?.view.body ?? "") });
   const takeover = launched.tookOver === undefined ? "" : `; ${launched.tookOver}`;
   // A reviewer started without a claim (A11-172) says so here as the board does, since nothing on GitHub shows it.
   const unclaimed = launched.unclaimed === undefined ? "" : `; started without a claim on GitHub, because no other instance is seen: ${launched.unclaimed}`;

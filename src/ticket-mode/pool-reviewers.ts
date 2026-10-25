@@ -30,9 +30,9 @@ import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import { herdrStartRefusalReason } from "../herdr-agents.ts";
 import { doneWhenOf } from "./done-when.ts";
-import { decisionsOf, unsupportedClaims } from "./ticket-decisions.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { partialStepOf } from "./board-view/plan-steps.ts";
+import { decisionsOf, hasDecisionsSection, unsupportedClaims } from "./ticket-decisions.ts";
 import { planStepSection } from "./pool-ticket-text.ts";
 import type { Reply, Review } from "../plugins/contracts/code-host.ts";
 import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef, ReviewerReply } from "../plugins/contracts/reviewer.ts";
@@ -193,7 +193,9 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const recordedBefore = kind.recorded.has(key);
   const earlierLook = looks.get(key);
   kind.recorded.add(key);
-  looks.set(key, { at: ctx.now(), body: kind.body, decisions: kind.brief.decisions ?? "" });
+  // The decisions a start was briefed with are known only when a run holds the pull request: with none, the brief carries no ticket, and a later change cannot be told from the first sight of them.
+  const decisions = heldBy(ctx, url) === undefined ? {} : { decisions: kind.brief.decisions ?? "" };
+  looks.set(key, { at: ctx.now(), body: kind.body, ...decisions });
   reviewerDropped.delete(dropped);
   rememberReviewers(ctx);
   const adopted = kind.adopts && reviewer.live({ pr: url, head });
@@ -342,7 +344,7 @@ type Answers = Readonly<{ replies: readonly ReviewerReply[]; changed: readonly R
  * ticket, and a ticket that states no decisions supports none (`ticketUrl` null).
  */
 function rereviewBrief(brief: ReviewBrief, held: Entry | undefined, { replies, changed, decided }: Answers): ReviewBrief {
-  const ticketUrl = brief.decisions === undefined || held === undefined ? null : held.ticket.url;
+  const ticketUrl = held !== undefined && hasDecisionsSection(held.ticket.description) ? held.ticket.url : null;
   const claimed = [...replies.map(({ text }) => text), ...changed.filter(({ kind }) => kind === "added").map(({ text }) => text)];
   const unsupported = unsupportedClaims(claimed, ticketUrl);
   return { ...brief, rereview: { replies, ...(changed.length === 0 ? {} : { body: changed }), ...(decided.length === 0 ? {} : { decisions: decided }), ...(unsupported.length === 0 ? {} : { unsupported }) } };

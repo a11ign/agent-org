@@ -56,10 +56,10 @@ test("A11-235: a start is recorded with its look: the time of the start and the 
   const looks: unknown[] = [];
   const withBody = { ...stateAt(HEAD), view: { body: "Closes A11-1\n" } } as unknown as ReviewState;
   reviewOnDemand({ url: URL, port: p, readState: () => withBody, started: new Set(), now: () => 1234, record: (_label, _key, _head, _unclaimed, look) => { looks.push(look); } });
-  assert.deepEqual(looks, [{ at: 1234, body: "Closes A11-1\n", decisions: "" }]);
+  assert.deepEqual(looks, [{ at: 1234, body: "Closes A11-1\n" }]);
   const bare: unknown[] = [];
   reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), now: () => 5, record: (_label, _key, _head, _unclaimed, look) => { bare.push(look); } });
-  assert.deepEqual(bare, [{ at: 5, body: "", decisions: "" }], "a host that gives no body has an empty one, and a start with no brief was told no decisions (A11-250)");
+  assert.deepEqual(bare, [{ at: 5, body: "" }], "a host that gives no body has an empty one; a start with no brief has no decisions on its look, so none are compared (A11-250)");
 });
 
 test("a --head given is the head reviewed, and its posted review is what is checked at that head", () => {

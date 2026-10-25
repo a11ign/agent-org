@@ -76,8 +76,13 @@ test("A11-250: a reply that says a person decided, with no link to the ticket, i
 
 test("A11-250: each way of wording a person's decision is a claim, and a reply that claims none is left alone", () => {
   const claims = ["The chairman said keep it.", "Per the chairman, no change.", "The chairman decided on 2026-10-25.", "This is the chairman's decision.", "Decided by Dan, keep it.", "The chairman answered in the terminal."];
+  const ordinary = ["The finding is answered by the new guard in foo.ts.", "Already decided by ADR-12.", "The decision table is in the ADR."];
   assert.deepEqual(unsupportedClaims(claims, TICKET), claims);
-  assert.deepEqual(unsupportedClaims(["Fixed in the description.", "The decision table is in the ADR."], TICKET), []);
+  assert.deepEqual(unsupportedClaims(["Fixed in the description.", ...ordinary], TICKET), [], "a sentence that merely says something was answered or decided by a thing is no claim");
+});
+
+test("A11-250: a ticket with no address (an empty one) supports nothing, as a ticket with no decisions does", () => {
+  assert.deepEqual(unsupportedClaims(["decided by the chairman"], ""), ["decided by the chairman"]);
 });
 
 test("A11-250: a ticket that records no decision (ticketUrl null) leaves every claim unsupported, link or not", () => {

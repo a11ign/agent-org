@@ -33,7 +33,7 @@ const ANSWERED = withAnswer(PLAIN, { question: QUESTION, answer: ANSWER, who: "t
 const clock = { ms: 0 };
 
 /** A finished run NBF-1 holding pull request 1, with the reviewer's first review of `HEAD` behind it: started with `described` as the ticket's description, ended, and blocked. */
-async function blockedRun({ described = PLAIN, rounds = 0, tracker }: { described?: string; rounds?: number; tracker?: TicketSource } = {}) {
+async function blockedRun({ described = PLAIN, rounds = 0, tracker, held = true }: { described?: string; rounds?: number; tracker?: TicketSource; held?: boolean } = {}) {
   await loadReviewerGate();
   clock.ms = 10 * MINUTE;
   const fixture = poolFixture({ keys: ["NBF-1"], tickets: { reviewer: "atomic", drafts: false }, now: () => clock.ms, descriptions: { "NBF-1": described }, ...(tracker === undefined ? {} : { source: tracker }) });
@@ -43,7 +43,7 @@ async function blockedRun({ described = PLAIN, rounds = 0, tracker }: { describe
   await reviewer.load();
   const queue = fixture.store.get();
   const outcome = { kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url }] } as Outcome;
-  fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", finishedAt: 15 * MINUTE, rounds, outcome }] });
+  fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", finishedAt: 15 * MINUTE, rounds, ...(held ? { outcome } : {}) }] });
   const pool = fixture.restart({ codeHost: host, reviewer });
   const pull = host.pullAt(url)!;
   const ref = { pr: url, head: HEAD };
@@ -213,4 +213,21 @@ test("A11-250: a claim added to the pull request body is unsupported too, and a 
   quiet.pull.body = `${BODY}Outside-Region: none\n`;
   quiet.pool.reviewNewHeads();
   assert.equal(quiet.reviewer.briefs[1]?.rereview?.unsupported, undefined);
+});
+
+test("A11-250: a start that no run held records no decisions on its look, so a run that holds the pull request later is not re-reviewed for decisions it never compared", async () => {
+  const { fixture, url, pool, reviewer, answered } = await blockedRun({ held: false });
+  const { memory } = readReviewerMemory(reviewerMemoryPath(fixture.settings.stateDir));
+  assert.equal(memory.looks.get(`${url}@${HEAD}`)?.decisions, undefined, "the brief carried no ticket: its decisions are unknown, not empty");
+  answered();
+  pool.reviewNewHeads();
+  assert.equal(reviewer.started.length, 1);
+});
+
+test("A11-250: a ticket that has only a Behaviour section records no Decisions: a reply linking it still claims a decision nothing supports", async () => {
+  const { reviewer, pool, reply } = await blockedRun({ described: "Fix it.\n\n## Behaviour\n\n* It toasts.\n" });
+  const claim = `decided by the chairman: ${TICKET_URL}`;
+  reply(claim, 25);
+  pool.reviewNewHeads();
+  assert.deepEqual(reviewer.briefs[1]?.rereview?.unsupported, [claim]);
 });
