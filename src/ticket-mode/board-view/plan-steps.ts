@@ -7,14 +7,20 @@
 // without moving forward cannot loop the queue. A declaration that gives no `of <M>`, or no step at all, is counted by the board (A11-173): the step it finished is the one it names or else
 // the first the plan's record does not show as merged, and the plan's size is the record's or the plan file's (`plan-step-count.ts`). Only a plan with no step left stops. This file is in `board-view/` because the page words the reason from it, and the page runs only what that folder holds.
 
+import { blockerClearedHead } from "./blocker-cleared.ts";
+import { pullLabel } from "./pull-label.ts";
+
 /** A step of the plan, numbered from 1, out of the plan's `of` steps. */
 export type PlanStep = Readonly<{ step: number; of: number }>;
 
 /** A step of the plan's record, and whether the board counted it (A11-173). */
 export type StepRecord = PlanStep & Readonly<{ counted?: true }>;
 
-/** A step whose pull requests merged: the step, the web address of each pull request that finished it, and `counted` when the board counted the step because the declaration did not name it (A11-173). */
-export type MergedStep = StepRecord & Readonly<{ prs: readonly string[] }>;
+/**
+ * A step whose pull requests merged: the step, the web address of each pull request that finished it, and `counted` when the board counted the step because the declaration did not name it (A11-173). `cleared` is set when
+ * the run that merged it had ended `needs-human`: its merge cleared the blocker it asked about, and the next step's card says so (A11-258).
+ */
+export type MergedStep = StepRecord & Readonly<{ prs: readonly string[]; cleared?: true }>;
 
 /** `step <N> of <M>`, as the ticket's plan numbers its steps and the brief tells a worker to word the `Partial:` line. */
 const STEP_WORDS = /\bstep\s+(\d+)\s+of\s+(\d+)\b/i;
@@ -105,16 +111,25 @@ export function afterPartialMerge(partial: string, merged: readonly PlanStep[], 
   return { next: { step: step + 1, of: size, ...(counted ? { counted: true as const } : {}) } };
 }
 
-/** The line a run queued for the next step carries, `step 1 of 9 merged; step 2 queued`, or null for a run that is no later step. PURE. */
-export const stepQueuedLine = (merged: readonly StepRecord[]): string | null => stepLine(merged, "queued");
+/** A step of the plan's record as a card words it: the pull requests and `cleared` are what a card of a step that cleared a blocker adds (A11-258). */
+type StepOnCard = StepRecord & Partial<Pick<MergedStep, "prs" | "cleared">>;
+
+/**
+ * The line a run queued for the next step carries, `step 1 of 9 merged; step 2 queued`, or null for a run that is no later step. After a step that cleared a `needs-human` blocker it names the merged pull
+ * requests instead, `the blocker cleared: a11ign/agent-org #1885 merged; step 2 of 2 queued` (A11-258). PURE.
+ */
+export const stepQueuedLine = (merged: readonly StepOnCard[]): string | null => stepLine(merged, "queued");
 
 /** The same line once the run has started, `step 1 of 9 merged; step 2 running`. PURE. */
-export const stepRunningLine = (merged: readonly StepRecord[]): string | null => stepLine(merged, "running");
+export const stepRunningLine = (merged: readonly StepOnCard[]): string | null => stepLine(merged, "running");
 
 /** What a step the board counted says of it: the declaration named no step (A11-173). */
 const COUNTED_WORDS = "counted by the board: the Partial line named no step";
 
-function stepLine(merged: readonly StepRecord[], state: "queued" | "running"): string | null {
+function stepLine(merged: readonly StepOnCard[], state: "queued" | "running"): string | null {
   const last = merged.at(-1);
-  return last === undefined ? null : `step ${last.step} of ${last.of} merged${last.counted ? ` (${COUNTED_WORDS})` : ""}; step ${last.step + 1} ${state}`;
+  if (last === undefined) return null;
+  const counted = last.counted ? ` (${COUNTED_WORDS})` : "";
+  if (last.cleared === true && last.prs !== undefined && last.prs.length > 0) return `${blockerClearedHead(last.prs.map(pullLabel).join(", "))}${counted}; step ${last.step + 1} of ${last.of} ${state}`;
+  return `step ${last.step} of ${last.of} merged${counted}; step ${last.step + 1} ${state}`;
 }

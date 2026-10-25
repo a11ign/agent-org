@@ -9,6 +9,7 @@ import { openPulls, pullsOf, type ViewEntry } from "./view-types-and-filters.ts"
 import { pullLabel } from "./pull-label.ts";
 import { clockOf, shortVersion, versionLine, type UpdateView } from "./update-banner.ts";
 import { ticketChangeLine } from "./ticket-change.ts";
+import { blockerClearedLine } from "./blocker-cleared.ts";
 
 /** The words a card's reason line says for an answered run, in place of its question. */
 const ANSWER_LINE: Readonly<Record<PullAnswer, string>> = { approved: "Approved", answered: "Answered: awaiting review" };
@@ -94,7 +95,7 @@ function stepNote(entry: ViewEntry): string | null {
 }
 
 /**
- * What completed a Completed run (A11-173), or null: `completed: a11ign/agent-org #1815, a11ign/plugin #9 merged`, with `; 2 after-merge checks listed` once the board listed the
+ * What completed a Completed run (A11-173), or null: `completed: a11ign/agent-org #1815, a11ign/plugin #9 merged` (`the blocker cleared: a11ign/agent-org #1815 merged` for a run that ended `needs-human`, A11-258), with `; 2 after-merge checks listed` once the board listed the
  * ticket's After-merge lines. A merged pull request that overruled the outcome's `partial` says so, naming both (A11-181). A run Completed without a merged pull request of its own (a `done`, or the tracker's word) says nothing here. PURE.
  */
 export function completedLine(entry: ViewEntry): string | null {
@@ -103,7 +104,8 @@ export function completedLine(entry: ViewEntry): string | null {
   if (merged.length === 0) return null;
   const listed = entry.afterMerge?.length ?? 0;
   const disagreement = overruledNote(entry);
-  return `completed: ${merged.map(({ url }) => pullLabel(url)).join(", ")} merged${disagreement === null ? "" : `; ${disagreement}`}${listed > 0 ? `; ${listed} after-merge check${listed === 1 ? "" : "s"} listed` : ""}`;
+  const head = blockerClearedLine(entry) ?? `completed: ${merged.map(({ url }) => pullLabel(url)).join(", ")} merged`;
+  return `${head}${disagreement === null ? "" : `; ${disagreement}`}${listed > 0 ? `; ${listed} after-merge check${listed === 1 ? "" : "s"} listed` : ""}`;
 }
 
 /** What a reviewed run that is Awaiting review waits on (A11-179): its review, its red checks, its running checks, from the heads the watch read. Null for any other run, and for one that waits on nothing. PURE. */
@@ -113,7 +115,7 @@ function mergeWait(entry: ViewEntry): string | null {
 
 /**
  * The reason line a run's card shows, and the question it keeps one click away. A needs-human run whose pull requests answered it says "Answered: awaiting
- * review" or "Approved" from them, and keeps what it asked as `question`. A text the card already shows as the rebase, retarget or verdict note is not said a
+ * review" or "Approved" from them, and keeps what it asked as `question`; one whose pull requests merged says "the blocker cleared: … merged" (A11-258). A text the card already shows as the rebase, retarget or verdict note is not said a
  * second time, as the line or as the question (A11-153). `now`, when given, lets a run waiting on background work say for how long (A11-236). PURE.
  */
 export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: string | null; question: string | null }> {
@@ -129,6 +131,9 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   // A Completed run says what completed it; what its worker said of it (a `done`'s reason, posted on the ticket) is kept one click away (A11-173).
   const completed = completedLine(entry);
   if (completed !== null) return { line: ticketChangeLine(entry) ?? completed, question: asking ?? asked };
+  // A `needs-human` run whose pull requests merged and whose next step is not simply queued says the blocker is gone and what happens next, in place of the question it asked, which stays one click away (A11-258).
+  const cleared = blockerClearedLine(entry);
+  if (cleared !== null) return { line: ticketChangeLine(entry) ?? [cleared, stepNote(entry)].filter((part) => part !== null).join("; "), question: asking ?? asked };
   // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167). A reviewed run that is not ready says what it waits on (A11-179).
   return { line: ticketChangeLine(entry) ?? asked ?? stepNote(entry) ?? mergeWait(entry), question: asking };
 }
