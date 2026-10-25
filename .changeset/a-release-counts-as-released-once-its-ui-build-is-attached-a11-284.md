@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A release counts as released only once its UI build is attached (A11-284). Every release has a tag minutes before CI attaches `agent-org-ui-<tag>.tar.gz`, and `agent-org update` failed with exit 2 on every machine in that window. When it follows the newest release it now skips a tag that declares a UI build (`agentOrg.shipsUiBuild`) whose checksum answers 404, says so in one line, stays on the current version without restarting anything, exits 0, and records the newest released tag as `latest`; the next update moves once the build is attached. A probe that fails any other way still reaches the build's own failure, and `--version` and `toolVersion` pins are not walked. The board's ui service, when a release version folder has no build, now serves the newest older release folder's build (which shows Updating, then Back) and otherwise an "Updating Atomaut" page that reloads itself, instead of "The UI build is missing", which a checkout and the main channel keep.

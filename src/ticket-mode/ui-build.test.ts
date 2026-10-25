@@ -5,7 +5,7 @@ import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { TOOL_ROOT } from "../install/paths.ts";
-import { buildCandidates, fileHeaders, findBuild, isAssetPath, locate, movedFromNext, UI_BUILD_DIR } from "./ui-build.ts";
+import { buildCandidates, fileHeaders, findBuild, isAssetPath, isReleaseFolder, locate, movedFromNext, servedCandidates, UI_BUILD_DIR } from "./ui-build.ts";
 
 /** A file made, with its folders, under `dir`. */
 function put(dir: string, relative: string, text = relative): string {
@@ -28,6 +28,34 @@ test("the build is looked for in ui-build/ beside the running version, then in t
   assert.equal(UI_BUILD_DIR, "ui-build");
   assert.deepEqual(buildCandidates("/v/1"), ["/v/1/ui-build", "/v/1/ui/dist"]);
   assert.deepEqual(buildCandidates(), [join(TOOL_ROOT, "ui-build"), join(TOOL_ROOT, "ui", "dist")], "the default is the running version's own folder");
+});
+
+test("A11-284: a release version folder is served from its own build, then each older release's, newest first, and never from ui/dist/", () => {
+  const tool = tmpDir("ui-served-");
+  for (const name of ["v0.1.0", "v0.2.0", "v0.3.0", "v0.4.0", "v0.10.0", "main-abc", "v0.2.0.partial"]) mkdirSync(join(tool, "versions", name), { recursive: true });
+  const at = (name: string) => join(tool, "versions", name);
+  assert.deepEqual(servedCandidates(at("v0.3.0")), [join(at("v0.3.0"), "ui-build"), join(at("v0.2.0"), "ui-build"), join(at("v0.1.0"), "ui-build")]);
+  assert.deepEqual(servedCandidates(at("v0.10.0")).map((dir) => dir.split("/").at(-2)), ["v0.10.0", "v0.4.0", "v0.3.0", "v0.2.0", "v0.1.0"], "ordered by number, not by text");
+  assert.deepEqual(servedCandidates(at("v0.1.0")), [join(at("v0.1.0"), "ui-build")], "the oldest has none to fall back to");
+  put(at("v0.2.0"), "ui-build/index.html");
+  assert.equal(findBuild(servedCandidates(at("v0.3.0"))), join(at("v0.2.0"), "ui-build"), "v0.3.0 has no build of its own, so v0.2.0's is served");
+  put(at("v0.3.0"), "ui-build/index.html");
+  assert.equal(findBuild(servedCandidates(at("v0.3.0"))), join(at("v0.3.0"), "ui-build"), "its own build wins once it is there");
+});
+
+test("A11-284: a checkout and a main-channel folder keep the list they had, and doctor's list is the running version's own build alone", () => {
+  const tool = tmpDir("ui-served-");
+  mkdirSync(join(tool, "versions", "v0.1.0"), { recursive: true });
+  mkdirSync(join(tool, "versions", "main-abc"), { recursive: true });
+  for (const root of ["/checkout", join(tool, "versions", "main-abc")]) assert.deepEqual(servedCandidates(root), buildCandidates(root), root);
+  assert.deepEqual(buildCandidates(join(tool, "versions", "v0.2.0")), [join(tool, "versions", "v0.2.0", "ui-build"), join(tool, "versions", "v0.2.0", "ui", "dist")]);
+  assert.deepEqual(servedCandidates(join(tool, "versions", "v0.2.0")), [join(tool, "versions", "v0.2.0", "ui-build"), join(tool, "versions", "v0.1.0", "ui-build")], "a folder that does not exist yet still lists its own");
+});
+
+test("A11-284: only a folder under versions/ named for a release is a release folder", () => {
+  assert.equal(isReleaseFolder("/home/a/.agent-org/tool/versions/v0.3.0"), true);
+  assert.equal(isReleaseFolder("/home/a/.agent-org/tool/versions/main-abc12345"), false);
+  assert.equal(isReleaseFolder("/home/a/src/agent-org"), false);
 });
 
 test("a folder is the build only when it holds index.html: ui-build/ beats ui/dist/, ui/dist/ stands in when it is absent, and an empty folder is skipped", () => {

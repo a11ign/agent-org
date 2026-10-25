@@ -23,11 +23,19 @@ export const uiAssetName = (tag: string): string => `agent-org-ui-${tag}.tar.gz`
 /** Longer than a slow link needs for a build of a few megabytes, and inside what an update run waits for. */
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
+/** Whether the `package.json` text `manifest` says `agentOrg.shipsUiBuild` is true. Text that is not a manifest declares nothing. */
+export function declaresUiBuildIn(manifest: string): boolean {
+  try {
+    return (JSON.parse(manifest) as { agentOrg?: { shipsUiBuild?: unknown } }).agentOrg?.shipsUiBuild === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether the release unpacked in `folder` ships a UI build: its `package.json` says `agentOrg.shipsUiBuild` is true. */
 export function declaresUiBuild(folder: string): boolean {
   try {
-    const manifest = JSON.parse(readFileSync(join(folder, "package.json"), "utf8")) as { agentOrg?: { shipsUiBuild?: unknown } };
-    return manifest.agentOrg?.shipsUiBuild === true;
+    return declaresUiBuildIn(readFileSync(join(folder, "package.json"), "utf8"));
   } catch {
     return false;
   }
@@ -81,6 +89,22 @@ function matches(tarball: string, checksum: string): boolean {
 function unavailable(tag: string, url: string, answer: Answer): string {
   if (answer.status === 404) return `${tag} has not attached its UI build yet (CI attaches it a few minutes after the release), so it is not installed; the next update tries again`;
   return `${url} could not be downloaded (${answer.status === null ? answer.why : `HTTP ${answer.status}`})`;
+}
+
+/** Whether a release has its UI build attached: it has (`attached`), CI has not got to it (`not-yet`, an HTTP 404), or the answer is not known (no releases address, no network, any other status). */
+export type UiAttached = "attached" | "not-yet" | "unknown";
+
+/**
+ * Whether `tag`'s UI build is attached (A11-284). The probe is a GET of the `.sha256`, which `release.yml` uploads after the tarball, so a checksum that answers 200 has its tarball. It is fetched to
+ * `/dev/null` through the same `curl` as the download; a HEAD is not used, because GitHub redirects an asset to a signed CDN address that does not answer one reliably. Only a 404 is `not-yet`:
+ * a failure of any other kind is `unknown`, so a broken network is never taken for a release that does not exist yet.
+ */
+export function uiBuildAttached(source: UiSource, tag: string): UiAttached {
+  const releases = source.releases();
+  if (releases === null) return "unknown";
+  const { status } = download(source, `${releases}/${tag}/${uiAssetName(tag)}.sha256`, "/dev/null");
+  if (status === 200) return "attached";
+  return status === 404 ? "not-yet" : "unknown";
 }
 
 /** The steps of fetching a build, which a failure names (A11-266): a person reads which one broke, and the error that broke it. */
