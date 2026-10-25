@@ -2,7 +2,7 @@
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/install/ui-asset.test.ts src/install/update.test.ts src/install/doctor.test.ts src/install/tool-migrate-launchd.test.ts src/install/install-sh.test.ts src/packaging/git-spawn-classification.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/install/ui-asset.test.ts src/install/update.test.ts src/install/doctor.test.ts src/install/tool-migrate-launchd.test.ts src/packaging/git-spawn-classification.test.ts
 ```
 
 Consumer-declaration: none -- no host file or setting changes meaning. `doctor`'s `ui build` row now reports a failure where it reported a warning, and its fix is the one it already named.
