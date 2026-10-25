@@ -209,7 +209,7 @@ function updateFromMain(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: st
 }
 
 /** The update of a branch, as the code host answers it, or a refusal when the host throws, which the contract says it does not. */
-function askUpdate(ctx: PoolContext, url: string, head: string): UpdateBranchResult {
+export function askUpdate(ctx: PoolContext, url: string, head: string): UpdateBranchResult {
   try {
     return ctx.codeHost.updateBranch!(url, head);
   } catch (err) {
