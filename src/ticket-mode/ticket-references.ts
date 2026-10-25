@@ -120,9 +120,9 @@ export function ticketClosesReport(body: string, key: string, keywords: Keywords
     return refuse(`CLOSES: REFUSED -- \`${closing}: none\` is not a ticket's pull request's declaration. Name ${key} with \`${closing} ${key}\` when this pull request `
       + `completes it, or with \`${nonClosing} ${key}\` and a \`Partial:\` line when it does not (A11-74, A11-92).`);
   }
-  const words = partialWordsOf(body)?.trim() ?? "";
-  if (saysNothingRemains(words)) {
-    return refuse(`CLOSES: REFUSED -- the \`Partial:\` line says nothing remains ("${cutAt(words, SHOWN_WORDS)}"). The last step closes the ticket: write \`${closing} ${key}\` and no \`Partial:\` line (A11-239).`);
+  const partialWords = partialWordsOf(body)?.trim() ?? "";
+  if (saysNothingRemains(partialWords)) {
+    return refuse(`CLOSES: REFUSED -- the \`Partial:\` line says nothing remains ("${cutAt(partialWords, SHOWN_WORDS)}"). The last step closes the ticket: write \`${closing} ${key}\` and no \`Partial:\` line (A11-239).`);
   }
   const others = closes.flatMap(({ names }) => names).filter((name) => name !== key);
   if (others.length > 0) {

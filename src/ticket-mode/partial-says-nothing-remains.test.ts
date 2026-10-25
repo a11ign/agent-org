@@ -22,6 +22,9 @@ const NOTHING_REMAINS = ["Partial: none", "Partial: None.", "Partial: nothing", 
 const REAL_REMAINDERS = ["Partial: step 2 of 3: the board view; step 3 remains", "Partial: none of the UI yet; the board view remains", "Partial: the last step's screenshots remain",
   "Partial: step 1 of 2; the last step adds the card", "Partial: nothing is wired to the card yet", "Partial: the docs"];
 
+/** The words after `Partial:` on a test line, markdown around the label dropped. */
+const wordsOf = (line: string): string => line.replace(/^.*?Partial:\**\s*/, "");
+
 test("A11-239: each wording that says nothing remains is refused by `pr:open`'s report and by CI's, with the last step's own fix, beside `Refs` or `Closes`", () => {
   for (const verb of ["Refs", "Closes"]) {
     for (const line of NOTHING_REMAINS) {
@@ -51,7 +54,7 @@ test("A11-239: a real remainder is still accepted, as is a placeholder's reading
 });
 
 test("A11-239: `saysNothingRemains` matches the whole leading clause only", () => {
-  assert.deepEqual([...NOTHING_REMAINS, ...REAL_REMAINDERS].map((line) => saysNothingRemains(line.replace(/^.*?Partial:\**\s*/, ""))), [...NOTHING_REMAINS.map(() => true), ...REAL_REMAINDERS.map(() => false)]);
+  assert.deepEqual([...NOTHING_REMAINS, ...REAL_REMAINDERS].map((line) => saysNothingRemains(wordsOf(line))), [...NOTHING_REMAINS.map(() => true), ...REAL_REMAINDERS.map(() => false)]);
   assert.deepEqual(["", "<what remains>", "NONE OF IT", "none of"].map(saysNothingRemains), [false, false, false, false]);
 });
 
@@ -59,7 +62,7 @@ test("A11-239: the board reads each wording as `Closes`, with or without a closi
   for (const line of NOTHING_REMAINS) {
     for (const head of ["Refs NBF-1", "Closes NBF-1", "No ticket named"]) assert.deepEqual(declarationOf(`${head}\n\n${line}\n`, "NBF-1", DEFAULT_KEYWORDS), { kind: "closes" }, `${head}: ${line}`);
   }
-  for (const line of REAL_REMAINDERS) assert.deepEqual(declarationOf(`Refs NBF-1\n\n${line}\n`, "NBF-1", DEFAULT_KEYWORDS), { kind: "partial", remains: line.replace(/^.*?Partial:\**\s*/, "") }, line);
+  for (const line of REAL_REMAINDERS) assert.deepEqual(declarationOf(`Refs NBF-1\n\n${line}\n`, "NBF-1", DEFAULT_KEYWORDS), { kind: "partial", remains: wordsOf(line) }, line);
 });
 
 test("A11-239: a blocker's merged pull request with A11-219's body closes the blocker's ticket", () => {
