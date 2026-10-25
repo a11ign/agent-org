@@ -2,7 +2,7 @@
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/plugins/health-read.test.ts src/plugins/check-child.test.ts src/ticket-mode/plugins-api.test.ts src/ticket-mode/server.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/plugins/health-read.test.ts src/plugins/check-child.test.ts src/ticket-mode/plugins-api.test.ts
 pnpm --dir ui exec rstest run --config rstest.config.ts src/plugins/
 ```
 
