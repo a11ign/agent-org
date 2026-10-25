@@ -382,14 +382,21 @@ function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, tol
   return { notes, moved, feedback };
 }
 
-/** The stack a run is in, its open pull requests in the stack's repository whose base has reached the default branch, and the blocker's pull requests there; null when the run has no stack, no member or no blocker pull request to look at. */
+/** The stack a run is in, its open pull requests in the stack's repository that have no base note, and the blocker's pull requests there; null when the run has no stack, no member or no blocker pull request to look at, which is said once in the log. */
 function restackMembers(ctx: PoolContext, entry: Entry, bases: Readonly<Record<string, string>>): { stack: StackBaseRecord; members: readonly { url: string }[]; candidates: readonly string[] } | null {
   const stack = entry.stackBase;
-  const blocker = stack === undefined ? undefined : ctx.store.get().entries.find((e) => e.ticket.key === stack.key);
-  if (stack === undefined || blocker === undefined) return null;
+  if (stack === undefined) return null;
   const members = openPulls(entry).filter((pr) => pr.repo === stack.repo && bases[pr.url] === undefined);
-  const candidates = pullsOf(blocker).filter((pr) => pr.repo === stack.repo).map((pr) => pr.url);
-  return members.length === 0 || candidates.length === 0 ? null : { stack, members, candidates };
+  if (members.length === 0) return null;
+  const blocker = ctx.store.get().entries.find((e) => e.ticket.key === stack.key);
+  const candidates = blocker === undefined ? [] : pullsOf(blocker).filter((pr) => pr.repo === stack.repo).map((pr) => pr.url);
+  if (candidates.length > 0) return { stack, members, candidates };
+  const said = `${entry.ticket.key}:${stack.key}`;
+  if (!ctx.restackSaid.has(said)) {
+    log(`${entry.ticket.key}: ${blocker === undefined ? `its blocker ${stack.key} is not on the queue` : `its blocker ${stack.key} has no pull request in ${stack.repo}`}, so its pull request is left as it is when the member below merges`);
+    ctx.restackSaid.add(said);
+  }
+  return null;
 }
 
 /** What a conflict found by the restack earns the run: a conflict round where it resumes on one and has rounds left, none at the cap, and none where the board does not resume it. PURE. */

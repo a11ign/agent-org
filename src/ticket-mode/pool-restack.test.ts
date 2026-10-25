@@ -50,7 +50,7 @@ function world(over: { entries?: (entries: Record<"bottom" | "next", Entry>) => 
   const entries = { bottom: bottomRun(), next: stackedRun("A11-2", NEXT, { key: "A11-1", branch: BOTTOM_BRANCH }, over.next) };
   let queue: Queue = { entries: over.entries?.(entries) ?? [entries.bottom, entries.next] } as unknown as Queue;
   const ctx = {
-    codeHost: over.codeHost?.(host) ?? host, store: { get: () => queue, set: (next: Queue) => { queue = next; } }, now: () => 1_000_000, stackMergeAsked: new Map(), restacked: new Map(), rebasing: new Set<string>(),
+    codeHost: over.codeHost?.(host) ?? host, store: { get: () => queue, set: (next: Queue) => { queue = next; } }, now: () => 1_000_000, stackMergeAsked: new Map(), restacked: new Map(), restackSaid: new Set<string>(), rebasing: new Set<string>(),
   } as unknown as PoolContext;
   const run = (key = "A11-2"): Entry => queue.entries.find((e) => e.ticket.key === key)!;
   const updates = () => host.branchUpdates.asked.map(({ url, expectedHead }) => `${url} ${expectedHead}`);
@@ -200,6 +200,29 @@ test("A11-248: a run whose blocker is not on the queue, or whose blocker's pull 
   open.sweep();
   assert.deepEqual(open.updates(), []);
   assert.equal(open.run().retargets, undefined);
+});
+
+/** What the board logs about its blocker while `act` runs, one entry per write to stderr. */
+function logged(act: () => void): string[] {
+  const lines: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    act();
+  } finally {
+    process.stderr.write = write;
+  }
+  return lines.filter((line) => line.includes(" its blocker "));
+}
+
+test("A11-248: a blocker that is not on the queue, or has no pull request in the stack's repository, is said once in the log and the run is left alone", () => {
+  const absent = world({ entries: ({ next }) => [next] });
+  const absentLog = logged(() => { absent.sweep(); absent.sweep(); });
+  assert.deepEqual(absentLog, ["ticket:serve: A11-2: its blocker A11-1 is not on the queue, so its pull request is left as it is when the member below merges\n"], "said once, over two sweeps");
+  const bare = world({ entries: ({ next }) => [{ ...bottomRun(), outcome: { kind: "reviewed", prs: [] } } as unknown as Entry, next] });
+  const bareLog = logged(() => { bare.sweep(); bare.sweep(); });
+  assert.deepEqual(bareLog, ["ticket:serve: A11-2: its blocker A11-1 has no pull request in agent-org, so its pull request is left as it is when the member below merges\n"]);
+  assert.deepEqual([...absent.updates(), ...bare.updates()], []);
 });
 
 test("A11-248: a run that is not finished, one with a workspace open, and one a merge of its blocker's branch is under way in are left alone", () => {

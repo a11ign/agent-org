@@ -147,6 +147,8 @@ export type PoolContext = Readonly<{
   stackMergeAsked: Map<string, StackMergeAsk>;
   /** The member that merged below each pull request the board brought up to date with the default branch because of it, by the pull request's url (A11-248). Kept in memory and read back off the pull request's note after a restart, which at worst restacks once more: GitHub answers a branch that has its base with up-to-date. */
   restacked: Map<string, RestackDone>;
+  /** The runs whose stack the restack could not look at, said once each in the log (A11-248): the blocker is not on the queue, or has no pull request in the stack's repository. */
+  restackSaid: Set<string>;
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
   ownLogin: { value: string | null };
 }>;
@@ -223,6 +225,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, attachRetries, telling: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(),
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(),
   };
 }
