@@ -9,6 +9,7 @@ import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
+import { agentTarget } from "./pool-resume.ts";
 import { plannedStepsOf } from "./pool-plan-steps.ts";
 import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
 import { hostname } from "node:os";
@@ -124,27 +125,34 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
   return { workspace: opened.workspace, pane: opened.pane };
 }
 
-/** Answer a start dialog on this run's pane, if one is showing and the run has answers left. True when it answered. */
-export function answerStartDialog(ctx: PoolContext, { name, folder }: RunPlace): boolean {
+/** Answer a start dialog on this run's pane, if one is showing and the run has answers left. True when it answered. The agent is reached by its pane, never its name (A11-279). */
+export function answerStartDialog(ctx: PoolContext, place: RunPlace): boolean {
   const { answered, herdr, settings, startedHere } = ctx;
+  const { name, folder } = place;
   if (!startedHere.has(name)) return false;
   const count = answered.get(name) ?? 0;
   if (count >= MAX_DIALOG_ANSWERS) return false;
   let screen: string;
+  let target: string;
   try {
-    screen = herdr(["--session", settings.herdrSession, "agent", "read", name, "--source", "visible"]);
+    target = agentTarget(ctx, place);
+    screen = herdr(["--session", settings.herdrSession, "agent", "read", target, "--source", "visible"]);
   } catch {
     return false;
   }
   if (!isStartDialog(screen, folder)) return false;
-  herdr(["--session", settings.herdrSession, "agent", "send-keys", name, "down", "enter"]);
+  herdr(["--session", settings.herdrSession, "agent", "send-keys", target, "down", "enter"]);
   answered.set(name, count + 1);
   return true;
 }
 
-/** Just after a start, answer the start dialogs as they appear, rather than one per tick: a few short waits, then the tick takes over. */
-async function settleStart(ctx: PoolContext, place: RunPlace): Promise<void> {
+/**
+ * Just after a start, answer the start dialogs as they appear, rather than one per tick: a few short waits, then the tick takes over. The pane is the one just opened, which herdr lists under the run's label: a pane
+ * the entry held before this start is not it.
+ */
+async function settleStart(ctx: PoolContext, started: RunPlace): Promise<void> {
   const { herdr, session, startedHere, wait } = ctx;
+  const { pane: _before, ...place } = started;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     await wait(1500);
     const status = readAgents((args) => herdr(args), session)?.find((agent) => agent.label === place.name)?.status;

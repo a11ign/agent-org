@@ -397,7 +397,20 @@ export type Entry = Readonly<{
   readopted?: Readopted;
   /** Set on a run a restart lost, when it was queued again (A11-240): the run is queued again once, so a second loss in the same chain ends it. A retry or a review round, which build the entry afresh, drop it. */
   lostInRestart?: Readonly<{ at: number }>;
+  /**
+   * When the board first saw a running run's agent idle at a prompt with no outcome but a `working` note (A11-279): its idle clock, which the board resumes it on after ten minutes. Dropped when it is seen working, or
+   * waiting, and when the run ends.
+   */
+  idleSince?: number;
+  /** The board's last resume prompt to this running run (A11-279), which its card says: see {@link ResumeNote}. Dropped once the run writes an outcome after it, and when the run ends. */
+  resume?: ResumeNote;
 }>;
+
+/**
+ * The board sent a running run the resume prompt (A11-279): when, and why, after a restart or after its agent sat idle since `idleSince`; `refused` is herdr's reason when it would not take the prompt, which the card
+ * says in its place.
+ */
+export type ResumeNote = Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string }>;
 
 /** How the board took a live pane back (A11-240): a run caught `starting` by a restart, or one it had marked crashed whose worker was found working, and why it had been crashed. */
 type Readopted = Readonly<{ at: number; from: "starting" }> | Readonly<{ at: number; from: "crashed"; reason: string }>;

@@ -1,7 +1,7 @@
-// no-token: none -- the wake prompt's words, and its sending over an injected herdr
+// no-token: none -- the wake prompt's words; its sending is `sendToAgent`'s, tested in pool-resume.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sendWake, wakePrompt } from "./wait-prompt.ts";
+import { wakePrompt } from "./wait-prompt.ts";
 import { judgeWaits } from "./wait-verdict.ts";
 import type { Reading } from "./wait-types.ts";
 
@@ -25,12 +25,4 @@ test("A11-245: a late wake names the deadline and each pending item's progress; 
   assert.equal(wakePrompt({ at: 1, why: "late" }, judgeWaits([slow]), DEADLINE),
     "Your wait passed its deadline (2026-10-25T12:00:00.000Z) with these still pending: fleet job fj-1 is running, 4 of 6 pages. Check them, then carry on, or write a new working outcome with a new until if they are still worth waiting for.");
   assert.equal(wakePrompt({ at: 1, why: "late" }, null, DEADLINE), "your wait has passed its bound (2026-10-25T12:00:00.000Z); check it and carry on");
-});
-
-test("A11-245: sending is herdr's `agent prompt` in the board's session to the run's agent: null when taken, herdr's reason when refused", () => {
-  const calls: string[][] = [];
-  assert.equal(sendWake((args) => { calls.push(args); return "{}"; }, "tickets", "t-nbf-1", "hello"), null);
-  assert.deepEqual(calls, [["--session", "tickets", "agent", "prompt", "t-nbf-1", "hello"]]);
-  const refused = sendWake(() => { throw Object.assign(new Error("herdr exited 1"), { stderr: "error: no such agent\n" }); }, "tickets", "t-nbf-1", "hello");
-  assert.match(refused ?? "", /no such agent/);
 });
