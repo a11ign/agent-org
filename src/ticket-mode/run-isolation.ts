@@ -48,6 +48,19 @@ export function makeRunTmp(base: string, dir: string): string | null {
 /** Entries left to remove in this pass: spent one per `unlink` or `rmdir`. */
 type Budget = { left: number };
 
+/**
+ * `env` with its private `TMPDIR` made before the run's shell exists. A directory that cannot be made leaves the run on the shared `/tmp`, said in the log, and `env` without a `TMPDIR`: the run is not refused for it.
+ * An `env` that names no `TMPDIR` (the pool gives runs none) is returned as it is.
+ */
+export function withRunTmpMade(ctx: PoolContext, env: Record<string, string>, runId: string): Record<string, string> {
+  const { TMPDIR: dir, ...rest } = env;
+  if (dir === undefined) return env;
+  const refusal = makeRunTmp(ctx.runTmpBase!, dir);
+  if (refusal === null) return env;
+  log(`${runId} was started without a private TMPDIR: ${refusal}`);
+  return rest;
+}
+
 /** Remove `dir` one entry per call until `budget` is spent. True when `dir` itself is gone. Every path passes `requirePrivate`. */
 function removeWithin(dir: string, base: string, budget: Budget): boolean {
   for (const entry of readdirSync(requirePrivate(dir, base), { withFileTypes: true })) {
