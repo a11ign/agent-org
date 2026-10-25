@@ -8,6 +8,9 @@
 /** What the entry records: the question the run asked as the board held it, the answer the person gave as they gave it, whom it is from and the day (`YYYY-MM-DD`). */
 export type AnsweredDecision = Readonly<{ question: string; answer: string; who: string; date: string }>;
 
+/** The most characters of the name an entry is headed with, and of who runs a line the planner moves to After merge (A11-275): one line either way. */
+export const WHO_CHARS = 60;
+
 const FENCE = /^\s*(```|~~~)/;
 const HEADING = /^#{1,6}\s/;
 

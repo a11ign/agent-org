@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MOVE_RULE, MOVED_HEADING, plannedMoves, WHO_CHARS, withMoves } from "./after-merge-move.ts";
+import { MOVE_RULE, MOVED_HEADING, plannedMoves, withMoves } from "./after-merge-move.ts";
+import { WHO_CHARS } from "./answer-decision.ts";
 import { afterMergeLines, doneWhenOf } from "./done-when.ts";
 import { decisionsOf } from "./ticket-decisions.ts";
 

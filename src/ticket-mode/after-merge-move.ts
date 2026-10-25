@@ -8,11 +8,8 @@
 // THE BOARD WRITES THE TICKET, FROM FIXED WORDS. The line moves under `### After merge`, in the form A11-173's After-merge checks list reads its owner from (`<line>. <who>, after merge ...`), and one entry
 // `## Decisions (the planner, <date>)` records each move. Every word is the ticket's own line, the reason's fixed words or the checked `who`: no planner prose reaches the ticket, as A11-250 requires of Decisions.
 // A line already moved is not moved again, so a re-plan and a retried attach write nothing twice.
-import { lastHeading } from "./answer-decision.ts";
+import { lastHeading, WHO_CHARS } from "./answer-decision.ts";
 import { linesOf, sectionEnd, type Line } from "./ticket-decisions.ts";
-
-/** The most characters of who runs a moved line: one line, as a Decisions entry's name is (`pool-answer.ts`). */
-export const WHO_CHARS = 60;
 
 /** The plan section the planner names its moves in. */
 export const MOVED_HEADING = "## Moved to After merge";
