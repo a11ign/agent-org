@@ -148,14 +148,19 @@ test("A11-245: a pull request waited on until reviewed wakes the worker once whe
 });
 
 test("A11-245: a ticket the tracker has completed wakes the worker once", async () => {
-  const types = new Map([["A11-9", "started"]]);
+  const types = new Map([["A11-9", "completed"]]);
   const run = await waitingRun([{ ticket: "A11-9", until: "done" }], { types });
-  await run.passes(3);
-  assert.deepEqual(run.prompts(), []);
-  types.set("A11-9", "completed");
   await run.passes(6);
   assert.equal(run.prompts().length, 1);
   assert.match(run.prompts()[0], /^What you waited on has finished: ticket A11-9 is done\. Act on it/);
+});
+
+test("A11-272: a ticket the wait's reading finds not done is not waited on in the pane: the run is stopped and queued behind it, and nothing is prompted", async () => {
+  const types = new Map([["A11-9", "started"]]);
+  const run = await waitingRun([{ ticket: "A11-9", until: "done" }], { types });
+  await run.passes(3);
+  assert.deepEqual([run.entry("NBF-1").phase, run.entry("NBF-1").stoppedForBlocker?.keys], ["queued", ["A11-9"]]);
+  assert.deepEqual(run.prompts(), []);
 });
 
 test("A11-245: with two items, one finished is no prompt; when the second finishes the worker is prompted once, and a board that restarted afterwards sends nothing more", async () => {

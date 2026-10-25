@@ -8,6 +8,7 @@ import type { HeldClaim } from "../path-claims.ts";
 import { currentStepOf, currentStepPaths } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
 import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
+import { blockersOf, waitersOn } from "./waits-on.ts";
 
 /** Split a repository-prefixed path, `<repo>:<path>`, into its repository and its path within it. PURE. */
 const repoPath = (path: string): [string, string] => {
@@ -73,11 +74,19 @@ const holds = (entry: ViewEntry): boolean => {
 };
 
 /**
- * Whether a holder is exempt from a queued run: one of its own blockers, or a run that is blocked by it. Those are sequenced on purpose
- * (`waitsOn`, `stackedOn`), so they are never held against each other.
+ * Whether two runs are sequenced on purpose: one is a blocker of the other (`waitsOn`, `stackedOn`), so they are never held against each other, and a planner is not shown the other's paths. PURE.
  */
-const exempt = (entry: ViewEntry, other: ViewEntry): boolean =>
-  (entry.blockers ?? []).some(({ key }) => key === other.ticket.key) || (other.blockers ?? []).some(({ key }) => key === entry.ticket.key);
+const sequenced = (entry: ViewEntry, other: ViewEntry): boolean =>
+  blockersOf(entry).some(({ key }) => key === other.ticket.key) || blockersOf(other).some(({ key }) => key === entry.ticket.key);
+
+/**
+ * The question whether a holder waits on a queued run's ticket through more than a blocker of its own: a ticket its idle worker declared a wait on, or one reached through the tickets those wait on ({@link waitersOn},
+ * A11-272). A run parked on a wait would otherwise hold its files against the very ticket it waits for. The board is walked once, and only when a path is found shared. PURE.
+ */
+function waitsOnTicketOf(entry: ViewEntry, entries: readonly ViewEntry[]): (holder: ViewEntry) => boolean {
+  let waiters: ReadonlySet<string> | null = null;
+  return (holder) => (waiters ??= waitersOn(entry.ticket.key, entries)).has(holder.ticket.key);
+}
 
 /**
  * The counted paths a queued run contests: none for a run that holds no path (see {@link pathless}), or was started anyway past its overlap
@@ -89,7 +98,7 @@ const contested = (entry: ViewEntry): string[] => pathless(entry) || entry.overl
 const pathless = (entry: ViewEntry): boolean => entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined;
 
 /** Whether `other` is a run a queued run contests paths with: a run that holds its footprint, other than its own and not sequenced with it. PURE. */
-const competes = (entry: ViewEntry, other: ViewEntry): boolean => other.ticket.key !== entry.ticket.key && holds(other) && !exempt(entry, other);
+const competes = (entry: ViewEntry, other: ViewEntry): boolean => other.ticket.key !== entry.ticket.key && holds(other) && !sequenced(entry, other);
 
 /**
  * One path two runs both claim: `path` is the narrower of the two, the file where one is a file, and within its repository. `folderOf` is the key of the run whose directory claim made the overlap, and `folder` that
@@ -138,23 +147,24 @@ function overlapsBetween(mine: readonly string[], held: readonly string[], pair:
 export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): OverlapWait | null {
   const mine = contested(entry);
   if (mine.length === 0) return null;
+  const waitsOnIt = waitsOnTicketOf(entry, entries);
   for (const other of entries) {
     if (!competes(entry, other)) continue;
     const held = footprintOf(other);
     const path = mine.find((own) => held.some((theirs) => pathsOverlap(own, theirs)));
-    if (path !== undefined) return { key: other.ticket.key, pull: parsePull(openPulls(other)[0]?.url ?? "")?.number ?? null, path: repoPath(path)[1], overlaps: overlapsBetween(mine, held, { waiting: entry.ticket.key, holder: other.ticket.key }) };
+    if (path !== undefined && !waitsOnIt(other)) return { key: other.ticket.key, pull: parsePull(openPulls(other)[0]?.url ?? "")?.number ?? null, path: repoPath(path)[1], overlaps: overlapsBetween(mine, held, { waiting: entry.ticket.key, holder: other.ticket.key }) };
   }
-  return unreadWait(entry, entries, mine);
+  return unreadWait(entry, entries, { mine, waitsOnIt });
 }
 
 /**
  * The paths every other queued or running ticket holds, as a planner is shown them (A11-212): for each run that holds its footprint (`running`, or `open pull request`) that footprint, and for each queued run that
- * contests paths the ones it contests (`queued`). A run is left out when it is one of `selves` or sequenced on purpose with one of them (its blockers, and the runs it blocks, see {@link exempt}), and so is a run that holds
+ * contests paths the ones it contests (`queued`). A run is left out when it is one of `selves` or sequenced on purpose with one of them (its blockers, and the runs it blocks, see {@link sequenced}), and so is a run that holds
  * nothing. `selves` is the ticket being planned, or every ticket of the batch being planned. PURE.
  */
 export function heldClaims(entries: readonly ViewEntry[], selves: readonly ViewEntry[]): HeldClaim[] {
   const keys = new Set(selves.map(({ ticket }) => ticket.key));
-  return entries.filter((other) => !keys.has(other.ticket.key) && !selves.some((self) => exempt(self, other))).flatMap((other) => {
+  return entries.filter((other) => !keys.has(other.ticket.key) && !selves.some((self) => sequenced(self, other))).flatMap((other) => {
     const paths = holds(other) ? footprintOf(other) : contested(other);
     return paths.length === 0 ? [] : [{ key: other.ticket.key, state: claimState(other), paths }];
   });
@@ -166,16 +176,19 @@ function claimState(run: ViewEntry): string {
   return holds(run) ? "open pull request" : "queued";
 }
 
+/** What a queued run contests: its counted paths, and whether a holder waits on its ticket, which exempts that holder (see {@link waitsOnTicketOf}). */
+type Contest = Readonly<{ mine: readonly string[]; waitsOnIt: (holder: ViewEntry) => boolean }>;
+
 /**
  * The run a queued run waits on because a held run's pull request has no files read yet (`pullFiles` unset) and lies in a repository one of the queued
  * run's paths names: the files it may change are unknown, so they may share one. Null when no such run holds it. PURE.
  */
-function unreadWait(entry: ViewEntry, entries: readonly ViewEntry[], mine: readonly string[]): OverlapWait | null {
+function unreadWait(entry: ViewEntry, entries: readonly ViewEntry[], { mine, waitsOnIt }: Contest): OverlapWait | null {
   const repos = new Set(mine.map((path) => repoPath(path)[0]));
   for (const other of entries) {
     if (!competes(entry, other) || other.phase !== "finished" || other.pullFiles !== undefined) continue;
     const pull = openPulls(other).find(({ repo }) => repo !== undefined && repos.has(repo));
-    if (pull !== undefined) return { key: other.ticket.key, pull: parsePull(pull.url)?.number ?? null, path: null, overlaps: [] };
+    if (pull !== undefined && !waitsOnIt(other)) return { key: other.ticket.key, pull: parsePull(pull.url)?.number ?? null, path: null, overlaps: [] };
   }
   return null;
 }

@@ -2,7 +2,7 @@
 // module: the copy of agent-org a run holds (A11-169) -- what is recorded on an entry when it starts, which version folders the queue keeps, and a run stopped for a breaking update
 
 import { find, isLive, LIVE, writerLive, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
-import { logEvent } from "./run-log.ts";
+import { logEvent, type RequeueWhy } from "./run-log.ts";
 
 /**
  * The copy of agent-org a run was prepared with (A11-169): the version folder its hooks and brief commands name (`toolRoot`, the real `<tool>/versions/<tag>` path) and that folder's
@@ -66,18 +66,28 @@ export function recordPluginCopy(queue: Queue, keys: readonly string[], copies: 
   return { ...queue, entries: queue.entries.map((entry) => (keys.includes(entry.ticket.key) && entry.phase === "starting" ? { ...entry, pluginCopy: copies } : entry)) };
 }
 
-/** What a stopped run drops when it is queued again for an update: what its live agent held. */
+/** What a stopped run drops when it is queued again: what its live agent held. */
 const runtimeFields = ["workspace", "pane", "startedAt", "finishedAt", "seenWorking", "waiting", "prompt", "declined", "working", "lastTerminal", "sessionWait", "sessionNote", "outcome", "tokens"] as const;
 
 /**
- * A live run is stopped for a breaking update and queued again (A11-169), where it was: the same ticket, plan, review round, branch records and worktrees, with `session` as the Claude session its next
- * round resumes, and `stoppedForUpdate` saying when and for which release. It goes to the end of the queue, as a retry does. Only a live entry is changed. PURE.
+ * Why the board stopped a live run, and what the entry it queues again records of it: `record` is set on it, each field `drops` names goes with what its live agent held, and `session` is the Claude session its
+ * agent had, when the pool learned it.
  */
-export function requeueForUpdate(queue: Queue, key: string, target: string, now: number, session?: string): Queue {
+type Stop = Readonly<{ why: RequeueWhy; record: Partial<Entry>; drops?: readonly (keyof Entry)[]; session?: string }>;
+
+/**
+ * A live run the board stopped is queued again where it was (A11-169, A11-272): the same ticket, plan, review round, branch records and worktrees, without what its live agent held, with `session` as the Claude
+ * session its next round resumes and `record` saying why. It goes to the end of the queue, as a retry does, and the log says why it was queued again. Only a live entry is changed. PURE.
+ */
+export function requeueStopped(queue: Queue, key: string, now: number, { why, record, drops = [], session }: Stop): Queue {
   const entry = find(queue, key);
   if (entry === undefined || !isLive(entry)) return queue;
   const kept: Record<string, unknown> = { ...entry };
-  for (const field of runtimeFields) delete kept[field];
-  const requeued = { ...kept, ...(session !== undefined ? { session } : {}), phase: "queued", queuedAt: now, stoppedForUpdate: { at: now, target } } as Entry;
-  return logEvent({ ...queue, entries: queue.entries.map((e) => (e.ticket.key === key ? requeued : e)) }, key, now, { kind: "requeued", why: "update" });
+  for (const field of [...runtimeFields, ...drops]) delete kept[field];
+  const requeued = { ...kept, ...(session !== undefined ? { session } : {}), ...record, phase: "queued", queuedAt: now } as Entry;
+  return logEvent({ ...queue, entries: queue.entries.map((e) => (e.ticket.key === key ? requeued : e)) }, key, now, { kind: "requeued", why });
 }
+
+/** A live run is stopped for a breaking update and queued again (A11-169), with `stoppedForUpdate` saying when and for which release: see {@link requeueStopped}. PURE. */
+export const requeueForUpdate = (queue: Queue, key: string, target: string, now: number, session?: string): Queue =>
+  requeueStopped(queue, key, now, { why: "update", record: { stoppedForUpdate: { at: now, target } }, session });

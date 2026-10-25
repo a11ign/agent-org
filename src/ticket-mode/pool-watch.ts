@@ -34,6 +34,7 @@ import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
+import { releaseTicketWaits } from "./pool-ticket-wait.ts";
 import { readoptCrashed } from "./pool-readopt.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
@@ -451,6 +452,9 @@ export async function tick(ctx: PoolContext): Promise<void> {
       watch(ctx);
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
       forceDrain(ctx);
+      // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).
+      const releasing = releaseTicketWaits(ctx);
+      if (releasing !== null) await releasing;
       await fill(ctx);
     } while (pass.again);
   } finally {
