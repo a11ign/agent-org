@@ -17,7 +17,7 @@ name: release
 # `node-version` as this file always ran, `pnpm-version` and `changesets-version`. agent-org has a tracked `pnpm-lock.yaml` and NO `packageManager`, and the shared workflow reads the two inputs differently
 # for that (`release-per-merge.yml` at the pinned sha: "pnpm itself comes from `packageManager`, else from the `pnpm-version` input, and a repository with neither is refused by name"; "With [a lockfile],
 # `version` runs `pnpm install --frozen-lockfile` and the repository's own `changeset`. Without, it ... runs `pnpm dlx @changesets/cli@<changesets-version>`"). So `pnpm-version` is LIVE, because there is no
-# `packageManager`; `changesets-version` is IGNORED while the lockfile stands, and is the fallback that would run if it were removed, so it names the `@changesets/cli` the lockfile installs (3.0.1, also
+# `packageManager`; `changesets-version` is IGNORED while the lockfile stands, and is the fallback that would run if it were removed, so it names the `@changesets/cli` the lockfile installs (3.0.3, also
 # package.json's `changeset` script). `release-tag-on-merge.test.ts` pins both and fails if the lockfile stops locking that version or a `packageManager` appears.
 #
 # `id-token: write` IS HELD BY THE CALL, AND NOTHING IS MINTED WITH IT (ceo review of a11ign/agent-org#352). The called file's `publish` job asks for `id-token: write`, and GitHub checks a
@@ -87,7 +87,7 @@ jobs:
       gate-check: gate
       node-version: 22.22.1
       pnpm-version: 10.34.5
-      changesets-version: 3.0.1
+      changesets-version: 3.0.3
 
   # THE UI BUILD, BUILT FOR THE RELEASE JUST CUT AND ATTACHED TO ITS GITHUB RELEASE (A11-191; parent A11-187: CI builds the UI into each release, so no machine needs its toolchain). The shared workflow above
   # declares NO `workflow_call` outputs, so the call is never told which tag it cut, and a tag pushed with GITHUB_TOKEN starts no workflow (`on: release` and `on: push: tags` never fire). So the two jobs

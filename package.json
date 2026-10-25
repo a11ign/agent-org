@@ -55,7 +55,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint --no-error-on-unmatched-pattern src scripts plugins ui",
     "test": "node scripts/test-entry.ts",
-    "changeset": "pnpm dlx @changesets/cli@3.0.1",
+    "changeset": "pnpm dlx @changesets/cli@3.0.3",
     "ui:dev": "pnpm --dir ui dev",
     "ui:build": "pnpm --dir ui build",
     "ui:test": "pnpm --dir ui test",
