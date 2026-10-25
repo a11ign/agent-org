@@ -26,7 +26,7 @@ const depsOf = (over: Partial<PluginDeps> = {}): PluginDeps => fakePluginDeps({ 
 test("the registry finds the plugin as the bundled reviewer `atomic`, from the folder atomic-reviewer, by its manifest's agentOrg.name, with no setting and no tooling", () => {
   const found = pluginNamed(defaultCatalog(), "atomic");
   assert.ok(found !== undefined);
-  assert.deepEqual([found.concern, found.where, found.contract, found.entry], ["reviewer", "bundled", "1.6", "index.ts"]);
+  assert.deepEqual([found.concern, found.where, found.contract, found.entry], ["reviewer", "bundled", "1.7", "index.ts"]);
   assert.match(found.dir ?? "", /\/plugins\/atomic-reviewer$/);
   assert.equal(pluginNamed(defaultCatalog(), "atomic-reviewer"), undefined, "the folder's name is not the plugin's");
   assert.deepEqual(Object.keys(found.settings), [], "`required` is the reviewer concern's, which core holds, and not the plugin's");

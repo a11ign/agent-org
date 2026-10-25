@@ -1,7 +1,7 @@
 // no-token: none -- pure text
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decisionsOf } from "./ticket-decisions.ts";
+import { decisionsOf, unsupportedClaims } from "./ticket-decisions.ts";
 
 /** A ticket as A11-203 wrote its decision: one line in the Problem, marked as the chairman's. */
 const A11_203 = [
@@ -62,4 +62,24 @@ test("A11-213: nothing looser is read: a mention of the chairman, a heading that
 
 test("A11-213: an empty, missing or decision-free description has none", () => {
   for (const description of [undefined, null, "", "## Problem\n\nA problem.\n\n## Done-when\n\n- a test"]) assert.equal(decisionsOf(description), null);
+});
+
+const TICKET = "https://linear.app/a11ign/issue/A11-248/round-cap-wording";
+
+test("A11-250: a reply that says a person decided, with no link to the ticket, is an unsupported claim; the same reply linking the ticket is not", () => {
+  const bare = "decided by the chairman, no change";
+  assert.deepEqual(unsupportedClaims([bare], TICKET), [bare]);
+  assert.deepEqual(unsupportedClaims([`decided by the chairman, no change: ${TICKET}`], TICKET), [], "the ticket's address, slug and all");
+  assert.deepEqual(unsupportedClaims(["decided by the chairman, no change: https://linear.app/a11ign/issue/A11-248"], TICKET), [], "or the address without its slug");
+  assert.deepEqual(unsupportedClaims(["decided by the chairman: https://linear.app/a11ign/issue/A11-249/other"], TICKET), ["decided by the chairman: https://linear.app/a11ign/issue/A11-249/other"], "another ticket's link supports nothing");
+});
+
+test("A11-250: each way of wording a person's decision is a claim, and a reply that claims none is left alone", () => {
+  const claims = ["The chairman said keep it.", "Per the chairman, no change.", "The chairman decided on 2026-10-25.", "This is the chairman's decision.", "Decided by Dan, keep it.", "The chairman answered in the terminal."];
+  assert.deepEqual(unsupportedClaims(claims, TICKET), claims);
+  assert.deepEqual(unsupportedClaims(["Fixed in the description.", "The decision table is in the ADR."], TICKET), []);
+});
+
+test("A11-250: a ticket that records no decision (ticketUrl null) leaves every claim unsupported, link or not", () => {
+  assert.deepEqual(unsupportedClaims([`decided by the chairman ${TICKET}`], null), [`decided by the chairman ${TICKET}`]);
 });

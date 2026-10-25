@@ -60,3 +60,16 @@ export function decisionsOf(description: string | null | undefined): string | nu
 /** Whether the description has a section headed `Decisions`, outside a code fence: the heading form {@link decisionsOf} reads, without `Behaviour` and the chairman's one-line decisions (A11-250). PURE. */
 export const hasDecisionsSection = (description: string | null | undefined): boolean =>
   !!description && linesOf(description).some(({ text, fenced }) => !fenced && DECISIONS_HEADING.test(text));
+
+/** The phrases that claim a person decided something: the chairman's own marker, and the ways a reply words it ("decided by the chairman", "the chairman said", "per the chairman", "decided by <name>"). */
+const DECISION_CLAIM = /chairman['’]s decision|\bthe chairman (?:decided|said|answered|confirmed|chose|ruled)|\bper the chairman|\b(?:decided|answered) by (?:the )?[\w-]+/i;
+
+/**
+ * Which of `texts` (the replies a re-review quotes, and the lines the pull request body gained) claim that a person decided something without linking the ticket (A11-250): each is returned as written. A claim is
+ * supported only by a link to the ticket's decisions, so `ticketUrl` is the ticket's address, or null when the ticket records no decision at all and nothing can support a claim. The link is the ticket's `/issue/<KEY>`
+ * path, so the address with or without the tracker's slug counts. PURE.
+ */
+export function unsupportedClaims(texts: readonly string[], ticketUrl: string | null): string[] {
+  const linked = ticketUrl === null ? null : ticketUrl.replace(/^(.*\/issue\/[^/\s]+).*$/, "$1").toLowerCase();
+  return texts.filter((text) => DECISION_CLAIM.test(text) && (linked === null || !text.toLowerCase().includes(linked)));
+}

@@ -156,9 +156,10 @@ export type Repost = { attempts: number; reason?: string };
 
 /**
  * What a reviewer was started against for one `url@head` (A11-235): when it started, and the pull request body it was started with. A description edit is not a new head, so this is what a later look compares
- * the body with, and the time a reply has to follow. The newest start of the head is the one kept.
+ * the body with, and the time a reply has to follow. The newest start of the head is the one kept. `decisions` is the ticket's decisions the start was briefed with, empty when it was briefed with none (A11-250);
+ * a look written before then has none, and its decisions are unknown: the head is never re-reviewed for them. A Decisions change is a new decision, so this is what a later look compares them with.
  */
-export type Look = { at: number; body: string };
+export type Look = { at: number; body: string; decisions?: string };
 
 /**
  * What herdr's refusals to start the reviewer for one `url@head` have come to (A11-241): herdr's reason for the last one, and how many in a row gave that same reason. A different reason starts the count again at 1.
@@ -206,8 +207,9 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
     // type is left out, not a reason to forget every started head: neither is what keeps a head from being started twice.
     const entriesOf = <T>(value: unknown, isT: (item: unknown) => item is T): [string, T][] =>
       (typeof value === "object" && value !== null && !Array.isArray(value) ? Object.entries(value).filter((entry): entry is [string, T] => isT(entry[1])) : []);
-    // `looks` is absent in a file written before A11-235, and a look that is not the right shape is left out like a `seen` entry: the head then has none, and is re-reviewed by a reply only.
-    const lookOf = (value: unknown): value is Look => value !== null && typeof value === "object" && Number.isFinite((value as Look).at) && typeof (value as Look).body === "string";
+    // `looks` is absent in a file written before A11-235 (and a look has no `decisions` before A11-250), and a look that is not the right shape is left out like a `seen` entry: the head then has none, and is re-reviewed by a reply only.
+    const lookOf = (value: unknown): value is Look => value !== null && typeof value === "object" && Number.isFinite((value as Look).at) && typeof (value as Look).body === "string"
+      && ((value as Look).decisions === undefined || typeof (value as Look).decisions === "string");
     // `refusals` is absent in a file written before A11-241, and in one for a pool whose starts herdr never refused. One that is not the right shape is left out like a `look`: its head is then refused again from a count of 1.
     const refusalOf = (value: unknown): value is StartRefusal => value !== null && typeof value === "object" && typeof (value as StartRefusal).reason === "string"
       && Number.isInteger((value as StartRefusal).count) && (value as StartRefusal).count >= 1;
