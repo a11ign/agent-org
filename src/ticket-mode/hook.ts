@@ -604,9 +604,8 @@ function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: St
  */
 function judgeWriterOutcome(outcome: string, text: string): Judgment {
   const parsed = parseWriterOutcome(text);
-  const stuck = `on the same invalid outcome in ${outcome}, so this one is allowed and the board fails the run`;
-  if (typeof parsed === "string") return { ask: `${outcome}: ${parsed}. Write ${outcome} again as the last thing you do, in the shape your brief shows.`, stuck };
-  return { verdict: ALLOW };
+  if (typeof parsed !== "string") return { verdict: ALLOW };
+  return { ask: `${outcome}: ${parsed}. Write ${outcome} again as the last thing you do, in the shape your brief shows.`, stuck: `on the same invalid outcome in ${outcome}, so this one is allowed and the board fails the run` };
 }
 
 /**

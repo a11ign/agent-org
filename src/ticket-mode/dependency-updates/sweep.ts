@@ -71,16 +71,16 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
  * never left to infer a team (A11-267), so while the epic cannot be read, or has no team, nothing is asked for: the reason is said once, and the next sweep reads it again. Null in that case.
  */
 async function requestTeamOf(ctx: SweepContext): Promise<string | null> {
-  const unknown = (why: string): null => {
+  const noTeam = (why: string): null => {
     sayOnce(ctx, `dependency updates: the team of ${DEPENDENCY_EPIC} is not known (${why}), so no dependency ticket is asked for until it is`);
     return null;
   };
   try {
     const epic = await ctx.deps.source.read(DEPENDENCY_EPIC);
-    if (epic === null) return unknown(`the tracker has no such ticket`);
-    return epic.team === "" ? unknown("it names no team") : epic.team;
+    if (epic === null) return noTeam(`the tracker has no such ticket`);
+    return epic.team === "" ? noTeam("it names no team") : epic.team;
   } catch (err) {
-    return unknown(firstLine(err));
+    return noTeam(firstLine(err));
   }
 }
 
