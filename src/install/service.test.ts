@@ -2,12 +2,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { main, reloadService, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
+import { main, reloadService, runWithin, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
+import { TAILSCALE_UNDER_TESTS } from "../plugins/real-seams.ts";
 import { TAILSCALE_MISSING } from "../../plugins/tailscale/tailnet.ts";
 
 type Answer = (args: string[]) => RunResult;
@@ -542,4 +543,19 @@ test("A11-162: an exposure handed in serves the port it names, with the readines
   const refusing = Object.assign(createFakeExposure("board.example.net"), { readiness: () => "the fake is not ready: run the fake" });
   await assert.rejects(startService("ui", { ...t.deps, exposure: async () => refusing }), (err: unknown) => err instanceof ServiceRefusal && err.message === "the fake is not ready: run the fake");
   assert.deepEqual(refusing.calls, [], "and nothing was claimed or served");
+});
+
+test("A11-279: the service's own run refuses `tailscale` under the test runner, so a stand-in first on PATH is never started", () => {
+  const dir = tmpDir("run-within-");
+  const log = join(dir, "calls.log");
+  writeFileSync(join(dir, "tailscale"), `#!/bin/sh\necho "$*" >> "${log}"\n`);
+  chmodSync(join(dir, "tailscale"), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${dir}:${previousPath ?? ""}`;
+  try {
+    assert.deepEqual(runWithin("tailscale", ["serve", "status", "--json"], 5_000), { status: null, stdout: "", stderr: TAILSCALE_UNDER_TESTS });
+  } finally {
+    process.env.PATH = previousPath;
+  }
+  assert.equal(existsSync(log) ? readFileSync(log, "utf8") : "", "", "the stand-in recorded no call");
 });

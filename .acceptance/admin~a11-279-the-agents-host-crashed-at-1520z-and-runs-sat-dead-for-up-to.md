@@ -5,20 +5,12 @@ Step 1 of 7. No test can run the real `tailscale`. Under the test runner (its ru
 Acceptance:
 
 ```bash
-# A recording `tailscale` first on PATH: every call it is given is appended to its log.
-work="$(mktemp -d)"
-mkdir "$work/shim"
-printf '#!/bin/sh\necho "$*" >> "%s/tailscale-calls.log"\n' "$work" > "$work/shim/tailscale"
-chmod +x "$work/shim/tailscale"
-# The guard, the exposure's ownership check, the contract suite over the fake, Tailscale and local, the service's own removal, and the live-default-seams guard with its positive control.
-PATH="$work/shim:$PATH" npx rstest run --config scripts/rstest/rstest.config.ts src/plugins/real-seams.test.ts plugins/tailscale/ plugins/local/ src/plugins/fakes/exposure.test.ts src/install/service.test.ts src/event-tunnel.test.ts src/packaging/live-default-seams.test.ts
-# The stand-in recorded no call: no test reached a `tailscale` it did not inject.
-test ! -s "$work/tailscale-calls.log"
-rm -rf "${work:?}"
+# One line, as the job reads one command at a time: a recording `tailscale` first on PATH (each call it is given is appended to its log); the guard, the exposure's ownership check, the contract suite over the fake, Tailscale and local, the event tunnel's removal, and the live-default-seams guard with its positive control; then the run must pass AND the stand-in must have recorded no call.
+bash -c 'w="$(mktemp -d)" && mkdir "$w/shim" && printf "#!/bin/sh\necho \"\$*\" >> \"$w/calls.log\"\n" > "$w/shim/tailscale" && chmod +x "$w/shim/tailscale" && PATH="$w/shim:$PATH" npx rstest run --config scripts/rstest/rstest.config.ts src/plugins/real-seams.test.ts plugins/tailscale/ plugins/local/ src/plugins/fakes/exposure.test.ts src/event-tunnel.test.ts src/packaging/live-default-seams.test.ts; ran=$?; calls="$(cat "$w/calls.log" 2>/dev/null)"; rm -rf "${w:?}"; echo "tailscale calls recorded: ${calls:-none}"; [ "$ran" -eq 0 ] && [ -z "$calls" ]'
 npm run typecheck
 ```
 
-The onboard and doctor tests the ticket names (`src/install/onboard.test.ts`, `src/install/onboard-demo.test.ts`, `src/install/doctor.test.ts`, `src/plugins/`, `src/ticket-mode/plugins-api.test.ts`) need the fixture project, so CI's `suite` job runs them. Locally, with the same shim first on PATH: `AGENT_ORG_HOST=<a fixture copy's host.json> PATH="$work/shim:$PATH" npx rstest run --config scripts/rstest/rstest.config.ts src/install/onboard.test.ts src/install/onboard-demo.test.ts src/install/doctor.test.ts src/plugins/ plugins/ src/ticket-mode/plugins-api.test.ts`, then `test ! -s "$work/tailscale-calls.log"`. On the agents host, `tailscale serve status` still lists :9443 and :9444 afterwards.
+The onboard and doctor tests the ticket names (`src/install/onboard.test.ts`, `src/install/onboard-demo.test.ts`, `src/install/doctor.test.ts`, `src/plugins/`, `src/ticket-mode/plugins-api.test.ts`), and `src/install/service.test.ts` (the service's own `runWithin` refusal, and `removeServe` passing `local`), need the fixture project or history, so CI's `suite` job runs them. Locally, with the same shim first on PATH: `AGENT_ORG_HOST=<a fixture copy's host.json> PATH="$work/shim:$PATH" npx rstest run --config scripts/rstest/rstest.config.ts src/install/onboard.test.ts src/install/onboard-demo.test.ts src/install/doctor.test.ts src/plugins/ plugins/ src/ticket-mode/plugins-api.test.ts`, then `test ! -s "$work/tailscale-calls.log"`. On the agents host, `tailscale serve status` still lists :9443 and :9444 afterwards.
 
 After merge: none for this step. Step 2 carries the ticket's After-merge check (`systemctl --user restart agent-org-herdr` with live runs).
 
