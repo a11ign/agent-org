@@ -25,7 +25,7 @@ describe("the empty state", () => {
     await pageOn(runsStand({ runs: [], max: 6 }));
     expect(await screen.findByText("No runs yet")).toBeTruthy();
     expect(screen.getByText("Queue tickets from the Tickets page and each one shows up here as it runs.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Go to Tickets" }).getAttribute("href")).toBe("/next/tickets");
+    expect(screen.getByRole("link", { name: "Go to Tickets" }).getAttribute("href")).toBe("/tickets");
     expect(textOf(document.querySelector(".page-count"))).toBe("0 total");
     expect(screen.getByRole("img", { name: "0 of 6 busy" })).toBeTruthy();
     expect(document.querySelectorAll(".slot")).toHaveLength(6);
@@ -52,7 +52,7 @@ describe("the paused state", () => {
 
   it("links Change limit to Settings, Workers", async () => {
     await pageOn();
-    expect(screen.getByRole("link", { name: "Change limit" }).getAttribute("href")).toBe("/next/settings/workers");
+    expect(screen.getByRole("link", { name: "Change limit" }).getAttribute("href")).toBe("/settings/workers");
   });
 
   it("shows a refused pause in the failure banner", async () => {
@@ -254,8 +254,8 @@ describe("the list", () => {
 
   it("links a row's key and title to Run detail, encoded", async () => {
     await pageOn(runsStand({ runs: [working({ key: "A11-1", title: "One", startedAgo: MINUTE }), completed({ key: "A11 2", title: "Two", startedAgo: 3 * MINUTE })] }));
-    expect(document.querySelector("#run-A11-1 .run-title")?.getAttribute("href")).toBe("/next/runs/A11-1");
-    expect(document.querySelector("[id='run-A11 2'] .run-title")?.getAttribute("href")).toBe("/next/runs/A11%202");
+    expect(document.querySelector("#run-A11-1 .run-title")?.getAttribute("href")).toBe("/runs/A11-1");
+    expect(document.querySelector("[id='run-A11 2'] .run-title")?.getAttribute("href")).toBe("/runs/A11%202");
   });
 
   it("fills the pool bar's squares from the queue", async () => {
@@ -266,7 +266,7 @@ describe("the list", () => {
   });
 
   it("serves a run's own address with Run detail, not the list", async () => {
-    history.replaceState(null, "", "/next/runs/A11-184");
+    history.replaceState(null, "", "/runs/A11-184");
     await pageOn(runsStand(), { ready: false });
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("herdr's claude and codex integrations are installed by onboard and kept current, and herdr's plugins are auto-updated");
     expect(textOf(screen.getByRole("navigation", { name: "Breadcrumb" }))).toBe("Runs/A11-184");

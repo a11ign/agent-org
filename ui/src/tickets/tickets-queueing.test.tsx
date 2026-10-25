@@ -22,7 +22,7 @@ describe("the Run options popover", () => {
     expect(within(dialog).getByLabelText(/^Plan first/).closest("label")?.textContent).toBe("Plan first (opus · low)");
     expect((within(dialog).getByLabelText("Model") as HTMLSelectElement).value).toBe("sonnet");
     expect((within(dialog).getByLabelText("Effort") as HTMLSelectElement).value).toBe("high");
-    expect(within(dialog).getByRole("link", { name: "Change defaults" }).getAttribute("href")).toBe("/next/settings/models");
+    expect(within(dialog).getByRole("link", { name: "Change defaults" }).getAttribute("href")).toBe("/settings/models");
     expect(within(dialog).getByRole("button", { name: "Reset" })).toBeTruthy();
     expect(dialog.querySelectorAll("select, input, button, a")).toHaveLength(5);
   });

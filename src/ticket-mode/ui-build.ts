@@ -1,5 +1,5 @@
 // @ts-check
-// module: where the built board UI (`ui/`, A11-188) is looked for, how a request under `/next` maps to a file in it, and the headers each file is sent with (A11-190)
+// module: where the built board UI (`ui/`, A11-188) is looked for, how a request path maps to a file in it, where an old `/next` address goes, and the headers each file is sent with (A11-190, A11-202)
 //
 // THE BUILD IS LOOKED FOR IN TWO PLACES, IN ORDER: `<TOOL_ROOT>/ui-build/`, beside the running version, where a release's build is unpacked (A11-191), then `<TOOL_ROOT>/ui/dist/`,
 // the checkout's own output of `pnpm ui:build`, for dev. A folder counts only when it holds `index.html`. The lookup is cheap and the caller makes it on each request, so a build made
@@ -43,7 +43,7 @@ export function findBuild(candidates: readonly string[]): string | null {
   return candidates.find((dir) => realFile(join(dir, "index.html")) !== null) ?? null;
 }
 
-/** What a path under `/next` is answered with: the file to send, or nothing. `relative` is the file's path in the build, with `/`, which its headers are chosen by. */
+/** What a request path is answered with: the file to send, or nothing. `relative` is the file's path in the build, with `/`, which its headers are chosen by. */
 export type Located = Readonly<{ file: string; relative: string }> | null;
 
 /** `text` percent-decoded, or null when it is not valid or holds a NUL byte, which no file name does. */
@@ -71,7 +71,7 @@ export function isAssetPath(path: string): boolean {
 }
 
 /**
- * The file in the build at `root` that answers `path`, the part of the request's path after `/next` (empty, or starting with `/`). In order: the exact file, the directory's
+ * The file in the build at `root` that answers `path`, the request's path (empty, or starting with `/`; `/` is the root page). In order: the exact file, the directory's
  * `index.html`, `<path>.html`, then, for a path that is not an asset, the nearest page above it. Null is a 404. PURE over the files it reads.
  */
 export function locate(root: string, path: string): Located {
@@ -113,8 +113,13 @@ export function fileHeaders(relative: string): Record<string, string> {
   };
 }
 
-/** Whether `path`, a request's pathname, is `/next` or under it. */
-export const isNextPath = (path: string): boolean => path === "/next" || path.startsWith("/next/");
+/** Whether `path`, a request's pathname, is `/next` or under it: where the build was served until A11-202 moved it to `/`. */
+const isNextPath = (path: string): boolean => path === "/next" || path.startsWith("/next/");
 
-/** `path`'s part after `/next`: empty for `/next` itself. */
-export const afterNext = (path: string): string => path.slice("/next".length);
+/**
+ * Where an address from the days of `/next` goes now (A11-202): the same address without `/next`, with its query, or null for a path that is not under `/next`. The part after `/next` loses
+ * every leading `/` and `\`, so `/next//host` goes to `/host` and never to the protocol-relative `//host`, which would leave this origin. PURE.
+ */
+export function movedFromNext(path: string, search: string): string | null {
+  return isNextPath(path) ? `/${path.slice("/next".length).replace(/^[/\\]+/, "")}${search}` : null;
+}

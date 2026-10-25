@@ -19,11 +19,13 @@ describe("a press of a header button", () => {
     await waitFor(() => expect(queueReads(fetchWith)).toBeGreaterThan(before));
   });
 
-  it("shows the server's sentence in the red banner above the header when it refuses", async () => {
+  it("shows the server's sentence in the red banner under the breadcrumb and above the header when it refuses, as the Publisher refused board lays them out", async () => {
     await pageFor("running", detailStand("running", { post: () => ({ status: 409, error: "A11-183 already ended" }) }));
     press("Stop");
     expect(textOf(await screen.findByRole("alert"))).toContain("A11-183 already ended");
-    expect(document.querySelector(".alert-banner")?.nextElementSibling?.getAttribute("aria-label")).toBe("Breadcrumb");
+    const banner = document.querySelector(".alert-banner");
+    expect(banner?.previousElementSibling?.getAttribute("aria-label")).toBe("Breadcrumb");
+    expect(banner?.nextElementSibling?.classList.contains("detail-head")).toBe(true);
   });
 
   it("posts Apply edit and Discard edit when the run offers them", async () => {

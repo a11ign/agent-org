@@ -589,7 +589,7 @@ test("running it again on the release that is current completes a missing build,
   rmSync(join(server.root, "v0.13.0"), { recursive: true });
   const warned = install(home, path, repo, ["--version", "v0.13.0"], env);
   assert.equal(warned.status, 0, "stopping would change nothing: it is current already");
-  assert.match(warned.stdout, /^agent-org v0\.13\.0 is current, but its UI build could not be fetched: v0\.13\.0 has not attached its UI build yet .*\. \/next shows the missing-build page until agent-org update fetches it\.$/m);
+  assert.match(warned.stdout, /^agent-org v0\.13\.0 is current, but its UI build could not be fetched: v0\.13\.0 has not attached its UI build yet .*\. \/ shows the missing-build page until agent-org update fetches it\.$/m);
   assert.equal(existsSync(join(folder, "ui-build")), false);
 });
 

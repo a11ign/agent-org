@@ -1,6 +1,6 @@
 import { BOARD_FILES, standOf as settingsOf, viewOf } from "../../test/settings/settings-stand.ts";
 import type { SettingsView } from "../api/types.ts";
-import { fireEvent, inputOf, instanceOf, pageOn, PERSONAL, posts, reads, rowOf, screen, standOf, waitFor, within } from "./settings-harness.tsx";
+import { fireEvent, inputOf, instanceOf, keysShown, pageOn, PERSONAL, posts, reads, rowOf, screen, standOf, waitFor, within } from "./settings-harness.tsx";
 
 // What `ui.html`'s Settings page does that A11-200's pages left off (A11-220): restore a host file's backup at any time, a row's Details, a provider's hint, return a key to its default, and
 // what the Conventions plugin says besides its keys.
@@ -152,5 +152,28 @@ describe("what the Conventions plugin says besides its keys", () => {
     await pageOn("workers", { state: settingsOf({ view: withNotes }) });
     await waitFor(() => expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy());
     expect(document.querySelector("details.settings-conventions")).toBeNull();
+  });
+});
+
+// The quiet Reconnecting line of every page (A11-211, PARITY.md): the Settings pages had a skeleton and an error banner but no line for an instance that is restarting.
+describe("the Settings page while the instance restarts", () => {
+  it("shows the Reconnecting line and the page's skeleton, with no red, when the first read finds the instance gone", async () => {
+    const state = settingsOf({ viewFails: { status: 502, error: "no answer within 30 seconds" } });
+    await pageOn("workers", { state, ready: false });
+    const line = await screen.findByText("Reconnecting…");
+    expect(line.getAttribute("role")).toBe("status");
+    expect(line.getAttribute("title")).toBe("no answer within 30 seconds");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("status", { name: "Loading settings" })).toBeTruthy();
+  });
+
+  it("keeps the settings it read, under the line, once they were read and the instance goes", async () => {
+    const state = settingsOf();
+    await pageOn("workers", { state });
+    state.viewFails = { status: 503, error: "service unavailable" };
+    document.dispatchEvent(new Event("visibilitychange"));
+    await screen.findByText("Reconnecting…");
+    expect(keysShown()).toContain("tickets.drafts");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

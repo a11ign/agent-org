@@ -42,7 +42,8 @@
     $("status").textContent = "";
     try {
       const response = await fetch("/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: $("code").value }) });
-      if (response.ok) return location.replace("/");
+      // Back to the page that was asked for (a deep link such as /runs/A11-1?connection=work), and the board's front page when the pairing page was opened at /.
+      if (response.ok) return location.replace(location.pathname + location.search + location.hash);
       const { error } = await response.json().catch(() => ({ error: response.statusText }));
       $("status").textContent = error;
     } catch (err) {

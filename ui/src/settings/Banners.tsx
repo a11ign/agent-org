@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { CodeWords } from "../lifecycle/CodeWords.tsx";
 import { AlertIcon } from "../lifecycle/icons.tsx";
 import type { SettingsView } from "../api/types.ts";
 import { CONFLICT_SENTENCE, refusedHeading, sentenceOf } from "./settings-model.ts";
@@ -58,7 +59,7 @@ export function OutcomeBanner({ outcome, actions }: Readonly<{ outcome: Outcome 
       return (
         <div role="alert" className="alert-banner alert-banner-column">
           <strong className="alert-banner-heading">{refusedHeading(outcome.file)}</strong>
-          <span>{outcome.sentence}</span>
+          <span><CodeWords text={outcome.sentence} /></span>
         </div>
       );
     case "conflict":
@@ -73,7 +74,7 @@ export function OutcomeBanner({ outcome, actions }: Readonly<{ outcome: Outcome 
     case "failed":
       return (
         <div role="alert" className="alert-banner alert-banner-column">
-          <span>{outcome.sentence}</span>
+          <span><CodeWords text={outcome.sentence} /></span>
         </div>
       );
   }

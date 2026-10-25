@@ -19,10 +19,10 @@ const instanceApi: AstroIntegration = {
   },
 };
 
-// Static output, no adapter: the instance's own server (`ui-server.ts`) is the only server, and it serves `dist/` under `/next` (A11-190).
+// Static output, no adapter: the instance's own server (`ui-server.ts`) is the only server, and it serves `dist/` at `/` (A11-190 served it under `/next`; A11-202 moved it).
 export default defineConfig({
   output: "static",
-  base: BASE,
+  base: BASE || "/",
   // The instance serves its pages under a content security policy whose `style-src` is `'unsafe-inline'` alone (`PAGE_CSP` in `ui-server.ts`), which blocks a linked stylesheet. So every page carries its
   // styles inline. The fonts they name are the page's own files, which `default-src 'self'` allows.
   build: { inlineStylesheets: "always" },

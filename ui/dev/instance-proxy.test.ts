@@ -79,7 +79,7 @@ describe("the dev proxy's call to the instance", () => {
 
   it("leaves a path outside /api to the dev server", async () => {
     const dev = track(await devServer(async () => { throw new Error("must not be read"); }));
-    expect(await call(dev.port, "GET", "/next/")).toEqual({ status: 200, text: "next" });
+    expect(await call(dev.port, "GET", "/")).toEqual({ status: 200, text: "next" });
     expect(await call(dev.port, "GET", "/apiary")).toEqual({ status: 200, text: "next" });
   });
 });

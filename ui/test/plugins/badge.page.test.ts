@@ -55,7 +55,7 @@ async function sidebarBadge(path: string, plugins: PluginsStand, screen: (typeof
 }
 
 describe("the Plugins badge in Chromium, over the built site", () => {
-  it.each(["/next/settings/models", "/next/settings/workers", "/next/settings/machine"])("%s shows '1 needs attention' on the Plugins link at 1440px and 390px with no horizontal overflow, with one /api/plugins request", async (path) => {
+  it.each(["/settings/models", "/settings/workers", "/settings/machine"])("%s shows '1 needs attention' on the Plugins link at 1440px and 390px with no horizontal overflow, with one /api/plugins request", async (path) => {
     for (const screen of SCREENS) {
       const seen = await sidebarBadge(path, ONE_FAILING, screen);
       expect(seen.text).toBe("Plugins 1 needs attention");
@@ -70,12 +70,12 @@ describe("the Plugins badge in Chromium, over the built site", () => {
   });
 
   it("shows no badge when every plugin is whole", async () => {
-    const seen = await sidebarBadge("/next/settings/models", NOTHING_WRONG, SCREENS[0]);
+    const seen = await sidebarBadge("/settings/models", NOTHING_WRONG, SCREENS[0]);
     expect([seen.text, seen.shown]).toEqual(["Plugins", 0]);
   });
 
   it("shows no badge when the plugins cannot be read", async () => {
-    const seen = await sidebarBadge("/next/settings/models", pluginsOf({ fails: { status: 500, error: "the doctor checks fell over" } }), SCREENS[0]);
+    const seen = await sidebarBadge("/settings/models", pluginsOf({ fails: { status: 500, error: "the doctor checks fell over" } }), SCREENS[0]);
     expect([seen.text, seen.shown]).toEqual(["Plugins", 0]);
   });
 });

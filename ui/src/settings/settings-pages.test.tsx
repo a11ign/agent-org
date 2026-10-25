@@ -38,7 +38,7 @@ describe("the three pages of the split", () => {
     await pageOn("workers");
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(nav).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
-      ["Models", "/next/settings/models"], ["Workers", "/next/settings/workers"], ["Machine", "/next/settings/machine"], ["Plugins", "/next/settings/plugins"],
+      ["Models", "/settings/models"], ["Workers", "/settings/workers"], ["Machine", "/settings/machine"], ["Plugins", "/settings/plugins"],
     ]);
     expect(within(nav).getByRole("link", { name: "Workers" }).getAttribute("aria-current")).toBe("page");
   });

@@ -1,16 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { UI_ROOT } from "../site.ts";
 
-// PARITY.md (docs/design/atomaut/) lists everything today's board (src/ticket-mode/ui.html) does, and where Atomaut does it (A11-220). This holds the file to its own rules: every feature row has a
-// location, a ticket and a board or a pattern, and, while ui.html exists, every element id and every name it imports from the board's modules is in some row.
+// PARITY.md (docs/design/atomaut/) lists everything the old board (src/ticket-mode/ui.html, retired by A11-202) did, and where Atomaut does it (A11-220). This holds the file to its own rules: every feature
+// row has a location, a ticket and a board or a pattern. (Until A11-202 it also held every element id and imported name of ui.html to a row; that was run once, on the last commit that held the file.)
 
 const REPO = join(UI_ROOT, "..");
 const PARITY = join(REPO, "docs", "design", "atomaut", "PARITY.md");
-const UI_HTML = join(REPO, "src", "ticket-mode", "ui.html");
-
-/** The modules `ui.html` imports its decisions from. */
-const MODULES = ["/board-view.js", "/label-filters.js", "/assignee-filter.js", "/settings-search.js", "/plugins-section.js"];
 
 const COLUMNS = ["Feature", "In ui.html", "Atomaut page", "Ticket", "Board or pattern"] as const;
 
@@ -47,30 +43,6 @@ export function problemsOf({ cells, line }: Row): string[] {
   return problems;
 }
 
-/** The names and `#ids` the "In ui.html" column mentions, from the code spans of its cells. */
-export function mentioned(rows: readonly Row[]): Set<string> {
-  const found = new Set<string>();
-  for (const { cells } of rows) {
-    for (const span of (cells[1] ?? "").matchAll(/`([^`]+)`/g)) for (const token of span[1].split(/[^\w#-]+/)) if (token !== "") found.add(token);
-  }
-  return found;
-}
-
-/** Every element id of `ui.html`'s markup, as `#id`. */
-export function idsOf(html: string): string[] {
-  const markup = html.slice(html.indexOf("<body>"), html.indexOf("<script"));
-  return [...markup.matchAll(/\bid="([^"]+)"/g)].map((match) => `#${match[1]}`);
-}
-
-/** Every name `ui.html` imports from the modules above. */
-export function importsOf(html: string): string[] {
-  const names: string[] = [];
-  for (const match of html.matchAll(/import \{([^}]*)\} from "([^"]+)"/g)) {
-    if (MODULES.includes(match[2])) names.push(...match[1].split(",").map((name) => name.trim()).filter((name) => name !== ""));
-  }
-  return names;
-}
-
 const rows = featureRows(readFileSync(PARITY, "utf8"));
 
 describe("PARITY.md rows", () => {
@@ -86,7 +58,7 @@ describe("PARITY.md rows", () => {
 });
 
 describe("the checks on a row", () => {
-  const good = ["A feature", "`#id`", "`/next/runs`, below the list", "A11-220", "pattern: status banner"];
+  const good = ["A feature", "`#id`", "`/runs`, below the list", "A11-220", "pattern: status banner"];
   const at = (cells: readonly string[]): Row => ({ cells, line: 1 });
 
   it("passes a row with every cell", () => {
@@ -112,24 +84,5 @@ describe("the checks on a row", () => {
   it("reads only the tables that begin with Feature", () => {
     const text = ["| Column | Says |", "| --- | --- |", "| Feature | What |", "", "| Feature | In `ui.html` | Atomaut page | Ticket | Board or pattern |", "| --- | --- | --- | --- | --- |", `| ${good.join(" | ")} |`].join("\n");
     expect(featureRows(text).map(({ cells }) => cells[0])).toEqual(["A feature"]);
-  });
-});
-
-// Removed by A11-202 with ui.html: it reads the file that is retired.
-describe.skipIf(!existsSync(UI_HTML))("everything ui.html has is in a row", () => {
-  const html = existsSync(UI_HTML) ? readFileSync(UI_HTML, "utf8") : "";
-  const found = mentioned(rows);
-
-  it("finds ui.html's ids and imports", () => {
-    expect(idsOf(html).length).toBeGreaterThan(80);
-    expect(importsOf(html).length).toBeGreaterThan(100);
-  });
-
-  it("has every element id of ui.html's markup in the ui.html column of some row", () => {
-    expect(idsOf(html).filter((id) => !found.has(id))).toEqual([]);
-  });
-
-  it("has every name ui.html imports from the board's modules in the ui.html column of some row", () => {
-    expect(importsOf(html).filter((name) => !found.has(name))).toEqual([]);
   });
 });

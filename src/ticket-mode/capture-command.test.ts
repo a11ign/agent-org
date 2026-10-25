@@ -51,6 +51,7 @@ function harness(over: Partial<CaptureDeps> = {}, start: () => Child = () => chi
     checkout: "/work/agent-org",
     env: { HOME: "/home/me", PATH: "/usr/bin:/bin" },
     chromium: () => READY,
+    build: () => "/work/agent-org/ui/dist",
     tmp: () => dir,
     freePort: async () => { port += 1; return port; },
     spawn: (file, args, env) => {
@@ -85,6 +86,12 @@ test("a capture refuses before anything starts when a Chromium build is missing,
   assert.equal(existsSync(h.dir), true, "nothing was made, so nothing needed removing");
 });
 
+test("A11-202: a capture refuses before anything starts when the checkout has no UI build, and names the command that makes it", async () => {
+  const h = harness({ build: () => null });
+  await assert.rejects(captureRoute(h.request, h.deps), (err: Error) => err instanceof CaptureRefusal && /no board UI build/.test(err.message) && /pnpm ui:build/.test(err.message));
+  assert.equal(h.spawned.length, 0, "no child starts");
+});
+
 test("a capture starts the throwaway instance and board, pairs, shoots the route at the size, and writes the file named for it", async () => {
   const h = harness();
   const written = await captureRoute(h.request, h.deps);
@@ -101,10 +108,10 @@ test("a capture starts the throwaway instance and board, pairs, shoots the route
   }
   assert.equal(h.shots.length, 1);
   const [shot] = h.shots;
-  assert.equal(shot.url, `http://127.0.0.1:${shot.origin.split(":")[2]}/#/settings`);
+  assert.equal(shot.url, `http://127.0.0.1:${shot.origin.split(":")[2]}/settings`);
   assert.deepEqual(shot.size, { width: 1280, height: 800 });
   assert.deepEqual(shot.cookie, { name: "ticket_session", value: "session-1" }, "the browser carries the session the board gave");
-  assert.equal(shot.ready, "#settings-page:not([hidden])");
+  assert.equal(shot.ready, "main .shell-page h1");
 });
 
 test("the UI is on a port the capture chose, distinct from the instance's, and both children and the directory are gone at the end", async () => {

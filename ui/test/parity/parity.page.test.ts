@@ -46,23 +46,23 @@ const openAll = (page: Page) => page.evaluate(() => document.querySelectorAll("d
 
 const SCENES: readonly Scene[] = [
   {
-    name: "runs-notices-and-lists", path: "/next/runs", stand: () => ({ stand: runsNoticesStand() }),
+    name: "runs-notices-and-lists", path: "/runs", stand: () => ({ stand: runsNoticesStand() }),
     ready: (page) => page.getByRole("region", { name: "After-merge checks" }).waitFor(),
   },
   {
-    name: "run-detail-queued-open", path: `/next/runs/${QUEUED_KEY}`, stand: () => ({ stand: detailOn(queuedChanged) }),
+    name: "run-detail-queued-open", path: `/runs/${QUEUED_KEY}`, stand: () => ({ stand: detailOn(queuedChanged) }),
     ready: (page) => page.getByRole("region", { name: "More about this run" }).waitFor(), drive: openAll,
   },
   {
-    name: "run-detail-proposal-open", path: `/next/runs/${PROPOSING_KEY}`, stand: () => ({ stand: detailOn(proposing) }),
+    name: "run-detail-proposal-open", path: `/runs/${PROPOSING_KEY}`, stand: () => ({ stand: detailOn(proposing) }),
     ready: (page) => page.getByRole("region", { name: "More about this run" }).waitFor(), drive: openAll,
   },
   {
-    name: "tickets-held-and-labels", path: "/next/tickets", stand: () => ({ stand: ticketsStand() }),
+    name: "tickets-held-and-labels", path: "/tickets", stand: () => ({ stand: ticketsStand() }),
     ready: (page) => page.locator("[data-key=A11-301]").waitFor(),
   },
   {
-    name: "settings-machine-restore", path: "/next/settings/machine", stand: () => ({ stand: { ...machineStand(), instances: { here: { ...machineStand().instances?.here, config: modelsConfig() } } } }), settings: true,
+    name: "settings-machine-restore", path: "/settings/machine", stand: () => ({ stand: { ...machineStand(), instances: { here: { ...machineStand().instances?.here, config: modelsConfig() } } } }), settings: true,
     ready: (page) => page.getByRole("button", { name: "Restore the backup of host.json" }).waitFor(), drive: openAll,
   },
 ];

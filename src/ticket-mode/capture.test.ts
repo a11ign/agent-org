@@ -1,7 +1,7 @@
 // no-token: none -- the host file is built and read in memory; no process starts and no file is written
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { captureHost, captureName, CaptureRefusal, HERDR_STUB, parseRoute, parseSize, pngSize, readySelector, routeAddress, routeSlug } from "./capture.ts";
+import { captureHost, captureName, CaptureRefusal, HERDR_STUB, parseRoute, parseSize, pngSize, READY_SELECTOR, routeAddress, routeSlug } from "./capture.ts";
 import { parseTicketSettings, readTicketSettings } from "./settings.ts";
 
 const FACTS = { checkout: "/work/agent-org", stateDir: "/tmp/cap/state", binDir: "/tmp/cap/bin", port: 47901, uiPort: 47902, keyPath: "/tmp/cap/linear-key" };
@@ -53,11 +53,12 @@ test("a capture's file is named for its route and size, so two sizes of one rout
   assert.notEqual(captureName("/settings", { width: 1280, height: 800 }), captureName("/settings", { width: 390, height: 844 }));
 });
 
-test("the address opens the board's hash route, which is the Settings page, and the board at /", () => {
-  assert.equal(routeAddress(4748, "/settings"), "http://127.0.0.1:4748/#/settings");
+test("A11-202: the address opens the route's own path on the board, and a page has drawn once its heading is in the page's column", () => {
+  assert.equal(routeAddress(4748, "/settings"), "http://127.0.0.1:4748/settings");
+  assert.equal(routeAddress(4748, "/runs/A11-151"), "http://127.0.0.1:4748/runs/A11-151");
   assert.equal(routeAddress(4748, "/"), "http://127.0.0.1:4748/");
-  assert.equal(readySelector("/settings"), "#settings-page:not([hidden])");
-  assert.equal(readySelector("/"), "#board:not([hidden])");
+  assert.throws(() => routeAddress(4748, "/settings?x=1"), CaptureRefusal);
+  assert.equal(READY_SELECTOR, "main .shell-page h1");
 });
 
 test("a PNG's size is read from its header, and bytes that are not a PNG have none", () => {

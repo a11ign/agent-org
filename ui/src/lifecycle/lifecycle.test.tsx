@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { PollView } from "../api/use-poll.ts";
+import { CodeWords } from "./CodeWords.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import { ErrorState } from "./ErrorState.tsx";
 import { Lifecycle, type LifecycleView } from "./Lifecycle.tsx";
@@ -117,9 +118,9 @@ describe("UnreachableFrame", () => {
 
 describe("EmptyState", () => {
   it("shows its title and text, and its actions when it has them", () => {
-    render(<EmptyState title="No runs yet" text="Queue tickets." actions={<a href="/next/tickets">Go to Tickets</a>} />);
+    render(<EmptyState title="No runs yet" text="Queue tickets." actions={<a href="/tickets">Go to Tickets</a>} />);
     expect(screen.getByText("No runs yet")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Go to Tickets" }).getAttribute("href")).toBe("/next/tickets");
+    expect(screen.getByRole("link", { name: "Go to Tickets" }).getAttribute("href")).toBe("/tickets");
   });
 });
 
@@ -141,5 +142,23 @@ describe("the page skeletons", () => {
   it("draws the rows asked for", () => {
     const { container } = render(<ListSkeleton label="Loading tickets" rows={3} />);
     expect(container.querySelectorAll(".skeleton-panel-row")).toHaveLength(3);
+  });
+});
+
+describe("CodeWords", () => {
+  it("draws each backticked word as code, drops the backticks, and keeps a sentence with an odd one as it is", () => {
+    const { container } = render(<p><CodeWords text="ticket mode: `tickets.plan` in the host file is not `a regex`." /></p>);
+    expect(container.textContent).toBe("ticket mode: tickets.plan in the host file is not a regex.");
+    expect([...container.querySelectorAll("code")].map((code) => code.textContent)).toEqual(["tickets.plan", "a regex"]);
+    const odd = render(<p><CodeWords text="a ` b" /></p>);
+    expect(odd.container.textContent).toBe("a ` b");
+    expect(odd.container.querySelector("code")).toBeNull();
+  });
+
+  it("never reads a sentence as markup", () => {
+    const { container } = render(<p><CodeWords text="`<b>x</b>` and <i>y</i>" /></p>);
+    expect(container.querySelector("b")).toBeNull();
+    expect(container.querySelector("i")).toBeNull();
+    expect(container.textContent).toBe("<b>x</b> and <i>y</i>");
   });
 });

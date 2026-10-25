@@ -188,6 +188,11 @@ export function ShellProvider({ fetchWith, reload, children }: Readonly<{ fetchW
   const storage = browserStorage();
   const [name, setName] = useState<string | null>(() => nameToOpenOn(storage));
   const connection = useMemo(() => (listing === null ? null : chosenConnection(listing.connections, name)), [listing, name]);
+  // A link names the instance for one page, and every page is a page load now: what it names is remembered, so the next page (a click on Runs, say) opens on it too, as the old one-page board stayed on it.
+  useEffect(() => {
+    const linked = new URLSearchParams(globalThis.location?.search ?? "").get("connection");
+    if (listing !== null && linked !== null && listing.connections.some((candidate) => candidate.name === linked)) remembered(storage, CONNECTION_MEMORY, linked);
+  }, [listing, storage]);
   if (listing === null) return <ShellContext.Provider value={LOADING_SHELL}>{children}</ShellContext.Provider>;
   const switchConnection = (next: string) => {
     if (!listing.connections.some((candidate) => candidate.name === next)) return;

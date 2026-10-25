@@ -12,7 +12,7 @@ async function pageOnSsh(runs = [STAGES.writing]) {
   const board = writerBoard(runs);
   const link = { down: false };
   Object.defineProperty(board.instance, "queueFails", { get: () => (link.down ? { status: 502, error: REFUSAL } : undefined) });
-  history.replaceState(null, "", "/next/tickets?connection=personal");
+  history.replaceState(null, "", "/tickets?connection=personal");
   const page = await pageWith({ connections: [HERE, PERSONAL], instances: { personal: board.instance, here: board.instance } });
   await screen.findAllByRole("region", { name: "New ticket request" });
   return { ...page, link };
