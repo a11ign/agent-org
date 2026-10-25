@@ -91,7 +91,7 @@ function healthy(more: Partial<{ merged: string | null; trunk: unknown; seats: a
 /** `fleet-watch`'s mirror of control's hourly record: `{ readAt, record }`. `differences` is a list of [box, field, has, wants]. */
 function mirrorOf(differences: [string, string, string | null, string][], record: Record<string, unknown> = {}, readAt: number = NOW - 5 * MINUTE) {
   return { readAt, record: { checkedAt: iso(NOW - 10 * MINUTE), firstSeenAt: differences.length === 0 ? null : iso(NOW - 3 * 60 * MINUTE), expected: { Windows: "26300.9711" }, unreadable: null,
-    reachable: 14, total: 15, unreachable: ["a11y-worker-6"], freeze: null,
+    reachable: 14, total: 15, unreachable: ["a11y-worker-6"], freeze: null, carryLost: [],
     differences: differences.map(([box, field, has, wants]) => ({ box, field, has, wants, carried: false })), ...record } };
 }
 
@@ -511,19 +511,59 @@ describe("readFleetDrift", () => {
     assert.doesNotMatch(JSON.stringify(reading), /root|ENOENT/);
   });
 
-  test("`unreadable` is anything the check wrote there, not only a string; and `carried` crosses as the box's own fact", () => {
-    for (const unreadable of ["ENOENT", true, { code: "ENOENT" }]) {
-      assert.equal(readFleetDrift({ path: mirrorFile(mirrorOf([], { unreadable, firstSeenAt: iso(NOW - 60 * MINUTE) })) }).unreadable, true, JSON.stringify(unreadable));
-    }
+  test("`carried` crosses as the box's own fact", () => {
     const carried = mirrorOf([["a11y-worker-5", "Windows", "1", "2"]]);
     carried.record.differences[0].carried = true;
     assert.equal(readFleetDrift({ path: mirrorFile(carried) }).differences[0].carried, true);
   });
 
-  test("`carryLost` crosses as names: an address is cut, and a missing list is none", () => {
-    const lost = mirrorOf([], { carryLost: ["a11y-worker-9  192.0.2.9:8765", "a11y-worker-4", 7], firstSeenAt: iso(NOW - 60 * MINUTE) });
+  test("`carryLost` crosses as names: an address is cut", () => {
+    const lost = mirrorOf([], { carryLost: ["a11y-worker-9  192.0.2.9:8765", "a11y-worker-4"], firstSeenAt: iso(NOW - 60 * MINUTE) });
     assert.deepEqual(readFleetDrift({ path: mirrorFile(lost) }).carryLost, ["a11y-worker-9", "a11y-worker-4"]);
     assert.deepEqual(readFleetDrift({ path: mirrorFile(mirrorOf([])) }).carryLost, []);
+  });
+
+});
+
+describe("readFleetDrift: a record that is not whole is not a reading", () => {
+  const mirrorFile = (/** @type {unknown} */ content: unknown) => {
+    const path = join(freshDirectory(), "fleet-drift-mirror.json");
+    writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content));
+    return path;
+  };
+
+  // Every field the reading depends on, missing or mistyped: a default (a count of 0, a list of none) would read as a clean fleet and clear an open incident.
+  const MALFORMED: [string, Record<string, unknown>][] = [
+    ["carryLost is a string", { carryLost: "corrupt" }], ["carryLost is missing", { carryLost: undefined }], ["carryLost holds a non-name", { carryLost: ["a11y-worker-9", 7] }],
+    ["unreadable is missing", { unreadable: undefined }], ["unreadable is a boolean", { unreadable: true }], ["unreadable is an object", { unreadable: { code: "ENOENT" } }],
+    ["reachable is missing", { reachable: undefined }], ["reachable is a string", { reachable: "14" }], ["reachable is negative", { reachable: -1 }], ["reachable is fractional", { reachable: 1.5 }],
+    ["total is missing", { total: undefined }], ["total is null", { total: null }],
+    ["firstSeenAt is missing", { firstSeenAt: undefined }], ["firstSeenAt is a number", { firstSeenAt: 12 }],
+    ["checkedAt is a number", { checkedAt: NOW }],
+  ];
+  for (const [what, change] of MALFORMED) {
+    test(`a record where ${what} is not a reading: the reader throws, and the source is cannot-ask with no event (never a clear)`, async () => {
+      const path = mirrorFile(mirrorOf([], change));
+      assert.throws(() => readFleetDrift({ path }), /a mirrored drift record was expected/);
+      const { readers } = readersFor({ github: healthy(), fleetDriftPath: path });
+      const seen = await observeIncidents({ now: () => NOW, readers, log: () => {} });
+      assert.deepEqual(seen.cannotAsk.map(({ source }) => source), ["incident:fleet-drift"]);
+      assert.equal(seen.events.some((event) => event.key === "incident:fleet-drift"), false);
+    });
+  }
+
+  test("a difference whose `has` or `carried` is mistyped is not a reading either", () => {
+    for (const change of [{ has: 12 }, { has: undefined }, { carried: "yes" }, { carried: undefined }]) {
+      const record = mirrorOf([["a11y-worker-5", "Windows", "1", "2"]]);
+      Object.assign(record.record.differences[0], change);
+      assert.throws(() => readFleetDrift({ path: mirrorFile(record) }), /not a box, a field and what the manifest wants/, JSON.stringify(change));
+    }
+  });
+
+  test("NEGATIVE CONTROL: the valid shapes still read (a quiet record, a failing one, a lost one)", () => {
+    for (const record of [mirrorOf([]), mirrorOf([["a11y-worker-5", "Windows", null, "2"]]), mirrorOf([], { carryLost: ["a11y-worker-9"], firstSeenAt: iso(NOW - 60 * MINUTE) }), mirrorOf([], { unreadable: "no pins", firstSeenAt: iso(NOW - 60 * MINUTE) })]) {
+      assert.doesNotThrow(() => readFleetDrift({ path: mirrorFile(record) }));
+    }
   });
 
   test("a difference with no box name is not a reading", () => {
@@ -534,7 +574,7 @@ describe("readFleetDrift", () => {
     assert.throws(() => readFleetDrift({ path: join(freshDirectory(), "absent.json") }), /ENOENT/);
     assert.throws(() => readFleetDrift({ path: mirrorFile({ readAt: NOW, record: {} }) }), /a mirrored drift record was expected/);
     assert.throws(() => readFleetDrift({ path: mirrorFile("not json at all") }), SyntaxError);
-    assert.throws(() => readFleetDrift({ path: mirrorFile({ readAt: NOW, record: { checkedAt: iso(NOW), differences: [{ box: "a11y-worker-5" }] } }) }), /not a box, a field and what the manifest wants/);
+    assert.throws(() => readFleetDrift({ path: mirrorFile(mirrorOf([], { differences: [{ box: "a11y-worker-5" }] })) }), /not a box, a field and what the manifest wants/);
   });
 
   test("through the source: a difference is one open incident:fleet-drift, a quiet record is its clear, and a mirror 3 hours old is cannot-ask", async () => {

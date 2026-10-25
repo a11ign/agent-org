@@ -204,23 +204,39 @@ export function readFleetState({ path }: { path: string; }): { state: Record<str
   return { state, writtenAt: statSync(path).mtimeMs };
 }
 
-/** A record the hourly check wrote: it has the time it was taken and a list of differences. `{}` (a check that never ran) is not one. */
-const isDriftRecord = (record: any): boolean => typeof record?.checkedAt === "string" && Array.isArray(record.differences);
+const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+const isStringOrNull = (value: unknown): boolean => value === null || typeof value === "string";
+const isStringList = (value: unknown): boolean => Array.isArray(value) && value.every((item) => typeof item === "string");
 
-const stringOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
+/**
+ * A record the hourly check wrote, with EVERY field the reading depends on present and of its type: the time it was taken, the start of the run (a string or null),
+ * why the manifest could not be read (a string or null), how many boxes answered of how many, the differences and the boxes whose state was lost. `{}` (a check that
+ * never ran) is not one, and neither is a record with a field missing or mistyped: a default there (a count of 0, a list of none) would read as a clean fleet.
+ */
+const isDriftRecord = (record: any): boolean => hasDriftStructure(record) && hasDriftFacts(record);
 
-/** One difference cut to names, or a throw: an entry that is not a box, a field and what the manifest wants is a record this reader does not understand. */
+/** The record's time and the lists it carries. */
+const hasDriftStructure = (record: any): boolean => typeof record?.checkedAt === "string" && Array.isArray(record.differences) && isStringList(record.carryLost);
+
+/** The record's run start, why the manifest could not be read, and how many boxes answered of how many. */
+const hasDriftFacts = (record: any): boolean => isStringOrNull(record.firstSeenAt) && isStringOrNull(record.unreadable) && isCount(record.reachable) && isCount(record.total);
+
+/** What a difference says besides its box: the field, what it has (or null) and what the manifest wants, and whether the box did not answer this hour. */
+const hasDifferenceFacts = (entry: Record<string, unknown>): boolean =>
+  typeof entry.field === "string" && typeof entry.wants === "string" && isStringOrNull(entry.has) && typeof entry.carried === "boolean";
+
+/** One difference cut to names, or `null`: an entry that is not a box, a field and what the manifest wants is a record this reader does not understand. */
 function driftDifference(entry: Record<string, unknown>): import("./incidents.ts").FleetDriftDifference | null {
   const box = typeof entry?.box === "string" ? workerName(entry.box) : "";
-  if (box === "" || typeof entry.field !== "string" || typeof entry.wants !== "string") return null;
-  return { box, field: entry.field, has: stringOrNull(entry.has), wants: entry.wants, carried: entry.carried === true };
+  if (box === "" || !hasDifferenceFacts(entry)) return null;
+  return { box, field: entry.field as string, has: entry.has as string | null, wants: entry.wants as string, carried: entry.carried as boolean };
 }
 
 /**
  * Control's hourly drift record, as `fleet-watch` mirrors it onto this host (`runs/fleet-drift-mirror.json`, A11-205): `{ readAt, record }`, `readAt` the epoch ms of the look
  * that wrote it. **Only names are kept: the box, the field, what it has and what the manifest wants. Nothing else of the record crosses**, so an address could not reach a
  * message even if the record held one. A MISSING mirror throws, and so does a record that is `{}` (the hourly check has not written one yet) or lacks the shape: each is
- * "could not ask", never an all-clear. A manifest the check could not read (`unreadable` is anything but null) fails the check as a difference does.
+ * "could not ask", never an all-clear. A manifest the check could not read (`unreadable` is a string) fails the check as a difference does.
  */
 export function readFleetDrift({ path }: { path: string; }): import("./incidents.ts").FleetDriftReading {
   const stored = JSON.parse(readFileSync(path, "utf8"));
@@ -230,9 +246,8 @@ export function readFleetDrift({ path }: { path: string; }): import("./incidents
   }
   const differences = record.differences.map(driftDifference);
   if (differences.some((difference: unknown) => difference === null)) throw new TypeError(`${path}: a difference in the record is not a box, a field and what the manifest wants`);
-  return { readAt: stored.readAt, checkedAt: record.checkedAt, firstSeenAt: stringOrNull(record.firstSeenAt), unreadable: record.unreadable != null,
-    reachable: Number(record.reachable) || 0, total: Number(record.total) || 0, differences,
-    carryLost: Array.isArray(record.carryLost) ? record.carryLost.filter((box: unknown): box is string => typeof box === "string").map(workerName) : [] };
+  return { readAt: stored.readAt, checkedAt: record.checkedAt, firstSeenAt: record.firstSeenAt, unreadable: record.unreadable !== null,
+    reachable: record.reachable, total: record.total, differences, carryLost: record.carryLost.map(workerName) };
 }
 
 /** `worker-2` before `worker-10`: the order a person reads a list of numbered machines in. */
