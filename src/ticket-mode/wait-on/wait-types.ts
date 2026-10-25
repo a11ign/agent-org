@@ -51,7 +51,7 @@ export function waitKey(wait: Wait): string {
     case "ciRun": return `ciRun:${wait.repository}#${wait.runId}`;
     case "pullRequest": return `pullRequest:${wait.url}:${wait.until}`;
     case "ticket": return `ticket:${wait.key}:${wait.until}`;
-    case "session": return `session:${wait.ask}`;
+    case "session": return `${wait.kind}:${wait.ask}`;
   }
 }
 

@@ -238,3 +238,8 @@ test("A11-275: a finished ask is not read again, and a pending one is read on ev
   await readWaits([wait], new Map(second.map((reading) => [waitKey(reading.wait), reading])), counting);
   assert.equal(reads, 2, "the finished reading is kept");
 });
+
+test("A11-275: an ask is remembered by its words, so a repeat of the same ask is the same item and another ask is not", () => {
+  assert.equal(waitKey({ kind: "session", ask: "run it" }), "session:run it");
+  assert.notEqual(waitKey({ kind: "session", ask: "run it" }), waitKey({ kind: "session", ask: "run it again" }));
+});
