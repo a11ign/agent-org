@@ -1,4 +1,6 @@
 import { RUN_STATUSES } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
+import { clockOf } from "../../../src/ticket-mode/board-view/update-banner.ts";
+import { BACKGROUND_WAIT_MS } from "../../../src/ticket-mode/board-view/wait-deadline.ts";
 import { boardRuns, queueWith, queuedRun, working, type RunFields } from "../../test/runs/runs-stand.ts";
 import type { QueueView } from "../api/types.ts";
 import {
@@ -20,13 +22,44 @@ describe("the rail", () => {
     const counts = Object.fromEntries(rail.heads.flatMap(({ items }) => items.map(({ label, count }) => [label, count])));
     expect(rail.all).toBe(90);
     expect(counts).toMatchObject({ "Needs you": 0, "In progress": 2, Planning: 1, "Ready to merge": 1, Checked: 1, Completed: 85, Failed: 0 });
-    expect(rail.heads.flatMap(({ items }) => items)).toHaveLength(15);
+    expect(rail.heads.flatMap(({ items }) => items)).toHaveLength(16);
   });
 
   it("takes a remembered status, and All runs for anything else", () => {
     expect(filterFrom("failed")).toBe("failed");
     expect(filterFrom("nonsense")).toBeNull();
     expect(filterFrom(null)).toBeNull();
+  });
+});
+
+describe("a run parked on a wait (A11-272)", () => {
+  const parked = (key: string, more: RunFields = {}) => working({ key, title: key, startedAgo: MINUTE, working: { reason: "waits", at: Date.now(), waiting: true, waits: [{ kind: "ticket", key: "A11-229" }], waitText: "Waiting on ticket A11-229 (In Progress)" }, ...more });
+
+  it("is listed under Waiting in the Active head, just after In progress, and counted there and not under In progress", () => {
+    const rail = railOf(queueOf([parked("A11-231"), working({ key: "A11-1", title: "at work", startedAgo: MINUTE })]));
+    const active = rail.heads.find(({ label }) => label === "Active");
+    expect(active?.items.map(({ label, count }) => [label, count]).slice(0, 3)).toEqual([["In progress", 1], ["Waiting", 1], ["Planning", 0]]);
+  });
+
+  it("holds a worker slot, in the In progress colour, and sits under Running now", () => {
+    const queue = queueOf([parked("A11-231")], { max: 2 });
+    expect(poolOf(queue)).toMatchObject({ slots: ["working", "free"], busy: 1, text: "1 of 2 busy" });
+    expect(groupsOf(queue, filteredRuns(queue, null)).map(({ label, count }) => [label, count])).toEqual([["Running now", 1]]);
+    expect(filteredRuns(queue, "waiting").map(({ ticket }) => ticket.key)).toEqual(["A11-231"]);
+    expect(filteredRuns(queue, "working")).toEqual([]);
+  });
+
+  it("says what it waits on and until when in its note, and never In progress or Working", () => {
+    const queue = queueOf([parked("A11-231")]);
+    const note = noteOf(entryOf(parked("A11-231")), { queue, publisher: undefined, now: Date.now() });
+    expect(note).toMatch(/^Waiting on ticket A11-229 \(In Progress\), until \d\d:\d\d$/);
+    expect(note).not.toMatch(/In progress|Working/);
+  });
+
+  it("names the wait cycle a queued ticket is in, on its card", () => {
+    const files = ["lab:middleware/runtime/main.py"];
+    const queue = queueOf([parked("A11-231", { paths: files }), queuedRun("A11-229", "held", MINUTE, { paths: files })]);
+    expect(noteLines(entryOf(queue.entries[1] as never), { queue, publisher: undefined })).toContain("in a wait cycle: A11-229 → A11-231 → A11-229");
   });
 });
 
@@ -193,8 +226,9 @@ describe("a row's note", () => {
   it("says a run waiting on background work waits, for how long when the page holds the time, and a run past its bound is stalled naming the job", () => {
     const base = working({ key: "A11-236", title: "t", startedAgo: 120 * MINUTE });
     const waiting = entryOf({ ...base, working: { reason: "the captures run", at: 0, waiting: true, waitingOn: "the fleet captures" } });
-    expect(noteLines(waiting, { ...context, now: 54 * MINUTE })).toContain("Waiting on background work for 54 min: the fleet captures");
-    expect(noteLines(waiting, context)).toContain("Waiting on background work: the fleet captures");
+    const until = `, until ${clockOf(0 + BACKGROUND_WAIT_MS)}`;
+    expect(noteLines(waiting, { ...context, now: 54 * MINUTE })).toContain(`Waiting on background work for 54 min: the fleet captures${until}`);
+    expect(noteLines(waiting, context)).toContain(`Waiting on background work: the fleet captures${until}`);
     const stalled = entryOf({ ...base, working: { reason: "the captures run", at: 0, stalled: true, stallReason: "waited past 2026-10-24T23:00:00.000Z on the fleet captures" } });
     expect(noteLines(stalled, { ...context, now: 54 * MINUTE })).toContain("Stalled: waited past 2026-10-24T23:00:00.000Z on the fleet captures since it said: the captures run");
   });

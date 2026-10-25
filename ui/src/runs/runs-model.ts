@@ -11,6 +11,7 @@ import { ciNote } from "../../../src/ticket-mode/board-view/ci-note.ts";
 import { readoptNote } from "../../../src/ticket-mode/board-view/readopt-note.ts";
 import { sharedRunNote } from "../../../src/ticket-mode/board-view/run-terminal.ts";
 import { cutListNote } from "../../../src/ticket-mode/board-view/overlap-hold.ts";
+import { cycleNote } from "../../../src/ticket-mode/board-view/wait-cycles.ts";
 import {
   isParked, overrideNote, rebaseNote, retargetNote, runsShown, shownStatus, stackedOn, stackNote, statusCounts, verdictNote, waitNote, waitsOn, workingNote,
 } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
@@ -36,7 +37,7 @@ const MILLION = 1_000_000;
 /** The rail's four section heads, each over the statuses it lists. Together they list `RUN_STATUSES`, in its order. */
 export const RAIL_HEADS: readonly Readonly<{ label: string; statuses: readonly RunStatus[] }>[] = [
   { label: "Attention", statuses: ["needs-you", "talking"] },
-  { label: "Active", statuses: ["working", "planning", "reviewing", "blocked", "queued"] },
+  { label: "Active", statuses: ["working", "waiting", "planning", "reviewing", "blocked", "queued"] },
   { label: "Delivery", statuses: ["awaiting-review", "ready-to-merge", "publishing", "published", "checked"] },
   { label: "Finished", statuses: ["completed", "failed", "cancelled"] },
 ];
@@ -116,7 +117,7 @@ export const footerOf = ({ shown, total }: Pick<Paged, "shown" | "total">): stri
 /** The count line: `90 total · 3 running`, with `running` as the shell's Runs badge counts it; `0 total` when the queue holds no run. PURE. */
 export const countText = (total: number, running: number): string => (total === 0 ? "0 total" : `${total} total · ${running} running`);
 
-/** One square of the pool bar: filled for a run holding a slot, in the planning colour for a Planning run and the In progress colour otherwise, else empty. */
+/** One square of the pool bar: filled for a run holding a slot, in the planning colour for a Planning run and the In progress colour otherwise (a Waiting run holds its slot too, A11-272), else empty. */
 export type Slot = "planning" | "working" | "free";
 
 /** The pool's squares and its words: `max` squares (more if more runs hold a slot than the limit says), one filled for each run holding a slot, in the order of the Running now group. PURE. */
@@ -210,6 +211,7 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
     stacked.length > 0 ? stackNote(stacked) : null,
     rebaseNote(entry),
     waitNote(entry, entries),
+    cycleNote(entry, entries),
     publishingOffLine(shownStatus(entry, queue.publish, entries), publisher),
     entry.sessionNote,
     readoptNote(entry),

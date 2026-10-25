@@ -12,6 +12,8 @@ import { poolFixture } from "./pool-fixture.ts";
 import { herdrName } from "./pool.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { workingNote } from "./board-view/pull-status-and-notes.ts";
+import { clockOf } from "./board-view/update-banner.ts";
+import { deadlineOf } from "./board-view/wait-deadline.ts";
 import { fleetJobStatusVia } from "./wait-on/wait-read.ts";
 import type { TicketSource } from "./source.ts";
 
@@ -78,6 +80,9 @@ async function waitingRun(waitingOn: unknown, { fleet = () => job("running"), fl
   const passes = async (count: number, ms = MIN) => { for (let i = 0; i < count; i += 1) await pass(ms); };
   return { ...made, pool, codeHost, fleetAsked, refuse, write, prompts, pass, passes, now: () => clock, working: () => made.entry("NBF-1").working, note: () => workingNote(made.entry("NBF-1")), file };
 }
+
+/** The deadline the card ends a wait's words with, `, until 16:30`, from the working note the worker's outcome gave (A11-272). */
+const dueOf = (run: Readonly<{ working: () => Parameters<typeof deadlineOf>[0] | undefined }>): string => `, until ${clockOf(deadlineOf(run.working()!))}`;
 
 const ciRun = (over: Partial<CiRun> = {}): CiRun => ({ status: "in_progress", conclusion: null, url: `https://github.com/${REPO}/actions/runs/9`, name: "ci", jobs: { done: 3, total: 5 }, ...over });
 
@@ -172,7 +177,7 @@ test("A11-245: with two items, one finished is no prompt; when the second finish
   state = job("done", { results: "/srv/fleet/jobs/fj-1" });
   await run.passes(4);
   assert.deepEqual(run.prompts(), [], "the job is done, the CI run is not");
-  assert.equal(run.note()?.text, "Waiting on fleet job fj-1 (done); CI run a11ign/agent-org#9 (running, 3 of 5 jobs)");
+  assert.equal(run.note()?.text, `Waiting on fleet job fj-1 (done); CI run a11ign/agent-org#9 (running, 3 of 5 jobs)${dueOf(run)}`);
   codeHost.ciRuns.runs.set(`${REPO}#9`, ciRun({ status: "completed", conclusion: "success" }));
   await run.passes(6);
   assert.equal(run.prompts().length, 1, "both are over: one prompt, naming both");
@@ -216,7 +221,7 @@ test("A11-245: an item the board cannot read is pending and never a failure: the
   const run = await waitingRun([{ fleetJob: "fj-1" }], { fleet: () => { throw new Error("fleet job status fj-1 failed: ssh: connection refused"); } });
   await run.passes(5);
   assert.deepEqual(run.prompts(), []);
-  assert.equal(run.note()?.text, "Waiting on fleet job fj-1 (could not read it: fleet job status fj-1 failed: ssh: connection refused)");
+  assert.equal(run.note()?.text, `Waiting on fleet job fj-1 (could not read it: fleet job status fj-1 failed: ssh: connection refused)${dueOf(run)}`);
   assert.deepEqual([run.note()?.stalled, run.note()?.waiting], [false, true]);
 });
 
@@ -254,9 +259,10 @@ test("A11-245: a newer working outcome after a late prompt clears the stall and 
 test("A11-245: the card reads Waiting on fleet job fj-1 (4 of 6 pages, about 20 min), not Stalled, including after the run has idled past tickets.stallMinutes", async () => {
   const run = await waitingRun([{ fleetJob: "fj-1" }], { fleet: (now) => job("running", { estimatedFinish: new Date(now + 20 * MIN).toISOString() }) });
   await run.pass();
-  assert.deepEqual(run.note(), { text: "Waiting on fleet job fj-1 (4 of 6 pages, about 20 min)", stalled: false, waiting: true });
+  const text = `Waiting on fleet job fj-1 (4 of 6 pages, about 20 min)${dueOf(run)}`;
+  assert.deepEqual(run.note(), { text, stalled: false, waiting: true });
   await run.passes(40);
-  assert.deepEqual(run.note(), { text: "Waiting on fleet job fj-1 (4 of 6 pages, about 20 min)", stalled: false, waiting: true }, "40 minutes idle, past the 30-minute stall: still waiting");
+  assert.deepEqual(run.note(), { text, stalled: false, waiting: true }, "40 minutes idle, past the 30-minute stall: still waiting");
   assert.equal(run.working()?.stalled, undefined);
 });
 
@@ -302,7 +308,7 @@ test("A11-245: the real exec seam: a stub `fleet` on the PATH answers `job statu
   await slow.pool.tick();
   assert.ok(Date.now() - started < 250, "a tick does not wait for the program");
   await until(() => /could not read it/.test(slow.note()?.text ?? ""), () => slow.pass());
-  assert.match(slow.note()?.text ?? "", /^Waiting on fleet job fj-1 \(could not read it: fleet job status fj-1 did not answer in 0\.3 s\)$/);
+  assert.equal(slow.note()?.text, `Waiting on fleet job fj-1 (could not read it: fleet job status fj-1 did not answer in 0.3 s)${dueOf(slow)}`);
   assert.deepEqual(slow.prompts(), [], "a program that outlives its timeout is pending, not a failure");
 });
 

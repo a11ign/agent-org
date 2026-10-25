@@ -1,0 +1,74 @@
+// no-token: gh -- the queue's view, in memory; nothing is read or spawned
+// A11-272: the wait cycles among the tickets on the board: blockers, declared waits and the files a run holds, read as one graph
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { cycleNote, cycleSentence, waitCycles } from "./wait-cycles.ts";
+import type { ViewEntry } from "./view-types-and-filters.ts";
+
+const FILES = ["lab:middleware/runtime/main.py", "lab:middleware/src/"];
+const entry = (key: string, over: Record<string, unknown> = {}) => ({ ticket: { key }, phase: "queued", ...over }) as unknown as ViewEntry;
+const blocker = (key: string, state = "started") => ({ key, state, status: "In Progress" });
+const parkedOn = (...waits: Record<string, unknown>[]) => ({ phase: "running", working: { reason: "w", at: 1, waiting: true, waits } });
+
+test("A11-272: the A11-231/A11-229 shape is one cycle: a run waits on a ticket that is held behind the run's files, though the hold is lifted for it", () => {
+  const entries = [entry("A11-231", { ...parkedOn({ kind: "ticket", key: "A11-229" }), paths: FILES }), entry("A11-229", { paths: FILES })];
+  const [cycle, ...rest] = waitCycles(entries);
+  assert.equal(rest.length, 0);
+  assert.deepEqual([cycle.id, cycle.keys, cycle.loop], ["A11-229,A11-231", ["A11-229", "A11-231"], ["A11-229", "A11-231", "A11-229"]]);
+  assert.deepEqual(cycle.edges.map(({ from, to, kind }) => `${from} ${kind} ${to}`).sort(), ["A11-229 files A11-231", "A11-231 waits-on A11-229"]);
+  assert.equal(cycleSentence(cycle), "Wait cycle A11-229 → A11-231 → A11-229: A11-229 is held behind A11-231's files; A11-231's worker waits on A11-229.");
+});
+
+test("A11-272: once the run is queued behind its ticket and the ticket runs, there is no cycle", () => {
+  const entries = [entry("A11-231", { stoppedForBlocker: { at: 1, keys: ["A11-229"] }, paths: FILES }), entry("A11-229", { phase: "running", paths: FILES })];
+  assert.deepEqual(waitCycles(entries), []);
+});
+
+test("A11-272: two queued tickets that block each other are a cycle of blockers alone", () => {
+  const entries = [entry("A-1", { blockers: [blocker("B-1")] }), entry("B-1", { blockers: [blocker("A-1")] })];
+  const [cycle] = waitCycles(entries);
+  assert.deepEqual(cycle.edges.map(({ kind }) => kind), ["blocked-by", "blocked-by"]);
+});
+
+test("A11-272: a cycle of three tickets is one cycle, its loop starting at the smallest key; a ticket outside it is not in it", () => {
+  const entries = [
+    entry("C-1", { blockers: [blocker("A-1")] }), entry("A-1", { blockers: [blocker("B-1")] }), entry("B-1", { blockers: [blocker("C-1")] }),
+    entry("D-1", { blockers: [blocker("A-1")] }),
+  ];
+  const cycles = waitCycles(entries);
+  assert.equal(cycles.length, 1);
+  assert.deepEqual([cycles[0].keys, cycles[0].loop], [["A-1", "B-1", "C-1"], ["A-1", "B-1", "C-1", "A-1"]]);
+  assert.equal(cycleNote(entries[3], entries), null);
+});
+
+test("A11-272: a blocker the tracker settled holds nothing, so it makes no cycle", () => {
+  const entries = [entry("A-1", { blockers: [blocker("B-1", "completed")] }), entry("B-1", { blockers: [blocker("A-1")] })];
+  assert.deepEqual(waitCycles(entries), []);
+});
+
+test("A11-272: a fleet job or a CI run names no ticket, so a run parked on one is in no cycle", () => {
+  const entries = [entry("A-1", { ...parkedOn({ kind: "fleetJob" }, { kind: "ciRun" }), paths: FILES }), entry("B-1", { paths: FILES })];
+  assert.deepEqual(waitCycles(entries), [], "B-1 is held behind A-1's files, and A-1 waits on neither a ticket nor a pull request");
+});
+
+test("A11-272: a pull request wait is an edge to the ticket whose run has the pull request open", () => {
+  const url = "https://github.com/a11ign/lab/pull/7";
+  const owner = { outcome: { kind: "ready-pr", prs: [{ url }] } };
+  const waiter = entry("A-1", parkedOn({ kind: "pullRequest", url }));
+  const blockedByWaiter = entry("C-1", { ...owner, blockers: [blocker("A-1")] });
+  const [cycle] = waitCycles([waiter, blockedByWaiter]);
+  assert.deepEqual(cycle.edges.map(({ from, to, kind }) => `${from} ${kind} ${to}`), ["A-1 waits-on C-1", "C-1 blocked-by A-1"]);
+  assert.deepEqual(waitCycles([waiter, entry("C-1", owner)]), [], "a pull request whose ticket waits on nothing is no cycle");
+});
+
+test("A11-272: the card of a ticket in a cycle names it; the card of another ticket says nothing", () => {
+  const entries = [entry("A11-231", { ...parkedOn({ kind: "ticket", key: "A11-229" }), paths: FILES }), entry("A11-229", { paths: FILES }), entry("A11-300")];
+  assert.equal(cycleNote(entries[0], entries), "in a wait cycle: A11-229 → A11-231 → A11-229");
+  assert.equal(cycleNote(entries[1], entries), "in a wait cycle: A11-229 → A11-231 → A11-229");
+  assert.equal(cycleNote(entries[2], entries), null);
+});
+
+test("A11-272: a worker woken from its wait waits on no ticket its note named, so the files alone make no cycle", () => {
+  const entries = [entry("A11-231", { phase: "running", working: { reason: "w", at: 1, waits: [{ kind: "ticket", key: "A11-229" }] }, paths: FILES }), entry("A11-229", { paths: FILES })];
+  assert.deepEqual(waitCycles(entries), []);
+});

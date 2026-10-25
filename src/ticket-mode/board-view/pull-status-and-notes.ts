@@ -6,6 +6,8 @@ import { overlapWait, type OverlapWait } from "./overlap-hold.ts";
 import { currentStepOf, currentStepPaths, stepNamed } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
 import { blockersOf, isStoppedFor, ticketWaitEnded } from "./waits-on.ts";
+import { clockOf } from "./update-banner.ts";
+import { deadlineOf } from "./wait-deadline.ts";
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
@@ -262,7 +264,8 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
 export function workStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
   // A talk session is Talking, never Planning, though it carries its planning run's `plan` (A11-171). One whose agent is blocked on a person still needs them.
-  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : isTalking(entry) ? "talking" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
+  // A run parked on a wait its worker declared, or on background work, is Waiting and never In progress: nothing is at work in it (A11-272). A stalled note carries no `waiting`, so it stays In progress, flagged.
+  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : isTalking(entry) ? "talking" : entry.working?.waiting === true ? "waiting" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   // The tracker's integration completed a ticket whose work is partial, and the board could not put it back: a person is asked, ahead of the tracker's word (A11-178).
   if (completedEarly(entry)) return "needs-you";
   if (entry.trackerState === "completed") return "completed";
@@ -296,8 +299,8 @@ function waitedFor(ms: number): string {
  * The note a running run shows from its worker's `working` outcome: its reason, which says what of its own is still running; `Waiting on background work`
  * when the board reads the run as waiting on it (A11-236), with how long it has, counted from the outcome's time, when `now` is given, and the job it named
  * in place of the reason; or, once its agent has sat idle with no newer outcome for `tickets.stallMinutes`, or past the end of its wait, that it has stalled,
- * with that reason. Null for any other run. The run's status stays In progress either way: nothing is asked of a person, and a stalled run is only flagged
- * so it is not forgotten.
+ * with that reason. A wait ends its words with when it ends, `, until 16:30` ({@link untilOf}). Null for any other run. A waiting run's status is Waiting ({@link workStatus}), a stalled run's stays In progress:
+ * nothing is asked of a person, and a stalled run is only flagged so it is not forgotten.
  */
 export function workingNote(entry: ViewEntry, now?: number): Readonly<{ text: string; stalled: boolean; waiting: boolean }> | null {
   const note = entry.working;
@@ -308,9 +311,15 @@ export function workingNote(entry: ViewEntry, now?: number): Readonly<{ text: st
   }
   if (note.waiting !== true) return { text: note.reason, stalled: false, waiting: false };
   // A wait the worker declared (A11-245) reads as the board last read it, which the poll stored on the note: `Waiting on fleet job 123 (4 of 6 pages, about 20 min)`.
-  if (note.waitText !== undefined) return { text: note.waitText, stalled: false, waiting: true };
+  if (note.waitText !== undefined) return { text: `${note.waitText}${untilOf(note)}`, stalled: false, waiting: true };
   const lasted = now === undefined || note.at === undefined ? "" : ` for ${waitedFor(now - note.at)}`;
-  return { text: `Waiting on background work${lasted}: ${note.waitingOn ?? note.reason}`, stalled: false, waiting: true };
+  return { text: `Waiting on background work${lasted}: ${note.waitingOn ?? note.reason}${untilOf(note)}`, stalled: false, waiting: true };
+}
+
+/** When a waiting note's wait ends, as the card says it, `, until 16:30` (A11-272): the `until` its outcome gave, else three hours after it ({@link deadlineOf}); nothing when the note has no time. A wait past its deadline still says when it was due. PURE. */
+function untilOf(note: NonNullable<ViewEntry["working"]>): string {
+  if (note.at === undefined && note.until === undefined) return "";
+  return `, until ${clockOf(deadlineOf({ at: note.at ?? 0, until: note.until }))}`;
 }
 
 /**

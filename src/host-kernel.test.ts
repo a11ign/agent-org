@@ -5,14 +5,18 @@
 // "idle reboots" twin, each "refuses inside 24 h" has an "after 24 h reboots" twin. `emptiness` below is the control for the `[]` results: the same reader reports a note for
 // the same /boot with another running kernel, so an empty result is a reading and not a reader that cannot see the kernels.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
-import { DRAIN_BOUND_MS, DRAIN_POLL_MS, REBOOT_ARGV, REBOOT_SERVICE, TICK_TIMER, drainedReboot, kernelFindings, kernelNotes, kernelReading, parseRelease, readBack,
-  readBackOwed, rebootReport, recordStore, runPrivileged, stillOlderFinding } from "./host-kernel.ts";
+import { DRAIN_BOUND_MS, DRAIN_POLL_MS, HANG_APPLY, HANG_CONF, HANG_CONF_PATH, HANG_SETTINGS, PSTORE_ROOT, REBOOT_ARGV, REBOOT_SERVICE, TICK_TIMER, crashRecordsFindings,
+  drainedReboot, hangConfFindings, kdumpFindings, kernelFindings, kernelNotes, kernelReading, newestPstoreRecords, parseRelease, readBack, readBackOwed, rebootReport,
+  recordStore, runPrivileged, stillOlderFinding, type HostReads } from "./host-kernel.ts";
 import { driftReport } from "./host-units.ts";
+import { hostDriftOrders } from "./work-gate.ts";
 import { shippedUnitText, shippedUnits } from "./host-units/shipped-unit-texts-and-declarations.ts";
 import { unitDrift, unitState } from "./host-units/host-drift-findings-and-notes.ts";
 import { homeHostConfig } from "./host-config.ts";
@@ -24,6 +28,37 @@ const HOUR = 3_600_000;
 const BOOT = ["vmlinuz", "vmlinuz.old", "vmlinuz-7.0.0-34-generic", "vmlinuz-7.0.0-38-generic", "config-7.0.0-38-generic", "initrd.img-7.0.0-38-generic"];
 const scratch = mkdtempSync(join(tmpdir(), "host-kernel-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+
+const KDUMP = "/sys/kernel/kexec_crash_loaded";
+const RECORD = `${PSTORE_ROOT}/1792941657/001/dmesg.txt`;
+
+/**
+ * A host's files as `readFile` and `listDir` see them, held in a map: a string is a file's text, an Error is what a read of it throws. A directory is any prefix of a path, and
+ * one nothing lies under throws ENOENT. The default is a CLEAN host: the file as {@link HANG_CONF} prints it, the live values equal to it, kdump loaded, a record this user can read.
+ * @param {Record<string, string | Error | null>} [over] a path set to null is removed
+ */
+function cleanHost(over: Record<string, string | Error | null> = {}): HostReads {
+  const files = new Map<string, string | Error>([[HANG_CONF_PATH, HANG_CONF], [KDUMP, "1\n"], [RECORD, "Panic#1 Part1"],
+    ...HANG_SETTINGS.map(({ key, value }): [string, string] => [`/proc/sys/kernel/${key}`, `${value}\n`])]);
+  for (const [path, content] of Object.entries(over)) { if (content === null) files.delete(path); else files.set(path, content); }
+  const errno = (code: string, path: string) => Object.assign(new Error(`${code}: ${path}`), { code, path });
+  return {
+    readFile: (path) => {
+      const content = files.get(path);
+      if (content === undefined) throw errno("ENOENT", path);
+      if (content instanceof Error) throw content;
+      return content;
+    },
+    listDir: (path) => {
+      const refused = files.get(path);
+      if (refused instanceof Error) throw refused;
+      const below = [...files.keys()].filter((p) => p.startsWith(`${path}/`)).map((p) => p.slice(path.length + 1).split("/")[0]);
+      if (below.length === 0) throw errno("ENOENT", path);
+      return [...new Set(below)];
+    },
+  };
+}
+const refusal = (path: string) => Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: "EACCES", path });
 
 /** @param {string} running @param {string[]} [boot] */
 const notesFor = (running: string, boot: string[] = BOOT) => kernelNotes({ uname: () => `${running}\n`, bootEntries: () => boot });
@@ -124,7 +159,7 @@ describe("the note: version order, and what a refused read is", () => {
   test("the wiring: host-units.ts adds the note to hostNotes and the findings to hostFindings", () => {
     const source = moduleSource("host-units.ts");
     assert.match(source, /function hostNotes\(\)[^}]*\.\.\.kernelNotes\(\)/);
-    assert.match(source, /function hostFindings\(\)[^}]*\.\.\.kernelFindings\(\)/);
+    assert.match(source, /function hostFindings\(\)[^}]*\.\.\.kernelFindings\(/);
   });
 });
 
@@ -249,6 +284,16 @@ describe("the ONE privileged command", () => {
     assert.deepEqual(ran, [["sudo", "systemctl", "reboot"]]);
   });
 
+  test("every other use of the word in the code is inside a command the chairman is TOLD to run (a *_APPLY text), which nothing passes to `run`", () => {
+    const source = readFileSync(new URL("./host-kernel.ts", import.meta.url), "utf8");
+    const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line));
+    const told = code.filter((line) => /\bsudo\b/.test(line));
+    assert.ok(told.length >= 3, "the control: the texts are found");
+    // the *_APPLY texts, the reboot's argv, and the note's sentence about the one granted command
+    for (const line of told) assert.match(line, /^(export )?const (HANG_APPLY|KDUMP_APPLY|PSTORE_APPLY|REBOOT_ARGV)\b|runs `sudo systemctl reboot` \(the one granted command\)/, line);
+    assert.doesNotMatch(code.join("\n"), /\b(?:run|deps\.run|runPrivileged)\([^)]*(?:HANG_APPLY|KDUMP_APPLY|PSTORE_APPLY)/);
+  });
+
   test("the SOURCE names `sudo` once: a second privileged command would be a second literal, and a new sudoers line", () => {
     const source = readFileSync(new URL("./host-kernel.ts", import.meta.url), "utf8");
     const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n");
@@ -290,13 +335,13 @@ describe("it cannot loop: a second reboot inside 24 hours is refused and the fin
     const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "not-read");
     assert.equal(h.calls.length, 0);
-    const [finding] = kernelFindings({ uname: () => "7.0.0-34-generic", bootEntries: () => BOOT, store: () => ({ read: () => { throw new Error("not JSON"); }, write: () => {} }) });
+    const [finding] = kernelFindings({ uname: () => "7.0.0-34-generic", bootEntries: () => BOOT, reads: cleanHost(), store: () => ({ read: () => { throw new Error("not JSON"); }, write: () => {} }) });
     assert.equal(finding.problem, "NOT READ");
   });
 
   test("host:check raises the loop finding as a FINDING (a note would wake nobody), and none on the live-shaped host with no record", () => {
     const store = (record: any) => () => ({ read: () => record, write: () => {} });
-    const base = { uname: () => "7.0.0-34-generic", bootEntries: () => BOOT, now: () => NOW, bootedAt: () => NOW - 100 * HOUR };
+    const base = { uname: () => "7.0.0-34-generic", bootEntries: () => BOOT, reads: cleanHost(), now: () => NOW, bootedAt: () => NOW - 100 * HOUR };
     assert.equal(kernelFindings({ ...base, store: store(last(2)) })[0].problem, "REBOOTED INSIDE 24 H, NEWER KERNEL STILL NOT RUNNING");
     assert.deepEqual(kernelFindings({ ...base, store: store(null) }), []);
     assert.deepEqual(kernelFindings({ ...base, uname: () => "7.0.0-38-generic", store: store(null) }), []);
@@ -314,7 +359,7 @@ describe("the read-back after boot", () => {
   });
 
   test("host:check raises an owed read-back as a finding naming the command", () => {
-    const [finding] = kernelFindings({ uname: () => "7.0.0-38-generic", bootEntries: () => BOOT, now: () => NOW, bootedAt: () => NOW - 30 * 60_000,
+    const [finding] = kernelFindings({ uname: () => "7.0.0-38-generic", bootEntries: () => BOOT, reads: cleanHost(), now: () => NOW, bootedAt: () => NOW - 30 * 60_000,
       store: () => ({ read: () => record, write: () => {} }) });
     assert.equal(finding.problem, "REBOOT NOT READ BACK");
     assert.match(finding.detail, /--read-back/);
@@ -322,7 +367,7 @@ describe("the read-back after boot", () => {
 
   test("a boot time that cannot be read is a NOT READ finding, not an exception that crashes host:check (#367 review)", () => {
     const refused = () => { throw new Error("EACCES: /proc/uptime"); };
-    const base = { uname: () => "7.0.0-38-generic", bootEntries: () => BOOT, now: () => NOW, bootedAt: refused };
+    const base = { uname: () => "7.0.0-38-generic", bootEntries: () => BOOT, reads: cleanHost(), now: () => NOW, bootedAt: refused };
     const [finding, ...rest] = kernelFindings({ ...base, store: () => ({ read: () => record, write: () => {} }) });
     assert.equal(finding.problem, "NOT READ");
     assert.match(finding.detail, /boot time could not be read/);
@@ -360,6 +405,190 @@ describe("the read-back after boot", () => {
     assert.ok(lines.includes("- standing seats: ABSENT: liaison"));
     assert.ok(lines.includes("- trace pages: NOT READ (tailscale serve publishes no web handler)"));
     assert.equal(lines.length, 9);
+  });
+});
+
+// A11-279: THE MODULE OWNS 90-a11ign-hang.conf. `softlockup_panic = 0` is written HERE, so no host check can put 1 back; every read is injected, so no test reads this machine.
+describe("the hang settings file: its text, and the drift from it", () => {
+  const settingLines = (text: string) => text.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("#"));
+
+  test("the text holds exactly the four settings, with softlockup_panic = 0, and no hung_task_panic", () => {
+    assert.deepEqual(settingLines(HANG_CONF), ["kernel.softlockup_panic = 0", "kernel.panic_on_rcu_stall = 1", "kernel.panic_on_oops = 1", "kernel.panic = 10"]);
+    assert.doesNotMatch(HANG_CONF, /hung_task_panic\s*=/);
+    assert.doesNotMatch(HANG_CONF, /softlockup_panic\s*=\s*1/);
+  });
+
+  test("each setting is preceded by its reason, and the header says why the file exists and why softlockup_panic changed", () => {
+    const lines = HANG_CONF.split("\n");
+    for (const { key, value, reason } of HANG_SETTINGS) assert.equal(lines[lines.indexOf(`kernel.${key} = ${value}`) - 1], `# ${reason}`, key);
+    assert.match(lines.slice(0, 3).join("\n"), /#3846/);
+    assert.match(lines.slice(0, 3).join("\n"), /A11-279/);
+  });
+
+  test("`--hang-conf` prints that text and nothing else, and does not write the file", () => {
+    const printed = execFileSync(process.execPath, [fileURLToPath(new URL("./host-kernel.ts", import.meta.url)), "--hang-conf"], { encoding: "utf8", timeout: 60_000 });
+    assert.equal(printed, HANG_CONF);
+    assert.equal(HANG_CONF.endsWith("\n"), true);
+  });
+
+  test("`--hang-conf` beside another flag is refused, not silently preferred: --reboot and --read-back do not run, and nothing is printed", () => {
+    const entry = fileURLToPath(new URL("./host-kernel.ts", import.meta.url));
+    for (const other of ["--reboot", "--read-back"]) {
+      const run = spawnSync(process.execPath, [entry, "--hang-conf", other], { encoding: "utf8", timeout: 60_000 });
+      assert.equal(run.status, 1, other);
+      assert.equal(run.stdout, "", other);
+      assert.match(run.stderr, /run it alone/, other);
+    }
+  });
+
+  test("the control: a host whose file is the printed text and whose live values equal it raises nothing", () => {
+    assert.deepEqual(hangConfFindings(cleanHost()), []);
+  });
+
+  test("the file the host has today (softlockup_panic = 1, live 1) raises HANG SETTINGS DIFFER with the command that applies the text", () => {
+    const today = "kernel.softlockup_panic = 1\nkernel.panic_on_rcu_stall = 1\nkernel.panic_on_oops = 1\nkernel.panic = 10\n";
+    const [finding, ...rest] = hangConfFindings(cleanHost({ [HANG_CONF_PATH]: today, "/proc/sys/kernel/softlockup_panic": "1\n" }));
+    assert.equal(finding.problem, "HANG SETTINGS DIFFER");
+    assert.match(finding.detail, /the file has kernel\.softlockup_panic = 1, wanted 0/);
+    assert.match(finding.detail, /kernel\.softlockup_panic is 1 now, wanted 0/);
+    assert.ok(finding.detail.includes(HANG_APPLY), "the exact root command");
+    assert.equal(HANG_APPLY, "node src/host-kernel.ts --hang-conf | sudo tee /etc/sysctl.d/90-a11ign-hang.conf && sudo sysctl --system");
+    assert.deepEqual(rest, []);
+  });
+
+  test("a live value that differs while the file is right is raised (a value set by hand is gone at the next boot), and the file alone differing is raised too", () => {
+    const live = hangConfFindings(cleanHost({ "/proc/sys/kernel/softlockup_panic": "1\n" }));
+    assert.equal(live[0].problem, "HANG SETTINGS DIFFER");
+    assert.doesNotMatch(live[0].detail, /the file has/);
+    const file = hangConfFindings(cleanHost({ [HANG_CONF_PATH]: HANG_CONF.replace("kernel.panic = 10", "kernel.panic = 0") }));
+    assert.match(file[0].detail, /the file has kernel\.panic = 0, wanted 10/);
+    assert.doesNotMatch(file[0].detail, /now, wanted/);
+  });
+
+});
+
+describe("the hang settings file: what differs from it", () => {
+  test("a file that is absent, or that adds a setting, differs; comments and spacing do not", () => {
+    assert.match(hangConfFindings(cleanHost({ [HANG_CONF_PATH]: null }))[0].detail, /does not exist/);
+    assert.match(hangConfFindings(cleanHost({ [HANG_CONF_PATH]: `${HANG_CONF}kernel.hung_task_panic = 1\n` }))[0].detail, /sets kernel\.hung_task_panic/);
+    const respaced = HANG_CONF.replace(/^#.*$/gm, "# other words").replace(/ = /g, "=");
+    assert.deepEqual(hangConfFindings(cleanHost({ [HANG_CONF_PATH]: respaced })), []);
+  });
+
+  test("a refused read is NOT READ, never clear; a refused read next to a real difference is still the difference", () => {
+    const refused = hangConfFindings(cleanHost({ [HANG_CONF_PATH]: refusal(HANG_CONF_PATH), "/proc/sys/kernel/panic": refusal("/proc/sys/kernel/panic") }));
+    assert.equal(refused.length, 1);
+    assert.equal(refused[0].problem, "NOT READ");
+    assert.match(refused[0].detail, /EACCES/);
+    const both = hangConfFindings(cleanHost({ [HANG_CONF_PATH]: refusal(HANG_CONF_PATH), "/proc/sys/kernel/softlockup_panic": "1\n" }));
+    assert.equal(both[0].problem, "HANG SETTINGS DIFFER");
+    assert.match(both[0].detail, /NOT READ/);
+  });
+
+  test("no code path of the module writes the file: the only writes are the reboot record's, and the text is only ever printed", () => {
+    const source = readFileSync(new URL("./host-kernel.ts", import.meta.url), "utf8");
+    const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n");
+    assert.equal((code.match(/writeFileSync\(/g) ?? []).length, 1, "recordStore's write");
+    assert.equal((code.match(/\b(rmSync|mkdirSync|appendFileSync|renameSync|copyFileSync)\(/g) ?? []).length, 2, "recordStore's rmSync and mkdirSync");
+    assert.doesNotMatch(code, /writeFileSync\([^)]*HANG_CONF_PATH/);
+  });
+});
+
+describe("kdump and the crash records, found and cleared", () => {
+  test("kdump not loaded raises KDUMP NOT LOADED with the root commands; loaded raises none (the twin); an unreadable flag is NOT READ", () => {
+    const [finding, ...rest] = kdumpFindings(cleanHost({ [KDUMP]: "0\n" }));
+    assert.equal(finding.problem, "KDUMP NOT LOADED");
+    assert.match(finding.detail, /USE_KDUMP=1/);
+    assert.match(finding.detail, /systemctl restart kdump-tools/);
+    assert.deepEqual(rest, []);
+    assert.deepEqual(kdumpFindings(cleanHost()), []);
+    assert.equal(kdumpFindings(cleanHost({ [KDUMP]: null }))[0].problem, "NOT READ");
+  });
+
+  test("the files of the newest boot stamp, then the newest numbered folder, are the ones opened; numbers order by value, and a stray file is passed over", () => {
+    const reads = cleanHost({ [`${PSTORE_ROOT}/1790893277/001/dmesg.txt`]: "old", [`${PSTORE_ROOT}/1792941657/002/dmesg.txt`]: "newest", [`${PSTORE_ROOT}/1792941657/002/dmesg-efi_pstore-1`]: "raw",
+      [`${PSTORE_ROOT}/1792941657/1000/dmesg.txt`]: "the 1000th" });
+    assert.deepEqual(newestPstoreRecords(reads).map((p) => p.slice(PSTORE_ROOT.length)), ["/1792941657/1000/dmesg.txt"]);
+    const stray = { ...reads, listDir: (path: string) => { if (path === `${PSTORE_ROOT}/1792941657/1000`) throw Object.assign(new Error("ENOTDIR"), { code: "ENOTDIR", path }); return reads.listDir(path); } };
+    assert.deepEqual(newestPstoreRecords(stray).map((p) => p.slice(PSTORE_ROOT.length)).sort(), ["/1792941657/002/dmesg-efi_pstore-1", "/1792941657/002/dmesg.txt"]);
+  });
+
+  test("every file of the newest record is opened: one 0600 file beside a readable dmesg.txt is the finding, and it names that file", () => {
+    const raw = `${PSTORE_ROOT}/1792941657/001/dmesg-efi_pstore-179294165601001`;
+    const [finding] = crashRecordsFindings(cleanHost({ [raw]: refusal(raw) }));
+    assert.equal(finding.problem, "CRASH RECORDS NOT READABLE");
+    assert.ok(finding.detail.includes(raw));
+  });
+
+  test("a folder the archive refuses is named in the finding, not the archive root; a folder that vanishes mid-read is NOT READ, not 'no archive'", () => {
+    const folder = `${PSTORE_ROOT}/1792941657/001`;
+    const clean = cleanHost();
+    const refused = { ...clean, listDir: (path: string) => { if (path === folder) throw refusal(folder); return clean.listDir(path); } };
+    assert.ok(crashRecordsFindings(refused)[0].detail.includes(folder));
+    const vanished = { ...clean, listDir: (path: string) => { if (path === folder) throw Object.assign(new Error("ENOENT"), { code: "ENOENT", path }); return clean.listDir(path); } };
+    assert.equal(crashRecordsFindings(vanished)[0].problem, "NOT READ");
+  });
+
+  test("a record file this user is refused raises CRASH RECORDS NOT READABLE with the root command, and a record it can read raises none", () => {
+    const [finding, ...rest] = crashRecordsFindings(cleanHost({ [RECORD]: refusal(RECORD) }));
+    assert.equal(finding.problem, "CRASH RECORDS NOT READABLE");
+    assert.ok(finding.detail.includes(RECORD));
+    assert.match(finding.detail, /setfacl -R -m g:adm:rX -m d:g:adm:rX \/var\/lib\/systemd\/pstore \/var\/crash/);
+    assert.deepEqual(rest, []);
+    assert.deepEqual(crashRecordsFindings(cleanHost()), []);
+  });
+
+  test("an archive whose DIRECTORY is refused is the same finding; an archive that is not there holds no record, so it raises none; another failure is NOT READ", () => {
+    assert.equal(crashRecordsFindings(cleanHost({ [PSTORE_ROOT]: refusal(PSTORE_ROOT), [RECORD]: null }))[0].problem, "CRASH RECORDS NOT READABLE");
+    assert.deepEqual(crashRecordsFindings(cleanHost({ [RECORD]: null })), []);
+    const broken = Object.assign(new Error("EIO: input/output error"), { code: "EIO" });
+    assert.equal(crashRecordsFindings(cleanHost({ [RECORD]: broken }))[0].problem, "NOT READ");
+  });
+
+  test("the real file system: a 0600 file of another owner is the refusal the finding is for (a mode-000 file stands in for root's)", { skip: process.getuid?.() === 0 && "root reads any file" }, () => {
+    const archive = join(scratch, "pstore");
+    const record = join(archive, "1792941657", "001", "dmesg.txt");
+    mkdirSync(dirname(record), { recursive: true });
+    writeFileSync(record, "Panic#1 Part1");
+    const inArchive = (path: string) => path.replace(PSTORE_ROOT, archive);
+    const real: HostReads = { readFile: (path) => readFileSync(inArchive(path), "utf8"), listDir: (path) => readdirSync(inArchive(path)) };
+    assert.deepEqual(crashRecordsFindings(real), [], "the control: readable while the mode allows it");
+    chmodSync(record, 0o000);
+    const [finding] = crashRecordsFindings(real);
+    assert.equal(finding.problem, "CRASH RECORDS NOT READABLE");
+    assert.ok(finding.detail.includes(record), "it names the file the file system refused");
+  });
+
+});
+
+describe("the crash settings findings, as host:check raises them", () => {
+  test("the three are STANDING findings: manualFix, so the host-drift gate wakes nobody to run host:install, and a unit each, so one NOT READ is not another's key", () => {
+    const dirty = cleanHost({ [HANG_CONF_PATH]: "kernel.softlockup_panic = 1\n", [KDUMP]: "0\n", [RECORD]: refusal(RECORD) });
+    const found = [...hangConfFindings(dirty), ...kdumpFindings(dirty), ...crashRecordsFindings(dirty)];
+    assert.equal(found.length, 3);
+    assert.ok(found.every((f) => f.manualFix === true));
+    assert.equal(new Set(found.map((f) => f.unit)).size, 3);
+    assert.deepEqual(hostDriftOrders(found), [], "the gate emits nothing for a set of only manual findings");
+    const reboot = stillOlderFinding({ at: NOW - 2 * HOUR, from: "a", to: "7.0.0-38-generic" }, { state: "newer", running: "7.0.0-34-generic", installed: "7.0.0-38-generic" }, NOW);
+    assert.notEqual(reboot?.manualFix, true, "the control: the loop guard is not manual, and still wakes the gate");
+    assert.equal(hostDriftOrders([...found, reboot as any]).length, 1);
+  });
+
+  test("a host with no user systemd (crashSettings: false) is not told its kernel settings drifted; the same host with it on is", () => {
+    const base = { uname: () => "7.0.0-38-generic", bootEntries: () => BOOT, now: () => NOW, bootedAt: () => NOW, store: () => ({ read: () => null, write: () => {} }) };
+    const bare = cleanHost({ [HANG_CONF_PATH]: null, [KDUMP]: null });
+    assert.deepEqual(kernelFindings({ ...base, reads: bare, crashSettings: false }), []);
+    assert.ok(kernelFindings({ ...base, reads: bare }).length >= 2);
+  });
+
+  test("kernelFindings raises all three beside the reboot findings, and none on a clean host (the wiring)", () => {
+    const base = { uname: () => "7.0.0-38-generic", bootEntries: () => BOOT, now: () => NOW, bootedAt: () => NOW, store: () => ({ read: () => null, write: () => {} }) };
+    assert.deepEqual(kernelFindings({ ...base, reads: cleanHost() }), []);
+    const dirty = cleanHost({ [HANG_CONF_PATH]: "kernel.softlockup_panic = 1\n", [KDUMP]: "0\n", [RECORD]: refusal(RECORD) });
+    assert.deepEqual(kernelFindings({ ...base, reads: dirty }).map((f) => f.problem), ["HANG SETTINGS DIFFER", "KDUMP NOT LOADED", "CRASH RECORDS NOT READABLE"]);
+    const unreadableStore = { ...base, store: () => ({ read: () => { throw new Error("not JSON"); }, write: () => {} }) };
+    assert.deepEqual(kernelFindings({ ...unreadableStore, reads: dirty }).map((f) => f.problem), ["NOT READ", "HANG SETTINGS DIFFER", "KDUMP NOT LOADED", "CRASH RECORDS NOT READABLE"],
+      "a record of the last reboot that cannot be read does not hide the crash settings");
   });
 });
 

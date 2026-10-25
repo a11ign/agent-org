@@ -954,7 +954,7 @@ function jsonReport() {
  * that function is pure of the running org -- twenty tests hand it a fixture host -- while this one reads whoever is running.
  */
 function hostFindings() {
-  return [...hostUnitDrift(), ...sessionModelDrift(), ...persistentSeatDrift(), ...kernelFindings()];
+  return [...hostUnitDrift(), ...sessionModelDrift(), ...persistentSeatDrift(), ...kernelFindings({ crashSettings: systemdUserAvailable() })];
 }
 
 async function main() {

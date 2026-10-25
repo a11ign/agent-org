@@ -11,6 +11,8 @@ import { isReadyToMerge, mergeWaitLine } from "./board-view/pull-readiness.ts";
 import type { PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullDeclared } from "./board-view/pull-declared.ts";
 import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
+import { clockOf } from "./board-view/update-banner.ts";
+import { BACKGROUND_WAIT_MS } from "./board-view/wait-deadline.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { diffLines, learnsFrom, learnsLine, REPLANNING_LINE, STALE_PLAN_LINE, ticketChangeOf } from "./board-view/ticket-change.ts";
@@ -324,7 +326,7 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "talking", "working", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "publishing", "published", "checked", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "talking", "working", "waiting", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "publishing", "published", "checked", "completed", "failed", "cancelled"]);
 });
 
 const blocker = (key: string, state: string, status = state) => ({ key, state, status });
@@ -571,7 +573,8 @@ test("a run planning its ticket is Planning, with its own filter after In progre
   assert.equal(runStatus({ ticket: { key: "A" }, phase: "queued", plan }), "queued");
   assert.equal(runStatus({ ticket: { key: "A" }, phase: "running" }), "working");
   const order = RUN_STATUSES.map(({ status }) => status);
-  assert.equal(order.indexOf("planning"), order.indexOf("working") + 1);
+  assert.equal(order.indexOf("waiting"), order.indexOf("working") + 1);
+  assert.equal(order.indexOf("planning"), order.indexOf("waiting") + 1);
 });
 
 test("the tickets to be planned first are those with no plan of their own", () => {
@@ -984,28 +987,30 @@ test("A11-85: a stall the pane's background work caused says so, with the reason
 test("A11-236: a waiting run reads Waiting on background work, with how long when it is given the time, the job it named in place of its reason, and a stall past the bound names the job", () => {
   const run = (working: NonNullable<ViewEntry["working"]>): ViewEntry => ({ ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", working });
   const waiting = run({ reason: "two shells run", at: 1000, waiting: true, waitingOn: "the fleet captures on three boxes" });
-  assert.deepEqual(workingNote(waiting, 1000 + 54 * 60_000), { text: "Waiting on background work for 54 min: the fleet captures on three boxes", stalled: false, waiting: true });
-  assert.equal(workingNote(waiting, 1000 + 88 * 60_000)?.text, "Waiting on background work for 1 h 28 min: the fleet captures on three boxes", "worded like the board's other durations");
-  assert.equal(workingNote(waiting)?.text, "Waiting on background work: the fleet captures on three boxes", "without a time there is no duration");
-  assert.equal(workingNote(run({ reason: "two shells run", at: 1000, waiting: true }), 1000 + 5 * 60_000)?.text, "Waiting on background work for 5 min: two shells run", "with no job named it quotes the reason");
-  assert.equal(runStatus(waiting), "working", "the run stays In progress");
+  const until = `, until ${clockOf(1000 + BACKGROUND_WAIT_MS)}`;
+  assert.deepEqual(workingNote(waiting, 1000 + 54 * 60_000), { text: `Waiting on background work for 54 min: the fleet captures on three boxes${until}`, stalled: false, waiting: true });
+  assert.equal(workingNote(waiting, 1000 + 88 * 60_000)?.text, `Waiting on background work for 1 h 28 min: the fleet captures on three boxes${until}`, "worded like the board's other durations");
+  assert.equal(workingNote(waiting)?.text, `Waiting on background work: the fleet captures on three boxes${until}`, "without a time there is no duration");
+  assert.equal(workingNote(run({ reason: "two shells run", at: 1000, waiting: true }), 1000 + 5 * 60_000)?.text, `Waiting on background work for 5 min: two shells run${until}`, "with no job named it quotes the reason");
+  assert.equal(runStatus(waiting), "waiting", "the run is Waiting, not In progress (A11-272)");
   const stalled = run({ reason: "two shells run", at: 1000, stalled: true, stallReason: "waited past 2026-10-24T23:00:00.000Z on the fleet captures on three boxes" });
   assert.deepEqual(workingNote(stalled, 1e9), { text: "Stalled: waited past 2026-10-24T23:00:00.000Z on the fleet captures on three boxes since it said: two shells run", stalled: true, waiting: false });
-  assert.equal(reasonOf(waiting, 1000 + 54 * 60_000).line, "Waiting on background work for 54 min: the fleet captures on three boxes", "the card's reason line carries it");
+  assert.equal(reasonOf(waiting, 1000 + 54 * 60_000).line, `Waiting on background work for 54 min: the fleet captures on three boxes${until}`, "the card's reason line carries it");
 });
 
 test("A11-245: a run that declared a wait reads exactly what the board last read of it, not Stalled, whatever the time; a stalled one names what it waited on", () => {
   const run = (working: NonNullable<ViewEntry["working"]>): ViewEntry => ({ ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", working });
   const text = "Waiting on fleet job fj-1 (4 of 6 pages, about 20 min)";
   const waiting = run({ reason: "the capture runs on the fleet", at: 1000, waiting: true, waitText: text });
-  assert.deepEqual(workingNote(waiting), { text, stalled: false, waiting: true });
-  assert.deepEqual(workingNote(waiting, 1000 + 5 * 60 * 60_000), { text, stalled: false, waiting: true }, "the stored text is the card's: no duration is added from a clock");
-  assert.equal(reasonOf(waiting, 1000 + 54 * 60_000).line, text, "the card's reason line carries it");
-  assert.equal(runStatus(waiting), "working", "the run stays In progress");
+  const shown = `${text}, until ${clockOf(1000 + BACKGROUND_WAIT_MS)}`;
+  assert.deepEqual(workingNote(waiting), { text: shown, stalled: false, waiting: true });
+  assert.deepEqual(workingNote(waiting, 1000 + 5 * 60 * 60_000), { text: shown, stalled: false, waiting: true }, "the stored text is the card's: no duration is added from a clock, and the deadline is the one it was due at");
+  assert.equal(reasonOf(waiting, 1000 + 54 * 60_000).line, shown, "the card's reason line carries it");
+  assert.equal(runStatus(waiting), "waiting", "the run is Waiting, not In progress (A11-272)");
   const several = "Waiting on fleet job fj-1 (done); CI run a11ign/x#9 (running, 3 of 5 jobs)";
-  assert.equal(workingNote(run({ reason: "r", at: 1000, waiting: true, waitText: several }))?.text, several, "several items are one line");
+  assert.equal(workingNote(run({ reason: "r", at: 1000, waiting: true, waitText: several }))?.text, `${several}, until ${clockOf(1000 + BACKGROUND_WAIT_MS)}`, "several items are one line");
   const unreadable = "Waiting on fleet job fj-1 (could not read it: ssh: connection refused)";
-  assert.equal(workingNote(run({ reason: "r", at: 1000, waiting: true, waitText: unreadable }))?.text, unreadable, "an unreadable item says so");
+  assert.equal(workingNote(run({ reason: "r", at: 1000, waiting: true, waitText: unreadable }))?.text, `${unreadable}, until ${clockOf(1000 + BACKGROUND_WAIT_MS)}`, "an unreadable item says so");
   const stalled = run({ reason: "the capture runs", at: 1000, stalled: true, waitText: text, stallReason: "waited past 2026-10-25T12:00:00.000Z on fleet job fj-1" });
   assert.deepEqual(workingNote(stalled), { text: "Stalled: waited past 2026-10-25T12:00:00.000Z on fleet job fj-1 since it said: the capture runs", stalled: true, waiting: false });
   assert.deepEqual(workingNote(run({ reason: "woken, nothing newer yet", at: 1000, waitText: text })), { text: "woken, nothing newer yet", stalled: false, waiting: false }, "a note that is not waiting reads as its reason, whatever text it holds");
