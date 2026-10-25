@@ -2,9 +2,10 @@
 //
 // THE EVENTS ARE THE BACKEND'S (`runTimeline` in `board-view/run-timeline.ts`: the log the board recorded, or what the run's own times rebuild). The boards' lines are illustrations of the wording ("Started", "Run finished",
 // "Approved at 1f6009d"), so each kind of event is worded here in their voice, from the event's own fields and never from a board's example. A reason is the backend's own first line.
+import { baseMergeWords } from "../../../src/ticket-mode/board-view/base-merge-words.ts";
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { runTimeline, type TimelineEvent } from "../../../src/ticket-mode/board-view/run-timeline.ts";
-import type { AnsweredBy, RequeueWhy, RoundCause } from "../../../src/ticket-mode/queue/run-log.ts";
+import type { AnsweredBy, BaseMergeStep, RequeueWhy, RoundCause } from "../../../src/ticket-mode/queue/run-log.ts";
 import type { QueueView } from "../api/types.ts";
 import { length, NOTE_JOIN, since, type RunEntry } from "../runs/runs-model.ts";
 
@@ -23,7 +24,10 @@ const ROUND_WORDS: Readonly<Record<RoundCause, string>> = {
 
 const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", answer: "the board's answer", terminal: "the run's own terminal" };
 
-const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget" };
+const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget", "conflict-round": "after its conflict round" };
+
+/** The colour of a base-merge row: violet while the board merges the base in, as a pull request opened, and amber for a round, a wait or the cap, as a round is. */
+const BASE_MERGE_TONES: Readonly<Record<BaseMergeStep, DotTone>> = { merging: "violet", behind: "violet", round: "amber", waiting: "amber", capped: "amber" };
 
 /** How long ago an event was: "just now" inside the first minute, then "5 min ago". */
 const agoOf = (at: number, now: number): string => (now - at < 60_000 ? "just now" : `${since(at, now)} ago`);
@@ -59,6 +63,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
     case "needs-you": return { text: "Waiting on a person", when: ago, tone: "amber" };
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };
+    case "base-merge": return { text: baseMergeWords(event.url, event.base, event.step), when: joined(ago, note), tone: BASE_MERGE_TONES[event.step] };
     case "merged": return { text: "Pull request merged", when: joined(pullLabel(event.url), ago, note), tone: "violet" };
     case "finished": return newest && canceled ? { text: "Ticket canceled in the tracker", when: joined(ago, note), tone: "grey" } : event.outcome === "needs-human" ? { text: "Handed back to a person", when: joined(ago, note), tone: "amber" } : {
       text: FAILED_OUTCOMES.has(event.outcome) ? "Run failed" : "Run finished",

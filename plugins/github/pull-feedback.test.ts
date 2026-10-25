@@ -35,7 +35,7 @@ test("the newest review, conversation comment or inline comment by anyone but th
     threads: [{ createdAt: at(20), author: { login: "carol" } }],
   }));
   const read = readPullFeedback(URL, "worker-bot", run);
-  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failures: [], failedAt: null, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true,
+  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failures: [], failedAt: null, conflicting: false, behind: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true,
     verdictAtHead: null, pendingRequired: [], body: "" },
     "an approval and the workers' own comments are not feedback");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
@@ -51,6 +51,12 @@ test("the failing checks are the required ones, or every one where none is requi
   assert.deepEqual([unrequired?.failing, unrequired?.failedAt], [["suite", "netlify"], ms(35)], "a re-run that passed replaces the failure it re-ran");
   const required = readPullFeedback(URL, "me", answering(pullWith({ checks: [run("gate", "SUCCESS", 10, true), run("suite", "FAILURE", 30)] })).run);
   assert.deepEqual([required?.failing, required?.failedAt], [[], null], "with a required check, only the required ones count");
+});
+
+test("A11-286: BEHIND reads as behind, and CLEAN, DIRTY and a pull request still being computed as not", () => {
+  const behindOf = (mergeStateStatus: string) => readPullFeedback(URL, "me", answering(pullWith({ mergeStateStatus })).run)?.behind;
+  assert.equal(behindOf("BEHIND"), true);
+  assert.deepEqual(["CLEAN", "DIRTY", "BLOCKED", "UNKNOWN"].map(behindOf), [false, false, false, false]);
 });
 
 test("A11-82: a pull request that conflicts with its base is conflicting, whichever GitHub says it by, and one still being computed is not", () => {

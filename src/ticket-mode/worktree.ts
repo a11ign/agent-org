@@ -17,7 +17,8 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 export type Git = (cwd: string, args: string[]) => Promise<string>;
 
 export const defaultGit: Git = (cwd, args) => new Promise((resolve, reject) => {
-  execFile("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  // A command that fails keeps what it printed on the error, as `util.promisify(execFile)` does: `git merge-tree` exits 1 on a conflict and names the conflicted files on stdout (A11-286).
+  execFile("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve(stdout)));
 });
 
 /** A worktree made or reused: its repository, path and base branch, and, when it was made from a stacked branch (`from`), the commit it was branched at. */

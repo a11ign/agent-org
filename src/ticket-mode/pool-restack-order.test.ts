@@ -90,14 +90,15 @@ test("A11-248: a restack that throws is said in the log, and the watch still rea
   assert.equal(next().feedback, `${NEXT} conflicts with its base branch ${BOTTOM_BRANCH}.`, "the plain round, which names neither the stack nor the merged member");
 });
 
-test("A11-82: a run that is not in a stack and conflicts still gets the plain conflict round from the watch", () => {
+test("A11-82: a run that is not in a stack and conflicts still gets the conflict round from the watch, after the board's merge of the base found the conflict real (A11-286)", () => {
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(REPOSITORY, 2, { head: NEXT_BRANCH, feedback: { conflicting: true }, merge: { armed: false, mergeable: false } });
+  host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
   const fixture = poolFixture({ keys: ["A11-2"], now: () => NOW });
   fixture.store.set({ ...fixture.store.get(), entries: [finishedRun("A11-2", NEXT)] });
   const pool = fixture.restart({ codeHost: host });
   pool.watchFeedback();
   const run = fixture.store.get().entries[0];
-  assert.deepEqual([run.rounds, run.feedback], [1, `${NEXT} conflicts with its base branch main.`]);
-  assert.deepEqual(host.branchUpdates.asked, [], "and nothing was restacked");
+  assert.deepEqual([run.rounds, run.feedback?.split("\n")[0]], [1, `${NEXT} conflicts with its base branch main.`]);
+  assert.deepEqual(host.branchUpdates.asked, [{ url: NEXT, expectedHead: NEXT_BRANCH }], "the board's one merge of the base into it, and no restack");
 });

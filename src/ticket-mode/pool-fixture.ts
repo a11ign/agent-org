@@ -106,13 +106,15 @@ export type FixtureOptions = Readonly<{
   descriptions?: Readonly<Record<string, string>>;
   /** What the pool reads a restart from (A11-279): one boot and one herdr start that never change, unless a test gives its own. */
   restartReads?: PoolDeps["restartReads"];
+  /** The repositories the host file's `clones` names, by repository name (A11-286): a test that has the board read a real clone names it here. */
+  clones?: Readonly<Record<string, string>>;
 }>;
 
 /** A pool of `keys` queued and started, over fakes. `restart` is a pool over the same queue and state folder with another `hook`, as an instance restarted onto another version is. */
 export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate, source: tracker = source, planFirst = [], descriptions = {},
-  restartReads = { bootId: () => "boot-1", herdrStart: () => "1" } }: FixtureOptions = {}) {
+  restartReads = { bootId: () => "boot-1", herdrStart: () => "1" }, clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } }: FixtureOptions = {}) {
   const root = tmpDir("ticket-pin-");
-  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state"), tickets });
+  const settings = parseTicketSettings({ clones, stateDir: join(root, "state"), tickets });
   const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" }, batch: false };
   let queue: Queue = resumeQueue(enqueue(emptyQueue(max), keys.map((key) => ({ ...ticket(key), description: descriptions[key] ?? "" })), { model: "sonnet", effort: "high" }, 0, plan));
   const store: QueueStore = { get: () => queue, set: (next: Queue) => { queue = next; } };

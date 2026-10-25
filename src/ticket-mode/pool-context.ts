@@ -27,6 +27,7 @@ import { livePaneEnv, type PaneEnv } from "./run-env.ts";
 import type { ServeCheck } from "../install/service.ts";
 import type { ExposureState } from "./pool-exposure.ts";
 import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
+import type { BaseMerge } from "./pool-outcome.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -169,6 +170,12 @@ export type PoolContext = Readonly<{
   restacked: Map<string, RestackDone>;
   /** The runs whose stack the restack could not look at, said once each in the log (A11-248): the blocker is not on the queue, or has no pull request in the stack's repository. */
   restackSaid: Set<string>;
+  /** What the board did about each pull request's base at the head it was read at, by the pull request's address (A11-286): one try for each head. Kept in memory: a restart asks the host once more, which answers a branch that has its base with up-to-date. */
+  baseMerges: Map<string, BaseMerge>;
+  /** The pull requests a read found merged or closed (A11-286), so a pull request the board opened and no entry holds any more is read once for a process and not again. */
+  settledPulls: Set<string>;
+  /** Whether a sweep of the kept pull requests is under way, and the one last started (A11-286): sweeps never overlap. */
+  keptSweep: { busy: boolean; done: Promise<void> };
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
   ownLogin: { value: string | null };
   /** What the board last read of each run's declared wait, by herdr name (A11-245). Kept in memory: a restart reads afresh, and the note's own `woke` says the worker was already told. */
@@ -257,7 +264,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, baseMerges: new Map<string, BaseMerge>(), settledPulls: new Set<string>(), keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() },
   };
