@@ -36,7 +36,7 @@ import { herdrRun } from "./herdr-agents.ts";
 import { prepareContext, handoffBacklog, waitedFor, addressed } from "./wake/fyi-queue.ts";
 import { orderClockIn } from "./wake/merge-queue-wait.ts";
 import { CONTEXT_ACTION } from "./wake/fyi-delivery-and-limits.ts";
-import { readAgents } from "./herdr-agents.ts";
+import { herdrAgentName, readAgents } from "./herdr-agents.ts";
 import { WAKEABLE } from "./wake/exit-and-limits.ts";
 import { queueHandoff, handoffQueuePath, ledgerPathFrom, readHandoffs, isLeadSeat, FYI_STALE_MS } from "./wake/seat-reset.ts";
 import { repointedForReviewer } from "./wake/reviewer-tokens-and-checkouts.ts";
@@ -216,7 +216,7 @@ export function promptWithContext(run: (args: string[]) => string, label: string
   const { action, refusal } = prepareContext(run, label, { sleep, contextRoot, sessions, clock });
   const followUp = action !== CONTEXT_ACTION.CLEARED;
   try {
-    run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp, context: action })]);
+    run(["--session", "org", "agent", "prompt", herdrAgentName(label), deliveredText(label, text, sender, { followUp, context: action })]);
   } catch (err: any) {
     return { action, report: `${PROMPT_REFUSED_PREFIX}${String(err?.message ?? err).split("\n")[0].slice(0, 120)}` };
   }

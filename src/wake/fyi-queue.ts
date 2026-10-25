@@ -16,7 +16,7 @@ import { engineerBriefSentence, briefRoleSentence } from "../spawn-role-brief.ts
 import type { OrchestratorOneShot } from "../orchestrator-one-shot.ts";
 import type { CeoOneShot } from "../ceo-one-shot.ts";
 import { SPARE_FAMILIES, familyMember } from "../arm-pr.ts";
-import { firstLine, herdrReason, closedNote } from "../herdr-agents.ts";
+import { firstLine, herdrAgentName, herdrReason, closedNote } from "../herdr-agents.ts";
 import { isAbsentReviewerSeat } from "../seat-retire-reset.ts";
 import { FYI_STALE_MS, HANDOFF_STALE_MS, SESSIONS_FILE, declaresDecision, dropHandoffs, isLeadSeat, staleHandoffs, undelivered } from "./seat-reset.ts";
 import { CLEAR_TIMEOUT_MS, CONTEXT_ACTION, CONTINUATION_ESCALATE_TO, MAX_DELIVERIES, NO_CLOCK, continuationOf, endedSeatLine, engineerStarts, escalatedContinuation, holdsAsFyi, isPerRowInstance, keepsContext, overThreshold, postOutsideVerdictsOf, recentOrderAction, recordCapped, registerSpawn, sleepSync, targetFor, type ClaimOrders, type HostLoad, type LaunchFacts, type OrderClock, whyUnavailable } from "./fyi-delivery-and-limits.ts";
@@ -643,8 +643,8 @@ function settleAfter(run: (args: string[]) => string, label: string, command: st
     //
     // The `agent wait` first is still worth its cost: it catches an agent that was mid-turn when the
     // command arrived, where the delay alone would not be enough.
-    run(["--session", "org", "agent", "prompt", label, command]);
-    run(["--session", "org", "agent", "wait", label, "--until", "idle", "--until", "done",
+    run(["--session", "org", "agent", "prompt", herdrAgentName(label), command]);
+    run(["--session", "org", "agent", "wait", herdrAgentName(label), "--until", "idle", "--until", "done",
       "--timeout", String(CLEAR_TIMEOUT_MS)]);
     sleep(CLEAR_SETTLE_MS);
     return null;
@@ -824,7 +824,7 @@ const PROMPT_TAKEN = new Set(["working", "blocked", "done"]);
  * Read one agent: `{status, ready}`. THROWS when herdr cannot answer, and the caller says what that cost.
  */
 export function readAgent(run: (args: string[]) => string, label: string): { status: string; ready: boolean; } {
-  const agent = JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent;
+  const agent = JSON.parse(run(["--session", "org", "agent", "get", herdrAgentName(label)]))?.result?.agent;
   if (agent === undefined) throw new Error("herdr's answer named no agent");
   return { status: String(agent.agent_status), ready: agent.interactive_ready === true };
 }
@@ -874,7 +874,7 @@ function untakenWhy(run: (args: string[]) => string, label: string, sleep: (ms: 
   const taken = (f: { status: string; }) => PROMPT_TAKEN.has(f.status);
   if (pollAgent(run, label, { met: taken, boundMs: SUBMIT_BOUND_MS, sleep }).met) return null;
   try {
-    run(["--session", "org", "agent", "send-keys", label, "enter"]);
+    run(["--session", "org", "agent", "send-keys", herdrAgentName(label), "enter"]);
   } catch (err) {
     return `"${label}" stayed idle ${SUBMIT_BOUND_MS / 1000}s after its prompt and the Enter was refused (${herdrReason(err)})`;
   }
@@ -930,7 +930,7 @@ export function promptTarget(order: { causeKey: string; session: string; prompt:
   const notReady = started ? notReadyWhy(run, target.label, sleep) : null;
   if (notReady !== null) return `${notReady}${abandonedStart(target, { run, claimer, env })}`;
   try {
-    run(["--session", "org", "agent", "prompt", target.label,
+    run(["--session", "org", "agent", "prompt", herdrAgentName(target.label),
       addressed(carriedOrder(order, target), target.label,
         { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context, orderId, blocking: blocking(), model: (target.profile as { model?: string } | undefined)?.model,
           // #832: the brief a ONE-SHOT order names; absent on every other order, and `addressed`'s default is then the engineer's, byte for byte.

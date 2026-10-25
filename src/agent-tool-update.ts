@@ -31,7 +31,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
-import { readAgents } from "./herdr-agents.ts";
+import { herdrAgentName, readAgents } from "./herdr-agents.ts";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 /** The incident's kind, the epic's class. Not seeded in `FAILURE_KINDS`, which a test pins at the six first-move kinds; `repeatsIn` reads any key. */
@@ -413,13 +413,13 @@ function smokeScratchPane(herdr: (args: string[]) => string, kind: SmokeKind, st
     let started = true;
     let why: string | undefined;
     try {
-      herdr(["--session", "org", "agent", "start", name, "--kind", product, "--pane", pane, "--timeout", "90000", "--", ...startArgs]);
+      herdr(["--session", "org", "agent", "start", herdrAgentName(name), "--kind", product, "--pane", pane, "--timeout", "90000", "--", ...startArgs]);
     } catch (cause) {
       started = false;
       why = causeOf(cause);
     }
     let screen: string | null;
-    try { screen = herdr(["--session", "org", "agent", "read", name, "--source", "recent", "--lines", "40"]); } catch { screen = null; }
+    try { screen = herdr(["--session", "org", "agent", "read", herdrAgentName(name), "--source", "recent", "--lines", "40"]); } catch { screen = null; }
     return { opened: true, started, pane: screen, ...(why === undefined ? {} : { why }) };
   } catch (cause) {
     return { opened: false, why: causeOf(cause) };

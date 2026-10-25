@@ -1,7 +1,7 @@
 // @ts-check
 // module: the herdr seam -- the calls the pool makes to herdr and their defaults, herdr's server command, and the names its runs are given
 
-import { herdrReason, herdrRun } from "../herdr-agents.ts";
+import { herdrAgentName, herdrRefusal, herdrRun } from "../herdr-agents.ts";
 import { execFile, spawn } from "node:child_process";
 import { defaultServiceDeps, serviceState, unitFor, type ServiceDeps } from "../install/service.ts";
 
@@ -52,17 +52,8 @@ const must = (result: { status: number | null; stdout: string; stderr: string },
 
 /**
  * A ticket's name in herdr, for its workspace and its agent: herdr refuses an agent name that is not a lowercase letter followed by up to 31
- * lowercase letters, digits, `-` or `_` (measured 2026-10-13, `invalid_agent_name` for `SMOKE-1`), and a tracker's keys are upper case.
+ * lowercase letters, digits, `-` or `_` (measured 2026-10-13, `invalid_agent_name` for `SMOKE-1`), and a tracker's keys are upper case. {@link herdrAgentName} makes it, shortening a long one with a hash (A11-241).
  */
-export const herdrName = (key: string): string => `t-${key.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`.slice(0, 32);
+export const herdrName = (key: string): string => herdrAgentName(`t-${key}`);
 
-/** Why herdr refused: it answers a refusal as JSON on stdout (`{"error":{"message":...}}`), which `herdrReason` (stderr) does not read. */
-export function herdrRefusal(err: unknown): string {
-  try {
-    const message = JSON.parse(String((err as { stdout?: unknown })?.stdout ?? "")).error?.message;
-    if (typeof message === "string") return message;
-  } catch {
-    // not herdr's JSON
-  }
-  return herdrReason(err);
-}
+export { herdrRefusal };

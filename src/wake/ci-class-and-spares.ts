@@ -18,7 +18,7 @@ import { worktreeOwner } from "../worktree-owner.ts";
 import { familyMember } from "../arm-pr.ts";
 import { holderWorkAtRisk, workAtRisk, gitRun, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS, readJsonObject, INTERRUPTED_TEXT, INTERRUPTED_SETTLE_MS, THRASH_TEXT } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { pathExists, statMtime, readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, mergedPrMention, openPrMentions } from "../claim-stall.ts";
-import { listingIsComplete, firstLine, herdrReason } from "../herdr-agents.ts";
+import { listingIsComplete, firstLine, herdrAgentName, herdrReason } from "../herdr-agents.ts";
 import { EXIT, SESSION_ID, WAKEABLE, codeRepositoryOf, defaultGh, defaultRun, engineerEligibility, guardedGh, paneReader, redPullRequestOf, remember, rowMention, transcriptOf, type Enrichable, type SpareInstance } from "./exit-and-limits.ts";
 import { CLAIM_LANDED, ENRICH_AHEAD, ROW_CLAIM, activeDrain, cyclesReport, defaultExec, drainedRoles, enrichDecisionDeps, keyedClone, launchWorktree, refailNote, rerunRedOnServerError, settleGoneKept, type EnrichDeps, type Exec, type KeptClaim, verdictLine } from "./release-line-and-seats.ts";
 import { defaultGit, isReviewerOrder, orderPullRequestRef } from "./reviewer-tokens-and-checkouts.ts";
@@ -498,7 +498,7 @@ function closeHolder(session: string, deps: ReleaseDeps): "closed" | "absent" | 
 function interruptHolder(request: ReleaseRequest, deps: ReleaseDeps): "interrupted" | "kept" | "failed" {
   if (request.interrupt !== true || !deps.isSpare(request.session)) return "kept";
   try {
-    deps.run(["--session", "org", "agent", "send-keys", request.session, "esc"]);
+    deps.run(["--session", "org", "agent", "send-keys", herdrAgentName(request.session), "esc"]);
     return "interrupted";
   } catch (err) {
     deps.warn(`release: "${request.session}" could not be interrupted (${firstLine(err)}) -- retried next tick.`);
@@ -754,7 +754,7 @@ export function readDeliveredHandoffs(path: string, read: typeof readFileSync = 
  */
 export function assistantTimestamps(label: string, { run = defaultRun, home = homedir(), read = readFileSync }: { run?: (args: string[]) => string; home?: string; read?: typeof readFileSync; } = {}): number[] | null {
   try {
-    const id = String(JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent?.agent_session?.value ?? "");
+    const id = String(JSON.parse(run(["--session", "org", "agent", "get", herdrAgentName(label)]))?.result?.agent?.agent_session?.value ?? "");
     const path = SESSION_ID.test(id) ? transcriptOf(id, home) : null;
     return path === null ? null : assistantTimesIn(String(read(path, "utf8")));
   } catch {
