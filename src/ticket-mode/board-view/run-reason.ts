@@ -41,12 +41,26 @@ export function promptNote(entry: ViewEntry): string | null {
   return `A safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} was declined automatically: ${command}`;
 }
 
-/** What the worker says of a run: its handed-back reason, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
+/**
+ * What a running run's card says of the board's resume prompt (A11-279), or null when it sent none: "Resumed after a restart at 15:27", "Idle since 15:22, resumed at 15:32", or, when herdr would not take the prompt,
+ * "could not be prompted: <herdr's reason>". The times are the viewer's clock, as the card's other times are. PURE.
+ */
+export function resumeLine(entry: ViewEntry): string | null {
+  const { resume } = entry;
+  if (entry.phase !== "running" || resume === undefined) return null;
+  if (resume.refused !== undefined) return `could not be prompted: ${resume.refused}`;
+  return resume.after === "restart" ? `Resumed after a restart at ${clockOf(resume.at)}` : `Idle since ${clockOf(resume.idleSince ?? resume.at)}, resumed at ${clockOf(resume.at)}`;
+}
+
+/** What the worker says of a run: its handed-back reason, the board's resume of it, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
 function askedReason(entry: ViewEntry, now?: number): string | null {
   const outcome = entry.outcome;
   const note = workingNote(entry, now);
+  const resumed = resumeLine(entry);
   if (entry.handedBack) return entry.handedBack;
-  if (note !== null && !note.stalled) return note.text;
+  // An idle run is never shown as only running: the board's resume comes first, then what its worker last said (A11-279).
+  if (note !== null && !note.stalled) return resumed === null ? note.text : `${resumed}; ${note.text}`;
+  if (resumed !== null) return resumed;
   if (outcome === undefined) return null;
   if (outcome.kind === "wrong-repo") return `Belongs in: ${outcome.where}`;
   if (outcome.kind === "no-outcome") return "Stopped without writing an outcome";

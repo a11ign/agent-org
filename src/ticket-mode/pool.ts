@@ -85,10 +85,10 @@
 //
 // A RESTART OF THE INSTANCE LEAVES THE WORKERS ALONE (A11-78, A11-169). The workers run in herdr's server, which runs in a service of its own (`agent-org-herdr.service`; this process only starts the unit,
 // `ensureSession`), so stopping or restarting the instance stops only the instance. A pool that starts up re-adopts what herdr lists and the
-// queue file holds (`reconcile`) and carries on watching it: it sends a running worker no key, no prompt and no second start of its own accord. The only keys
+// queue file holds (`reconcile`) and carries on watching it: it sends a running worker no key and no second start of its own accord. The only keys
 // the pool ever sends answer a start dialog, and only on a run this pool started itself, until its agent is first seen up (`startedHere`): a
-// pane it adopted is never one it is starting. The one other thing it sends is its answer to a Claude Code safety prompt (A11-174): Esc, and one message saying why. That is safe on an
-// adopted run too, and a run that is not on such a prompt is sent nothing. A reviewer is recorded as started before it is started, so a restart in between never starts it
+// pane it adopted is never one it is starting. The other things it sends are its answer to a Claude Code safety prompt (A11-174): Esc, and one message saying why, and the one resume prompt
+// (A11-279) to a run its first pass finds idle at a prompt, or interrupted, with no outcome written (`pool-resume.ts`). Both are safe on an adopted run, and a run that is working is sent nothing. A reviewer is recorded as started before it is started, so a restart in between never starts it
 // twice, and one herdr still lists for its head is adopted. `agent-org update` restarts the instance over a live run whatever it is doing, and a breaking release
 // drains instead (`pool-drain.ts`, `update.ts`, A11-169).
 //

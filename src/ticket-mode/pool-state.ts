@@ -46,15 +46,18 @@ export const forgetRun = (ctx: PoolContext, name: string): void => {
 export const updateEach = (ctx: PoolContext, entries: readonly Entry[], change: (queue: Queue, key: string) => Queue) =>
   update(ctx, (queue) => entries.reduce((next, entry) => change(next, entry.ticket.key), queue));
 
+/** The pane a run's record holds, as a {@link RunPlace} carries it: none until the run has one. PURE. */
+const paneOf = ({ pane }: Readonly<{ pane?: string }>): Pick<RunPlace, "pane"> => (pane === undefined ? {} : { pane });
+
 /**
- * Where the run an entry is in lives: the herdr name of its workspace and agent, the folder holding its brief and outcome, and the folder its
- * agent starts in. A ticket of a batch is in its batch's run, which is the only way a live or parked entry keeps its batch.
+ * Where the run an entry is in lives: the herdr name of its workspace, the folder holding its brief and outcome, the folder its
+ * agent starts in, and its pane. A ticket of a batch is in its batch's run, which is the only way a live or parked entry keeps its batch.
  */
 export const runPlace = (ctx: PoolContext, entry: Entry): RunPlace => {
   const { settings } = ctx;
   return entry.batch === undefined
-    ? { name: herdrName(entry.ticket.key), dir: ticketDir(settings, entry.ticket.key), folder: ticketFolder(settings, entry.ticket.key) }
-    : { name: herdrName(entry.batch), dir: batchDir(settings, entry.batch), folder: batchFolder(settings, entry.batch) };
+    ? { name: herdrName(entry.ticket.key), dir: ticketDir(settings, entry.ticket.key), folder: ticketFolder(settings, entry.ticket.key), ...paneOf(entry) }
+    : { name: herdrName(entry.batch), dir: batchDir(settings, entry.batch), folder: batchFolder(settings, entry.batch), ...paneOf(entry) };
 };
 
 /** The entries in `entry`'s run, as the queue has them now: every ticket of its batch in the same phase and workspace, or else the entry alone. */
@@ -87,7 +90,7 @@ export const phaseOf = (ctx: PoolContext, key: string) => {
 /** Where a new-ticket run lives. Its herdr name is its id's, which no ticket's key can be. */
 export const writerPlace = (ctx: PoolContext, run: WriterRun): RunPlace => {
   const { settings } = ctx;
-  return { name: herdrName(`writer-${run.id}`), dir: writerDir(settings, run.id), folder: writerFolder(settings, run.id) };
+  return { name: herdrName(`writer-${run.id}`), dir: writerDir(settings, run.id), folder: writerFolder(settings, run.id), ...paneOf(run) };
 };
 
 /** Whether the new-ticket run `id`'s agent is still running: a stop or a failure while its outcome is read is the last word, so nothing overwrites it. */
@@ -99,5 +102,5 @@ export const writerAgentRunning = (ctx: PoolContext, id: string): boolean => {
 /** Where a publish run lives. Its herdr name is its id's, which no ticket's key can be. */
 export const publishPlace = (ctx: PoolContext, publish: PublishRun): RunPlace => {
   const { settings } = ctx;
-  return { name: herdrName(`publish-${publish.id}`), dir: publishDir(settings, publish.id), folder: publishFolder(settings) };
+  return { name: herdrName(`publish-${publish.id}`), dir: publishDir(settings, publish.id), folder: publishFolder(settings), ...paneOf(publish) };
 };

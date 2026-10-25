@@ -536,7 +536,7 @@ test("a run showing a start dialog for its worktree is answered with down-enter 
   screen.text = TRUST(ticketFolder(settings, "NBF-1"));
   await pool.tick();
   const answers = () => h.calls.filter((args) => args.includes("send-keys"));
-  assert.deepEqual(answers()[0], ["--session", "tickets", "agent", "send-keys", "t-nbf-1", "down", "enter"]);
+  assert.deepEqual(answers()[0], ["--session", "tickets", "agent", "send-keys", "w1:p1", "down", "enter"]);
   assert.notEqual(entry("NBF-1").waiting, true, "an answered dialog is not a person's to clear");
   assert.deepEqual([promptsSent(h.calls), entry("NBF-1").declined], [[], undefined], "A11-174: a start dialog is answered Yes, and is not read as a safety prompt: no esc, no message");
   for (let i = 0; i < 6; i += 1) await pool.tick();
@@ -572,10 +572,10 @@ const promptsSent = (calls: string[][]) => calls.filter((args) => args.includes(
 test("A11-174: a run on the dangerous-rm prompt is answered esc, never enter or a digit, told once which command and to guard it with ${VAR:?}, and recorded as declined, not waiting", async () => {
   const { pool, status, entry, h, screen } = await blockedOn(DANGEROUS_RM);
   await pool.tick();
-  assert.deepEqual(keysSent(h.calls), [SEND_KEYS("t-nbf-1", "esc")], "the one key is esc: never enter, never a digit, so a reordered menu cannot be answered Yes");
+  assert.deepEqual(keysSent(h.calls), [SEND_KEYS("w1:p1", "esc")], "the one key is esc: never enter, never a digit, so a reordered menu cannot be answered Yes");
   const told = promptsSent(h.calls);
   assert.equal(told.length, 1, "one message");
-  assert.deepEqual(told[0].slice(0, 5), ["--session", "tickets", "agent", "prompt", "t-nbf-1"]);
+  assert.deepEqual(told[0].slice(0, 5), ["--session", "tickets", "agent", "prompt", "w1:p1"]);
   assert.equal(told[0][5], declineMessage({ command: "rm -f $SC/*.done Remove the done markers", warning: "Dangerous rm operation on possibly-empty variable path" }));
   for (const part of ["rm -f $SC/*.done", "Dangerous rm operation on possibly-empty variable path", "${VAR:?}"]) assert.ok(told[0][5].includes(part), part);
   assert.deepEqual(entry("NBF-1").declined, { command: "rm -f $SC/*.done Remove the done markers", warning: "Dangerous rm operation on possibly-empty variable path", at: 100, count: 1, told: true });
@@ -594,7 +594,7 @@ const RM_WARNING = "Dangerous rm operation on statically-unresolvable target: /t
 async function declinedOn(pane: string) {
   const made = await blockedOn(pane);
   await made.pool.tick();
-  assert.deepEqual(keysSent(made.h.calls), [SEND_KEYS("t-nbf-1", "esc")], "the one key is esc, as for the main agent");
+  assert.deepEqual(keysSent(made.h.calls), [SEND_KEYS("w1:p1", "esc")], "the one key is esc, as for the main agent");
   assert.equal(promptsSent(made.h.calls).length, 1, "one message");
   return { entry: made.entry, message: promptsSent(made.h.calls)[0][5] };
 }
@@ -703,7 +703,7 @@ test("A11-174: a batch run's decline is recorded on every ticket of the batch, a
   status.set(herdrName(BATCH), "blocked");
   screen.text = DANGEROUS_RM;
   await pool.tick();
-  assert.deepEqual(keysSent(h.calls), [SEND_KEYS(herdrName(BATCH), "esc")]);
+  assert.deepEqual(keysSent(h.calls), [SEND_KEYS("w1:p1", "esc")], "A11-279: the batch's agent is reached by its pane");
   assert.equal(promptsSent(h.calls).length, 1);
   for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).declined?.count, entry(key).declined?.told, entry(key).waiting], [1, true, false], key);
 });
@@ -1891,7 +1891,7 @@ test("a batch's run is answered at its own folder's trust dialog, and a QUESTION
   status.set(herdrName(BATCH), "blocked");
   screen.text = TRUST(batchFolder(settings, BATCH));
   await pool.tick();
-  assert.deepEqual(h.calls.find((args) => args.includes("send-keys")), ["--session", "tickets", "agent", "send-keys", herdrName(BATCH), "down", "enter"]);
+  assert.deepEqual(h.calls.find((args) => args.includes("send-keys")), ["--session", "tickets", "agent", "send-keys", "w1:p1", "down", "enter"]);
   const plan = join(batchDir(settings, BATCH), "plan");
   const secret = join(settings.stateDir, "secret.txt");
   put(secret, "lin_api_secret");
@@ -3597,7 +3597,7 @@ test("A11-85: a working run whose pane shows no background work for BACKGROUND_G
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled, entry("NBF-1").working?.stallReason], ["running", true, "background work gone"]);
   assert.equal(runStatus(entry("NBF-1")), "working", "still In progress, not ended");
   assert.deepEqual(h.calls.slice(calls).filter((args) => args.includes("prompt")),
-    [["--session", "tickets", "agent", "prompt", herdrName("NBF-1"), "your background work is gone; check it and carry on"]], "prompted once, with the resume text");
+    [["--session", "tickets", "agent", "prompt", "w1:p1", "your background work is gone; check it and carry on"]], "prompted once, with the resume text, at its pane (A11-279)");
   assert.equal(logged.filter((line) => line.includes("NBF-1 wrote working with no background work running")).length, 1, "said once");
   assert.equal(h.calls.slice(calls).some((args) => args.includes("send-keys") || args.includes("close")), false, "no key sent and nothing closed");
 });
@@ -6312,7 +6312,7 @@ test("a description change while a worker runs is prompted to it, and its next r
   await pool.refreshTracker();
   const prompts = h.calls.filter((args) => args.includes("prompt"));
   assert.equal(prompts.length, 1);
-  assert.deepEqual(prompts[0].slice(0, 5), ["--session", "tickets", "agent", "prompt", herdrName("NBF-1")]);
+  assert.deepEqual(prompts[0].slice(0, 5), ["--session", "tickets", "agent", "prompt", "w1:p1"]);
   assert.ok(prompts[0][5].includes(join(dir, "ticket-changed-1.md")), "the message names the file");
   const file = readFileSync(join(dir, "ticket-changed-1.md"), "utf8");
   assert.ok(file.includes("- Done-when: it fits.\n+ Done-when: it fits, and it replays.") && file.includes(`last updated ${T11}`) && file.includes(`## The description now\n\n${FIT_AND_REPLAY}`));

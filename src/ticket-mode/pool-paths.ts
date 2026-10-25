@@ -17,8 +17,11 @@ export const publishDir = (settings: TicketSettings, id: string): string => join
 /** The folder every publish run starts in, one at a time: it reads no repository. */
 export const publishFolder = (settings: TicketSettings): string => join(settings.worktreeRoot, "publish");
 
-/** Where a run lives: the herdr name of its workspace and agent, the folder holding its brief and outcome, and the folder its agent starts in. */
-export type RunPlace = Readonly<{ name: string; dir: string; folder: string }>;
+/**
+ * Where a run lives: the herdr name of its workspace (its label), the folder holding its brief and outcome, the folder its agent starts in, and the pane its agent is in once the run has one. herdr 0.9.3 lists
+ * Claude agents with no name, so the agent is reached by its pane (`agentTarget`, A11-279), never by the name.
+ */
+export type RunPlace = Readonly<{ name: string; dir: string; folder: string; pane?: string }>;
 
 /** The repositories a worker has made worktrees in: the folder's directories that hold a git worktree. */
 export function worktreesIn(folder: string): string[] {

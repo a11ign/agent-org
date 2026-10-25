@@ -16,6 +16,8 @@ import { fleetJobStatusVia } from "./wait-on/wait-read.ts";
 import type { TicketSource } from "./source.ts";
 
 const NAME = herdrName("NBF-1");
+/** The pane NBF-1's agent is in, which every prompt reaches it by: herdr 0.9.3 lists Claude agents with no name (A11-279). */
+const PANE = "w1:p1";
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const T0 = Date.UTC(2026, 9, 25, 10, 0, 0);
@@ -50,7 +52,7 @@ async function waitingRun(waitingOn: unknown, { fleet = () => job("running"), fl
   const refuse = { left: 0, tried: 0 };
   const herdr = (args: string[], timeoutMs?: number): string => {
     // Only the board's wake prompts are counted and refused: A11-85's "background work is gone" prompt is another thing.
-    if (args.includes("prompt") && args.includes(NAME) && !String(args.at(-1)).startsWith("your background work is gone")) {
+    if (args.includes("prompt") && args.includes(PANE) && !String(args.at(-1)).startsWith("your background work is gone")) {
       refuse.tried += 1;
       if (refuse.left > 0) { refuse.left -= 1; throw new Error("herdr exited 1: the pane is busy"); }
     }
@@ -70,7 +72,7 @@ async function waitingRun(waitingOn: unknown, { fleet = () => job("running"), fl
     await flush();
   };
   await write({ kind: "working", reason: "waiting for the capture", waitingOn, ...(until === undefined ? {} : { until }) });
-  const prompts = () => made.herdr.calls.filter((args) => args.includes("prompt") && args.includes(NAME)).map((args) => String(args.at(-1)));
+  const prompts = () => made.herdr.calls.filter((args) => args.includes("prompt") && args.includes(PANE)).map((args) => String(args.at(-1)));
   /** The clock moves on and the pool ticks once; the reading it starts is there for the tick after. */
   const pass = async (ms = MIN) => { clock += ms; await pool.tick(); await flush(); };
   const passes = async (count: number, ms = MIN) => { for (let i = 0; i < count; i += 1) await pass(ms); };

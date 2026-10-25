@@ -1,7 +1,7 @@
 // @ts-check
 // module: watching the runs -- each run's status from herdr, what its outcome settles, and the tick that drives a pass
 
-import { herdrReason, readAgents } from "../herdr-agents.ts";
+import { readAgents } from "../herdr-agents.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { log, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
 import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, recordWrittenStep, settle } from "./pool-settle.ts";
@@ -16,7 +16,8 @@ import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOu
 import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
-import { sendWake, wakePrompt } from "./wait-on/wait-prompt.ts";
+import { wakePrompt } from "./wait-on/wait-prompt.ts";
+import { reseatMoved, resumeAfterRestart, sendToAgent, watchIdle } from "./pool-resume.ts";
 import { fleetJobStatusVia, type WaitSeams } from "./wait-on/wait-read.ts";
 import { judgedWait, pollWhenDue } from "./wait-on/wait-watch.ts";
 import type { Judged } from "./wait-on/wait-verdict.ts";
@@ -89,7 +90,9 @@ function watch(ctx: PoolContext): void {
   const status = new Map(agents.map((agent) => [agent.label, agent.status]));
   for (const [workspace, id] of readSessionIds(ctx)) claudeSessions.set(workspace, id);
   readoptCrashed(ctx, agents);
-  watchRunning(ctx, status);
+  // A run whose workspace a restart brought back under a new id is reached there; then a run left at a prompt is resumed in this pass, before the watch below could end it for having no outcome (A11-279).
+  reseatMoved(ctx, agents);
+  watchRunning(ctx, status, resumeAfterRestart(ctx, status));
   watchParked(ctx, status);
   rereadUnreadable(ctx);
   watchPublish(ctx, status);
@@ -98,9 +101,10 @@ function watch(ctx: PoolContext): void {
 
 /**
  * Each running run's status, from one listing (label -> status): record its repositories, answer a start dialog, or end it. A batch's run is
- * watched once, through its first ticket: the others have no agent of their own.
+ * watched once, through its first ticket: the others have no agent of their own. A run `resumed` this pass is not ended for having no outcome, nor woken for its wait or told of a decline: the status read
+ * before its resume prompt is not its answer to it, and the resume already says to re-check its waits. Every run still running is watched for sitting idle at a prompt ({@link watchIdle}, A11-279).
  */
-function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): void {
+function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, resumed: ReadonlySet<string>): void {
   const { misses, startedHere, store } = ctx;
   const watched = new Set<string>();
   for (const entry of store.get().entries.filter((e) => e.phase === "running")) {
@@ -132,16 +136,20 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
       settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8"), { talk: current.talk === true }));
       // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled. A decline it was not yet told of is told now, not to a run that just ended.
       if (sameRun(ctx, current)) {
+        // A run resumed this pass already has the one prompt it needs: its wake and its decline wait for a status read after it (A11-279).
+        if (resumed.has(name)) continue;
         // A plan attach being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the planner (A11-216).
         if (!ctx.attachRetries.has(name)) watchStall(ctx, current, seen);
         retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
+        watchIdle(ctx, latest(), seen);
       }
       continue;
     }
     // The message a refused one waits for, before an idle run with no outcome is called over: the status read before it is not the agent's answer to it (A11-174).
     const justTold = retellDeclined(ctx, current, runPlace(ctx, entry), seen);
     if (seen === "working") watchStall(ctx, latest(), seen);
-    else if (!justTold && stoppedWithNoOutcome(ctx, latest(), seen)) end(ctx, latest(), { kind: "no-outcome" });
+    else if (!justTold && !resumed.has(name) && stoppedWithNoOutcome(ctx, latest(), seen)) end(ctx, latest(), { kind: "no-outcome" });
+    watchIdle(ctx, latest(), seen);
   }
   // What was read of a wait belongs to a run that is still running: a run that ended or was stopped leaves nothing behind.
   for (const name of ctx.waitPolls.keys()) if (!watched.has(name)) ctx.waitPolls.delete(name);
@@ -304,10 +312,9 @@ function waitSeamsOf({ codeHost, source, deps }: PoolContext): WaitSeams {
  * refuses is counted and the wake is offered again on the next pass, up to {@link MAX_WAKE_TRIES}, after which the run is marked stalled with the refusal.
  */
 function wakeWorker(ctx: PoolContext, entry: Entry, note: WorkingNote, woke: Woke, judged: Judged | null): void {
-  const { herdr, settings } = ctx;
   const who = entry.batch ?? entry.ticket.key;
   const text = wakePrompt(woke, note.waits === undefined ? null : judged?.verdict ?? null, deadlineOf(note));
-  const refusal = sendWake(herdr, settings.herdrSession, runPlace(ctx, entry).name, text);
+  const refusal = sendToAgent(ctx, runPlace(ctx, entry), text);
   if (refusal === null) return log(wakeLine(who, woke));
   updateEach(ctx, runMembers(ctx, entry), (queue, member) => replace(queue, member, (held) => (held.working === undefined ? held : { ...held, working: wakeRefused(held.working, refusal, woke) })));
   log(`${who} could not be prompted for its wait: ${refusal}`);
@@ -330,12 +337,8 @@ function paneBackground(ctx: PoolContext, entry: Entry): Background {
 
 /** Tell a run's worker, once, that its background work is gone: it checks it and carries on. A refusal is said, and nothing else is sent. */
 function promptBackgroundGone(ctx: PoolContext, entry: Entry): void {
-  const { herdr, settings } = ctx;
-  try {
-    herdr(["--session", settings.herdrSession, "agent", "prompt", runPlace(ctx, entry).name, BACKGROUND_GONE_PROMPT]);
-  } catch (err) {
-    log(`${entry.batch ?? entry.ticket.key} could not be told its background work is gone: ${herdrReason(err)}`);
-  }
+  const refusal = sendToAgent(ctx, runPlace(ctx, entry), BACKGROUND_GONE_PROMPT);
+  if (refusal !== null) log(`${entry.batch ?? entry.ticket.key} could not be told its background work is gone: ${refusal}`);
 }
 
 /**
