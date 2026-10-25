@@ -5,9 +5,9 @@ A Before-merge Done-when line that needs a published release, a person's own mac
 Acceptance:
 
 ```bash
-# after-merge-move.test.ts: the plan section is read and checked against the ticket; the rewrite moves the line with who runs it, adds the Decisions entry, and is idempotent
-# pool-after-merge-move.test.ts: a plan moving a release-only line has the ticket rewritten at attach, stamped with the rewritten text; a retried attach writes nothing twice; a line not under Before merge is refused
+# after-merge-move.test.ts: the plan section is read and checked against the ticket; the rewrite moves the line with who runs it, adds the Decisions entry, is idempotent, and reads CRLF and nested bullets
 # worker-files.test.ts: both planner briefs carry the rule; prompt.test.ts, port.test.ts: every reviewer prompt carries the reviewer rule
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/after-merge-move.test.ts src/ticket-mode/pool-after-merge-move.test.ts src/ticket-mode/worker-files.test.ts plugins/atomic-reviewer/prompt.test.ts plugins/atomic-reviewer/port.test.ts src/ticket-mode/pool-attach-retry.test.ts src/ticket-mode/pool-answer.test.ts
+# (the filing check cannot run pool-after-merge-move.test.ts, pool-attach-retry.test.ts, pool.test.ts or pool-answer.test.ts, which CI's suite runs: the ticket rewritten at attach and stamped with the rewritten text, a retried single and batch attach, a line not under Before merge refused)
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/after-merge-move.test.ts src/ticket-mode/worker-files.test.ts plugins/atomic-reviewer/prompt.test.ts plugins/atomic-reviewer/port.test.ts
 npm run typecheck
 ```
