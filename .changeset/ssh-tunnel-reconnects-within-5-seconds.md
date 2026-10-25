@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The board's SSH tunnel to another machine's instance recovers within 5 seconds instead of up to a minute. A request that finds the tunnel dead (the link dropped but ssh has not noticed yet, which its keepalive takes up to 45 s to do) opens it again at once, and a read is answered from a second try on the new tunnel; a write is never sent twice. Opening the tunnel again reuses the remote's port and key from the last good tunnel, so it is one ssh handshake and no `agent-org ticket:remote-info` on the remote; that is read again after the remote refuses the key, when such an open fails, or on a second restart with no answer between. A tunnel is restarted at most twice until a request is answered through it again, so an instance that is stopped there is not restarted on every poll. A remote that cannot be reached is tried again after 0.5 s, then less often, up to every 5 seconds (was 2 s up to once a minute), and a page's read that arrives when a retry is due within 3 seconds makes it then and waits up to 3 seconds for it. A11-270.
