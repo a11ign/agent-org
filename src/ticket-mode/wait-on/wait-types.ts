@@ -58,8 +58,14 @@ export function waitKey(wait: Wait): string {
 /** The longest ask a card or a prompt quotes. */
 const ASK_CHARS = 80;
 
-/** An ask as the card and the wake prompt quote it: cut to {@link ASK_CHARS} characters. PURE. */
-export const askCut = (ask: string): string => (ask.length > ASK_CHARS ? `${ask.slice(0, ASK_CHARS)}...` : ask);
+/** Text on one line: every run of white space, a new line among it, becomes one space. The wake prompt is typed into a pane, where a new line submits it early. PURE. */
+export const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/** An ask as the card and the wake prompt quote it: on one line, cut to {@link ASK_CHARS} characters. PURE. */
+export const askCut = (ask: string): string => {
+  const line = oneLine(ask);
+  return line.length > ASK_CHARS ? `${line.slice(0, ASK_CHARS)}...` : line;
+};
 
 /** What an item is, in the words the card and the wake prompt use for it: `fleet job fj-1`, `CI run owner/repo#9`, `pull request <address>`, `ticket A11-1`, `the person's session: <ask>`. PURE. */
 export function subjectOf(wait: Wait): string {

@@ -1,6 +1,6 @@
 // A leaf of ticket mode, run by no command: whether a worker's declared wait is over, and what the board tells it when it is (A11-245). PURE. All items finished: the wait is finished. Any item failed: the wait is failed at once, with the others still
 // pending. Otherwise it is pending. An item the board could not read counts as pending, so a flaky read never wakes a worker with a false alarm.
-import { type Reading, type Wait, askCut, subjectOf } from "./wait-types.ts";
+import { type Reading, type Wait, askCut, oneLine, subjectOf } from "./wait-types.ts";
 
 /** Where a wait stands, with the words for the prompt: `lines` has one per item (the failures first, then the rest), `reason` is the first failure's, and `ended` the items that are over, which a repeat guard compares a new declaration to. */
 export type Verdict =
@@ -30,7 +30,7 @@ export function lineOf(reading: Reading): string {
     if (pull.review !== null) return `${subject} has ${pull.review === "APPROVED" ? "an approving review" : "a review asking for changes"} on its current head`;
     return `${subject} is still open${reading.wait.until === "reviewed" ? " and has no review on its current head" : ""}`;
   }
-  if ("result" in reading) return reading.result === null ? `${subject} has not answered yet` : `the person's session answered "${askCut(reading.wait.ask)}": ${reading.result}`;
+  if ("result" in reading) return reading.result === null ? `${subject} has not answered yet` : `the person's session answered "${askCut(reading.wait.ask)}": ${oneLine(reading.result)}`;
   return `${subject} is ${reading.status === "finished" ? "done" : reading.status === "failed" ? "canceled" : `not done (${reading.stateType})`}`;
 }
 

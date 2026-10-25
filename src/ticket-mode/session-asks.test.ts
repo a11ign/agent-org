@@ -158,11 +158,10 @@ test("A11-275: a run whose ask has an answer is not listed, nor is one already w
   assert.equal((await everyAsk()).asks.length, 1, "an answer to an earlier declaration of the same words is not this one's");
 });
 
-test("A11-275: ?since lists only the waiting runs declared after the read, oldest first", async () => {
+test("A11-275: waiting runs are listed oldest first, and ?since does not hide one: its sentAt is when the worker wrote, which can be before a read that had not yet seen it", async () => {
   const { everyAsk } = board(emptyChecks(), queueOf({ "A11-1": waitingOn(ASK, 3_000), "A11-2": waitingOn("another ask", 1_000), "A11-3": waitingOn(ASK, 8_000) }));
   assert.deepEqual((await everyAsk()).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-2", "A11-1", "A11-3"]);
-  assert.deepEqual((await everyAsk(3_000)).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-3"]);
-  assert.deepEqual((await everyAsk(8_000)).asks, []);
+  assert.deepEqual((await everyAsk(8_500)).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-2", "A11-1", "A11-3"], "a read at 8,500 still lists the run that wrote at 3,000 and was first seen later");
 });
 
 test("A11-275: a batch is one run, listed once under its first ticket; one run with two asks lists both", async () => {
@@ -170,11 +169,23 @@ test("A11-275: a batch is one run, listed once under its first ticket; one run w
   assert.deepEqual((await everyAsk()).asks.map((ask) => ask.kind === "waiting-run" && [ask.key, ask.ask]), [["A11-1", "first"], ["A11-1", "second"], ["A11-2", "third"]]);
   const queued = queueOf({ "A11-1": waitingOn(ASK, 1_000), "A11-2": waitingOn(ASK, 1_000) });
   const batched: Queue = { ...queued, entries: queued.entries.map((entry) => ({ ...entry, batch: "b1" })) };
-  assert.deepEqual((await board(emptyChecks(), batched).everyAsk()).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-1"]);
+  const { everyAsk: batchAsks, dir } = board(emptyChecks(), batched);
+  assert.deepEqual((await batchAsks()).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-1"]);
+  writeFileSync(sessionAnswersPath(dir), JSON.stringify({ answers: [{ key: "A11-2", ask: ASK, at: 1_000, result: "ok", answeredAt: 1_500 }] }));
+  assert.deepEqual((await batchAsks()).asks, [], "an answer posted under another ticket of the batch answers the batch's ask");
 });
 
-test("A11-275: a file of answers that cannot be read makes the queue throw, not list nothing", async () => {
-  const { dir, api } = board(emptyChecks(), queueOf({ "A11-1": waitingOn(ASK, 1_000) }));
+test("A11-275: a file of answers that cannot be read makes the queue throw, not list nothing, and marks no After-merge check sent", async () => {
+  const seeded = seedChecks(emptyChecks(), [run("A11-235", [LINE])], 1_000, planned("A11-235", [{ line: LINE, runner: "session", evidence: "one line" }]));
+  const { dir, api, path } = board(seeded, queueOf({ "A11-1": waitingOn(ASK, 1_000) }));
   writeFileSync(sessionAnswersPath(dir), "not json");
   await assert.rejects(async () => api("GET", "/api/session-asks", {}, new URLSearchParams()), SyntaxError);
+  assert.equal(loadChecks(path).checks["A11-235#1"].sentAt, undefined, "the check was not marked sent for a listing the session never got");
+});
+
+test("A11-275: with no run waiting on the session the answers file is never read, so a bad one cannot break the After-merge queue", async () => {
+  const seeded = seedChecks(emptyChecks(), [run("A11-235", [LINE])], 1_000, planned("A11-235", [{ line: LINE, runner: "session", evidence: "one line" }]));
+  const { dir, asks } = board(seeded, queueOf({ "A11-4": { reason: "r", at: 2_000, waits: [{ kind: "fleetJob", id: "fj-1" }] } }));
+  writeFileSync(sessionAnswersPath(dir), "not json");
+  assert.deepEqual((await asks()).asks.map(({ id }) => id), ["A11-235#1"]);
 });

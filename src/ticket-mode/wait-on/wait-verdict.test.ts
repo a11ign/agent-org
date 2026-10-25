@@ -97,3 +97,8 @@ test("A11-275: an ask over 80 characters is cut in the line, and the result is n
   const [line] = judgeWaits([{ wait: { kind: "session", ask: long }, status: "finished", result: "y".repeat(500) }]).lines;
   assert.equal(line, `the person's session answered "${"x".repeat(80)}...": ${"y".repeat(500)}`);
 });
+
+test("A11-275: the line a worker is woken with is one line however many the ask and the result were written on", () => {
+  const [line] = judgeWaits([{ wait: { kind: "session", ask: "run this\n\non the Mac" }, status: "finished", result: "installed 0.312.0\r\n  second line\n" }]).lines;
+  assert.equal(line, "the person's session answered \"run this on the Mac\": installed 0.312.0 second line");
+});

@@ -57,28 +57,38 @@ export function resultOf(file: AnswersFile, keys: readonly string[], ask: string
 export const sessionResultsFrom = (stateDir: string, keys: readonly string[], at: number): ((ask: string) => string | null) =>
   (ask) => resultOf(loadAnswers(sessionAnswersPath(stateDir)), keys, ask, at);
 
-/** A run waiting on one ask of the session: the ticket, where it is, its pull requests, the ask, and when the worker declared it. */
-export type WaitingRun = Readonly<{ key: string; url: string; pullRequests: readonly string[]; ask: string; at: number }>;
+/** A run waiting on one ask of the session: the ticket it is named by, every ticket of the run (a batch has several), where it is, its pull requests, the ask, and when the worker declared it. */
+export type WaitingRun = Readonly<{ key: string; keys: readonly string[]; url: string; pullRequests: readonly string[]; ask: string; at: number }>;
 
 /** Whether a note is a wait still on: its worker has not been woken for it, it is not marked stalled, and the board reads it (a repeat is not read). */
 const stillWaiting = (note: WorkingNote): boolean => note.woke === undefined && note.stalled !== true && note.repeat !== true;
 
 const pullRequestsOf = (entry: Entry): string[] => (entry.review ?? (entry.outcome !== undefined && "prs" in entry.outcome ? entry.outcome.prs : [])).map(({ url }) => url);
 
+/** The entries of the queue that make up one run each: a batch's tickets together, named by the first, and every other ticket alone. PURE. */
+function runsOf(queue: Queue): Entry[][] {
+  const batches = new Map<string, Entry[]>();
+  const runs: Entry[][] = [];
+  for (const entry of queue.entries) {
+    const members = entry.batch === undefined ? undefined : batches.get(entry.batch);
+    if (members !== undefined) members.push(entry);
+    else runs.push(entry.batch === undefined ? [entry] : batches.set(entry.batch, [entry]).get(entry.batch)!);
+  }
+  return runs;
+}
+
 /** The asks of the session that the queue's runs wait on, one for each ask of each run (a batch is one run, named by its first ticket), in the order declared. PURE. */
 export function waitingRuns(queue: Queue): WaitingRun[] {
-  const seen = new Set<string>();
-  return queue.entries.flatMap((entry) => {
-    const note = entry.working;
-    const run = entry.batch ?? entry.ticket.key;
-    if (note === undefined || !stillWaiting(note) || seen.has(run)) return [];
-    seen.add(run);
-    return (note.waits ?? []).flatMap((wait) => wait.kind === "session" ? [{ key: entry.ticket.key, url: entry.ticket.url, pullRequests: pullRequestsOf(entry), ask: wait.ask, at: note.at }] : []);
+  return runsOf(queue).flatMap(([first, ...rest]) => {
+    const note = first.working;
+    if (note === undefined || !stillWaiting(note)) return [];
+    const keys = [first, ...rest].map((member) => member.ticket.key);
+    return (note.waits ?? []).flatMap((wait) => wait.kind === "session" ? [{ key: first.ticket.key, keys, url: first.ticket.url, pullRequests: pullRequestsOf(first), ask: wait.ask, at: note.at }] : []);
   });
 }
 
-/** The asks the session has not answered yet. PURE. */
-export const unansweredRuns = (queue: Queue, file: AnswersFile): WaitingRun[] => waitingRuns(queue).filter((run) => resultOf(file, [run.key], run.ask, run.at) === null);
+/** The asks the session has not answered yet, by any ticket of the run. PURE. */
+export const unansweredRuns = (queue: Queue, file: AnswersFile): WaitingRun[] => waitingRuns(queue).filter((run) => resultOf(file, run.keys, run.ask, run.at) === null);
 
 const ROUTE = /^\/api\/session-asks\/([A-Za-z0-9_-]+)\/answer$/;
 

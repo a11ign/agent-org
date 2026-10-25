@@ -9,7 +9,7 @@ import { roleOf, type CheckRecord, type ChecksFile } from "./after-merge/checks.
 import { markSent, sentToSession } from "./after-merge/dispatch.ts";
 import { afterMergeChecksPath, changeChecks } from "./after-merge/store.ts";
 import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
-import { loadAnswers, sessionAnswersPath, unansweredRuns } from "./session-answers.ts";
+import { type AnswersFile, loadAnswers, sessionAnswersPath, unansweredRuns, waitingRuns } from "./session-answers.ts";
 
 /** What an After-merge check asks of the session when its plan does not say what would close it. */
 export const DEFAULT_CHECK_EVIDENCE = "one line saying what you saw, and where";
@@ -46,7 +46,7 @@ export type WaitingRunAsk = Readonly<{
   answer: string;
 }>;
 
-/** One thing the board asks the session to do. */
+/** One thing the board asks the session to do. In a listing, the After-merge checks come first and the waiting runs after them, each oldest first. */
 export type SessionAsk = AfterMergeAsk | WaitingRunAsk;
 
 /** What `GET /api/session-asks` answers: the board's clock as it listed them, which a session's next read passes as `since`, and the asks, oldest first. */
@@ -70,9 +70,12 @@ export function afterMergeAsks(file: ChecksFile, since?: number): AfterMergeAsk[
 /** The route a waiting run's result is posted to: `/api/session-asks/<KEY>/answer`. PURE. */
 export const answerRouteOf = (key: string): string => `/api/session-asks/${key}/answer`;
 
-/** The asks the runs of `queue` make of the session that it has not answered, oldest first; only those declared after `since` when it is given. PURE. */
-export function waitingRunAsks(queue: Queue, answers: Parameters<typeof unansweredRuns>[1], since?: number): WaitingRunAsk[] {
-  return unansweredRuns(queue, answers).filter(({ at }) => since === undefined || at > since).sort((a, b) => a.at - b.at)
+/**
+ * The asks the runs of `queue` make of the session that it has not answered, oldest first. `?since` does not filter them: `sentAt` is when the worker wrote its outcome, which can be earlier than a read the board had not yet
+ * seen it at, so a read since then would never list the ask; every open ask is listed until it is answered. PURE.
+ */
+export function waitingRunAsks(queue: Queue, answers: AnswersFile): WaitingRunAsk[] {
+  return unansweredRuns(queue, answers).sort((a, b) => a.at - b.at)
     .map((run) => ({ kind: "waiting-run", key: run.key, url: run.url, pullRequests: run.pullRequests, ask: run.ask, sentAt: run.at, answer: answerRouteOf(run.key) }));
 }
 
@@ -88,15 +91,16 @@ function sinceOf(query: URLSearchParams): number | undefined {
 export type SessionAsksBoard = Readonly<{ stateDir: string; now: () => number; queue: () => Queue }>;
 
 /**
- * `GET /api/session-asks`: every open After-merge check the session runs, each sent (`sentAt` set) the first time it is listed, so that is when the board sent it; then every ask a run waits on the session for, sent when its
- * worker declared it (listing it writes nothing). Undefined when the request names another route. A checks or answers file that cannot be read THROWS, as the close route does: listed as empty, the session would be told it has
+ * `GET /api/session-asks`: every open After-merge check the session runs, each sent (`sentAt` set) the first time it is listed, so that is when the board sent it; then every ask a run waits on the session for that is not answered, sent when its
+ * worker declared it (listing it writes nothing, and `since` does not filter it). Undefined when the request names another route. A checks or answers file that cannot be read THROWS, as the close route does: listed as empty, the session would be told it has
  * nothing to run.
  */
 export function sessionAsksRoute(board: SessionAsksBoard, method: string, path: string, query: URLSearchParams): [number, SessionAsksView] | undefined {
   if (method !== "GET" || path !== "/api/session-asks") return undefined;
   const since = sinceOf(query);
   const at = board.now();
+  // Read before any check is marked sent: a file that cannot be read must not leave checks sent that the session never saw. A queue with no run waiting on the session never reads it.
+  const waiting = waitingRuns(board.queue()).length === 0 ? [] : waitingRunAsks(board.queue(), loadAnswers(sessionAnswersPath(board.stateDir)));
   const file = changeChecks(afterMergeChecksPath(board.stateDir), (before) => markSent(before, at));
-  const waiting = waitingRunAsks(board.queue(), loadAnswers(sessionAnswersPath(board.stateDir)), since);
   return [200, { at, asks: [...afterMergeAsks(file, since), ...waiting] }];
 }
