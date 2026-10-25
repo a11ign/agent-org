@@ -156,3 +156,24 @@ test("an ssh connection is reached through its tunnel, as its own host on the re
   assert.deepEqual(forgot, ["personal"]);
   await assert.rejects(connections.reach("gone"), /no connection gone/);
 });
+
+test("A11-270: restart opens only an ssh connection's tunnel again, from the one the request failed on, and reaches any other as it is", async () => {
+  const restarted: [string, string][] = [];
+  const remotes = {
+    reach: async () => ({ port: 4747, key: KEY, terminal: null, socket: "/private/s1/board.sock", terminalLocal: 50001 }),
+    restart: async (name: string, socket: string) => { restarted.push([name, socket]); return { port: 4747, key: KEY, terminal: null, socket: "/private/s2/board.sock", terminalLocal: 50009 }; },
+    forget: () => {},
+    close: () => {},
+  } as unknown as Remotes;
+  const personal: Connection = { name: "personal", kind: "ssh", ssh: "agents", agentOrg: "agent-org" };
+  const connections = createConnections([personal, ...ON_THIS_MACHINE], { local: { port: 4747, keyPath: keyFile(0o600) }, remotes });
+  const failed = await connections.reach("personal");
+  const reopened = await connections.restart("personal", failed);
+  assert.deepEqual(restarted, [["personal", "/private/s1/board.sock"]]);
+  assert.deepEqual([reopened.host, reopened.address], ["127.0.0.1:4747", { socket: "/private/s2/board.sock" }]);
+  assert.equal(reopened.terminal("http://127.0.0.1:7318/?ws={workspace}"), "http://127.0.0.1:50009/?ws={workspace}", "the terminal through the new tunnel");
+  const local = await connections.restart("local", await connections.reach("local"));
+  assert.deepEqual(local.address, { origin: "http://127.0.0.1:4747" });
+  assert.equal(restarted.length, 1, "this machine's instance has no tunnel to open again");
+  await assert.rejects(connections.restart("gone", failed), /no connection gone/);
+});
