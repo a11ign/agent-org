@@ -14,6 +14,7 @@ import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, folderClaimMisses, folderClaimR
 import { type PlanStamp, stampedPlan, urlsNamedIn } from "./plan-stamp.ts";
 import { descriptionHash, ticketReadOf, type TicketRead } from "./ticket-read.ts";
 import { type Move, plannedMoves, withMoves } from "./after-merge-move.ts";
+import { afterMergeChecksRefusal } from "./after-merge/plan-section.ts";
 import { dateOf } from "./pool-answer.ts";
 import { recordAnswer } from "./queue/queue-answer.ts";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, recordPullStates, unpark } from "./queue/queue-transitions.ts";
@@ -200,7 +201,8 @@ type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly strin
 /**
  * The files a planning run left in `planDir` to attach, and the Before-merge lines the plan moves to After merge (A11-275), or why they cannot be. Only plain markdown files are taken: a planning run is
  * unattended, so a link in its folder could point the board at a secret it would then upload. A plan that claims a folder another queued or running ticket writes into is refused, naming the narrower paths (A11-212),
- * and so is a move the board cannot write: a line the ticket does not hold under `### Before merge`, a reason that is not one of the three, or a missing or over-long `who`.
+ * and so is a move the board cannot write: a line the ticket does not hold under `### Before merge`, a reason that is not one of the three, or a missing or over-long `who`. So is a plan that leaves an After-merge line
+ * naming nobody out of its `## After-merge checks` section, or names a runner there the board cannot record (A11-277).
  */
 function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false, description, screen }: PlanChecks = {}): { files: string[]; moves: Move[] } | { refusal: string } {
   const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
@@ -223,6 +225,9 @@ function planFiles(planDir: string, { given = [], retried = [], claims = [], cla
   const planned = description ?? screen?.description;
   const moved = planned === undefined ? { moves: [] } : plannedMoves(texts, planned);
   if ("refusal" in moved) return moved;
+  // Each After-merge line that names nobody to run it is given a runner by the plan, and every runner the plan names is one the board can send a check to (A11-277).
+  const checks = planned === undefined ? null : afterMergeChecksRefusal(texts, planned, moved.moves);
+  if (checks !== null) return { refusal: checks };
   // A claims file that is there and cannot be read is no list of nothing: the plan is not attached unchecked.
   if (claimsProblem !== undefined) return { refusal: claimsProblem };
   const folders = folderClaimMisses(texts.flatMap(planClaimPaths), claims);

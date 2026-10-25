@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ESCALATION_RULE } from "./escalation.ts";
 import { MOVE_RULE } from "./after-merge-move.ts";
+import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
 import { outcomeExamples } from "./outcome.ts";
 import type { WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
@@ -159,6 +160,17 @@ test("A11-275: both planner briefs tell the planner to move a Before-merge line 
     assert.match(brief, /`## Moved to After merge`, one bullet per line/);
   }
   assert.ok(!work.includes(MOVE_RULE), "a worker is briefed with the ticket the board already rewrote");
+});
+
+test("A11-277: both planner briefs tell the planner to name each After-merge line's runner in a `## After-merge checks` section, and the worker's brief does not", () => {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.ok(brief.includes(AFTER_MERGE_CHECKS_RULE), "the rule, whole");
+    assert.match(brief, /list them in a plan section `## After-merge checks`, one bullet per line/);
+  }
+  assert.ok(!work.includes(AFTER_MERGE_CHECKS_RULE), "a worker is briefed with the plan the rule shaped");
 });
 
 test("A11-174, A11-209: every unattended brief says to guard variable paths with ${VAR:?}, and that its subagents inherit the rule", () => {
