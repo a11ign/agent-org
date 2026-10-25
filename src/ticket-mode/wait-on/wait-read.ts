@@ -108,7 +108,7 @@ function readCiRun(wait: CiRunWait, seams: WaitSeams): Reading {
 }
 
 /** The newest approving or change-requesting review on the head the state names, or null when there is none. A review of an older head is not a review of this one. */
-function reviewOnHead(state: ReviewState): PullFacts["review"] {
+export function reviewOnHead(state: ReviewState): PullFacts["review"] {
   const onHead = state.reviews.filter((review) => review.commit === state.head && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED")).sort((a, b) => b.at - a.at);
   return (onHead[0]?.state as PullFacts["review"]) ?? null;
 }

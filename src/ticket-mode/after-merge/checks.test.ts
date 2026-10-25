@@ -2,7 +2,7 @@
 // A11-277: After-merge checks are records of their own, with a runner, closed with evidence
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ageOf, claimPost, CLOSED_KEPT_MS, closeCheck, closeComment, decideFollowUp, emptyChecks, EVIDENCE_CHARS, followUpText, listedIds, markUnpostable, pruneChecks, releasePost, roleOf, runnerOf, seedChecks, type ChecksFile } from "./checks.ts";
+import { ageOf, claimPost, CLOSED_KEPT_MS, closeCheck, closeComment, decideFollowUp, emptyChecks, EVIDENCE_CHARS, followUpText, listedIds, markUnpostable, pruneChecks, releasePost, roleOf, runnerOf, seedChecks, ticketsToSeed, type ChecksFile } from "./checks.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const run = (key: string, lines: readonly string[], finishedAt?: number) => ({
@@ -121,4 +121,20 @@ test("A11-277: a ticket run again and merged after its check was closed lists it
   const posted = claimPost(done, "A11-145#1");
   assert.deepEqual([seedChecks(posted, [again], 4_000).checks["A11-145#1"].state, seedChecks(posted, [again], 4_000).checks["A11-145#1"].listedAt], ["open", 3_000]);
   assert.equal(seedChecks(posted, [first], 4_000), posted, "the run that listed it before does not list it again");
+});
+
+test("A11-277: a line its plan names takes the plan's runner, escalation item, watch from the seeding and evidence, a moved line matched by the Before-merge line it was, and the last bullet decides", () => {
+  const moved = "A real update installs the UI. Chairman session, after merge (moved by the planner: it needs a published release).";
+  const runs = [run("A11-260", ["The next major arrives as a ticket.", moved, "The chairman: the note is posted."], 1_000)];
+  const planned = new Map([["A11-260", [
+    { line: "The next major arrives as a ticket.", runner: "session", evidence: "an earlier bullet" },
+    { line: "The next major arrives as a ticket.", runner: "board", observe: { kind: "sweep-ticket" }, evidence: "the ticket the sweep files" },
+    { line: "A real update installs the UI.", runner: "session", evidence: "the update's log" },
+  ] as const]]);
+  const seeded = seedChecks(emptyChecks(), runs, 9_000, planned).checks;
+  assert.deepEqual([seeded["A11-260#1"].runner, seeded["A11-260#1"].observe, seeded["A11-260#1"].evidence], ["board", { spec: { kind: "sweep-ticket" }, from: 9_000 }, "the ticket the sweep files"]);
+  assert.deepEqual([seeded["A11-260#2"].runner, seeded["A11-260#2"].evidence], ["session", "the update's log"]);
+  assert.deepEqual([seeded["A11-260#3"].runner, "evidence" in seeded["A11-260#3"]], ["person", false], "a line the plan does not name runs as its owner says");
+  assert.deepEqual([...ticketsToSeed(emptyChecks(), runs)], ["A11-260"]);
+  assert.deepEqual([...ticketsToSeed({ checks: seeded }, runs)], [], "a ticket whose lines are all seeded needs no plan read");
 });

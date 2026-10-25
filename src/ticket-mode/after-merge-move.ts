@@ -90,9 +90,14 @@ const indentOf = (text: string): number => text.length - text.trimStart().length
 /** The line without the full stop it ends with, so the owner's sentence follows it. PURE. */
 const sentenceOf = (line: string): string => line.trim().replace(/\.$/, "");
 
+/** Whether `afterMerge`, a line of a ticket's After-merge part, is one the board moved there, which names who runs it. PURE. */
+export const isBoardMoved = (afterMerge: string): boolean => afterMerge.includes(MOVED_MARK);
+
+/** Whether `afterMerge`, a line of a ticket's After-merge part, is the Before-merge `line` as the board moved it (A11-277 matches a plan's quote of the line it moved by this). PURE. */
+export const isMovedLine = (afterMerge: string, line: string): boolean => afterMerge.startsWith(`${sentenceOf(line)}. `) && isBoardMoved(afterMerge);
+
 /** Whether the ticket's After-merge part holds `line` as the board moves one. PURE. */
-const alreadyMoved = (lines: readonly Line[], line: string): boolean =>
-  bulletsOf(lines, partOf(lines, AFTER_MERGE)).some(({ text }) => text.startsWith(`${sentenceOf(line)}. `) && text.includes(MOVED_MARK));
+const alreadyMoved = (lines: readonly Line[], line: string): boolean => bulletsOf(lines, partOf(lines, AFTER_MERGE)).some(({ text }) => isMovedLine(text, line));
 
 /** One bullet of the plan's section read as a move, or why it is not one. PURE. */
 function moveOf(bullet: string): Move | string {
