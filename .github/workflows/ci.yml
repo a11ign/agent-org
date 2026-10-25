@@ -316,7 +316,7 @@ jobs:
       contents: read
     env:
       PNPM_VERSION: 10.34.5
-      CHANGESETS_VERSION: 3.0.1
+      CHANGESETS_VERSION: 3.0.3
     steps:
       - uses: actions/checkout@v7
         with:

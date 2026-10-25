@@ -24,6 +24,8 @@ export type ShellValue = Readonly<{
   connections: readonly ViewConnection[];
   /** The reads of the instance shown: what a page calls to change something (queue a ticket, start a Grill) and to read what the shell does not. */
   client: Client;
+  /** The `fetch` the client sends with: the browser's, or a test's stand-in. A read the client has no method for (the loop line's `/api/health`) sends with it too. */
+  fetch: Fetch;
   /** The instance the whole UI is showing: null while the list is not read, and when it is empty (the reads then go to `/api/*` at the root). */
   connection: ViewConnection | null;
   /** Why the connections file was refused, in the service's own sentence, or null. */
@@ -72,11 +74,12 @@ export type ShellValue = Readonly<{
 }>;
 
 const noop = () => undefined;
+const browserFetch: Fetch = (...args) => globalThis.fetch(...args);
 const LOADING_VIEW = { state: "loading", data: null, refusal: null, cached: false, refresh: noop } as const;
 
 /** The shell as it is before anything is read: nothing chosen, everything loading. */
 const LOADING_SHELL: ShellValue = {
-  connectionsReady: false, client: createClient(null), connections: [], connection: null, connectionsRefusal: null, switchConnection: noop, retryConnections: noop,
+  connectionsReady: false, client: createClient(null), fetch: browserFetch, connections: [], connection: null, connectionsRefusal: null, switchConnection: noop, retryConnections: noop,
   queue: LOADING_VIEW, update: NO_UPDATE, unreachable: null, reconnected: false, checkNow: noop, config: null, tickets: LOADING_VIEW, scope: scopeOf(null, null), chooseScope: noop, readingScope: null, scopesRead: new Set(), held: null, allTickets: [], contextParents: [],
   runningRuns: null, ticketCount: null, projects: [], project: null, chooseProject: noop, goals: [], goal: ALL_GOALS_ID, chooseGoal: noop, projectTickets: [],
 };
@@ -181,7 +184,7 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const projectTickets = inProject(tickets.data ?? [], project);
   const goals = goalEntries(projectTickets);
   const value: ShellValue = {
-    connectionsReady: true, client, connections: listing.connections, connection, connectionsRefusal: listing.refusal, switchConnection, retryConnections,
+    connectionsReady: true, client, fetch: fetchWith ?? browserFetch, connections: listing.connections, connection, connectionsRefusal: listing.refusal, switchConnection, retryConnections,
     queue, update, unreachable, reconnected, checkNow, config: config.data, tickets, scope, held: reads.held, allTickets, readingScope: reads.reading, scopesRead: reads.read,
     chooseScope: (next) => {
       setScopeChoice(next);

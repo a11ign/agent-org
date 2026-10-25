@@ -150,7 +150,7 @@ test("positive control: each copy with ONE thing broken is refused by the proper
     ["inputs", "another gate check, one that ci.yml has", (w) => { inputsOf(w)["gate-check"] = "typecheck"; }],
     ["inputs", "another node", (w) => { inputsOf(w)["node-version"] = "22"; }],
     ["inputs", "no pnpm-version", (w) => { delete inputsOf(w)["pnpm-version"]; }],
-    ["inputs", "a changesets version the script does not run", (w) => { inputsOf(w)["changesets-version"] = "3.0.3"; }],
+    ["inputs", "a changesets version the script does not run", (w) => { inputsOf(w)["changesets-version"] = "2.0.0"; }],
     ["inputs", "a dist-tag", (w) => { inputsOf(w)["dist-tag"] = "next"; }],
   ];
   for (const [owner, what, mutate] of mutants) {

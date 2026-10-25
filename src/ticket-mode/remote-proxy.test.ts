@@ -283,6 +283,16 @@ test("A11-195: a path nothing was read from has no last known, and a read with a
   }
 });
 
+test("A11-282: an SSH connection's health is passed on but never kept, since it changes on every read and is polled", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
+  const up = fixed(overSsh("/s"));
+  const instance = flaky({ loop: { board: { p99Ms: 4 } } });
+  const request = { method: "GET", path: "/api/health", body: null };
+  assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [200, { loop: { board: { p99Ms: 4 } } }]);
+  instance.state.down = true;
+  assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE }]);
+});
+
 test("A11-195: a local or https connection, a POST, a refusal and a body that is not JSON are neither kept nor recalled", async () => {
   const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
   const read = { method: "GET", path: "/api/tickets", body: null };

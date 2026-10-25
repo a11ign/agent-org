@@ -81,7 +81,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged", "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "readBranchCi answers null for a repository it cannot read", "readBranchCi reads a branch's workflow runs with each job's runner labels and times", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "closePull throws for an address that is no pull request, so no caller reads a refusal as a close", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "readBranchCi answers null for a repository it cannot read", "readBranchCi reads a branch's workflow runs with each job's runner labels and times", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -274,6 +274,22 @@ test("A11-215: the fake answers an update of a branch as the test says, records 
   assert.equal(host.updateBranch!(missing, "h").kind, "refused");
   assert.deepEqual(host.branchUpdates.asked.map(({ url, expectedHead }) => [url, expectedHead]), [[held, "h7"], [held, "h7"], [missing, "h"]]);
   assert.ok(host.calls.includes(`updateBranch ${held} h7`), "and it is in the calls");
+});
+
+test("A11-248: the fake closes a pull request with its comment, reads it as closed, refuses as the test says, and throws for one it does not hold", () => {
+  const { host } = seeded();
+  const held = fakePullUrl("owner/repo", 7);
+  host.closePull!(held, "empty");
+  assert.equal(host.readPullState(held), "CLOSED", "the close reads back");
+  assert.deepEqual(host.closes.closed, [{ url: held, comment: "empty" }]);
+  host.closePull!(held, "again");
+  assert.equal(host.closes.closed.length, 1, "a pull request closed already is no error, and gets no second comment");
+  assert.ok(host.calls.includes(`closePull ${held}`), "and the asks are in the calls");
+  const other = host.seedPull("owner/repo", 20).url;
+  host.closes.refusals.set(other, "Resource not accessible by integration");
+  assert.throws(() => host.closePull!(other, "empty"), { message: "Resource not accessible by integration" });
+  assert.equal(host.readPullState(other), "OPEN", "a refusal closes nothing");
+  assert.throws(() => host.closePull!(fakePullUrl("owner/repo", 999), "empty"), { message: /no pull request/ });
 });
 
 const CI_CHECKS = ["readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs"];

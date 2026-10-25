@@ -534,6 +534,13 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(isObject(answer) && answer.kind === "refused" && isString(answer.reason) && answer.reason !== "", "updateBranch must answer { kind: \"refused\", reason } for what is no pull request of the host, not throw or say it updated");
     },
   },
+  "closePull throws for an address that is no pull request, so no caller reads a refusal as a close": {
+    applies: ({ host }) => typeof host.closePull === "function",
+    reason: "the code host has no closePull, which is optional (contract 1.22)",
+    run: ({ host }) => {
+      expect(throws(() => host.closePull!("not a pull request", "closed by the conformance suite")), "closePull must throw for what is no pull request of the host, not answer as if it had closed it");
+    },
+  },
   "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked": {
     applies: ({ host }) => typeof host.stackMergeFactsOf === "function",
     reason: "the code host has no stackMergeFactsOf, which is optional (contract 1.16)",
