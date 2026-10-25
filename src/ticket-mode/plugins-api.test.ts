@@ -15,7 +15,10 @@ const MANIFEST = `${CACHE}/.claude-plugin/plugin.json`;
 const BLOCKS = { tracker: { provider: "linear", enabled: true }, codeHost: { provider: "github", enabled: true }, exposure: { provider: "tailscale", port: 5000 } };
 const declared = (needs: object = {}) => JSON.stringify({ name: "a11ign", metadata: { agentOrg: { contract: "1.0", agentOrg: ">=0.0.0 <1.0.0", provides: { writer: { skill: "a11ign:create-ticket" } }, needs } } });
 
-/** The page's API over a scratch host file that lists `plugins`, with Claude Code's install record holding `record` and the plugin's manifest `manifest`. */
+/**
+ * The page's API over a scratch host file that lists `plugins`, with Claude Code's install record holding `record` and the plugin's manifest `manifest`. An action that releases a plugin's
+ * serve (disabling the exposure) is released by a stand-in, which notes it in `released`: no test reaches the machine's own `tailscale` (A11-270).
+ */
 function apiOver(host: Record<string, unknown>, claude: Readonly<{ record?: unknown; manifest?: string; onPath?: boolean }> = {}, seam: PluginsSeam = {}) {
   const dir = tmpDir("plugins-api-");
   const hostPath = join(dir, "host.json");
@@ -23,14 +26,16 @@ function apiOver(host: Record<string, unknown>, claude: Readonly<{ record?: unkn
   write(host);
   const files: Record<string, string> = { [RECORD]: JSON.stringify(claude.record ?? { version: 2, plugins: {} }), ...(claude.manifest === undefined ? {} : { [MANIFEST]: claude.manifest }) };
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets: { providers: BLOCKS } });
+  const released: string[] = [];
   const api = pluginsApi({ hostPath, settings, seam: {
+    outgoing: async (plugin) => ({ machineName: null, release: () => { released.push(plugin.name); return { ok: true, detail: "" }; } }),
     load: async () => ({ loaded: [], unbuilt: [], refusals: [] }),
     messaging: { state: async () => ({ provider: null, why: "off" }) as const, checks: async () => [] },
     version: "v1.2.3",
     claude: { record: RECORD, read: (path) => { if (path in files) return files[path]; throw new Error(`ENOENT: ${path}`); }, exists: (path) => path === CACHE, onPath: () => claude.onPath ?? true, agentOrgVersion: () => "0.300.0" },
     ...seam,
   } });
-  return { api, write, hostPath, files };
+  return { api, write, hostPath, files, released };
 }
 const USER_INSTALL = { version: 2, plugins: { "a11ign@m": [{ scope: "user", installPath: CACHE }] } };
 
@@ -176,11 +181,12 @@ test("A11-270: a change to the host file runs the checks again, and the plugins 
 
 test("A11-270: an action runs the checks again once it is done, and its answer is unchanged", async () => {
   const { seam, gate } = gatedSeam({ at: 0 });
-  const { api, hostPath } = apiOver({}, {}, seam);
+  const { api, hostPath, released } = apiOver({}, {}, seam);
   const before = await api.read();
   await finish(gate);
   const done = await api.act({ action: "disable", name: "tailscale", base: before.bases["host.json"] });
   assert.match(done.said, /^disabled tailscale/);
+  assert.deepEqual(released, ["tailscale"], "the stand-in, not the machine, was asked to release the serve");
   await settle();
   assert.equal(gate.runs, 2, "the action started the checks");
   const after = await api.read();
