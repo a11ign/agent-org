@@ -54,6 +54,7 @@ import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
+import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -364,12 +365,13 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
 export type QueueView = ReturnType<typeof queueView>;
 
 /** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
-function queueView(board: Pick<Board, "store" | "pool" | "update">) {
+function queueView(board: Pick<Board, "store" | "pool" | "update" | "settings">) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
   const queue = board.store.get();
-  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading.
-  return { ...queue, entries: queue.entries.map(shownEntry), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update() };
+  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
+  return { ...queue, entries: queue.entries.map(shownEntry), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
+    afterMergeChecks: afterMergeView(board.settings.stateDir) };
 }
 
 /**
@@ -712,6 +714,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await settingsEditRoute(board, method, path, body))
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
+    ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 

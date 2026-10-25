@@ -9,9 +9,9 @@ const HELD = { name: "tickets.preflight", reason: "the disk is 97% full", since:
 const MINE = "https://github.com/a11ign/agent-org/pull/1900";
 const MINE_REVIEW = "waiting on a reviewer";
 
-/** Two merged runs, one After-merge line each (one names who runs it, one does not), and a run at work. */
+/** Two merged runs, one After-merge line each (one names who runs it, one does not), which the board lists as open checks, and a run at work. */
 const withAfterMerge = (): RunFields[] => [
-  { ...completed({ key: "A11-70", title: "A merged run", startedAgo: 40 * MINUTE }), afterMerge: [{ line: "Check the release is out", owner: "the chairman" }] },
+  { ...completed({ key: "A11-70", title: "A merged run", startedAgo: 40 * MINUTE }), afterMerge: [{ line: "The chairman: check the release is out", owner: null }] },
   { ...completed({ key: "A11-71", title: "Another merged run", startedAgo: 50 * MINUTE }), afterMerge: [{ line: "Read the dashboard", owner: null }] },
   working({ key: "A11-72", title: "A run at work", startedAgo: 5 * MINUTE }),
 ];
@@ -104,25 +104,25 @@ describe("the After-merge checks list", () => {
     await pageOn(standWith());
     const list = within(screen.getByRole("region", { name: "After-merge checks" }));
     expect(list.getByRole("link", { name: "A11-70" }).getAttribute("href")).toBe("https://linear.app/a11ign/issue/A11-70");
-    expect(list.getByText("Check the release is out", { exact: false })).toBeTruthy();
-    expect(list.getByText("Runs it: the chairman")).toBeTruthy();
+    expect(list.getByText("The chairman: check the release is out", { exact: false })).toBeTruthy();
+    expect(list.getByText(/^Runs it: The chairman · you · /)).toBeTruthy();
     expect(textOf(document.querySelector(".runs-extra-head"))).toBe("After-merge checks2");
   });
 
   it("says when no one is named to run a line", async () => {
     await pageOn(standWith());
-    expect(within(screen.getByRole("region", { name: "After-merge checks" })).getByText("Runs it: owner not named")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "After-merge checks" })).getByText(/^Runs it: owner not named · the session · /)).toBeTruthy();
   });
 
-  it("is not drawn while no run has an After-merge line", async () => {
+  it("is not drawn while no check is open", async () => {
     await pageOn(standWith({ runs: [working({ key: "A11-72", title: "A run at work", startedAgo: 5 * MINUTE })] }));
     expect(screen.queryByRole("region", { name: "After-merge checks" })).toBeNull();
   });
 
-  it("is not narrowed by the rail's status filter, and follows the runs rather than the rows drawn", async () => {
+  it("is not narrowed by the rail's status filter, and follows the checks rather than the rows drawn", async () => {
     await pageOn(standWith());
     fireEvent.click(rail().getByRole("button", { name: /^Failed/ }));
-    expect(within(screen.getByRole("region", { name: "After-merge checks" })).getByText("Runs it: the chairman")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "After-merge checks" })).getByText(/^Runs it: The chairman · /)).toBeTruthy();
   });
 
   it("is drawn after the Pull requests list, below the runs", async () => {

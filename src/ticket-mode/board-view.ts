@@ -11,6 +11,7 @@
 /** The fields of a ticket the board shows. */
 import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
+import { followUpText, roleOf, type CheckRecord, type ChecksFile } from "./after-merge/checks.ts";
 
 /**
  * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a
@@ -137,16 +138,23 @@ export function unlistedPulls(entries: readonly ViewEntry[], reviews: Readonly<R
   return Object.entries(reviews).filter(([url]) => !listed.has(url)).map(([url, text]) => ({ url, label: pullLabel(url), text }));
 }
 
-/** A line of the board's "After-merge checks" list (A11-173): the ticket it belongs to, with its address when the entry has one, the line, and who runs it. */
-export type AfterMergeCheck = Readonly<{ key: string; url: string | null; line: string; owner: string }>;
+/**
+ * A row of the board's "After-merge checks" list (A11-173, A11-277): an open check, or a failed one whose follow-up is undecided, with its ticket (and the ticket's address when it has one), the line, who runs it
+ * ("owner not named" when the line names no one), the runner the board sends it to, the role a session runs it for, when it was listed, and a failed check's pre-filled follow-up request.
+ */
+export type AfterMergeCheck = Pick<CheckRecord, "id" | "key" | "url" | "line" | "runner" | "listedAt" | "state" | "result"> & Readonly<{ owner: string; role: string | null; followUpText: string | null }>;
 
 /** The words a check says when its line names no one. */
 export const OWNER_NOT_NAMED = "owner not named";
 
 /**
- * The After-merge checks of every run on the board that has listed some (A11-173): one row per line, in the order of the runs, each with who runs it or "owner not named". A row leaves with
- * its run, since the list is read from the runs; there is nothing else to remove it from. PURE.
+ * The After-merge checks the board lists (A11-277): every open check, and every failed one whose follow-up is undecided, oldest first. The checks are records of their own (`after-merge/checks.ts`), so a row
+ * outlives its run and leaves only when its runner closes it. PURE.
  */
-export function afterMergeChecks(entries: readonly ViewEntry[]): AfterMergeCheck[] {
-  return entries.flatMap((entry) => (entry.afterMerge ?? []).map(({ line, owner }) => ({ key: entry.ticket.key, url: entry.ticket.url ?? null, line, owner: owner ?? OWNER_NOT_NAMED })));
+export function afterMergeChecks(file: ChecksFile): AfterMergeCheck[] {
+  const listed = Object.values(file.checks).filter((check) => check.state === "open" || (check.state === "failed" && check.followUp === undefined));
+  return listed.sort((a, b) => a.listedAt - b.listedAt).map((check) => ({
+    id: check.id, key: check.key, url: check.url, line: check.line, runner: check.runner, listedAt: check.listedAt, state: check.state, ...(check.result === undefined ? {} : { result: check.result }),
+    owner: check.owner ?? OWNER_NOT_NAMED, role: roleOf(check.owner), followUpText: check.state === "failed" ? followUpText(check) : null,
+  }));
 }
