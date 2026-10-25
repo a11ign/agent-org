@@ -33,6 +33,11 @@ const stackedRun = (key: string, url: string, blocker: { key: string; branch: st
 /** The run of the bottom member, whose pull request merged. */
 const bottomRun = (): Entry => ({ ticket: { key: "A11-1" }, phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: BOTTOM }] }, pullStates: { [BOTTOM]: "merged" } }) as unknown as Entry;
 
+/** The code host answers that each pull request conflicts with its base. */
+const conflicting = (host: ReturnType<typeof createFakeCodeHost>, ...urls: string[]): void => {
+  for (const url of urls) host.branchUpdates.answers.set(url, { kind: "conflict" });
+};
+
 /**
  * The fake stack of #1 (merged into `main`), #2 above it on #1's branch, and #3 above #2 on #2's branch, a queue with the runs of #1 and #2, and a clock a test moves. `ctx` is the part of the pool's context the sweep reads.
  */
@@ -96,7 +101,7 @@ test("A11-248: a branch the restack moved is not handed to the arm bot in the sa
 
 test("A11-248: a conflict starts the run's conflict round, whose feedback names the stack and the merged member, and the card says so", () => {
   const { host, sweep, run, queue } = world();
-  host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
+  conflicting(host, NEXT);
   sweep();
   assert.deepEqual(host.branchUpdates.asked.length, 1);
   assert.equal(run().phase, "queued", "the run left finished for a round");
@@ -111,7 +116,7 @@ test("A11-248: a conflict starts the run's conflict round, whose feedback names 
 
 test("A11-248: a conflict at the round cap starts no round, and the note says Respond to review starts another", () => {
   const { host, sweep, run } = world({ next: { rounds: 3 } });
-  host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
+  conflicting(host, NEXT);
   sweep();
   assert.equal(run().phase, "finished");
   assert.equal(run().retargets![NEXT], "#2 conflicts with main after #1 merged, and the conflict rounds are used up: Respond to review starts another");
@@ -121,7 +126,7 @@ test("A11-248: a conflict at the round cap starts no round, and the note says Re
 
 test("A11-248: a conflict note is dropped once a round has moved the head", () => {
   const { host, sweep, run } = world({ next: { rounds: 3 } });
-  host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
+  conflicting(host, NEXT);
   sweep();
   host.pullAt(NEXT)!.head = MOVED_HEAD;
   sweep();
@@ -139,8 +144,7 @@ test("A11-248: two conflicting members of one run share one round that names bot
   const second = fakePullUrl(REPOSITORY, 4);
   const { host, sweep, run } = world({ next: { outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: NEXT }, { repo: "agent-org", url: second }] }, pullStates: { [NEXT]: "open", [second]: "open" } } });
   host.seedPull(REPOSITORY, 4, { head: "e".repeat(40), base: BOTTOM_BRANCH });
-  host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
-  host.branchUpdates.answers.set(second, { kind: "conflict" });
+  conflicting(host, NEXT, second);
   sweep();
   assert.equal(host.branchUpdates.asked.length, 2);
   assert.equal(run().rounds, 1, "one round, not one for each");

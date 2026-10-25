@@ -362,14 +362,12 @@ const restackedOnly = (notes: Readonly<Record<string, string>>): Record<string, 
  * What a pull request needs said is its note. One the sweep cannot decide for keeps the restack note it had; one it will never decide for (no stack, no blocker pull request, a code host that cannot) keeps only the note that it was restacked.
  */
 function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, told }: { urls: readonly string[]; bases: Readonly<Record<string, string>>; facts: Map<string, StackMergeFacts | null>; told: { unsupported: boolean } }): RestackSweep {
-  const stack = entry.stackBase;
   const kept = restackNotesOf(entry, urls);
-  const members = stack === undefined ? [] : openPulls(entry).filter((pr) => pr.repo === stack.repo && bases[pr.url] === undefined);
-  const blocker = stack === undefined ? undefined : ctx.store.get().entries.find((e) => e.ticket.key === stack.key);
-  const candidates = stack === undefined || blocker === undefined ? [] : pullsOf(blocker).filter((pr) => pr.repo === stack.repo).map((pr) => pr.url);
-  if (stack === undefined || members.length === 0 || candidates.length === 0 || !canRestack(ctx, told)) return { notes: restackedOnly(kept), moved: new Set(), feedback: [] };
+  const found = restackMembers(ctx, entry, bases);
+  if (found === null || !canRestack(ctx, told)) return { notes: restackedOnly(kept), moved: new Set(), feedback: [] };
   if (!mergeable(entry) || ctx.rebasing.has(entry.ticket.key)) return { notes: kept, moved: new Set(), feedback: [] };
-  const round = !resumesOnConflict(entry) ? "none" : roundsLeft(entry) ? "started" : "capped";
+  const { stack, members, candidates } = found;
+  const round = conflictRoundOf(entry);
   const notes = { ...kept };
   const moved = new Set<string>();
   const feedback: string[] = [];
@@ -382,6 +380,22 @@ function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, tol
     if (decided.feedback !== null) feedback.push(decided.feedback);
   }
   return { notes, moved, feedback };
+}
+
+/** The stack a run is in, its open pull requests in the stack's repository whose base has reached the default branch, and the blocker's pull requests there; null when the run has no stack, no member or no blocker pull request to look at. */
+function restackMembers(ctx: PoolContext, entry: Entry, bases: Readonly<Record<string, string>>): { stack: StackBaseRecord; members: readonly { url: string }[]; candidates: readonly string[] } | null {
+  const stack = entry.stackBase;
+  const blocker = stack === undefined ? undefined : ctx.store.get().entries.find((e) => e.ticket.key === stack.key);
+  if (stack === undefined || blocker === undefined) return null;
+  const members = openPulls(entry).filter((pr) => pr.repo === stack.repo && bases[pr.url] === undefined);
+  const candidates = pullsOf(blocker).filter((pr) => pr.repo === stack.repo).map((pr) => pr.url);
+  return members.length === 0 || candidates.length === 0 ? null : { stack, members, candidates };
+}
+
+/** What a conflict found by the restack earns the run: a conflict round where it resumes on one and has rounds left, none at the cap, and none where the board does not resume it. PURE. */
+function conflictRoundOf(entry: Entry): "started" | "capped" | "none" {
+  if (resumesOnConflict(entry)) return roundsLeft(entry) ? "started" : "capped";
+  return "none";
 }
 
 /** Whether the code host can update a branch and read a stack, which the restack needs. A host that cannot is said so once for the sweep. */
