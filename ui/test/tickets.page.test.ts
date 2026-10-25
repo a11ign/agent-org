@@ -149,7 +149,7 @@ describe("no horizontal overflow, and the captures of the four boards", () => {
     { name: "paused", serving: { stand: ticketsBoardStand({ paused: true }) }, ready: (page) => page.getByText("Workers are paused.").waitFor() },
   ];
 
-  /** The page in `state` at `screen`: measured for overflow, and written as `next-tickets-<state>-<W>x<H>.png` beside the other screenshots. */
+  /** The page in `state` at `screen`: measured for overflow, and written as `tickets-<state>-<W>x<H>.png` beside the other screenshots. */
   async function captured({ name, serving, ready, ticked = [] }: State, screen: (typeof SCREENS)[number]): Promise<void> {
     const context = await browser.newContext({ viewport: screen, deviceScaleFactor: 1 });
     try {

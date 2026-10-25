@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ReconnectingNote } from "../lifecycle/ReconnectingNote.tsx";
 import { NewTicket } from "../new-ticket/NewTicket.tsx";
 import { useShell, type ShellValue } from "../shell/ShellProvider.tsx";
 import { HeldBanner, PausedBanner, StatusBanner } from "./Banners.tsx";
@@ -71,11 +72,15 @@ function ListByState({ page, shell, onNewTicket }: Readonly<{ page: Page; shell:
   return shell.tickets.data === null ? null : <Listing page={page} shell={shell} />;
 }
 
-/** The page under its header: the filters, the paused banner, the notice of the last Queue its children, and the list. */
+/** The page under its header: the Reconnecting line while the instance restarts, the filters, the paused banner, the notice of the last Queue its children, and the list. */
 function Body({ page, shell, onNewTicket }: Readonly<{ page: Page; shell: ShellValue; onNewTicket?: () => void }>) {
-  if (shell.tickets.data === null && shell.tickets.state !== "loading") return null;
+  // The instance is restarting (A11-211): the quiet line, and the list as it was read, or its skeleton when nothing was.
+  const reconnecting = shell.queue.state === "reconnecting" || shell.tickets.state === "reconnecting";
+  const restarting = reconnecting ? <ReconnectingNote refusal={shell.queue.refusal ?? shell.tickets.refusal} /> : null;
+  if (shell.tickets.data === null && shell.tickets.state !== "loading") return reconnecting ? <>{restarting}<TicketsSkeleton /></> : null;
   return (
     <>
+      {restarting}
       <FilterRow filters={page.filters} list={page.list} />
       <HeldBanner held={shell.queue.data?.held} />
       {shell.queue.data?.paused === true ? <PausedBanner /> : null}

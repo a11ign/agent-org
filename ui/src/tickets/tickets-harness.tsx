@@ -23,8 +23,8 @@ export const answers = (tickets: readonly TicketView[] = BACKLOG, more: Instance
 });
 export const standOf = (instance: InstanceAnswers = answers()): Stand => ({ connections: [HERE], instances: { here: instance } });
 
-/** The Tickets page inside the shell, reading from a stand-in instance; resolves once the first list has been drawn. */
-export async function pageOn(stand: Stand) {
+/** The Tickets page inside the shell, reading from a stand-in instance, drawn at once: what it draws first is the caller's to wait for. */
+export function renderOn(stand: Stand) {
   const fetchWith = standFetch(stand);
   const view = render(
     <ShellProvider fetchWith={fetchWith}>
@@ -33,6 +33,12 @@ export async function pageOn(stand: Stand) {
       </ShellFrame>
     </ShellProvider>,
   );
+  return { ...view, fetchWith };
+}
+
+/** The Tickets page inside the shell, reading from a stand-in instance; resolves once the first list has been drawn. */
+export async function pageOn(stand: Stand) {
+  const { fetchWith, ...view } = renderOn(stand);
   await waitFor(() => expect(screen.queryByRole("status", { name: "Loading tickets" })).toBeNull());
   return { ...view, fetchWith };
 }
