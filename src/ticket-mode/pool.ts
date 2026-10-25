@@ -120,7 +120,7 @@ export { ticketDir, ticketFolder } from "./ticket-paths.ts";
 /**
  * The watch of a finished run's pull requests, after the restack of the stacked ones (A11-248). The member above one that merged conflicts with `main` the moment GitHub recomputes it, and the watch
  * would start a plain conflict round that names neither the stack nor the merged member, a round the restack then leaves alone. So the restack goes first: a restack that conflicts starts its own round,
- * which takes the run out of `finished`, and the watch leaves it alone. The restack is idempotent per merged member, so it still runs on its own timer too. A restack that throws is said, and the watch runs.
+ * which takes the run out of `finished`, and the watch leaves it alone. The restack is idempotent per merged member (its pull requests are read again, and nothing is restacked or asked twice), so it still runs on its own timer too. A restack that throws is said, and the watch runs.
  */
 function restackThenWatch(ctx: PoolContext): void {
   try {
