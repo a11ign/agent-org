@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.21 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.22 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.22 (A11-261): `readBranchCi`, OPTIONAL: the workflow runs on one branch of a repository with each job's runner labels and times, which the board adds up into the CI minutes a ticket's pushes cost (weighted as GitHub bills them) and warns and holds a run on when a ticket passes its budget. A plugin of 1.21 is read as one that reads no branch's CI, and the board then shows and holds nothing.
 // 1.21 (A11-264): `PullFeedback.queue`, OPTIONAL: what the merge queue did to a pull request since its head last moved (is it queued, and each removal with its reason, actor and the merge group's commit), read in the same query as the rest of the feedback; `readQueueFailure`, OPTIONAL: the failing `merge_group` run behind one removal, its failing jobs and their first failing step; and `holdFromQueue`, OPTIONAL: put the `hold:board` label on a pull request, or take it off, which every arm bot in the org already honours. A plugin of 1.20 is read as one that reads no queue, and the board then behaves as it did.
 // 1.20 (A11-249): `readClosedWork`, OPTIONAL: what a pull request closed without merging still held, the commits on its head that are not on its base and the files they change, as the host's compare reads them, which the board lists on the ticket so the work is never lost with the pull request. A plugin of 1.19 is read as one that cannot be asked, and the board then lists nothing.
 // 1.19 (A11-255): `openDependencyPulls`, OPTIONAL: the open pull requests of a repository that the host's dependency bot (`DEPENDENCY_PULL_AUTHOR`) opened, with their title, branch, head, author and body, which the board reads to turn a major update, or a grouped update that stays red, into a ticket. The host filters by author, so a pull request anyone else opens with a bot-like title is never returned. A plugin of 1.18 is read as one that cannot be asked, and the board then files no dependency ticket.
@@ -53,7 +54,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.21";
+export const CODE_HOST_CONTRACT_VERSION = "1.22";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -221,6 +222,15 @@ export type StackMergeFacts = Readonly<{
  */
 export type CiRun = Readonly<{ status: "queued" | "in_progress" | "completed"; conclusion: string | null; url: string; name: string; jobs: Readonly<{ done: number; total: number }> | null }>;
 
+/**
+ * One workflow run on a branch, with its jobs' billable facts (contract 1.22): `headSha` is the commit it ran on and `createdAt` when the host created it (ISO time). Each job carries the labels of the runner it ran on and when it started
+ * and completed (ISO times, null until it has), which is all a caller needs to bill it. A run read as settled comes back with `jobs: []`.
+ */
+export type BranchCiRun = Readonly<{
+  id: number; headSha: string; createdAt: string; status: "queued" | "in_progress" | "completed";
+  jobs: readonly Readonly<{ labels: readonly string[]; startedAt: string | null; completedAt: string | null }>[];
+}>;
+
 /** A pull request that names a ticket's key (contract 1.18): where it is, its repository (`owner/name`), its state as the host says it, and its body, which is where a `Closes`, `Refs` or `Partial:` line says what it does for the ticket. */
 export type NamingPull = Readonly<{ url: string; repo: string; state: "open" | "merged" | "closed"; body: string }>;
 
@@ -339,6 +349,11 @@ export interface CodeHost extends CodeHostPort {
    * about a run (contract 1.17).
    */
   readCiRun?(repository: string, runId: number): CiRun | null;
+  /**
+   * The workflow runs of `repository` (`owner/name`) on `branch`, newest first, each with its jobs (contract 1.22), or null for "could not ask": a repository the host cannot read, an answer it cannot read and a list cut short at the host's page limit are all
+   * null. Null is never "no runs". A run whose id is in `settled` (the caller holds its jobs and it has completed) is answered with no jobs, so the host reads each completed run's jobs once. A host without it is read as one that cannot be asked.
+   */
+  readBranchCi?(repository: string, branch: string, settled: ReadonlySet<number>): readonly BranchCiRun[] | null;
   /**
    * Every pull request of `repositories` (`owner/name`) whose title or body names `key`, in any state, or null for "could not ask": a repository the host cannot read, an answer it cannot read, and a list cut short at the host's limit are all null.
    * Null is never "none names it". The host answers what it finds and judges nothing: a pull request that only mentions the key in passing is listed too, and the caller decides which of them are the ticket's. A host without it is read as one that

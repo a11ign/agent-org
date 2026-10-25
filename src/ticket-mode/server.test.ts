@@ -1251,7 +1251,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.21", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.22", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1386,6 +1386,23 @@ test("A11-167: the queue is sent to the page without the copies of the ticket's 
   const [, again] = await b.api("GET", "/api/queue", {}) as [number, { entries: { ticketChanges: unknown[]; talkFrom: Record<string, unknown> }[] }];
   assert.deepEqual(again.entries[0].ticketChanges, [more[1]], "only the latest change is drawn");
   assert.equal(again.entries[0].talkFrom.briefedAgainst, undefined, "and a talk session's copy of the run it replaced is sent as that run is");
+});
+
+test("A11-261: /api/queue sends each run's CI as figures and where the ticket stands against its budget, and not the workflow runs the board keeps them from", async () => {
+  const b = board(4747, { ciBudgetMinutes: 100 });
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  const job = (labels: string[], minutes: number) => ({ labels, startedAt: "2026-10-25T10:00:00Z", completedAt: new Date(Date.parse("2026-10-25T10:00:00Z") + minutes * 60_000).toISOString() });
+  const run = (id: number, jobs: ReturnType<typeof job>[]) => ({ id, headSha: `head-${id}`, createdAt: "2026-10-25T10:00:00Z", status: "completed" as const, jobs });
+  const ciSpend = { "NBF-1": { readAt: 1, runs: { 1: run(1, [job(["macos-14"], 6)]), 2: run(2, [job(["ubuntu-latest"], 5), job(["windows-latest"], 10)]) } } };
+  b.store.set({ ...b.store.get(), ciSpend, entries: b.store.get().entries.map((entry) => ({ ...entry, ciSince: 0 })) });
+  const [, queue] = await b.api("GET", "/api/queue", {}) as [number, { ciSpend?: unknown; entries: { ci?: unknown }[] }];
+  assert.deepEqual(queue.entries[0]!.ci, { run: { pushes: 2, jobs: 3, weighted: 85 }, ticket: { pushes: 2, jobs: 3, weighted: 85 }, budget: 100, state: "ok" }, "60 for six macOS minutes, 20 for ten Windows ones, and 5 for the Linux ones");
+  assert.equal(queue.ciSpend, undefined, "the workflow runs stay on the board");
+  assert.ok(b.store.get().ciSpend !== undefined, "and the board keeps them");
+  b.store.set({ ...b.store.get(), ciSpend: { "NBF-1": { ...ciSpend["NBF-1"], runs: { ...ciSpend["NBF-1"].runs, 3: run(3, [job(["macos-14"], 12)]) } } } });
+  const [, over] = await b.api("GET", "/api/queue", {}) as [number, { entries: { ci?: { state: string } }[] }];
+  assert.equal(over.entries[0]!.ci?.state, "held", "205 weighted minutes of a budget of 100");
 });
 
 test("A11-255: the dependency sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {

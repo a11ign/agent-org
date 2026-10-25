@@ -37,6 +37,7 @@ import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
 import type { UpdateNote } from "./board-view/update-banner.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
+import { ciViewOf } from "./ci-spend/view.ts";
 import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
@@ -370,9 +371,14 @@ export type QueueView = ReturnType<typeof queueView>;
 function queueView(board: Pick<Board, "store" | "pool" | "update" | "settings">) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
-  const queue = board.store.get();
+  // `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261).
+  const { ciSpend: _ciSpend, ...queue } = board.store.get();
+  const entries = board.store.get().entries.map((entry) => {
+    const ci = ciViewOf(board.store.get(), entry, board.settings.ciBudgetMinutes);
+    return { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) };
+  });
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries: queue.entries.map(shownEntry), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
+  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
     afterMergeChecks: afterMergeView(board.settings.stateDir) };
 }
 

@@ -43,6 +43,8 @@ export const QUEUE_RUN_ID = 55;
 export const QUEUE_JOB = "middleware";
 /** A workflow run GitHub holds, halfway through (contract 1.17). */
 export const CI_RUN_ID = 77;
+/** A branch GitHub holds two workflow runs on, the newer still going, with a macOS job in the older (contract 1.22). */
+export const CI_BRANCH = "admin/a11-261-x";
 
 const REFUSED = { status: 1, stdout: "", stderr: "gh: Could not resolve to a PullRequest (HTTP 404)\n" };
 
@@ -78,6 +80,21 @@ function queueCalls(args: readonly string[], labels: string[]): Answer | null {
   return null;
 }
 
+/** The gh calls of the runs on a branch and their jobs (contract 1.22), or null for any other: two runs, the newer still going, each with one job. */
+function branchCalls(args: readonly string[]): Answer | null {
+  const ok = (stdout: string): Answer => ({ status: 0, stdout, stderr: "" });
+  if (args[0] !== "api") return null;
+  if (args.includes(`repos/${REPOSITORY}/actions/runs?branch=${encodeURIComponent(CI_BRANCH)}&per_page=100&page=1`)) {
+    return ok(JSON.stringify({ total_count: 2, workflow_runs: [
+      { id: 91, head_sha: "a".repeat(40), head_branch: CI_BRANCH, created_at: "2026-10-25T10:00:00Z", status: "in_progress" },
+      { id: 90, head_sha: "9".repeat(40), head_branch: CI_BRANCH, created_at: "2026-10-25T09:00:00Z", status: "completed" },
+    ] }));
+  }
+  if (args.includes(`repos/${REPOSITORY}/actions/runs/91/jobs?filter=all&per_page=100&page=1`)) return ok(JSON.stringify({ total_count: 1, jobs: [{ labels: ["ubuntu-latest"], started_at: "2026-10-25T10:00:05Z", completed_at: null }] }));
+  if (args.includes(`repos/${REPOSITORY}/actions/runs/90/jobs?filter=all&per_page=100&page=1`)) return ok(JSON.stringify({ total_count: 1, jobs: [{ labels: ["macos-latest"], started_at: "2026-10-25T09:00:05Z", completed_at: "2026-10-25T09:03:00Z" }] }));
+  return null;
+}
+
 /** The gh calls the plugin makes, answered from pull request 7: its feedback, its fields, its state and the list it is in. */
 function github(calls: string[][] = []) {
   /** The statuses on the claim head, as GitHub keeps them: a POST adds one, and the listing prints one tab-separated line for each. */
@@ -95,6 +112,8 @@ function github(calls: string[][] = []) {
     if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/pulls/9`)) return ok(JSON.stringify({ stack: { number: 12 }, merged: false, base: { ref: "main", repo: { default_branch: "main" } }, head: { sha: STACK_REFUSAL_HEAD } }));
     if (args[0] === "api" && args[1] === "graphql" && args.includes("n=9")) return ok(JSON.stringify({ merged: false, autoMergeRequest: null, mergeQueueEntry: null }));
     if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/issues/9/comments`)) return ok(`${JSON.stringify(`<!-- agent-org:stack-merge head=${STACK_REFUSAL_HEAD} -->\nGitHub refused the stack merge of #9: ${STACK_REFUSAL_REASON}`)}\n`);
+    const branch = branchCalls(args);
+    if (branch !== null) return branch;
     if (args[0] === "run" && args[1] === "view") return args[2] === String(CI_RUN_ID) ? ok(JSON.stringify({ status: "in_progress", conclusion: "", url: `https://github.com/${REPOSITORY}/actions/runs/${CI_RUN_ID}`, name: "ci", jobs: [{ status: "completed" }, { status: "in_progress" }] })) : REFUSED;
     const queued = queueCalls(args, labels);
     if (queued !== null) return queued;
@@ -158,7 +177,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
   const host = create({}, fakePluginDeps({ exec: github(), policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));
   const { passed, skipped } = await runCodeHostConformance(host, {
     pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED, closed: CLOSED, queueFailure: { groupCommit: QUEUE_GROUP, job: QUEUE_JOB },
-    stackRefusal: { pull: STACKED, head: STACK_REFUSAL_HEAD, reason: STACK_REFUSAL_REASON }, stackRequestRefused: NO_ARM_BOT, ciRun: { repository: REPOSITORY, runId: CI_RUN_ID },
+    stackRefusal: { pull: STACKED, head: STACK_REFUSAL_HEAD, reason: STACK_REFUSAL_REASON }, stackRequestRefused: NO_ARM_BOT, ciRun: { repository: REPOSITORY, runId: CI_RUN_ID }, branchCi: { repository: REPOSITORY, branch: CI_BRANCH },
     named: { key: NAMED_KEY, repository: REPOSITORY, url: NAMED, state: "merged" }, dependency: { repository: REPOSITORY, url: DEPENDENCY_PULLS.bot, foreign: DEPENDENCY_PULLS.foreign },
     remote: { urls: [`https://github.com/${REPOSITORY}.git`, `git@github.com:${REPOSITORY}.git`], repository: { name: "repo", fullName: REPOSITORY } },
     check: { detailsUrl: CHECK_URL, log: CHECK_LOG }, claim: { repository: REPOSITORY, head: CLAIM_HEAD, environment: { GH_CONFIG_DIR: "/opt/reviewer/gh" } },
@@ -183,7 +202,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
     "the rows' rules for arming answer as the callers that arm and guard expect",
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged", "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "readBranchCi answers null for a repository it cannot read", "readBranchCi reads a branch's workflow runs with each job's runner labels and times", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ["readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"],
