@@ -8,7 +8,8 @@ import { tmpDir } from "../../lib/tmp-fixture.ts";
 import type { Queue } from "../queue/queue-entries-and-outcomes.ts";
 import { BOARD_LINES_2026_10_25 } from "./board-lines-fixture.ts";
 import { closeCheck } from "./checks.ts";
-import { afterMergeChecksPath, loadChecks, saveChecks } from "./store.ts";
+import { afterMergeChecksPath, changeChecks, loadChecks, saveChecks } from "./store.ts";
+import { markSent, OVERDUE_MS } from "./dispatch.ts";
 import { syncAfterMergeChecks } from "./sweep.ts";
 import { AFTER_MERGE_CHECKS_HEADING } from "./plan-section.ts";
 import { ticketDir } from "../ticket-paths.ts";
@@ -18,7 +19,7 @@ type Entries = Queue["entries"];
 
 /**
  * A sweep over a temporary state directory, a queue holding `entries`, and a tracker whose comments are recorded (and refused while `refuse` is on); no `comment` at all when `comments` is false. Plan files are named
- * as `PLAN` matches, and a pull request's reviews are what `reviews` says.
+ * as `PLAN` matches, a pull request's reviews are what `reviews` says, and the clock is what `clock.at` says.
  */
 function world(entries: Entries, { comments = true, reviews = new Map<string, ReviewState>() } = {}) {
   const stateDir = tmpDir("after-merge-sweep-");
@@ -30,7 +31,8 @@ function world(entries: Entries, { comments = true, reviews = new Map<string, Re
     posted.push({ key, body });
   };
   const codeHost: Pick<CodeHost, "readReviewState"> = { readReviewState: (url) => reviews.get(url) ?? null };
-  const ctx = { settings: { stateDir, plan: PLAN }, store: { get: () => queue }, source: comments ? { comment } : {}, codeHost, now: () => 50_000 } as never;
+  const clock = { at: 50_000 };
+  const ctx = { settings: { stateDir, plan: PLAN }, store: { get: () => queue }, source: comments ? { comment } : {}, codeHost, now: () => clock.at } as never;
   const path = afterMergeChecksPath(stateDir);
   /** Attach `text` as ticket `key`'s plan, where the board downloads it. */
   const plan = (key: string, text: string) => {
@@ -38,7 +40,7 @@ function world(entries: Entries, { comments = true, reviews = new Map<string, Re
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `${key}-0001-plan-fit.md`), text);
   };
-  return { queue, posted, refuse, path, plan, sweep: () => syncAfterMergeChecks(ctx), checks: () => loadChecks(path).checks };
+  return { queue, posted, refuse, path, plan, clock, sweep: () => syncAfterMergeChecks(ctx), checks: () => loadChecks(path).checks };
 }
 
 const PLAN = "-plan-[^/]*\\.md$";
@@ -164,4 +166,40 @@ test("A11-277: a sweep-ticket check records the dependency sweep's filed tickets
   state({ "a11ign/agent-org:typescript@6": { state: "filed", ticket: "A11-90", queue: true, queued: true }, "a11ign/agent-org:typescript@7": { state: "filed", ticket: "A11-301", queue: true, queued: false } });
   await board.sweep();
   assert.deepEqual([board.checks()["A11-255#1"].state, board.checks()["A11-255#1"].result], ["passed", "A11-301 filed by the dependency sweep for a11ign/agent-org:typescript@7"]);
+});
+
+test("A11-277: the sweep sends a check open 7 days after it was sent again, once, overdue, and not again on the 8th day", async () => {
+  const board = world([merged("A11-245", ["Chairman session: the next run that waits on a fleet job is woken by the board."])] as unknown as Entries);
+  await board.sweep();
+  changeChecks(board.path, (file) => markSent(file, 50_000));
+  board.clock.at = 50_000 + OVERDUE_MS - 1;
+  await board.sweep();
+  assert.equal(board.checks()["A11-245#1"].overdueAt, undefined, "not before 7 days");
+  board.clock.at = 50_000 + OVERDUE_MS;
+  await board.sweep();
+  board.clock.at += 24 * 60 * 60 * 1000;
+  await board.sweep();
+  const { sentAt, overdueAt } = board.checks()["A11-245#1"];
+  assert.deepEqual([sentAt, overdueAt], [50_000 + OVERDUE_MS, 50_000 + OVERDUE_MS], "sent again once, at 7 days, and not on the 8th");
+});
+
+test("A11-277: the sweep sends a board check nobody saw pass for 7 days to the session, overdue", async () => {
+  const board = world([] as unknown as Entries);
+  const watched = { id: "A11-246#1", key: "A11-246", url: null, line: "The board: the next run that waits on a fleet job is woken.", owner: "The board", runner: "board" as const,
+    observe: { spec: { kind: "wake" as const }, from: 1_000 }, evidence: "the wake", listedAt: 1_000, state: "open" as const };
+  saveChecks(board.path, { checks: { [watched.id]: watched } });
+  board.clock.at = 1_000 + OVERDUE_MS;
+  await board.sweep();
+  const { runner, sentAt, overdueAt } = board.checks()["A11-246#1"];
+  assert.deepEqual([runner, sentAt, overdueAt], ["session", 1_000 + OVERDUE_MS, 1_000 + OVERDUE_MS]);
+});
+
+test("A11-277: a Needs-you check seeded from a run that merged weeks ago is shown to the person by the sweep, and is not overdue", async () => {
+  const board = world([] as unknown as Entries);
+  const held = { id: "A11-233#1", key: "A11-233", url: null, line: "The chairman chooses the licence.", owner: "The chairman", runner: "person" as const, escalation: "legal", evidence: "the licence", listedAt: 0, state: "open" as const };
+  saveChecks(board.path, { checks: { [held.id]: held } });
+  board.clock.at = 30 * 24 * 60 * 60 * 1000;
+  await board.sweep();
+  const { sentAt, overdueAt } = board.checks()["A11-233#1"];
+  assert.deepEqual([sentAt, overdueAt], [board.clock.at, undefined]);
 });

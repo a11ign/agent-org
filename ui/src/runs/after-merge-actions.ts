@@ -1,5 +1,5 @@
 // module: what the After-merge list's rows say and do (A11-277) -- the words of a row's runner and field, and its close and follow-up posted to the board
-import { EVIDENCE_CHARS, evidenceRefusal } from "../../../src/ticket-mode/after-merge/checks.ts";
+import { ageOf, EVIDENCE_CHARS, evidenceRefusal } from "../../../src/ticket-mode/after-merge/checks.ts";
 import type { Answer } from "../api/answer.ts";
 import type { AfterMergeCheck, CheckAnswer, CheckResult } from "../api/types.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
@@ -8,6 +8,13 @@ const RUNNER_WORDS: Readonly<Record<AfterMergeCheck["runner"], string>> = { sess
 
 /** Who the board sends a check to, as its row says it: "the session", "you" or "the board", and "for <role>" when the session runs it for a role. PURE. */
 export const runnerText = ({ runner, role }: Pick<AfterMergeCheck, "runner" | "role">): string => (role === null ? RUNNER_WORDS[runner] : `${RUNNER_WORDS[runner]} for ${role}`);
+
+/** The escalation item a row waits on the person for, or null: an instance older than A11-277's step 3 sends no `needsYou`, and its rows wait on no one. PURE. */
+export const needsYouOf = (check: AfterMergeCheck): string | null => check.needsYou ?? null;
+
+/** What an open row says of its check: "Runs it: <owner> · <runner> · <age>", then the escalation item a Needs-you check is on, and "overdue" once it is. PURE. */
+export const openMeta = (check: AfterMergeCheck, now: number): string =>
+  [`Runs it: ${check.owner}`, runnerText(check), ageOf(check.listedAt, now), needsYouOf(check), check.overdue === true ? "overdue" : null].filter((part) => part !== null).join(" · ");
 
 /** A row's three closes, in the order its buttons are drawn, each with the button's words and the question its field asks. */
 export const CLOSES: readonly Readonly<{ result: CheckResult; button: string; question: string }>[] = [

@@ -56,6 +56,7 @@ import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
+import { sessionAsksRoute } from "./session-asks.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -723,6 +724,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
     ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
+    ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, query)
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 

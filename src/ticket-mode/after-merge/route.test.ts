@@ -33,7 +33,7 @@ test("A11-277: GET /api/queue lists the open checks, each with its owner and run
   const [status, view] = await api("GET", "/api/queue", {});
   assert.equal(status, 200);
   assert.deepEqual((view as QueueView).afterMergeChecks, [{
-    id: "A11-235#1", key: "A11-235", url: "https://linear.app/a11ign/issue/A11-235", line: LINE, runner: "session", listedAt: 1_000, state: "open", owner: "Chairman session", role: null, followUpText: null,
+    id: "A11-235#1", key: "A11-235", url: "https://linear.app/a11ign/issue/A11-235", line: LINE, runner: "session", listedAt: 1_000, state: "open", owner: "Chairman session", role: null, followUpText: null, needsYou: null, overdue: false,
   }]);
 });
 
