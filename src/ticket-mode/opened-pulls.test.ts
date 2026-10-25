@@ -26,6 +26,13 @@ async function hostOf(made: Fixture): Promise<{ host: Host; repo: string }> {
   return { host, repo };
 }
 
+/** A host that holds one open pull request naming NBF-1. */
+async function hostWithOpenPull(made: Fixture): Promise<Host> {
+  const { host, repo } = await hostOf(made);
+  host.seedPull(repo, 140, { body: "Refs NBF-1" });
+  return host;
+}
+
 const briefOf = (made: Fixture, key = "NBF-1"): string => readFileSync(join(ticketDir(made.settings, key), "brief.md"), "utf8");
 
 /** NBF-1's run, started over `host`: its brief is written, and its record holds no pull request. */
@@ -44,7 +51,7 @@ test("a brief for a run started again lists an open pull request the board never
   assert.ok(section.startsWith(SECTION), "the section is in the brief");
   assert.match(section, new RegExp(`- ${open.url} \\(${repo}\\): open; head 012345678; failing checks: lint, types; Partial: step 1 of 2: the second half`));
   assert.match(section, new RegExp(`- ${merged.url} \\(${repo}\\): merged; completes the ticket`));
-  assert.match(section, /continue from there: fix an open pull request on its own branch, and never do again a step that already has a pull request/);
+  assert.match(section, /continue from there: fix an open pull request on its own branch, and never do again a step whose pull request merged\. A closed one was not merged/);
 });
 
 test("a pull request that only mentions the key, or names another ticket, is not the ticket's and is not in the brief", async () => {
@@ -129,4 +136,23 @@ test("Respond on a run with a pull request on record answers the record's, and d
   made.restart({ codeHost: host }).respond("NBF-1");
   assert.deepEqual(made.entry("NBF-1").review, [recorded]);
   assert.deepEqual(host.calls.filter((call) => call.startsWith("pullsNaming")), []);
+});
+
+test("Respond on a run that ended on drafts with none open on record is refused as before, and the code host's pull requests are not approved in its place", async () => {
+  const made = poolFixture();
+  const host = await hostWithOpenPull(made);
+  await made.pool.tick();
+  made.store.set(finish(made.store.get(), "NBF-1", { kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" }] }, 50));
+  made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, pullStates: { "https://github.com/x/nbl-ui-netbox/pull/1": "merged" } })));
+  assert.throws(() => made.restart({ codeHost: host }).respond("NBF-1"), /NBF-1 has no pull request open, so there is no feedback to answer/);
+  assert.equal(made.entry("NBF-1").phase, "finished");
+});
+
+test("a code host whose read of a pull request throws does not stop the run starting: the brief just has no section", async () => {
+  const made = poolFixture();
+  const host = await hostWithOpenPull(made);
+  const throwing = { ...host, readPullFeedback: () => { throw new Error("rate limited"); } } as unknown as Host;
+  const brief = await started(made, throwing);
+  assert.equal(brief.includes(SECTION), false);
+  assert.equal(made.entry("NBF-1").phase, "running");
 });

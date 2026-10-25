@@ -138,14 +138,14 @@ function openedLine({ url, repo, state, head, failing, declared }: OpenedPull): 
 
 /**
  * The section of a work brief that lists the pull requests the ticket already has on the code host (A11-240), which a run started again is not told by the board's own record: the crash that ended the run before may have emptied it. Nothing when
- * there are none, or the host could not be asked. It says to continue from them: an open one is fixed on its own branch, and a step that has a pull request is never done again. PURE.
+ * there are none, or the host could not be asked. It says to continue from them: an open one is fixed on its own branch, and a step whose pull request merged is never done again. PURE.
  */
 export function openedText(opened: readonly OpenedPull[]): string {
   if (opened.length === 0) return "";
   return `
 ## Pull requests already opened for this ticket
 
-An earlier run of this ticket opened these, and the board's record of this run does not hold them. Read each one before you change anything, and continue from there: fix an open pull request on its own branch, and never do again a step that already has a pull request.
+An earlier run of this ticket opened these, and the board's record of this run does not hold them. Read each one before you change anything, and continue from there: fix an open pull request on its own branch, and never do again a step whose pull request merged. A closed one was not merged: its work is not done.
 
 ${opened.map(openedLine).join("\n")}
 `;

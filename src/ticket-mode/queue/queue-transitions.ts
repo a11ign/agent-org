@@ -44,16 +44,18 @@ function respondRefusal(key: string, entry: Entry | undefined, found: readonly P
  * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it. A run handed back for a conflict carries the
  * conflict lines, so its round merges the base in first (A11-125). A run whose pull requests are drafts is approved, which marks them ready and starts the
  * same round. Throws, naming why, for a run Respond cannot act on ({@link respondRefusal}), so the board says it. A parked run is the pool's: it closes the
- * run's workspace, then asks this. `found` is the open pull requests the code host holds for the ticket that the run's record does not (A11-240): a run whose record holds no
+ * run's workspace, then asks this. `foundOnHost` is the open pull requests the code host holds for the ticket that the run's record does not (A11-240): a run whose record holds no
  * open pull request answers those instead of being refused, so a crash that emptied the record does not leave a pull request nobody can respond on.
  */
-export function respond(queue: Queue, key: string, now: number, found: readonly PullRequest[] = []): Queue {
+export function respond(queue: Queue, key: string, now: number, foundOnHost: readonly PullRequest[] = []): Queue {
   const entry = find(queue, key);
+  // A run that ended on drafts is approved, which marks its recorded drafts ready: a pull request found only on the code host is not its to approve.
+  const found = entry?.outcome?.kind === "draft-pr" ? [] : foundOnHost;
   const refusal = respondRefusal(key, entry, found);
   if (refusal !== null) throw new Error(refusal);
   if (entry === undefined || isParked(entry)) throw new Error(`${key}'s workspace is open: it is closed before Respond acts`);
   const recorded = openPulls(entry);
-  if (entry.outcome?.kind === "draft-pr" && recorded.length > 0) return approve(queue, key, now);
+  if (entry.outcome?.kind === "draft-pr") return approve(queue, key, now);
   const conflict = conflictsIn(entry.handedBack ?? "");
   const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, recorded.length > 0 ? recorded : found, now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
   return loggedPersonRound(queued, entry, "respond", now, conflict === null ? null : shortReason(conflict));

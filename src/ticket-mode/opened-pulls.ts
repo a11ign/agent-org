@@ -11,13 +11,15 @@ import { log, messageOf } from "./pool-state.ts";
 import { reviewedRepositoriesOf } from "./reviewer-port.ts";
 import { pullsOf } from "./board-view/view-types-and-filters.ts";
 import { type Entry, type PullRequest } from "./queue/queue-entries-and-outcomes.ts";
-import { DEFAULT_KEYWORDS } from "./source.ts";
+import { DEFAULT_KEYWORDS, type Keywords } from "./source.ts";
 import { declarationOf, referencesIn } from "./ticket-references.ts";
 import type { NamingPull } from "../plugins/contracts/code-host.ts";
 
 /** Whether `body` has a `Closes` or `Refs` line that names `key`: the pull request is the ticket's, not a mention of it. PURE. */
-const referencesTicket = (body: string, key: string, ctx: PoolContext): boolean =>
-  referencesIn(body, ctx.source.keywords ?? DEFAULT_KEYWORDS).some(({ names }) => names.some((name) => name.toLowerCase() === key.toLowerCase()));
+const referencesTicket = (body: string, key: string, keywords: Keywords): boolean =>
+  referencesIn(body, keywords).some(({ names }) => names.some((name) => name.toLowerCase() === key.toLowerCase()));
+
+const keywordsOf = ({ source }: PoolContext): Keywords => source.keywords ?? DEFAULT_KEYWORDS;
 
 /**
  * The pull requests of the repositories the board reviews that are `key`'s, in any state, as the code host lists them. None when the host cannot be asked, and the reason is said in the log: the board must not
@@ -32,7 +34,7 @@ function ticketPullsOf(ctx: PoolContext, key: string): readonly NamingPull[] {
       log(`${key}: the pull requests that name it could not be listed, so none is told to its worker or answered by Respond`);
       return [];
     }
-    return found.filter(({ body }) => referencesTicket(body, key, ctx));
+    return found.filter(({ body }) => referencesTicket(body, key, keywordsOf(ctx)));
   } catch (err) {
     log(`${key}: the pull requests that name it could not be listed: ${messageOf(err).split("\n")[0]}`);
     return [];
@@ -59,9 +61,21 @@ function candidatesOf(entry: Entry, listed: readonly NamingPull[]): Candidate[] 
  * its failing checks, and every one for what its body declares of the ticket. A pull request of a merged plan step is left out: the brief lists the steps already. It reads the host and writes nothing.
  */
 export function openedPullsOf(ctx: PoolContext, entry: Entry): readonly OpenedPull[] {
+  const key = entry.ticket.key;
+  try {
+    return readOpened(ctx, entry);
+  } catch (err) {
+    // The brief of a run must not fail for a read of the host that was only to tell it more.
+    log(`${key}: the pull requests its ticket has could not be read: ${messageOf(err).split("\n")[0]}`);
+    return [];
+  }
+}
+
+/** {@link openedPullsOf}, over the reads of the code host, which may throw. */
+function readOpened(ctx: PoolContext, entry: Entry): readonly OpenedPull[] {
   const { codeHost, feedbackIgnores } = ctx;
   const key = entry.ticket.key;
-  const keywords = ctx.source.keywords ?? DEFAULT_KEYWORDS;
+  const keywords = keywordsOf(ctx);
   const candidates = candidatesOf(entry, ticketPullsOf(ctx, key));
   if (candidates.some(({ state }) => state === "open")) ctx.ownLogin.value ??= codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
