@@ -43,12 +43,20 @@ The queue holds the run until the tracker reads each of those tickets completed 
 
 A run never holds its files against a ticket it waits on (`board-view/waits-on.ts`): a ticket its idle worker's note declares a wait on, the ticket whose run on the board has a pull request it waits on, and its blockers not yet done, each followed through the tickets those wait on. A worker woken from its wait, or at work again, holds its files as before. A fleet job or a CI run names no ticket, so a run parked on one still holds its files against the others.
 
+## A wait cycle is found, broken and told once (A11-272)
+
+A **wait cycle** is two or more tickets that each wait on another: through a blocker, through the files a run holds, or through a wait the idle worker declared. `board-view/wait-cycles.ts` reads the whole board as one graph (a ticket is a node; an edge says `A` cannot go on until `B` does, as `blocked-by`, `files` or `waits-on`) and returns each strongly connected group of tickets. The `files` edge counts the hold as it would be without the exemption above (`overlapHolders`), so the 2026-10-25 shape, a run waiting on the very ticket held behind its files, is a cycle even though the exemption lifts that hold. A fleet job and a CI run name no ticket and add no edge.
+
+On every tick, before slots are filled, `releaseTicketWaits` finds the cycles and lets go, at once, each run in one whose idle worker declared a ticket wait on another ticket of the cycle: a ticket on the board in the same cycle is not done, so the wait's first reading is not needed. What it cannot release is named and left as it is: a cycle of blockers alone, a pull request wait, a batch's shared run. Then `pool-wait-cycles.ts` tells the chairman's session, once: one tracker comment on the cycle's smallest key saying what the board did, or that a person must remove one blocker relation, and a log line. It is posted once the board has done what it can (a workspace herdr will not close is told after it closes), and recorded in `tickets/wait-cycles.json` in the state folder only after the tracker took it, so a refused comment is tried again. A cycle the board no longer finds is removed from the record, so one that forms again is told again.
+
+The cards name the cycle: a ticket in one reads `in a wait cycle: A11-229 → A11-231 → A11-229`, and the Runs page shows one banner for each cycle, which goes when the cycle does. A queued ticket held by an overlap reads `Waits on A11-231 #12: both touch ...`, naming the holder.
+
 ## What each state reads like
 
 | The run is | The card says |
 | --- | --- |
-| Waiting, inside the deadline (declared) | `Waiting on fleet job fj-123 (4 of 6 pages, about 20 min)`; several items joined with `; `: `Waiting on fleet job fj-1 (done); CI run a11ign/x#9 (running, 3 of 5 jobs)`; an unreadable item `(could not read it: <why>)`. Never Stalled, however long it has been idle. |
-| Waiting on its own shell or Monitor (undeclared), inside the deadline | `Waiting on background work for 54 min: <waitingOn or reason>` (A11-236) |
+| Waiting, inside the deadline (declared) | status **Waiting**, never In progress or Working. `Waiting on fleet job fj-123 (4 of 6 pages, about 20 min), until 16:30`; several items joined with `; `: `Waiting on fleet job fj-1 (done); CI run a11ign/x#9 (running, 3 of 5 jobs), until 16:30`; an unreadable item `(could not read it: <why>)`. The deadline is the `until` the outcome gave, else 3 hours after it (`board-view/wait-deadline.ts`), and a wait past it still says when it was due. Never Stalled, however long it has been idle. |
+| Waiting on its own shell or Monitor (undeclared), inside the deadline | status **Waiting**: `Waiting on background work for 54 min: <waitingOn or reason>, until 16:30` (A11-236) |
 | Woken, no newer outcome yet | its reason, as any `working` note |
 | Past the deadline, woken, still idle | `Stalled: waited past <deadline> on <what was pending> since it said: <reason>` |
 | Declared a wait that had already ended | `Stalled: re-declared a wait that had already ended: <items> since it said: <reason>` |

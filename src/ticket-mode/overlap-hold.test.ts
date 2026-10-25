@@ -1,7 +1,7 @@
 // no-token: gh -- the queue and the board's words, in memory; nothing is read or spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { heldClaims, overlapWait } from "./board-view/overlap-hold.ts";
+import { heldClaims, overlapHolders, overlapWait } from "./board-view/overlap-hold.ts";
 import { runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import type { ViewEntry } from "./board-view/view-types-and-filters.ts";
 import { enqueue } from "./queue/queue-entries-and-outcomes.ts";
@@ -166,4 +166,21 @@ test("A11-272: a planner is still shown the claims of a run that waits on its ti
   const middle = { ticket: { key: "A11-231" }, phase: "queued", paths: ["lab:a.ts"], blockers: [{ key: "A11-229", state: "unstarted", status: "Todo" }] } as unknown as ViewEntry;
   const last = { ticket: { key: "A11-232" }, phase: "queued", paths: ["lab:b.ts"], blockers: [{ key: "A11-231", state: "unstarted", status: "Todo" }] } as unknown as ViewEntry;
   assert.deepEqual(heldClaims([planned, middle, last], [planned]).map(({ key }) => key), ["A11-232"]);
+});
+
+test("A11-272: the holders of a queued run's files are all counted without the exemption a waiting holder gets: overlapWait lifts the hold on A11-229, overlapHolders still names A11-231", () => {
+  const holder = parked("A11-231", [{ kind: "ticket", key: "A11-229", until: "done" }]);
+  const other = parked("A11-300", [], { working: undefined });
+  const waiting = needsMiddleware("A11-229");
+  assert.equal(overlapWait(waiting, [holder, waiting]), null, "the exemption is unchanged");
+  assert.equal(overlapWait(waiting, [holder, other, waiting])?.key, "A11-300", "and a holder that does not wait on the ticket still holds it");
+  assert.deepEqual(overlapHolders(waiting, [holder, other, waiting]), ["A11-231", "A11-300"], "every run that holds the files, the waiting one too");
+});
+
+test("A11-272: a run that holds none of a queued run's files, is its own ticket, or is sequenced with it is no holder", () => {
+  const waiting = needsMiddleware("A11-229", { blockers: [{ key: "A11-100", state: "started", status: "In Progress" }] });
+  const elsewhere = parked("A11-231", [], { paths: ["lab:docs/"] });
+  const blocker = parked("A11-100", []);
+  assert.deepEqual(overlapHolders(waiting, [elsewhere, blocker, waiting]), [], "A11-100 is a blocker, sequenced on purpose");
+  assert.deepEqual(overlapHolders({ ...waiting, paths: [] }, [parked("A11-231", [])]), [], "a run with no paths contests none");
 });

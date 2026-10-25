@@ -158,6 +158,17 @@ export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): Ov
 }
 
 /**
+ * The keys of every run whose footprint a queued run contests, whether or not that run waits on the queued run's ticket (A11-272): the hold {@link overlapWait} would find without its exemption for a holder that waits
+ * on the ticket, and every such holder, not the first. The wait cycles read this (`wait-cycles.ts`): with the exemption, the hold that makes a run and the ticket it waits on wait on each other is gone, and the cycle
+ * with it. A run held only because a pull request's files are not read yet is not counted: that is a hold on a finished run, which waits on nothing. PURE.
+ */
+export function overlapHolders(entry: ViewEntry, entries: readonly ViewEntry[]): string[] {
+  const mine = contested(entry);
+  if (mine.length === 0) return [];
+  return entries.filter((other) => competes(entry, other) && footprintOf(other).some((held) => mine.some((own) => pathsOverlap(own, held)))).map(({ ticket }) => ticket.key);
+}
+
+/**
  * The paths every other queued or running ticket holds, as a planner is shown them (A11-212): for each run that holds its footprint (`running`, or `open pull request`) that footprint, and for each queued run that
  * contests paths the ones it contests (`queued`). A run is left out when it is one of `selves` or sequenced on purpose with one of them (its blockers, and the runs it blocks, see {@link sequenced}), and so is a run that holds
  * nothing. `selves` is the ticket being planned, or every ticket of the batch being planned. PURE.

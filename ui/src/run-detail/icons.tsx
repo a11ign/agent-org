@@ -85,12 +85,12 @@ const SHAPES: Readonly<Partial<Record<RunBoard, Drawn>>> = {
 };
 
 /** The icon in a run's header: the board's own, or none for the Awaiting board. Running and Publishing turn the amber ring. */
-export function RunIcon({ board }: Readonly<{ board: RunBoard }>) {
-  if (board === "running" || board === "publishing") return <Spinner size={MARK_SIZE} label={ICON_NAME[board]} />;
+export function RunIcon({ board, name }: Readonly<{ board: RunBoard; name?: string }>) {
+  if (board === "running" || board === "publishing") return <Spinner size={MARK_SIZE} label={name ?? ICON_NAME[board]} />;
   const drawn = SHAPES[board];
   if (drawn === undefined || board === "awaiting") return null;
   return (
-    <svg className={`run-icon ${drawn.tone}`} width={MARK_SIZE} height={MARK_SIZE} viewBox="0 0 18 18" fill="none" role="img" aria-label={ICON_NAME[board]}>
+    <svg className={`run-icon ${drawn.tone}`} width={MARK_SIZE} height={MARK_SIZE} viewBox="0 0 18 18" fill="none" role="img" aria-label={name ?? ICON_NAME[board]}>
       {drawn.shape}
     </svg>
   );
