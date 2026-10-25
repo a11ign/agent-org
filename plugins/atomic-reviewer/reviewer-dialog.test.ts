@@ -56,7 +56,7 @@ function machine() {
  * A seat's reviewer-7 in the tickets' session, whose agent has `status` and whose pane shows `pane`, over a real Codex trust on `m`: the port, the keys herdr was sent and the panes it was asked for. The head the seat was
  * started for is h1.
  */
-async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", pane = trustPane(m.clones.alpha), pressRefused = false }: { status?: string; pane?: string; pressRefused?: boolean } = {}) {
+async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", pane = trustPane(m.clones.alpha), pressRefused = false, herdrDown = false }: { status?: string; pane?: string; pressRefused?: boolean; herdrDown?: boolean } = {}) {
   await loadReviewerGate();
   const sent: string[][] = [];
   const tried: string[][] = [];
@@ -64,8 +64,10 @@ async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", 
   const logged: string[] = [];
   const state = { status, pane };
   const run = (args: string[]): string => {
+    if (herdrDown && args.includes("list")) throw new Error("herdr is not answering");
     if (args.includes("agent") && args.includes("read")) {
       read.push(args);
+      if (state.pane === UNREADABLE) throw new Error("pane_not_found");
       return state.pane;
     }
     if (args.includes("send-keys")) {
@@ -82,6 +84,9 @@ async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", 
   const port = atomicReviewerPort(helpers, { codexTrust: codexTrustSeam(deps) });
   return { port, sent, tried, read, logged, state };
 }
+
+/** The pane text a test sets to have `agent read` fail. */
+const UNREADABLE = "<unreadable>";
 
 const ENTER = ["--session", "tickets", "agent", "send-keys", "reviewer-7", "enter"];
 const READ = ["--session", "tickets", "agent", "read", "reviewer-7", "--source", "visible"];
@@ -141,6 +146,16 @@ test("A11-221: a reviewer that is not blocked has its pane left unread, and so h
   const { port, read } = await blockedPort(m);
   assert.equal(port.unblock!({ pr: PR_URL, head: "h2" }), null);
   assert.deepEqual(read, []);
+});
+
+test("A11-221: a look that cannot be made is unread, not a look that found no dialog: herdr not listing the session, and a pane that cannot be read", async () => {
+  const m = machine();
+  const down = await blockedPort(m, { herdrDown: true });
+  assert.deepEqual(down.port.unblock!(REF), { unread: "herdr did not list the tickets session" });
+  const unreadable = await blockedPort(m, { pane: UNREADABLE });
+  const answer = unreadable.port.unblock!(REF);
+  assert.ok(answer !== null && "unread" in answer && answer.unread.startsWith("reviewer-7's pane could not be read"), JSON.stringify(answer));
+  assert.deepEqual([down.sent, unreadable.sent], [[], []]);
 });
 
 test("A11-221: a blocked reviewer whose pane shows no dialog, or cannot be read, reports none", async () => {

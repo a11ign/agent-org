@@ -343,24 +343,33 @@ function forgetMendedClaimProblems(ctx: PoolContext): void {
  * port answered is logged. One it left is logged once per dialog, and kept on the pull request's read until a look finds none.
  */
 function stoppedDialog(ctx: PoolContext, reviewer: ReviewerPort, url: string, ref: ReviewerRef): string | null {
+  const before = ctx.pullReads.get(url);
+  // A look that could not be made says nothing of a dialog, so the last look's finding at this head stands.
+  const unread = (why: string): string | null => {
+    sayOnce(ctx, `${url}@${ref.head}#dialog-unread`, `${url}: the reviewer's dialog could not be looked at (${why}); the last look stands until one can`);
+    return before?.head === ref.head ? (before.dialog ?? null) : null;
+  };
   let seen: ReviewerDialog | null | undefined;
   try {
     seen = reviewer.unblock?.(ref);
   } catch (err) {
-    log(`${url}: the reviewer's dialog could not be looked at (${messageOf(err)})`);
-    return null;
+    return unread(messageOf(err));
   }
   if (seen === null || seen === undefined) return null;
+  if ("unread" in seen) return unread(seen.unread);
   if ("answered" in seen) {
     log(`${url}: answered the reviewer's dialog at ${ref.head.slice(0, 8)}: "${seen.answered}"`);
     return null;
   }
-  const said = `${url}@${ref.head}#dialog:${seen.stuck}`;
-  if (!ctx.refusedHeads.has(said)) {
-    ctx.refusedHeads.add(said);
-    log(`${url}: the reviewer stopped on a dialog it cannot answer: "${seen.stuck}"; a person answers it in herdr`);
-  }
+  sayOnce(ctx, `${url}@${ref.head}#dialog:${seen.stuck}`, `${url}: the reviewer stopped on a dialog it cannot answer: "${seen.stuck}"; a person answers it in herdr`);
   return seen.stuck;
+}
+
+/** Logs `line` once per `key`: the pool looks at the same pull request on every sweep. */
+function sayOnce(ctx: PoolContext, key: string, line: string): void {
+  if (ctx.refusedHeads.has(key)) return;
+  ctx.refusedHeads.add(key);
+  log(line);
 }
 
 /**

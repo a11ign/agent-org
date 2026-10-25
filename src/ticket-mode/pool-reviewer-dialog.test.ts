@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
-import type { Reviewer } from "../plugins/contracts/reviewer.ts";
+import type { Reviewer, ReviewerDialog } from "../plugins/contracts/reviewer.ts";
 import { createFakeReviewer, reviewerOver } from "../plugins/fakes/reviewer.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { reasonOf } from "./board-view/run-reason.ts";
@@ -43,11 +43,16 @@ async function reviewedRun() {
 }
 
 /** The reviewer shows the dialog the port cannot answer, the pool looks at it and watches the run, and the run carries the note. */
-function stopAndWatch({ reviewer, pool, ref, entry }: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref" | "entry">): void {
-  reviewer.showing(ref, { stuck: STUCK });
+function stopAndWatch(made: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref" | "entry">): void {
+  lookAt(made, { stuck: STUCK });
+  assert.equal(made.entry().handedBack, NOTE);
+}
+
+/** The reviewer shows `dialog`, and the pool looks at the pull request and watches the run. */
+function lookAt({ reviewer, pool, ref }: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref">, dialog: ReviewerDialog): void {
+  reviewer.showing(ref, dialog);
   pool.reviewNewHeads();
   pool.watchFeedback();
-  assert.equal(entry().handedBack, NOTE);
 }
 
 test("A11-221: a reviewer stuck on a dialog the port cannot answer makes the run read Needs you with the dialog's first line, and the pull request's review line says it", async () => {
@@ -64,6 +69,32 @@ test("A11-221: a reviewer stuck on a dialog the port cannot answer makes the run
   pool.reviewNewHeads();
   pool.watchFeedback();
   assert.equal(JSON.stringify(entry()), written, "a later look at the same dialog rewrites nothing");
+});
+
+test("A11-221: a look that cannot be made keeps the line and the note, and the next look that reads the pane and finds no dialog clears them", async () => {
+  const made = await reviewedRun();
+  const { reviewer, pool, ref, url, entry } = made;
+  stopAndWatch(made);
+  lookAt(made, { unread: "reviewer-7's pane could not be read (pane_not_found)" });
+  assert.equal(pool.pullReviews()[url], `the reviewer stopped on a dialog it cannot answer: "${STUCK}"`, "the last finding stands");
+  assert.equal(entry().handedBack, NOTE);
+  reviewer.showing(ref, null);
+  pool.reviewNewHeads();
+  pool.watchFeedback();
+  assert.equal(pool.pullReviews()[url], "reviewing");
+  assert.equal(entry().handedBack, undefined);
+});
+
+test("A11-221: an unblock that throws is an unread look too, and a first look that cannot be made reports no dialog", async () => {
+  const made = await reviewedRun();
+  const { reviewer, pool, ref, url } = made;
+  reviewer.showing(ref, { unread: "herdr did not list the tickets session" });
+  pool.reviewNewHeads();
+  assert.equal(pool.pullReviews()[url], "reviewing", "nothing was found before, so nothing is claimed");
+  stopAndWatch(made);
+  Object.assign(reviewer, { unblock: () => { throw new Error("herdr crashed"); } });
+  pool.reviewNewHeads();
+  assert.equal(pool.pullReviews()[url], `the reviewer stopped on a dialog it cannot answer: "${STUCK}"`);
 });
 
 test("A11-221: the note logs Needs you once on the run, as the stale-block note does (A11-219), and the repeated look logs nothing more", async () => {
@@ -135,10 +166,9 @@ test("A11-221: with no reviewer on the machine the note goes, since no look is c
 });
 
 test("A11-221: a dialog the port answered is not Needs you: nothing is kept on the pull request or the run", async () => {
-  const { reviewer, pool, ref, url, entry } = await reviewedRun();
-  reviewer.showing(ref, { answered: "Trust this folder?" });
-  pool.reviewNewHeads();
-  pool.watchFeedback();
+  const made = await reviewedRun();
+  const { pool, url, entry } = made;
+  lookAt(made, { answered: "Trust this folder?" });
   assert.equal(pool.pullReviews()[url], "reviewing");
   assert.equal(entry().handedBack, undefined);
 });

@@ -460,18 +460,20 @@ function settledReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerS
 
 /**
  * Looks at the pane of a seat's reviewer when herdr lists it `blocked` (A11-221, contract 1.6), and answers Codex's trust dialog for a repository the host file names (`answerDialog`). Any other dialog is `stuck`, with its
- * first line, and nothing is pressed. Null when the reviewer is not blocked (its pane is left unread), the pane cannot be read, or it shows no dialog.
+ * first line, and nothing is pressed. Null when the reviewer is not blocked (its pane is left unread) or its pane shows no dialog; `unread` when herdr cannot be asked or the pane cannot be read, which says nothing of a dialog.
  */
 function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerDialog | null {
   const seat = seatOf(context, pr);
   const board = boardOf(context);
   if ("refusal" in seat || board.heads.get(seat.label) !== head) return null;
-  if (!listedOf(context)?.some((agent) => agent.label === seat.label && agent.status === BLOCKED_STATUS)) return null;
+  const agents = listedOf(context);
+  if (agents === null) return { unread: `herdr did not list the ${board.session} session` };
+  if (!agents.some((agent) => agent.label === seat.label && agent.status === BLOCKED_STATUS)) return null;
   let pane: string;
   try {
     pane = board.run(["--session", board.session, "agent", "read", seat.label, "--source", "visible"]);
-  } catch {
-    return null;
+  } catch (err) {
+    return { unread: `${seat.label}'s pane could not be read (${board.herdr.firstLine(err)})` };
   }
   const seen = readPaneDialog(pane, board.herdr.readDialogLines);
   if (seen === null) return null;
