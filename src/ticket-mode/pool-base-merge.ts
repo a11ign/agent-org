@@ -28,6 +28,9 @@ import { conflictLine } from "./worker-files.ts";
 /** One open pull request and what the board read of it. */
 type OpenPull = Readonly<{ url: string; read: PullFeedback }>;
 
+/** An open pull request the host said the head of. */
+type HeadedPull = Readonly<{ url: string; read: PullFeedback & { head: string } }>;
+
 /** The steps that are events of the run's log: the others are the sweep's own bookkeeping. */
 const LOGGED: ReadonlySet<BaseMerge["step"]> = new Set<BaseMerge["step"]>(["merging", "behind", "round", "waiting", "capped"]);
 
@@ -81,7 +84,7 @@ async function conflictFilesOf(ctx: PoolContext, place: NonNullable<ReturnType<t
 }
 
 /** A real conflict's decision, once its files are known (or known to be unlistable): a round when the run has one left, and the cap otherwise. */
-function decideRound(ctx: PoolContext, entry: Entry, url: string, read: PullFeedback & { head: string }, files: readonly string[] | null): void {
+function decideRound(ctx: PoolContext, entry: Entry, { url, read }: HeadedPull, files: readonly string[] | null): void {
   const latest = find(ctx.store.get(), entry.ticket.key) ?? entry;
   remember(ctx, latest, url, read.base, { head: read.head, step: roundsLeft(latest) ? "round" : "capped", files });
 }
@@ -90,14 +93,15 @@ function decideRound(ctx: PoolContext, entry: Entry, url: string, read: PullFeed
  * Read the files of the conflict the host reported at `head`, then decide ({@link decideRound}). The record says `listing` meanwhile, so no sweep acts on the pull request, and no conflict line is given for it, until the files are known.
  * With no clone to list them in there is nothing to wait for: it is decided at once, and null is returned.
  */
-function listThenDecide(ctx: PoolContext, entry: Entry, url: string, read: PullFeedback & { head: string }): Promise<void> | null {
+function listThenDecide(ctx: PoolContext, entry: Entry, pull: HeadedPull): Promise<void> | null {
+  const { url, read } = pull;
   const place = listingPlace(ctx, url, read.base);
   if (place === null) {
-    decideRound(ctx, entry, url, read, null);
+    decideRound(ctx, entry, pull, null);
     return null;
   }
   ctx.baseMerges.set(url, { head: read.head, step: "listing" });
-  return conflictFilesOf(ctx, place, read.head).then((files) => decideRound(ctx, entry, url, read, files));
+  return conflictFilesOf(ctx, place, read.head).then((files) => decideRound(ctx, entry, pull, files));
 }
 
 /** What an open pull request needs of its base, as the step the board records for it: `merging` for a conflict, `behind` for a branch that only lags. Null for one that needs neither, one that is not open, one the host does not say the head of, and one in the merge queue. PURE. */
@@ -140,7 +144,7 @@ export function mergeBaseInto(ctx: PoolContext, entry: Entry, pull: OpenPull): P
       ctx.baseMerges.set(url, { head, step: "refused", reason: result.reason });
       return null;
     case "conflict":
-      return listThenDecide(ctx, entry, url, { ...read, head });
+      return listThenDecide(ctx, entry, { url, read: { ...read, head } });
   }
 }
 
@@ -155,7 +159,7 @@ function takesRound(entry: Entry): boolean {
 const isConcluded = (entry: Entry): boolean => CONCLUDED.has(entry.outcome?.kind ?? "") || entry.outcome?.kind === "stopped";
 
 /**
- * The round that merges the base into pull requests of the ticket's earlier steps that conflict (A11-286), ahead of whatever the ticket was queued for: PURE.
+ * The round that merges the base into pull requests of the ticket's earlier steps that conflict (A11-286), ahead of whatever the ticket was queued for. PURE.
  * A queued entry is replaced by a review round over `pulls`, and itself stashed as the round's `afterRound`; a finished one is replaced by a review round over its own open pull requests and `pulls`, as the A11-89 round is. The round counts as
  * one of the board's own, and logs a `round` of cause `conflict`. The queue as it was when the run cannot take one: it is gone, it holds a workspace, it is a round already, or the board's rounds are used up.
  */
@@ -190,7 +194,7 @@ function roundFeedback(ctx: PoolContext, ready: readonly OpenPull[]): string {
 }
 
 /** What a sweep of one ticket's kept pull requests reads: the open ones, and whether any could not be read. A pull request found merged or closed is remembered as settled. */
-function readKept(ctx: PoolContext, entry: Entry, pulls: readonly PullRequest[], self: string): readonly OpenPull[] {
+function readOpenKept(ctx: PoolContext, entry: Entry, pulls: readonly PullRequest[], self: string): readonly OpenPull[] {
   const reads = pulls.map(({ url }) => ({ url, read: ctx.codeHost.readPullFeedback(url, self, ctx.feedbackIgnores) }));
   const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
   if (unread.length > 0) log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
@@ -199,26 +203,32 @@ function readKept(ctx: PoolContext, entry: Entry, pulls: readonly PullRequest[],
   return readable.filter(({ read }) => read.state === "open");
 }
 
-/**
- * One ticket's sweep: the step a finished round held back is queued again, and the ticket's pull requests that no finished run's watch reads are read and brought up to date, or handed to a conflict round. Returns whether a round was queued.
- * A run that cannot take a round, and is not live either (a talk session, a round already queued), reads nothing.
- */
-async function sweepTicket(ctx: PoolContext, key: string): Promise<boolean> {
+/** Queue the step a finished round held back again, when the round has pushed. Written only when it changes the queue. */
+function restoreStep(ctx: PoolContext, key: string): void {
   const held = ctx.store.get();
   const restored = restoreAfterRound(held, key, ctx.now());
   if (restored !== held) ctx.store.set(restored);
+}
+
+/** Whether a run's kept pull requests are looked at: a run that holds a workspace has them recorded as waiting, and one that may take a round has them answered. A talk session and a round already queued read nothing. */
+const looksAtKept = (entry: Entry): boolean => entry.workspace !== undefined || entry.phase === "starting" || entry.phase === "running" || takesRound(entry);
+
+/**
+ * One ticket's sweep: the step a finished round held back is queued again, and the ticket's pull requests that no finished run's watch reads are read and brought up to date, or handed to a conflict round. Returns whether a round was queued.
+ */
+async function sweepTicket(ctx: PoolContext, key: string): Promise<boolean> {
+  restoreStep(ctx, key);
   const entry = find(ctx.store.get(), key);
   if (entry === undefined || SETTLED.has(entry.trackerState ?? "")) return false;
-  const live = entry.workspace !== undefined || entry.phase === "starting" || entry.phase === "running";
   const pulls = unwatchedPullsOf(ctx.store.get(), entry, ctx.settledPulls);
-  if (pulls.length === 0 || !(live || takesRound(entry))) return false;
+  if (pulls.length === 0 || !looksAtKept(entry)) return false;
   ctx.ownLogin.value ??= ctx.codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   if (self === null) {
     log("the GitHub account the workers use could not be read, so no kept pull request's feedback was read");
     return false;
   }
-  const open = readKept(ctx, entry, pulls, self);
+  const open = readOpenKept(ctx, entry, pulls, self);
   const before = new Map(open.map(({ url }) => [url, ctx.baseMerges.get(url)]));
   await Promise.all(open.flatMap((pull) => mergeBaseInto(ctx, entry, pull) ?? []));
   const decided = open.filter(({ url, read }) => {
