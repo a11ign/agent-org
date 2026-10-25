@@ -253,15 +253,19 @@ function finishedRun(outcome: Outcome, over: Partial<Entry> = {}, seed: (host: R
   fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", finishedAt: NOW / 2, outcome, ...over }] });
   return { fixture, host, pool: fixture.restart({ codeHost: host }), entry: () => fixture.store.get().entries[0] };
 }
+/** Let the tick that a round `watchFeedback` queues wakes, which it does not wait for, finish: left running it writes the run's state folder after the test removed it. */
+const settled = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+/** Watch the run's pull requests once, and wait for the tick that wakes. */
+const watching = async (pool: { watchFeedback: () => void }) => { pool.watchFeedback(); await settled(); };
 const seedQueue = (removals: QueueRemoval[], head = HEAD) => (host: ReturnType<typeof createFakeCodeHost>) => { Object.assign(host.pullAt(URL)!, { head, queue: removedFrom(...removals) }); };
 const readyPr = { kind: "ready-pr", prs: [PR] } as Outcome;
 const needsHuman = { kind: "needs-human", reason: "which colour?" } as Outcome;
 /** What a run that asked a question after a round holds: the pull request it answered, as its `review`. */
 const afterRound: Partial<Entry> = { review: [PR] };
 
-test("A11-264: a run Ready to merge whose pull request the queue removed gets a round that names the merge_group run's errors, and the head is recorded as answered", () => {
+test("A11-264: a run Ready to merge whose pull request the queue removed gets a round that names the merge_group run's errors, and the head is recorded as answered", async () => {
   const run = finishedRun(readyPr, {}, seedQueue([removal(0)]));
-  run.pool.watchFeedback();
+  await watching(run.pool);
   const entry = run.entry();
   assert.equal(entry.rounds, 1, "one round");
   assert.deepEqual(entry.review, [PR], "for the pull request");
@@ -270,64 +274,64 @@ test("A11-264: a run Ready to merge whose pull request the queue removed gets a 
   assert.deepEqual(entry.queueHeads, { [URL]: { head: HEAD, step: "round", removals: 1, jobs: ["middleware"] } }, "carried into the round, so the same removal is not answered again");
 });
 
-test("A11-264: a run that ended needs-human gets the same round, and at the round cap is handed to a person with the removal named", () => {
+test("A11-264: a run that ended needs-human gets the same round, and at the round cap is handed to a person with the removal named", async () => {
   const run = finishedRun(needsHuman, afterRound, seedQueue([removal(0)]));
-  run.pool.watchFeedback();
+  await watching(run.pool);
   assert.equal(run.entry().rounds, 1);
   assert.match(run.entry().feedback ?? "", /was removed from the merge queue at /);
   const capped = finishedRun(needsHuman, { ...afterRound, rounds: 3 }, seedQueue([removal(0)]));
-  capped.pool.watchFeedback();
+  await watching(capped.pool);
   assert.equal(capped.entry().phase, "finished", "no round at the cap");
   assert.match(capped.entry().handedBack ?? "", /^The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped\. Respond to review starts another\. The latest: .*was removed from the merge queue/s);
   assert.deepEqual(capped.entry().queueHeads?.[URL]?.step, "round", "and the removal is answered, not asked again");
 });
 
-test("A11-264: a conflict removal starts a conflict round for a run Ready to merge and for one that ended needs-human, and none at the cap of the second", () => {
+test("A11-264: a conflict removal starts a conflict round for a run Ready to merge and for one that ended needs-human, and none at the cap of the second", async () => {
   const conflict = removal(0, { reason: "merge_conflict", groupCommit: null });
   for (const [kind, outcome] of [["Ready to merge", readyPr], ["needs-human", needsHuman]] as const) {
     const run = finishedRun(outcome, afterRound, seedQueue([conflict]));
-    run.pool.watchFeedback();
+    await watching(run.pool);
     assert.equal(run.entry().rounds, 1, kind);
     assert.match(run.entry().feedback ?? "", new RegExp(`^${URL} conflicts with its base branch main\\.\\nThe merge queue removed it at `), kind);
   }
   const capped = finishedRun(needsHuman, { ...afterRound, rounds: 3 }, seedQueue([conflict]));
-  capped.pool.watchFeedback();
+  await watching(capped.pool);
   assert.deepEqual([capped.entry().phase, capped.entry().handedBack, capped.entry().queueHeads], ["finished", undefined, undefined], "a conflict needs a round left: at the cap nothing is queued and nothing is recorded, so it is asked again");
 });
 
-test("A11-264: a repeat without a new push does not re-arm: the pull request is held, the card says so, and no second round starts", () => {
+test("A11-264: a repeat without a new push does not re-arm: the pull request is held, the card says so, and no second round starts", async () => {
   const record: Record<string, QueueHead> = { [URL]: { head: HEAD, step: "round", removals: 1, jobs: ["middleware"] } };
   const run = finishedRun(readyPr, { queueHeads: record }, seedQueue([removal(0), removal(1), removal(2)]));
-  run.pool.watchFeedback();
+  await watching(run.pool);
   const entry = run.entry();
   assert.deepEqual([entry.phase, entry.rounds], ["finished", undefined], "no second round");
   assert.deepEqual(run.host.queues.holds, [{ url: URL, on: true }], "the label is put on");
   assert.equal(queueNote(entry as never), "removed from the merge queue 3 times: middleware", "the card says so");
-  run.pool.watchFeedback();
+  await watching(run.pool);
   assert.equal(run.host.queues.holds.length, 1, "a later watch holds nothing twice");
 });
 
-test("A11-264: the hold lifts when the head changes, and the record goes with it", () => {
+test("A11-264: the hold lifts when the head changes, and the record goes with it", async () => {
   const held: Record<string, QueueHead> = { [URL]: { head: HEAD, step: "held", removals: 3, jobs: ["middleware"], held: true, note: "removed from the merge queue 3 times: middleware" } };
   const run = finishedRun(readyPr, { queueHeads: held }, (host) => { host.queues.held.add(URL); seedQueue([], PUSHED)(host); });
-  run.pool.watchFeedback();
+  await watching(run.pool);
   assert.deepEqual(run.host.queues.holds, [{ url: URL, on: false }]);
   assert.equal(run.entry().queueHeads === undefined || Object.keys(run.entry().queueHeads!).length === 0, true, "the record is dropped");
   assert.equal(queueNote(run.entry() as never), null);
 });
 
-test("A11-264: another reason is named on the card and starts no round", () => {
+test("A11-264: another reason is named on the card and starts no round", async () => {
   const run = finishedRun(readyPr, {}, seedQueue([removal(0, { reason: "timeout", groupCommit: null })]));
-  run.pool.watchFeedback();
+  await watching(run.pool);
   assert.deepEqual([run.entry().phase, run.entry().rounds], ["finished", undefined]);
   assert.equal(queueNote(run.entry() as never), "removed from the merge queue: timeout");
   const written = JSON.stringify(run.entry());
-  run.pool.watchFeedback();
+  await watching(run.pool);
   assert.equal(JSON.stringify(run.entry()), written, "a later watch rewrites nothing");
 });
 
-test("A11-264: a code host that reads no queue leaves the watch as it was", () => {
+test("A11-264: a code host that reads no queue leaves the watch as it was", async () => {
   const run = finishedRun(readyPr, {}, (host) => { Object.assign(host.pullAt(URL)!, { queue: undefined }); });
-  run.pool.watchFeedback();
+  await watching(run.pool);
   assert.deepEqual([run.entry().phase, run.entry().queueHeads, run.host.calls.filter((call) => call.startsWith("readQueueFailure"))], ["finished", undefined, []]);
 });
