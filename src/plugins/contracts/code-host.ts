@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.15 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.16 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,8 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.16 (A11-238): `stackMergeFactsOf` and `requestStackMerge`, both OPTIONAL: what the board reads of a pull request that may be in a stack (is it, where its base is, whether the stack merge is settled or was refused and why), and the hand-back of an approved, green stacked pull request to the arm bot, which alone merges it. A plugin of 1.15 is read as one with neither,
+// and the board then asks the arm bot for nothing, as before.
 // 1.15 (A11-215): `DefaultBranchRed` gains OPTIONAL `passing` and `pending`, the checks whose newest run on the default branch's head concluded green and those whose newest run has not concluded, and the base contract gains `updateBranch`, OPTIONAL: bring a pull request's branch up to date with its base, which is how the board
 // mends a pull request it held as red on main once main is green again. A plugin of 1.14 is read as one with neither, and the board then keeps a held pull request as A11-179 holds it.
 // 1.14 (A11-186): `repositories`, an OPTIONAL group: the accounts and organisations a person can pick repositories from, the repositories of each, the repository a git remote names, and the clone of one, which `onboard` offers at a terminal. A code host without it keeps onboard's typed
@@ -46,7 +48,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.15";
+export const CODE_HOST_CONTRACT_VERSION = "1.16";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -163,6 +165,20 @@ export type RetargetRequest = Readonly<{
   log: (line: string) => void;
 }>;
 
+/**
+ * What the board reads of a pull request that may be in a stack (contract 1.16). `stacked` is whether GitHub puts it in one; `base` and `defaultBranch` are where it merges into and the repository's default branch, so a base that is the default branch
+ * is the bottom open member; `head` is its commit. `settled` is `merged` once it has, `queued` once it is in the merge queue or has auto-merge on, and null otherwise. `refusal` is the newest refusal of the stack merge the arm bot left on the pull request, with the head it was given at and
+ * GitHub's reason, or null when it left none.
+ */
+export type StackMergeFacts = Readonly<{
+  stacked: boolean; base: string; defaultBranch: string; head: string;
+  settled: "merged" | "queued" | null;
+  refusal: Readonly<{ head: string; reason: string }> | null;
+}>;
+
+/** The pull request to hand to the arm bot (contract 1.16): its repository, `owner/name`, and its number. */
+export type StackMergeRequest = Readonly<{ repo: string; number: number }>;
+
 /** How a role authenticates: as the person's account, or as an installation token of a GitHub App named by id, key file and, when it has several, the installation (`slug` is the login the App's writes carry, without `[bot]`). */
 export type RoleIdentity = Readonly<{ mode: "user-accounts" }> | Readonly<{ mode: "github-apps"; appId: string; keyPath: string; installationId?: string; slug?: string }>;
 
@@ -261,6 +277,15 @@ export interface CodeHost extends CodeHostPort {
    * answers `refused` with a reason, and an address that is no pull request of the host is `refused`. A host without it cannot update a branch, and the board then holds a pull request as it did before.
    */
   updateBranch?(url: string, expectedHead: string): UpdateBranchResult;
+  /**
+   * What the pull request at `url` is, as the stack merge sees it (contract 1.16), or null for "could not ask": an address that is no pull request of the host, and a pull request the host will not say are both null. Null is never "it is not in a stack".
+   * A host without it is read as one the board asks the arm bot for nothing on.
+   */
+  stackMergeFactsOf?(url: string): StackMergeFacts | null;
+  /**
+   * Asks the arm bot to merge the pull request (contract 1.16): the board never merges itself, so this starts the arm bot's own job, which re-reads everything with its own identity and trusts nothing the request says. THROWS, with the host's own first line, when the request is refused.
+   */
+  requestStackMerge?(request: StackMergeRequest): void;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
   /**
