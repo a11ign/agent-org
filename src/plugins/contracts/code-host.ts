@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.19 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.20 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.20 (A11-249): `readClosedWork`, OPTIONAL: what a pull request closed without merging still held, the commits on its head that are not on its base and the files they change, as the host's compare reads them, which the board lists on the ticket so the work is never lost with the pull request. A plugin of 1.19 is read as one that cannot be asked, and the board then lists nothing.
 // 1.19 (A11-255): `openDependencyPulls`, OPTIONAL: the open pull requests of a repository that the host's dependency bot (`DEPENDENCY_PULL_AUTHOR`) opened, with their title, branch, head, author and body, which the board reads to turn a major update, or a grouped update that stays red, into a ticket. The host filters by author, so a pull request anyone else opens with a bot-like title is never returned. A plugin of 1.18 is read as one that cannot be asked, and the board then files no dependency ticket.
 // 1.18 (A11-240): `pullsNaming`, OPTIONAL: the pull requests of some repositories whose title or body names a ticket's key, with their state, which a run that is queued again is told of and which Respond finds a pull request to answer by when the board never recorded one. A plugin of 1.17 is read as one that cannot be asked, and everything is then as it was: the board's own record is all there is.
 // 1.17 (A11-245): `readCiRun`, OPTIONAL: what a workflow run is (whether it has finished, how it concluded, how many of its jobs have), which the board reads for a worker that declared it waits on one. A plugin of 1.16 is read as one that has no CI-run read, and a wait on a run is then shown as unreadable.
@@ -51,7 +52,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.19";
+export const CODE_HOST_CONTRACT_VERSION = "1.20";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -124,6 +125,15 @@ export type PullFeedback = Readonly<{
   /** Whether `files` is all of them. Read a page of 100 at a time, up to {@link MAX_FILE_PAGES}: a list cut off there is not complete. */
   filesComplete: boolean;
 }>;
+
+/** One commit of a closed pull request's unique work: its full SHA and the first line of its message. */
+export type ClosedCommit = Readonly<{ sha: string; subject: string }>;
+
+/**
+ * What a pull request closed without merging still held (A11-249), as the host's compare of its base with its head COMMIT reads it at the moment it is read: the commits on the head that are not on the base, oldest first, and the files they change. The compare is
+ * against the head's SHA and not its branch, so the read still works when someone deleted the branch. No commits means everything the pull request held is on its base. `filesComplete` is false when the host's compare stopped at its cap of files, so `files` is then a part.
+ */
+export type ClosedWork = Readonly<{ number: number; url: string; base: string; branch: string; head: string; commits: readonly ClosedCommit[]; files: readonly string[]; filesComplete: boolean }>;
 
 /** One markdown section a pull request added: the file it is in, its heading line as written (`### Scripted replay`), and the lines the pull request added under it. */
 export type FindingsSection = Readonly<{ file: string; heading: string; text: string }>;
@@ -341,6 +351,11 @@ export interface CodeHost extends CodeHostPort {
    * found nothing". A host without it passes no findings on.
    */
   readMergedFindings?(url: string): MergedFindings | null;
+  /**
+   * What the pull request at `url` still held when it closed (contract 1.20), or null for "could not ask": a pull request that is open or merged, an address that is no pull request of the host, a refused read, an answer it cannot read and a compare cut short
+   * of its commits are all null. Null is never "it held nothing": a pull request whose commits are all on its base answers a {@link ClosedWork} with no commits. A host without it is read as one that cannot be asked.
+   */
+  readClosedWork?(url: string): ClosedWork | null;
   /**
    * The log of the job behind a failing check, given the address its run reports (`FailingCheck.detailsUrl`), as text, or null for "could not ask": an address that names no job (a commit status
    * reports none) and a log the host would not give are both null. Null is never "the log is empty" (contract 1.5).

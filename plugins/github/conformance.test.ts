@@ -33,6 +33,10 @@ export const NAMED_KEY = "A11-240";
 export const NAMED = `https://github.com/${REPOSITORY}/pull/10`;
 /** A pull request the dependency bot opened, and one a person opened in the same repository with a bot-like title (contract 1.19). */
 export const DEPENDENCY_PULLS = { bot: `https://github.com/${REPOSITORY}/pull/11`, foreign: `https://github.com/${REPOSITORY}/pull/12` };
+/** A pull request closed without merging that still holds two commits, with its head and its base (contract 1.20). */
+export const CLOSED = `https://github.com/${REPOSITORY}/pull/13`;
+export const CLOSED_HEAD = "9".repeat(40);
+export const CLOSED_COMMITS = [{ sha: "8".repeat(40), subject: "feat: check-report refuses unknown options" }, { sha: CLOSED_HEAD, subject: "test: a browser.newContext() suite" }];
 /** A workflow run GitHub holds, halfway through (contract 1.17). */
 export const CI_RUN_ID = 77;
 
@@ -67,6 +71,11 @@ function github(calls: string[][] = []) {
         files: { nodes: [{ path: "src/a.ts" }], pageInfo: { hasNextPage: false, endCursor: null } },
         reviews: { nodes: [] }, comments: { nodes: [] }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] },
       } : null } } }));
+    }
+    // A closed pull request's read (contract 1.20): the pull request, then the compare of its base with its head commit, one line per commit and file as the plugin's jq prints them.
+    if (args[0] === "pr" && args[1] === "view" && args[2] === CLOSED) return ok(JSON.stringify({ number: 13, state: "CLOSED", baseRefName: "main", headRefName: "admin/a11-229-x", headRefOid: CLOSED_HEAD }));
+    if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/compare/main...${CLOSED_HEAD}?per_page=100`)) {
+      return ok([`T ${CLOSED_COMMITS.length}`, ...CLOSED_COMMITS.map((commit) => `C ${JSON.stringify(commit)}`), `F ${JSON.stringify("src/check-report.ts")}`, ""].join("\n"));
     }
     if (args[0] === "pr" && args[1] === "view" && args[2] === MERGED) return ok(JSON.stringify({ number: 8, title: "feat: replay", body: "What it found", state: "MERGED" }));
     if (args[0] === "pr" && args[1] === "diff" && args[2] === MERGED) return ok("diff --git a/docs/spike.md b/docs/spike.md\n--- a/docs/spike.md\n+++ b/docs/spike.md\n@@ -1 +1,3 @@\n+### Scripted replay\n+Cookie dialogs drop pages.\n");
@@ -108,7 +117,7 @@ const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRep
 test("the GitHub plugin passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
   const host = create({}, fakePluginDeps({ exec: github(), policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));
   const { passed, skipped } = await runCodeHostConformance(host, {
-    pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED,
+    pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED, closed: CLOSED,
     stackRefusal: { pull: STACKED, head: STACK_REFUSAL_HEAD, reason: STACK_REFUSAL_REASON }, stackRequestRefused: NO_ARM_BOT, ciRun: { repository: REPOSITORY, runId: CI_RUN_ID },
     named: { key: NAMED_KEY, repository: REPOSITORY, url: NAMED, state: "merged" }, dependency: { repository: REPOSITORY, url: DEPENDENCY_PULLS.bot, foreign: DEPENDENCY_PULLS.foreign },
     remote: { urls: [`https://github.com/${REPOSITORY}.git`, `git@github.com:${REPOSITORY}.git`], repository: { name: "repo", fullName: REPOSITORY } },
@@ -133,7 +142,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
     "a read the rows could not make for opening a pull request throws, never an empty answer", "a read the rows could not make for a hold answers null, never nobody holds it", "a read the rows could not make for the branch tools and the Stop hook throws, never an empty listing", "a write the rows could not make for a hold, the sweep and the daily post throws, so no caller reads it as done", "a read the rows could not make for the audit, the retro's stock count and the un-park throws, never an empty answer", "a write the rows could not make for the tick's heartbeat throws, so no caller reads it as done", "a read the rows could not make for the close of a merged pull request throws, never an empty answer", "a read the rows could not make for the checks on a row's claim throws, never an empty answer", "a write the rows could not make for the close of a merged pull request throws, so no caller reads it as done", "a read the rows could not make for the classes section throws, never an empty answer", "a write the rows could not make for the classes section throws, so no caller reads it as done", "an answer that is JSON and not a comment is never a comment's body", "the repository and job a check's details address names are read without asking the code host", "a read the rows could not make for the trunk, the queue table and the red-trunk reading throws, never an empty answer", "a write the rows could not make for the trunk sweep throws, so no caller reads it as done", "a read the rows could not make for the read-only reporters throws, never an empty answer", "a read the rows could not make for the tool-version agreement, the host check and the review eval throws, never an empty answer", "the GraphQL pool's probe is a list of arguments the caller sends through a runner of its own",
     "the rows' rules for arming answer as the callers that arm and guard expect",
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
-    "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
+    "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged", "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held",
     "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);

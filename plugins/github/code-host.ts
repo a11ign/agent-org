@@ -16,6 +16,7 @@ import { ghRunner } from "./gh.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { createRepositories } from "./repositories.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { readClosedWork } from "./closed-work.ts";
 import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
 import { readReplies } from "./replies.ts";
@@ -80,6 +81,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     readReviewState: (url) => readReviewState(url, gh, deps.policy),
     readPullState: (url) => readPullState(url, gh),
     readMergedFindings: (url) => readMergedFindings(url, gh),
+    readClosedWork: (url) => readClosedWork(url, gh),
     openPullUrlsOf: (repository) => openPullUrlsOf(repository, gh),
     pullsNaming: (key, repositories) => pullsNaming(key, repositories, gh),
     openDependencyPulls: (repository) => openDependencyPulls(repository, gh),

@@ -34,8 +34,10 @@ function seeded() {
   // A pull request the dependency bot opened, and one a person opened with the same title (contract 1.19).
   const bot = host.seedPull("owner/repo", 12, { body: "Release notes", dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
   const foreign = host.seedPull("owner/repo", 13, { dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", author: "someone" } });
+  // A pull request closed without merging that still holds two commits (contract 1.20).
+  const closed = host.seedPull("owner/repo", 20, { state: "closed", closedWork: { branch: "admin/a11-229-x", commits: [{ sha: "e".repeat(40), subject: "feat: one" }, { sha: "f".repeat(40), subject: "feat: two" }], files: ["src/a.ts", "src/b.ts"] } });
   const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, closed: closed.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
 }
 
 /**
@@ -69,7 +71,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     "readCheckLog answers null for an address that names no job", "rerunFailedChecks of no checks reruns nothing and says so", "readReviewClaims answers the entries of a head, or why it could not", "subscribe returns the function that cancels it",
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
-    "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
+    "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged", "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held",
     "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
@@ -373,4 +375,31 @@ test("the fake lists a bot's open pull request only: not a merged one, not anoth
   host.seedPull("owner/repo", 14, { state: "merged", dependency: { title: "deps: bump a from 1.0.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/a-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
   assert.deepEqual(host.openDependencyPulls!("owner/repo")?.map(({ number }) => number), [12]);
   assert.equal(host.openDependencyPulls!("owner/never-given"), null);
+});
+
+test("the fake reads a closed pull request's work, with no commits for one that holds nothing, and reads no pull request that is open, merged or never given (contract 1.20)", () => {
+  const { host, probe } = seeded();
+  const held = host.readClosedWork!(probe.closed);
+  assert.deepEqual([held?.number, held?.base, held?.branch, held?.head, held?.commits.map(({ subject }) => subject), held?.files, held?.filesComplete], [20, "main", "admin/a11-229-x", "head-20", ["feat: one", "feat: two"], ["src/a.ts", "src/b.ts"], true]);
+  const nothing = host.seedPull("owner/repo", 21, { state: "closed" });
+  assert.deepEqual([host.readClosedWork!(nothing.url)?.commits, host.readClosedWork!(nothing.url)?.branch], [[], "branch-21"], "a closed pull request seeded with no work holds none: everything it held is on its base");
+  assert.deepEqual([probe.pull, probe.merged, probe.missing].map((url) => host.readClosedWork!(url)), [null, null, null]);
+});
+
+test("a code host that reads an open pull request, or one it cannot read, as having held nothing fails the closed-work check by name (contract 1.20)", async () => {
+  const { host, probe } = seeded();
+  const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
+  const reads = host.readClosedWork!;
+  const CHECK = "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held";
+  assert.deepEqual(await failures({ ...host, readClosedWork: (url) => reads(url) ?? { number: 1, url, base: "main", branch: "b", head: "h", commits: [], files: [], filesComplete: true } }), [CHECK], "an empty list for could not ask");
+  assert.deepEqual(await failures({ ...host, readClosedWork: (url) => (url === probe.closed ? { ...reads(url)!, commits: [] } : reads(url)) }), [CHECK], "a closed pull request the probe says holds a commit");
+});
+
+test("a code host of contract 1.19, with no readClosedWork, still passes the suite: its check is skipped with the reason", async () => {
+  const { host, probe } = seeded();
+  const older = Object.fromEntries(Object.entries(host).filter(([name]) => name !== "readClosedWork")) as CodeHost;
+  const ran = await runCodeHostConformance(older, probe);
+  const name = "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held";
+  assert.ok(!ran.passed.includes(name));
+  assert.match(ran.skipped.find(({ check }) => check === name)?.reason ?? "", /the code host has no readClosedWork/);
 });

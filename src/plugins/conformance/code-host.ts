@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`; A11-240 adds `pullsNaming`; A11-255 adds `openDependencyPulls`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
+// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`; A11-240 adds `pullsNaming`; A11-255 adds `openDependencyPulls`; A11-249 adds `readClosedWork`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
 //
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
@@ -30,6 +30,8 @@ export type CodeHostProbe = Readonly<{
   ciRun?: Readonly<{ repository: string; runId: number }>;
   /** A pull request the host holds whose body names `key`, with its repository and state (contract 1.18). A host without `pullsNaming` is not asked. */
   named?: Readonly<{ key: string; repository: string; url: string; state: "open" | "merged" | "closed" }>;
+  /** A pull request the host holds that was closed without merging, whose head holds at least one commit that is not on its base and a file that commit changes (contract 1.20). A host without `readClosedWork` is not asked. */
+  closed?: string;
   /** A pull request the dependency bot opened (`url`) and one in the same repository that someone else opened with a bot-like title (`foreign`), which must not be listed (contract 1.19). A host without `openDependencyPulls` is not asked. */
   dependency?: Readonly<{ repository: string; url: string; foreign: string }>;
   /** Remote URLs of one repository the host holds, in the forms a checkout's `origin` takes, and the repository each names (contract 1.14). A host without a `repositories` group is not asked. */
@@ -468,6 +470,21 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const found = host.readMergedFindings!(probe.merged);
       expect(isObject(found) && isString(found.title) && Number.isInteger(found.number) && isString(found.body) && Array.isArray(found.sections), `readMergedFindings(${probe.merged}) must read { title, number, body, sections }`);
       expect(found.sections.every((section) => isString(section.file) && isString(section.heading) && isString(section.text)), "each section must be { file, heading, text }");
+    },
+  },
+  "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held": {
+    applies: ({ host }) => typeof host.readClosedWork === "function",
+    reason: "the code host has no readClosedWork, which is optional (contract 1.20)",
+    run: ({ host, probe }) => {
+      expect(host.readClosedWork!(probe.missing) === null, "readClosedWork must answer null for what it cannot read: null is never 'it held nothing'");
+      expect(host.readClosedWork!(probe.pull) === null, "readClosedWork must answer null for a pull request that is open, whose work is not final");
+      if (probe.merged !== undefined) expect(host.readClosedWork!(probe.merged) === null, "readClosedWork must answer null for a pull request that merged, whose work is on its base");
+      if (probe.closed === undefined) return;
+      const held = host.readClosedWork!(probe.closed);
+      expect(isObject(held) && Number.isInteger(held.number) && held.url === probe.closed && isString(held.base) && isString(held.branch) && isString(held.head) && Array.isArray(held.commits) && Array.isArray(held.files) && typeof held.filesComplete === "boolean",
+        `readClosedWork(${probe.closed}) must read { number, url, base, branch, head, commits, files, filesComplete }`);
+      expect(held.commits.length > 0 && held.commits.every((commit) => isString(commit.sha) && isString(commit.subject)), "each commit must be { sha, subject }, and the probe's closed pull request holds one");
+      expect(held.files.length > 0 && held.files.every(isString), "the files must be paths, and the probe's closed pull request changes one");
     },
   },
   "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read": {
