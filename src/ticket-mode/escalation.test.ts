@@ -44,6 +44,10 @@ test("A11-257: a QUESTION.md names its item on its first line, and the card show
   assert.equal(questionText("Post it?"), "Post it?");
 });
 
+test("A11-257: the rule tells a run that failed, with no question open, to say what failed, and that the board marks the stop", () => {
+  assert.match(ESCALATION_RULE, /A run that cannot go on because something failed, such as a skill that is missing or a check that never starts, has no question to decide: it says what failed in its `needs-human` reason, and the board shows that stop as "Off the escalation list:"/);
+});
+
 test("A11-257: the needs-human example names an item of the list, and the file checks as it is written", () => {
   const example = OUTCOME_EXAMPLES["needs-human"];
   assert.ok(escalationItem(example.escalation) !== undefined);

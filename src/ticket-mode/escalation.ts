@@ -68,7 +68,8 @@ export function escalationList(): string {
 export const ESCALATION_RULE = `${escalationList()}\n\n`
   + "Everything else you decide yourself, in line with the plan, the ticket's Decisions, the code and the ADRs. Where you would have recommended an option, take it. "
   + "Record each such choice under \"Decisions made without a person\" (in the plan, or in the pull request body), with its reason, and carry on. "
-  + "A `needs-human` outcome names its item in `escalation` (`\"escalation\": \"<id>\"`), and a `QUESTION.md` starts with the line `**Escalation:** <id>`: a stop that names none, or one not on this list, is sent back to you.";
+  + "A `needs-human` outcome names its item in `escalation` (`\"escalation\": \"<id>\"`), and a `QUESTION.md` starts with the line `**Escalation:** <id>`: a stop that names none, or one not on this list, is sent back to you. "
+  + "A run that cannot go on because something failed, such as a skill that is missing or a check that never starts, has no question to decide: it says what failed in its `needs-human` reason, and the board shows that stop as \"Off the escalation list:\" so that the cause is fixed.";
 
 /**
  * What the stop hook refuses an agent with when it stops on a question that is not on the list. `what` says which stop and why it is off the list. A run that cannot go on because something FAILED (a check that never started, a

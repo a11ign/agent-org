@@ -808,6 +808,7 @@ test("A11-257: both planners decide everything off the escalation list themselve
     }
   }
   assert.match(batch, /or a `QUESTION\.md` when its plan needs an item of the escalation list/);
+  for (const brief of [plan, batch]) assert.match(brief, /A decision of the ticket's that your plan cannot follow is the `contradicts` item: stop with a `QUESTION\.md` that starts `\*\*Escalation:\*\* contradicts`/);
 });
 
 test("A11-134: a Grill run's brief grills one ticket, asks its open line and its screen's behaviour, and files nothing: it ends decided", () => {

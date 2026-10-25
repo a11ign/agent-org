@@ -68,7 +68,8 @@ export const behaviourOpen = (ticket: Pick<Ticket, "description" | "labels">): b
 
 /** The line a plan carries for a screen ticket whose behaviour no Grill settled (A11-257): the planner settled it, and the decisions follow, each with its reason. */
 export const BEHAVIOUR_BY_PLANNER = "**Behaviour:** settled by the planner";
-const BEHAVIOUR_BY_PLANNER_LINE = /^\s*\*\*Behaviour:\*\*\s*settled by the planner\s*$/m;
+/** The line may be a bullet or a quote and may end in a full stop: a plan is not refused for how it spells the line. */
+const BEHAVIOUR_BY_PLANNER_LINE = /^\s*(?:[-*>]\s+)?\*\*Behaviour:\*\*\s*settled by the planner\.?\s*$/m;
 
 /**
  * Why a plan is refused for a screen's behaviour, or null (A11-257). A ticket that changes a screen and has no `**Behaviour:** settled` line has had no Grill, and there is no behaviour grill to wait for: the planner settles what the person sees,

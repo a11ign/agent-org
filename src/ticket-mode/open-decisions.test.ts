@@ -107,6 +107,12 @@ test("A11-257: a ticket whose behaviour was grilled, or that changes no screen, 
   assert.match(missingBehaviour(["# Plan\n"], { description: "x", labels: [{ name: "ui", group: null }] }) ?? "", /settled by the planner/, "a ui label is a screen too");
 });
 
+test("A11-257: the line may be a bullet, a quote or end in a full stop: a plan is not refused for how it spells the line", () => {
+  for (const spelled of [`- ${BEHAVIOUR_BY_PLANNER}`, `* ${BEHAVIOUR_BY_PLANNER}`, `> ${BEHAVIOUR_BY_PLANNER}`, `${BEHAVIOUR_BY_PLANNER}.`, `  ${BEHAVIOUR_BY_PLANNER}  `]) {
+    assert.equal(missingBehaviour([`# Plan\n\n${spelled}\n`], SCREEN), null, spelled);
+  }
+});
+
 test("A11-257: the line must stand on its own: a mention of it in prose settles nothing", () => {
   assert.notEqual(missingBehaviour([`The plan will write ${BEHAVIOUR_BY_PLANNER} later.\n`], SCREEN), null);
 });
