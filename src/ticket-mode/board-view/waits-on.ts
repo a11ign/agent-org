@@ -39,7 +39,7 @@ function stillAhead({ state, pulls }: ViewBlocker): boolean {
   return !SETTLED_STATES.has(state) && !(states.includes("merged") && !states.includes("open"));
 }
 
-/** The ticket of each open pull request on the board: what {@link directWaits} reads a pull request wait by, built once for a walk. */
+/** The ticket of each open pull request on the board: what {@link declaredIn} reads a pull request wait by, built once for a walk. */
 type Board = Readonly<{ pullOwner: ReadonlyMap<string, string> }>;
 
 function boardOf(entries: readonly ViewEntry[]): Board {
@@ -47,20 +47,29 @@ function boardOf(entries: readonly ViewEntry[]): Board {
 }
 
 /**
- * The tickets a run waits on directly: its blockers that may still hold it ({@link blockersOf}, {@link stillAhead}), and, while its worker sits idle in a declared wait (`working.waiting`), each ticket the wait names and
- * the ticket whose run has a pull request it names. A worker woken from its wait, or at work again, waits on none of those. PURE.
+ * The tickets a run's idle worker declared a wait on, or [] when it declared none: while the run is live and its worker sits idle in a declared wait (`working.waiting`), each ticket the wait names and the ticket whose
+ * run has a pull request it names. A worker woken from its wait, or at work again, waits on none of those. The tickets of a wait are the wait's, so a fleet job and a CI run add none. PURE.
  */
-function directWaits(entry: ViewEntry, board: Board): string[] {
-  const blockers = blockersOf(entry).filter(stillAhead).map(({ key }) => key);
+function declaredIn(entry: ViewEntry, board: Board): string[] {
   const parked = (entry.phase === "starting" || entry.phase === "running") && entry.working?.waiting === true;
-  if (!parked) return blockers;
-  const declared = (entry.working?.waits ?? []).flatMap((wait) => {
+  if (!parked) return [];
+  return (entry.working?.waits ?? []).flatMap((wait) => {
     if (wait.kind === "ticket") return [wait.key];
     const owner = wait.kind === "pullRequest" ? board.pullOwner.get(wait.url) : undefined;
     return owner === undefined ? [] : [owner];
   });
-  return [...blockers, ...declared];
 }
+
+/** The tickets each ticket's idle worker declared a wait on ({@link declaredIn}), by ticket key, given every run on the board and read in one pass over it: what the wait cycles read (`wait-cycles.ts`) beside what the overlap hold reads. PURE. */
+export function declaredWaits(entries: readonly ViewEntry[]): ReadonlyMap<string, readonly string[]> {
+  const board = boardOf(entries);
+  const declared = new Map<string, string[]>();
+  for (const entry of entries) declared.set(entry.ticket.key, [...(declared.get(entry.ticket.key) ?? []), ...declaredIn(entry, board)]);
+  return declared;
+}
+
+/** The tickets a run waits on directly: its blockers that may still hold it ({@link blockersOf}, {@link stillAhead}), then the tickets its worker declared a wait on ({@link declaredIn}). PURE. */
+const directWaits = (entry: ViewEntry, board: Board): string[] => [...blockersOf(entry).filter(stillAhead).map(({ key }) => key), ...declaredIn(entry, board)];
 
 /**
  * The tickets whose runs wait on ticket `key`, directly ({@link directWaits}) or through the tickets those wait on, each once, and never `key` itself. One walk back from `key` over the board's waits, so a caller

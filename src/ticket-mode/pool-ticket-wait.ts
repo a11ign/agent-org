@@ -10,6 +10,8 @@ import { forgetRun, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { find, type Entry, type WorkingNote } from "./queue/queue-entries-and-outcomes.ts";
 import { type BlockerWait, recordStoppedStates, requeueBehindBlocker, unlistedKeysDue } from "./queue/queue-blocker-wait.ts";
 import { judgedWait } from "./wait-on/wait-watch.ts";
+import { waitCycles, type WaitCycle } from "./board-view/wait-cycles.ts";
+import { tellWaitCycles, waitCyclesDue } from "./pool-wait-cycles.ts";
 import { type TicketWait, type Wait, waitKey } from "./wait-on/wait-types.ts";
 import { type PoolContext } from "./pool-context.ts";
 
@@ -22,16 +24,20 @@ const parkedAlone = (entry: Entry): boolean => entry.phase === "running" && entr
 const inUnwokenWait = (note: WorkingNote): boolean => note.waiting === true && note.woke === undefined;
 
 /**
- * What lets a live run go, or null when nothing does: its worker is idle in a declared wait it has not been woken from, the wait's latest reading is still pending, and that reading found some ticket of it, other
- * than the run's own, not done. Those tickets are what it is queued behind, and the wait's other events are kept beside them.
+ * What lets a live run go, or null when nothing does: its worker is idle in a declared wait it has not been woken from, and the wait is not over. The wait's latest reading is still pending and found some ticket of
+ * it, other than the run's own, not done; or, with no reading yet, the run is in a wait cycle (`cycle` holds the tickets of the cycle) and the wait names another ticket of it, which is on the board and so not done
+ * (A11-272). Every ticket the wait names, not done, is what it is queued behind, and the wait's other events are kept beside them.
  */
-function blockerWaitOf(ctx: PoolContext, entry: Entry): BlockerWait | null {
+function blockerWaitOf(ctx: PoolContext, entry: Entry, cycle?: ReadonlySet<string>): BlockerWait | null {
   const note = entry.working;
   if (!parkedAlone(entry) || note?.waits === undefined || !inUnwokenWait(note)) return null;
   const judged = judgedWait(ctx.waitPolls, runPlace(ctx, entry).name, note);
-  if (judged?.verdict.outcome !== "pending") return null;
-  const ended = new Set(judged.verdict.ended.map(waitKey));
+  // Two grounds to let go: the reading is pending and found a ticket not done, or there is no reading yet and a ticket the wait names is in a wait cycle with the run (it is on the board, so not done).
+  const readingPending = judged !== null && judged.verdict.outcome === "pending";
+  const ended = new Set((judged?.verdict.ended ?? []).map(waitKey));
   const tickets = note.waits.filter(isTicketWait).filter((wait) => wait.key !== entry.ticket.key && !ended.has(waitKey(wait)));
+  const grounded = readingPending || (judged === null && tickets.some((wait) => cycle?.has(wait.key) === true));
+  if (!grounded) return null;
   return tickets.length === 0 ? null : { keys: tickets.map(({ key }) => key), others: note.waits.filter((wait) => !isTicketWait(wait)) };
 }
 
@@ -49,22 +55,29 @@ async function addBlockers(ctx: PoolContext, key: string, keys: readonly string[
 
 /**
  * Let one run go: the tracker is told its tickets block it, its workspace is closed, and it is queued behind them with its agent's session. A run whose worker moved on while the tracker answered (a newer note,
- * or a wake) is left alone, and so is one whose workspace would not close: the next tick tries again, and nothing is queued beside a live agent.
+ * or a wake) is left alone, and so is one whose workspace would not close: the next tick tries again, and nothing is queued beside a live agent. True when the run was queued.
  */
-async function release(ctx: PoolContext, entry: Entry, asked: BlockerWait): Promise<void> {
+async function release(ctx: PoolContext, entry: Entry, asked: BlockerWait, cycle?: ReadonlySet<string>): Promise<boolean> {
   const { claudeSessions, now, store } = ctx;
   const key = entry.ticket.key;
   await addBlockers(ctx, key, asked.keys);
   // Read again after the tracker answered: the worker may have written a newer note, or been woken, meanwhile.
   const current = find(store.get(), key);
-  const wait = current === undefined || current.working?.at !== entry.working?.at ? null : blockerWaitOf(ctx, current);
-  if (current === undefined || wait === null) return;
+  const wait = current === undefined || current.working?.at !== entry.working?.at ? null : blockerWaitOf(ctx, current, cycle);
+  if (current === undefined || wait === null) return false;
   const behind = wait.keys.join(", ");
-  if (!closedOrGone(ctx, current, `to queue it behind ${behind}`)) return;
+  if (!closedOrGone(ctx, current, `to queue it behind ${behind}`)) return false;
   const session = current.workspace === undefined ? undefined : claudeSessions.get(current.workspace);
   forgetRun(ctx, runPlace(ctx, current).name);
   update(ctx, (queue) => requeueBehindBlocker(queue, key, { ...wait, session }, now()));
   log(`${key}: its worker waits on ${behind}, so its run was closed and queued behind ${behind}; it resumes its own session once ${wait.keys.length === 1 ? "that ticket is" : "those tickets are"} done`);
+  return true;
+}
+
+/** The other tickets of the wait cycle a ticket is in, or undefined when it is in none: the tickets its wait may name for the board to let it go before it has read the wait. */
+function cycleMates(cycles: readonly WaitCycle[], key: string): ReadonlySet<string> | undefined {
+  const cycle = cycles.find(({ keys }) => keys.includes(key));
+  return cycle === undefined ? undefined : new Set(cycle.keys.filter((member) => member !== key));
 }
 
 /**
@@ -85,20 +98,25 @@ async function readUnlisted(ctx: PoolContext, due: readonly Readonly<{ entry: En
 }
 
 /**
- * One pass: let go of every live run whose worker waits on a ticket not done, then read the tickets queued stopped runs wait on that the tracker does not list. Null when neither is due, so a tick with nothing to do
- * here awaits nothing, and its slots are filled in the same turn as before.
+ * One pass: let go of every live run whose worker waits on a ticket not done, and, at once, every run in a wait cycle whose worker waits on another ticket of it, since a ticket on the board in the same cycle is not
+ * done (A11-272); then tell the chairman's session of the cycles found (`pool-wait-cycles.ts`), and read the tickets queued stopped runs wait on that the tracker does not list. Null when none of it is due, so a tick
+ * with nothing to do here awaits nothing, and its slots are filled in the same turn as before.
  */
 export function releaseTicketWaits(ctx: PoolContext): Promise<void> | null {
   const { now, store } = ctx;
   const entries = store.get().entries;
+  const cycles = waitCycles(entries);
   const releases = entries.flatMap((entry) => {
-    const wait = blockerWaitOf(ctx, entry);
-    return wait === null ? [] : [{ entry, wait }];
+    const cycle = cycleMates(cycles, entry.ticket.key);
+    const wait = blockerWaitOf(ctx, entry, cycle);
+    return wait === null ? [] : [{ entry, wait, cycle }];
   });
   const reads = entries.map((entry) => ({ entry, keys: unlistedKeysDue(entry, now()) })).filter(({ keys }) => keys.length > 0);
-  if (releases.length === 0 && reads.length === 0) return null;
+  if (releases.length === 0 && reads.length === 0 && !waitCyclesDue(ctx, cycles)) return null;
   return (async () => {
-    for (const { entry, wait } of releases) await release(ctx, entry, wait);
+    const released = new Set<string>();
+    for (const { entry, wait, cycle } of releases) if (await release(ctx, entry, wait, cycle)) released.add(entry.ticket.key);
+    await tellWaitCycles(ctx, cycles, released, new Set(releases.map(({ entry }) => entry.ticket.key).filter((key) => !released.has(key))));
     await readUnlisted(ctx, reads);
   })();
 }

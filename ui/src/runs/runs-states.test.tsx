@@ -1,6 +1,6 @@
 import { render } from "@testing-library/react";
 import { PERSONAL, queueingConfig, standFetch, type InstanceAnswers } from "../../test/fixtures.ts";
-import { boardRuns, completed, queueWith, runsStand, working } from "../../test/runs/runs-stand.ts";
+import { boardRuns, completed, queueWith, queuedRun, runsStand, working } from "../../test/runs/runs-stand.ts";
 import { fireEvent, headings, keysShown, pageOn, posts, rail, rowOf, screen, textOf, waitFor, within } from "./runs-harness.tsx";
 import { RunsApp } from "./RunsApp.tsx";
 
@@ -17,6 +17,31 @@ describe("the loading state", () => {
     expect(document.querySelector(".page-header .sk")).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Run status" })).toBeNull();
     expect(screen.queryByText(/of \d+ busy/)).toBeNull();
+  });
+});
+
+describe("wait cycles (A11-272)", () => {
+  const FILES = ["lab:middleware/runtime/main.py"];
+  const cycle = () => [
+    working({ key: "A11-231", title: "parked", startedAgo: MINUTE, paths: FILES, working: { reason: "waits", at: Date.now(), waiting: true, waits: [{ kind: "ticket", key: "A11-229" }], waitText: "Waiting on ticket A11-229 (In Progress)" } }),
+    queuedRun("A11-229", "held", MINUTE, { paths: FILES }),
+  ];
+
+  it("draws one banner for the cycle, naming it, and the cards say Waiting and name the cycle", async () => {
+    await pageOn(runsStand({ runs: cycle() }));
+    await screen.findByText("held");
+    const banners = [...document.querySelectorAll(".status-banner")].map(textOf);
+    expect(banners).toEqual(["Wait cycle A11-229 → A11-231 → A11-229: A11-229 is held behind A11-231's files; A11-231's worker waits on A11-229."]);
+    expect(textOf(rowOf("A11-231"))).toMatch(/Waiting on ticket A11-229 \(In Progress\), until \d\d:\d\d/);
+    expect(textOf(rowOf("A11-231"))).not.toMatch(/In progress/);
+    expect(textOf(rowOf("A11-229"))).toContain("in a wait cycle: A11-229 → A11-231 → A11-229");
+    expect(rail().getByRole("button", { name: /^Waiting/ }).textContent).toMatch(/1$/);
+  });
+
+  it("draws no banner when no ticket waits on another", async () => {
+    await pageOn(runsStand({ runs: [working({ key: "A11-1", title: "at work", startedAgo: MINUTE }), queuedRun("A11-2", "q", MINUTE)] }));
+    await screen.findByText("at work");
+    expect(document.querySelector(".status-banner")).toBeNull();
   });
 });
 
@@ -203,7 +228,7 @@ describe("a filter", () => {
 
   it("draws every status in the rail, a status with no runs dimmed", async () => {
     await pageOn();
-    expect(rail().getAllByRole("button")).toHaveLength(16);
+    expect(rail().getAllByRole("button")).toHaveLength(17);
     expect(rail().getByRole("button", { name: /^Needs you/ }).className).toContain("rail-button-empty");
     expect(rail().getByRole("button", { name: /^Completed/ }).className).not.toContain("rail-button-empty");
     expect(textOf(rail().getByRole("button", { name: /^All runs/ }))).toBe("All runs90");
