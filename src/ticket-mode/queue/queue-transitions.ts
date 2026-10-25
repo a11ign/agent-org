@@ -7,7 +7,7 @@ import { conflictsIn } from "../worker-files.ts";
 import type { RunWorker } from "./queue-run-detail.ts";
 import { loggedPersonRound } from "./queue-person-round.ts";
 import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
-import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type Queue, type WorkingNote, writerLive } from "./queue-entries-and-outcomes.ts";
+import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type PullRequest, type Queue, type WorkingNote, writerLive } from "./queue-entries-and-outcomes.ts";
 
 /**
  * A person reviewed a finished run's DRAFT pull requests and approved them: the ticket goes back on the queue, at the end, as a REVIEW RUN. It
@@ -24,15 +24,15 @@ export function approve(queue: Queue, key: string, now: number): Queue {
 
 /**
  * Why a person's Respond cannot act on `entry`, or null when it can (A11-154): the run is not on the board, is not finished, has a round queued already, its
- * tracker has completed or canceled the ticket, or it has no pull request open. A parked run is not refused here: the pool closes its workspace first. PURE.
+ * tracker has completed or canceled the ticket, or it has no pull request open, on the board's record or on `found` (A11-240). A parked run is not refused here: the pool closes its workspace first. PURE.
  */
-function respondRefusal(key: string, entry: Entry | undefined): string | null {
+function respondRefusal(key: string, entry: Entry | undefined, found: readonly PullRequest[]): string | null {
   if (entry === undefined) return `${key} is not on the board`;
   if (entry.phase === "queued" && entry.talk === true) return `a talk session is already queued for ${key}: a round would share its session`;
   if (entry.phase === "queued") return entry.review !== undefined ? `a round is already queued for ${key}` : `${key} has not run yet, so there is no pull request to answer`;
   if (entry.phase !== "finished") return `${key} is still running: Respond answers a run that has finished`;
   if (SETTLED.has(entry.trackerState ?? "")) return `${key}'s ticket is ${entry.trackerState === "completed" ? "completed" : "closed"} in the tracker, so there is nothing to respond to`;
-  if (openPulls(entry).length === 0) return `${key} has no pull request open, so there is no feedback to answer`;
+  if (openPulls(entry).length === 0 && found.length === 0) return `${key} has no pull request open, so there is no feedback to answer`;
   const kind = entry.outcome?.kind ?? "";
   if (CONCLUDED.has(kind) || kind === "stopped") return `${key} ${kind === "stopped" ? "was stopped" : `concluded (${kind})`}: there is nothing for a worker to answer`;
   return null;
@@ -44,16 +44,20 @@ function respondRefusal(key: string, entry: Entry | undefined): string | null {
  * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it. A run handed back for a conflict carries the
  * conflict lines, so its round merges the base in first (A11-125). A run whose pull requests are drafts is approved, which marks them ready and starts the
  * same round. Throws, naming why, for a run Respond cannot act on ({@link respondRefusal}), so the board says it. A parked run is the pool's: it closes the
- * run's workspace, then asks this.
+ * run's workspace, then asks this. `foundOnHost` is the open pull requests the code host holds for the ticket that the run's record does not (A11-240): a run whose record holds no
+ * open pull request answers those instead of being refused, so a crash that emptied the record does not leave a pull request nobody can respond on.
  */
-export function respond(queue: Queue, key: string, now: number): Queue {
+export function respond(queue: Queue, key: string, now: number, foundOnHost: readonly PullRequest[] = []): Queue {
   const entry = find(queue, key);
-  const refusal = respondRefusal(key, entry);
+  // A run that ended on drafts is approved, which marks its recorded drafts ready: a pull request found only on the code host is not its to approve.
+  const found = entry?.outcome?.kind === "draft-pr" ? [] : foundOnHost;
+  const refusal = respondRefusal(key, entry, found);
   if (refusal !== null) throw new Error(refusal);
   if (entry === undefined || isParked(entry)) throw new Error(`${key}'s workspace is open: it is closed before Respond acts`);
+  const recorded = openPulls(entry);
   if (entry.outcome?.kind === "draft-pr") return approve(queue, key, now);
   const conflict = conflictsIn(entry.handedBack ?? "");
-  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, openPulls(entry), now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
+  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, recorded.length > 0 ? recorded : found, now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
   return loggedPersonRound(queued, entry, "respond", now, conflict === null ? null : shortReason(conflict));
 }
 

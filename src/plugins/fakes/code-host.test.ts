@@ -28,8 +28,11 @@ function seeded() {
   host.stackMerges.requestRefusal = "Resource not accessible by integration (HTTP 403)";
   // A workflow run the fake holds, halfway through (contract 1.17).
   host.ciRuns.runs.set("owner/repo#31", { status: "in_progress", conclusion: null, url: "https://github.com/owner/repo/actions/runs/31", name: "ci", jobs: { done: 1, total: 3 } });
+  // A pull request whose body names a ticket (contract 1.18), and one that does not.
+  const named = host.seedPull("owner/repo", 10, { state: "merged", body: "Refs A11-240\n\nPartial: step 1 of 2: the first half" });
+  host.seedPull("owner/repo", 11, { body: "Refs A11-2401" });
   const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 } } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const } } };
 }
 
 /**
@@ -64,7 +67,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -296,4 +299,48 @@ test("a code host of contract 1.16, with no readCiRun, still passes the suite: b
   assert.deepEqual(skipped.map(({ check }) => check).filter((check) => CI_CHECKS.includes(check)), CI_CHECKS);
   assert.ok(skipped.filter(({ check }) => CI_CHECKS.includes(check)).every(({ reason }) => /the code host has no readCiRun/.test(reason)));
   assert.ok(!passed.some((check) => CI_CHECKS.includes(check)));
+});
+
+const NAMING_CHECKS = ["pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state"];
+
+/** Runs the suite over `candidate` and says which of `checks` it skipped, with the reason, and which it passed. */
+async function ranChecks(candidate: CodeHost, probe: Parameters<typeof runCodeHostConformance>[1], checks: readonly string[]) {
+  const { passed, skipped } = await runCodeHostConformance(candidate, probe);
+  return { skipped: skipped.filter(({ check }) => checks.includes(check)), passed: passed.filter((check) => checks.includes(check)) };
+}
+
+test("a code host of contract 1.17, with no pullsNaming, still passes the suite: both of the listing's checks are skipped with the reason", async () => {
+  const { host, probe } = seeded();
+  const { pullsNaming, ...older } = host;
+  assert.equal(typeof pullsNaming, "function");
+  const ran = await ranChecks(older, probe, NAMING_CHECKS);
+  assert.deepEqual(ran.skipped.map(({ check }) => check), NAMING_CHECKS);
+  assert.ok(ran.skipped.every(({ reason }) => /the code host has no pullsNaming/.test(reason)));
+  assert.deepEqual(ran.passed, []);
+});
+
+test("without a pull request that names a key in the probe the listing of one is skipped with the reason, not passed (contract 1.18)", async () => {
+  const { host, probe } = seeded();
+  const ran = await ranChecks(host, { ...probe, named: undefined }, NAMING_CHECKS);
+  assert.deepEqual(ran.skipped.map(({ check }) => check), [NAMING_CHECKS[1]]);
+  assert.match(ran.skipped[0]!.reason, /the probe names no pull request that names a key/);
+  assert.deepEqual(ran.passed, [NAMING_CHECKS[0]]);
+});
+
+test("a code host that reads a repository it cannot read as one that names nothing, or lists a pull request in a state or repository it is not in, fails each by name", async () => {
+  const { host, probe } = seeded();
+  const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
+  const reads = host.pullsNaming!;
+  assert.deepEqual(await failures({ ...host, pullsNaming: (key, repositories) => reads(key, repositories) ?? [] }), [NAMING_CHECKS[0]], "none for could not ask");
+  assert.deepEqual(await failures({ ...host, pullsNaming: (key, repositories) => reads(key, repositories)?.map((pull) => ({ ...pull, state: "open" as const })) ?? null }), [NAMING_CHECKS[1]], "the wrong state");
+  assert.deepEqual(await failures({ ...host, pullsNaming: (key, repositories) => reads(key, repositories)?.map((pull) => ({ ...pull, repo: "other/repo" })) ?? null }), [NAMING_CHECKS[1]], "the wrong repository");
+});
+
+test("A11-240: the fake lists the pull requests of the repositories asked about that name the key on word boundaries, in their state, and cannot ask about a repository it does not hold", () => {
+  const { host } = seeded();
+  assert.deepEqual(host.pullsNaming!("A11-240", ["owner/repo"]), [{ url: fakePullUrl("owner/repo", 10), repo: "owner/repo", state: "merged", body: "Refs A11-240\n\nPartial: step 1 of 2: the first half" }]);
+  assert.deepEqual(host.pullsNaming!("a11-2401", ["owner/repo"])?.map(({ url }) => url), [fakePullUrl("owner/repo", 11)], "any case, and not a longer key's prefix");
+  assert.equal(host.pullsNaming!("A11-240", ["owner/repo", "owner/unknown"]), null);
+  host.seedRepository("owner/empty");
+  assert.deepEqual(host.pullsNaming!("A11-240", ["owner/empty"]), [], "a repository it can ask about, with none naming the key");
 });

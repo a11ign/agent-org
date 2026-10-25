@@ -117,3 +117,36 @@ An earlier plan for this ticket was attached, and the board has detached it so t
 Plan from the ticket's text above, which is the latest. Keep what still holds from the earlier plan, change what the new text changes, and say in the plan what you changed and why. The board writes a \`## Planned against\` section into your plan before \`## Paths\`: do not write one.
 `;
 }
+
+/**
+ * A pull request the code host holds for the ticket (A11-240): its address, repository and state, and what the board could read of it. `head` and `failing` are read of an open one (null when they could not be), and `declared` is what its body says of the
+ * ticket: the words of its `Partial:` line (`partial`), that it completes the ticket (`closes`), or nothing.
+ */
+export type OpenedPull = Readonly<{ url: string; repo: string; state: "open" | "merged" | "closed"; head: string | null; failing: readonly string[]; declared: Readonly<{ kind: "partial"; remains: string } | { kind: "closes" }> | null }>;
+
+/** The characters of a commit the brief shows. */
+const SHOWN_HEAD = 9;
+
+/** One pull request line of the section: its state and address, and for an open one its head and failing checks, and what its body declares. PURE. */
+function openedLine({ url, repo, state, head, failing, declared }: OpenedPull): string {
+  const parts = [state === "open" ? "open" : state];
+  if (state === "open" && head !== null) parts.push(`head ${head.slice(0, SHOWN_HEAD)}`);
+  if (state === "open") parts.push(failing.length > 0 ? `failing checks: ${failing.join(", ")}` : "no failing check read");
+  if (declared !== null) parts.push(declared.kind === "partial" ? `Partial: ${declared.remains}` : "completes the ticket");
+  return `- ${url} (${repo}): ${parts.join("; ")}`;
+}
+
+/**
+ * The section of a work brief that lists the pull requests the ticket already has on the code host (A11-240), which a run started again is not told by the board's own record: the crash that ended the run before may have emptied it. Nothing when
+ * there are none, or the host could not be asked. It says to continue from them: an open one is fixed on its own branch, and a step whose pull request merged is never done again. PURE.
+ */
+export function openedText(opened: readonly OpenedPull[]): string {
+  if (opened.length === 0) return "";
+  return `
+## Pull requests already opened for this ticket
+
+An earlier run of this ticket opened these, and the board's record of this run does not hold them. Read each one before you change anything, and continue from there: fix an open pull request on its own branch, and never do again a step whose pull request merged. A closed one was not merged: its work is not done.
+
+${opened.map(openedLine).join("\n")}
+`;
+}

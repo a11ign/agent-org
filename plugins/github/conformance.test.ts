@@ -28,6 +28,9 @@ export const STACKED = `https://github.com/${REPOSITORY}/pull/9`;
 export const STACK_REFUSAL_HEAD = "d".repeat(40);
 export const STACK_REFUSAL_REASON = "a member below has changes requested";
 export const NO_ARM_BOT = { repo: "owner/no-arm-bot", number: 1 };
+/** A merged pull request whose body names a ticket's key (contract 1.18). */
+export const NAMED_KEY = "A11-240";
+export const NAMED = `https://github.com/${REPOSITORY}/pull/10`;
 /** A workflow run GitHub holds, halfway through (contract 1.17). */
 export const CI_RUN_ID = 77;
 
@@ -49,6 +52,11 @@ function github(calls: string[][] = []) {
     if (args[0] === "api" && args[1] === "graphql" && args.includes("n=9")) return ok(JSON.stringify({ merged: false, autoMergeRequest: null, mergeQueueEntry: null }));
     if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/issues/9/comments`)) return ok(`${JSON.stringify(`<!-- agent-org:stack-merge head=${STACK_REFUSAL_HEAD} -->\nGitHub refused the stack merge of #9: ${STACK_REFUSAL_REASON}`)}\n`);
     if (args[0] === "run" && args[1] === "view") return args[2] === String(CI_RUN_ID) ? ok(JSON.stringify({ status: "in_progress", conclusion: "", url: `https://github.com/${REPOSITORY}/actions/runs/${CI_RUN_ID}`, name: "ci", jobs: [{ status: "completed" }, { status: "in_progress" }] })) : REFUSED;
+    if (args[0] === "search" && args[1] === "prs") {
+      const repositories = args.flatMap((arg, at) => (args[at - 1] === "--repo" ? [arg] : []));
+      if (repositories.some((repository) => repository !== REPOSITORY)) return REFUSED;
+      return ok(JSON.stringify([{ url: NAMED, repository: { name: "repo", nameWithOwner: REPOSITORY }, state: "merged", title: "feat: step one", body: `Refs ${NAMED_KEY}` }]));
+    }
     if (args[0] === "workflow" && args[1] === "run") return args.includes(REPOSITORY) ? ok("") : REFUSED;
     if (args[0] === "api" && args[1] === "graphql") {
       const found = args.includes("number=7");
@@ -92,6 +100,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
   const { passed, skipped } = await runCodeHostConformance(host, {
     pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED,
     stackRefusal: { pull: STACKED, head: STACK_REFUSAL_HEAD, reason: STACK_REFUSAL_REASON }, stackRequestRefused: NO_ARM_BOT, ciRun: { repository: REPOSITORY, runId: CI_RUN_ID },
+    named: { key: NAMED_KEY, repository: REPOSITORY, url: NAMED, state: "merged" },
     remote: { urls: [`https://github.com/${REPOSITORY}.git`, `git@github.com:${REPOSITORY}.git`], repository: { name: "repo", fullName: REPOSITORY } },
     check: { detailsUrl: CHECK_URL, log: CHECK_LOG }, claim: { repository: REPOSITORY, head: CLAIM_HEAD, environment: { GH_CONFIG_DIR: "/opt/reviewer/gh" } },
   });
@@ -115,7 +124,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
     "the rows' rules for arming answer as the callers that arm and guard expect",
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ["readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"],
