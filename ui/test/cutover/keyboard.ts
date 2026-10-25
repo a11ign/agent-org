@@ -45,7 +45,9 @@ export async function tabThrough(page: Page, within = "body"): Promise<Stop[]> {
       const style = getComputedStyle(element);
       const outlined = style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) > 0;
       const named = element.getAttribute("aria-label") ?? (element as HTMLInputElement).labels?.[0]?.textContent ?? element.textContent ?? element.getAttribute("title") ?? element.tagName;
-      return { name: named.trim().replace(/\s+/g, " ").slice(0, 60), ringed: element.matches(":focus-visible") && (outlined || style.boxShadow !== "none") };
+      const words = named.trim().replace(/\s+/g, " ").slice(0, 60);
+      // An element with no words is named by what it is, so a failure says which.
+      return { name: words !== "" ? words : `<${element.tagName.toLowerCase()}${(element as HTMLInputElement).type ? ` type=${(element as HTMLInputElement).type}` : ""}${element.id ? ` id=${element.id}` : ""}${element.className ? ` class=${element.className}` : ""}>`, ringed: element.matches(":focus-visible") && (outlined || style.boxShadow !== "none") };
     }, within);
     if (stop === "left" || stop === "round") return stops;
     stops.push(stop);
