@@ -4,6 +4,7 @@ import { Unreachable } from "../../../src/ticket-mode/remote.ts";
 import { proxy, type Forward } from "../../../src/ticket-mode/remote-proxy.ts";
 import type { Answer } from "./answer.ts";
 import { createClient } from "./client.ts";
+import { readCached, writeCached } from "./session-cache.ts";
 import { usePoll } from "./use-poll.ts";
 import type { ViewConnection } from "./types.ts";
 
@@ -646,5 +647,64 @@ describe("usePoll.current, the data fresh enough to build a link from (A11-211)"
     await advance(5_000);
     expect(result.current.state).toBe("reconnecting");
     expect(result.current.readAt).toBe(first);
+  });
+});
+
+// A READ THAT NAMES ITS PATH STARTS FROM WHAT THE TAB KEPT (A11-270): a page after the first draws its last data at once, refreshes it in place, and says it is `cached` until a read of its own answers.
+describe("usePoll from the answer the tab kept", () => {
+  const PERSONAL: ViewConnection = { name: "personal", kind: "ssh" };
+  const named = <T,>(read: (signal: AbortSignal) => Promise<Answer<T>>, path = "/api/queue") => Object.assign(read, { path });
+
+  it("draws the kept answer at once, as cached, and the read made at mount replaces it in place", async () => {
+    writeCached(LOCAL, "/api/queue", [1]);
+    const keptAt = Date.now();
+    await advance(1_000);
+    const { read } = scripted([ok([2])]);
+    const { result } = renderHook(() => usePoll(named(read), { connection: LOCAL }));
+    expect(result.current).toMatchObject({ state: "ready", data: [1], cached: true, readAt: keptAt });
+    await advance(0);
+    expect(result.current).toMatchObject({ state: "ready", data: [2], cached: false });
+  });
+
+  it("keeps each good answer for the next page, and starts from loading on a tab's first visit", async () => {
+    const { read } = scripted([ok([3])]);
+    const { result } = renderHook(() => usePoll(named(read), { connection: LOCAL }));
+    expect(result.current).toMatchObject({ state: "loading", data: null, cached: false });
+    await advance(0);
+    expect(readCached(LOCAL, "/api/queue")?.data).toEqual([3]);
+  });
+
+  it("is empty, not loading, when the kept answer is nothing", () => {
+    writeCached(LOCAL, "/api/queue", []);
+    const { read } = scripted([ok([])]);
+    const { result } = renderHook(() => usePoll(named(read), { connection: LOCAL }));
+    expect(result.current).toMatchObject({ state: "empty", data: [], cached: true });
+  });
+
+  it("keeps the kept data under a failure, still cached, so the page draws it under the unreachable frame", async () => {
+    writeCached(PERSONAL, "/api/queue", [1]);
+    const { read } = scripted<number[]>([fail("cannot reach personal over SSH: socket hung up", true)]);
+    const { result } = renderHook(() => usePoll(named(read), { connection: PERSONAL }));
+    await advance(0);
+    expect(result.current).toMatchObject({ state: "unreachable", data: [1], cached: true, refusal: "cannot reach personal over SSH: socket hung up" });
+  });
+
+  it("never draws another instance's kept answer", () => {
+    writeCached(PERSONAL, "/api/queue", [1]);
+    const { read } = scripted([ok([2])]);
+    const { result } = renderHook(() => usePoll(named(read), { connection: LOCAL }));
+    expect(result.current).toMatchObject({ state: "loading", data: null });
+  });
+
+  it("keeps nothing for a read that names no path", async () => {
+    const { read } = scripted([ok([4])]);
+    renderHook(() => usePoll(read, { connection: LOCAL }));
+    await advance(0);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("names the path of each of the client's reads, so the page's reads are kept without a caller passing one", () => {
+    const client = createClient(LOCAL);
+    expect([client.config.path, client.queue.path, client.tickets.path, client.settings.path, client.plugins.path, client.connections.path]).toEqual(["/api/config", "/api/queue", "/api/tickets", "/api/settings", "/api/plugins", "/api/connections"]);
   });
 });

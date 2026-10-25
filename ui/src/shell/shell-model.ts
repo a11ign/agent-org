@@ -71,14 +71,15 @@ export type ScopedReads = Readonly<{ scope: string | null; extra: readonly Ticke
  * not be read (`refusal`), which is an `error` in the server's own words. PURE.
  */
 export function ticketsView(tickets: PollView<TicketView[]>, config: PollView<ConfigView>, { scope = null, extra = [], reading = null, refusal = null }: Partial<ScopedReads> = {}): PollView<TicketView[]> {
-  if (config.data === null && FAILED.includes(config.state)) return { state: config.state, data: null, refusal: config.refusal };
-  if (tickets.state === "loading" || (config.state === "loading" && tickets.data !== null)) return { state: "loading", data: null, refusal: null };
+  const cached = tickets.cached || config.cached;
+  if (config.data === null && FAILED.includes(config.state)) return { state: config.state, data: null, refusal: config.refusal, cached: false };
+  if (tickets.state === "loading" || (config.state === "loading" && tickets.data !== null)) return { state: "loading", data: null, refusal: null, cached: false };
   const shown = scopeOf(config.data, scope);
   const data = tickets.data === null ? null : ticketsInScope(mergedTickets(tickets.data, extra), config.data, shown);
-  if (data?.length === 0 && reading === shown) return { state: "loading", data: null, refusal: null };
-  if (refusal !== null && (tickets.state === "ready" || tickets.state === "empty")) return { state: "error", data, refusal };
+  if (data?.length === 0 && reading === shown) return { state: "loading", data: null, refusal: null, cached: false };
+  if (refusal !== null && (tickets.state === "ready" || tickets.state === "empty")) return { state: "error", data, refusal, cached };
   const state = tickets.state === "ready" || tickets.state === "empty" ? (data?.length === 0 ? "empty" : "ready") : tickets.state;
-  return { state, data, refusal: tickets.refusal };
+  return { state, data, refusal: tickets.refusal, cached };
 }
 
 /**

@@ -199,12 +199,12 @@ describe("goalShown and ticketsOfGoal", () => {
 });
 
 describe("ticketsView", () => {
-  const view = <T,>(state: PollView<T>["state"], data: T | null, refusal: string | null = null): PollView<T> => ({ state, data, refusal });
+  const view = <T,>(state: PollView<T>["state"], data: T | null, refusal: string | null = null): PollView<T> => ({ state, data, refusal, cached: false });
   const mine = ticket({ key: "A11-1" });
   const theirs = ticket({ key: "A11-2", assignee: OTHER });
 
   it("is loading until the tickets have been read", () => {
-    expect(ticketsView(view("loading", null), view("ready", config()))).toEqual({ state: "loading", data: null, refusal: null });
+    expect(ticketsView(view("loading", null), view("ready", config()))).toEqual({ state: "loading", data: null, refusal: null, cached: false });
   });
 
   it("is still loading when the tickets are in but the config, which says the scope, is not", () => {
@@ -224,17 +224,17 @@ describe("ticketsView", () => {
   });
 
   it("keeps the failure and the last good tickets", () => {
-    expect(ticketsView(view("unreachable", [mine], "cannot reach personal"), view("ready", config()))).toEqual({ state: "unreachable", data: [mine], refusal: "cannot reach personal" });
+    expect(ticketsView(view("unreachable", [mine], "cannot reach personal"), view("ready", config()))).toEqual({ state: "unreachable", data: [mine], refusal: "cannot reach personal", cached: false });
   });
 
   it("is the config's failure when the config cannot be read, with nothing shown", () => {
-    expect(ticketsView(view("ready", [mine, theirs]), view("error", null, "no config"))).toEqual({ state: "error", data: null, refusal: "no config" });
+    expect(ticketsView(view("ready", [mine, theirs]), view("error", null, "no config"))).toEqual({ state: "error", data: null, refusal: "no config", cached: false });
     expect(ticketsView(view("loading", null), view("unreachable", null, "cannot reach personal")).state).toBe("unreachable");
   });
 
   it("is reconnecting when the config cannot be read because the instance is restarting, and keeps the last good tickets when the tickets read does", () => {
-    expect(ticketsView(view("loading", null), view("reconnecting", null, "Failed to fetch"))).toEqual({ state: "reconnecting", data: null, refusal: "Failed to fetch" });
-    expect(ticketsView(view("reconnecting", [mine], "Failed to fetch"), view("ready", config()))).toEqual({ state: "reconnecting", data: [mine], refusal: "Failed to fetch" });
+    expect(ticketsView(view("loading", null), view("reconnecting", null, "Failed to fetch"))).toEqual({ state: "reconnecting", data: null, refusal: "Failed to fetch", cached: false });
+    expect(ticketsView(view("reconnecting", [mine], "Failed to fetch"), view("ready", config()))).toEqual({ state: "reconnecting", data: [mine], refusal: "Failed to fetch", cached: false });
   });
 
   it("shows the scope chosen, from the first list and the pages read since", () => {
@@ -248,7 +248,7 @@ describe("ticketsView", () => {
   });
 
   it("is an error, in the server's words, with the tickets it has, when a scope could not be read", () => {
-    expect(ticketsView(view("ready", [mine]), view("ready", config()), { scope: "anyone", refusal: "tracker refused" })).toEqual({ state: "error", data: [mine], refusal: "tracker refused" });
+    expect(ticketsView(view("ready", [mine]), view("ready", config()), { scope: "anyone", refusal: "tracker refused" })).toEqual({ state: "error", data: [mine], refusal: "tracker refused", cached: false });
   });
 
   it("keeps showing the tickets in scope when a later read of the config fails after it answered", () => {

@@ -1,9 +1,9 @@
-An SSH connection's tunnel recovers within 5 s (A11-270, step 2 of 4): a request whose forward finds the tunnel dead (`socket hang up`, `ECONNRESET`, `ECONNREFUSED`, `ENOENT`, `EPIPE`) restarts it at once and a GET is answered from a second try on the new tunnel (a POST is never sent twice); a reopen reuses the remote's port, key and terminal from the last good tunnel, so it runs no `ticket:remote-info` (a second restart with no answer between reads it again, and a third waits for an answer); the retry backoff is 500 ms doubling up to 5 s (was 2 s up to 60 s); and a request that finds the tunnel down makes a retry due within 3 s at once and waits up to 3 s for it.
+A board page the tab has drawn before draws its last data at once and refreshes it in place (A11-270, step 3 of 4): each read's last good answer, and the connections list, is kept in the tab's `sessionStorage` per instance and path (`ui/src/api/session-cache.ts`), so Tickets, Runs, a run's page, Machine, Models, Workers and Plugins draw while every read is still in flight, with no skeleton, and the static HTML's skeleton is held back until the shell has drawn the kept data. The controls that write wait for the instance's own answer. A page whose SSH instance cannot be reached draws its last data under the existing unreachable frame, and Plugins shows the proxy's last known answer as the Unknown board. The first visit of a tab still draws the skeleton.
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/remote.test.ts src/ticket-mode/remote-proxy.test.ts src/ticket-mode/connections.test.ts src/ticket-mode/ui-server.test.ts
-pnpm --dir ui exec rstest run --config rstest.config.ts src/api/use-poll.test.tsx
+pnpm ui:build
+pnpm --dir ui exec rstest run --config rstest.config.ts src/api/session-cache.test.ts src/api/use-poll.test.tsx src/shell/pages-return.test.tsx src/settings/settings-unreachable.test.tsx src/run-detail/run-detail-lifecycle.test.tsx src/updating/updating.test.tsx test/return-visit.page.test.ts
 ```
 
-Consumer-declaration: none -- the change is inside `ticket:ui`'s own process (its proxy and tunnels); no route, answer shape or file another package reads changes.
+Consumer-declaration: none -- the change is inside the board UI's browser code; no route, answer shape or file another package reads changes.

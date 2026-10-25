@@ -17,7 +17,7 @@ function MaxInput({ pool }: Readonly<{ pool: Pool }>) {
     input?.addEventListener("change", commit);
     return () => input?.removeEventListener("change", commit);
   }, [setMax]);
-  return <input ref={field} id="workers-at-once" className="settings-input settings-input-number" type="number" min={1} step={1} value={text} disabled={pool.max === null} onChange={(event) => setText(event.target.value)} />;
+  return <input ref={field} id="workers-at-once" className="settings-input settings-input-number" type="number" min={1} step={1} value={text} disabled={pool.max === null || pool.waiting} onChange={(event) => setText(event.target.value)} />;
 }
 
 /** "Worker pool": how many runs work at once, and whether workers are started. Both save as they change. */
@@ -44,7 +44,7 @@ export function WorkerPool({ pool }: Readonly<{ pool: Pool }>) {
           </div>
           <span className="settings-control">
             <SaveStateText state={pool.pauseState} />
-            <button type="button" className="ghost" disabled={pool.paused === null} onClick={pool.togglePause}>{paused ? "Start workers" : "Pause"}</button>
+            <button type="button" className="ghost" disabled={pool.paused === null || pool.waiting} onClick={pool.togglePause}>{paused ? "Start workers" : "Pause"}</button>
           </span>
         </div>
       </div>

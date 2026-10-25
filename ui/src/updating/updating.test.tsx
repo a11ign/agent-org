@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { HERE, PERSONAL, queueingConfig, queueOf, standFetch, type InstanceAnswers, type Stand } from "../../test/fixtures.ts";
 import { boardRuns, queueWith } from "../../test/runs/runs-stand.ts";
 import type { QueueView } from "../api/types.ts";
@@ -85,6 +85,19 @@ async function leftOpenAndDown(update: UpdateInfo | null) {
   await goDown(link);
   return { link, ...opened };
 }
+
+// A PAGE LOADED IN THE MIDDLE OF AN OUTAGE (A11-270): the queue the tab kept from an earlier page is not this page's read, so it starts no Updating card; that page shows the Reconnecting line, as it did before the tab kept anything.
+describe("a page loaded while the instance is down, in a tab that kept its queue", () => {
+  it("shows no Updating card from the kept queue's update", async () => {
+    const { link, stand } = instance(NORMAL);
+    await pageLeftOpen(stand);
+    cleanup();
+    link.down = true;
+    await pageLeftOpen(stand);
+    expect(cardText()).toBe("");
+    expect(pageHidden()).toBe(false);
+  });
+});
 
 describe("Updating: a normal update", () => {
   it("replaces the page with the card, from vX to vY, with the three steps and the board's sentence about runs", async () => {

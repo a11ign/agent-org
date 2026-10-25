@@ -14,14 +14,15 @@ export function Models() {
   const config = usePoll<ConfigView>(client.config, { connection, repeat: false, isEmpty: () => false });
   return (
     <Lifecycle view={config} skeleton={<SettingsSkeleton label="Loading models" />} empty={null} connection={connection?.name ?? ""}>
-      {(data) => <Choices config={data} refresh={config.refresh} />}
+      {(data) => <Choices config={data} refresh={config.refresh} cached={config.cached} />}
     </Lifecycle>
   );
 }
 
-function Choices({ config, refresh }: Readonly<{ config: ConfigView; refresh: () => void }>) {
+/** The selects over the config; while it is the tab's kept copy (A11-270) they wait for the instance's own answer. */
+function Choices({ config, refresh, cached }: Readonly<{ config: ConfigView; refresh: () => void; cached: boolean }>) {
   const { client } = useShell();
-  return <ChoiceSection config={config} choices={useChoices(client, config, refresh)} />;
+  return <ChoiceSection config={config} choices={useChoices(client, config, refresh)} disabled={cached} />;
 }
 
 /** The worker pool of Workers: the number of workers and whether they are started, over the queue the shell polls. */

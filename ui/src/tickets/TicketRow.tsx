@@ -19,6 +19,8 @@ export type RowContext = Readonly<{
   planUniverse: readonly TicketView[];
   /** True while the instance cannot be reached: the rows are the last known ones, and nothing on them can be picked, queued or grilled. */
   paused: boolean;
+  /** The list is the tab's kept copy (A11-270): the buttons that write wait for the instance's own answer, and the rows are drawn as they are. */
+  held: boolean;
   pick: (keys: readonly string[]) => void;
   unpick: (keys: readonly string[]) => void;
   toggleParent: (key: string) => void;
@@ -51,7 +53,7 @@ function ChildrenOf({ ticket, context }: Readonly<{ ticket: TicketView; context:
   return (
     <>
       <span className="row-note">{childrenNote(ticket)}</span>
-      <button type="button" className="ghost ghost-small" title={QUEUE_CHILDREN_TITLE} disabled={context.paused} onClick={() => context.queueChildren(ticket)}>{QUEUE_CHILDREN}</button>
+      <button type="button" className="ghost ghost-small" title={QUEUE_CHILDREN_TITLE} disabled={context.paused || context.held} onClick={() => context.queueChildren(ticket)}>{QUEUE_CHILDREN}</button>
     </>
   );
 }
@@ -62,7 +64,7 @@ function Decision({ ticket, context }: Readonly<{ ticket: TicketView; context: R
   return (
     <>
       <span className="pill-tag pill-tag-warn" title={ticket.needsDecision.reason}>{NEEDS_DECISION}</span>
-      <button type="button" className="ghost ghost-small" title={context.grillReason ?? GRILL_TITLE} disabled={context.grillReason !== null || context.paused} onClick={() => context.grill(ticket)}>{GRILL}</button>
+      <button type="button" className="ghost ghost-small" title={context.grillReason ?? GRILL_TITLE} disabled={context.grillReason !== null || context.paused || context.held} onClick={() => context.grill(ticket)}>{GRILL}</button>
     </>
   );
 }

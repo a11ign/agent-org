@@ -114,7 +114,8 @@ export function answerAction(state: PluginsStand, body: ActionBody): PluginActio
 }
 
 const reply = (body: unknown, status = 200): { status: number; body: string } => ({ status, body: JSON.stringify(body) });
-const answered = (value: unknown): { status: number; body: string } => (isFailure(value) ? reply({ error: value.error }, value.status) : reply(value));
+/** A failure is answered with its sentence, and with the last answer the proxy kept when it names one. */
+const answered = (value: unknown): { status: number; body: string } => (isFailure(value) ? reply({ error: value.error, ...(value.lastKnown === undefined ? {} : { lastKnown: value.lastKnown }) }, value.status) : reply(value));
 
 /** What a read answers: the answer, with the host file's `base` as the file is now, which is what an action of the page is checked against. */
 const read = (state: PluginsStand): PluginsAnswer => {
