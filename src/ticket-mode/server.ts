@@ -251,7 +251,10 @@ function withTaken<T extends Ticket>(board: Pick<Board, "settings" | "store" | "
 }
 
 /** A ticket as `/api/tickets` answers it: with `taken` where it holds. The UI's client names this type, so a field renamed here fails its `tsc`. */
-export type TicketView = ReturnType<typeof ticketView>;
+export type TicketView = ReturnType<typeof ticketView> & Readonly<{
+  /** Never sent now (A11-257): nothing holds a ticket for an open decision. The page's and the built UI's dead branches still read it, and A11-202, A11-241 and A11-245 hold those files; a follow-up removes both. */
+  needsDecision?: Readonly<{ kind: string; reason: string }>;
+}>;
 
 function ticketView(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: Ticket) {
   return withTaken(board, ticket);
