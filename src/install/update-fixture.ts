@@ -58,11 +58,11 @@ export function releaseRemote() {
 }
 
 /** The services as a machine has them: units on disk (a map), `systemctl` recorded, and a state for each service. */
-export function stubServices(home: string, states: Partial<Record<ServiceName, ServiceState>> = {}) {
+export function stubServices(home: string, states: Partial<Record<ServiceName, ServiceState>> = {}, platform: "linux" | "darwin" = "linux") {
   const files = new Map<string, string>([[join(home, ".agent-org", "host.json"), "{}"], ["/opt/bin/herdr", ""]]);
   const calls: string[] = [];
   const services: ServiceDeps = {
-    platform: "linux", env: { PATH: "/opt/bin:/usr/bin" }, home, uid: 1000, node: "/opt/node/bin/node", toolRoot: "/unset", commands: COMMANDS, user: "alice",
+    platform, env: { PATH: "/opt/bin:/usr/bin" }, home, uid: 1000, node: "/opt/node/bin/node", toolRoot: "/unset", commands: COMMANDS, user: "alice",
     exists: (path) => files.has(path), read: (path) => files.get(path) ?? null, write: (path, text) => { files.set(path, text); },
     run: (file, args): RunResult => { calls.push([file, ...args].join(" ")); return { status: 0, stdout: "", stderr: "" }; },
   };
@@ -70,12 +70,12 @@ export function stubServices(home: string, states: Partial<Record<ServiceName, S
 }
 
 /** Everything `update` is given, real where it touches files and git, with the machine-wide parts stubbed. */
-export function updateFixture(options: { states?: Partial<Record<ServiceName, ServiceState>>; live?: number | null; inUse?: readonly string[] | null } = {}) {
+export function updateFixture(options: { states?: Partial<Record<ServiceName, ServiceState>>; live?: number | null; inUse?: readonly string[] | null; platform?: "linux" | "darwin" } = {}) {
   const remote = releaseRemote();
   const home = join(remote.root, "home");
   const tool = join(home, ".agent-org", "tool");
   mkdirSync(join(home, ".agent-org"), { recursive: true });
-  const stub = stubServices(home, options.states);
+  const stub = stubServices(home, options.states, options.platform);
   const restarted: ServiceName[] = [];
   const said: string[] = [];
   const errors: string[] = [];
@@ -89,8 +89,8 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
   const hostPath = join(home, ".agent-org", "host.json");
   const binDir = join(home, ".local", "bin");
   const uiSource = (): { ui: UiSource } => ({ ui: state.ui });
-  /** Fetch UI builds from `releases`, a stand-in for GitHub's downloads (`fixtures/release-server.ts`), with the real `curl` and `tar`. */
-  const fetchUiFrom = (releases: string) => { state.ui = { releases: () => releases, exec: execFileSync }; };
+  /** Fetch UI builds from `releases`, a stand-in for GitHub's downloads (`fixtures/release-server.ts`), with the real `curl` and `tar` unless a test passes its own `exec`. */
+  const fetchUiFrom = (releases: string, exec: UiSource["exec"] = execFileSync) => { state.ui = { releases: () => releases, exec }; };
   const deps = (over: Partial<UpdateDeps> = {}): UpdateDeps => ({
     root: state.root, git,
     fetch: (channel) => {

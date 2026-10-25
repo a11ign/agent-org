@@ -9,7 +9,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpat
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { pinnedPnpm } from "./pnpm.ts";
-import { ensureUiBuild, releasesUrl, type UiSource } from "./ui-asset.ts";
+import { isReleaseTag } from "../lib/release-tag.ts";
+import { declaresUiBuild, ensureUiBuild, hasUiBuild, releasesUrl, type UiSource } from "./ui-asset.ts";
 import { currentLink, mirrorPath, versionFolder, versionsDir } from "./tool-versions.ts";
 
 /** A program run as `execFileSync` runs it; a test passes one that records what it was asked to run. */
@@ -168,12 +169,18 @@ export function currentVersionName(tool: string): string | null {
   }
 }
 
+/** Whether the release `name`, unpacked in `folder`, declares a UI build and has none. The main channel never does: it has no Release to fetch a build from. */
+const lacksDeclaredUiBuild = (name: string, folder: string): boolean => isReleaseTag(name) && declaresUiBuild(folder) && !hasUiBuild(folder);
+
 /**
  * Point `<tool>/current` at `versions/<name>`: a new link is made beside it and renamed over it, the one atomic swap a link allows, so a service starting at any moment finds a whole tool. The target is
- * relative, so the home can move. REFUSES a version that is not built.
+ * relative, so the home can move. REFUSES a version that is not built, and a release that declares a UI build and has none (A11-266): this is the one place `current` moves, so no caller can make a
+ * board that shows "The UI build is missing". The main channel is exempt: it has no Release to fetch a build from (`ensureUiBuild`), and `doctor` fails on it.
  */
 export function swapCurrent(tool: string, name: string): void {
-  if (!existsSync(join(versionFolder(tool, name), "src", "bin.ts"))) throw new Error(`versions/${name} is not built, so current stays where it is`);
+  const folder = versionFolder(tool, name);
+  if (!existsSync(join(folder, "src", "bin.ts"))) throw new Error(`versions/${name} is not built, so current stays where it is`);
+  if (lacksDeclaredUiBuild(name, folder)) throw new Error(`versions/${name} declares a UI build and has none, so current stays where it is`);
   const link = currentLink(tool);
   const next = `${link}.${randomBytes(4).toString("hex")}.new`;
   symlinkSync(join("versions", name), next, "dir");

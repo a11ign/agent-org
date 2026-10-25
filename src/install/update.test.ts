@@ -16,7 +16,7 @@ import { stubServices, updateFixture } from "./update-fixture.ts";
 import { herdrStatusPath, readHerdrStatus } from "./herdr-upkeep.ts";
 import { unitFor, type RunResult } from "./service.ts";
 import { herdrConfigDir } from "./terminal.ts";
-import { publishUiAsset, startReleaseServer } from "./fixtures/release-server.ts";
+import { bsdtarLikeExec, publishUiAsset, startReleaseServer } from "./fixtures/release-server.ts";
 import { swapCurrent } from "./tool-install.ts";
 
 /** An install at v0.1.0 in version folders, running from it, with v0.2.0 and v0.10.0 cut since. */
@@ -318,7 +318,7 @@ test("A11-191: update downloads the UI build of the release it moves to, verifie
   assert.deepEqual(atSwap, [true], "the build was in the folder when current was pointed at it");
   assert.equal(currentVersionName(f.tool), "v0.2.0");
   assert.equal(readFileSync(join(versionDir(f, "v0.2.0"), "ui-build", "index.html"), "utf8"), "<title>v0.2.0</title>\n");
-  assert.ok(f.said.includes("agent-org update: fetched the UI build of v0.2.0"), f.said.join("\n"));
+  assert.ok(f.said.includes("agent-org update: ✓ UI build for v0.2.0 installed (2 files)"), f.said.join("\n"));
   assert.deepEqual(server.requests(), ["/v0.2.0/agent-org-ui-v0.2.0.tar.gz.sha256", "/v0.2.0/agent-org-ui-v0.2.0.tar.gz"]);
 });
 
@@ -352,7 +352,7 @@ test("A11-191: a checksum that does not match fails the move, leaves current whe
   f.release("0.2.0", "a fix", SHIPS);
   const { checksum } = attach("v0.2.0");
   writeFileSync(checksum, `${"0".repeat(64)}  agent-org-ui-v0.2.0.tar.gz\n`);
-  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps()), /because building it failed: the UI build of v0\.2\.0 did not match its checksum, so it was not installed/);
+  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps()), /because building it failed: UI build checksum failed: agent-org-ui-v0\.2\.0\.tar\.gz did not match its checksum, so it was not installed/);
   assert.equal(currentVersionName(f.tool), "v0.1.0");
   assert.deepEqual(versionNames(f), ["v0.1.0"]);
 });
@@ -367,7 +367,7 @@ test("A11-191: the update that finds nothing newer completes the current folder'
   const others = treeOf(versionDir(f, "v0.1.0"));
   f.said.length = 0;
   assert.equal(update({ version: undefined, channel: "release" }, f.deps()), false);
-  assert.deepEqual(f.said.slice(0, 2), ["agent-org is at v0.2.0: nothing newer", "agent-org update: fetched the UI build of v0.2.0"]);
+  assert.deepEqual(f.said.slice(0, 2), ["agent-org is at v0.2.0: nothing newer", "agent-org update: ✓ UI build for v0.2.0 installed (2 files)"]);
   assert.equal(readFileSync(join(versionDir(f, "v0.2.0"), "ui-build", "index.html"), "utf8"), "<title>v0.2.0</title>\n");
   assert.deepEqual(treeOf(versionDir(f, "v0.1.0")), others, "no other folder was touched");
   assert.equal(currentVersionName(f.tool), "v0.2.0");
@@ -378,13 +378,88 @@ test("A11-191: the update that finds nothing newer completes the current folder'
   assert.equal(server.requests().length, asked);
 });
 
-test("A11-191: a build that cannot be fetched for the folder that is already current is said as an error and fails nothing", async () => {
+test("A11-266: a build that cannot be fetched for the folder that is already current fails the update, after the status is written and the upkeep has run", async () => {
   const { f } = await shippingInstalledAt("0.1.0", true);
   rmSync(join(versionDir(f, "v0.1.0"), "ui-build"), { recursive: true });
   rmSync(join(f.root, "releases", "v0.1.0"), { recursive: true });
-  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), false);
+  f.statuses.length = 0;
+  const upkeep: string[] = [];
+  const refusal = (err: Error) => err instanceof UpdateRefusal && err.message === "agent-org is at v0.1.0, but it has no UI build, so the board shows \"The UI build is missing\": UI build download failed: v0.1.0 has not attached its UI build yet (CI attaches it a few minutes after the release), so it is not installed; the next update tries again";
+  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps({ upkeep: () => { upkeep.push("ran"); return []; } })), refusal);
   assert.equal(currentVersionName(f.tool), "v0.1.0");
-  assert.deepEqual(f.errors, ["agent-org update: v0.1.0 is current but has no UI build: v0.1.0 has not attached its UI build yet (CI attaches it a few minutes after the release), so it is not installed; the next update tries again"]);
+  assert.equal(f.statuses.length, 1, "the status file was written before the refusal");
+  assert.deepEqual(upkeep, ["ran"], "the plugins' upkeep ran");
+  assert.deepEqual(versionNames(f), ["v0.1.0"], "no staging folder is left");
+});
+
+// A11-266: a declared build that cannot be fetched fails the update, naming the step and the error, and leaves current where it was.
+const DOWNLOADS: readonly (readonly [string, (f: Awaited<ReturnType<typeof shipping>>) => void, RegExp])[] = [
+  ["a 404, the build not attached yet", () => undefined, /^agent-org stays at v0\.1\.0, not moved to v0\.2\.0, because building it failed: UI build download failed: v0\.2\.0 has not attached its UI build yet/],
+  ["a 503", ({ f, server }) => f.fetchUiFrom(server.url, () => "503"), /because building it failed: UI build download failed: .*agent-org-ui-v0\.2\.0\.tar\.gz\.sha256 could not be downloaded \(HTTP 503\)/],
+  ["no server", ({ f }) => f.fetchUiFrom("http://127.0.0.1:1/dl"), /because building it failed: UI build download failed: http:\/\/127\.0\.0\.1:1\/dl\/v0\.2\.0\/agent-org-ui-v0\.2\.0\.tar\.gz\.sha256 could not be downloaded \(.*[Cc]onnect/],
+];
+
+for (const [label, breakServer, message] of DOWNLOADS) {
+  test(`A11-266: ${label} fails the update, naming the step and the error, and leaves current, the folders and the services alone`, async () => {
+    const made = await shippingInstalledAt("0.1.0", false);
+    made.f.release("0.2.0", "a fix", SHIPS);
+    breakServer(made);
+    made.f.restarted.length = 0;
+    assert.throws(() => update({ version: undefined, channel: "release" }, made.f.deps()), (err: Error) => err instanceof UpdateRefusal && message.test(err.message));
+    assert.equal(currentVersionName(made.f.tool), "v0.1.0");
+    assert.deepEqual(versionNames(made.f), ["v0.1.0"], "no v0.2.0, no .partial, no ui-build");
+    assert.deepEqual(made.f.restarted, [], "nothing was restarted on a version that did not become current");
+  });
+}
+
+test("A11-266: a nothing-newer update whose build is missing and whose server cannot be reached fails too", async () => {
+  const { f } = await shippingInstalledAt("0.1.0", true);
+  rmSync(join(versionDir(f, "v0.1.0"), "ui-build"), { recursive: true });
+  f.fetchUiFrom("http://127.0.0.1:1/dl");
+  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps()), (err: Error) => err instanceof UpdateRefusal && /^agent-org is at v0\.1\.0, but it has no UI build.*UI build download failed: http:\/\/127\.0\.0\.1:1\/dl\/v0\.1\.0\//.test(err.message));
+  assert.equal(currentVersionName(f.tool), "v0.1.0");
+});
+
+test("A11-266: a folder that is built and in place, but declares a UI build and has none, is never pointed at by current", async () => {
+  const { f } = await shippingInstalledAt("0.1.0", false);
+  f.release("0.2.0", "a fix", SHIPS);
+  const folder = versionDir(f, "v0.2.0");
+  mkdirSync(join(folder, "src"), { recursive: true });
+  writeFileSync(join(folder, "src", "bin.ts"), "// agent-org 0.2.0\n");
+  writeFileSync(join(folder, "package.json"), `${JSON.stringify({ name: "agent-org", version: "0.2.0", agentOrg: SHIPS })}\n`);
+  assert.throws(() => swapCurrent(f.tool, "v0.2.0"), /^Error: versions\/v0\.2\.0 declares a UI build and has none, so current stays where it is$/);
+  assert.equal(currentVersionName(f.tool), "v0.1.0");
+});
+
+test("A11-266: a swap that is refused fails the update as a refusal that says current stayed, and nothing restarts", async () => {
+  const { f } = await shippingInstalledAt("0.1.0", false);
+  f.release("0.2.0");
+  f.restarted.length = 0;
+  const refusing = f.deps({ swap: () => { throw new Error("versions/v0.2.0 declares a UI build and has none, so current stays where it is"); } });
+  assert.throws(() => update({ version: undefined, channel: "release" }, refusing), (err: Error) => err instanceof UpdateRefusal && /^agent-org stays at v0\.1\.0, not moved to v0\.2\.0, because current could not be moved to it: versions\/v0\.2\.0 declares a UI build and has none/.test(err.message));
+  assert.deepEqual(f.restarted, []);
+  assert.equal(currentVersionName(f.tool), "v0.1.0");
+});
+
+test("A11-266: on macOS (launchd services, bsdtar), an update installs ui-build/ before current moves, and prints the line for it with its file count", async () => {
+  const { f, server, attach } = await shipping({ states: { instance: "running", ui: "running" }, platform: "darwin" });
+  f.fetchUiFrom(server.url, bsdtarLikeExec());
+  f.release("0.1.0");
+  update({ version: undefined, channel: "release" }, f.deps());
+  f.runFromVersion("v0.1.0");
+  f.release("0.2.0", "a fix", SHIPS);
+  attach("v0.2.0");
+  f.said.length = 0;
+  f.restarted.length = 0;
+  const atSwap: boolean[] = [];
+  assert.equal(f.services.platform, "darwin");
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps({ swap: (name) => { atSwap.push(existsSync(join(versionDir(f, name), "ui-build", "index.html"))); swapCurrent(f.tool, name); } })), true);
+  assert.deepEqual(atSwap, [true], "ui-build/index.html was in the folder when current was pointed at it");
+  assert.equal(readFileSync(join(versionDir(f, "v0.2.0"), "ui-build", "_astro", "app.js"), "utf8"), "console.log(\"v0.2.0\");\n");
+  assert.deepEqual(f.said.filter((line) => /UI build/.test(line)), ["agent-org update: ✓ UI build for v0.2.0 installed (2 files)"]);
+  assert.ok(f.said.indexOf("agent-org update: ✓ UI build for v0.2.0 installed (2 files)") < f.said.findIndex((line) => line.startsWith("agent-org v0.2.0 is current")), "the UI line comes before 'is current'");
+  assert.deepEqual(f.restarted, ["instance", "ui"]);
+  assert.deepEqual(f.errors, []);
 });
 
 test("A11-191 pinning: a folder a run still names keeps its own build across an update, byte for byte, and the new folder has its own", async () => {

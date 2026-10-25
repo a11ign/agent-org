@@ -11,7 +11,7 @@
 // THE BUILD IS UNPACKED BESIDE ITS PLACE AND RENAMED INTO IT, so a folder only ever gains a whole `ui-build/`: the download is staged in `<folder>.ui.partial` (a name `pruneVersions` removes if a kill leaves it), and
 // the tarball is unpacked into `<folder>/ui-build.partial` first. A11-190's `/` looks `ui-build/` up on every request, so a build completed in place is served with no restart.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { isReleaseTag } from "../lib/release-tag.ts";
 import { UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
@@ -80,8 +80,13 @@ function matches(tarball: string, checksum: string): boolean {
 /** The reason a file is not there to download: nothing attached yet for a 404, else the status or curl's own words. */
 function unavailable(tag: string, url: string, answer: Answer): string {
   if (answer.status === 404) return `${tag} has not attached its UI build yet (CI attaches it a few minutes after the release), so it is not installed; the next update tries again`;
-  return `the UI build of ${tag} could not be downloaded from ${url} (${answer.status === null ? answer.why : `HTTP ${answer.status}`})`;
+  return `${url} could not be downloaded (${answer.status === null ? answer.why : `HTTP ${answer.status}`})`;
 }
+
+/** The steps of fetching a build, which a failure names (A11-266): a person reads which one broke, and the error that broke it. */
+type FetchStep = "stage" | "download" | "checksum" | "unpack" | "rename";
+
+const failedAt = (step: FetchStep, error: string): UiStep => ({ state: "failed", reason: `UI build ${step} failed: ${error}` });
 
 /** Download `tag`'s checksum and tarball into `staging`, and the reason when either is not there. */
 function downloadAsset(source: UiSource, { releases, tag, staging }: { releases: string; tag: string; staging: string }): string | null {
@@ -93,31 +98,66 @@ function downloadAsset(source: UiSource, { releases, tag, staging }: { releases:
   return null;
 }
 
+/** How many regular files `directory` holds, at any depth. */
+const countFiles = (directory: string): number => readdirSync(directory, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).length;
+
+/** Unpack `tarball` into `unpacked`, and the reason when it does not leave a build there: `tar` failing (bsdtar's words as it prints them) or no `index.html`. */
+function unpack(source: UiSource, { tarball, unpacked }: { tarball: string; unpacked: string }): string | null {
+  try {
+    mkdirSync(unpacked, { recursive: true });
+    // Only the short options bsdtar (macOS) and GNU tar share: a GNU-only long option fails on a Mac.
+    source.exec("tar", ["-xzf", tarball, "-C", unpacked], { stdio: ["ignore", "pipe", "pipe"] });
+  } catch (err) {
+    return `tar could not unpack it (${lastLine(String((err as { stderr?: unknown }).stderr || (err as Error).message))})`;
+  }
+  return existsSync(join(unpacked, "index.html")) ? null : "the tarball holds no index.html, so it is not a build of the board UI";
+}
+
+/** Rename `unpacked` into `folder/ui-build`, replacing what is there, and the reason when the filesystem refuses. */
+function place(folder: string, unpacked: string): string | null {
+  try {
+    rmSync(join(folder, UI_BUILD_DIR), { recursive: true, force: true });
+    renameSync(unpacked, join(folder, UI_BUILD_DIR));
+    return null;
+  } catch (err) {
+    return `it could not be moved into ${join(folder, UI_BUILD_DIR)} (${lastLine(String((err as Error).message))})`;
+  }
+}
+
 /**
  * Fetch `tag`'s UI build into `folder/ui-build/`: its checksum and tarball downloaded, the tarball verified against the checksum, unpacked beside its place and renamed into it. Anything else is a
- * failure that leaves `folder` as it was. `folder` is the version folder, or its `.partial` while it is still being built.
+ * failure that names its step and leaves `folder` as it was. `folder` is the version folder, or its `.partial` while it is still being built.
  */
 function fetchUiBuild(source: UiSource, folder: string, tag: string): UiStep {
   const releases = source.releases();
-  if (releases === null) return { state: "failed", reason: `the UI build of ${tag} cannot be fetched: this install's repository is not a GitHub URL, so set AGENT_ORG_RELEASES_URL to where its releases are downloaded from` };
+  if (releases === null) return failedAt("download", `this install's repository is not a GitHub URL, so the build of ${tag} cannot be fetched: set AGENT_ORG_RELEASES_URL to where its releases are downloaded from`);
   const staging = `${folder}.ui.partial`;
   const unpacked = join(folder, `${UI_BUILD_DIR}.partial`);
-  const clear = (): void => { rmSync(staging, { recursive: true, force: true }); rmSync(unpacked, { recursive: true, force: true }); };
+  // Best effort: a cleanup that fails must not hide the step that failed, and the next fetch clears the same two places before it starts.
+  const clear = (): void => {
+    for (const leftover of [staging, unpacked]) {
+      try {
+        rmSync(leftover, { recursive: true, force: true });
+      } catch {
+        // left for the next fetch, and for `pruneVersions`, which removes `.partial` folders
+      }
+    }
+  };
   try {
     clear();
     mkdirSync(staging, { recursive: true });
     const missing = downloadAsset(source, { releases, tag, staging });
-    if (missing !== null) return { state: "failed", reason: missing };
+    if (missing !== null) return failedAt("download", missing);
     const tarball = join(staging, uiAssetName(tag));
-    if (!matches(tarball, `${tarball}.sha256`)) return { state: "failed", reason: `the UI build of ${tag} did not match its checksum, so it was not installed` };
-    mkdirSync(unpacked, { recursive: true });
-    source.exec("tar", ["-xzf", tarball, "-C", unpacked], { stdio: ["ignore", "pipe", "pipe"] });
-    if (!existsSync(join(unpacked, "index.html"))) return { state: "failed", reason: `the UI build of ${tag} holds no index.html, so it is not a build of the board UI` };
-    rmSync(join(folder, UI_BUILD_DIR), { recursive: true, force: true });
-    renameSync(unpacked, join(folder, UI_BUILD_DIR));
-    return { state: "ok", said: `fetched the UI build of ${tag}` };
+    if (!matches(tarball, `${tarball}.sha256`)) return failedAt("checksum", `${uiAssetName(tag)} did not match its checksum, so it was not installed`);
+    const unusable = unpack(source, { tarball, unpacked });
+    if (unusable !== null) return failedAt("unpack", unusable);
+    const files = countFiles(unpacked);
+    const unplaced = place(folder, unpacked);
+    if (unplaced !== null) return failedAt("rename", unplaced);
+    return { state: "ok", said: `✓ UI build for ${tag} installed (${files} files)` };
   } catch (err) {
-    return { state: "failed", reason: `the UI build of ${tag} could not be unpacked (${lastLine(String((err as { stderr?: unknown }).stderr || (err as Error).message))})` };
+    return failedAt("stage", lastLine(String((err as Error).message)));
   } finally {
     clear();
   }
@@ -125,7 +165,7 @@ function fetchUiBuild(source: UiSource, folder: string, tag: string): UiStep {
 
 /**
  * Give the version folder `folder`, named `name`, the UI build its release ships, when it should have one and does not. A folder of a release before the marker, or one that has its build, is left alone
- * with no network call. The main channel's folder has no Release to fetch from, so it says so and succeeds: `doctor` warns that it has no build.
+ * with no network call. The main channel's folder has no Release to fetch from, so it says so and succeeds: `doctor` fails on it until a release is installed.
  */
 export function ensureUiBuild({ folder, name, source }: { folder: string; name: string; source: UiSource }): UiStep {
   if (!declaresUiBuild(folder) || hasUiBuild(folder)) return { state: "ok" };
