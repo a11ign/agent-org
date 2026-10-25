@@ -9,6 +9,9 @@
 // THIS FILE IMPORTS NOTHING FROM THE PROJECT-CONFIG CHAIN, on purpose. Listing the commands and refusing an unknown one must work in a directory
 // that holds no project; only the program that runs reads the declaration, and it refuses by name when there is none.
 //
+// `update`, `host:install` AND `start` REFUSE TO RUN FROM A COPY THAT IS NOT THE INSTALLED TOOL AND IS OLDER THAN IT (A11-285): `install/command-guard.ts` decides, here, between the table and the program, so no program changes.
+// Other commands never compare, so they start as fast as before.
+//
 // A `ticket:*` PROGRAM IS HANDED THE HOST FILE THE SERVICES USE (A11-68). Ticket mode reads `$AGENT_ORG_HOST`, and a non-interactive
 // `ssh <machine> agent-org ticket:remote-info` sets none, so it read `~/.agent-org/host.json`, which on a machine onboarded with another host file
 // does not exist. With the variable unset, the child gets the path `install/paths.ts` resolves (onboard's record, then the instance unit's), the
@@ -21,7 +24,10 @@ import { constants, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMANDS, FIXED_ARGS } from "./commands.ts";
+import { guardCopy, isGuarded, type Guarded } from "./install/command-guard.ts";
 import { hostFilePath, hostGhConfigDir, readOrNull } from "./install/paths.ts";
+import { shellContext } from "./install/shell-command.ts";
+import { compareWithInstalled } from "./install/tool-copy.ts";
 
 const REFUSED = 2;
 const SIGNAL_EXIT_BASE = 128;
@@ -39,6 +45,24 @@ export function planInvocation(argv: readonly string[], { commands = COMMANDS, f
   const file = Object.hasOwn(commands, name) ? commands[name] : undefined;
   if (file === undefined) return { refusal: `agent-org: \`${name}\` is not a command. Commands:\n${list}` };
   return { run: { program: join(SRC, file), args: [...fixedArgs[name] ?? [], ...withoutRepeatedFixed(rest, fixedArgs[name] ?? [])] } };
+}
+
+/**
+ * `planInvocation`, then the guard of the three commands that change the install (A11-285): a refusal when this copy is older than the installed tool, else the plan with the override flag removed.
+ * PURE over `guard.compare`, so a test drives it with a comparison and spawns nothing.
+ * @param argv what follows `agent-org`
+ */
+export function planGuardedInvocation(argv: readonly string[], guard: Omit<Guarded, "command" | "argv">): ReturnType<typeof planInvocation> {
+  const plan = planInvocation(argv);
+  if ("refusal" in plan) return plan;
+  const guarded = guardCopy({ ...guard, command: argv[0] as string, argv });
+  return "refusal" in guarded ? guarded : planInvocation(guarded.run);
+}
+
+/** This copy, the installed tool's folder and the `agent-org` shim's folder, as the guard compares them; read only for a command the guard covers. */
+function realGuard(): Omit<Guarded, "command" | "argv"> {
+  const context = shellContext(process.env, homedir(), readOrNull(hostFilePath(process.env, homedir(), readOrNull)));
+  return { copyRoot: dirname(SRC), tool: context.tool, binDir: context.binDir, compare: (copyRoot) => compareWithInstalled(copyRoot, { tool: context.tool }) };
 }
 
 /**
@@ -74,7 +98,7 @@ function runProgram(program: string, args: string[], env: NodeJS.ProcessEnv): Pr
 }
 
 async function main(argv: readonly string[]) {
-  const plan = planInvocation(argv);
+  const plan = isGuarded(argv[0] ?? "") ? planGuardedInvocation(argv, realGuard()) : planInvocation(argv);
   if ("refusal" in plan) {
     console.error(plan.refusal);
     process.exitCode = REFUSED;

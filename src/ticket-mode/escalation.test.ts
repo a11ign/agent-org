@@ -1,7 +1,7 @@
 // no-token: gh -- pure builders over text; nothing is read or spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ESCALATION_IDS, ESCALATION_ITEMS, ESCALATION_RULE, OFF_LIST_PREFIX, escalationItem, escalationList, escalationReason, questionEscalation, questionText } from "./escalation.ts";
+import { ESCALATION_IDS, ESCALATION_ITEMS, ESCALATION_RULE, OFF_LIST_PREFIX, escalationItem, escalationList, escalationReason, offListRefusal, questionEscalation, questionText } from "./escalation.ts";
 import { batchPlanBriefText, briefText, planBriefText, reviewBriefText } from "./worker-files.ts";
 import { OUTCOME_EXAMPLES, checkOutcome } from "./outcome.ts";
 import { planDecisionWords } from "../../plugins/atomic-reviewer/prompt.ts";
@@ -52,6 +52,16 @@ test("A11-277: the rule tells a run that an After-merge check the person's sessi
   assert.match(ESCALATION_RULE, /An After-merge check that the person's session runs is not a stop either: the board sends it to the session's queue \(`GET \/api\/session-asks`/);
   assert.ok(ESCALATION_RULE.includes("`POST /api/after-merge/<KEY>/<n>`"));
   assert.ok(!/chairman/i.test(ESCALATION_RULE), "the rule names no organisation's own people: agent-org is public");
+});
+
+test("A11-275: the rule tells a run that an ask only the person's session can do is a `session` wait, not a stop, and names the two routes and what to do when it is not answered", () => {
+  assert.match(ESCALATION_RULE, /An ask that only the person's session can do \(running something on the person's machine, reading the board, a live check against a release\) is not a stop either\./);
+  assert.ok(ESCALATION_RULE.includes("`{ \"kind\": \"working\", \"reason\": \"...\", \"waitingOn\": [ { \"session\": \"<the exact command, where it runs, and what a pass looks like>\" } ], \"until\": \"<ISO time>\" }`"));
+  assert.ok(ESCALATION_RULE.includes("`GET /api/session-asks`, as `kind: \"waiting-run\"`"));
+  assert.ok(ESCALATION_RULE.includes("`POST /api/session-asks/<KEY>/answer`"));
+  assert.ok(ESCALATION_RULE.includes("declare it again with a new `until`; never stop on it"));
+  assert.ok(ESCALATION_RULE.includes("An After-merge check that the person's session runs is not a stop either"), "the first sentence stays beside it");
+  assert.ok(offListRefusal("a needs-human outcome that names no item").includes(ESCALATION_RULE), "a stop that names no item is refused with those words");
 });
 
 test("A11-257: the needs-human example names an item of the list, and the file checks as it is written", () => {

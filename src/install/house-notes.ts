@@ -23,7 +23,7 @@ export const WORKER_NOTES = `# Worker house rules
 
 ## Proof before merge
 
-Every line of a ticket's Acceptance and Done-when is proven by a named test or a runnable check, and the pull request body says which proves which. If a line can only be proven after merge, build the check so it runs against your branch before merge, and say how to run it.
+Every line of a ticket's Acceptance and Done-when is proven by a named test or a runnable check, and the pull request body says which proves which. If a line can only be proven after merge, build the check so it runs against your branch before merge, and say how to run it. A check that only the person's session can run now is not a stop: ask it with a \`session\` wait (below).
 
 ## Outcome file shape (exact)
 
@@ -31,6 +31,7 @@ The board reads outcome.json strictly. A wrong field name reads as "could not be
 
 - Pull request ready: { "kind": "ready-pr", "prs": [ { "repo": "owner/repo", "url": "https://github.com/owner/repo/pull/1" } ], "reason": "one line" }  -- \`prs\` is an ARRAY of {repo, url}; never \`pr\`.
 - Waiting on events the board reads for you (your brief lists them): { "kind": "working", "reason": "what you wait for", "waitingOn": [ { "<event>": "<id>" } ], "until": "<ISO time>" }  -- then END YOUR TURN: the board prompts you when all of them have finished or any has failed, and once if \`until\` passes. Never write a wait loop, a \`sleep\` or a \`pgrep -f\` to wait for them.
+- Waiting on something only the person's session can do (running a command on the person's machine, reading the board, a live check): { "kind": "working", "reason": "what you ask", "waitingOn": [ { "session": "<the exact command, where it runs, and what a pass looks like>" } ], "until": "<ISO time>" }  -- then END YOUR TURN: the board lists the ask in the session's queue (\`GET /api/session-asks\`), the session answers it (\`POST /api/session-asks/<KEY>/answer\`), and the board prompts you with the result. Never write \`needs-human\` for it.
 - Still running your own background work (a shell or a Monitor): { "kind": "working", "reason": "what is still running", "waitingOn": "<what>", "until": "<ISO time>" }  -- before a long wait; \`waitingOn\` and \`until\` are optional, and the board reads \`until\` as the end of the wait.
 - Nothing to build, done-when holds: { "kind": "checked", "reason": "what you read" }
 - A person must act, for an item on the escalation list below: { "kind": "needs-human", "reason": "the one thing only they can do", "escalation": "<id>" }
