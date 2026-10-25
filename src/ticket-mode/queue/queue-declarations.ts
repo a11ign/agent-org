@@ -9,7 +9,7 @@ import { stepNamed } from "../board-view/plan-steps.ts";
 import { pullsOf } from "../board-view/view-types-and-filters.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
 import { replace, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
-import { declarationOf, type Declaration } from "../ticket-references.ts";
+import { declarationOf, saysNothingRemains, type Declaration } from "../ticket-references.ts";
 import type { Keywords } from "../source.ts";
 
 /** One merged pull request's body, read: its address, and what the body declares of the ticket (null for nothing). */
@@ -72,7 +72,7 @@ export function recordDeclared(queue: Queue, key: string, declared: PullDeclared
 }
 
 /**
- * `entry` with its `partial` as the declaration says. A disagreement is a `Closes` against an outcome that has a `partial`, or a `Partial:` against an outcome with none or one that names another step;
+ * `entry` with its `partial` as the declaration says. A disagreement is a `Closes` against an outcome that has a `partial` naming work to do (not one that says nothing remains), or a `Partial:` against an outcome with none or one that names another step;
  * different words for the same step are none. `pull` is the declaration as the card names it. PURE.
  */
 function followed(entry: Entry, declared: PullDeclared, pull: string): Entry {
@@ -80,7 +80,8 @@ function followed(entry: Entry, declared: PullDeclared, pull: string): Entry {
   const overruled = (words: string | null): PartialOverruled => ({ outcome: words, pull, urls: declared.urls });
   switch (declared.kind) {
     case "none": return entry;
-    case "closes": return outcome === undefined ? whole : { ...whole, partialOverruled: overruled(outcome) };
+    // An outcome whose own words say nothing remains agrees with `Closes` (A11-239): no disagreement to show.
+    case "closes": return outcome === undefined || saysNothingRemains(outcome) ? whole : { ...whole, partialOverruled: overruled(outcome) };
     case "partial": {
       const agrees = outcome !== undefined && !namesOtherStep(outcome, declared.remains);
       return { ...whole, partial: declared.remains, ...(agrees ? {} : { partialOverruled: overruled(outcome ?? null) }) };

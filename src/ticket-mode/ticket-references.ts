@@ -1,5 +1,5 @@
 // @ts-check
-// module: how a pull request's body names its ticket: the `Closes` and `Refs` lines, the `Partial:` line, the closing words the tracker reads anywhere in a body, and the `closes` report that reads them (A11-74, A11-92, A11-127, A11-178)
+// module: how a pull request's body names its ticket: the `Closes` and `Refs` lines, the `Partial:` line, the closing words the tracker reads anywhere in a body, and the `closes` report that reads them (A11-74, A11-92, A11-127, A11-178, A11-239)
 //
 // A LEAF, ON PURPOSE. `pr-open-ticket.ts` imports `CI_BODY_REPORTS` from the acceptance module, and CI's own `closes` report must read a ticket's declaration with the same
 // grammar `pr:open` does. Were the grammar left in `pr-open-ticket.ts`, the acceptance module would import it back and the two would form a cycle. So both import this file,
@@ -16,8 +16,33 @@ const REFERENCED = /^[*_`(]*([A-Za-z][A-Za-z0-9]*-\d+|#\d+)[*_`).,;:]*$/;
 /** A body's `Partial:` line: what remains of the ticket after a partial pull request. A placeholder, or no words, is no declaration. */
 const PARTIAL_LINE = /^\s*(?:[-*]\s+)?(?:\*\*|__)?Partial:(?:\*\*|__)?[ \t]*(\S.*)$/m;
 
+/** The words of a body's `Partial:` line, as written, or undefined when it has none. */
+const partialWordsOf = (body: string): string | undefined => PARTIAL_LINE.exec(body)?.[1];
+
 /** What the body's `Partial:` line says remains of the ticket, or null when the body declares the pull request complete. PURE. */
-const partialOf = (body: string): string | null => declaredRemains(PARTIAL_LINE.exec(body)?.[1] ?? "");
+const partialOf = (body: string): string | null => declaredRemains(partialWordsOf(body) ?? "");
+
+/** Where one clause of a `Partial:` line ends: a sentence or clause break, a bracket, or a dash with a space on both sides. */
+const CLAUSE_END = /[;.,()]| - | -- | — /;
+/** What a worker writes after `Partial:` when nothing remains, each as the whole of a clause (A11-239). A later wording is added here. */
+const NOTHING_REMAINS: ReadonlySet<string> = new Set(["none", "nothing", "n/a", "na", "nil", "-", "—", "last step", "the last step", "final step", "the final step",
+  "nothing remains", "nothing left", "nothing left to do", "nothing more", "no remainder", "none remain", "none remains"]);
+/** What a worker may add to such a clause without naming work: that the step is the end. */
+const SAYS_DONE: ReadonlySet<string> = new Set(["done", "all done", "complete", "completed", "finished", "all finished"]);
+
+/** How many characters of a `Partial:` line a refusal quotes. */
+const SHOWN_WORDS = 60;
+const cutAt = (text: string, length: number): string => text.length > length ? `${text.slice(0, length)}...` : text;
+
+/**
+ * Whether the words of a `Partial:` line say that nothing remains (A11-239): `none; this is the last step.` is no remainder, it is the last step, which closes the ticket. Every clause of the line (lower-cased,
+ * markdown emphasis stripped, cut at each break) must be a whole {@link NOTHING_REMAINS} or {@link SAYS_DONE} wording, after one `this is ` or `it is `, and at least one the former. A clause that names
+ * anything else (`none, the board view remains`, `the last step; step 3 remains`, `none of the UI yet`) leaves the line a real remainder. PURE.
+ */
+export function saysNothingRemains(words: string): boolean {
+  const clauses = words.toLowerCase().replace(/[*_`]/g, "").split(CLAUSE_END).map((clause) => clause.trim().replace(/^(?:this|it) is /, "")).filter((clause) => clause !== "");
+  return clauses.some((clause) => NOTHING_REMAINS.has(clause)) && clauses.every((clause) => NOTHING_REMAINS.has(clause) || SAYS_DONE.has(clause));
+}
 
 /** What a pull request's body declares of its ticket (A11-181): that it leaves `remains` to do, or that it completes the ticket. */
 export type Declaration = Readonly<{ kind: "partial"; remains: string } | { kind: "closes" }>;
@@ -25,9 +50,10 @@ export type Declaration = Readonly<{ kind: "partial"; remains: string } | { kind
 /**
  * What one pull request's body declares of the ticket `key`, or null when it declares nothing: the `Partial:` line's words when it has one, whatever closing words the same body carries (a partial body that
  * quoted one is still partial, A11-127); else `closes` when a reference line with the tracker's closing keyword names `key`. `Refs <KEY>` alone, a body that names no ticket, an empty body and a closing
- * keyword of another ticket declare nothing. It reads the grammar `pr:open` and CI's `closes` report read, and adds none (A11-181). PURE.
+ * keyword of another ticket declare nothing. A `Partial:` line that says nothing remains ({@link saysNothingRemains}) is `closes`, with or without a closing line (A11-239). It reads the grammar `pr:open` and CI's `closes` report read, and adds none (A11-181). PURE.
  */
 export function declarationOf(body: string, key: string, keywords: Keywords): Declaration | null {
+  if (saysNothingRemains(partialWordsOf(body) ?? "")) return { kind: "closes" };
   const remains = partialOf(body);
   if (remains !== null) return { kind: "partial", remains };
   const closes = referencesIn(body, keywords).some(({ verb, names }) => verb === keywords.closing && names.some((name) => sameKey(name, key)));
@@ -82,7 +108,7 @@ export function referencesIn(body: string, keywords: Keywords): { verb: string; 
 /**
  * THE `closes` REPORT FOR A TICKET, replacing a row's: the body names its ticket with the tracker's closing keyword when the pull request completes it,
  * or with its non-closing keyword and a `Partial: <what remains>` line when it is partial (A11-92). The closing keyword completes the ticket when the pull
- * request merges, so the report says which it found. `Closes: none`, a closing keyword of any other ticket, a partial pull request that says it is
+ * request merges, so the report says which it found. `Closes: none`, a `Partial:` line that says nothing remains (the last step closes), a closing keyword of any other ticket, a partial pull request that says it is
  * complete, and a body that names no ticket are refused. A non-closing keyword of another ticket is no refusal.
  * @param {string} body @param {string} key the ticket's key @param {Keywords} keywords the tracker's two words
  * @returns {{ ok: boolean, lines: string[] }}
@@ -95,6 +121,10 @@ export function ticketClosesReport(body: string, key: string, keywords: Keywords
   if (closes.some(({ first }) => first.toLowerCase() === "none")) {
     return refuse(`CLOSES: REFUSED -- \`${closing}: none\` is not a ticket's pull request's declaration. Name ${key} with \`${closing} ${key}\` when this pull request `
       + `completes it, or with \`${nonClosing} ${key}\` and a \`Partial:\` line when it does not (A11-74, A11-92).`);
+  }
+  const partialWords = partialWordsOf(body)?.trim() ?? "";
+  if (saysNothingRemains(partialWords)) {
+    return refuse(`CLOSES: REFUSED -- the \`Partial:\` line says nothing remains ("${cutAt(partialWords, SHOWN_WORDS)}"). The last step closes the ticket: write \`${closing} ${key}\` and no \`Partial:\` line (A11-239).`);
   }
   const others = closes.flatMap(({ names }) => names).filter((name) => name !== key);
   if (others.length > 0) {
