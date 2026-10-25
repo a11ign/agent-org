@@ -176,16 +176,16 @@ export const NOTE_JOIN = " · ";
 const PARKED_LINE = "Still open: answer the agent in its terminal and the run carries on";
 
 /** What a row's note needs of the page besides the run: the whole queue, and the terminal and publisher the machine names. */
-export type NoteContext = Readonly<{ queue: QueueView; publisher: ConfigView["publisher"] | undefined }>;
+export type NoteContext = Readonly<{ queue: QueueView; publisher: ConfigView["publisher"] | undefined; now?: number }>;
 
 const present = (line: string | null | undefined): line is string => line !== null && line !== undefined && line !== "";
 
 /** The lines of a run's card, in the order `ui.html`'s `row()` draws them. The links it puts inside some of them (What changed, the pull requests a plan learns from, the question's disclosure) are Run detail's. PURE. */
-export function noteLines(entry: RunEntry, { queue, publisher }: NoteContext): string[] {
+export function noteLines(entry: RunEntry, { queue, publisher, now }: NoteContext): string[] {
   const { entries } = queue;
   const waits = waitsOn(entry, entries);
   const stacked = stackedOn(entry, entries);
-  const stalled = workingNote(entry);
+  const stalled = workingNote(entry, now);
   const outcome = entry.outcome;
   const edit = outcome !== undefined && "edit" in outcome ? outcome.edit : undefined;
   const lines: (string | null | undefined)[] = [
@@ -200,7 +200,7 @@ export function noteLines(entry: RunEntry, { queue, publisher }: NoteContext): s
     readoptNote(entry),
     overrideNote(entry),
     cutListNote(entry, entries),
-    reasonOf(entry).line,
+    reasonOf(entry, now).line,
     learnsLine(entry),
     ...updateLines(entry, queue.update ? { note: queue.update.note, instanceVersion: queue.update.version } : undefined),
     ...reviewLinesOf(entry, queue.pulls ?? {}),

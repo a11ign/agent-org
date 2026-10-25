@@ -92,6 +92,18 @@ test("A11-118: a done carries its trimmed reason and evidence, and a checked, ne
   assert.deepEqual(exact("{\"kind\":\"working\",\"reason\":\"the roll is still running\"}"), { kind: "working", reason: "the roll is still running" });
 });
 
+test("A11-236: a working outcome keeps the job it waits on and the time it expects to end, refuses an empty job or an unreadable time by name, and a plain working is still valid", () => {
+  assert.deepEqual(exact("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":\" the fleet captures \",\"until\":\"2026-10-24T23:00:00Z\"}"), { kind: "working", reason: "r", waitingOn: "the fleet captures", until: Date.parse("2026-10-24T23:00:00Z") });
+  assert.deepEqual(exact("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":\"job\"}"), { kind: "working", reason: "r", waitingOn: "job" }, "a job alone");
+  assert.deepEqual(exact("{\"kind\":\"working\",\"reason\":\"r\"}"), { kind: "working", reason: "r" }, "a plain working");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":\" \"}"), "working waitingOn needs a string naming the background job, you wrote an empty string");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":3}"), "working waitingOn needs a string naming the background job, you wrote a number");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"soon\"}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote \"soon\"");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"5\"}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote \"5\"", "a bare number in text is not a time");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":1761346800000}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote a number");
+  assert.ok(outcomeExamples(["working"]).includes("\"waitingOn\": ") && !outcomeExamples(["working"]).includes("\"until\""), "the brief's example names the job and carries no fixed until: a copy of a date that has passed would end the wait at once");
+});
+
 test("A11-118: a proposed edit is read where the kind may carry one, and its title or description must fit", () => {
   assert.match(refusal("{\"kind\":\"needs-human\",\"reason\":\"q\",\"edit\":{\"title\":\"\",\"why\":\"w\"}}"), /^needs-human edit proposes a title that is not one line/);
   assert.equal("edit" in exact("{\"kind\":\"ready-pr\",\"prs\":[{\"repo\":\"a\",\"url\":\"" + PR + "\"}],\"edit\":\"x\"}"), false, "an edit on a pull request kind is not read, so it is not refused either");

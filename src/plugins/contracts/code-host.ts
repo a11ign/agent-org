@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.16 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.17 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.17 (A11-245): `readCiRun`, OPTIONAL: what a workflow run is (whether it has finished, how it concluded, how many of its jobs have), which the board reads for a worker that declared it waits on one. A plugin of 1.16 is read as one that has no CI-run read, and a wait on a run is then shown as unreadable.
 // 1.16 (A11-238): `stackMergeFactsOf` and `requestStackMerge`, both OPTIONAL: what the board reads of a pull request that may be in a stack (is it, where its base is, whether the stack merge is settled or was refused and why), and the hand-back of an approved, green stacked pull request to the arm bot, which alone merges it. A plugin of 1.15 is read as one with neither,
 // and the board then asks the arm bot for nothing, as before.
 // 1.15 (A11-215): `DefaultBranchRed` gains OPTIONAL `passing` and `pending`, the checks whose newest run on the default branch's head concluded green and those whose newest run has not concluded, and the base contract gains `updateBranch`, OPTIONAL: bring a pull request's branch up to date with its base, which is how the board
@@ -48,7 +49,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.16";
+export const CODE_HOST_CONTRACT_VERSION = "1.17";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -176,6 +177,12 @@ export type StackMergeFacts = Readonly<{
   refusal: Readonly<{ head: string; reason: string }> | null;
 }>;
 
+/**
+ * A workflow run as the code host says it is (contract 1.17). `status` is where it is, and `conclusion` is how it ended, which is null until it has; GitHub's own words are kept (`success`, `failure`, `cancelled`, `skipped`, `neutral`, ...), because what
+ * counts as a pass is the caller's. `url` is the run's page and `name` the workflow's. `jobs` counts the jobs that have completed of all the run lists, or is null when the run lists none yet.
+ */
+export type CiRun = Readonly<{ status: "queued" | "in_progress" | "completed"; conclusion: string | null; url: string; name: string; jobs: Readonly<{ done: number; total: number }> | null }>;
+
 /** The pull request to hand to the arm bot (contract 1.16): its repository, `owner/name`, and its number. */
 export type StackMergeRequest = Readonly<{ repo: string; number: number }>;
 
@@ -286,6 +293,11 @@ export interface CodeHost extends CodeHostPort {
    * Asks the arm bot to merge the pull request (contract 1.16): the board never merges itself, so this starts the arm bot's own job, which re-reads everything with its own identity and trusts nothing the request says. THROWS, with the host's own first line, when the request is refused.
    */
   requestStackMerge?(request: StackMergeRequest): void;
+  /**
+   * The workflow run `runId` of `repository` (`owner/name`), or null for "could not ask": a run the host does not have, a refused read and an answer it cannot read are all null. Null is never "it has not finished". A host without it is read as one that cannot be asked
+   * about a run (contract 1.17).
+   */
+  readCiRun?(repository: string, runId: number): CiRun | null;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
   /**

@@ -15,7 +15,7 @@ import { create, doctorChecks, keep, onboardSteps } from "./index.ts";
 test("the registry finds the plugin as the bundled code host github, from its manifest alone", () => {
   const plugin = pluginNamed(defaultCatalog(), "github");
   assert.ok(plugin !== undefined);
-  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry], ["codeHost", "bundled", "1.16", "index.ts"]);
+  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry], ["codeHost", "bundled", "1.17", "index.ts"]);
   assert.deepEqual(plugin.tooling, { mcpServers: [], connectors: [], skills: [] }, "workers need nothing beyond the gh they already have");
   assert.deepEqual(defaultCatalog().refusals, []);
 });

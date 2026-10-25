@@ -3544,8 +3544,8 @@ test("A11-80: a working outcome is read with its reason and does not end the run
 
 test("A11-80: a working run idle with no newer outcome for tickets.stallMinutes is marked stalled, once, and is neither ended nor prompted", async () => {
   let clock = 100;
-  const { pool, status, entry, settings, h, screen } = setup(1, ["NBF-1"], { stallMinutes: 30 }, { now: () => clock });
-  screen.text = PANE("1 shell");  // a shell of its own still runs, so the background rule does not stall it first
+  const { pool, status, entry, settings, h } = setup(1, ["NBF-1"], { stallMinutes: 30 }, { now: () => clock });
+  h.refused.add("read");  // a pane that cannot be read leaves the idle clock to decide alone: with a shell shown on it the run would be waiting (A11-236)
   await pool.tick();
   status.set(herdrName("NBF-1"), "working");
   await pool.tick();
@@ -3570,13 +3570,15 @@ const PANE = (counts = "") => `❯\n────\n  5h ╸─────── 
 const resumes = (h: { calls: string[][] }) => h.calls.filter((args) => args.includes("prompt")).length;
 
 /** NBF-1 wrote `working`, and went idle with its pane showing `screen`: the clock moves on with `advance`. */
-async function idleWithWork(screen: string, { refuseRead = false }: { refuseRead?: boolean } = {}) {
+async function idleWithWork(screen: string, { refuseRead = false, wait = {} }: { refuseRead?: boolean; wait?: Record<string, unknown> } = {}) {
   let clock = 100;
   const made = setup(1, ["NBF-1"], { stallMinutes: 30 }, { now: () => clock });
   await made.pool.tick();
   made.status.set(herdrName("NBF-1"), "working");
   await made.pool.tick();
-  writeFileSync(join(ticketDir(made.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "working", reason: "the roll is still running" }));
+  writeFileSync(join(ticketDir(made.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "working", reason: "the roll is still running", ...wait }));
+  // The note's time is the file's: put it on the test's clock, which the three-hour bound counts from (A11-236).
+  utimesSync(join(ticketDir(made.settings, "NBF-1"), "outcome.json"), new Date(clock), new Date(clock));
   made.status.set(herdrName("NBF-1"), "idle");
   made.screen.text = screen;
   if (refuseRead) made.h.refused.add("read");
@@ -3606,6 +3608,37 @@ test("A11-85: a pane that shows a shell or a Monitor is not stalled however long
   await pool.tick();
   assert.deepEqual([entry("NBF-1").working?.stalled, entry("NBF-1").working?.resumed], [undefined, undefined]);
   assert.equal(resumes(h), 0, "not prompted");
+});
+
+test("A11-236: a run whose pane shows 2 shells is waiting on background work past tickets.stallMinutes: still running, not stalled, and no stall line is logged", async () => {
+  const { pool, entry, h, pass } = await idleWithWork(PANE("2 shells"));
+  const logged = await captureStderr(async () => { await pass(31 * 60_000); await pass(60_000); });
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled, entry("NBF-1").working?.waiting], ["running", undefined, true]);
+  assert.equal(runStatus(entry("NBF-1")), "working", "still In progress");
+  assert.equal(logged.filter((line) => line.includes("NBF-1") && line.includes("idle")).length, 0, "no stall line");
+  assert.equal(resumes(h), 0, "not prompted");
+  await pool.tick();
+});
+
+test("A11-236: past the three-hour bound the shells no longer excuse an idle run: it is stalled once, and the log says it waited past the bound", async () => {
+  const { entry, pass } = await idleWithWork(PANE("2 shells"), { wait: { waitingOn: "the fleet captures on three boxes" } });
+  await pass(3 * 60 * 60_000 - 200_000);
+  assert.equal(entry("NBF-1").working?.stalled, undefined, "inside the bound");
+  const logged = await captureStderr(async () => { await pass(200_000); await pass(60_000); });
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled], ["running", true]);
+  assert.match(entry("NBF-1").working?.stallReason ?? "", /^waited past \d{4}-\d\d-\d\dT[\d:.]+Z on the fleet captures on three boxes$/);
+  const lines = logged.filter((line) => line.includes("NBF-1 was waiting on background work"));
+  assert.equal(lines.length, 1, "said once");
+  assert.ok(lines[0].includes("on the fleet captures on three boxes"), "naming the job");
+});
+
+test("A11-236: an until in the outcome file is the bound: a run with a named job and no shells is waiting until then, and stalled naming the job after it", async () => {
+  const until = new Date(100 + 2 * 60 * 60_000).toISOString();
+  const { entry, pass } = await idleWithWork(PANE(), { wait: { waitingOn: "the Linux runs", until } });
+  await pass(90 * 60_000);
+  assert.deepEqual([entry("NBF-1").working?.waiting, entry("NBF-1").working?.stalled], [true, undefined], "inside until, with no shells on the pane");
+  await pass(31 * 60_000);
+  assert.deepEqual([entry("NBF-1").working?.stalled, entry("NBF-1").working?.stallReason], [true, `waited past ${until} on the Linux runs`]);
 });
 
 test("A11-85: a pane that cannot be read leaves the thirty-minute rule to decide alone: no background stall, no prompt", async () => {

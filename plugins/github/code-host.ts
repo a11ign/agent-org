@@ -9,6 +9,7 @@
 import { fileURLToPath } from "node:url";
 import type { ChangeRef, CodeHost, VerdictDoor } from "../../src/plugins/contracts/code-host.ts";
 import type { PluginDeps } from "../../src/plugins/manifest.ts";
+import { readCiRun } from "./ci-run.ts";
 import { readCheckLog, rerunFailedChecks } from "./check-runs.ts";
 import { readDefaultBranchRed } from "./default-branch-checks.ts";
 import { ghRunner } from "./gh.ts";
@@ -81,6 +82,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh }),
     stackMergeFactsOf: (url) => stackMergeFactsOf(url, gh),
     requestStackMerge: (request) => requestStackMerge(request, gh),
+    readCiRun: (repository, runId) => readCiRun(repository, runId, gh),
     readCheckLog: (detailsUrl) => readCheckLog(detailsUrl, gh, deps.log),
     rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
     updateBranch: (url, expectedHead) => updateBranch(url, expectedHead, gh),

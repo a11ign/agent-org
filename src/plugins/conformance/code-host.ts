@@ -26,9 +26,15 @@ export type CodeHostProbe = Readonly<{
    */
   stackRefusal?: Readonly<{ pull: string; head: string; reason: string }>;
   stackRequestRefused?: StackMergeRequest;
+  /** A workflow run the host holds, by its repository (`owner/name`) and id (contract 1.17). A host without `readCiRun` is not asked. */
+  ciRun?: Readonly<{ repository: string; runId: number }>;
   /** Remote URLs of one repository the host holds, in the forms a checkout's `origin` takes, and the repository each names (contract 1.14). A host without a `repositories` group is not asked. */
   remote?: Readonly<{ urls: readonly string[]; repository: HostRepository }>;
 }>;
+
+/** The statuses a workflow run may be in (contract 1.17), and a run id no host holds. */
+const CI_STATUSES: readonly unknown[] = ["queued", "in_progress", "completed"];
+const MISSING_RUN_ID = 2_000_000_000;
 
 /** The operations of the optional `rows` group (contract 1.11), as a function each; the other members are values. */
 const BASE_ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
@@ -499,6 +505,22 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     applies: ({ host, probe }) => typeof host.requestStackMerge === "function" && probe.stackRequestRefused !== undefined,
     reason: "the code host has no requestStackMerge (optional, contract 1.16) or the probe names no request it refuses",
     run: ({ host, probe }) => expect(throws(() => host.requestStackMerge!(probe.stackRequestRefused!)), "requestStackMerge must throw for a request the host refuses: a hand-back that was not made is never done"),
+  },
+  "readCiRun answers null for a run it cannot read": {
+    applies: ({ host }) => typeof host.readCiRun === "function",
+    reason: "the code host has no readCiRun, which is optional (contract 1.17)",
+    run: ({ host, probe }) => expect(host.readCiRun!(probe.repository, MISSING_RUN_ID) === null, "readCiRun must answer null for a run it cannot read: null is never 'it has not finished'"),
+  },
+  "readCiRun reads a workflow run's status, conclusion, address, name and jobs": {
+    applies: ({ host, probe }) => typeof host.readCiRun === "function" && probe.ciRun !== undefined,
+    reason: "the code host has no readCiRun (optional, contract 1.17) or the probe names no workflow run",
+    run: ({ host, probe }) => {
+      const { repository, runId } = probe.ciRun!;
+      const run = host.readCiRun!(repository, runId);
+      expect(isObject(run) && CI_STATUSES.includes(run.status) && isString(run.url) && isString(run.name), `readCiRun(${repository}, ${runId}) must read { status: queued | in_progress | completed, conclusion, url, name, jobs }`);
+      expect((run.status === "completed") === (isString(run.conclusion) && run.conclusion !== ""), "a run has a conclusion once it has completed, and has none before");
+      expect(run.jobs === null || (isObject(run.jobs) && Number.isInteger(run.jobs.done) && Number.isInteger(run.jobs.total) && run.jobs.done >= 0 && run.jobs.done <= run.jobs.total && run.jobs.total >= 1), "jobs must be null (none listed) or { done, total } with done no more than total, and at least one job");
+    },
   },
   "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {
     expect(hasFunctions(repositories, ["readOwners", "readRepositories", "repositoryOfRemote", "cloneCommand", "cloneRepository"]), "the repositories group has readOwners, readRepositories, repositoryOfRemote, cloneCommand and cloneRepository functions");

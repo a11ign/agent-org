@@ -72,7 +72,7 @@ export function RunRow({ entry, context }: Readonly<{ entry: RunEntry; context: 
   const { queue } = context;
   const status = shownStatus(entry, queue.publish, queue.entries);
   const tokens = tokensOf(entry);
-  const note = noteOf(entry, { queue, publisher: context.publisher });
+  const note = noteOf(entry, { queue, publisher: context.publisher, now: context.now });
   const { key, title } = entry.ticket;
   return (
     <div className="run-row" id={`run-${key}`}>

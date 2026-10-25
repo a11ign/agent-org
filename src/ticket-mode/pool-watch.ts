@@ -14,7 +14,7 @@ import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
-import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, SETTLED, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
@@ -245,6 +245,14 @@ function markLive(ctx: PoolContext, entry: Entry): void {
   updateEach(ctx, runMembers(ctx, entry), markResumed);
 }
 
+/** The log line of a run first marked stalled on its `working` note: which of the three reasons stalled it (A11-85, A11-236). PURE. */
+function stallLine(who: string, note: WorkingNote, stallMinutes: number): string {
+  if (note.stallReason === BACKGROUND_GONE) return `${who} wrote working with no background work running for ${BACKGROUND_GONE_MS / 60_000} minutes, so nothing will wake it: marked stalled, and told once to check its background work: ${note.reason}`;
+  // The only other reason a note carries is the one that names the job it waited on past the end of its wait.
+  if (note.stallReason !== undefined) return `${who} was waiting on background work and has been idle past the end of its wait, with no newer outcome (${note.stallReason}): ${note.reason}`;
+  return `${who} has been idle for ${stallMinutes} minutes or more since it wrote working, with no newer outcome: ${note.reason}`;
+}
+
 /** Move a working run's idle clock on `seen`, and log once when the run is first marked stalled. Nothing is ended and no key is sent. */
 function watchStall(ctx: PoolContext, entry: Entry, seen: string): void {
   const { now, settings, stallMs, store } = ctx;
@@ -255,9 +263,7 @@ function watchStall(ctx: PoolContext, entry: Entry, seen: string): void {
   const note = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
   if (before?.stalled !== true && note?.stalled === true) {
     const who = entry.batch ?? entry.ticket.key;
-    log(note.stallReason === BACKGROUND_GONE
-      ? `${who} wrote working with no background work running for ${BACKGROUND_GONE_MS / 60_000} minutes, so nothing will wake it: marked stalled, and told once to check its background work: ${note.reason}`
-      : `${who} has been idle for ${settings.stallMinutes} minutes or more since it wrote working, with no newer outcome: ${note.reason}`);
+    log(stallLine(who, note, settings.stallMinutes));
   }
   if (!wasResumed && note?.resumed === true) promptBackgroundGone(ctx, entry);
 }
