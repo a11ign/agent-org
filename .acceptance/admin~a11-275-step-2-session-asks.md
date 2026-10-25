@@ -9,7 +9,7 @@ Acceptance:
 # wait-verdict.test.ts, wait-text.test.ts: the finished line quotes the result; the card reads "asked, no answer yet" and "answered"; wait-note.test.ts: the run is waiting, never stalled or Needs you
 # session-asks.test.ts: a waiting run is listed as a waiting-run ask; session-answers.test.ts: the answer is recorded, refused or accepted again as the plan says, and the route needs the board's key
 # escalation.test.ts, escalation-stop.test.ts, house-notes.test.ts: the rule and the notes name the `session` wait and both routes, and a needs-human for such an ask is refused with those words
-# (the filing check cannot run pool-session-wait.test.ts, which CI's suite runs: a declared `session` wait reads In progress, the ask is listed, the answer wakes the worker once with the result, and an answer to an earlier declaration finishes no later one)
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/wait-on src/ticket-mode/outcome.test.ts src/ticket-mode/session-asks.test.ts src/ticket-mode/session-answers.test.ts src/ticket-mode/escalation.test.ts src/ticket-mode/escalation-stop.test.ts src/install/house-notes.test.ts
+# (the filing check cannot run session-asks.test.ts, session-answers.test.ts, escalation-stop.test.ts or pool-session-wait.test.ts, which CI's suite runs: the waiting-run listing, the answer route and its refusals, the hook's refusal, and the pool end to end: a declared `session` wait reads In progress, the ask is listed, the answer wakes the worker once with the result, and an answer to an earlier declaration finishes no later one)
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/wait-on src/ticket-mode/outcome.test.ts src/ticket-mode/escalation.test.ts src/install/house-notes.test.ts
 npm run typecheck
 ```
