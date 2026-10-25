@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The gate asks the other repositories' first reads TOGETHER (`src/work-gate.mjs`): each other repository's open pull-request list, its merged list and its `main`'s `ci.yml` runs go out as one batch (`readWithFirstWaveTogether`, `runBatch`: one synchronous spawn of a `node` that starts the `gh` calls at once), where they used to wait one after another. The commands, their parsing and every order are the same: the readers run once against empty answers to name what they ask, the batch answers those, and a call that was not foreseen (the widened page after a full first one) still runs on its own. A call is answered once; a refusal reaches its reader as the throw `execFileSync` made, so a lane that could not be read is still `null`. Measured 2026-10-05 on one host, four gate runs each way alternated at the same load, `gh` timed by a shim on PATH: 35.8 to 41.9 s before (mean 38.7 s), 28.5 to 30.0 s after (mean 29.5 s), 46 to 68 `gh` calls either way. The tick-cost line's `gh` wall now excludes these calls (they are counted by the batch's own `node`, which is timed); their count by repository is unchanged. a11ign/a11ign#3566.
