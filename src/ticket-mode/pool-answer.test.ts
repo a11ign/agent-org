@@ -10,8 +10,10 @@ import { descriptionHash } from "./ticket-read.ts";
 import { logOf } from "./queue/run-log.ts";
 
 const QUESTION = "Which wording should the round cap use: keep the current one, or the shorter one?";
-const ASKED = { kind: "needs-human", reason: QUESTION };
-const ENTRY = `## Decisions (the chairman, 2026-10-25)\n\n* **Question:** ${QUESTION}\n* **Answer:** Keep the current wording.\n`;
+const ASKED = { kind: "needs-human", reason: QUESTION, escalation: "reserved" };
+/** The question as the board holds it (A11-257): the card names the escalation-list item first, and the Decisions entry records the question as held. */
+const HELD = `reserved to the person \u2014 ${QUESTION}`;
+const ENTRY = `## Decisions (the chairman, 2026-10-25)\n\n* **Question:** ${HELD}\n* **Answer:** Keep the current wording.\n`;
 
 test("A11-250: an answered Needs-you question lands in the ticket's Decisions, written before the run is told, and the run is told", async () => {
   const made = answerFixture();
@@ -30,7 +32,7 @@ test("A11-250: an answered Needs-you question lands in the ticket's Decisions, w
   assert.ok(made.writes[0].herdrCallsBefore <= made.herdr.calls.indexOf(prompt), "the ticket was written before the run was told");
   const message = prompt[prompt.length - 1];
   assert.match(message, /A person answered your question/);
-  assert.ok(message.includes(`> ${QUESTION}`) && message.includes("> Keep the current wording."), "the message quotes both");
+  assert.ok(message.includes(`> ${HELD}`) && message.includes("> Keep the current wording."), "the message quotes both");
   assert.ok(message.includes("`## Decisions (the chairman, 2026-10-25)`") && message.includes("https://linear.app/x/NBF-1"), "and says where the ticket records them");
   assert.match(message, /link the ticket's Decisions entry that records it/);
 });
@@ -51,7 +53,7 @@ test("A11-250: a second answer in the same section merges under the heading; the
   await made.endsOn(ASKED);
   await made.pool.answer("NBF-1", { answer: "Keep it.", who: "the chairman" });
   assert.equal(made.held.description.match(/^## Decisions/gm)?.length, 1, "one section");
-  assert.ok(made.held.description.endsWith("* **Round cap:** three.\n\n* **Question:** " + QUESTION + "\n* **Answer:** Keep it.\n"));
+  assert.ok(made.held.description.endsWith("* **Round cap:** three.\n\n* **Question:** " + HELD + "\n* **Answer:** Keep it.\n"));
   const named = answerFixture();
   await named.endsOn(ASKED);
   await named.pool.answer("NBF-1", { answer: "Keep it." });

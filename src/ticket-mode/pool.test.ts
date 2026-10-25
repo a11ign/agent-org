@@ -1707,8 +1707,8 @@ test("a batch's planned outcome attaches each ticket's plan, hands back the one 
   const asked = entry("NBF-3").outcome;
   assert.equal(asked?.kind, "needs-human");
   const reason = asked?.kind === "needs-human" ? asked.reason : "";
-  assert.ok(reason.startsWith("the planner needs a person: Which of the two layouts does the design mean? x"), reason);
-  assert.equal(reason.length, "the planner needs a person: ".length + 500, "the question's first 500 characters");
+  assert.ok(reason.startsWith("Off the escalation list: the planner needs a person: Which of the two layouts does the design mean? x"), reason);
+  assert.equal(reason.length, "Off the escalation list: the planner needs a person: ".length + 500, "the question's first 500 characters");
   for (const key of ["NBF-4", "NBF-5"]) {
     const empty = entry(key).outcome;
     assert.match(empty?.kind === "needs-human" ? empty.reason : "", new RegExp(`the planning run wrote nothing for ${key}: no plan and no QUESTION\\.md`), "an empty folder, or none");
@@ -1734,7 +1734,7 @@ test("an order.json that fails its checks records no blockers and is logged, and
 
 test("A11-152: a worker that writes its outcome and ends its turn while the watcher runs is never told to write it again", async () => {
   // The first rewrite is the outcome the run parked on, written again during the stop hook; the second is a new one. Neither is moved, and both pass the hook.
-  for (const written of [{ kind: "needs-human", reason: "which colour?" }, { kind: "needs-human", reason: "which shade?" }]) {
+  for (const written of [{ kind: "needs-human", reason: "which colour?", escalation: "reserved" }, { kind: "needs-human", reason: "which shade?", escalation: "reserved" }]) {
     const { pool, status, settings } = await endedOn({ kind: "needs-human", reason: "which colour?" });
     const dir = ticketDir(settings, "NBF-1");
     status.set(herdrName("NBF-1"), "working");
@@ -1825,10 +1825,10 @@ test("a batch's run that hands back hands back every ticket on its one workspace
   const { pool, status, entry, settings, h } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
   await pool.tick();
   const dir = batchDir(settings, BATCH);
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which design?" }));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which design?", escalation: "reserved" }));
   status.set(herdrName(BATCH), "idle");
   await pool.tick();
-  for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).outcome, entry(key).workspace], [{ kind: "needs-human", reason: "which design?" }, "w1"], key);
+  for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).outcome, entry(key).workspace], [{ kind: "needs-human", reason: "reserved to the person \u2014 which design?", escalation: "reserved" }, "w1"], key);
   status.set(herdrName(BATCH), "working");
   await pool.tick();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "answered once, both are live again");
@@ -2303,9 +2303,9 @@ test("a parked run stays parked on an outcome file written before it parked, and
   utimesSync(join(dir, "outcome.json"), 0.05, 0.05);
   await pool.tick();
   assert.deepEqual([entry("NBF-1").outcome?.kind, entry("NBF-1").phase], ["no-outcome", "finished"], "a file older than the parking is not the run's new outcome");
-  const handed = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  const handed = await endedOn({ kind: "needs-human", reason: "which colour?", escalation: "reserved" });
   await handed.pool.tick();
-  assert.deepEqual([handed.entry("NBF-1").outcome, handed.entry("NBF-1").workspace], [{ kind: "needs-human", reason: "which colour?" }, "w1"], "the outcome it parked on");
+  assert.deepEqual([handed.entry("NBF-1").outcome, handed.entry("NBF-1").workspace], [{ kind: "needs-human", reason: "reserved to the person \u2014 which colour?", escalation: "reserved" }, "w1"], "the outcome it parked on");
 });
 
 /** NBF-1 started on a machine that opens ready pull requests, its agent working: nothing has ended yet (A11-118). */
@@ -2668,7 +2668,7 @@ async function parkedOnQuestion(gh: World, tracker?: TicketSource) {
   const ctx = await approvedRun({}, { gh, tracker });
   ctx.status.set(herdrName("NBF-1"), "working");
   await ctx.pool.tick();
-  writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which colour?" }));
+  writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which colour?", escalation: "reserved" }));
   ctx.status.set(herdrName("NBF-1"), "idle");
   await ctx.pool.tick();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").outcome?.kind, ctx.entry("NBF-1").workspace], ["finished", "needs-human", "w2"], "parked on a question");
@@ -3415,7 +3415,7 @@ test("A11-91: an edit that is not one the board can apply parks the run as needs
     assert.match(read.kind === "needs-human" ? read.reason : "", problem);
     assert.equal("edit" in read, false, "nothing is proposed from it");
   }
-  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "needs-human", reason: "q", edit: { description: "", why: "blank it" } })), { kind: "needs-human", reason: "q", edit: { description: "", why: "blank it" } }, "an empty description is a proposal too");
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "needs-human", reason: "q", edit: { description: "", why: "blank it" } })), { kind: "needs-human", reason: "Off the escalation list: q", edit: { description: "", why: "blank it" } }, "an empty description is a proposal too");
 });
 
 test("A11-91: Apply writes the proposed title to the ticket and drops the proposal, and refuses, keeping it, once the ticket has changed since", async () => {
@@ -4921,26 +4921,26 @@ test("a refusal that is not the busy one ends the waiting at once, after some bu
 /** A ticket that still holds an open decision in its Acceptance: the line the start guard names (A11-134). */
 const OPEN_DECISION = "## Acceptance\n\n### 4. Decide whether to isolate the failing ticket or keep the stall\n";
 
-/** NBF-1's work run is held for its open decision: it ends needs-human with the line, and no worker was started (A11-134). */
-function assertHeldForDecision(made: ReturnType<typeof setup>): void {
-  const outcome = made.entry("NBF-1").outcome;
-  assert.equal(outcome?.kind, "needs-human");
-  assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", /Decide whether to isolate the failing ticket or keep the stall/);
-  assert.equal(made.h.calls.some((args) => args.includes("start")), false, "no worker is started");
+/** NBF-1's work run starts although its ticket holds an open decision: the planner settled it, and a worker decides the rest (A11-257, which replaced A11-134's hold). */
+function assertStartedDespiteDecision(made: ReturnType<typeof setup>): void {
+  assert.notEqual(made.entry("NBF-1").outcome?.kind, "needs-human", "it is not handed to a person");
+  assert.equal(made.h.calls.some((args) => args.includes("start")), true, "a worker is started");
 }
 
-test("A11-134: a work run never starts on a ticket with an open decision: it ends needs-human with the line, and no worker is started", async () => {
+test("A11-257: a work run starts on a ticket with an open decision: nothing holds it for a person", async () => {
   const made = setup(1, ["NBF-1"]);
   const queue = made.store.get();
   made.store.set({ ...queue, entries: queue.entries.map((e) => ({ ...e, ticket: { ...e.ticket, description: OPEN_DECISION } })) });
   await made.pool.tick();
-  assertHeldForDecision(made);
+  assertStartedDespiteDecision(made);
 });
 
-/** NBF-1 planned by a planning run whose one plan file says `plan`, once the run is read: the plans the tracker took, and the ticket (A11-134). */
-async function plannedWith(plan: string) {
+/** NBF-1 planned by a planning run whose one plan file says `plan`, once the run is read: the plans the tracker took, and the ticket (A11-134). `ticket` is what the queued ticket says of itself, such as its description or its labels. */
+async function plannedWith(plan: string, ticket: Partial<Ticket> = {}) {
   const { tracker, attached } = planTracker();
   const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  const queue = made.store.get();
+  made.store.set({ ...queue, entries: queue.entries.map((e) => ({ ...e, ticket: { ...e.ticket, ...ticket } })) });
   await made.pool.tick();
   const dir = ticketDir(made.settings, "NBF-1");
   writeFileSync(join(dir, "plan", "NBF-1-0001-plan-fit.md"), plan);
@@ -4949,16 +4949,20 @@ async function plannedWith(plan: string) {
   return { attached, entry: made.entry };
 }
 
-test("A11-134: a plan that records a product decision as made without asking is refused whole: nothing is attached, and the ticket ends for a person", async () => {
-  const { attached, entry } = await plannedWith("# Fit\n\n## Decisions made without a person\n\n- Technical: the phrase list.\n- Product: the empty state says none.\n");
-  assert.deepEqual(attached, [], "nothing is attached");
-  const outcome = entry("NBF-1").outcome;
-  assert.equal(outcome?.kind === "needs-human" ? outcome.reason : "", "the plan records a product decision made without asking: - Product: the empty state says none.");
+test("A11-257: a plan that records a product decision as made without a person is attached as any plan is: a Product: bullet is no longer a defect", async () => {
+  const { attached } = await plannedWith("# Fit\n\n## Decisions made without a person\n\n- Technical: the phrase list.\n- Product: the empty state says none. Reason: the board's other lists do.\n");
+  assert.deepEqual(attached.map(({ key }) => key), ["NBF-1"]);
 });
 
-test("A11-134: a plan whose decisions are all Technical is attached as any plan is", async () => {
-  const { attached } = await plannedWith("# Fit\n\n## Decisions made without a person\n\n- Technical: the phrase list.\n");
-  assert.deepEqual(attached.map(({ key }) => key), ["NBF-1"]);
+const SCREEN_TICKET = { description: "## Acceptance\n\n- The board shows the pill.\n\n**Screen:** yes\n" };
+
+test("A11-257: the plan of a screen ticket with no grilled behaviour is refused without `**Behaviour:** settled by the planner`, and attached with it", async () => {
+  const bare = await plannedWith("# Fit\n\n## Decisions made without a person\n\n- Technical: the phrase list.\n", SCREEN_TICKET);
+  assert.deepEqual(bare.attached, [], "nothing is attached");
+  const outcome = bare.entry("NBF-1").outcome;
+  assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", /the plan must settle its behaviour: add the line `\*\*Behaviour:\*\* settled by the planner`/);
+  const settled = await plannedWith("# Fit\n\n## Behaviour\n\n**Behaviour:** settled by the planner\n\n- The pill says Held. Reason: the board's word for it.\n", SCREEN_TICKET);
+  assert.deepEqual(settled.attached.map(({ key }) => key), ["NBF-1"]);
 });
 
 /** A Grill run on NBF-1 whose ticket says `current` now and held `startedFrom` when the Grill started, on a tracker that records each write (A11-134). */
@@ -5013,11 +5017,10 @@ test("A11-134: a Grill run's brief grills its ticket, and the run is granted no 
   assert.deepEqual(JSON.parse(readFileSync(join(fixture.dir, WRITER_FILE), "utf8")).tools, []);
 });
 
-test("A11-134: a decision the tracker gains after a ticket is queued holds its work run too: the run ends needs-human with the line, and no worker is started", async () => {
-  // Queued clean: the copy the queue holds has no open decision, but the tracker now says the Acceptance leaves one open.
+test("A11-257: a decision the tracker gains after a ticket is queued holds its work run no more than one it had: the worker starts", async () => {
   const made = setup(1, ["NBF-1"], {}, { source: trackerOf({ "NBF-1": { description: OPEN_DECISION } }) });
   await made.pool.tick();
-  assertHeldForDecision(made);
+  assertStartedDespiteDecision(made);
 });
 
 /** A pool whose one run, NBF-1, ended with a draft pull request, as `approvedRun` has it, before anyone approves it. */
@@ -5149,11 +5152,11 @@ test("A11-153 done-when: a needs-human run goes from Needs you to Answered to Co
   assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" }, "the head the pull request was at when the run ended is recorded by the end of the run");
   pool.watchFeedback();
   await pool.refreshTracker();
-  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "which colour?"], "nothing has answered it: a watch of an unchanged pull request changes nothing");
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "reserved to the person \u2014 which colour?"], "nothing has answered it: a watch of an unchanged pull request changes nothing");
   pulls[1] = feedbackPull({ head: "h2" });
   pool.watchFeedback();
   assert.deepEqual(entry("NBF-1").pullHeads, { [approvedPr.url]: { head: "h2", approved: false, review: "none", red: [], pending: [] } }, "the heads carry what the read said of readiness (A11-179)");
-  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1"))], ["awaiting-review", { line: "Answered: awaiting review", question: "which colour?" }]);
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1"))], ["awaiting-review", { line: "Answered: awaiting review", question: "reserved to the person \u2014 which colour?" }]);
   assert.equal(completed.length, 0, "answered is not merged: the ticket is left open");
   pull.state = "merged";
   await pool.refreshTracker();

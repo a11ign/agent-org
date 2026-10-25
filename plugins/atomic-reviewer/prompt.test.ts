@@ -1,7 +1,7 @@
 // no-token: none -- pure text
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DECISION_RULE, decisionWords, NO_SECTION_LINE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
+import { DECISION_RULE, decisionWords, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
 
 const GATE = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
 const DONE_WHEN = "## Done-when\n\n### Before merge\n\n- a test\n\n### After merge (who runs it)\n\n- the chairman, after 0.9.0";
@@ -175,4 +175,42 @@ test("A11-250: each unsupported claim is quoted with the sentence that it is uns
   assert.ok(words.indexOf("replies posted since") < words.indexOf(UNSUPPORTED_RULE), "after the replies it is about");
   assert.doesNotMatch(rereviewWords({ ...REREVIEW, replies: [reply], unsupported: [] }), /Treat it as unsupported/);
   assert.doesNotMatch(rereviewWords({ ...REREVIEW, replies: [reply] }), /Treat it as unsupported/);
+});
+
+// ---- A11-257: the plan's decisions bind the reviewer
+
+const PLAN_DECISIONS = "## Decisions made without a person\n\n- Product: the pill says Held. Reason: the board's word for it.";
+const ESCALATION = "Only these reach a person (the escalation list). Each has an id:\n\n- `outward`: anything outward-facing";
+
+test("A11-257: a reviewer does not re-raise a planned decision: the first review, the reprompt and the re-review carry the plan's decisions, the order of authority and the note-not-finding rule", () => {
+  const first = reviewWords(GATE, { doneWhen: DONE_WHEN, decisions: DECISION, planDecisions: PLAN_DECISIONS, escalation: ESCALATION });
+  const again = rereviewWords({ ...REREVIEW, replies: REPLY, decisions: DECISION, planDecisions: PLAN_DECISIONS, escalation: ESCALATION });
+  for (const [which, words] of [["a first review and a reprompt", first], ["a re-review", again]] as const) {
+    assert.ok(words.includes(`The plan's decisions, as the plan states them:\n\n${PLAN_DECISIONS}`), `${which} quotes the plan's decisions`);
+    assert.ok(words.includes(PLAN_DECISION_RULE), `${which} carries the rule`);
+    assert.ok(words.includes(ESCALATION), `${which} carries the escalation list the decisions cannot override`);
+    const order = [DECISION_RULE, "The plan's decisions, as the plan states them", PLAN_DECISION_RULE, ESCALATION, POST_MERGE_RULE].map((part) => words.indexOf(part));
+    assert.ok(order.every((at) => at >= 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `${which}: the ticket's decisions, then the plan's, then the list, then the post-merge rule: ${order}`);
+  }
+  assert.match(PLAN_DECISION_RULE, /you do not request changes on a point a decision settled/);
+  assert.match(PLAN_DECISION_RULE, /write a "Note \(not a finding\)" in your review body that quotes the decision and says why, and approve on that point/);
+  assert.match(PLAN_DECISION_RULE, /in a first review, a reprompt and a re-review/);
+});
+
+test("A11-257: the reviewer's order of authority is stated: the ticket's Decisions (latest first), the plan's decisions, the plan's text, its own rules; a plan line a ticket Decision contradicts is no finding", () => {
+  assert.match(PLAN_DECISION_RULE, /1\. the ticket's Decisions, the latest entry first; 2\. the plan's decisions; 3\. the plan's text; 4\. your own general rules, your role file and the gate's rules among them\./);
+  assert.match(PLAN_DECISION_RULE, /A finding that contradicts a higher source is not raised: at most it is a note\./);
+  assert.match(PLAN_DECISION_RULE, /Where the plan and the ticket's Decisions differ, the ticket's Decisions win, and a plan line a ticket Decision contradicts is not a finding\./);
+});
+
+test("A11-257: a decision on an escalation-list item, or against a recorded chairman decision, does not bind: that is a finding that quotes the item", () => {
+  assert.match(PLAN_DECISION_RULE, /A decision does not bind when it falls on an item of the escalation list below, or contradicts a recorded decision of the chairman: that is a finding, and it quotes the item\./);
+});
+
+test("A11-257: a brief with no plan decisions gets the prompt it always got, and a long set of decisions is cut with the length said", () => {
+  assert.equal(planDecisionWords(undefined, ESCALATION), "");
+  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`);
+  assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN, decisions: DECISION }).includes(PLAN_DECISION_RULE), "and no rule about decisions of a plan that is not there");
+  assert.match(planDecisionWords("z".repeat(9000), undefined), /\[cut: 1000 more characters on the pull request\]/);
+  assert.ok(!planDecisionWords("a", undefined).includes("Only these reach a person"), "the list is quoted only when the brief carries it");
 });

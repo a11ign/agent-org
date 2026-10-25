@@ -21,6 +21,7 @@ import { DECISIONS_FILE, MAX_CREATED, PRIORITIES, type Priority } from "./writer
 import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
+import { ESCALATION_RULE } from "./escalation.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
@@ -90,6 +91,11 @@ export const PUBLISH_FILE = "publish-run";
  */
 export const WRITER_FILE = "writer-run";
 /**
+ * Present beside the outcome file of a TALK SESSION (A11-257), written by the board: a person has opened the run's terminal and is in it. The stop hook does not refuse the session's `needs-human` for naming no item of the
+ * escalation list, because that outcome only says the agent waits for the person. No worker may write it.
+ */
+export const TALK_FILE = "talk-run";
+/**
  * The tracker tools a new-ticket run may call to file its ticket and attach its plan, which the board grants by name in the writer's mark beside the
  * outcome file (A11-135): the tracker plugin's create tool and attach tools (`TrackerWriting`). Creation only: `hook.ts` refuses any call with an input the plugin
  * names (an `id`, a relation that writes on another ticket) and an attachment to a ticket the run did not create. A build worker is granted none of them.
@@ -158,21 +164,22 @@ const PARENT_ONLY_PLAN = "A ticket that is only a parent, an epic whose work is 
 const DONE_CHECKED_OR_NEEDS_HUMAN = [
   "Write `done` only when no code and no pull request is needed and **every Done-when item of the ticket is verified**: you ran or read what each item asks, and it holds. The `evidence` list has one line per Done-when item: what you ran or read, and what it showed (a command and its result, a link, a file and line). A prediction is not evidence: say what you saw, not what you expect. The board completes the ticket on your `done`. Never write `done` for a ticket with open sub-issues, which complete it, and never after you opened a pull request, whose merge completes the ticket.",
   "Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is **not finished**: a Done-when item is not verifiable by you, or the ticket is only a parent whose work is all in its child tickets (name them, so the person queues them). The ticket stays open. Say in its reason what you checked and what you found.",
-  "Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one. A product or design decision the ticket did not settle is one of these: name the one question, and do not pick an answer.",
+  "Write `needs-human` only for an item on the escalation list, with its id in `escalation`: it asks a person for an answer, and the run waits for one. Any other question you decide yourself and list under \"Decisions made without a person\" in the pull request body: it is not a reason to stop.",
 ].join("\n\n");
 
 /**
- * What a worker does with a product or design decision the ticket did not settle (A11-134). Nobody answers a worker, so it stops with the one question
- * rather than choosing: a decision a person has not made is not a technical one. The board holds a ticket with an open decision back before any worker
- * starts (`open-decisions.ts`), so this is for the decision a ticket implies without naming it.
+ * What a worker does with a choice the ticket and the plan did not settle (A11-257, which replaced A11-134's stop). Nobody answers a worker, and a stop for a choice the plan could have settled reached the chairman for nothing: the worker
+ * decides in line with the plan and the ticket's Decisions, and lists the choice in its pull request, unless it falls on the escalation list. A product decision is still what it was: what a person sees or does, what a control is called or does,
+ * what happens on an empty or failed state, or a trade-off between two behaviours the ticket names.
  */
-const PRODUCT_DECISIONS = "A product decision is what a person sees or does, what a control is called or does, what happens on an empty or failed state, or a trade-off between two behaviours the ticket names. A ticket that leaves one open is not yours to answer: the board holds it until a person grills it.";
+const WORKER_DECISIONS = `${ESCALATION_RULE}\n\nA choice the plan and the ticket leave open, a product one or a technical one, is made in line with the plan and the ticket's Decisions, and listed in the pull request body under the heading "Decisions made without a person", as \`Technical:\` or \`Product:\` with its reason, so the reviewer checks it against the code. A product decision is what a person sees or does, what a control is called or does, what happens on an empty or failed state, or a trade-off between two behaviours the ticket names.`;
 
 /**
- * What a planner does with a decision only a person can make (A11-134). It is never recorded as one made without a person: the plan check refuses such a
- * plan (`pool-settle.ts`), so the question goes to the person as a `QUESTION.md` instead.
+ * What a planner does with a decision (A11-257, which replaced A11-134's rule that a product decision ends in a `QUESTION.md`). "The planner should have already planned anything out": it settles everything that is not on the escalation
+ * list, taking the option it would have recommended, and writes each decision in the plan for the worker and the reviewer, which both treat the plan's decisions as binding. A screen's behaviour is settled the same way, under
+ * `**Behaviour:** settled by the planner`; the plan check refuses a screen plan without it (`missingBehaviour`, `open-decisions.ts`).
  */
-const PLANNER_DECISIONS = "A decision only a person can make (a product, design or priority decision) that the ticket does not settle ends that ticket in its `QUESTION.md`, with no plan. It is never recorded under \"Decisions made without a person\". When the work changes a screen and the ticket has no `**Behaviour:** settled` line, the `QUESTION.md` says the behaviour grill is needed. Each bullet of a plan's \"Decisions made without a person\" starts with `Technical:` or `Product:`: a `Product:` bullet is a defect, and the board refuses that plan.";
+const PLANNER_DECISIONS = `${ESCALATION_RULE}\n\nYou decide everything that is not on the list yourself, from the boards, the code, the ADRs and the ticket's Decisions, so that a worker finds it settled in the plan and has nothing to ask. Where you would have recommended an option, take it. That covers a product decision, a wording question, an open line in the ticket such as "decide whether ...", and a screen's behaviour: there is no behaviour grill to wait for. A \`QUESTION.md\` is written only for an item on the list, and starts with \`**Escalation:** <id>\`; the plan check refuses one that does not. The plan records its decisions in a \`## Key decisions\` section and in its \`## Decisions made without a person\` section, which a worker and a reviewer are bound by. Each bullet of the second starts with \`Technical:\` or \`Product:\` and gives its reason; a \`Product:\` bullet is no defect. When the work changes a screen and the ticket has no \`**Behaviour:** settled\` line, the plan carries the line \`**Behaviour:** settled by the planner\`, followed by each behaviour decision with its reason: what the person sees, what each control does, and what happens on an empty and a failed state. The board refuses the plan of a screen ticket without that line.`;
 
 /**
  * A worker's proposed edit to its ticket's own text (A11-91). The board never changes the ticket on the worker's word: a person applies the edit on the
@@ -507,7 +514,7 @@ ${STALLING_COMMANDS}
 
 Write everything in \`${planDir}\`, and nowhere else:
 
-- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${PATHS_RULE}
+- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when its plan needs an item of the escalation list. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${PATHS_RULE}
 - \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. A ticket's \`repo\` is its project's repository, named with it above, unless its work belongs in another repository. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
 
 How \`wait\` says how a ticket waits on each ticket in its \`after\`:
@@ -525,7 +532,7 @@ Write \`${runDir}/${OUTCOME_FILE}\` as the last thing you do, after every plan, 
 ${outcomeExamples(["planned", "needs-human"])}
 \`\`\`
 
-Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may answer you here after a \`needs-human\` outcome, and after a \`planned\` one that leaves a \`${QUESTION_FILE}\`: the board keeps this terminal open for them. If one does, finish the plans with what they said: once a person answers a ticket's question, replace that ticket's \`${QUESTION_FILE}\` with its plan files, and write the outcome file again as the last thing you do.
+Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without an item of the escalation list, and name the item in \`escalation\`. A person may answer you here after a \`needs-human\` outcome, and after a \`planned\` one that leaves a \`${QUESTION_FILE}\`: the board keeps this terminal open for them. If one does, finish the plans with what they said: once a person answers a ticket's question, replace that ticket's \`${QUESTION_FILE}\` with its plan files, and write the outcome file again as the last thing you do.
 `;
 }
 
@@ -625,9 +632,9 @@ export function briefText({ ticket, folder, ticketDir, attachments, parent = nul
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
 
-You are an unattended worker. Nobody will answer you in this run. Settle no product or design decision the ticket did not settle: end with \`needs-human\`, naming the one question, and you may state your recommendation. Decide technical matters yourself.
+You are an unattended worker. Nobody will answer you in this run. Decide anything that is not on the escalation list yourself, in line with the plan and the ticket's Decisions, and list each such choice under "Decisions made without a person" in the pull request body. End with \`needs-human\` only for an item on the list, naming its id.
 
-${PRODUCT_DECISIONS}
+${WORKER_DECISIONS}
 
 ${TICKET_DECISIONS}
 
@@ -732,6 +739,8 @@ ${list}
 
 ${round.steps}
 
+${ESCALATION_RULE}
+
 ${TICKET_DECISIONS}
 
 ${RELAY_DECISION}
@@ -785,14 +794,15 @@ Check your pull requests against the new text, and say in your reply what the ch
 type Round = Readonly<{ title: string; opening: string; steps: string; reviewed: string }>;
 
 /**
- * What a round does with a review that requests changes when its worker judges the request wrong, or already settled by the ticket (A11-213). Nothing is changed for it, and the run does NOT end `reviewed`: the pull
- * request stays blocked, and a reviewed run reads as waiting for a review that is not coming. It ends `needs-human`, so the request reaches a person, who reads the worker's reply and decides.
+ * What a round does with a review that requests changes against a decision (A11-257, which replaced A11-213's stop). A11-213 ended the round `needs-human` so the request reached a person; with the plan's decisions binding the reviewer too,
+ * the worker makes no change for it, replies quoting the decision, and ends the round `reviewed`. That reply starts the reviewer's re-review of the same head (A11-156), which the decision now binds, and A11-213's flag for a
+ * CHANGES_REQUESTED pull request left idle backs it up. A request it judges wrong on other grounds is answered with the evidence, and none of these ends in a stop that is not on the escalation list.
  */
-const DISPUTED_REVIEW = "When a review requests changes and you judge the request wrong, or already settled by the ticket: make no change for it, reply on that pull request saying why and quoting the ticket's line, "
-  + "and end the round with a `needs-human` outcome whose reason names the pull request's URL and the disputed finding.";
+const DISPUTED_REVIEW = "When a review requests changes that go against the plan or the ticket's Decisions: make no change for it, reply on that pull request quoting the decision (the plan's line, or the ticket's Decisions entry with its heading), "
+  + "and end the round `reviewed`. Your reply starts the reviewer's re-review of the same head, which that decision binds. A request you judge wrong on other grounds is answered with the evidence. End `needs-human` only for an item on the escalation list.";
 
-/** The line a round's `reviewed` condition carries so that a disputed review never ends quietly (A11-213). */
-const NEVER_REVIEWED_DISPUTED = "Never write `reviewed` while a review you disputed still requests changes on the head.";
+/** The line a round's `reviewed` condition carries for a review it disputed on a decision (A11-257): the reply is the answer, and the reviewer re-reviews the head. */
+const REVIEWED_DISPUTED = "A review you disputed on a decision counts as answered once your reply quoting the decision is on the pull request.";
 
 /** The round a person started by approving the draft pull requests: mark them ready, then see them through their checks and review. */
 function approvedRound(who: string, prReview: string | null): Round {
@@ -808,7 +818,7 @@ function approvedRound(who: string, prReview: string | null): Round {
 4. ${roundPushStep(prReview)}
 5. Reply on each pull request with one comment: each finding, and what you did about it.
 6. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again. Do not wait for a second review: the board starts another round when new feedback comes.`,
-    reviewed: `Write \`reviewed\` only when every pull request is ready, every finding is answered, and every check passed on its last commit. ${NEVER_REVIEWED_DISPUTED}`,
+    reviewed: `Write \`reviewed\` only when every pull request is ready, every finding is answered, and every check passed on its last commit. ${REVIEWED_DISPUTED}`,
   };
 }
 
@@ -846,7 +856,7 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
     title: "feedback round",
     opening: [`${first} ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`, ...rest].join("\n\n"),
     steps: (merge === null ? items : [merge, ...items]).map((item, index) => `${index + 1}. ${item}`).join("\n"),
-    reviewed: `Write \`reviewed\` only when every finding is answered and every check passed on the last commit you pushed. ${NEVER_REVIEWED_DISPUTED}`,
+    reviewed: `Write \`reviewed\` only when every finding is answered and every check passed on the last commit you pushed. ${REVIEWED_DISPUTED}`,
   };
 }
 
@@ -895,7 +905,8 @@ Write \`${dir}/${PUBLISHED_FILE}\` once the messages are posted, with the web ad
 Then write \`${dir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
-${outcomeExamples(["published", "needs-human"])}
+${outcomeExamples(["published"])}
+{ "kind": "needs-human", "reason": "<why the messages could not be posted, which the board shows as the run's failure>" }
 \`\`\`
 `;
 }

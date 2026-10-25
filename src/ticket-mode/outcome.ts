@@ -29,7 +29,7 @@ const STEP_KEY = "currentStep";
 const PULL_KEYS = ["prs", "reason", "partial", STEP_KEY];
 
 /** The fields a reason-bearing outcome's contract names: its reason, and the edit a kind may carry. */
-const REASON_KEYS = ["reason", "edit", STEP_KEY];
+const REASON_KEYS = ["reason", "edit", "escalation", STEP_KEY];
 
 /** The fields a `working` outcome's contract names beside its reason: what it waits on (a job, or the events the board reads) and the time it expects to be woken by (A11-236, A11-245). */
 const WORKING_KEYS = ["reason", "waitingOn", "until", STEP_KEY];
@@ -53,7 +53,7 @@ export const OUTCOME_EXAMPLES: Readonly<Record<OutcomeKind, Readonly<Record<stri
   done: { kind: "done", reason: "The ticket asks for one new test; it is on main and every Done-when item holds.", evidence: ["pnpm test: the new case passes, 12 of 12"] },
   checked: { kind: "checked", reason: "Read the ticket and the code it names: the change is already on main, so nothing needs to change, and the ticket waits for a person to close it." },
   "wrong-repo": { kind: "wrong-repo", where: "a11ign/screenreader-worker: the scheduler that fails this run lives there, not in this repository." },
-  "needs-human": { kind: "needs-human", reason: "The one thing only a person can decide, and why the evidence does not settle it: the ticket asks for both behaviours and names no winner." },
+  "needs-human": { kind: "needs-human", reason: "The one thing only a person can do or decide, and why: the release note is ready, and posting it to the forum is outward-facing.", escalation: "outward" },
   working: { kind: "working", reason: "The capture is running on the fleet; the board prompts me when job fj-2026-1025-a ends.", waitingOn: [{ fleetJob: "fj-2026-1025-a" }] },
   planned: { kind: "planned" },
   reviewed: { kind: "reviewed" },
@@ -204,6 +204,16 @@ function withReason(kind: OutcomeKind, object: Record<string, unknown>, outcome:
 }
 
 /**
+ * The item of the escalation list a `needs-human` names (A11-257), as written: a string, or nothing. Whether the id is on the list is not the file's contract: the Stop hook refuses an off-list stop and the board marks
+ * one, because the board also writes `needs-human` for its own failures. A value that is not a string is refused here. PURE.
+ */
+function escalationField(object: Record<string, unknown>): Readonly<{ escalation?: string }> | string {
+  const { escalation } = object;
+  if (escalation === undefined) return {};
+  return nonEmpty(escalation) ? { escalation: escalation.trim() } : `needs-human escalation needs the id of an item of the escalation list, a string, you wrote ${wrote(escalation)}`;
+}
+
+/**
  * A `working`: a non-empty `reason`, and optionally `waitingOn` and `until`, the ISO time the board reads as the bound of the wait (A11-236). `waitingOn` is a string naming background work the worker's own shell or
  * Monitor holds (an undeclared wait), or a list of the events the board reads for it (A11-245: a declared wait, checked by `parseWaits`). A plain `working` with a reason alone is still valid. PURE.
  */
@@ -261,8 +271,12 @@ export function checkOutcome(text: string): Checked {
     case "done":
       return doneOutcome(value, edit);
     case "checked":
-    case "needs-human":
       return withReason(kind, value, (reason) => ({ kind, reason, ...editField(edit) }));
+    case "needs-human": {
+      const escalation = escalationField(value);
+      if (typeof escalation === "string") return refuse(escalation);
+      return withReason(kind, value, (reason) => ({ kind, reason, ...editField(edit), ...escalation }));
+    }
     case "working":
       return workingOutcome(value);
     case "wrong-repo":

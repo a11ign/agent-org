@@ -1,10 +1,10 @@
 // @ts-check
-// module: the decisions a ticket still holds open, and whether its screen's behaviour is grilled -- what the board checks before a ticket can be queued (A11-134)
+// module: the decisions a ticket still holds open, and whether its screen's behaviour is grilled -- what a Grill has to settle, and what a plan must say instead (A11-134, A11-257)
 //
-// A ticket whose Acceptance, Done-when or Open-check still asks a person to decide something cannot be queued: a worker may not settle a product decision
-// (`worker-files.ts`'s brief), so the board holds the ticket until its Grill writes the answers into it. The Grill records them with two markers, which this
-// module reads: `**Decisions:** settled` settles every open line, and `**Behaviour:** settled` records a screen's behaviour pass. The planner's check on a
-// plan (`pool-settle.ts`) covers what a phrase cannot. The browser page never imports this: the server puts `needsDecision` on each ticket it sends.
+// A TICKET WITH AN OPEN DECISION IS QUEUED, AND ITS PLANNER SETTLES IT (A11-257). Before, a ticket whose Acceptance, Done-when or Open-check still asked a person to decide something, or a screen ticket with no grilled
+// behaviour, was held until its Grill wrote the answers into it. Now the planner decides every question that is not on the escalation list (`escalation.ts`), taking the option it would have recommended, and a screen's plan says so
+// with `**Behaviour:** settled by the planner` (`missingBehaviour`). The Grill stays as a person's own choice. It records its answers with two markers, which this module reads: `**Decisions:** settled` settles every open line,
+// and `**Behaviour:** settled` records a screen's behaviour pass. The browser page never imports this.
 
 import type { Ticket } from "./source.ts";
 
@@ -14,8 +14,6 @@ export const DECISIONS_MARK = "**Decisions:** settled";
 export const BEHAVIOUR_MARK = "**Behaviour:** settled";
 /** The line that marks a ticket as changing a screen, for a tracker with no `ui` label. The create-ticket skill writes it. */
 export const SCREEN_MARK = "**Screen:** yes";
-/** The heading of the plan's section that records the decisions a planning run made without a person, lowercased. */
-export const DECISIONS_WITHOUT_PERSON = "decisions made without a person";
 
 /** The sections whose lines are checked for an open decision, by their heading, lowercased. `Acceptance criteria` is Acceptance. */
 const CHECKED = new Set(["acceptance", "acceptance criteria", "done-when", "open-check"]);
@@ -68,19 +66,17 @@ export const changesScreen = (ticket: Pick<Ticket, "description" | "labels">): b
 /** Whether a screen ticket's behaviour is still to be grilled: it changes a screen, and no `**Behaviour:** settled` line records the grill. PURE. */
 export const behaviourOpen = (ticket: Pick<Ticket, "description" | "labels">): boolean => changesScreen(ticket) && !BEHAVIOUR_LINE.test(ticket.description);
 
-/** Why a ticket cannot be queued yet: an open decision, which names its line, or a screen's behaviour not yet grilled. */
-export type NeedsDecision = Readonly<{ kind: "decision"; line: string; reason: string }> | Readonly<{ kind: "behaviour"; reason: string }>;
+/** The line a plan carries for a screen ticket whose behaviour no Grill settled (A11-257): the planner settled it, and the decisions follow, each with its reason. */
+export const BEHAVIOUR_BY_PLANNER = "**Behaviour:** settled by the planner";
+const BEHAVIOUR_BY_PLANNER_LINE = /^\s*\*\*Behaviour:\*\*\s*settled by the planner\s*$/m;
 
-/** The reason a ticket cannot be queued yet, or null when it can be. A decision comes before a screen's behaviour. PURE. */
-export function needsDecision(ticket: Pick<Ticket, "description" | "labels">): NeedsDecision | null {
-  const open = openDecisionOf(ticket.description);
-  if (open !== null) {
-    return { kind: "decision", line: open.line, reason: `An open decision is still in ${open.section}: "${open.line}". Grill it to settle the decision before it is queued.` };
-  }
-  if (behaviourOpen(ticket)) {
-    return { kind: "behaviour", reason: "It changes a screen, and its behaviour is not grilled yet. Grill what the person sees, what each control does, and the empty and failed states before it is queued." };
-  }
-  return null;
+/**
+ * Why a plan is refused for a screen's behaviour, or null (A11-257). A ticket that changes a screen and has no `**Behaviour:** settled` line has had no Grill, and there is no behaviour grill to wait for: the planner settles what the person sees,
+ * what each control does and the empty and failed states, and says so with the line {@link BEHAVIOUR_BY_PLANNER}. A plan without it, in all of its `plans` files, is refused. A ticket that does not change a screen, or one whose behaviour was grilled, needs no such line. PURE.
+ */
+export function missingBehaviour(plans: readonly string[], ticket: Pick<Ticket, "description" | "labels">): string | null {
+  if (!behaviourOpen(ticket) || plans.some((plan) => BEHAVIOUR_BY_PLANNER_LINE.test(plan))) return null;
+  return `the ticket changes a screen and has no \`${BEHAVIOUR_MARK}\` line, so the plan must settle its behaviour: add the line \`${BEHAVIOUR_BY_PLANNER}\`, followed by each decision with its reason (what the person sees, what each control does, and the empty and failed states)`;
 }
 
 /** The sections of a Grill's `decisions.md` the ticket needs: `Decisions` while an open line stands, `Behaviour` while the screen's behaviour is open. PURE. */
@@ -99,13 +95,4 @@ export function settledDescription(description: string, decisions: string): stri
     /^## Behaviour\s*$/m.test(decisions) ? BEHAVIOUR_MARK : null,
   ].filter((mark): mark is string => mark !== null);
   return [description.trimEnd(), decisions.trim(), marks.join("\n")].filter((part) => part !== "").join("\n\n");
-}
-
-/**
- * The first bullet of a plan's "Decisions made without a person" section that is a product decision, as the bullet's first line, or null. Each bullet
- * starts `Technical:` or `Product:`, and a product decision is never recorded as made without a person (A11-134). PURE.
- */
-export function productDecisionIn(plan: string): string | null {
-  const bullet = sectionLines(plan, (name) => name === DECISIONS_WITHOUT_PERSON).find(({ line }) => /^[-*]\s+Product:/.test(line));
-  return bullet?.line ?? null;
 }

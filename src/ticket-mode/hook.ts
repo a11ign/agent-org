@@ -44,6 +44,11 @@
 // is `review`. Absent the setting, nothing is logged and nothing is refused on a review. Once the setting's copy is there, the gate fails CLOSED: a copy
 // it cannot read, or a log it cannot read or write, refuses the pushes and pull requests it holds, since it could not check them.
 //
+// A STOP MUST BE ON THE ESCALATION LIST (A11-257). Only the items of `escalation.ts` reach a person, so a `needs-human` outcome that names no item of the list in `escalation`, and a `planned` one that leaves a `QUESTION.md` whose
+// first line is not `**Escalation:** <id>`, are refused with the list and the order to decide it and record it under "Decisions made without a person". The refusal is counted and bounded like every other (`MAX_STOP_REFUSALS`), so an agent
+// is never held for ever, and the board marks a stop that gets through "Off the escalation list:" (`pool-outcome.ts`, `pool-settle.ts`). A Talk session, a new-ticket run and a publish run are exempt: a person is in the first, and the
+// others' `needs-human` reports a failure. The board leaves a mark beside the outcome file for each.
+//
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
 //
 // A NEW-TICKET RUN FILES ITS OWN TICKET (A11-135). The board grants it, in its mark, the tracker's create tool and the two attachment tools, and no other
@@ -55,6 +60,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { escapeRegExp } from "../lib/escape-regexp.ts";
+import { escalationItem, offListRefusal, questionEscalation } from "./escalation.ts";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
@@ -67,7 +73,7 @@ import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMiss
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
-  ORDER_FILE, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+  ORDER_FILE, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, readCreatedKeys } from "./writer.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
@@ -115,7 +121,7 @@ function readyRefusal(approved: readonly string[]): Refusal {
  * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
  * tickets hold and the mark of the retry made for a folder claim (A11-212).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -592,6 +598,49 @@ function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: St
 }
 
 /**
+ * Whether the run's stops are exempt from the escalation list (A11-257): a Talk session, which has a person in its terminal, a new-ticket run, whose grill waits for a person and whose `needs-human` reports a failure, and a
+ * publish run, whose `needs-human` reports a failure too. The board leaves a mark for each beside the outcome file.
+ */
+const exemptFromEscalation = (ticketDir: string, io: StopIo): boolean => [TALK_FILE, WRITER_FILE, PUBLISH_FILE].some((file) => io.exists(join(ticketDir, file)));
+
+/** The `QUESTION.md` files of a planning run's plan folders (`findings-given.json` lists them) that name no item of the escalation list, as the ticket's key and the file's path. Empty when the list cannot be read. */
+function offListQuestions(ticketDir: string, io: StopIo): { key: string; path: string }[] {
+  const given = join(ticketDir, FINDINGS_GIVEN_FILE);
+  const rows = io.exists(given) ? parseFindingsGiven(io.read(given)) : null;
+  return (rows ?? []).flatMap(({ key, planDir }) => {
+    const path = join(planDir, QUESTION_FILE);
+    return io.exists(path) && escalationItem(questionEscalation(io.read(path))) === undefined ? [{ key, path }] : [];
+  });
+}
+
+/**
+ * The refusal of a stop that is not on the escalation list (A11-257): a `needs-human` outcome that names no item of the list, or a `planned` one that leaves a `QUESTION.md` naming none. It is a {@link Judgment}, so it
+ * is counted and bounded like every other refusal: past {@link MAX_STOP_REFUSALS} the stop is allowed, and the board marks it "Off the escalation list:" so that it is seen and counted. Null for a stop that stands, a run that is exempt,
+ * and an outcome the contract refuses (the next judgment names that).
+ */
+function offListStop(ticketDir: string, { text }: OutcomeRead, io: StopIo): Judgment | null {
+  if (exemptFromEscalation(ticketDir, io)) return null;
+  const checked = checkOutcome(text);
+  if ("problem" in checked) return null;
+  const { outcome } = checked;
+  if (outcome.kind === "needs-human") return escalationItem(outcome.escalation) === undefined ? offListOutcome(join(ticketDir, OUTCOME_FILE), outcome.escalation) : null;
+  return outcome.kind === "planned" ? offListQuestion(offListQuestions(ticketDir, io)) : null;
+}
+
+/** The judgment of a `needs-human` outcome in `file` that names no item of the list (`named` is what it wrote in `escalation`, if anything). */
+function offListOutcome(file: string, named: string | undefined): Judgment {
+  const wrote = named === undefined ? "names no item" : `names "${named}", which is not an item`;
+  return { ask: offListRefusal(`${file} is a needs-human outcome that ${wrote} of the escalation list`), stuck: `on a needs-human outcome in ${file} that is not on the escalation list, so this one is allowed and the board marks it "Off the escalation list"` };
+}
+
+/** The judgment of the planner's `QUESTION.md` files that name no item of the list, or null when there are none. */
+function offListQuestion(questions: readonly { key: string; path: string }[]): Judgment | null {
+  if (questions.length === 0) return null;
+  const listed = questions.map(({ key, path }) => `${key}: ${path}`).join("; ");
+  return { ask: offListRefusal(`${listed} is a question whose first line is not \`**Escalation:** <id>\` with the id of an item of the escalation list`), stuck: `on a QUESTION.md that is not on the escalation list (${listed}), so this one is allowed and the board marks it "Off the escalation list"` };
+}
+
+/**
  * The outcome a stop judges: the file as it was read, unless the board marked it stale when a parked run resumed. An outcome written at or before the
  * mark is the one the run parked on, so it is no outcome (A11-152). A mark that is not a number makes every outcome stale: the refusal is bounded by the
  * count, so a worker is never held longer than a missing outcome holds it.
@@ -757,7 +806,7 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
       return ALLOW;
     }
     const judged: Judgment = found !== null
-      ? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath }, found, io)
+      ? offListStop(ticketDir, found, io) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath }, found, io)
       : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
     if ("verdict" in judged) {
       // A plan that misses a blocker pull request is refused once, before the planner ends, and the refusal is no outcome problem: the count is left as it is (A11-207).
