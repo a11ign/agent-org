@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { NewTicket } from "../new-ticket/NewTicket.tsx";
 import { useShell, type ShellValue } from "../shell/ShellProvider.tsx";
-import { PausedBanner, StatusBanner } from "./Banners.tsx";
+import { HeldBanner, PausedBanner, StatusBanner } from "./Banners.tsx";
 import { EmptyPanelView } from "./EmptyPanelView.tsx";
 import { FailureBanner } from "./FailureBanner.tsx";
 import { FilterRow } from "./FilterRow.tsx";
@@ -10,7 +10,7 @@ import { Sections } from "./Sections.tsx";
 import { TicketsHeader } from "./TicketsHeader.tsx";
 import { TicketsUnreachable } from "./TicketsUnreachable.tsx";
 import { TicketsSkeleton } from "./TicketsSkeleton.tsx";
-import { countText, queueOptionsOf, type QueueOptions } from "./tickets-model.ts";
+import { countText, planPatternOf, queueOptionsOf, type QueueOptions } from "./tickets-model.ts";
 import { useFolding } from "./use-folding.ts";
 import { useQueueNow } from "./use-queue-now.ts";
 import { useBatch, useSelection } from "./use-queue-state.ts";
@@ -48,6 +48,7 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
     open: folding.open, toggleSection: folding.toggleSection, queue: page.queue,
     row: {
       queue: page.queue, selected: selection.selected, openParents: folding.openParents, showsOwner: list.showsOwner, grillReason: grillReasonOf(shell),
+      plan: planPatternOf(shell.config), planUniverse: [...shell.allTickets, ...shell.contextParents],
       pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill, paused: shell.unreachable !== null,
     },
   };
@@ -76,6 +77,7 @@ function Body({ page, shell, onNewTicket }: Readonly<{ page: Page; shell: ShellV
   return (
     <>
       <FilterRow filters={page.filters} list={page.list} />
+      <HeldBanner held={shell.queue.data?.held} />
       {shell.queue.data?.paused === true ? <PausedBanner /> : null}
       {page.actions.notice === null ? null : <StatusBanner>{page.actions.notice}</StatusBanner>}
       <ListByState page={page} shell={shell} {...(onNewTicket === undefined ? {} : { onNewTicket })} />

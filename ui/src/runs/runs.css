@@ -135,7 +135,8 @@
   background: var(--color-surface);
   overflow: hidden;
 }
-.runs-head {
+.runs-head,
+.runs-extra-head {
   display: flex;
   align-items: center;
   gap: var(--space-8);
@@ -150,6 +151,20 @@
 .runs-head-count {
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+}
+/* The Pull requests and After-merge checks lists below the runs: the run list's group pattern, its heading over rows in the run row's type. */
+.runs-extra {
+  margin-top: var(--space-16);
+}
+.runs-extra-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-12) var(--space-16);
+  border-bottom: 1px solid var(--color-hover);
+}
+.runs-extra-row:last-child {
+  border-bottom: 0;
 }
 .runs-none {
   padding: var(--space-40);

@@ -76,7 +76,7 @@ describe("the error state", () => {
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(fetchWith.paths.filter((path) => path === "/c/personal/api/queue").length).toBe(reads + 1));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-    expect(await screen.findByText("A11-179", { exact: false })).toBeTruthy();
+    await waitFor(() => expect(keysShown()).toContain("A11-179"));
     expect(keysShown()).toHaveLength(50);
   });
 

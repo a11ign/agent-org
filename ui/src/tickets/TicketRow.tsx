@@ -1,9 +1,10 @@
 import { useEffect, useRef, type CSSProperties } from "react";
 import { NEEDS_DECISION, GRILL, GRILL_TITLE, safeHref } from "../../../src/ticket-mode/board-view.ts";
-import { QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, parentTick, projectOf, selectable, type TicketNode } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
+import { QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, missingPlan, parentTick, projectOf, selectable, ticketCount, type TicketNode } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { ownerName } from "../../../src/ticket-mode/assignee-filter.ts";
+import { groupTags } from "../../../src/ticket-mode/label-filters.ts";
 import type { QueueView, TicketView } from "../api/types.ts";
-import { FoldChevron, PriorityMark } from "./icons.tsx";
+import { FoldChevron, NoPlanMark, PriorityMark } from "./icons.tsx";
 
 /** What a row needs of the page: the queue, the selection, which parents are open, whether rows name their owner, and what the row's buttons do. */
 export type RowContext = Readonly<{
@@ -13,6 +14,9 @@ export type RowContext = Readonly<{
   showsOwner: boolean;
   /** Why Grill is disabled on this machine, or null when it is not. */
   grillReason: string | null;
+  /** The pattern a plan's name matches (`tickets.plan`), or null when the board looks for none, and every ticket the board knows, parents included: what the no-plan mark reads. */
+  plan: RegExp | null;
+  planUniverse: readonly TicketView[];
   /** True while the instance cannot be reached: the rows are the last known ones, and nothing on them can be picked, queued or grilled. */
   paused: boolean;
   pick: (keys: readonly string[]) => void;
@@ -63,6 +67,22 @@ function Decision({ ticket, context }: Readonly<{ ticket: TicketView; context: R
   );
 }
 
+/** The mark of a ticket with no plan of its own, muted when its parent's plan covers it. Nothing when it has a plan, or the board looks for none. */
+function PlanMark({ ticket, context }: Readonly<{ ticket: TicketView; context: RowContext }>) {
+  const missing = context.plan === null ? null : missingPlan(ticket, context.plan, context.planUniverse);
+  if (missing === null) return null;
+  return <NoPlanMark note={missing.note} covered={missing.covered} />;
+}
+
+/** The labels a ticket carries in a group, as small tags after its title, each titled with its group. The Goal group's is the goal pill's already, and the board's row with an open decision draws the decision in place of it. */
+function LabelTags({ ticket }: Readonly<{ ticket: TicketView }>) {
+  return (
+    <>
+      {groupTags(ticket).filter(({ group }) => group !== "Goal").map(({ name, group }) => <span key={`${group}|${name}`} className="pill-tag label-tag" title={group ?? ""}>{name}</span>)}
+    </>
+  );
+}
+
 const goalsOf = (ticket: TicketView): string[] => (ticket.labels ?? []).filter(({ group }) => group === "Goal").map(({ name }) => name);
 
 /** What follows a row's title: the parent's sub-issues, the open decision, the goal, the note, the owner and the project. */
@@ -92,11 +112,19 @@ function LeafRow({ ticket, depth, context }: Readonly<{ ticket: TicketView; dept
       <input type="checkbox" aria-label={`Select ${ticket.key}`} checked={picked} disabled={!free || context.paused} {...(reason === undefined ? {} : { title: reason })} onChange={(event) => (event.target.checked ? context.pick([ticket.key]) : context.unpick([ticket.key]))} />
       <PriorityMark priority={ticket.priority} />
       <span className="row-key">{ticket.key}</span>
+      {isParentTicket(ticket) ? null : <PlanMark ticket={ticket} context={context} />}
       <Title ticket={ticket} />
+      <LabelTags ticket={ticket} />
       <RowTail ticket={ticket} depth={depth} context={context} />
     </div>
   );
 }
+
+/** How many tickets are under a parent in the list: "3 tickets under it". */
+const underIt = (node: TicketNode<TicketView>): string => {
+  const count = ticketCount(node.children);
+  return `${count} ticket${count === 1 ? "" : "s"} under it`;
+};
 
 /** A parent with tickets under it in the list: it folds them away, its checkbox picks them rather than itself, and one that is not the person's says so. */
 function ParentRow({ node, depth, context }: Readonly<{ node: TicketNode<TicketView>; depth: number; context: RowContext }>) {
@@ -115,6 +143,8 @@ function ParentRow({ node, depth, context }: Readonly<{ node: TicketNode<TicketV
       <input ref={box} type="checkbox" aria-label={`Select the tickets under ${ticket.key}`} checked={tick.checked} disabled={tick.keys.length === 0 || context.paused} onChange={(event) => (event.target.checked ? context.pick(tick.keys) : context.unpick(tick.keys))} />
       <span className="row-key">{ticket.key}</span>
       <Title ticket={ticket} />
+      <LabelTags ticket={ticket} />
+      <span className="row-note">{underIt(node)}</span>
       {node.context === true ? <span className="row-note">Not in this view</span> : null}
       <RowTail ticket={ticket} depth={depth} context={context} />
     </div>

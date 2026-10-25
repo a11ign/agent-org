@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { runsHref } from "../shell/routes.ts";
 import { ActionIcon } from "../runs/icons.tsx";
 import type { QueueView, RunAction } from "../api/types.ts";
@@ -17,15 +18,15 @@ export function Breadcrumb({ runKey }: Readonly<{ runKey: string }>) {
 }
 
 /** What the header's buttons do: press a verb, wait while a request is out, and nothing while the instance cannot be reached. */
-export type HeaderControls = Readonly<{ actions: readonly HeaderAction[]; terminalHref: string | null; busy: boolean; disabled: boolean; onPress: (verb: RunAction) => void }>;
+export type HeaderControls = Readonly<{ actions: readonly HeaderAction[]; terminalHref: string | null; followTerminal: (event: MouseEvent) => void; busy: boolean; disabled: boolean; onPress: (verb: RunAction) => void }>;
 
 /** The header's buttons: the run's one Talk to it first when it is the terminal link, which carries the board's terminal mark, then each verb `runActions` returns, in its order as text. */
-function Buttons({ actions, terminalHref, busy, disabled, onPress }: HeaderControls) {
+function Buttons({ actions, terminalHref, followTerminal, busy, disabled, onPress }: HeaderControls) {
   const held = busy || disabled;
   return (
     <div className="run-buttons">
       {terminalHref === null ? null : (
-        <a className="ghost run-button" href={terminalHref} target="_blank" rel="noreferrer" title={TERMINAL_TITLE}>
+        <a className="ghost run-button" href={terminalHref} target="_blank" rel="noreferrer" title={TERMINAL_TITLE} onClick={followTerminal}>
           <ActionIcon verb="talk" />
           Talk to it
         </a>

@@ -87,9 +87,9 @@ export type Staging = Readonly<{ staged: readonly Staged[]; problems: Readonly<R
 
 type Read = Readonly<{ change: Change }> | Readonly<{ problem: string }>;
 
-/** What a draft of a row comes to: the change it makes, or why it does not read. An emptied text, number or JSON field returns the key to its default (`remove`). */
+/** What a draft of a row comes to: the change it makes, or why it does not read. An emptied field, or a switch returned to its default, returns the key to its default (`remove`). */
 function readDraft(row: Row, draft: string): Read {
-  if (row.input === "boolean") return { change: { key: row.key, value: draft === "true" } };
+  if (row.input === "boolean") return draft === "" ? { change: { key: row.key, remove: true } } : { change: { key: row.key, value: draft === "true" } };
   if (draft.trim() === "" && row.input !== "text") return { change: { key: row.key, remove: true } };
   if (row.input === "number") return Number.isNaN(Number(draft)) ? { problem: `${row.key} needs a number` } : { change: { key: row.key, value: Number(draft) } };
   if (row.input === "json") {
@@ -104,6 +104,8 @@ function readDraft(row: Row, draft: string): Read {
 
 /** Whether `text` says what the file already holds for the row: the same text, or the same value (`5.0` for `5`, a list laid out another way). */
 export function sameAsFile(row: Row, text: string): boolean {
+  // A switch returned to its default (an empty draft) says what the file says once the file holds no value for the key.
+  if (row.input === "boolean" && text === "") return row.raw === null;
   const file = baselineOf(row);
   return text === file || JSON.stringify(readDraft(row, text)) === JSON.stringify(readDraft(row, file));
 }

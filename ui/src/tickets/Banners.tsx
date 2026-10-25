@@ -19,3 +19,12 @@ export function PausedBanner() {
     </StatusBanner>
   );
 }
+
+/** What `tickets.preflight` holds: the check that failed and what it printed. `QueueView.held` is null while no run is held. */
+export type Held = Readonly<{ name: string; reason: string }>;
+
+/** The banner while the instance starts no run (its host's `tickets.preflight` fails), on Tickets and on Runs: which check failed and what it printed. Nothing is drawn while no run is held. */
+export function HeldBanner({ held }: Readonly<{ held: Held | null | undefined }>) {
+  if (held === null || held === undefined) return null;
+  return <StatusBanner>No run starts while {held.name} fails: {held.reason}</StatusBanner>;
+}

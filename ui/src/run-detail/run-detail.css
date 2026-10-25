@@ -381,3 +381,84 @@
 .skeleton-detail .sk-side {
   border-radius: var(--radius-10);
 }
+
+/* What the callout leaves out: the ticket's change, what the plan learns from, the proposed edit and the run's whole note, as closed disclosures in the callout's body type. */
+.disclosures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.disclosure {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-10);
+  background: var(--color-sidebar);
+}
+.disclosure-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-4) var(--space-10);
+  padding: var(--space-10) var(--space-14);
+  cursor: pointer;
+}
+.disclosure-title {
+  font-size: var(--font-size-14);
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+.disclosure-note {
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+.disclosure-body {
+  margin: 0;
+  padding: var(--space-10) var(--space-14) var(--space-14);
+  border-top: 1px solid var(--color-card-divider);
+  color: var(--color-text-rail);
+  overflow-wrap: anywhere;
+}
+.disclosure-diff,
+.disclosure-text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+  white-space: pre-wrap;
+}
+.disclosure-diff {
+  max-height: 60vh;
+  overflow: auto;
+}
+.disclosure-diff del,
+.disclosure-diff ins,
+.disclosure-diff .diff-same {
+  display: block;
+}
+.disclosure-diff del {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-body);
+  text-decoration: line-through;
+}
+.disclosure-diff ins {
+  background: var(--color-success-bg);
+  color: var(--color-success-body);
+  text-decoration: none;
+}
+.disclosure-diff .diff-same {
+  color: var(--color-text-muted);
+}
+.disclosure-text {
+  margin: var(--space-2) 0 var(--space-10);
+}
+.disclosure-label {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+.disclosure-list {
+  list-style: disc;
+  padding-left: var(--space-32);
+}
+.disclosure-line {
+  margin: 0;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}

@@ -5,9 +5,11 @@ import type { EditFile, SettingsView } from "../api/types.ts";
 import { usePoll } from "../api/use-poll.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
 import { Notes, OutcomeBanner, ReadRefusals } from "./Banners.tsx";
+import { ConventionsNotes } from "./ConventionsNotes.tsx";
 import { HostFileSection, type Editing } from "./HostFileSection.tsx";
 import { Models, Workers } from "./PageControls.tsx";
 import { ReadFailure } from "./ReadFailure.tsx";
+import { RestoreBackups } from "./RestoreBackups.tsx";
 import { ReviewDialog } from "./ReviewDialog.tsx";
 import { editableRows, filesStaged, idOf, PAGE_WORDS, remoteNote, stagedIn } from "./settings-model.ts";
 import { SettingsSkeleton } from "./SettingsSkeleton.tsx";
@@ -26,7 +28,7 @@ function Header({ section }: Readonly<{ section: Section }>) {
 }
 
 /** The sections of the page once the settings are read: the banners that say how the last action went, the page's own controls, and the host file's keys. */
-function Sections({ section, view, flow, editing, onRestore }: Readonly<{ section: Section; view: SettingsView; flow: HostFile; editing: Editing; onRestore: () => void }>) {
+function Sections({ section, view, flow, editing, local, onRestore }: Readonly<{ section: Section; view: SettingsView; flow: HostFile; editing: Editing; local: boolean; onRestore: () => void }>) {
   return (
     <>
       <ReadRefusals refusals={view.refusals} />
@@ -35,6 +37,8 @@ function Sections({ section, view, flow, editing, onRestore }: Readonly<{ sectio
       {section === "models" ? <Models /> : null}
       {section === "workers" ? <Workers /> : null}
       <HostFileSection view={view} page={section} editing={editing} />
+      {section === "machine" ? <ConventionsNotes view={view} /> : null}
+      {section === "machine" && local ? <RestoreBackups view={view} busy={flow.busy} onRestore={flow.restore} /> : null}
     </>
   );
 }
@@ -64,7 +68,7 @@ function Content({ section }: Readonly<{ section: Section }>) {
       <div className="settings">
         <Header section={section} />
         <ReadFailure read={read} name={connection?.name ?? ""} hasSettings={view !== null} />
-        {view === null ? (read.state === "loading" ? <SettingsSkeleton /> : null) : <Sections section={section} view={view} flow={flow} editing={editing} onRestore={() => outcome?.kind === "saved" && flow.restore(outcome.file)} />}
+        {view === null ? (read.state === "loading" ? <SettingsSkeleton /> : null) : <Sections section={section} view={view} flow={flow} editing={editing} local={local} onRestore={() => outcome?.kind === "saved" && flow.restore(outcome.file)} />}
       </div>
       <UnsavedBars files={bars} busy={flow.busy} onDiscard={discard} onReview={flow.openReview} />
       {flow.review === null ? null : <ReviewDialog review={flow.review} busy={flow.busy} onBack={flow.closeReview} onSave={flow.save} />}
