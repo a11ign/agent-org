@@ -186,10 +186,10 @@ test("A11-257: a reviewer does not re-raise a planned decision: the first review
   const first = reviewWords(GATE, { doneWhen: DONE_WHEN, decisions: DECISION, planDecisions: PLAN_DECISIONS, escalation: ESCALATION });
   const again = rereviewWords({ ...REREVIEW, replies: REPLY, decisions: DECISION, planDecisions: PLAN_DECISIONS, escalation: ESCALATION });
   for (const [which, words] of [["a first review and a reprompt", first], ["a re-review", again]] as const) {
-    assert.ok(words.includes(`The plan's decisions, as the plan states them:\n\n${PLAN_DECISIONS}`), `${which} quotes the plan's decisions`);
+    assert.ok(words.includes(`The plan's decisions, as the board read them:\n\n${PLAN_DECISIONS}`), `${which} quotes the plan's decisions`);
     assert.ok(words.includes(PLAN_DECISION_RULE), `${which} carries the rule`);
     assert.ok(words.includes(ESCALATION), `${which} carries the escalation list the decisions cannot override`);
-    const order = [DECISION_RULE, "The plan's decisions, as the plan states them", PLAN_DECISION_RULE, ESCALATION, POST_MERGE_RULE].map((part) => words.indexOf(part));
+    const order = [DECISION_RULE, "The plan's decisions, as the board read them", PLAN_DECISION_RULE, ESCALATION, POST_MERGE_RULE].map((part) => words.indexOf(part));
     assert.ok(order.every((at) => at >= 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `${which}: the ticket's decisions, then the plan's, then the list, then the post-merge rule: ${order}`);
   }
   assert.match(PLAN_DECISION_RULE, /you do not request changes on a point a decision settled/);

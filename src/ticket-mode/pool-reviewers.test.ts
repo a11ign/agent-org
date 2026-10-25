@@ -32,7 +32,7 @@ test("A11-161: where the gate does not load, a sweep with reviews required and t
 // A11-213: the reviewer cannot read the tracker, so the ticket's explicit decisions reach it in the brief, from the run that holds the pull request.
 const HELD_PR = "https://github.com/o/r/pull/7";
 const DESCRIPTION = "## Problem\n\nThe policy must reach the second repository.\n\nThis step widens the policy by the chairman's decision on 2026-10-24.\n\n## Done-when\n\n### Before merge\n\n- applied";
-const holding = (description: string, url = HELD_PR): PoolContext => ({ store: { get: () => ({ entries: [{ ticket: { key: "A11-203", description }, review: [{ repo: "r", url }] } as unknown as Entry] }) } }) as unknown as PoolContext;
+const holding = (description: string, url = HELD_PR): PoolContext => ({ settings: { plan: null }, store: { get: () => ({ entries: [{ ticket: { key: "A11-203", description }, review: [{ repo: "r", url }] } as unknown as Entry] }) } }) as unknown as PoolContext;
 const state = { view: { body: "" } } as unknown as ReviewState;
 
 test("A11-213: a brief carries the decisions of the ticket whose run holds the pull request, with its Done-when", () => {
@@ -70,4 +70,22 @@ test("A11-257: a plan that records no decision, no plan file, and a pull request
   assert.deepEqual(briefOf(holdingWithPlan("## Problem\n\nA problem.", { "A11-203-0001-plan-x.md": bare }), HELD_PR, state), { doneWhen: null });
   assert.deepEqual(briefOf(holdingWithPlan("## Problem\n\nA problem.", {}), HELD_PR, state), { doneWhen: null });
   assert.deepEqual(briefOf(holdingWithPlan("## Problem\n\nA problem.", { "A11-203-0001-plan-x.md": PLAN }), "https://github.com/o/r/pull/8", state), { doneWhen: null }, "one a person opened has no plan to quote");
+});
+
+test("A11-257: a plan the board cannot read is not a plan with no decisions: the brief says so, and the reviewer is not left to re-raise what the plan may have decided", () => {
+  const ctx = holdingWithPlan(DESCRIPTION, {});
+  mkdirSync(join(ticketDir((ctx as unknown as { settings: never }).settings, "A11-203"), "paths", "A11-203-0001-plan-x.md"));
+  const written: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((line: string) => { written.push(line); return true; }) as typeof process.stderr.write;
+  let brief: ReturnType<typeof briefOf>;
+  try {
+    brief = briefOf(ctx, HELD_PR, state);
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.match(brief.planDecisions ?? "", /^The board could not read this ticket's plan \(its plan file A11-203-0001-plan-x\.md could not be read/);
+  assert.match(brief.planDecisions ?? "", /write a "Note \(not a finding\)" about it and approve on that point/);
+  assert.equal(brief.escalation, escalationList(), "the list still goes with it");
+  assert.ok(written.some((line) => /A11-203: .*so its reviewer is told the plan's decisions are unknown/.test(line)), written.join(""));
 });

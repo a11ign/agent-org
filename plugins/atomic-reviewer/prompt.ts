@@ -81,7 +81,7 @@ export const decisionWords = (decisions: string | undefined): string =>
 
 /** The plan's decisions as the plan words them, cut at the Done-when's limit, with the order of authority and the escalation list they cannot override. Nothing when the plan records none. */
 export const planDecisionWords = (planDecisions: string | undefined, escalation: string | undefined): string =>
-  (planDecisions === undefined ? "" : [`The plan's decisions, as the plan states them:\n\n${cut(planDecisions, DONE_WHEN_LIMIT)}`, PLAN_DECISION_RULE, ...(escalation === undefined ? [] : [escalation])].join("\n\n"));
+  (planDecisions === undefined ? "" : [`The plan's decisions, as the board read them:\n\n${cut(planDecisions, DONE_WHEN_LIMIT)}`, PLAN_DECISION_RULE, ...(escalation === undefined ? [] : [escalation])].join("\n\n"));
 
 /** The step a partial pull request finishes (A11-175): which step it is, its section of the plan or the line that says there is none, and the ratchets' direction. */
 const stepWords = ({ step, of, section }: ReviewStep): string => [
