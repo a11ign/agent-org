@@ -453,7 +453,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
       forceDrain(ctx);
       // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).
-      await releaseTicketWaits(ctx);
+      const releasing = releaseTicketWaits(ctx);
+      if (releasing !== null) await releasing;
       await fill(ctx);
     } while (pass.again);
   } finally {

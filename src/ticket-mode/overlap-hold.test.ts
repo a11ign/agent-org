@@ -1,7 +1,7 @@
 // no-token: gh -- the queue and the board's words, in memory; nothing is read or spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { overlapWait } from "./board-view/overlap-hold.ts";
+import { heldClaims, overlapWait } from "./board-view/overlap-hold.ts";
 import { runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import type { ViewEntry } from "./board-view/view-types-and-filters.ts";
 import { enqueue } from "./queue/queue-entries-and-outcomes.ts";
@@ -146,4 +146,24 @@ test("A11-272: a run parked on a fleet job does not hold its own blocker's block
   const blocker = { ticket: { key: "B-1" }, phase: "finished", paths: [], outcome: { kind: "ready-pr", prs: [] }, blockers: [{ key: "C-1", state: "started", status: "In Progress" }] } as unknown as ViewEntry;
   const waiting = needsMiddleware("C-1");
   assert.equal(overlapWait(waiting, [holder, blocker, waiting]), null);
+});
+
+test("A11-272: a run whose worker was woken from its wait, or works again, holds its files against the ticket it had declared, as before", () => {
+  const woken = { ticket: { key: "A11-231" }, phase: "running", paths: MIDDLEWARE, working: { reason: "back at work", waits: [{ kind: "ticket", key: "A11-229", until: "done" }] } } as unknown as ViewEntry;
+  const waiting = needsMiddleware("A11-229");
+  assert.equal(overlapWait(waiting, [woken, waiting])?.key, "A11-231");
+});
+
+test("A11-272: a holder's exemption does not reach through a blocker that is done", () => {
+  const holder = { ticket: { key: "A-1" }, phase: "running", paths: MIDDLEWARE, blockers: [{ key: "B-1", state: "completed", status: "Done" }] } as unknown as ViewEntry;
+  const done = { ticket: { key: "B-1" }, phase: "finished", paths: [], outcome: { kind: "ready-pr", prs: [] }, blockers: [{ key: "C-1", state: "started", status: "In Progress" }] } as unknown as ViewEntry;
+  const waiting = needsMiddleware("C-1");
+  assert.equal(overlapWait(waiting, [holder, done, waiting])?.key, "A-1");
+});
+
+test("A11-272: a planner is still shown the claims of a run that waits on its ticket only through others, as before", () => {
+  const planned = { ticket: { key: "A11-229" }, phase: "queued", plan: { model: "opus", effort: "max" } } as unknown as ViewEntry;
+  const middle = { ticket: { key: "A11-231" }, phase: "queued", paths: ["lab:a.ts"], blockers: [{ key: "A11-229", state: "unstarted", status: "Todo" }] } as unknown as ViewEntry;
+  const last = { ticket: { key: "A11-232" }, phase: "queued", paths: ["lab:b.ts"], blockers: [{ key: "A11-231", state: "unstarted", status: "Todo" }] } as unknown as ViewEntry;
+  assert.deepEqual(heldClaims([planned, middle, last], [planned]).map(({ key }) => key), ["A11-232"]);
 });

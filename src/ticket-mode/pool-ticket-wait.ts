@@ -8,7 +8,7 @@
 import { closedOrGone } from "./pool-drain.ts";
 import { forgetRun, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { find, type Entry, type WorkingNote } from "./queue/queue-entries-and-outcomes.ts";
-import { type BlockerWait, recordStoppedStates, requeueBehindBlocker, unlistedKeys } from "./queue/queue-blocker-wait.ts";
+import { type BlockerWait, recordStoppedStates, requeueBehindBlocker, unlistedKeysDue } from "./queue/queue-blocker-wait.ts";
 import { judgedWait } from "./wait-on/wait-watch.ts";
 import { type TicketWait, type Wait, waitKey } from "./wait-on/wait-types.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -68,29 +68,37 @@ async function release(ctx: PoolContext, entry: Entry, asked: BlockerWait): Prom
 }
 
 /**
- * Read where each ticket a queued stopped run waits on stands, when the tracker's blockers, once read, do not list it: the hold lets go of it once it is completed (`blockersOf`). A refused read changes nothing,
- * and the next tick asks again.
+ * Read where each ticket a queued stopped run waits on stands, when the tracker's blockers, once read, do not list it: the hold lets go of it once it is completed or canceled (`waitsOn`). At most once a minute per
+ * run, and not once its wait has ended. A refused read changes nothing, and the next tick asks again.
  */
-async function readUnlisted(ctx: PoolContext): Promise<void> {
-  const { source, store } = ctx;
+async function readUnlisted(ctx: PoolContext, due: readonly Readonly<{ entry: Entry; keys: readonly string[] }>[]): Promise<void> {
+  const { now, source } = ctx;
   if (source.stateTypes === undefined) return;
-  for (const entry of store.get().entries) {
-    const keys = unlistedKeys(entry);
-    if (keys.length === 0) continue;
+  for (const { entry, keys } of due) {
     try {
       const states = await source.stateTypes(keys);
-      update(ctx, (queue) => recordStoppedStates(queue, entry.ticket.key, states));
+      update(ctx, (queue) => recordStoppedStates(queue, entry.ticket.key, states, now()));
     } catch {
       // the tracker could not be asked: the next tick asks again
     }
   }
 }
 
-/** One pass: let go of every live run whose worker waits on a ticket not done, then read the tickets queued stopped runs wait on that the tracker does not list. */
-export async function releaseTicketWaits(ctx: PoolContext): Promise<void> {
-  for (const entry of ctx.store.get().entries) {
+/**
+ * One pass: let go of every live run whose worker waits on a ticket not done, then read the tickets queued stopped runs wait on that the tracker does not list. Null when neither is due, so a tick with nothing to do
+ * here awaits nothing, and its slots are filled in the same turn as before.
+ */
+export function releaseTicketWaits(ctx: PoolContext): Promise<void> | null {
+  const { now, store } = ctx;
+  const entries = store.get().entries;
+  const releases = entries.flatMap((entry) => {
     const wait = blockerWaitOf(ctx, entry);
-    if (wait !== null) await release(ctx, entry, wait);
-  }
-  await readUnlisted(ctx);
+    return wait === null ? [] : [{ entry, wait }];
+  });
+  const reads = entries.map((entry) => ({ entry, keys: unlistedKeysDue(entry, now()) })).filter(({ keys }) => keys.length > 0);
+  if (releases.length === 0 && reads.length === 0) return null;
+  return (async () => {
+    for (const { entry, wait } of releases) await release(ctx, entry, wait);
+    await readUnlisted(ctx, reads);
+  })();
 }

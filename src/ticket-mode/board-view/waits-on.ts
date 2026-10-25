@@ -18,29 +18,70 @@ export function blockersOf(entry: ViewEntry): readonly ViewBlocker[] {
 export const unlistedStops = (entry: ViewEntry): string[] =>
   (entry.stoppedForBlocker?.keys ?? []).filter((key) => !(entry.blockers ?? []).some((blocker) => blocker.key === key));
 
-/** The keys of the tickets whose runs on the board have the pull request `url` open. PURE. */
-const pullOwners = (url: string, entries: readonly ViewEntry[]): string[] =>
-  entries.filter((other) => openPulls(other).some((pull) => pull.url === url)).map(({ ticket }) => ticket.key);
+/** The tracker's states that end a ticket wait, as its reading judges one (A11-245): `completed` finishes it and `canceled` fails it. */
+const TICKET_WAIT_ENDS: ReadonlySet<string> = new Set(["completed", "canceled"]);
 
-/** The tickets a run waits on directly: its blockers ({@link blockersOf}), and, while it is live, each ticket its worker declared a wait on and each ticket whose run has a pull request it declared a wait on. PURE. */
-function directWaits(entry: ViewEntry, entries: readonly ViewEntry[]): string[] {
-  const blockers = blockersOf(entry).map(({ key }) => key);
-  if (entry.phase !== "starting" && entry.phase !== "running") return blockers;
+/** Whether the board stopped the run for a wait on this blocker (A11-272). PURE. */
+export const isStoppedFor = (entry: ViewEntry, blocker: ViewBlocker): boolean => (entry.stoppedForBlocker?.keys ?? []).includes(blocker.key);
+
+/**
+ * Whether the wait a run was stopped for has ended for a blocker in the tracker's `state`: completed or canceled, as the wait's own reading judges it. Merged pull requests do not end it, as they let an ordinary
+ * blocker go, since the worker asked for the ticket to be done: a run let go on a merge that leaves its ticket open would declare the same wait again, and be stopped again. PURE.
+ */
+export const ticketWaitEnded = (state: string): boolean => TICKET_WAIT_ENDS.has(state);
+
+/** The tracker's states of a ticket whose work is over: a blocker in one is waited on no longer. */
+const SETTLED_STATES: ReadonlySet<string> = new Set(["completed", "canceled", "duplicate"]);
+
+/** Whether a blocker may still hold the run it blocks: the tracker has not settled it, and its pull requests have not all merged. PURE. */
+function stillAhead({ state, pulls }: ViewBlocker): boolean {
+  const states = Object.values(pulls ?? {});
+  return !SETTLED_STATES.has(state) && !(states.includes("merged") && !states.includes("open"));
+}
+
+/** The ticket of each open pull request on the board: what {@link directWaits} reads a pull request wait by, built once for a walk. */
+type Board = Readonly<{ pullOwner: ReadonlyMap<string, string> }>;
+
+function boardOf(entries: readonly ViewEntry[]): Board {
+  return { pullOwner: new Map(entries.flatMap((entry) => openPulls(entry).map(({ url }): [string, string] => [url, entry.ticket.key]))) };
+}
+
+/**
+ * The tickets a run waits on directly: its blockers that may still hold it ({@link blockersOf}, {@link stillAhead}), and, while its worker sits idle in a declared wait (`working.waiting`), each ticket the wait names and
+ * the ticket whose run has a pull request it names. A worker woken from its wait, or at work again, waits on none of those. PURE.
+ */
+function directWaits(entry: ViewEntry, board: Board): string[] {
+  const blockers = blockersOf(entry).filter(stillAhead).map(({ key }) => key);
+  const parked = (entry.phase === "starting" || entry.phase === "running") && entry.working?.waiting === true;
+  if (!parked) return blockers;
   const declared = (entry.working?.waits ?? []).flatMap((wait) => {
     if (wait.kind === "ticket") return [wait.key];
-    return wait.kind === "pullRequest" ? pullOwners(wait.url, entries) : [];
+    const owner = wait.kind === "pullRequest" ? board.pullOwner.get(wait.url) : undefined;
+    return owner === undefined ? [] : [owner];
   });
   return [...blockers, ...declared];
 }
 
-/** Every ticket a run waits on, directly ({@link directWaits}) or through the tickets those wait on, each once, and never its own. PURE. */
-export function waitedOn(entry: ViewEntry, entries: readonly ViewEntry[]): ReadonlySet<string> {
+/**
+ * The tickets whose runs wait on ticket `key`, directly ({@link directWaits}) or through the tickets those wait on, each once, and never `key` itself. One walk back from `key` over the board's waits, so a caller
+ * that asks it of every holder of a run's paths walks the board once. PURE.
+ */
+export function waitersOn(key: string, entries: readonly ViewEntry[]): ReadonlySet<string> {
+  const board = boardOf(entries);
+  const waitedBy = new Map<string, string[]>();
+  for (const entry of entries) {
+    for (const target of directWaits(entry, board)) {
+      const waiters = waitedBy.get(target) ?? [];
+      waiters.push(entry.ticket.key);
+      waitedBy.set(target, waiters);
+    }
+  }
   const found = new Set<string>();
-  const toFollow = directWaits(entry, entries);
-  for (let key = toFollow.pop(); key !== undefined; key = toFollow.pop()) {
-    if (key === entry.ticket.key || found.has(key)) continue;
-    found.add(key);
-    for (const run of entries.filter((other) => other.ticket.key === key)) toFollow.push(...directWaits(run, entries));
+  const toFollow = [...(waitedBy.get(key) ?? [])];
+  for (let waiter = toFollow.pop(); waiter !== undefined; waiter = toFollow.pop()) {
+    if (waiter === key || found.has(waiter)) continue;
+    found.add(waiter);
+    toFollow.push(...(waitedBy.get(waiter) ?? []));
   }
   return found;
 }

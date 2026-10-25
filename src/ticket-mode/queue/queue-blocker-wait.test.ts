@@ -6,7 +6,7 @@ import { enqueue, type Queue } from "./queue-entries-and-outcomes.ts";
 import { markRunning, markStarting, recordBlockers, recordPaths, resumeQueue } from "./queue-transitions.ts";
 import { emptyQueue, nextStarts } from "../queue.ts";
 import { logOf } from "./run-log.ts";
-import { recordStoppedStates, requeueBehindBlocker, resumesStoppedSession, unlistedKeys } from "./queue-blocker-wait.ts";
+import { recordStoppedStates, requeueBehindBlocker, resumesStoppedSession, unlistedKeysDue } from "./queue-blocker-wait.ts";
 import { waitNote, waitsOn } from "../board-view/pull-status-and-notes.ts";
 import type { Ticket } from "../source.ts";
 
@@ -42,7 +42,7 @@ test("A11-272: the deadlock lets go: A11-229 starts on the files, and A11-231 wa
     assert.deepEqual(nextStarts(read, 0, 14).map((e) => e.ticket.key), ["A11-229"]);
     const waiter = read.entries.find((e) => e.ticket.key === "A11-231")!;
     assert.deepEqual(waitsOn(waiter, read.entries).map(({ key }) => key), ["A11-229"]);
-    assert.equal(waitNote(waiter, read.entries), "Waits for A11-229 (queued) to merge");
+    assert.equal(waitNote(waiter, read.entries), "Waits for A11-229 to be done: its worker waits on it");
   }
 });
 
@@ -57,13 +57,31 @@ test("A11-272: a blocker it was stopped for is waited on until done, never stack
 test("A11-272: a ticket the tracker does not list lets go once its state, as read, is completed; before the list is read nothing is asked", () => {
   const requeued = requeueBehindBlocker(deadlocked(), "A11-231", { keys: ["A11-500"], others: [] }, 50);
   const waiter = () => read.entries.find((e) => e.ticket.key === "A11-231")!;
-  assert.deepEqual(unlistedKeys(requeued.entries.find((e) => e.ticket.key === "A11-231")!), [], "its blockers are not read yet");
+  assert.deepEqual(unlistedKeysDue(requeued.entries.find((e) => e.ticket.key === "A11-231")!, 100), [], "its blockers are not read yet");
   let read = recordBlockers(requeued, new Map([["A11-231", []]]));
-  assert.deepEqual(unlistedKeys(waiter()), ["A11-500"]);
-  read = recordStoppedStates(read, "A11-231", new Map([["A11-500", "started"]]));
+  assert.deepEqual(unlistedKeysDue(waiter(), 100), ["A11-500"]);
+  read = recordStoppedStates(read, "A11-231", new Map([["A11-500", "started"]]), 100);
   assert.equal(waitsOn(waiter(), read.entries).length, 1);
-  read = recordStoppedStates(read, "A11-231", new Map([["A11-500", "completed"]]));
+  read = recordStoppedStates(read, "A11-231", new Map([["A11-500", "completed"]]), 200);
   assert.deepEqual(waitsOn(waiter(), read.entries), []);
+});
+
+test("A11-272: the board reads an unlisted ticket's state at most once a minute, and not once its wait has ended", () => {
+  const read = recordBlockers(requeueBehindBlocker(deadlocked(), "A11-231", { keys: ["A11-500"], others: [] }, 50), new Map([["A11-231", []]]));
+  const started = recordStoppedStates(read, "A11-231", new Map([["A11-500", "started"]]), 1_000);
+  const waiter = (queue: Queue) => queue.entries.find((e) => e.ticket.key === "A11-231")!;
+  assert.deepEqual([unlistedKeysDue(waiter(started), 1_000 + 59_999), unlistedKeysDue(waiter(started), 1_000 + 60_000)], [[], ["A11-500"]]);
+  const canceled = recordStoppedStates(started, "A11-231", new Map([["A11-500", "canceled"]]), 2_000);
+  assert.deepEqual(unlistedKeysDue(waiter(canceled), 999_999), []);
+});
+
+test("A11-272: a ticket it was stopped for lets go only when the tracker reads it completed or canceled: merged pull requests that leave it open hold it, so the worker is not resumed into the same wait", () => {
+  const requeued = requeueBehindBlocker(deadlocked(), "A11-231", WAIT, 50);
+  const holds = (state: string) => {
+    const read = recordBlockers(requeued, new Map([["A11-231", [{ key: "A11-229", state, status: state, pulls: { "https://github.com/a11ign/lab/pull/3": "merged" } }]]]));
+    return waitsOn(read.entries.find((e) => e.ticket.key === "A11-231")!, read.entries).length > 0;
+  };
+  assert.deepEqual(["started", "completed", "canceled"].map(holds), [true, false, false]);
 });
 
 test("A11-272: its start drops the record, so the run it resumes holds nothing behind the ticket", () => {

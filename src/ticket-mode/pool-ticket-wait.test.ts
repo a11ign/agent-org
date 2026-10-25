@@ -83,6 +83,9 @@ test("A11-272: when the ticket it waited on is done, the stopped run starts agai
   assert.equal(run.entry(WAITER).phase, "queued", "still held while NBF-2 works");
   await run.write(BLOCKER, { kind: "done", reason: "built it", evidence: ["the test passes"] });
   await run.pass();
+  assert.equal(run.starts().filter((args) => args.includes(herdrName(WAITER))).length, 1, "not before the tracker's sweep reads NBF-2 completed");
+  await run.pool.refreshTracker();
+  await run.pass();
   const resumed = run.starts().filter((args) => args.includes(herdrName(WAITER))).at(-1)!;
   assert.ok(resumed.includes("--resume") && resumed.includes(`session-${herdrName(WAITER)}`), "the round resumes the stopped run's own session");
   assert.ok(["starting", "running"].includes(run.entry(WAITER).phase));
