@@ -540,14 +540,16 @@ test("a declared repository whose name is also a clone keeps its declared key, w
   assert.deepEqual(made.spawned[0].env, { AGENT_ORG_INSTANCE: "work" }, "the spawn names this instance for the door's claim, and no repository, as it did not before");
 });
 
-test("clonedSeatOf takes a clone only of the primary's owner, and gives it the key `cloneKeys` made, a hashed one where a declared repository is keyed by the clone's name", () => {
+test("clonedSeatOf takes a clone only of the primary's owner, gives it the key `cloneKeys` made, and refuses a clone named as a declared key, which is that repository's checkout", () => {
   const clones = { plugin: "/repos/plugin", ".github": "/repos/github", github: "/repos/github-clone" };
-  const keys = cloneKeys(clones, ["", "github"]);
-  assert.deepEqual(clonedSeatOf(`${OWNER}/plugin`, { owner: OWNER, clones, keys }), { key: "plugin", clone: "/repos/plugin" });
-  assert.equal(clonedSeatOf("someone-else/plugin", { owner: OWNER, clones, keys }), null, "another owner's repository is no clone of this org's");
-  assert.equal(clonedSeatOf(`${OWNER}/not-cloned`, { owner: OWNER, clones, keys }), null, "a repository the host does not clone is no seat");
-  assert.match(clonedSeatOf(`${OWNER}/.github`, { owner: OWNER, clones, keys })!.key, /^github-h[0-9a-f]{7}$/, "the declared `github` keeps its own key, so the clone named `.github` is told apart by a hash");
-  assert.match(clonedSeatOf(`${OWNER}/github`, { owner: OWNER, clones, keys })!.key, /^github-h[0-9a-f]{7}$/, "the clone named as a declared key does not take that key's seat");
+  const codes = [{ key: "", repo: `${OWNER}/${OWNER}` }, { key: "github", repo: `${OWNER}/.github` }];
+  const keys = cloneKeys(clones, codes.map((code) => code.key));
+  const seat = (repo: string, over: Partial<{ clones: Record<string, string> }> = {}) => clonedSeatOf(repo, { owner: OWNER, clones, codes, keys, ...over });
+  assert.deepEqual(seat(`${OWNER}/plugin`), { key: "plugin", clone: "/repos/plugin" });
+  assert.equal(seat("someone-else/plugin"), null, "another owner's repository is no clone of this org's");
+  assert.equal(seat(`${OWNER}/not-cloned`), null, "a repository the host does not clone is no seat");
+  assert.match((seat(`${OWNER}/.github`) as { key: string }).key, /^github-h[0-9a-f]{7}$/, "the declared `github` keeps its own key, so the clone named `.github` is told apart by a hash");
+  assert.ok(refusalOf(seat(`${OWNER}/github`)).includes(`declares \`github\` as the key of ${OWNER}/.github`), "the clone named as a declared key would take that key's seat");
 });
 
 test("A11-175: the started prompt names the unrequired red checks the code host reports, and the reprompt and a re-review do too; a head with none says nothing of them", async () => {

@@ -8,7 +8,7 @@ A repository whose name has a dot (`a11ign.github.io`) could never be reviewed: 
 - `src/herdr-agents.ts`: `herdrAgentName` is `derivedName(full, HERDR_AGENT_RULE)`; its names are unchanged.
 - `src/review-attribution.ts`: `reviewerInstance` tests a key with `isReviewerKey`.
 - `src/plugins/manifest.ts`, `src/plugins/reviewing-helpers.ts`: `attribution.cloneKeys` reaches the plugin as `reviewerSeat` does.
-- `plugins/atomic-reviewer/port.ts`: `clonedSeatOf` takes its key from `cloneKeys` and no longer refuses; `repositoryOfKey` maps a key back to the clone's real repository through the same `cloneKeys`.
+- `plugins/atomic-reviewer/port.ts`: `clonedSeatOf` takes its key from `cloneKeys` (no more refusal of a name that is not a key), and still refuses a clone named as a declared key, which is that repository's checkout (`clones` is by key); `repositoryOfKey` maps a key back to the clone's real repository through the same `cloneKeys`.
 
 ## Acceptance
 
@@ -21,4 +21,4 @@ AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts
 npm run typecheck
 ```
 
-Consumer-declaration: `clonedSeatOf` (exported, used only by the reviewer port and its test) takes `keys` where it took `codes` and returns no refusal. `herdrAgentName` and `reviewerInstance` return what they returned for every name they accepted before.
+Consumer-declaration: `clonedSeatOf` (exported, used only by the reviewer port and its test) takes `keys` as well, and refuses only a clone named as a declared key. `herdrAgentName` and `reviewerInstance` return what they returned for every name they accepted before.

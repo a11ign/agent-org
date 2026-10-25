@@ -76,10 +76,11 @@ export function derivedName(real: string, rule: NameRule): string {
 export function cloneKeys(clones: Readonly<Record<string, unknown>>, declared: readonly string[]): ReadonlyMap<string, string> {
   const names = Object.keys(clones);
   const bases = new Map(names.map((name) => [name, derivedName(name, REVIEWER_KEY_RULE)]));
-  const claimants = (base: string): string[] => names.filter((name) => bases.get(name) === base);
+  const makers = new Map<string, number>();
+  for (const base of bases.values()) makers.set(base, (makers.get(base) ?? 0) + 1);
   return new Map(names.map((name) => {
     const base = bases.get(name)!;
-    const keepsBase = !declared.includes(base) && (name === base || claimants(base).length === 1);
+    const keepsBase = !declared.includes(base) && (name === base || makers.get(base) === 1);
     return [name, keepsBase ? base : `${base}-h${sha256(name).slice(0, COLLISION_HASH_LENGTH)}`];
   }));
 }
