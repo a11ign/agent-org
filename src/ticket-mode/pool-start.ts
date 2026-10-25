@@ -39,7 +39,6 @@ import { isDraining } from "./pool-drain.ts";
 import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles, writeRunFiles } from "./pool-prepare.ts";
 import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
-import { needsDecision } from "./open-decisions.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { trackerWritingOf } from "../plugins/registry.ts";
 import { settleSessions } from "./pool-sessions.ts";
@@ -392,13 +391,6 @@ function stoppedWhileStarting(ctx: PoolContext, key: string, workspace: string):
   return true;
 }
 
-/**
- * The open decision that holds a work run back, as its reason, or null (A11-134). A work run never starts on a ticket with an open decision: the queue refused
- * one, but the tracker may have changed since the ticket was queued, and no worker chooses the answer. So the ticket is read as the tracker has it now, the
- * same read `prepare` briefs the worker with, and not the copy taken when it was queued.
- */
-const openDecisionHold = (fresh: Ticket): string | null => needsDecision(fresh)?.reason ?? null;
-
 /** Where a run starts (A11-219): this instance's name and this machine's host name. Over an SSH connection the page reads the remote instance's own queue, so the instance there is the remote's. */
 const workerOf = ({ settings }: PoolContext): RunWorker => ({ instance: settings.instance, host: hostname() });
 
@@ -492,15 +484,14 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
       update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false, now: now() }));
       return;
     }
-    // A work run held by an open decision ends needs-human with its reason (A11-134); a review round may wait on its stacked base instead. Only a work run
+    // A work run no longer waits for a person to settle an open decision (A11-257): its planner settled it, and a worker decides the rest. A review round may wait on its stacked base instead. Only a work run
     // reads the tracker here, so a planning run or a review round starts as it did before.
     const isWork = !isPlanning(ctx, entry) && entry.review === undefined;
     const fresh = isWork ? await current(ctx, entry.ticket) : undefined;
-    const held = fresh === undefined ? null : openDecisionHold(fresh);
     // A work run whose plan was stamped with a description the ticket no longer has, or that a blocker's findings reached after the plan was written, plans again before it starts (A11-167).
-    const queuedRun = held === null && fresh !== undefined ? await replanStale(ctx, entry, fresh) : entry;
+    const queuedRun = fresh !== undefined ? await replanStale(ctx, entry, fresh) : entry;
     const merge = queuedRun.review !== undefined && queuedRun.stackBase !== undefined ? await mergeBeforeRound(ctx, queuedRun) : NO_MERGE;
-    const blocked = held ?? merge.held;
+    const blocked = merge.held;
     if (blocked !== null) {
       update(ctx, (queue) => finish(queue, entry.ticket.key, { kind: "needs-human", reason: blocked }, now()));
       return;

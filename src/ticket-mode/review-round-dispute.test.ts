@@ -1,6 +1,8 @@
 // no-token: gh -- pure builders and a board status over hand-made entries
 //
 // A11-213: a worker that judges a review's requested change wrong, or already settled by the ticket, replies on the pull request and hands the run to a person. It never ends `reviewed` with the pull request blocked.
+// A11-257 changed that: a worker never stops to ask about anything off the escalation list. A review that requests changes against the plan or the ticket's Decisions is answered with a reply quoting the decision and the round ends
+// `reviewed`: the reply starts the reviewer's re-review of the same head (A11-156), which the decision now binds. A11-213's flag for a pull request left blocked and idle backs it up.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { reasonOf } from "./board-view/run-reason.ts";
@@ -22,23 +24,24 @@ const ROUNDS: [string, string][] = [
   ["a round a person asked for", brief({ asked: true })],
 ];
 
-/** The reply-and-hand-back step every round carries, as one sentence. */
-const DISPUTE = "When a review requests changes and you judge the request wrong, or already settled by the ticket: make no change for it, reply on that pull request saying why and quoting the ticket's line, "
-  + "and end the round with a `needs-human` outcome whose reason names the pull request's URL and the disputed finding.";
-const NEVER_REVIEWED = "Never write `reviewed` while a review you disputed still requests changes on the head.";
+/** The reply step every round carries, as one sentence (A11-257). */
+const DISPUTE = "When a review requests changes that go against the plan or the ticket's Decisions: make no change for it, reply on that pull request quoting the decision (the plan's line, or the ticket's Decisions entry with its heading), "
+  + "and end the round `reviewed`. Your reply starts the reviewer's re-review of the same head, which that decision binds. A request you judge wrong on other grounds is answered with the evidence. End `needs-human` only for an item on the escalation list.";
+const ANSWERED = "A review you disputed on a decision counts as answered once your reply quoting the decision is on the pull request.";
 
 for (const [round, text] of ROUNDS) {
-  test(`A11-213: ${round} tells the worker to reply quoting the ticket and end needs-human naming the pull request and the finding, in its steps`, () => {
+  test(`A11-257: ${round} tells the worker to reply quoting the decision and end reviewed, and to stop only for an item on the escalation list, in its steps`, () => {
     const steps = text.slice(text.indexOf("## What to do"), text.indexOf("## The outcome file"));
     assert.ok(steps.includes(DISPUTE), "the dispute step is among the round's steps");
     assert.ok(steps.indexOf("A finding you judge wrong is not fixed") < steps.indexOf(DISPUTE), "and follows the line that says a wrong finding is not fixed");
+    assert.equal(steps.includes("needs-human` outcome whose reason names the pull request"), false, "the old hand-back to a person is gone");
   });
 
-  test(`A11-213: ${round} never lets the worker end reviewed while a disputed review still blocks the head`, () => {
+  test(`A11-257: ${round} lets the worker end reviewed once the disputed review is answered by its reply, and never asks it to hold the round for a person`, () => {
     const outcome = text.slice(text.indexOf("## The outcome file"));
-    assert.ok(outcome.includes(NEVER_REVIEWED), "the condition for `reviewed` carries the line");
-    assert.ok(outcome.includes('"kind": "needs-human"') && outcome.includes('"kind": "reviewed"'), "and both outcomes are on offer");
-    assert.ok(outcome.indexOf("Write `reviewed` only when") < outcome.indexOf(NEVER_REVIEWED));
+    assert.ok(outcome.includes(ANSWERED), "the condition for `reviewed` carries the line");
+    assert.equal(outcome.includes("Never write `reviewed` while a review you disputed"), false, "A11-213's condition is gone");
+    assert.ok(outcome.indexOf("Write `reviewed` only when") < outcome.indexOf(ANSWERED));
   });
 }
 

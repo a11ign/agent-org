@@ -19,6 +19,7 @@ import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parseStamp, urlsNamedIn } from "./plan-stamp.ts";
+import { planDecisionsOf } from "./plan-decisions.ts";
 import { stepSectionText } from "./plan-step-sections.ts";
 import { descriptionHash, ticketReadOf, type TicketRead } from "./ticket-read.ts";
 import { BLOCKERS_DIR, diffText, type Finding, PREVIOUS_PLAN_DIR } from "./brief-ticket-text.ts";
@@ -56,6 +57,27 @@ export function planStepSection(ctx: PoolContext, key: string, step: number): st
     // A plan file that cannot be read has no plan to quote: the reviewer is told so.
   }
   return null;
+}
+
+/**
+ * What the reviewer is told when the board could not read a ticket's plan (A11-257). A plan it cannot read may hold decisions that bind the reviewer, and silence would read as a plan with none, so the reviewer is told, and does not
+ * request changes on a point the plan may have decided.
+ */
+export const planUnreadableWords = (why: string): string =>
+  `The board could not read this ticket's plan (${why}), so the plan's decisions are not given to you here. A point the plan may have decided is not yours to request changes on: write a "Note (not a finding)" about it and approve on that point.`;
+
+/**
+ * The decisions the plan files of ticket `key` record (A11-257), quoted as the plan words them, or null when this machine names no plan, no plan file is there, or none records a decision. Reads the folder and downloads nothing, as
+ * {@link planStepSection} does. A plan file that cannot be read is not a plan with no decisions: the answer is {@link planUnreadableWords}, which the reviewer is given in their place, and the failure is logged.
+ */
+export function planDecisions(ctx: PoolContext, key: string): string | null {
+  try {
+    const found = [...planTexts(ctx, key)].map(planDecisionsOf).filter((text): text is string => text !== null);
+    return found.length === 0 ? null : found.join("\n\n");
+  } catch (err) {
+    log(`${key}: ${messageOf(err)}, so its reviewer is told the plan's decisions are unknown`);
+    return planUnreadableWords(messageOf(err));
+  }
 }
 
 /**

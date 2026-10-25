@@ -1,6 +1,7 @@
 // no-token: none -- the files and the keys are in-memory; nothing is read from or written to disk
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { escalationList } from "../ticket-mode/escalation.ts";
 import { houseNotes, REVIEW_NOTES, WORKER_NOTES } from "./house-notes.ts";
 
 const HOME = "/home/me";
@@ -38,6 +39,14 @@ test("the shipped text names no organisation, plugin, decision record or account
   }
   assert.ok(WORKER_NOTES.includes("{ \"kind\": \"ready-pr\", \"prs\": [ { \"repo\": \"owner/repo\", \"url\": \"https://github.com/owner/repo/pull/1\" } ]"));
   assert.ok(WORKER_NOTES.includes("## Proof before merge"));
+});
+
+test("A11-257: the shipped notes end a run on checked, or on needs-human only for an item of the escalation list, which they quote, and send every other choice to the pull request body", () => {
+  const ending = WORKER_NOTES.slice(WORKER_NOTES.indexOf("## Ending a run"));
+  assert.ok(ending.includes("Use `needs-human` only for an item on the escalation list, and name its id in `escalation`."));
+  assert.ok(ending.includes(escalationList()), "the list is quoted from its module");
+  assert.ok(ending.includes("Everything else you decide yourself, in line with the plan and the ticket's Decisions, and list under \"Decisions made without a person\" in the pull request body."));
+  assert.ok(WORKER_NOTES.includes("{ \"kind\": \"needs-human\", \"reason\": \"the one thing only they can do\", \"escalation\": \"<id>\" }"));
 });
 
 test("A11-173: the opening-a-pull-request line says a partial is a plan step and never an After-merge line, and pull requests that finish a ticket together each say Refs", () => {

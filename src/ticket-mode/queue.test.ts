@@ -1075,13 +1075,10 @@ test("a legacy run that was creating its tickets, with every draft made, ends do
 });
 
 
-test("A11-134: the queue refuses a ticket with an open decision, naming its line, and a ticket whose Grill is recorded is queued", () => {
+test("A11-257: the queue holds a ticket with an open decision or an ungrilled screen like any other: its planner settles it", () => {
   const open = { ...ticket("A"), description: "## Acceptance\n\n- Decide whether the list sorts.\n" };
-  assert.throws(() => enqueue(emptyQueue(2), [open], choice, 1),
-    /^Error: A: An open decision is still in acceptance: "- Decide whether the list sorts\.". Grill it to settle the decision before it is queued\.$/);
-  const settled = { ...open, description: `${open.description}\n**Decisions:** settled\n` };
-  assert.deepEqual(keys(enqueue(emptyQueue(2), [settled], choice, 1)), ["A"]);
-  assert.throws(() => enqueue(emptyQueue(2), [{ ...ticket("B"), description: "**Screen:** yes\n" }], choice, 1), /B: It changes a screen, and its behaviour is not grilled yet/);
+  assert.deepEqual(keys(enqueue(emptyQueue(2), [open], choice, 1)), ["A"]);
+  assert.deepEqual(keys(enqueue(emptyQueue(2), [{ ...ticket("B"), description: "**Screen:** yes\n" }], choice, 1)), ["B"]);
 });
 
 const ANSWERED = { [pr.url]: { head: "h1", step: "round" as const } };

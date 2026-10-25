@@ -33,7 +33,8 @@ import { doneWhenOf } from "./done-when.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { partialStepOf } from "./board-view/plan-steps.ts";
 import { decisionsOf, hasDecisionsSection, unsupportedClaims } from "./ticket-decisions.ts";
-import { planStepSection } from "./pool-ticket-text.ts";
+import { planDecisions, planStepSection } from "./pool-ticket-text.ts";
+import { escalationList } from "./escalation.ts";
 import type { Reply, Review } from "../plugins/contracts/code-host.ts";
 import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef, ReviewerReply } from "../plugins/contracts/reviewer.ts";
 
@@ -124,9 +125,12 @@ export function briefOf(ctx: PoolContext, url: string, state: ReviewState): Revi
   const held = heldBy(ctx, url);
   const step = partialStepOf(bodyOf(state));
   const decisions = decisionsOf(held?.ticket.description);
+  // The plan's decisions bind the reviewer beside the ticket's (A11-257, contract 1.8), with the escalation list that is the one thing they cannot override.
+  const planned = held === undefined ? null : planDecisions(ctx, held.ticket.key);
   return {
     doneWhen: doneWhenOf(held?.ticket.description),
     ...(decisions === null ? {} : { decisions }),
+    ...(planned === null ? {} : { planDecisions: planned, escalation: escalationList() }),
     ...(step === null ? {} : { step: { ...step, section: held === undefined ? null : planStepSection(ctx, held.ticket.key, step.step) } }),
   };
 }

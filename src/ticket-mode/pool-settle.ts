@@ -16,12 +16,13 @@ import { type TicketRead } from "./ticket-read.ts";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, recordPullStates, unpark } from "./queue/queue-transitions.ts";
 import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { writtenStep } from "./outcome.ts";
+import { escalationItem, escalationReason, questionEscalation, questionText } from "./escalation.ts";
 import { recordCurrentStep } from "./queue/queue-run-detail.ts";
 import { recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { clearPartial } from "./queue/queue-next-step.ts";
 import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
-import { productDecisionIn } from "./open-decisions.ts";
+import { missingBehaviour } from "./open-decisions.ts";
 import { ticketDecisionsDefect } from "./plan-ticket-decisions.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
@@ -191,13 +192,13 @@ const settleFailed = (entry: Entry) => (err: unknown): void => log(`${entry.batc
  * What a plan is checked against besides its files being plain markdown: the pull requests its brief listed and the addresses the stop hook's one automatic retry named for them (A11-207), and the paths other
  * tickets held when the brief was written and whether the retry for a folder claim was made (A11-212), and the description the planner read, which the plan is held to follow the Decisions of (A11-250).
  */
-type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly string[]; claims?: readonly HeldClaim[]; claimsProblem?: string; claimsRetried?: boolean; description?: string }>;
+type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly string[]; claims?: readonly HeldClaim[]; claimsProblem?: string; claimsRetried?: boolean; description?: string; screen?: Pick<Ticket, "description" | "labels"> }>;
 
 /**
  * The files a planning run left in `planDir` to attach, or why they cannot be. Only plain markdown files are taken: a planning run is
  * unattended, so a link in its folder could point the board at a secret it would then upload. A plan that claims a folder another queued or running ticket writes into is refused, naming the narrower paths (A11-212).
  */
-function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false, description }: PlanChecks = {}): { files: string[] } | { refusal: string } {
+function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false, description, screen }: PlanChecks = {}): { files: string[] } | { refusal: string } {
   const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
   if (names.length === 0) return { refusal: `the planning run wrote no plan in ${planDir}` };
   const odd = names.find((name) => {
@@ -205,12 +206,10 @@ function planFiles(planDir: string, { given = [], retried = [], claims = [], cla
     return !info.isFile() || !name.endsWith(".md") || info.size > PLAN_FILE_BYTES;
   });
   if (odd !== undefined) return { refusal: `the plan folder ${planDir} holds ${odd}, which is not a markdown file of 1 MB or less, so nothing was attached` };
-  // A plan that records a product decision as made without a person is refused whole, and nothing is attached: the question is the person's (A11-134).
-  for (const name of names) {
-    const bullet = productDecisionIn(readFileSync(join(planDir, name), "utf8"));
-    if (bullet !== null) return { refusal: `the plan records a product decision made without asking: ${bullet}` };
-  }
   const texts = names.map((name) => readFileSync(join(planDir, name), "utf8"));
+  // A screen's behaviour is settled by the planner, in the plan, when the ticket's own Grill did not (A11-257): a plan that does not say so is not attached.
+  const behaviour = screen === undefined ? null : missingBehaviour(texts, screen);
+  if (behaviour !== null) return { refusal: behaviour };
   const miss = findingsMiss(texts, given);
   if (miss !== null) return { refusal: findingsRefusal(miss, given, retried) };
   // A decision a person made overrides the plan: a plan that says it conflicts with one, or that does not say whether it follows them, is not attached (A11-250).
@@ -252,8 +251,9 @@ function claimsFor(runDir: string): Pick<PlanChecks, "claims" | "claimsProblem">
 }
 
 /** What the plan of the ticket `key`, written by the run whose files are in `runDir`, is checked against; `given` are the pull requests its entry was briefed with. */
-const checksFor = (runDir: string, key: string, given: readonly string[] | undefined, read: TicketRead | undefined): PlanChecks =>
-  ({ ...(given === undefined ? {} : { given }), retried: retriedFor(runDir, key), ...claimsFor(runDir), claimsRetried: existsSync(join(runDir, CLAIMS_RETRIED_FILE)), ...(read === undefined ? {} : { description: read.description }) });
+const checksFor = (runDir: string, key: string, given: readonly string[] | undefined, read: TicketRead | undefined, ticket: Ticket): PlanChecks =>
+  ({ ...(given === undefined ? {} : { given }), retried: retriedFor(runDir, key), ...claimsFor(runDir), claimsRetried: existsSync(join(runDir, CLAIMS_RETRIED_FILE)), ...(read === undefined ? {} : { description: read.description }),
+    screen: { description: read?.description ?? ticket.description, labels: ticket.labels } });
 
 /** The entry of the ticket `key`, as the queue has it now: the planning run's own, which holds the text it was briefed with. */
 const entryOf = (ctx: PoolContext, key: string): Entry | undefined => ctx.store.get().entries.find((e) => e.ticket.key === key);
@@ -315,7 +315,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   const planDir = join(ticketDir(settings, key), PLAN_DIR);
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
-    const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst));
+    const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket));
     if ("refusal" in found) return end(ctx, entry, { kind: "needs-human", reason: found.refusal });
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const stamp = stampPlan(ctx, found.files, entry.briefedAgainst);
@@ -340,7 +340,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
 async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<Outcome | null> {
   const { settings, source } = ctx;
   const member = entryOf(ctx, key);
-  const found = planFiles(dir, member === undefined ? {} : checksFor(runPlace(ctx, member).dir, key, member.findingsGiven, member.briefedAgainst));
+  const found = planFiles(dir, member === undefined ? {} : checksFor(runPlace(ctx, member).dir, key, member.findingsGiven, member.briefedAgainst, member.ticket));
   if ("refusal" in found) return { kind: "needs-human", reason: found.refusal };
   if (source.attachPlan === undefined) return { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${dir} by hand` };
   try {
@@ -413,7 +413,10 @@ async function planOneOfBatch(ctx: PoolContext, key: string, dir: string): Promi
   const question = join(dir, QUESTION_FILE);
   if (existsSync(question)) {
     if (!lstatSync(question).isFile()) return { kind: "needs-human", reason: `the planner left ${question}, which is not a plain file` };
-    return { kind: "needs-human", reason: `the planner needs a person: ${readFileSync(question, "utf8").trim().slice(0, QUESTION_CHARS)}` };
+    // The question names the item of the escalation list it is for, and the card says which; one that names none got past the stop hook's bound and is marked, so it is seen and counted (A11-257).
+    const asked = readFileSync(question, "utf8");
+    const item = escalationItem(questionEscalation(asked));
+    return { kind: "needs-human", reason: escalationReason(item?.id, `the planner needs a person: ${questionText(asked).slice(0, QUESTION_CHARS)}`), ...(item === undefined ? {} : { escalation: item.id }) };
   }
   return readdirSync(dir).length === 0 ? nothing : attachFiles(ctx, key, dir);
 }

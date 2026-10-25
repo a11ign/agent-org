@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { conflictLine, OUTCOME_FILE, PUBLISHED_FILE, STALE_OUTCOME_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { checkOutcome, isStale } from "./outcome.ts";
+import { escalationReason } from "./escalation.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 
 /** The largest file a planning run's plan may hold. A plan is prose; anything bigger is not one. */
@@ -45,12 +46,13 @@ export function outcomeWritten(dir: string): boolean {
   return !isStale(statSync(path).mtimeMs, existsSync(mark) ? readFileSync(mark, "utf8") : undefined);
 }
 
-export function parseOutcome(text: string): WrittenOutcome {
+export function parseOutcome(text: string, { talk = false }: Readonly<{ talk?: boolean }> = {}): WrittenOutcome {
   const checked = checkOutcome(text);
   if (!checked.ok) return { kind: "needs-human", reason: `the worker's outcome file is not valid: ${checked.problem}`, unreadable: true };
   const { outcome } = checked;
   if (outcome.kind === "published" || outcome.kind === "drafted") return { kind: "needs-human", reason: `the worker wrote ${outcome.kind}, which this run cannot end on` };
-  return outcome;
+  // The card says which item of the escalation list a stop is for, or that it is on none (A11-257). A talk session's stop only says it waits for the person in its terminal.
+  return outcome.kind === "needs-human" && !talk ? { ...outcome, reason: escalationReason(outcome.escalation, outcome.reason) } : outcome;
 }
 
 /**

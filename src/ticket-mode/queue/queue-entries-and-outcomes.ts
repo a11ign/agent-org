@@ -9,7 +9,6 @@ import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "../boa
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import type { Placement } from "../writer-placement.ts";
-import { needsDecision } from "../open-decisions.ts";
 import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
 import type { TicketRead } from "../ticket-read.ts";
 import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
@@ -62,9 +61,9 @@ export type Outcome =
   | Readonly<{ kind: "wrong-repo"; where: string }>
   /**
    * `unreadable` is set when the worker's outcome file failed its contract, so the reason names the field and the run is read again once the file
-   * changes (A11-118). Optional, so a queue stored before it still reads.
+   * changes (A11-118). Optional, so a queue stored before it still reads. `escalation` is the id of the escalation-list item the stop names (A11-257).
    */
-  | Readonly<{ kind: "needs-human"; reason: string; edit?: ProposedEdit; unreadable?: true }>
+  | Readonly<{ kind: "needs-human"; reason: string; edit?: ProposedEdit; unreadable?: true; escalation?: string }>
   | Readonly<{ kind: "no-outcome" }>
   | Readonly<{ kind: "crashed"; reason: string }>
   | Readonly<{ kind: "stopped" }>;
@@ -574,19 +573,6 @@ export function childOrder(children: readonly string[], blockers: ReadonlyMap<st
 }
 
 /**
- * Refuse a ticket that still holds an open decision, or a screen's behaviour that is not grilled: a worker may not settle either (`open-decisions.ts`), so
- * the queue holds the rule itself, as the page's Select does not. The reason names each ticket and its open line, and says to Grill it. PURE.
- */
-export function refuseDecisions(tickets: readonly Ticket[]): void {
-  const held = tickets.flatMap((ticket) => {
-    const open = needsDecision(ticket);
-    return open === null ? [] : [`${ticket.key}: ${open.reason}`];
-  });
-  if (held.length === 0) return;
-  throw new Error(held.join("; "));
-}
-
-/**
  * Add each ticket not already on the queue, after the last entry. A ticket already there is left as it is. Each ticket `planFirst` names is
  * planned, on its model and effort, before it is worked. With `planFirst.batch`, the ones added are batched in runs of up to
  * {@link PLAN_BATCH_MAX}, in queue order, and a run of one is no batch. A parent is refused, whole, before anything is added: see
@@ -595,7 +581,6 @@ export function refuseDecisions(tickets: readonly Ticket[]): void {
 export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunChoice, now: number, planFirst: PlanFirst | null = null): Queue {
   refuseParents(tickets.filter((ticket) => find(queue, ticket.key) === undefined));
   const fresh = tickets.filter((ticket) => find(queue, ticket.key) === undefined);
-  refuseDecisions(fresh);
   const planned = fresh.filter((ticket) => planFirst?.keys.has(ticket.key)).map((ticket) => ticket.key);
   const batches = new Map<string, string>();
   for (let start = 0; planFirst?.batch === true && start < planned.length; start += PLAN_BATCH_MAX) {

@@ -1,5 +1,9 @@
 // @ts-check
-// module: the reviewer contract, version 1.7 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 1.8 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+//
+// 1.8 (A11-257): `ReviewBrief.planDecisions` and `ReviewBrief.escalation`, both OPTIONAL. `planDecisions` is the decisions the ticket's plan records (its Key decisions, its Decisions made without a person, and the behaviour the planner settled),
+// quoted as the plan words them: they bind the reviewer as the ticket's `decisions` do, and the ticket's win where the two differ. `escalation` is the escalation list, the one thing a decision cannot override. The reviewer does not
+// request changes on a point a decision settled; where it disagrees it writes a note and not a finding. A reviewer of 1.7 ignores both.
 //
 // 1.7 (A11-250): `ReviewBrief.rereview.decisions` and `ReviewBrief.rereview.unsupported`, both OPTIONAL. `decisions` is the lines of the ticket's Decisions that changed since the reviewer's last look at the head, for a re-review of a block
 // that a person's decision answers (the replies and the description may then be none). `unsupported` is each reply or new description line that claims a person decided something and does not link the ticket's decisions: the
@@ -26,7 +30,7 @@
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.7";
+export const REVIEWER_CONTRACT_VERSION = "1.8";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
@@ -45,10 +49,12 @@ export type ReviewBodyLine = Readonly<{ kind: "removed" | "added"; text: string 
  * `step` is present when the pull request's body says `Partial: step N of M` (A11-175): the pull request is one step of the ticket's plan, `section` is that step's text of the plan, or null when the pool
  * could not find it. The reviewer holds the pull request to that step, and the ticket's Done-when is for the last step.
  * `decisions` is present when the ticket states explicit decisions (A11-213), as the ticket words them, and absent when the pool holds no ticket or it states none: they override a general direction the reviewer holds.
+ * `planDecisions` (contract 1.8, A11-257) is the decisions the ticket's plan records, as the plan words them, absent when it records none: they bind the reviewer like `decisions`, which win where they differ. `escalation` (contract 1.8) is the escalation
+ * list, present whenever `planDecisions` is: a decision that falls on one of its items does not bind.
  * `rereview.decisions` (contract 1.7, A11-250) is the lines of those decisions that changed since the reviewer's last look at the head, absent when they did not change; `rereview.unsupported` (contract 1.7) is each reply or new
  * description line that claims a person decided something and does not link the ticket's decisions, absent when none does.
  */
-export type ReviewBrief = Readonly<{ doneWhen: string | null; decisions?: string; step?: ReviewStep; rereview?: Readonly<{ replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decisions?: readonly ReviewBodyLine[]; unsupported?: readonly string[] }> }>;
+export type ReviewBrief = Readonly<{ doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; step?: ReviewStep; rereview?: Readonly<{ replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decisions?: readonly ReviewBodyLine[]; unsupported?: readonly string[] }> }>;
 
 /** The plan step a pull request finishes: step `step` of `of`, and the plan's text for it, or null when the pool found none. */
 export type ReviewStep = Readonly<{ step: number; of: number; section: string | null }>;

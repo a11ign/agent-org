@@ -1,7 +1,7 @@
 // no-token: gh -- pure functions over the text of tickets and plans, handed in as strings; nothing here reads a tracker or spawns anything
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { behaviourOpen, changesScreen, needsDecision, openDecisionOf, productDecisionIn, sectionsNeeded, settledDescription } from "./open-decisions.ts";
+import { BEHAVIOUR_BY_PLANNER, behaviourOpen, changesScreen, missingBehaviour, openDecisionOf, sectionsNeeded, settledDescription } from "./open-decisions.ts";
 
 /** A11-125's item 4, as it was queued: a decision left open inside a numbered acceptance item. */
 const A11_125 = `## Acceptance
@@ -59,29 +59,23 @@ test("A11-134: a `**Decisions:** settled` line settles every open line", () => {
   assert.equal(openDecisionOf(`${A11_125}\n**Decisions:** settled\n`), null);
 });
 
-test("A11-134: a screen ticket is queueable only after its behaviour grill is recorded", () => {
+test("A11-134: a screen ticket's behaviour is open until its behaviour grill is recorded", () => {
   const screen = { description: "## Acceptance\n\n- The board shows the pill.\n\n**Screen:** yes\n", labels: [] };
   assert.equal(changesScreen(screen), true);
   assert.equal(behaviourOpen(screen), true);
-  assert.equal(needsDecision(screen)?.kind, "behaviour");
-  assert.equal(needsDecision({ ...screen, description: `${screen.description}\n**Behaviour:** settled\n` }), null);
-  assert.equal(needsDecision({ description: "**Screen:** yes\n", labels: [{ name: "ui", group: null }] })?.kind, "behaviour", "a ui label is a screen too");
-  assert.equal(needsDecision({ description: "## Acceptance\n\n- The copy changes.\n", labels: [] }), null, "an ordinary ticket is never held for a behaviour grill");
+  assert.equal(behaviourOpen({ ...screen, description: `${screen.description}\n**Behaviour:** settled\n` }), false);
+  assert.equal(behaviourOpen({ description: "**Screen:** yes\n", labels: [{ name: "ui", group: null }] }), true, "a ui label is a screen too");
+  assert.equal(behaviourOpen({ description: "## Acceptance\n\n- The copy changes.\n", labels: [] }), false, "an ordinary ticket has no behaviour to grill");
 });
 
-test("A11-134: a screen ticket with its decisions settled still needs its behaviour grilled: each marker is separate", () => {
+test("A11-134: a screen ticket with its decisions settled still has its behaviour to settle: each marker is separate", () => {
   const description = `${A11_125}\n**Decisions:** settled\n**Screen:** yes\n`;
-  assert.equal(needsDecision({ description, labels: [] })?.kind, "behaviour");
   assert.deepEqual(sectionsNeeded({ description, labels: [] }), ["Behaviour"]);
 });
 
-test("A11-134: needsDecision names the open line in its reason, and a decision comes before a screen's behaviour", () => {
-  const open = needsDecision({ description: `${A11_125}\n**Screen:** yes\n`, labels: [] });
-  assert.equal(open?.kind, "decision");
-  assert.equal(open?.line, "### 4. Decide whether to isolate the failing ticket or keep the stall");
-  assert.ok(open?.reason.includes(`"${open.line}"`), open?.reason);
+test("A11-134: sectionsNeeded lists a decision before a screen's behaviour, and nothing for a ticket with neither", () => {
   assert.deepEqual(sectionsNeeded({ description: `${A11_125}\n**Screen:** yes\n`, labels: [] }), ["Decisions", "Behaviour"]);
-  assert.equal(needsDecision({ description: "## Acceptance\n\n- Ready.\n", labels: [] }), null);
+  assert.deepEqual(sectionsNeeded({ description: "## Acceptance\n\n- Ready.\n", labels: [] }), []);
 });
 
 test("A11-134: the answers are written under the old text, with the marker of each section they hold", () => {
@@ -89,28 +83,36 @@ test("A11-134: the answers are written under the old text, with the marker of ea
   const written = settledDescription(`${A11_125}\n`, decisions);
   assert.equal(written, `${A11_125.trimEnd()}\n\n${decisions.trim()}\n\n**Decisions:** settled\n**Behaviour:** settled`);
   assert.equal(openDecisionOf(written), null, "the open line is settled by the marker, and not rewritten");
-  assert.equal(needsDecision({ description: written, labels: [{ name: "ui", group: null }] }), null, "a screen whose behaviour is answered is queueable");
+  assert.deepEqual(sectionsNeeded({ description: written, labels: [{ name: "ui", group: null }] }), [], "a screen whose behaviour is answered has nothing left to grill");
 });
 
 test("A11-134: a Grill that answered only the decisions leaves a screen's behaviour open", () => {
   const written = settledDescription(`${A11_125}\n`, "## Decisions\n\n**Isolate or stall?** Isolate.\n");
   assert.equal(written.endsWith("**Decisions:** settled"), true);
-  assert.equal(needsDecision({ description: written, labels: [{ name: "ui", group: null }] })?.kind, "behaviour");
+  assert.deepEqual(sectionsNeeded({ description: written, labels: [{ name: "ui", group: null }] }), ["Behaviour"]);
 });
 
-test("A11-134: a plan's product bullet is found, and a technical one is not", () => {
-  const plan = `# Plan
+const SCREEN = { description: "## Acceptance\n\n- The board shows the pill.\n\n**Screen:** yes\n", labels: [] };
+const PLANNED_PLAN = `# Plan\n\n## Behaviour\n\n${BEHAVIOUR_BY_PLANNER}\n\n- The pill says Held. Reason: the board's word for it.\n`;
 
-## Decisions made without a person
+test("A11-257: a screen ticket with no grilled behaviour needs its plan to say the planner settled it", () => {
+  assert.match(missingBehaviour(["# Plan\n\nDo it.\n"], SCREEN) ?? "", /\*\*Behaviour:\*\* settled by the planner/);
+  assert.equal(missingBehaviour([PLANNED_PLAN], SCREEN), null);
+  assert.equal(missingBehaviour(["# Plan\n\nDo it.\n", PLANNED_PLAN], SCREEN), null, "any one of the plan's files carries it");
+});
 
-- Technical: the phrase list. Evidence: the ticket.
-- Product: the empty state says none. Evidence: none.
+test("A11-257: a ticket whose behaviour was grilled, or that changes no screen, needs no such line", () => {
+  assert.equal(missingBehaviour(["# Plan\n"], { ...SCREEN, description: `${SCREEN.description}\n**Behaviour:** settled\n` }), null);
+  assert.equal(missingBehaviour(["# Plan\n"], { description: "## Acceptance\n\n- The copy changes.\n", labels: [] }), null);
+  assert.match(missingBehaviour(["# Plan\n"], { description: "x", labels: [{ name: "ui", group: null }] }) ?? "", /settled by the planner/, "a ui label is a screen too");
+});
 
-## Paths
+test("A11-257: the line may be a bullet, a quote or end in a full stop: a plan is not refused for how it spells the line", () => {
+  for (const spelled of [`- ${BEHAVIOUR_BY_PLANNER}`, `* ${BEHAVIOUR_BY_PLANNER}`, `> ${BEHAVIOUR_BY_PLANNER}`, `${BEHAVIOUR_BY_PLANNER}.`, `  ${BEHAVIOUR_BY_PLANNER}  `]) {
+    assert.equal(missingBehaviour([`# Plan\n\n${spelled}\n`], SCREEN), null, spelled);
+  }
+});
 
-- \`agent-org:src/a.ts\`
-`;
-  assert.equal(productDecisionIn(plan), "- Product: the empty state says none. Evidence: none.");
-  assert.equal(productDecisionIn(plan.replace("- Product:", "- Technical:")), null);
-  assert.equal(productDecisionIn("## Paths\n\n- Product: outside its section.\n"), null);
+test("A11-257: the line must stand on its own: a mention of it in prose settles nothing", () => {
+  assert.notEqual(missingBehaviour([`The plan will write ${BEHAVIOUR_BY_PLANNER} later.\n`], SCREEN), null);
 });

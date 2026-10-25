@@ -80,7 +80,7 @@ test("A11-212: a plan of files, of folders nobody else writes in, or of a file a
 test("A11-212: only a planned outcome with a list is retried: a needs-human outcome, a run with no list or an unreadable one, and a plan folder with a question or no plan are not", () => {
   const broad = { "A11-200": { "plan.md": planWith("agent-org:ui/test/") } };
   const asked = planningRun(broad);
-  writeFileSync(join(asked.dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which?" }));
+  writeFileSync(join(asked.dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which?", escalation: "reserved" }));
   assert.equal(stopVerdict(asked.dir).code, 0, "a needs-human outcome");
   assert.equal(stopVerdict(planningRun(broad, { claims: null }).dir).code, 0, "a run with no list (a worker's run, or a board older than this)");
   const unreadable = planningRun(broad);
@@ -88,7 +88,7 @@ test("A11-212: only a planned outcome with a list is retried: a needs-human outc
   const said = stopVerdict(unreadable.dir);
   assert.equal(said.code, 0);
   assert.match(said.say.join("\n"), /is not a list of held paths, so the plan was not checked and the stop is ALLOWED/);
-  assert.equal(stopVerdict(planningRun({ "A11-200": { [QUESTION_FILE]: "which?" } }).dir).code, 0, "a ticket that wrote a question");
+  assert.equal(stopVerdict(planningRun({ "A11-200": { [QUESTION_FILE]: "**Escalation:** reserved\n\nwhich?" } }).dir).code, 0, "a ticket that wrote a question");
   const empty = planningRun({ "A11-200": {} });
   assert.equal(stopVerdict(empty.dir).code, 0, "a plan folder with no plan is the board's refusal");
 });

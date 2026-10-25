@@ -481,6 +481,14 @@ opens a DRAFT pull request per repository it changed with `pr:open create --draf
 end the run. A worker writes nothing to Linear. The board writes only a planning run's files, attached to its ticket, the
 ticket's move to the planner's state, a batch's order as "blocks" relations, and the completion of a ticket on a worker's `done` or a merged pull request.
 
+**Only the escalation list reaches a person** (A11-257, `src/ticket-mode/escalation.ts`). A planner, a worker and a reviewer settle everything else themselves, from the plan, the ticket's Decisions, the code and the ADRs, taking the
+option they would have recommended. The list: anything outward-facing (a message, a post, publishing, contacting anyone outside the organisation); money, accounts, permissions, secrets, credentials or security settings; discarding or
+deleting work; changing anything a policy freezes; legal and licensing; a product decision the person reserved (a new visual design, naming, pricing); and anything that contradicts a recorded decision of the person. Each has an id. A `needs-human`
+outcome names its item in `escalation`, and a `QUESTION.md` starts with `**Escalation:** <id>`; the Stop hook refuses a stop that names none (at most twice, like every refusal), and the card starts with the item's words, or with "Off the escalation
+list:" for a stop that got past the hook. A Talk session, a new-ticket run and a publish run are exempt. A planner no longer stops for a behaviour grill: a screen's plan carries `**Behaviour:** settled by the planner`, followed by each decision with
+its reason, and a `Product:` bullet under "Decisions made without a person" is no defect. Pick holds no ticket for an open decision, and the Grill stays as a person's own choice. The reviewer is bound by the plan's decisions (its Key decisions, its
+Decisions made without a person, and the behaviour the planner settled) as well as the ticket's, ranks the ticket's Decisions first, and writes a note and not a finding where it disagrees.
+
 **Outcomes that finish a ticket without a pull request.** A ticket whose work needs no code (setup, configuration, verification) ends with
 `done` when every one of its Done-when items is verified. The outcome carries a `reason` and an `evidence` list, one line per Done-when item, saying
 what the worker ran or read and what it showed. A `done` with no reason or no evidence is `needs-human`, naming what it lacks, so a bare claim completes
