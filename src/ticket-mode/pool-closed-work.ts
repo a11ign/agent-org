@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { log, messageOf } from "./pool-state.ts";
 import { pullsOf } from "./board-view/view-types-and-filters.ts";
 import { ticketDir } from "./ticket-paths.ts";
-import { CLOSED_PULLS_DIR, closedWorkMarkdown, commentOf, recordName, recordOf, type ClosedWorkRecord } from "./closed-work.ts";
+import { CLOSED_PULLS_DIR, closedWorkMarkdown, commentOf, isClosedWorkRecord, recordName, recordOf, type ClosedWorkRecord } from "./closed-work.ts";
 import type { ClosedWork } from "../plugins/contracts/code-host.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import type { PoolContext } from "./pool-context.ts";
@@ -24,14 +24,11 @@ const filesOf = (ctx: PoolContext, key: string, url: string): { json: string; md
   return { json: `${base}.json`, md: `${base}.md` };
 };
 
-/** Whether `value` is a record this sweep wrote: of a known kind, naming its pull request. */
-const isRecord = (value: unknown): value is ClosedWorkRecord => typeof value === "object" && value !== null && ["unique", "none"].includes((value as ClosedWorkRecord).kind) && Number.isInteger((value as ClosedWorkRecord).number);
-
 /** The record at `path`, or null when none is there or it cannot be read: an unreadable record is asked about again, as one that was never written. */
 function readRecord(path: string): ClosedWorkRecord | null {
   try {
     const found = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
-    return isRecord(found) ? found : null;
+    return isClosedWorkRecord(found) ? found : null;
   } catch (error) {
     void error; // a record that does not parse is rewritten from the code host's own read
     return null;

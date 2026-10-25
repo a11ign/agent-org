@@ -10,6 +10,7 @@ import { ATTACH_TRIES, ATTACH_WAITS_MS, isTransient, MS_PER_SECOND } from "./att
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { findingsMiss, findingsRefusal, retriedUrls } from "./blocker-findings-check.ts";
+import { accountRefusal, closedWorkOf, type KeptClosedWork } from "./closed-work-account.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, folderClaimMisses, folderClaimRefusal, folderClaimRetriedRefusal, type HeldClaim, parseClaimsGiven, planClaimPaths } from "./path-claims.ts";
 import { type PlanStamp, stampedPlan, urlsNamedIn } from "./plan-stamp.ts";
 import { descriptionHash, ticketReadOf, type TicketRead } from "./ticket-read.ts";
@@ -196,7 +197,7 @@ const settleFailed = (entry: Entry) => (err: unknown): void => log(`${entry.batc
  * What a plan is checked against besides its files being plain markdown: the pull requests its brief listed and the addresses the stop hook's one automatic retry named for them (A11-207), and the paths other
  * tickets held when the brief was written and whether the retry for a folder claim was made (A11-212), and the description the planner read, which the plan is held to follow the Decisions of (A11-250).
  */
-type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly string[]; claims?: readonly HeldClaim[]; claimsProblem?: string; claimsRetried?: boolean; description?: string; screen?: Pick<Ticket, "description" | "labels"> }>;
+type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly string[]; claims?: readonly HeldClaim[]; claimsProblem?: string; claimsRetried?: boolean; description?: string; screen?: Pick<Ticket, "description" | "labels">; closed?: readonly KeptClosedWork[] }>;
 
 /**
  * The files a planning run left in `planDir` to attach, and the Before-merge lines the plan moves to After merge (A11-275), or why they cannot be. Only plain markdown files are taken: a planning run is
@@ -204,7 +205,7 @@ type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly strin
  * and so is a move the board cannot write: a line the ticket does not hold under `### Before merge`, a reason that is not one of the three, or a missing or over-long `who`. So is a plan that leaves an After-merge line
  * naming nobody out of its `## After-merge checks` section, or names a runner there the board cannot record (A11-277).
  */
-function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false, description, screen }: PlanChecks = {}): { files: string[]; moves: Move[] } | { refusal: string } {
+function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false, description, screen, closed = [] }: PlanChecks = {}): { files: string[]; moves: Move[] } | { refusal: string } {
   const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
   if (names.length === 0) return { refusal: `the planning run wrote no plan in ${planDir}` };
   const odd = names.find((name) => {
@@ -218,6 +219,9 @@ function planFiles(planDir: string, { given = [], retried = [], claims = [], cla
   if (behaviour !== null) return { refusal: behaviour };
   const miss = findingsMiss(texts, given);
   if (miss !== null) return { refusal: findingsRefusal(miss, given, retried) };
+  // The work a closed pull request of this ticket held is carried over or dropped, item by item, in the plan (A11-249).
+  const account = accountRefusal(texts, closed);
+  if (account !== null) return { refusal: account };
   // A decision a person made overrides the plan: a plan that says it conflicts with one, or that does not say whether it follows them, is not attached (A11-250).
   const defect = description === undefined ? null : ticketDecisionsDefect(texts, description);
   if (defect !== null) return { refusal: `the plan does not follow the ticket's Decisions: ${defect}` };
@@ -304,8 +308,8 @@ function claimsFor(runDir: string): Pick<PlanChecks, "claims" | "claimsProblem">
 }
 
 /** What the plan of the ticket `key`, written by the run whose files are in `runDir`, is checked against; `given` are the pull requests its entry was briefed with. */
-const checksFor = (runDir: string, key: string, given: readonly string[] | undefined, read: TicketRead | undefined, ticket: Ticket): PlanChecks =>
-  ({ ...(given === undefined ? {} : { given }), retried: retriedFor(runDir, key), ...claimsFor(runDir), claimsRetried: existsSync(join(runDir, CLAIMS_RETRIED_FILE)), ...(read === undefined ? {} : { description: read.description }),
+const checksFor = (runDir: string, key: string, given: readonly string[] | undefined, read: TicketRead | undefined, ticket: Ticket, closed: readonly KeptClosedWork[]): PlanChecks =>
+  ({ closed, ...(given === undefined ? {} : { given }), retried: retriedFor(runDir, key), ...claimsFor(runDir), claimsRetried: existsSync(join(runDir, CLAIMS_RETRIED_FILE)), ...(read === undefined ? {} : { description: read.description }),
     screen: { description: read?.description ?? ticket.description, labels: ticket.labels } });
 
 /** The entry of the ticket `key`, as the queue has it now: the planning run's own, which holds the text it was briefed with. */
@@ -390,7 +394,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   const planDir = join(ticketDir(settings, key), PLAN_DIR);
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
-    const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket));
+    const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket, closedWorkOf(ticketDir(settings, key))));
     if ("refusal" in found) return end(ctx, entry, { kind: "needs-human", reason: found.refusal });
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const moving = { key, moves: found.moves, briefed: entry.briefedAgainst };
@@ -418,7 +422,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
 async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<Outcome | null> {
   const { source } = ctx;
   const member = entryOf(ctx, key);
-  const found = planFiles(dir, member === undefined ? {} : checksFor(runPlace(ctx, member).dir, key, member.findingsGiven, member.briefedAgainst, member.ticket));
+  const found = planFiles(dir, member === undefined ? {} : checksFor(runPlace(ctx, member).dir, key, member.findingsGiven, member.briefedAgainst, member.ticket, closedWorkOf(ticketDir(ctx.settings, key))));
   if ("refusal" in found) return { kind: "needs-human", reason: found.refusal };
   if (source.attachPlan === undefined) return { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${dir} by hand` };
   try {
