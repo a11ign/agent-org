@@ -19,7 +19,7 @@ export type RunActions = Readonly<{
 export type ActionInputs = Readonly<{ client: Client; connection: ViewConnection | null; config: ConfigView | null; refresh: () => void }>;
 
 /** Whether a tab is still the blank one this page opened, so one that already shows a terminal is never closed by a press that failed. */
-function isBlank(tab: Window): boolean {
+export function isBlank(tab: Window): boolean {
   try {
     return tab.location.href === "about:blank" || tab.location.href === "";
   } catch {
@@ -28,7 +28,7 @@ function isBlank(tab: Window): boolean {
 }
 
 /** Looks at a run on the queue again: its terminal link while it is live or parked, and over once it has ended with no workspace, as `ui.html`'s `ticketTerminal` does (A11-171). */
-const lookAtRun = (client: Client, template: string | null, key: string) => async (): Promise<TerminalLook> => {
+export const lookAtRun = (client: Client, template: string | null, key: string) => async (): Promise<TerminalLook> => {
   const answer = await client.queue();
   const run = answer.ok ? answer.data.entries.find((candidate) => candidate.ticket.key === key) : undefined;
   const live = run !== undefined && (run.phase !== "finished" || isParked(run));
