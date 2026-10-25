@@ -11,6 +11,20 @@ npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/dependen
 ```
 Run with `AGENT_ORG_HOST` naming a host declaration, as CI's `suite` job does (the fixture project copied to a temporary directory), and with a stand-in `tailscale` first on `PATH` until A11-279 lands.
 
-After merge, on the agents host once the release is installed and the board restarted: `jq -e '.tickets["a11ign/a11ign:transformers@5"].ticket=="A11-262" and .tickets["a11ign/a11ign:@anthropic-ai/sdk@1"].ticket=="A11-265"' ~/.local/state/agent-org/tickets/dependency-tickets.json` holds, then the `failed` entries are dropped from that file while the board is stopped (`jq '.tickets |= with_entries(select(.value.state != "failed"))'`), and after the next sweeps `[.tickets[] | select(.state=="failed")] | length == 0` and no `filed` ticket key is used by two entries.
+After merge, run by the chairman session on the agents host (the board's own host; no fleet and no other person is involved), once the release is installed. The board is stopped for the one edit, because it replaces the file whole by rename. `STATE` is the state file; a pass is every line below printing `ok` and the sweeps after it ending with no failed entry. The same commands run against a copy of the file before merge (`STATE=<copy>`; skip the `systemctl` lines), with this cleanup: `rm -f "${COPY:?}" "${COPY:?}.bak"`.
+
+```bash
+STATE=~/.local/state/agent-org/tickets/dependency-tickets.json
+# 1. The two filed before the fix stay filed, and no ticket key is used by two entries (nothing is filed twice).
+jq -e '.tickets["a11ign/a11ign:transformers@5"].ticket=="A11-262" and .tickets["a11ign/a11ign:@anthropic-ai/sdk@1"].ticket=="A11-265"' "$STATE" >/dev/null && echo ok-kept
+jq -e '[.tickets[] | select(.state=="filed") | .ticket] | (length == (unique|length))' "$STATE" >/dev/null && echo ok-unique
+# 2. Drop only the failed entries, writing the file back (a backup first, then the new file moved over it).
+cp "$STATE" "$STATE.bak" && jq '.tickets |= with_entries(select(.value.state != "failed"))' "$STATE.bak" > "$STATE.next" && mv "$STATE.next" "$STATE"
+jq -e '[.tickets[] | select(.state=="failed")] | length == 0' "$STATE" >/dev/null && echo ok-cleared
+jq -e '.tickets["a11ign/a11ign:transformers@5"].ticket=="A11-262" and .tickets["a11ign/a11ign:@anthropic-ai/sdk@1"].ticket=="A11-265"' "$STATE" >/dev/null && echo ok-still-kept
+# 3. After the next sweeps (the board restarted): the remaining majors and red groups are filed with no failed entry, and none twice.
+jq -e '[.tickets[] | select(.state=="failed")] | length == 0' "$STATE" >/dev/null && echo ok-no-failed
+jq -e '[.tickets[] | select(.state=="filed") | .ticket] | (length == (unique|length))' "$STATE" >/dev/null && echo ok-no-duplicates
+```
 
 Consumer-declaration: none -- `WriterRun.team` is read only by `pool-start.ts`, and `teamRule` only by `writerBriefText`.
