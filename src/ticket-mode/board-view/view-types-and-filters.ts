@@ -1,6 +1,7 @@
 import type { MergedStep } from "./plan-steps.ts";
 import type { QueueHead } from "./queue-head.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "./pull-declared.ts";
+import type { CiView } from "./ci-note.ts";
 
 export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
@@ -18,6 +19,9 @@ export type ViewTicket = Readonly<{
  */
 export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T; children: readonly TicketNode<T>[]; context?: boolean }>;
 
+/** An event a worker declared it waits on (A11-245), as the board reads it: a ticket by its key and a pull request by its address name a ticket's run; a fleet job and a CI run name none. */
+type ViewWait = Readonly<{ kind: "ticket"; key: string }> | Readonly<{ kind: "pullRequest"; url: string }> | Readonly<{ kind: "fleetJob" | "ciRun" }>;
+
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string; url?: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
@@ -32,6 +36,12 @@ export type ViewEntry = Readonly<{
   /** The version of agent-org the run was started on, and, when a breaking update stopped it and queued it again, when and for which release (A11-169). */
   toolVersion?: string;
   stoppedForUpdate?: Readonly<{ at: number; target: string }>;
+  /** Set when its worker declared a wait on other tickets and the board stopped the run and queued it again behind them (A11-272): the tickets, and the state last read of each the tracker does not list as a blocker yet. */
+  stoppedForBlocker?: Readonly<{ at: number; keys: readonly string[]; states?: Readonly<Record<string, string>> }>;
+  /** Set on a run the board holds for its ticket's CI spend (A11-261): why, and `released` once it has been held through two passes of the board. A queued run is a wait on the card until then. */
+  ciHold?: Readonly<{ reason: string; released?: true }>;
+  /** What the run's and the ticket's pushes cost in CI, as the server reads it from the workflow runs of the ticket's branch (A11-261). Absent until the board has read a run. */
+  ci?: CiView;
   /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
   sessionWait?: string;
   /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */
@@ -101,7 +111,7 @@ export type ViewEntry = Readonly<{
    * Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled, and why (A11-85).
    * `at` is when it said so, `waiting` that the board reads the run as waiting on background work, `waitingOn` the job it named, `until` when it expects the wait to end (A11-236), and `waitText` what the board last read of the events it declared it waits on (A11-245).
    */
-  working?: Readonly<{ reason: string; at?: number; stalled?: boolean; stallReason?: string; waiting?: boolean; waitingOn?: string; until?: number; waitText?: string }>;
+  working?: Readonly<{ reason: string; at?: number; stalled?: boolean; stallReason?: string; waiting?: boolean; waitingOn?: string; until?: number; waitText?: string; waits?: readonly ViewWait[] }>;
   /** Set while a reviewer's verdict on one of the run's pull requests is not posted, and the reason it is not (A11-83). */
   verdictNotPosted?: string;
   /** Set while herdr has refused twice, for the same reason, to start the reviewer of one of the run's pull requests: the pull request and herdr's reason (A11-241). */

@@ -6,16 +6,29 @@
 // Done-when line that no branch can meet, and wait for a reply. The rule agrees with the reviewer's role file, which allows a deferral only where the row itself says so: an "After merge" part is
 // the ticket itself saying so. The gate's own prompt is not changed, so the org's own reviewers are unaffected.
 //
+// THE SAME THREE PROMPTS CARRY THE RULE FOR A BEFORE-MERGE LINE NO BRANCH CAN MEET (A11-275): one that needs a published release, a person's own machine or anything else the worker cannot reach is treated as an
+// After-merge line. The planner moves such a line before any code is written, so this rule is the backstop for a ticket planned before that, a tracker the board could not write, or a line the planner missed: PR #1906
+// was blocked on such a line alone, with all its tests passing, and the card went to a person who had nothing to decide.
+//
 // THE PLAN'S DECISIONS BIND THE REVIEWER TOO (A11-257), in the same three prompts: it keeps an order of authority (the ticket's Decisions, the plan's decisions, the plan's text, its own rules), does not request changes on a point a decision
 // settled, and writes a note where it disagrees. A decision on an item of the escalation list does not bind.
 //
 // THE SAME GOES FOR THE DECISION RULE (A11-213): the first review, the reprompt and the re-review all carry the ticket's decisions and the rule that they come before a general direction. A reviewer that held
 // "permissions only shrink" against the chairman's written decision to widen one blocked a pull request the ticket asked for, and a re-review that did not see the decision could not correct it.
 import type { ReviewBodyLine, ReviewBrief, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
+import { CI_COST_RULE } from "./ci-rule.ts";
 
 /** What the reviewer is told about a Done-when line the ticket puts under "After merge". */
 export const POST_MERGE_RULE = "A Done-when line under the ticket's \"After merge\" part is not a merge condition: do not block the pull request on it. "
   + "Check instead that the pull request names how that line will be run and by whom. A pull request that names neither has a defect, and that line names it.";
+
+/**
+ * What the reviewer is told about a Done-when line the ticket puts under "Before merge" that no branch can meet before merge (A11-275): it is treated as an After-merge line, said so in the review, and not blocked on.
+ * The one finding it allows on such a line is the post-merge rule's own: a pull request that does not say how and by whom the line will be run.
+ */
+export const IMPOSSIBLE_BEFORE_MERGE_RULE = "A Done-when line under the ticket's \"Before merge\" part that no branch can meet before merge, because it needs a published release, a person's own machine, or something else the worker cannot reach, "
+  + "is treated as an After-merge line. Say so in your review: name the line, say why it cannot be met before merge, and say that you treat it as After merge. Do not block the pull request on it. "
+  + "As for any After-merge line, check that the pull request says how that line will be run after merge and by whom. A pull request that says neither has a defect, and that line names it. That is the only finding you raise on such a line.";
 
 /** What the reviewer is told when it is given no Done-when: the pool holds no ticket for the pull request (one a person opened, or a run since removed), or the ticket has no such section. */
 export const NO_TICKET_LINE = "The board gave no Done-when for this pull request, so the pull request body and its `.acceptance/` file are the only copy of the contract you have.";
@@ -102,19 +115,19 @@ function contractWords({ doneWhen, step }: Pick<ReviewBrief, "doneWhen" | "step"
   return `${stepWords(step)}\n\n${forLast}`;
 }
 
-/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract. */
+/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract and the CI cost rule (A11-261). */
 const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "decisions" | "planDecisions" | "escalation" | "step">, unrequiredRed: readonly string[] | undefined): string =>
-  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief)].filter((words) => words !== "").join("\n\n");
+  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief), CI_COST_RULE].filter((words) => words !== "").join("\n\n");
 
-/** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), then the post-merge rule. */
+/** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), the CI cost rule (A11-261), then the rule for a Before-merge line no branch can meet (A11-275) and the post-merge rule. */
 export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, unrequiredRed?: readonly string[]): string {
-  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.planDecisions === undefined ? {} : { planDecisions: brief.planDecisions }), ...(brief?.escalation === undefined ? {} : { escalation: brief.escalation }), ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${POST_MERGE_RULE}`;
+  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.planDecisions === undefined ? {} : { planDecisions: brief.planDecisions }), ...(brief?.escalation === undefined ? {} : { escalation: brief.escalation }), ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`;
 }
 
 /**
  * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156, A11-235), in this order: what this is and what changed since the review (the description, the ticket's Decisions, a reply, or any of them) with the
- * instruction to review the whole diff again, the description's changed lines, the lines of the ticket's Decisions that changed (A11-250), the replies since the review, the claims of a person's decision the ticket does not record, the ticket's decisions and the rule that they come first (A11-213), the plan's decisions and the order of authority (A11-257), the ticket's Done-when (or the plan step), the post-merge rule,
- * and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure.
+ * instruction to review the whole diff again, the description's changed lines, the lines of the ticket's Decisions that changed (A11-250), the replies since the review, the claims of a person's decision the ticket does not record, the ticket's decisions and the rule that they come first (A11-213), the plan's decisions and the order of authority (A11-257), the ticket's Done-when (or the plan step), the CI cost rule (A11-261), the rule for a Before-merge line no branch can meet (A11-275),
+ * the post-merge rule, and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure.
  */
 export function rereviewWords({ number, head, pr, roleFile, replies, body, decided, unsupported, doneWhen, decisions, planDecisions, escalation, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decided?: readonly ReviewBodyLine[]; unsupported?: readonly string[]; doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
   const head8 = head.slice(0, 8);
@@ -132,6 +145,7 @@ export function rereviewWords({ number, head, pr, roleFile, replies, body, decid
     ...(replies.length > 0 ? [`The replies posted since that review:\n\n${replies.map(replyLine).join("\n")}`] : []),
     ...(unsupportedWords(unsupported) === "" ? [] : [unsupportedWords(unsupported)]),
     afterGateWords({ doneWhen, ...(decisions === undefined ? {} : { decisions }), ...(planDecisions === undefined ? {} : { planDecisions }), ...(escalation === undefined ? {} : { escalation }), ...(step === undefined ? {} : { step }) }, unrequiredRed),
+    IMPOSSIBLE_BEFORE_MERGE_RULE,
     POST_MERGE_RULE,
     `Review it per ${roleFile} and post the verdict as it says, with this difference. A \`convinced\` verdict is an approval whose body names the standing review on a line after the verdict line: `
     + `"Corrects review: ${standing}", with the backticks as written. That is the one second review the verdict door accepts at this patch. A \`not convinced\` verdict is refused by the door at this patch (exit 3), and that refusal is `

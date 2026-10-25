@@ -37,6 +37,7 @@ import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
 import type { UpdateNote } from "./board-view/update-banner.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
+import { ciViewOf } from "./ci-spend/view.ts";
 import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
@@ -54,6 +55,8 @@ import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
+import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
+import { sessionAsksRoute } from "./session-asks.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -95,6 +98,8 @@ export type BoardDeps = Readonly<{
   next?: () => string | null;
   /** What the Settings page's Plugins section reads and runs through (A11-163): the real catalog, loader and programs unless a test replaces them. */
   plugins?: PluginsSeam;
+  /** Whether the plugins' checks start when the board is made, so the first page read finds them (A11-270): `serve` sets it; a test's board starts none. */
+  warmPlugins?: boolean;
 }>;
 
 /** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
@@ -364,12 +369,18 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
 export type QueueView = ReturnType<typeof queueView>;
 
 /** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
-function queueView(board: Pick<Board, "store" | "pool" | "update">) {
+function queueView(board: Pick<Board, "store" | "pool" | "update" | "settings">) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
-  const queue = board.store.get();
-  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading.
-  return { ...queue, entries: queue.entries.map(shownEntry), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update() };
+  // `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261).
+  const { ciSpend: _ciSpend, ...queue } = board.store.get();
+  const entries = board.store.get().entries.map((entry) => {
+    const ci = ciViewOf(board.store.get(), entry, board.settings.ciBudgetMinutes);
+    return { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) };
+  });
+  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
+  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
+    afterMergeChecks: afterMergeView(board.settings.stateDir) };
 }
 
 /**
@@ -426,8 +437,8 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
       choicePath: deps.choicePath, ...(deps.poolDeps?.pluginRecord === undefined ? {} : { pluginRecord: deps.poolDeps.pluginRecord }) })];
   }
   if (method === "GET" && path === "/api/plugins") {
-    // The Plugins section is its own call (A11-163): a plugin's checks run programs, and the rest of the page must not wait on them or fail with them.
-    return [200, await board.plugins.read()];
+    // The Plugins section is its own call (A11-163): a plugin's checks run programs, and the rest of the page must not wait on them or fail with them. `?check` asks for fresh checks (A11-270).
+    return [200, await board.plugins.read({ check: query.has("check") })];
   }
   if (method === "GET" && path === "/api/pick") {
     // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
@@ -712,6 +723,8 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await settingsEditRoute(board, method, path, body))
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
+    ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
+    ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, query)
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 
@@ -805,7 +818,7 @@ export function createBoard(deps: BoardDeps) {
       batch: plansInBatches(settings.planner) };
   }
 
-  const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins });
+  const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins, warm: deps.warmPlugins });
   const update = updateReader(deps, store);
   const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, update, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
 
@@ -829,7 +842,7 @@ export function createBoard(deps: BoardDeps) {
     }
   }
 
-  return { handle, api, pool, store, queueTickets, wake };
+  return { handle, api, pool, store, queueTickets, wake, plugins };
 }
 
 /**
@@ -922,7 +935,7 @@ async function serve(): Promise<void> {
   if (reviewer !== undefined && startsReviewers(settings)) await reviewer.load();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(),
+  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(), warmPlugins: true,
     poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } };
   const board = createBoard(boardDeps);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));

@@ -56,7 +56,7 @@ const TABLE_KEYS = [
   "tickets.max", "tickets.port", "tickets.uiPort", "tickets.serve", "tickets.servePorts", "tickets.herdrSession", "tickets.worktreeRoot",
   "tickets.linearKey", "tickets.brief", "tickets.review", "tickets.plugins", "tickets.deny", "tickets.connectors", "tickets.terminal",
   "tickets.plan", "tickets.planner", "tickets.publish", "tickets.writer", "tickets.preflight", "tickets.drafts", "tickets.prReview",
-  "tickets.reviewer", "tickets.pick", "tickets.stallMinutes", "tickets.updateMaxDeferHours", "tickets.workingState", "stateDir",
+  "tickets.reviewer", "tickets.pick", "tickets.stallMinutes", "tickets.ciBudgetMinutes", "tickets.updateMaxDeferHours", "tickets.workingState", "stateDir",
   "tickets.providers", "tickets.providers.tracker", "tickets.providers.tracker.provider", "tickets.providers.tracker.key", "tickets.providers.tracker.key.path",
   "tickets.providers.tracker.key.keychain", "tickets.providers.tracker.connectors", "tickets.providers.tracker.workingState",
   "tickets.providers.tracker.plannedState", "tickets.providers.tracker.takenStates", "tickets.providers.codeHost", "tickets.providers.codeHost.provider", "tickets.providers.codeHost.identity",

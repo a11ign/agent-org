@@ -10,9 +10,11 @@ import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import type { Placement } from "../writer-placement.ts";
 import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
+import type { StoppedForBlocker } from "./queue-blocker-wait.ts";
 import type { TicketRead } from "../ticket-read.ts";
 import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
 import { logEvent, type RunEvent } from "./run-log.ts";
+import type { CiHold, TicketCi } from "../ci-spend/store.ts";
 
 
 
@@ -378,6 +380,14 @@ export type Entry = Readonly<{
   pluginCopy?: readonly PluginCopy[];
   /** Set when a breaking update stopped this run and queued it again; its round resumes the same session on the new version. */
   stoppedForUpdate?: StoppedForUpdate;
+  /** Set when its worker declared a wait on other tickets and the board stopped the run and queued it again behind them (A11-272); its round resumes the same session once they are done. */
+  stoppedForBlocker?: StoppedForBlocker;
+  /** When the run first started (A11-261): its CI figures count the workflow runs created from then on, and a review round carries it, so every push of the run is counted. A retry builds the entry afresh and starts the count again. */
+  ciSince?: number;
+  /** Set on a run the board stopped and queued again because its ticket's CI passed twice its budget (A11-261): why, and how many board passes have gone by. The queued run is held back until two have, and its brief carries the reason. Dropped when the round starts. */
+  ciHold?: CiHold;
+  /** Set on a finished run whose ticket's CI passed twice its budget (A11-261): the reason, for the brief of its next round, which is neither stopped nor held for it. Carried by a round, and dropped when the round starts. */
+  ciTold?: string;
   /** Set when the board took this run's live pane back after a restart, or after it had marked the run crashed (A11-240): the card says so. A retry or a review round, which build the entry afresh, drop it. */
   readopted?: Readopted;
   /** Set on a run a restart lost, when it was queued again (A11-240): the run is queued again once, so a second loss in the same chain ends it. A retry or a review round, which build the entry afresh, drop it. */
@@ -418,7 +428,9 @@ export type PublishRun = Readonly<{
  */
 export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean; publish?: PublishRun; writers?: readonly WriterRun[];
   /** What happened to each run, by ticket key, oldest first (A11-219, ADR 0006). Kept beside the entries so it outlives `dismiss`, `remove` and every transition that builds an entry afresh. Unset until something is logged. */
-  runLog?: Readonly<Record<string, readonly RunEvent[]>> }>;
+  runLog?: Readonly<Record<string, readonly RunEvent[]>>;
+  /** What each ticket's pushes have cost in CI, by ticket key, as the board last read it (A11-261, `ci-spend/store.ts`). Kept beside the entries for the reason the run log is: a run that is dropped or retried keeps its ticket's total. Unset until something is read. */
+  ciSpend?: Readonly<Record<string, TicketCi>> }>;
 
 /**
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list
@@ -708,11 +720,12 @@ export function talkRound(entry: Entry, now: number): Entry {
 }
 
 /**
- * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration and what its pull requests declared, merged plan steps, the plan's step count, the After-merge lines listed and posted, and the heads its red checks and the merge queue's removals were answered at: only those the run has set. PURE.
+ * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration and what its pull requests declared, merged plan steps, the plan's step count, the After-merge lines listed and posted, the heads its red checks and the merge queue's removals were answered at, and when its CI count began and what its next round is told of the ticket's CI spend (A11-261): only those the run has set. PURE.
  */
-const carriedFields = ({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst }: Pick<Entry, "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst">) => ({
+const carriedFields = ({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold }: Pick<Entry, "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold">) => ({
   ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
   ...(partial !== undefined ? { partial } : {}), ...(declared ? { declared } : {}), ...(partialOverruled ? { partialOverruled } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}), ...(queueHeads ? { queueHeads } : {}),
+  ...(ciSince !== undefined ? { ciSince } : {}), ...(ciTold ? { ciTold } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */

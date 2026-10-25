@@ -20,6 +20,7 @@
 // the field, never answered with a guess.
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
+import { DEFAULT_CI_BUDGET_MINUTES } from "./ci-spend/budget.ts";
 import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
@@ -120,6 +121,10 @@ export type TicketSettings = Readonly<{
    */
   stallMinutes: number;
   /**
+   * The weighted CI minutes one ticket's pushes may run before the board warns its worker, and, at twice that, holds the run (A11-261); 0 is none. {@link DEFAULT_CI_BUDGET_MINUTES} by default. The figures show whatever it is.
+   */
+  ciBudgetMinutes: number;
+  /**
    * How many whole hours a BREAKING release (a changeset whose first line starts `Breaking:`) drains for: no new run starts, the live runs finish, and those still live
    * once it has passed are stopped and queued again, and the update applies (A11-90, A11-169). A release that is not breaking waits for nothing. 2 by default.
    */
@@ -199,6 +204,13 @@ function refuseRelativeSecretPaths(providers: Providers, catalog: Catalog): void
 function positiveInteger(value: unknown, field: string, fallback: number): number {
   if (value === undefined) return fallback;
   if (!Number.isInteger(value) || (value as number) < 1) throw new TicketSettingsRefusal(field, `must be a whole number of 1 or more, not ${JSON.stringify(value)}`);
+  return value as number;
+}
+
+/** A whole number of 0 or more read from the host file, or `fallback` when the key is absent: for a setting where 0 is "off". */
+function nonNegativeInteger(value: unknown, field: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || (value as number) < 0) throw new TicketSettingsRefusal(field, `must be a whole number of 0 or more, not ${JSON.stringify(value)}`);
   return value as number;
 }
 
@@ -577,6 +589,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     reviewerRequired: reviewerRequiredOf(reviewer),
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
+    ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
     // Where the tailnet ports were read before they moved to the exposure plugin: a value no exposure could serve on is still refused after the fields before it.
     ...refuseUnservablePorts(settingOf(exposure, "tailnetPorts")),

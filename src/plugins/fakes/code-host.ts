@@ -6,6 +6,7 @@
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { branchCiOf, type FakeBranchCi } from "./code-host-ci.ts";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
 import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type ClosedCommit, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type PullQueue, type QueueFailure, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
 
@@ -194,7 +195,7 @@ function branchUpdatesOf(state: FakeBranchUpdates, pulls: Pulls, calls: string[]
 }
 
 /**
- * What the fake does when asked to close a pull request (contract 1.22), and what a test sets: why it refuses a pull request (`refusals`, by address), and each close, in order (`closed`). A close sets the pull request's state to closed, so it reads `CLOSED`; a pull request
+ * What the fake does when asked to close a pull request (contract 1.23), and what a test sets: why it refuses a pull request (`refusals`, by address), and each close, in order (`closed`). A close sets the pull request's state to closed, so it reads `CLOSED`; a pull request
  * that is closed already is not an error, and its comment is not posted again. A pull request the fake does not hold throws, as a host does for an address that is no pull request of its own.
  */
 export type FakeCloses = { refusals: Map<string, string>; closed: { url: string; comment: string }[] };
@@ -429,9 +430,10 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const closes: FakeCloses = { refusals: new Map(), closed: [] };
   const stackMerges: FakeStackMerges = { facts: new Map(), requestRefusal: null, requests: [] };
   const ciRuns: FakeCiRuns = { runs: new Map(), asked: [] };
+  const branchCi: FakeBranchCi = { runs: new Map(), asked: [] };
   const queues: FakeQueues = { failures: new Map(), holdRefusal: null, held: new Set(), holds: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -448,6 +450,8 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     stackMerges,
     /** The workflow runs the fake says it holds, by `owner/name#runId`, and the runs it was asked about, for a test to seed and read (see {@link FakeCiRuns}). */
     ciRuns,
+    /** The workflow runs on a branch the fake says it holds, by `<owner/name>@<branch>`, and the reads it was asked for, for a test to seed and read (see {@link FakeBranchCi}). */
+    branchCi,
     /** The failing runs behind removals from the merge queue the fake can find, and the holds it was asked for, for a test to seed and read (see {@link FakeQueues}). */
     queues,
     /** The owners, repositories and clones the fake's `repositories` group holds, for a test to seed and read (see {@link FakeRepositories}). */

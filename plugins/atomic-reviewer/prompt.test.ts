@@ -1,7 +1,8 @@
 // no-token: none -- pure text
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DECISION_RULE, decisionWords, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
+import { CI_COST_RULE } from "./ci-rule.ts";
+import { DECISION_RULE, decisionWords, IMPOSSIBLE_BEFORE_MERGE_RULE, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
 
 const GATE = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
 const DONE_WHEN = "## Done-when\n\n### Before merge\n\n- a test\n\n### After merge (who runs it)\n\n- the chairman, after 0.9.0";
@@ -13,6 +14,26 @@ test("A11-156: a first review and a reprompt are sent the gate's prompt, then th
   assert.ok(words.endsWith(POST_MERGE_RULE));
   assert.match(POST_MERGE_RULE, /"After merge" part is not a merge condition/);
   assert.match(POST_MERGE_RULE, /names how that line will be run and by whom/);
+});
+
+/** A11-266's Done-when as it was: a Before-merge line that only a published release can meet. */
+const RELEASE_ONLY = "## Done-when\n\n### Before merge\n\n- The tests pass.\n- A real macOS `agent-org update` installing the UI build is quoted.";
+
+test("A11-275: a first review, a reprompt and a re-review of a Done-when whose Before-merge line needs a release carry the rule beside it: treat it as After merge, say so, and do not block", () => {
+  const first = reviewWords(GATE, { doneWhen: RELEASE_ONLY });
+  const again = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "https://github.com/o/r/pull/7", roleFile: ".agent-org/roles/reviewer.md", replies: [{ author: "w", url: "https://github.com/o/r/pull/7#c1", text: "It needs a release." }], doneWhen: RELEASE_ONLY });
+  for (const words of [first, again, reviewWords(GATE, undefined)]) {
+    assert.ok(words.includes(IMPOSSIBLE_BEFORE_MERGE_RULE), "every prompt carries the rule, with a Done-when or without");
+    assert.ok(words.indexOf(IMPOSSIBLE_BEFORE_MERGE_RULE) < words.indexOf(POST_MERGE_RULE), "just before the post-merge rule");
+  }
+  for (const words of [first, again]) assert.ok(words.indexOf(RELEASE_ONLY) < words.indexOf(IMPOSSIBLE_BEFORE_MERGE_RULE), "after the Done-when it applies to");
+  const says = [
+    /"Before merge" part that no branch can meet before merge, because it needs a published release, a person's own machine, or something else the worker cannot reach, is treated as an After-merge line/,
+    /Say so in your review: name the line, say why it cannot be met before merge/,
+    /Do not block the pull request on it\./,
+    /how that line will be run after merge and by whom\. A pull request that says neither has a defect/,
+  ];
+  for (const words of says) assert.match(IMPOSSIBLE_BEFORE_MERGE_RULE, words);
 });
 
 test("A11-156: with no Done-when to give, or no brief at all, the prompt says the pull request is the only copy of the contract, and still carries the rule", () => {
@@ -113,7 +134,7 @@ test("A11-175: a step brief with no section says so, and the reviewer goes by th
 
 test("A11-175: with no step in the brief the prompt is the one it was: the whole ticket's Done-when under its own heading", () => {
   const words = reviewWords(GATE, { doneWhen: DONE_WHEN });
-  assert.equal(words, `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`);
+  assert.equal(words, `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${CI_COST_RULE}\n\n${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`);
 });
 
 // A11-213: an explicit decision in the ticket overrides a general direction the reviewer holds, and the reviewer is told so wherever it reads the ticket.
@@ -144,7 +165,7 @@ test("A11-213: the decision and its rule are in a re-review too, so the reply to
 
 test("A11-213: a ticket with no decision gets the prompt it always got, and a long decision is cut with the length said", () => {
   assert.equal(decisionWords(undefined), "");
-  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`, "a brief with no decisions reads as one from before them");
+  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${CI_COST_RULE}\n\n${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`, "a brief with no decisions reads as one from before them");
   assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN }).includes(DECISION_RULE), "and there is no rule about a decision that is not there");
   assert.match(decisionWords("z".repeat(9000)), /\[cut: 1000 more characters on the pull request\]/);
 });
@@ -209,7 +230,7 @@ test("A11-257: a decision on an escalation-list item, or against a recorded chai
 
 test("A11-257: a brief with no plan decisions gets the prompt it always got, and a long set of decisions is cut with the length said", () => {
   assert.equal(planDecisionWords(undefined, ESCALATION), "");
-  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`);
+  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${CI_COST_RULE}\n\n${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`);
   assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN, decisions: DECISION }).includes(PLAN_DECISION_RULE), "and no rule about decisions of a plan that is not there");
   assert.match(planDecisionWords("z".repeat(9000), undefined), /\[cut: 1000 more characters on the pull request\]/);
   assert.ok(!planDecisionWords("a", undefined).includes("Only these reach a person"), "the list is quoted only when the brief carries it");

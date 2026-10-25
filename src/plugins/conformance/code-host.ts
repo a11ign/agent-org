@@ -28,6 +28,8 @@ export type CodeHostProbe = Readonly<{
   stackRequestRefused?: StackMergeRequest;
   /** A workflow run the host holds, by its repository (`owner/name`) and id (contract 1.17). A host without `readCiRun` is not asked. */
   ciRun?: Readonly<{ repository: string; runId: number }>;
+  /** A branch the host holds workflow runs on, by its repository (`owner/name`) and name, with at least one run that has a job (contract 1.22). A host without `readBranchCi` is not asked. */
+  branchCi?: Readonly<{ repository: string; branch: string }>;
   /** A pull request the host holds whose body names `key`, with its repository and state (contract 1.18). A host without `pullsNaming` is not asked. */
   named?: Readonly<{ key: string; repository: string; url: string; state: "open" | "merged" | "closed" }>;
   /** A pull request the host holds that was closed without merging, whose head holds at least one commit that is not on its base and a file that commit changes (contract 1.20). A host without `readClosedWork` is not asked. */
@@ -578,6 +580,28 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(isObject(run) && CI_STATUSES.includes(run.status) && isString(run.url) && isString(run.name), `readCiRun(${repository}, ${runId}) must read { status: queued | in_progress | completed, conclusion, url, name, jobs }`);
       expect((run.status === "completed") === (isString(run.conclusion) && run.conclusion !== ""), "a run has a conclusion once it has completed, and has none before");
       expect(run.jobs === null || (isObject(run.jobs) && Number.isInteger(run.jobs.done) && Number.isInteger(run.jobs.total) && run.jobs.done >= 0 && run.jobs.done <= run.jobs.total && run.jobs.total >= 1), "jobs must be null (none listed) or { done, total } with done no more than total, and at least one job");
+    },
+  },
+  "readBranchCi answers null for a repository it cannot read": {
+    applies: ({ host }) => typeof host.readBranchCi === "function",
+    reason: "the code host has no readBranchCi, which is optional (contract 1.22)",
+    run: ({ host }) => expect(host.readBranchCi!(MISSING_REPOSITORY, "main", new Set()) === null, "readBranchCi must answer null for a repository it cannot read: null is never 'the branch ran nothing'"),
+  },
+  "readBranchCi reads a branch's workflow runs with each job's runner labels and times": {
+    applies: ({ host, probe }) => typeof host.readBranchCi === "function" && probe.branchCi !== undefined,
+    reason: "the code host has no readBranchCi (optional, contract 1.22) or the probe names no branch with runs",
+    run: ({ host, probe }) => {
+      const { repository, branch } = probe.branchCi!;
+      const runs = host.readBranchCi!(repository, branch, new Set());
+      expect(Array.isArray(runs) && runs.length > 0, `readBranchCi(${repository}, ${branch}) must read the runs on the branch`);
+      const isTime = (value: unknown): boolean => value === null || (isString(value) && !Number.isNaN(Date.parse(value)));
+      const runIsRead = (run: any): boolean => isObject(run) && Number.isInteger(run.id) && isString(run.headSha) && isString(run.createdAt) && CI_STATUSES.includes(run.status) && Array.isArray(run.jobs);
+      const jobIsRead = (job: any): boolean => isObject(job) && Array.isArray(job.labels) && job.labels.every(isString) && isTime(job.startedAt) && isTime(job.completedAt);
+      expect(runs!.every(runIsRead), "every run must read { id, headSha, createdAt, status: queued | in_progress | completed, jobs }");
+      expect(runs!.every((run) => run.jobs.every(jobIsRead)), "every job must read { labels: strings, startedAt, completedAt }, each time an ISO time or null");
+      expect(runs!.some((run) => run.jobs.length > 0), "an unsettled run lists its jobs");
+      const settled = host.readBranchCi!(repository, branch, new Set(runs!.map(({ id }) => id)));
+      expect(Array.isArray(settled) && settled.length === runs!.length && settled.every((run) => run.jobs.length === 0), "a run the caller holds as settled comes back with no jobs: the host reads each completed run's jobs once");
     },
   },
   "pullsNaming answers null for a repository it cannot read": {

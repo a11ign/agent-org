@@ -45,10 +45,10 @@ export function isDraining(ctx: PoolContext): boolean {
 }
 
 /**
- * Close a run's workspace. True when it is closed or already gone; false, said in the log, when herdr refuses for another reason: the agent may still be running, so the run is not queued again
- * beside it, and the next tick tries again.
+ * Close a run's workspace, to stop it `forWhat` (the log's words: "for the update"). True when it is closed or already gone; false, said in the log, when herdr refuses for another reason: the agent may still be
+ * running, so the run is not queued again beside it, and the next tick tries again.
  */
-function closedOrGone(ctx: PoolContext, entry: Entry): boolean {
+export function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: string): boolean {
   if (entry.workspace === undefined) return true;
   try {
     ctx.herdr(["--session", ctx.session.session, "workspace", "close", entry.workspace]);
@@ -56,7 +56,7 @@ function closedOrGone(ctx: PoolContext, entry: Entry): boolean {
   } catch (err) {
     const why = `${herdrRefusal(err)} ${herdrReason(err)}`;
     if (/not_found|not found/i.test(why)) return true;
-    log(`${entry.ticket.key}: its workspace ${entry.workspace} would not close for the update (${why.trim()}), so it is left running and tried again`);
+    log(`${entry.ticket.key}: its workspace ${entry.workspace} would not close ${forWhat} (${why.trim()}), so it is left running and tried again`);
     return false;
   }
 }
@@ -64,7 +64,7 @@ function closedOrGone(ctx: PoolContext, entry: Entry): boolean {
 /** Stop one live run's agent and record that it was stopped for the update: its workspace is closed, and the run is queued again with the session its agent had. False when the workspace would not close. */
 function stopEntry(ctx: PoolContext, entry: Entry, target: string): boolean {
   const { claudeSessions, now } = ctx;
-  if (!closedOrGone(ctx, entry)) return false;
+  if (!closedOrGone(ctx, entry, "for the update")) return false;
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   forgetRun(ctx, runPlace(ctx, entry).name);
   update(ctx, (queue) => requeueForUpdate(queue, entry.ticket.key, target, now(), id));

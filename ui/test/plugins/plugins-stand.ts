@@ -53,13 +53,18 @@ export const a11ign = (fields: Partial<ClaudePlugin> = {}): ClaudePlugin => clau
 
 const NO_PROJECT: MessagingState = { provider: null, why: "this machine declares no project" };
 
-/** The answer of `/api/plugins` for a host, the doctor checks of each plugin by name, the Claude plugins the host lists, and what the project says of messaging. */
-export function answerOf({ host = BOARD_HOST, checks = {}, claude = NO_CLAUDE, note = null, messaging = NO_PROJECT, refused = [] }: Readonly<{
+
+/**
+ * The answer of `/api/plugins` for a host, the doctor checks of each plugin by name, the Claude plugins the host lists, and what the project says of messaging, with when the checks finished
+ * (just now, unless a check says otherwise) and whether they are running again.
+ */
+export function answerOf({ host = BOARD_HOST, checks = {}, claude = NO_CLAUDE, note = null, messaging = NO_PROJECT, refused = [], checkedAt = new Date().toISOString(), checking = false }: Readonly<{
   host?: unknown; checks?: Readonly<Record<string, readonly PluginCheck[]>>; claude?: ClaudePlugins; note?: string | null; messaging?: MessagingState; refused?: readonly Readonly<{ plugin: string; why: string }>[];
+  checkedAt?: string | null; checking?: boolean;
 }> = {}): PluginsAnswer {
   const catalog = defaultCatalog();
   const health = pluginHealth({ catalog: { ...catalog, refusals: [...catalog.refusals, ...refused] }, providers: resolveProviders(host, catalog), messaging, load: { loaded: [], unbuilt: [], refusals: [] }, checks, version: "v0.289.0" });
-  return { ...health, claude, attention: attentionOf(health, claude), note, bases: { "host.json": "base-1", "project.json": "base-p1" } };
+  return { ...health, claude, attention: attentionOf(health, claude), note, bases: { "host.json": "base-1", "project.json": "base-p1" }, checkedAt, checking };
 }
 
 /** A failing doctor check, as a plugin reports one. */
@@ -88,6 +93,9 @@ const IN_FORCE = "in force after the board restarts: ticket:serve and ticket:ui.
 const PAST: Readonly<Record<ActionBody["action"], string>> = { install: "installed", enable: "enabled", disable: "disabled", uninstall: "uninstalled" };
 
 const isFailure = (value: unknown): value is Failure => typeof value === "object" && value !== null && "status" in value && "error" in value;
+
+/** A read of the plugins: the page's own, and the one that asks the instance to run the checks again (`?check`, A11-270), which a hold holds alike. */
+const PLUGINS_READ = /\/api\/plugins(\?check)?$/;
 
 /** The answer the instance gives to an action: what `runAction` decides, without writing a file. A stale `base` is the conflict, an unconfirmed uninstall or replacing install is refused, and so is a control the plan refuses. */
 export function answerAction(state: PluginsStand, body: ActionBody): PluginActionDone | Failure {
@@ -137,8 +145,8 @@ export function pluginsFetch(stand: Stand, state: PluginsStand, settings: Settin
     const request = { method: init?.method ?? "GET", body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined };
     paths.push(path);
     requests.push({ ...request, path });
-    if (state.hold === true && request.method === "GET" && /\/api\/plugins$/.test(path)) return new Promise<Response>(() => undefined);
-    if (state.hold instanceof Promise && request.method === "GET" && /\/api\/plugins$/.test(path)) await state.hold;
+    if (state.hold === true && request.method === "GET" && PLUGINS_READ.test(path)) return new Promise<Response>(() => undefined);
+    if (state.hold instanceof Promise && request.method === "GET" && PLUGINS_READ.test(path)) await state.hold;
     const own = answerPlugins(state, path, request);
     if (own !== null) return new Response(own.body, { status: own.status, headers: { "Content-Type": "application/json" } });
     return /\/api\/settings(\/|\?|$)/.test(path) ? settled(input, init) : inner(input, init);

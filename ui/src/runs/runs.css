@@ -166,6 +166,29 @@
 .runs-extra-row:last-child {
   border-bottom: 0;
 }
+/* An After-merge check's buttons, and the one-line field a close is sent from (A11-277): the row's own type, in the run row's buttons and the Settings input's pattern. */
+.after-merge-actions,
+.after-merge-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+}
+.after-merge-input {
+  box-sizing: border-box;
+  flex: 1 1 var(--input-width);
+  max-width: 100%;
+  padding: var(--space-5) var(--space-10);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-6);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+}
+.after-merge-refused {
+  flex-basis: 100%;
+  color: var(--color-danger-body);
+}
 .runs-none {
   padding: var(--space-40);
   text-align: center;
@@ -265,12 +288,19 @@
 .run-tokens {
   font-variant-numeric: tabular-nums;
 }
-.run-note {
+.run-note,
+.run-ci {
   max-width: var(--measure-readable);
   color: var(--color-text-nav);
   font-size: var(--font-size-small);
   line-height: var(--line-height-small);
   overflow-wrap: anywhere;
+}
+.run-ci {
+  font-variant-numeric: tabular-nums;
+}
+.run-ci.tone-warn {
+  color: var(--color-warn-text);
 }
 .clamp {
   display: -webkit-box;

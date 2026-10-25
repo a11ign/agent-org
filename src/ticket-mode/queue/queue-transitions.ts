@@ -232,10 +232,12 @@ export function setMax(queue: Queue, max: number): Queue {
 }
 
 export function markStarting(queue: Queue, key: string, now: number, worker?: RunWorker): Queue {
-  // The round that follows a stop for an update is under way: the board stops saying the run was stopped (A11-169). What a start records of the run's plan and machine is read again
-  // for this start, so the earlier one's is dropped (A11-219).
-  return replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, plannedSteps: _planned, currentStep: _step, ...entry }) =>
-    ({ ...entry, phase: "starting", startedAt: now, ...(worker === undefined ? {} : { worker }) }));
+  // The round that follows a stop for an update, for a wait on another ticket or for the ticket's CI spend is under way: the board stops saying the run was stopped, and no longer holds it (A11-169, A11-272, A11-261). What a start
+  // records of the run's plan and machine is read again for this start, so the earlier one's is dropped (A11-219). The run's CI is counted from its first start (A11-261): a round after it keeps that time.
+  const held = find(queue, key)?.ciHold;
+  const started = replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, stoppedForBlocker: _behind, ciHold: _ciHeld, ciTold: _ciTold, plannedSteps: _planned, currentStep: _step, ...entry }) =>
+    ({ ...entry, phase: "starting", startedAt: now, ciSince: entry.ciSince ?? now, ...(worker === undefined ? {} : { worker }) }));
+  return held === undefined ? started : logEvent(started, key, now, { kind: "round", cause: "ci-budget", reason: shortReason(held.reason) });
 }
 
 /**

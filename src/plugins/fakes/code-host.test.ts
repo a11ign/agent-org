@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { runCodeHostConformance } from "../conformance/code-host.ts";
 import { ContractError } from "../conformance/suite.ts";
 import { DEPENDENCY_PULL_AUTHOR, type CodeHost, type WrapperInputs } from "../contracts/code-host.ts";
+import { branchCiKey } from "./code-host-ci.ts";
 import { createFakeCodeHost, fakePullUrl, queueFailureKey } from "./code-host.ts";
 
 /** The inputs a wrapper is asked about: a place outside any temporary directory, and the workers' role an App. */
@@ -28,6 +29,11 @@ function seeded() {
   host.stackMerges.requestRefusal = "Resource not accessible by integration (HTTP 403)";
   // A workflow run the fake holds, halfway through (contract 1.17).
   host.ciRuns.runs.set("owner/repo#31", { status: "in_progress", conclusion: null, url: "https://github.com/owner/repo/actions/runs/31", name: "ci", jobs: { done: 1, total: 3 } });
+  // The workflow runs on a branch: one finished with two jobs (a macOS one among them) and one still going (contract 1.22).
+  host.branchCi.runs.set(branchCiKey("owner/repo", "admin/a11-1-x"), [
+    { id: 41, headSha: "a".repeat(40), createdAt: "2026-10-25T10:00:00Z", status: "in_progress", jobs: [{ labels: ["ubuntu-latest"], startedAt: "2026-10-25T10:00:05Z", completedAt: null }] },
+    { id: 40, headSha: "9".repeat(40), createdAt: "2026-10-25T09:00:00Z", status: "completed", jobs: [{ labels: ["macos-latest"], startedAt: "2026-10-25T09:00:05Z", completedAt: "2026-10-25T09:03:00Z" }, { labels: ["ubuntu-latest"], startedAt: "2026-10-25T09:00:05Z", completedAt: "2026-10-25T09:01:00Z" }] },
+  ]);
   // A pull request whose body names a ticket (contract 1.18), and one that does not.
   const named = host.seedPull("owner/repo", 10, { state: "merged", body: "Refs A11-240\n\nPartial: step 1 of 2: the first half" });
   host.seedPull("owner/repo", 11, { body: "Refs A11-2401" });
@@ -40,7 +46,7 @@ function seeded() {
   const queueFailure = { groupCommit: "b".repeat(40), job: "middleware" };
   host.queues.failures.set(queueFailureKey(url, queueFailure.groupCommit), { runId: 55, runUrl: "https://github.com/owner/repo/actions/runs/55", jobs: [{ name: queueFailure.job, step: "The Dependabot config is what the toolchain generates", detailsUrl: "https://github.com/owner/repo/actions/runs/55/job/56" }] });
   const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, closed: closed.url, queueFailure, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, closed: closed.url, queueFailure, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, branchCi: { repository: "owner/repo", branch: "admin/a11-1-x" }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
 }
 
 /**
@@ -75,7 +81,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged", "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "closePull throws for an address that is no pull request, so no caller reads a refusal as a close", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "closePull throws for an address that is no pull request, so no caller reads a refusal as a close", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "readBranchCi answers null for a repository it cannot read", "readBranchCi reads a branch's workflow runs with each job's runner labels and times", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -440,4 +446,50 @@ test("a code host of contract 1.19, with no readClosedWork, still passes the sui
   const name = "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held";
   assert.ok(!ran.passed.includes(name));
   assert.match(ran.skipped.find(({ check }) => check === name)?.reason ?? "", /the code host has no readClosedWork/);
+});
+
+const BRANCH_CI_CHECKS = ["readBranchCi answers null for a repository it cannot read", "readBranchCi reads a branch's workflow runs with each job's runner labels and times"];
+
+/** The branch checks of a conformance run: which passed, and which were skipped with their reasons. */
+async function branchChecksOf(host: CodeHost, probe: Parameters<typeof runCodeHostConformance>[1]) {
+  const { passed, skipped } = await runCodeHostConformance(host, probe);
+  return { passed: passed.filter((check) => BRANCH_CI_CHECKS.includes(check)), skipped: skipped.filter(({ check }) => BRANCH_CI_CHECKS.includes(check)) };
+}
+
+test("without a branch in the probe the read of a branch's runs is skipped with the reason, not passed (contract 1.22)", async () => {
+  const { host, probe } = seeded();
+  const { passed, skipped } = await branchChecksOf(host, { ...probe, branchCi: undefined });
+  assert.deepEqual([passed, skipped.map(({ check }) => check)], [[BRANCH_CI_CHECKS[0]], [BRANCH_CI_CHECKS[1]]]);
+  assert.match(skipped[0]!.reason, /the probe names no branch with runs/);
+});
+
+test("a code host that reads a branch it cannot read as one that ran nothing, or runs in a shape the board cannot bill, fails each by name (contract 1.22)", async () => {
+  const { host, probe } = seeded();
+  const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
+  const reads = host.readBranchCi!;
+  const readsOr = (change: (runs: NonNullable<ReturnType<typeof reads>>) => unknown): CodeHost["readBranchCi"] =>
+    (repository, branch, settled) => { const runs = reads(repository, branch, settled); return runs === null ? null : (change(runs) as ReturnType<typeof reads>); };
+  const failing = (change: Parameters<typeof readsOr>[0]) => failures({ ...host, readBranchCi: readsOr(change) });
+  assert.deepEqual(await failures({ ...host, readBranchCi: (repository, branch, settled) => reads(repository, branch, settled) ?? [] }), [BRANCH_CI_CHECKS[0]], "a repository it cannot read answered as no runs");
+  assert.deepEqual(await failing(() => []), [BRANCH_CI_CHECKS[1]], "a branch that ran something answered with no runs");
+  assert.deepEqual(await failing((runs) => runs.map((run) => ({ ...run, status: "stalled" }))), [BRANCH_CI_CHECKS[1]], "a status the board does not know");
+  assert.deepEqual(await failing((runs) => runs.map((run) => ({ ...run, jobs: run.jobs.map((job) => ({ ...job, labels: "ubuntu-latest" })) }))), [BRANCH_CI_CHECKS[1]], "labels that are no list");
+  assert.deepEqual(await failing((runs) => runs.map((run) => ({ ...run, jobs: run.jobs.map((job) => ({ ...job, startedAt: "last Tuesday" })) }))), [BRANCH_CI_CHECKS[1]], "a time that is no time");
+  assert.deepEqual(await failures({ ...host, readBranchCi: (repository, branch) => reads(repository, branch, new Set()) }), [BRANCH_CI_CHECKS[1]], "a settled run answered with its jobs again");
+});
+
+test("the fake says which branches it was asked about and which runs it was told were settled, and answers null for one it was given none for", () => {
+  const { host } = seeded();
+  const jobsOf = (settled: number[], id: number) => host.readBranchCi!("owner/repo", "admin/a11-1-x", new Set(settled))?.find((run) => run.id === id)?.jobs.length;
+  assert.deepEqual([jobsOf([40], 40), jobsOf([], 40)], [0, 2], "a settled run has no jobs");
+  assert.equal(host.readBranchCi!("owner/repo", "elsewhere", new Set()), null);
+  assert.deepEqual(host.branchCi.asked.map(({ branch, settled }) => [branch, settled]), [["admin/a11-1-x", [40]], ["admin/a11-1-x", []], ["elsewhere", []]]);
+});
+
+test("a code host of contract 1.21, with no readBranchCi, still passes the suite: both of the branch's checks are skipped with the reason", async () => {
+  const { host, probe } = seeded();
+  const { readBranchCi: _reads, ...older } = host;
+  const { passed, skipped } = await branchChecksOf(older, probe);
+  assert.deepEqual([passed, skipped.map(({ check }) => check)], [[], BRANCH_CI_CHECKS]);
+  assert.ok(skipped.every(({ reason }) => /the code host has no readBranchCi/.test(reason)));
 });

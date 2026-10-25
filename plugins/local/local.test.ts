@@ -17,7 +17,7 @@ import { create, doctorChecks, onboardSteps } from "./index.ts";
 test("the local exposure passes the exposure contract suite as a loopback-only exposure, serving nothing, and every check runs", async () => {
   const { passed, skipped } = await runExposureConformance(createExposure(), { sandboxed: true });
   assert.deepEqual(skipped, []);
-  assert.equal(passed.length, 8);
+  assert.equal(passed.length, 9);
 });
 
 test("it answers no name, no hosts, no origins, no ports and no terminal address, and refuses to serve or unserve, saying why", async () => {

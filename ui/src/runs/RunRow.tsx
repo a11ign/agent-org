@@ -6,7 +6,7 @@ import { runsHref } from "../shell/routes.ts";
 import { actionsOf } from "./run-actions.ts";
 import { ActionIcon, MessageIcon, PullIcon, StatusIcon, STATUS_TONE } from "./icons.tsx";
 import { MESSAGE_TITLE } from "./publish-model.ts";
-import { labelOf, noteOf, timingOf, tokensOf, type NoteContext, type RunEntry } from "./runs-model.ts";
+import { ciLineOf, labelOf, noteOf, timingOf, tokensOf, type NoteContext, type RunEntry } from "./runs-model.ts";
 
 /** The ticks of a machine with a publisher: the keys ticked for Publish, and the press that ticks or unticks one. */
 export type Ticks = Readonly<{ picked: readonly string[]; toggle: (key: string) => void }>;
@@ -88,6 +88,13 @@ function Timing({ entry, now }: Readonly<{ entry: RunEntry; now: number }>) {
   );
 }
 
+/** The run's CI line (A11-261): what its pushes cost, in the existing warn tone once the ticket is over its budget or the run is held for it. */
+function CiLine({ entry }: Readonly<{ entry: RunEntry }>) {
+  const line = ciLineOf(entry);
+  if (line === null) return null;
+  return <div className={line.tone === "warn" ? "run-ci tone-warn" : "run-ci"}>{line.text}</div>;
+}
+
 /** The reserved first column of a machine with a publisher: a tick box on a run that can be published, and nothing on any other, so the rows stay in line. */
 function Tick({ entry, context, ticks }: Readonly<{ entry: RunEntry; context: RowContext; ticks: Ticks }>) {
   const { key } = entry.ticket;
@@ -102,7 +109,7 @@ function Tick({ entry, context, ticks }: Readonly<{ entry: RunEntry; context: Ro
   );
 }
 
-/** One run: its status icon, its key and title (a link to Run detail), its status, repositories, model and tokens, its note, its pull requests and timing, and its buttons. */
+/** One run: its status icon, its key and title (a link to Run detail), its status, repositories, model and tokens, its note, its CI line, its pull requests and timing, and its buttons. */
 export function RunRow({ entry, context }: Readonly<{ entry: RunEntry; context: RowContext }>) {
   const { queue } = context;
   const status = shownStatus(entry, queue.publish, queue.entries);
@@ -133,6 +140,7 @@ export function RunRow({ entry, context }: Readonly<{ entry: RunEntry; context: 
           )}
         </div>
         {note === null ? null : <div className="run-note clamp" title={note}>{note}</div>}
+        <CiLine entry={entry} />
       </div>
       <div className="run-right">
         <Timing entry={entry} now={context.now} />

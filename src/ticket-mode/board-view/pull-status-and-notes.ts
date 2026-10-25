@@ -5,6 +5,7 @@ import { isReadyToMerge } from "./pull-readiness.ts";
 import { overlapWait, type OverlapWait } from "./overlap-hold.ts";
 import { currentStepOf, currentStepPaths, stepNamed } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
+import { blockersOf, isStoppedFor, ticketWaitEnded } from "./waits-on.ts";
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
@@ -12,10 +13,11 @@ import { parsePull } from "./pull-url.ts";
  * merged ({@link pullsMerged}), whatever state its ticket is in: a ticket whose pull request said `Refs` stays In Progress after the merge (A11-154).
  * That lets go only a blocker nothing more is coming from ({@link holdReason}): one with a live run holds, whatever its pull requests so far did, and so does one whose merged pull request
  * declared itself partial (A11-206). A canceled or duplicate blocker never lets go: the work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
- * be stacked on ({@link stackedOn}) does not hold it back.
+ * be stacked on ({@link stackedOn}) does not hold it back. A run the board stopped for a wait on other tickets is held by each of them until the tracker reads it completed or canceled, whether or not the tracker lists
+ * it as a blocker yet, and is never stacked on it ({@link blockersOf}, {@link ticketWaitEnded}, A11-272).
  */
 export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
-  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(entry, blocker, entries) && stackBaseOf(entry, blocker) === null);
+  return blockersOf(entry).filter((blocker) => (isStoppedFor(entry, blocker) ? !ticketWaitEnded(blocker.state) : !isDoneFor(entry, blocker, entries) && stackBaseOf(entry, blocker) === null));
 }
 
 /** Whether the planner said the run waits for this blocker to merge, rather than stacking on it: its key is in the run's `waitMerged`. */
@@ -166,6 +168,7 @@ export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${
  * such as "Waits for NBF-1 (running)" (A11-206). A blocker whose pull requests merged and are all read holds nothing ({@link isDoneFor}). PURE.
  */
 function blockerWait(entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): string {
+  if (isStoppedFor(entry, blocker)) return `Waits for ${blocker.key} to be done: its worker waits on it`;
   if (blocker.state === "canceled" || blocker.state === "duplicate") return `${blocker.key} was ${blocker.state === "canceled" ? "canceled" : "marked a duplicate"}: a person decides`;
   const held = holdReason(entry, blocker, entries);
   if (held !== null) return `Waits for ${blocker.key} (${held})`;
@@ -180,6 +183,7 @@ function blockerWait(entry: ViewEntry, blocker: ViewBlocker, entries: readonly V
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
   const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again on every pass`];
   if (entry.sessionWait !== undefined) plan.push(entry.sessionWait);
+  if (entry.ciHold !== undefined && entry.ciHold.released !== true) plan.push(entry.ciHold.reason);
   const waits = waitsOn(entry, entries);
   const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map((blocker) => {
     const held = holdReason(entry, blocker, entries);

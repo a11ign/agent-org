@@ -1,0 +1,55 @@
+// no-token: none -- pure text
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { WORKER_NOTES } from "../../install/house-notes.ts";
+import type { Ticket } from "../source.ts";
+import { briefText, reviewBriefText } from "../worker-files.ts";
+import { heldText, PUSH_ONCE_RULE } from "./rules.ts";
+
+const ticket = { key: "A11-1", title: "t", description: "d", url: "https://linear.app/x/issue/A11-1", branch: "a11-1-t", status: "Backlog", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null } as Ticket;
+
+test("A11-261: the rule says to test locally, push once per meaningful change, never push to see what CI says, batch fix-ups, and keep heavy jobs off drafts", () => {
+  for (const part of ["tests, typecheck and lint locally before you push", "push once per meaningful change", "Never push only to see what CI says", "never push fix-ups one at a time when they can be batched", "heavy jobs off a pull request while it is still a draft"]) {
+    assert.ok(PUSH_ONCE_RULE.includes(part), `the rule says ${part}`);
+  }
+});
+
+const briefWith = (drafts?: boolean): string =>
+  briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p", ...(drafts === undefined ? {} : { drafts }) });
+
+test("A11-261: every worker's brief carries the rule, in the step that tells it to commit and push, with drafts on or off", () => {
+  const brief = briefWith();
+  const step = brief.indexOf("3. Work, commit and push only inside those worktrees.");
+  assert.ok(step >= 0 && brief.indexOf(PUSH_ONCE_RULE) > step && brief.indexOf(PUSH_ONCE_RULE) < brief.indexOf("## What to do"));
+  for (const drafts of [true, false]) assert.ok(briefWith(drafts).includes(PUSH_ONCE_RULE), `the rule is in the brief with drafts ${drafts}`);
+});
+
+test("A11-261: a drafts-off machine's brief still never says draft pull request or --draft (worker-files.test.ts holds the same)", () => {
+  const ready = briefWith(false);
+  assert.equal(ready.includes("draft pull request"), false);
+  assert.equal(ready.includes("--draft"), false);
+});
+
+test("A11-261: the shipped worker house notes carry the rule", () => {
+  assert.ok(WORKER_NOTES.includes(PUSH_ONCE_RULE));
+});
+
+const REASON = "Held: CI ~640 min, over twice this ticket's budget of 300";
+
+test("A11-261: a run the board held for its CI spend opens its brief with why and the rule, and a run that was not held gets no such section", () => {
+  const held = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p", held: REASON });
+  assert.ok(held.startsWith(`# A11-1: t\n\n## The board held this run\n\n${REASON}.`), held.slice(0, 160));
+  assert.ok(held.indexOf(PUSH_ONCE_RULE) < held.indexOf("## The ticket"), "the rule is read before the ticket, and again in step 3");
+  assert.ok(held.includes("Your worktrees and commits are as you left them"));
+  assert.equal(briefWith().includes("The board held this run"), false);
+  assert.equal(heldText(undefined), "");
+});
+
+test("A11-261: a review round the board held for its CI spend says so before the round's own opening", () => {
+  const prs = [{ repo: "repo", url: "https://github.com/a/repo/pull/1" }];
+  const round = (held?: string) => reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs, resumed: true, feedback: "New review feedback on x", ...(held === undefined ? {} : { held }) });
+  const held = round(REASON);
+  assert.ok(held.includes(`## The board held this run\n\n${REASON}.`));
+  assert.ok(held.indexOf("The board held this run") < held.indexOf("## The ticket"));
+  assert.equal(round().includes("The board held this run"), false);
+});

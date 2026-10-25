@@ -48,6 +48,12 @@ test("A11-257: the rule tells a run that failed, with no question open, to say w
   assert.match(ESCALATION_RULE, /A run that cannot go on because something failed, such as a skill that is missing or a check that never starts, has no question to decide: it says what failed in its `needs-human` reason, and the board shows that stop as "Off the escalation list:"/);
 });
 
+test("A11-277: the rule tells a run that an After-merge check the person's session runs is no stop, and names the session's queue and the route that closes it", () => {
+  assert.match(ESCALATION_RULE, /An After-merge check that the person's session runs is not a stop either: the board sends it to the session's queue \(`GET \/api\/session-asks`/);
+  assert.ok(ESCALATION_RULE.includes("`POST /api/after-merge/<KEY>/<n>`"));
+  assert.ok(!/chairman/i.test(ESCALATION_RULE), "the rule names no organisation's own people: agent-org is public");
+});
+
 test("A11-257: the needs-human example names an item of the list, and the file checks as it is written", () => {
   const example = OUTCOME_EXAMPLES["needs-human"];
   assert.ok(escalationItem(example.escalation) !== undefined);

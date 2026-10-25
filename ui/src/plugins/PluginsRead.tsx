@@ -29,20 +29,29 @@ function viewAfter(before: PollView<PluginsAnswer>, answer: Answer<PluginsAnswer
 
 const LOADING: PollView<PluginsAnswer> = { state: "loading", data: null, refusal: null };
 
+/** How often the plugins are read again while the instance runs their checks (A11-270). */
+export const CHECKING_MS = 2_000;
+
+/** Whether the instance is still running the checks of the view's answer: it has none yet, or is running them again. */
+const isChecking = (view: PollView<PluginsAnswer>): boolean => view.state === "ready" && view.data !== null && (view.data.checking || view.data.checkedAt === null);
+
 /**
- * `/api/plugins`, read once per connection and again only when `refresh` asks (the page's Retry and "Read the plugins again", and after an action). It is NOT polled and a failure is NOT
- * retried on a backoff, which `usePoll` does even with `repeat: false`: the read runs the plugins' doctor checks (`security`, `claude mcp list`, `gh`), and trying again by itself would run them
- * every minute for as long as a page stays open. The shell's own queue poll is what notices the instance has gone. Never an empty answer: an instance with no plugin still has its concerns.
+ * `/api/plugins`, read once per connection and again when `refresh` asks (the page's Retry and "Read the plugins again", and after an action). It is NOT polled on the shell's cadence and a
+ * failure is NOT retried on a backoff, which `usePoll` does even with `repeat: false`: a read can start the plugins' doctor checks (`security`, `claude mcp list`, `gh`) on the instance, and
+ * reading again by itself would start them over and over for as long as a page stays open. The shell's own queue poll is what notices the instance has gone. Never an empty answer: an instance with no plugin still has its concerns.
  * ONE FAILURE IS RETRIED: the instance that did not answer (it is restarting, or took longer than the page's service waits). The page says "Reconnecting…", which promises it, so it reads again after
  * 2 seconds, and after twice as long each time it still finds nothing, up to a minute (A11-211's backoff), and stops at the first answer. An answer that is a refusal is not retried.
+ * AN ANSWER WHOSE CHECKS ARE STILL RUNNING IS READ AGAIN (A11-270): the instance answers its last checks at once and runs them again behind the page, so the page reads again every
+ * `CHECKING_MS` while the answer says `checking` or has no checks yet, and stops at the first that has finished them. The checks have a time limit, so this ends. A `refresh` (a person's
+ * Retry or "Read the plugins again", or after a change) asks the instance to run them again, since they are kept for a minute; a read of its own does not.
  */
 export function usePluginsRead(): PluginsReadValue {
   const { client, connection } = useShell();
   const [held, setHeld] = useState<Held>({ client, view: LOADING, misses: 0 });
-  const [attempt, setAttempt] = useState(0);
+  const [attempt, setAttempt] = useState({ count: 0, check: false });
   useEffect(() => {
     const reading = new AbortController();
-    void client.plugins(reading.signal).then((answer) => {
+    void (attempt.check ? client.pluginsCheckedAgain : client.plugins)(reading.signal).then((answer) => {
       if (reading.signal.aborted) return;
       setHeld((before) => {
         const view = viewAfter(before.client === client ? before.view : LOADING, answer, connection);
@@ -52,12 +61,13 @@ export function usePluginsRead(): PluginsReadValue {
     return () => reading.abort();
   }, [client, connection, attempt]);
   const waiting = held.client === client && held.view.state === "reconnecting";
+  const checking = held.client === client && isChecking(held.view);
   useEffect(() => {
-    if (!waiting) return undefined;
-    const timer = setTimeout(() => setAttempt((count) => count + 1), nextDelay(held.misses));
+    if (!waiting && !checking) return undefined;
+    const timer = setTimeout(() => setAttempt(({ count }) => ({ count: count + 1, check: false })), waiting ? nextDelay(held.misses) : CHECKING_MS);
     return () => clearTimeout(timer);
-  }, [waiting, held.misses]);
-  return { ...(held.client === client ? held.view : LOADING), refresh: () => setAttempt((count) => count + 1) };
+  }, [waiting, checking, held.misses, held.view]);
+  return { ...(held.client === client ? held.view : LOADING), refresh: () => setAttempt(({ count }) => ({ count: count + 1, check: true })) };
 }
 
 /** What the plugins are before the connections are known: nothing read, and nothing to read it of. */

@@ -8,13 +8,14 @@
 // A FILE THAT EXISTS IS NEVER OVERWRITTEN, and its difference from the shipped text is not an error: a person edits these. The key is set only when the
 // file and the key are both absent, so a host that already has its own notes keeps them.
 import { join } from "node:path";
+import { PUSH_ONCE_RULE } from "../ticket-mode/ci-spend/rules.ts";
 import { escalationList } from "../ticket-mode/escalation.ts";
 import { agentOrgHome, type Env } from "./paths.ts";
 
 export const WORKER_NOTES = `# Worker house rules
 
 - **Identity.** Every \`gh\` call goes out as the GitHub login this machine's \`gh\` uses. Never set \`GH_TOKEN\` by hand.
-- **Toolchain.** Run the repository's own tests, typecheck and lint before you push.
+- **Toolchain and pushes.** ${PUSH_ONCE_RULE}
 - **Releases.** A change to a published package carries a changeset. A change with no release says \`no-release: <reason>\` in the pull request body.
 - **Acceptance.** A pull request carries \`.acceptance/<branch>.md\`. It says what the change does and gives an \`Acceptance:\` bash block that proves it. The reviewer runs that block.
 - **Opening a pull request:** use \`gh pr create\`, ready and not draft. Its body says what changed and how it was verified, names the ticket with \`Closes <ticket key>\` when the pull request completes the ticket, or \`Refs <ticket key>\` with a \`Partial: <what remains>\` line when it does not (a plan step, \`step <N> of <M>\`, never an After-merge line of the Done-when: a pull request that leaves only those names the ticket \`Closes\`; pull requests that finish the ticket together each say \`Refs\`, with the others named in their \`Partial:\` line and no \`partial\` in the outcome), and gives an \`Outside-Region: <path> — <reason>\` line for each path outside the plan.

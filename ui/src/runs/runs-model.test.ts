@@ -164,6 +164,14 @@ describe("a row's note", () => {
     expect(noteLines({ ...entry, queueHeads: undefined } as RunEntry, context).some((line) => line.includes("merge queue"))).toBe(false);
   });
 
+  it("says what the run's pushes cost in CI, among the lines, with the ticket's total and the budget when they differ or are passed (A11-261)", () => {
+    const ci = { run: { pushes: 3, jobs: 48, weighted: 184 }, ticket: { pushes: 3, jobs: 48, weighted: 184 }, budget: 300, state: "ok" as const };
+    const entry = entryOf({ ...working({ key: "A11-4", title: "t", startedAgo: MINUTE }), ci });
+    expect(noteLines(entry, context)).toContain("CI: 3 pushes, 48 jobs, ~184 min");
+    expect(noteLines({ ...entry, ci: { ...ci, ticket: { pushes: 5, jobs: 70, weighted: 340 }, state: "over" } } as RunEntry, context)).toContain("CI: 3 pushes, 48 jobs, ~184 min (ticket ~340 min) · over budget (300)");
+    expect(noteLines({ ...entry, ci: undefined } as RunEntry, context).some((line) => line.startsWith("CI:"))).toBe(false);
+  });
+
   it("says when the board took a live pane back after a restart (A11-240)", () => {
     const entry = entryOf({ ...working({ key: "A11-6", title: "t", startedAgo: MINUTE }), readopted: { at: new Date(2026, 9, 24, 22, 31).getTime(), from: "starting" } });
     expect(noteLines(entry, context)).toContain("re-adopted after a restart at 22:31: its worker carried on");

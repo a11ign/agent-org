@@ -4,6 +4,7 @@
 // WHAT THE CROSS-REPO-RED VERDICT ASKS, modelled over the world a test seeds: the check runs of a head commit, the runs of a workflow on `main` for an event filter, the jobs and the failed log of a run,
 // and the state of a row. Each read is a map the test fills; an entry that is an `Error` is a read that throws it (a refused read of just that one thing), an absent run, log or check list answers
 // the empty one and an absent job list or row throws (GitHub's own "not found"). The shapes are the contract's (`CiJob`), not GitHub's JSON.
+import type { BranchCiRun, CodeHost } from "../contracts/code-host.ts";
 import type { CiJob, CodeHostRows } from "../contracts/code-host-rows.ts";
 import type { FakeRowsWorld } from "./code-host-rows.ts";
 
@@ -56,6 +57,27 @@ export function ciOperations(world: FakeRowsWorld): Pick<CodeHostRows, "headOfCh
       const row = repo === world.repo ? world.rows.get(Number(number)) : world.foreignRows.get(key);
       if (row === undefined) throw new Error(`GraphQL: Could not resolve to an issue or pull request with the number of ${number}. (repository.issue)`);
       return row.state;
+    },
+  };
+}
+
+/**
+ * What the fake holds of the workflow runs on a branch (contract 1.22), and what a test sets: the runs of a branch by `<owner/name>@<branch>`, newest first. A branch the fake was given none for cannot be asked about, and is null. `asked` lists each read,
+ * with the runs it was told were settled, in order.
+ */
+export type FakeBranchCi = { runs: Map<string, readonly BranchCiRun[]>; asked: { repository: string; branch: string; settled: number[] }[] };
+
+/** The key a branch's runs are seeded under. */
+export const branchCiKey = (repository: string, branch: string): string => `${repository}@${branch}`;
+
+/** The read of a branch's workflow runs over what a test seeded: a run the caller holds as settled comes back with no jobs, as the contract says. */
+export function branchCiOf(state: FakeBranchCi, calls: string[]): Pick<CodeHost, "readBranchCi"> {
+  return {
+    readBranchCi(repository, branch, settled) {
+      calls.push(`readBranchCi ${repository} ${branch}`);
+      state.asked.push({ repository, branch, settled: [...settled] });
+      const runs = state.runs.get(branchCiKey(repository, branch));
+      return runs === undefined ? null : runs.map((run) => (settled.has(run.id) ? { ...run, jobs: [] } : run));
     },
   };
 }

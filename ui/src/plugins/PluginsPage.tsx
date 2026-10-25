@@ -19,7 +19,7 @@ import { HostNote, NoticeBanner, UnknownBanner } from "./PluginBanners.tsx";
 import { NOT_READ_YET, useProvidedPluginsRead } from "./PluginsRead.tsx";
 import { PluginsSkeleton } from "./PluginsSkeleton.tsx";
 import { panelId, PluginTabs, tabId, type Tab } from "./PluginTabs.tsx";
-import { isLocal } from "./plugins-model.ts";
+import { checkedWords, isLocal, NOT_CHECKED_YET, notChecked } from "./plugins-model.ts";
 import { useChanges, type Changes } from "./use-changes.ts";
 
 const BLANK_COUNTS: Readonly<Record<Tab, number | null>> = { integrations: null, claude: null };
@@ -71,9 +71,13 @@ function Loaded({ answer, unknown, view, viewWords, changes, editing, onRetry, o
   const { connection } = useShell();
   const remote = connection === null || isLocal(connection) ? null : remoteNote(connectionLabel(connection));
   const controls = remote === null && answer.note === null;
-  const page = { answer, instance: unknown ? (connection?.name ?? "") : null, controls, changes, view, viewWords, editing: { ...editing, remote: controls ? null : (remote ?? answer.note) } };
+  const instance = unknown ? (connection?.name ?? "") : null;
+  const unchecked = instance !== null ? notChecked(instance) : answer.checkedAt === null ? NOT_CHECKED_YET : null;
+  const page = { answer, instance, unchecked, controls, changes, view, viewWords, editing: { ...editing, remote: controls ? null : (remote ?? answer.note) } };
+  const age = checkedWords(answer, Date.now());
   return (
     <PageProvider value={page}>
+      {age === null ? null : <p className="plugins-checked">{age}</p>}
       {unknown ? <UnknownBanner instance={connection?.name ?? ""} onRetry={onRetry} /> : null}
       <NoticeBanner notice={changes.notice} busy={changes.busy} onReadAgain={onReadAgain} />
       {flowBanner}
@@ -107,7 +111,7 @@ function Content() {
   const [tab, setTab] = useState<Tab>("integrations");
   const [open, setOpen] = useState<string | null>("tracker");
   const local = isLocal(connection);
-  // The queue the shell polls is what notices the instance has gone: the plugins are read once, and not again by themselves.
+  // The queue the shell polls is what notices the instance has gone: the plugins are read again by themselves only while the instance runs their checks.
   const unknown = plugins.data !== null && (queue.state === "unreachable" || plugins.state === "unreachable");
   const bars = local ? filesStaged(flow.staging.staged).map((file) => ({ file, count: stagedIn(flow.staging.staged, file).length })) : [];
   const discard = (file: EditFile) => state.discard(rows.filter((row) => row.file === file && state.drafts[idOf(row)] !== undefined).map(idOf));

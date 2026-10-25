@@ -1,0 +1,68 @@
+// @ts-check
+// module: the After-merge checks' routes (A11-277) -- a runner closes a check with one line of evidence, and decides a failed check's follow-up
+//
+// `POST /api/after-merge/<KEY>/<n>` with `{ result, evidence, by }` closes check `<KEY>#<n>`: the record closes at once, so its row leaves the list, and the pool's next sweep posts the close on the ticket.
+// `POST /api/after-merge/<KEY>/<n>/follow-up` with `{ writer }` records a failed check's follow-up: the writer request it was filed by, or null for none. Both sit behind the instance's key, as every route does.
+import type { Json } from "../local-http.ts";
+import { afterMergeChecks, type AfterMergeCheck } from "../board-view.ts";
+import { checkIdOf, closeCheck, decideFollowUp, followUpText, type CheckRecord, type ChecksFile, type CheckResult, type Closer, type Transition } from "./checks.ts";
+import { afterMergeChecksPath, loadChecks, saveChecks } from "./store.ts";
+
+const ROUTE = /^\/api\/after-merge\/([A-Za-z0-9_-]+)\/([1-9]\d*)(\/follow-up)?$/;
+const RESULTS: readonly unknown[] = ["passed", "failed", "superseded"];
+/** Who may close a check through the route: the person's session or a person. The board closes its own checks in its sweep. */
+const ROUTE_CLOSERS: readonly unknown[] = ["session", "person"];
+
+/** What the routes need of the board: where its state is, and its clock. */
+export type CheckRouteBoard = Readonly<{ stateDir: string; now: () => number }>;
+
+/** The close a request names. A malformed one THROWS, which the board answers with 400 and the sentence. */
+function closeOf(body: Json): { result: CheckResult; evidence: string; by: Closer } {
+  if (!RESULTS.includes(body.result)) throw new Error("result must be passed, failed or superseded");
+  if (typeof body.evidence !== "string") throw new Error("evidence must be one line saying what was seen, or why the check is superseded");
+  if (!ROUTE_CLOSERS.includes(body.by)) throw new Error("by must be session or person");
+  return { result: body.result as CheckResult, evidence: body.evidence, by: body.by as Closer };
+}
+
+/** The writer request a follow-up names, or null for none. A malformed one THROWS. */
+function writerOf(body: Json): string | null {
+  if (body.writer === null || (typeof body.writer === "string" && body.writer !== "")) return body.writer;
+  throw new Error("writer must be the writer request the follow-up was filed by, or null for none");
+}
+
+/** What a close and a follow-up answer: the check as it now is, and a failed check's follow-up request pre-filled while its follow-up is undecided. */
+export type CheckAnswer = Readonly<{ check: CheckRecord; followUpText: string | null }>;
+
+/** Apply a transition to the file, read and written back with nothing awaited in between: the changed check and, for a failed close, its follow-up request pre-filled; or the refusal. */
+function answerOf(path: string, transition: (file: ChecksFile) => Transition): [number, unknown] {
+  const answer = transition(loadChecks(path));
+  if (!answer.ok) return [answer.status, { error: answer.error }];
+  saveChecks(path, answer.file);
+  const { check } = answer;
+  const answered: CheckAnswer = { check, followUpText: check.state === "failed" && check.followUp === undefined ? followUpText(check) : null };
+  return [200, answered];
+}
+
+/** The After-merge routes, or undefined when the request names none of them. */
+export function afterMergeRoute(board: CheckRouteBoard, method: string, path: string, body: Json): [number, unknown] | undefined {
+  const named = ROUTE.exec(path);
+  if (method !== "POST" || named === null) return undefined;
+  const [, key, place, followUp] = named;
+  const id = checkIdOf(key, Number(place));
+  const file = afterMergeChecksPath(board.stateDir);
+  if (followUp !== undefined) {
+    const writer = writerOf(body);
+    return answerOf(file, (checks) => decideFollowUp(checks, id, writer));
+  }
+  const close = closeOf(body);
+  return answerOf(file, (checks) => closeCheck(checks, id, close, board.now()));
+}
+
+/** The rows `GET /api/queue` lists as `afterMergeChecks`, read from the file each time. A file that cannot be read lists none: the sweep logs why, and writes nothing over it. */
+export function afterMergeView(stateDir: string): AfterMergeCheck[] {
+  try {
+    return afterMergeChecks(loadChecks(afterMergeChecksPath(stateDir)));
+  } catch {
+    return [];
+  }
+}

@@ -22,6 +22,9 @@ import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
 import { ESCALATION_RULE } from "./escalation.ts";
+import { MOVE_RULE } from "./after-merge-move.ts";
+import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
+import { heldText, PUSH_ONCE_RULE } from "./ci-spend/rules.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
@@ -425,6 +428,10 @@ ${PLANNER_DECISIONS}
 
 ${PLANNER_TICKET_DECISIONS}
 
+${MOVE_RULE}
+
+${AFTER_MERGE_CHECKS_RULE}
+
 ${MISSING_SKILL}
 
 ${STALLING_COMMANDS}
@@ -505,6 +512,10 @@ ${PARENT_ONLY_PLAN}
 ${PLANNER_DECISIONS}
 
 ${PLANNER_TICKET_DECISIONS}
+
+${MOVE_RULE}
+
+${AFTER_MERGE_CHECKS_RULE}
 
 ${MISSING_SKILL}
 
@@ -622,17 +633,17 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], numberedSteps = false, opened = [] }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], numberedSteps = false, opened = [], held }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
-  read?: TicketRead; findings?: readonly Finding[]; numberedSteps?: boolean; opened?: readonly OpenedPull[];
+  read?: TicketRead; findings?: readonly Finding[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
 
-You are an unattended worker. Nobody will answer you in this run. Decide anything that is not on the escalation list yourself, in line with the plan and the ticket's Decisions, and list each such choice under "Decisions made without a person" in the pull request body. End with \`needs-human\` only for an item on the list, naming its id.
+${heldText(held)}You are an unattended worker. Nobody will answer you in this run. Decide anything that is not on the escalation list yourself, in line with the plan and the ticket's Decisions, and list each such choice under "Decisions made without a person" in the pull request body. End with \`needs-human\` only for an item on the list, naming its id.
 
 ${WORKER_DECISIONS}
 
@@ -658,7 +669,7 @@ ${repos}
 
 1. From the ticket, decide which repository the fix belongs in. ${repo === null ? "" : `The ticket's project names \`${repo}\`, so its work lands there unless it belongs in another of these repositories: then name that one. `}A ticket may name a repository that has since been retired or moved into another one: check where the code lives now, and use that. If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a \`wrong-repo\` outcome naming where it belongs.
 2. Make your worktree there with \`${worktreeCommand} <repo>\`. It creates \`${folder}/<repo>\` on the ticket's branch \`${ticket.branch}\`, from the repository's default branch, and on a retry it gives you back the one an earlier run made: continue from its commits rather than starting again. Run it once per repository you change; most tickets need one.
-3. Work, commit and push only inside those worktrees. Read each repository's \`CLAUDE.md\` and \`AGENTS.md\` before you change anything, and use the install, test, typecheck and lint commands they give, scoped to the package you change.
+3. Work, commit and push only inside those worktrees. Read each repository's \`CLAUDE.md\` and \`AGENTS.md\` before you change anything, and use the install, test, typecheck and lint commands they give, scoped to the package you change. ${PUSH_ONCE_RULE}
 
 ## What to do
 
@@ -709,9 +720,9 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
  * handed the run back for at its round cap, when it was (`conflictsIn`). `prReview` is the skill `tickets.prReview`
  * names, which each round runs on its whole diff before it pushes, or null for none.
  */
-export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, conflict, prReview = null, read, previous }: {
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, conflict, prReview = null, read, previous, held }: {
   ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
-  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; conflict?: string; prReview?: string | null; read?: TicketRead; previous?: TicketRead;
+  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; conflict?: string; prReview?: string | null; read?: TicketRead; previous?: TicketRead; held?: string;
 }): string {
   const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
   const who = resumed
@@ -723,7 +734,7 @@ export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewN
       CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null, prReview);
   return `# ${ticket.key}: ${round.title} for ${ticket.title}
 
-${round.opening}
+${heldText(held)}${round.opening}
 
 ## The ticket
 
