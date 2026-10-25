@@ -7,6 +7,7 @@ import { promptNote, reasonOf } from "../../../src/ticket-mode/board-view/run-re
 import { publishTerminalLink, repoLabel, shownStatus, terminalLink, waitNote, workingNote } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import { openPulls, pullsOf, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
+import { cycleNote } from "../../../src/ticket-mode/board-view/wait-cycles.ts";
 import { clockOf, versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
 import { diffLines, learnsFrom, ticketChangeOf, type DiffLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
 import type { PlannedStep, QueueView, RunAction, ViewConnection } from "../api/types.ts";
@@ -20,11 +21,11 @@ import { labelOf, noteLines, since, timingOf, tokensOf, type NoteContext, type R
 export type RunBoard = "running" | "needs" | "handback" | "ready" | "publishing" | "published" | "done" | "failed" | "cancelled" | "queued" | "blocked" | "awaiting";
 
 /**
- * The board of each status. A status with no board of its own takes the closest one: Talking, Planning and Reviewing the running board, Checked the Done board. Publishing and Published have the boards
+ * The board of each status. A status with no board of its own takes the closest one: Talking, Waiting, Planning and Reviewing the running board, Checked the Done board. Publishing and Published have the boards
  * the Publish tickets drew (A11-218). Needs you is two boards, told apart by `boardOf`.
  */
 const BOARD_OF_STATUS: Readonly<Record<RunStatus, RunBoard | "needs-you">> = {
-  "needs-you": "needs-you", talking: "running", working: "running", planning: "running", reviewing: "running", blocked: "blocked", queued: "queued",
+  "needs-you": "needs-you", talking: "running", working: "running", waiting: "running", planning: "running", reviewing: "running", blocked: "blocked", queued: "queued",
   "awaiting-review": "awaiting", "ready-to-merge": "ready", publishing: "publishing", published: "published", checked: "done", completed: "done", failed: "failed", cancelled: "cancelled",
 };
 
@@ -92,12 +93,22 @@ function bodyOf(entry: RunEntry, queue: QueueView, board: RunBoard): string | nu
   }
 }
 
-/** The callout of a run: the board's title, the backend's own words, and the question the worker asked when it kept one. A string the backend has none of is not drawn. PURE. */
+/** Whether a run is Waiting on the running board: parked on a wait, with nothing at work in it (A11-272). */
+const isWaitingOnRunning = (entry: RunEntry, queue: Pick<QueueView, "publish" | "entries">, board: RunBoard): boolean =>
+  board === "running" && shownStatus(entry, queue.publish, queue.entries) === "waiting";
+
+/** The board whose icon and status colour the header draws: the run's board, except that a Waiting run takes the Queued board's still ring and quiet colour, since nothing is at work in it (A11-272). */
+export const drawnBoardOf = (entry: RunEntry, queue: Pick<QueueView, "publish" | "entries">, board: RunBoard): RunBoard => (isWaitingOnRunning(entry, queue, board) ? "queued" : board);
+
+/** The title of a board's callout for a run: the board's, except that a run Waiting on the running board says Waiting, since nothing is at work in it (A11-272). */
+const titleOf = (entry: RunEntry, queue: QueueView, board: RunBoard): string => (isWaitingOnRunning(entry, queue, board) ? labelOf("waiting") : CALLOUT_TITLE[board]);
+
+/** The callout of a run: the board's title, the backend's own words, the wait cycle it is in when it is in one, and the question the worker asked when it kept one. A string the backend has none of is not drawn. PURE. */
 export function calloutOf(entry: RunEntry, queue: QueueView, board: RunBoard): Callout {
   // A running agent that was refused a safety prompt says so beside what it is doing.
   const declined = board === "running" ? promptNote(entry) : null;
-  const paragraphs = [...new Set([bodyOf(entry, queue, board), declined, reasonOf(entry).question].filter(present))];
-  return { title: CALLOUT_TITLE[board], paragraphs, help: HELP[board] ?? null };
+  const paragraphs = [...new Set([bodyOf(entry, queue, board), declined, cycleNote(entry, queue.entries), reasonOf(entry).question].filter(present))];
+  return { title: titleOf(entry, queue, board), paragraphs, help: HELP[board] ?? null };
 }
 
 /** The pull request the Ready board's button opens: the run's first open one, else its first, with the address safe to link. Null when it has none or its address is not http or https. PURE. */

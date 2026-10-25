@@ -5,18 +5,15 @@ import type { WorkingNote } from "../queue/queue-entries-and-outcomes.ts";
 import { type Judged } from "./wait-verdict.ts";
 import { pendingText } from "./wait-text.ts";
 import { type Wait, type Woke, subjectOf, waitKey } from "./wait-types.ts";
+import { BACKGROUND_WAIT_MS, deadlineOf } from "../board-view/wait-deadline.ts";
 
-/** How long a run waiting on background work may sit idle past its `working` outcome, when the outcome gives no `until`: three hours. */
-export const BACKGROUND_WAIT_MS = 3 * 60 * 60_000;
+export { BACKGROUND_WAIT_MS, deadlineOf };
 
 /** The most times the board offers a wake prompt that herdr keeps refusing, before it marks the run stalled with the refusal. */
 export const MAX_WAKE_TRIES = 3;
 
 /** The start of the stall reason of a run idle past the end of its wait: the deadline and what it waited on follow. */
 const WAITED_PAST = "waited past";
-
-/** The time (ms) a waiting note's wait ends: the `until` its outcome gave, whatever it is, or {@link BACKGROUND_WAIT_MS} after the outcome file was written, so a newer outcome starts it again. PURE. */
-export const deadlineOf = ({ at, until }: Pick<WorkingNote, "at" | "until">): number => until ?? at + BACKGROUND_WAIT_MS;
 
 /** What a note's wait was on, in words: the declared items still pending when the worker was woken late, else the job it named, else nothing in particular. */
 function waitedOn(note: WorkingNote): string | null {

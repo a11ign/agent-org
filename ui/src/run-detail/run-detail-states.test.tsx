@@ -128,3 +128,15 @@ describe("the sections", () => {
     expect(textOf(document.querySelector(".prop-tokens"))).toBe("74.2M in · 189k out");
   });
 });
+
+describe("a run parked on a wait (A11-272)", () => {
+  it("is drawn with the word Waiting, the still ring and no spinner, and its callout is titled Waiting", async () => {
+    const parked = { ...RUNS_OF.running.runs[0], working: { reason: "waits", at: Date.now(), waiting: true, waits: [{ kind: "ticket", key: "A11-229" }], waitText: "Waiting on ticket A11-229 (In Progress)" } };
+    await pageFor("running", detailStand("running", { runs: [parked] }));
+    expect(textOf(document.querySelector(".run-head-line")).startsWith("Waiting·")).toBe(true);
+    expect(document.querySelector(".run-head-icon svg")?.getAttribute("aria-label")).toBe("Waiting");
+    expect(document.querySelector(".run-head-icon .spin")).toBeNull();
+    expect(callout().getByText("Waiting")).toBeTruthy();
+    expect(callout().queryByText("Working")).toBeNull();
+  });
+});

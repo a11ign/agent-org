@@ -3615,7 +3615,7 @@ test("A11-236: a run whose pane shows 2 shells is waiting on background work pas
   const { pool, entry, h, pass } = await idleWithWork(PANE("2 shells"));
   const logged = await captureStderr(async () => { await pass(31 * 60_000); await pass(60_000); });
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled, entry("NBF-1").working?.waiting], ["running", undefined, true]);
-  assert.equal(runStatus(entry("NBF-1")), "working", "still In progress");
+  assert.equal(runStatus(entry("NBF-1")), "waiting", "Waiting on its background work, and not In progress (A11-272)");
   assert.equal(logged.filter((line) => line.includes("NBF-1") && line.includes("idle")).length, 0, "no stall line");
   assert.equal(resumes(h), 0, "not prompted");
   await pool.tick();

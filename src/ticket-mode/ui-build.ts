@@ -5,13 +5,18 @@
 // the checkout's own output of `pnpm ui:build`, for dev. A folder counts only when it holds `index.html`. The lookup is cheap and the caller makes it on each request, so a build made
 // while `ticket:ui` runs is served without a restart.
 //
+// A RELEASE VERSION FOLDER FALLS BACK TO THE PREVIOUS BUILD (A11-284): the board is served from {@link servedCandidates}, which for a release folder is its own `ui-build/` and then the `ui-build/` of each older
+// release folder beside it. A version whose build is not there yet shows the previous one, whose page (A11-217) says Updating and then Back. `doctor` still reads {@link buildCandidates}: the running version's own build.
+//
 // A PATH THAT LEAVES THE BUILD IS NEVER SERVED. It is decoded and normalised, and a result outside the build's root, or whose real path (after symlinks) is, is "not found".
 //
 // A CLIENT-SIDE ROUTE IS ANSWERED WITH THE NEAREST PAGE ABOVE IT: Astro's static output writes each route as `<route>/index.html`, so `/settings/plugins/x` takes `settings/index.html` when
 // that exists and the root page when not. A MISSING ASSET IS NEVER ANSWERED WITH A PAGE: a path with a file extension, or under `_astro/`, that is not there is "not found".
-import { realpathSync, statSync } from "node:fs";
-import { extname, join, posix, resolve, sep } from "node:path";
+import { readdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, extname, join, posix, resolve, sep } from "node:path";
 import { TOOL_ROOT } from "../install/paths.ts";
+import { versionNameOf } from "../install/tool-versions.ts";
+import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 
 /** The folder beside the running version that a release's build is unpacked into. A11-191's install, auto-update and doctor import the name from here. */
 export const UI_BUILD_DIR = "ui-build";
@@ -22,9 +27,38 @@ const DEV_BUILD_DIR = join("ui", "dist");
 /** The folder Astro writes content-hashed files into: the only files that never change under their name. */
 const HASHED_DIR = "_astro";
 
-/** The directories the build is looked for in, first to last. */
+/** The directories the build is looked for in, first to last. `doctor` reads the running version's own build from this list. */
 export function buildCandidates(root: string = TOOL_ROOT): readonly string[] {
   return [join(root, UI_BUILD_DIR), join(root, DEV_BUILD_DIR)];
+}
+
+/** The release tag of the version folder `root` is, or null for a checkout, a `main-<sha>` folder and any other folder. */
+function releaseFolderOf(root: string): string | null {
+  const name = versionNameOf(root);
+  return name !== null && isReleaseTag(name) ? name : null;
+}
+
+/** Whether `root` is a release version folder (`versions/<tag>`), which a release gives its build, and not a checkout or a `main-<sha>` folder, which no release does. */
+export const isReleaseFolder = (root: string): boolean => releaseFolderOf(root) !== null;
+
+/** The release folders beside `root` that are older than `tag`, newest first. A folder that cannot be listed has none. */
+function olderReleases(root: string, tag: string): string[] {
+  try {
+    return readdirSync(dirname(root)).filter((name) => isReleaseTag(name) && compareReleaseTags(name, tag) < 0).toSorted((a, b) => compareReleaseTags(b, a));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The directories the board SERVES the build from (A11-284). A release version folder is not a checkout, so it looks in its own `ui-build/` and then in the `ui-build/` of each older release folder
+ * beside it, newest first: a version that has no build of its own shows the previous build, whose page says Updating and then Back (A11-217). It never looks in `ui/dist/`. A checkout and a
+ * `main-<sha>` folder keep {@link buildCandidates}.
+ */
+export function servedCandidates(root: string = TOOL_ROOT): readonly string[] {
+  const tag = releaseFolderOf(root);
+  if (tag === null) return buildCandidates(root);
+  return [join(root, UI_BUILD_DIR), ...olderReleases(root, tag).map((older) => join(dirname(root), older, UI_BUILD_DIR))];
 }
 
 /** The path of `file`'s real file, or null when it is not a file (or cannot be read: a missing file and a refused one are the same to a visitor). */
