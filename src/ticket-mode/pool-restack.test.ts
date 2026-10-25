@@ -44,7 +44,7 @@ const conflicting = (host: ReturnType<typeof createFakeCodeHost>, ...urls: strin
 function world(over: { entries?: (entries: Record<"bottom" | "next", Entry>) => Entry[]; codeHost?: (host: ReturnType<typeof createFakeCodeHost>) => CodeHost; next?: Record<string, unknown> } = {}) {
   const host = createFakeCodeHost();
   host.seedPull(REPOSITORY, 1, { head: BOTTOM_BRANCH, state: "merged" });
-  host.seedPull(REPOSITORY, 2, { head: NEXT_BRANCH, base: BOTTOM_BRANCH });
+  host.seedPull(REPOSITORY, 2, { head: NEXT_BRANCH, base: BOTTOM_BRANCH, files: ["src/the-next-member.ts"] });
   host.seedPull(REPOSITORY, 3, { head: "a11-3-the-top-member", base: NEXT_BRANCH });
   host.pullAt(NEXT)!.head = NEXT_HEAD;
   const entries = { bottom: bottomRun(), next: stackedRun("A11-2", NEXT, { key: "A11-1", branch: BOTTOM_BRANCH }, over.next) };
@@ -75,7 +75,7 @@ test("A11-248: a pull request is not restacked again after a restart that lost t
   const { sweep, updates, ctx } = world({ next: { retargets: { [NEXT]: "#2 restacked on main after #1 merged" } } });
   sweep();
   assert.deepEqual(updates(), []);
-  assert.equal(ctx.restacked.size, 0);
+  assert.deepEqual([...ctx.restacked], [[NEXT, { merged: BOTTOM, ownChangesAt: NEXT_HEAD }]], "no restack was made; the read of its files (it holds one of its own) is all the board remembers");
 });
 
 test("A11-248: a branch that already has the default branch is noted restacked, and is then handed to the arm bot as before", () => {

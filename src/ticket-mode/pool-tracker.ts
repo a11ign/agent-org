@@ -27,7 +27,8 @@ import { readPullDeclarations } from "./pool-pull-declarations.ts";
 import { adoptNamedBlockers, releaseMergedBlockers } from "./pool-blocker-cleared.ts";
 import { askUpdate } from "./pool-checks.ts";
 import { recordClosedWork } from "./pool-closed-work.ts";
-import { isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
+import { closeEmptyMember } from "./pool-restack-close.ts";
+import { isEmptyMemberNote, isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
@@ -350,10 +351,10 @@ function factsOf(ctx: PoolContext, url: string, read: Map<string, StackMergeFact
   return read.get(url) ?? null;
 }
 
-/** What {@link sweepRestacks} decided for a run: the note of each pull request, the pull requests whose branch it moved or found conflicting, and the feedback of the conflict round to start. */
+/** What {@link sweepRestacks} decided for a run: the note of each pull request, the pull requests whose branch it moved, found conflicting or has closed (or is to close), and the feedback of the conflict round to start. */
 type RestackSweep = Readonly<{ notes: Record<string, string>; moved: ReadonlySet<string>; feedback: readonly string[] }>;
 
-/** What the restack decided for one pull request: its note (null clears it), whether its branch moved or conflicts, and the feedback of the conflict round it earns. */
+/** What the restack decided for one pull request: its note (null clears it), whether its branch moved or conflicts or the member is empty, and the feedback of the conflict round it earns. */
 type MemberRestack = Readonly<{ note: string | null; moved: boolean; feedback: string | null }>;
 
 /** The restack notes a run has now, for the pull requests it still holds open. */
@@ -433,11 +434,15 @@ function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates,
   const read = below === null ? null : factsOf(ctx, url, facts);
   if (below === null || read === null) return null;
   const step = restackStep({ facts: read, below, done, previousNote: previous });
-  if (!step.restack) return { note: step.note, moved: false, feedback: null };
+  if (!step.restack) {
+    const closing = done === undefined ? null : closeEmptyMember(ctx, entry, { url, below, done, read, previousNote: previous });
+    // A note other than "restacked" means the member is empty (closed, or to be closed): it is not handed to the arm bot.
+    return closing === null ? { note: step.note, moved: false, feedback: null } : { note: closing, moved: !isRestackedNote(closing), feedback: null };
+  }
   const result = askUpdate(ctx, url, read.head);
   const outcome: RestackOutcome = result.kind === "conflict" ? { kind: "conflict", round } : result;
   const note = restackNote({ url, defaultBranch: read.defaultBranch, below, outcome });
-  if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head });
+  if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head, ...(result.kind === "up-to-date" ? { upToDate: true as const } : {}) });
   if (result.kind === "updated") followHead(ctx, key, url, read.head);
   log(`${key}: ${note}`);
   const feedback = result.kind === "conflict" && round === "round" ? restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }) : null;
@@ -446,7 +451,7 @@ function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates,
 
 /** The restack a pull request's note says was made: the note stands in for the memory a restart lost. A note about a conflict or a refusal does not, so the restack is made again and finds the conflict, or finds it resolved. */
 function doneFromNote(note: string | undefined, url: string): { merged: string } | undefined {
-  const merged = note === undefined || !isRestackedNote(note) ? null : restackedAfter(note, url);
+  const merged = note === undefined || !(isRestackedNote(note) || isEmptyMemberNote(note)) ? null : restackedAfter(note, url);
   return merged === null ? undefined : { merged };
 }
 
