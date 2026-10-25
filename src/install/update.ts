@@ -48,7 +48,7 @@ import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { HOUR_MS } from "./update-safety.ts";
 import type { StepResult } from "../plugins/manifest.ts";
 import { findBun } from "./bun.ts";
-import { gitRemoteTags, fetchHerdrNewest, herdrStatusPath, herdrUpkeep, runHerdr, writeHerdrStatus, type HerdrNewest, type HerdrRun, type HerdrUpkeep } from "./herdr-upkeep.ts";
+import { gitRemoteTags, fetchHerdrNewest, herdrStatusPath, herdrUpkeep, readHerdrStatus, runHerdr, writeHerdrStatus, type HerdrNewest, type HerdrRun, type HerdrUpkeep } from "./herdr-upkeep.ts";
 import { herdrConfigDir } from "./terminal.ts";
 
 export type Channel = "release" | "main";
@@ -130,6 +130,7 @@ export function herdrWiring(newestHerdr: HerdrNewest, services: ServiceDeps, sea
         return bun === null ? null : dirname(bun);
       },
       path: env.PATH ?? "/usr/bin:/bin",
+      lastStatus: () => readHerdrStatus(herdrStatusPath(env, home)),
       terminalState: () => serviceState("terminal", services),
       restartTerminal: () => reloadService("terminal", services),
       newestHerdr,
@@ -154,6 +155,16 @@ export function update(options: { version: string | undefined; channel: Channel;
   }
 }
 
+/**
+ * `update`, and the exit status of the run: 1 when herdr's upkeep met a plugin step that failed for the first time (A11-287), so the person or the service manager sees the update fail once. The
+ * move of the tool, if any, stays applied; the same failure on a later run is held and exits 0.
+ */
+export function runUpdate(options: Parameters<typeof update>[0], deps: UpdateDeps): number {
+  let newFailures = 0;
+  update(options, { ...deps, herdr: () => { const upkeep = deps.herdr(); newFailures = upkeep.newFailures; return upkeep; } });
+  return newFailures > 0 ? 1 : 0;
+}
+
 /** What the plugins keep true, said as each says it: an error for one that failed, and nothing for one with nothing to say. */
 function keepPlugins(deps: UpdateDeps): void {
   for (const { ok, detail } of deps.upkeep()) {
@@ -175,7 +186,8 @@ function sayUpkeep(deps: UpdateDeps, { said, failed }: ConventionsUpdate): void 
 
 /**
  * herdr's integrations and plugins, kept current at every update (A11-184): what it changed is said, and a step that failed is an error. It runs whatever the move did, a drain included: none
- * of it reaches a live run (ADR 0004), and only the terminal service restarts, when the web UI moved. Neither fails the update.
+ * of it reaches a live run (ADR 0004), and only the terminal service restarts, when the web UI moved. A failure is an error line and does not fail the move; `runUpdate` turns a plugin step that failed
+ * for the first time into exit 1.
  */
 function keepHerdr(deps: UpdateDeps): void {
   sayUpkeep(deps, deps.herdr());
@@ -439,8 +451,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       const { channel } = values;
       const upkeep = await pluginUpkeep(hostSettings(), process.env, { hostText: readOrNull(hostFilePath(process.env)) });
       const newestHerdr = await fetchHerdrNewest(runHerdr);
-      withUpdateLock(toolDir(process.env, homedir()), () => update({ version: values.version, channel, force: values.force }, defaultUpdateDeps(upkeep, newestHerdr)));
-      return 0;
+      return withUpdateLock(toolDir(process.env, homedir()), () => runUpdate({ version: values.version, channel, force: values.force }, defaultUpdateDeps(upkeep, newestHerdr)));
     } catch (err) {
       console.error(`agent-org update: ${(err as Error).message}`);
       return 2;

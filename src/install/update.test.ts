@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { herdrWiring, update, UpdateRefusal } from "./update.ts";
+import { herdrWiring, runUpdate, update, UpdateRefusal } from "./update.ts";
 import { readLiveRuns } from "./instance-queue.ts";
 import { currentVersionName } from "./tool-install.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
@@ -198,7 +198,7 @@ test("A11-160: a plugin that cannot be imported, and a keep that throws, are sai
 });
 
 // A11-184: herdr's integrations and plugins are kept current at the end of every update, whatever the move did.
-const HERDR_LINES = { said: ["reinstalled herdr's claude integration (it was outdated (v8 < v10); now current (v10))"], failed: ["the herdr plugin devswha/herdr-web-ui is at @35bf28fa and `herdr plugin install devswha/herdr-web-ui --ref v0.4.13 -y` failed: no"] };
+const HERDR_LINES = { newFailures: 0, said: ["reinstalled herdr's claude integration (it was outdated (v8 < v10); now current (v10))"], failed: ["the herdr plugin devswha/herdr-web-ui is at @35bf28fa and `herdr plugin install devswha/herdr-web-ui --ref v0.4.13 -y` failed: no"] };
 
 test("A11-184: update logs what herdr's upkeep changed as it does the plugins' and the conventions', and a failure is an error that fails nothing", () => {
   const f = installed();
@@ -209,11 +209,22 @@ test("A11-184: update logs what herdr's upkeep changed as it does the plugins' a
   assert.deepEqual(f.errors, [`agent-org update: ${HERDR_LINES.failed[0]}`]);
 });
 
+test("A11-287: an update whose herdr upkeep met a new plugin failure exits 1 after the tool moved, and one with a held failure exits 0", () => {
+  const f = installed();
+  const failure = { said: [], failed: ["the herdr plugin devswha/herdr-web-ui is at v0.4.13 and `herdr plugin install` failed (exit 1); herdr said:\nboom"], newFailures: 1 };
+  assert.equal(runUpdate({ version: undefined, channel: "release" }, f.deps({ herdr: () => failure })), 1);
+  assert.equal(currentVersionName(f.tool), "v0.10.0", "the move of the tool stays applied");
+  assert.deepEqual(f.errors, [`agent-org update: ${failure.failed[0]}`], "and the failure is one error line");
+  const held = installed();
+  assert.equal(runUpdate({ version: undefined, channel: "release" }, held.deps({ herdr: () => ({ said: [], failed: [], newFailures: 0 }) })), 0);
+  assert.equal(runUpdate({ version: undefined, channel: "release" }, held.deps({ herdr: () => ({ said: [], failed: ["the terminal service did not restart"], newFailures: 0 }) })), 0, "a failure that is not new does not fail the run");
+});
+
 test("A11-184: herdr's upkeep runs when nothing is newer, when the build fails, and while a breaking release drains", () => {
   const quiet = installed();
   update({ version: undefined, channel: "release" }, quiet.deps());
   let ran = 0;
-  const count = () => { ran += 1; return { said: [], failed: [] }; };
+  const count = () => { ran += 1; return { said: [], failed: [], newFailures: 0 }; };
   update({ version: undefined, channel: "release" }, quiet.deps({ herdr: count }));
   assert.equal(ran, 1, "nothing newer");
   const broken = installed();

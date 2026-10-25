@@ -15,10 +15,10 @@
 import { isAbsolute, join } from "node:path";
 import type { Env } from "./paths.ts";
 import { resolveProviders } from "../ticket-mode/providers.ts";
+import { pluginEntries } from "./herdr-plugins.ts";
 
-/** The plugin, as `herdr plugin install` takes it, and as herdr's `plugins.json` names it. */
+/** The plugin, as `herdr plugin install` takes it: its GitHub repository. `plugins.json` is read by that source, never by the manifest id, which a release can rename (A11-287). */
 export const TERMINAL_PLUGIN = "devswha/herdr-web-ui";
-export const TERMINAL_PLUGIN_ID = "devswha.herdr-web-ui";
 export const DEFAULT_TERMINAL_PORT = 7318;
 export const DEFAULT_HERDR_SESSION = "tickets";
 
@@ -31,20 +31,11 @@ export function herdrConfigDir(env: Env, home: string): string {
 /** The socket of the herdr session `session`: `<herdr>/sessions/<session>/herdr.sock`. */
 export const herdrSocket = (env: Env, home: string, session: string) => join(herdrConfigDir(env, home), "sessions", session, "herdr.sock");
 
-/** The plugin's installed directory, from the text of herdr's `plugins.json`, or null when it is not installed or the file is not herdr's. */
-export function pluginRoot(pluginsJson: string | null): string | null {
-  if (pluginsJson === null) return null;
-  let plugins: unknown;
-  try {
-    plugins = JSON.parse(pluginsJson);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(plugins)) return null;
-  const entry = plugins.find((plugin) => typeof plugin === "object" && plugin !== null && plugin.plugin_id === TERMINAL_PLUGIN_ID);
-  const root = entry?.plugin_root;
-  return typeof root === "string" && isAbsolute(root) ? root : null;
-}
+/**
+ * The plugin's installed directory, from the text of herdr's `plugins.json`: the root of the current copy of `TERMINAL_PLUGIN` (the newest release when a renamed id left two), or null when it is
+ * not installed or the file is not herdr's.
+ */
+export const pluginRoot = (pluginsJson: string | null): string | null => pluginEntries(pluginsJson, TERMINAL_PLUGIN)?.current.root ?? null;
 
 /** The `tickets.terminal` onboard writes for a terminal service on `port`. */
 export const terminalAddress = (port: number) => `http://127.0.0.1:${port}/?ws={workspace}&pane={pane}&view=terminal`;
