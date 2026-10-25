@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The instance measures how long its loop makes a request wait, and names what held it (A11-282, step 1 of 2). `GET /api/health` answers the loop's p50, p99 and max over the last minute, the worst since start, and the ten call sites whose synchronous `gh`, `git`, `herdr` or other spawns held it the longest, counted from start without editing any call site; a spawn of 250 ms or more is one line on the instance's stderr. The page service answers its own loop at its root `/api/health`. The board's sidebar shows `Loop p99 18 ms` under the connection pill, in the warning tone from 100 ms (`Loop p99 1.2 s: background work is holding the board`), with every reading in its tooltip, and nothing for an instance from before. `AGENT_ORG_TICK_MS`, `AGENT_ORG_TRACKER_MS` and `AGENT_ORG_FEEDBACK_MS` shorten the instance's intervals for the load script. `node scripts/loop-load.ts` times every read of a throwaway instance with a 2 s stand-in `gh`, and `node scripts/loop-watch.ts --minutes 60` reads this machine's instance over an hour.
