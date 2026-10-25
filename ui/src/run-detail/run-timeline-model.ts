@@ -21,7 +21,7 @@ const ROUND_WORDS: Readonly<Record<RoundCause, string>> = {
   feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head",
 };
 
-const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", terminal: "the run's own terminal" };
+const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", answer: "the board's answer", terminal: "the run's own terminal" };
 
 const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again" };
 
