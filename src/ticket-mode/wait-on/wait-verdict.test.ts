@@ -77,3 +77,23 @@ test("A11-245: a pull request, a ticket and a CI run in each state read as a sen
 test("A11-245: a finished job with no results location says nothing of one", () => {
   assert.equal(lineOf(job("finished", { results: null })), "fleet job fj-1 is done");
 });
+
+const ask = (result: string | null): Reading => ({ wait: { kind: "session", ask: "run `agent-org update` on the Mac and quote its last line" }, status: result === null ? "pending" : "finished", result });
+
+test("A11-275: an ask the session answered finishes the wait, and the line quotes the ask and the result for the worker", () => {
+  const verdict = judgeWaits([ask("installed 0.312.0")]);
+  assert.equal(verdict.outcome, "finished");
+  assert.deepEqual(verdict.lines, ["the person's session answered \"run `agent-org update` on the Mac and quote its last line\": installed 0.312.0"]);
+});
+
+test("A11-275: an ask not yet answered keeps the wait pending, and is never failed", () => {
+  const verdict = judgeWaits([ask(null), job("finished")]);
+  assert.equal(verdict.outcome, "pending");
+  assert.deepEqual(verdict.lines, ["the person's session: run `agent-org update` on the Mac and quote its last line has not answered yet"]);
+});
+
+test("A11-275: an ask over 80 characters is cut in the line, and the result is not", () => {
+  const long = "x".repeat(100);
+  const [line] = judgeWaits([{ wait: { kind: "session", ask: long }, status: "finished", result: "y".repeat(500) }]).lines;
+  assert.equal(line, `the person's session answered "${"x".repeat(80)}...": ${"y".repeat(500)}`);
+});

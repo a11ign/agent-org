@@ -49,3 +49,10 @@ test("A11-245: an item that could not be read says so and why", () => {
 test("A11-245: a run that has declared a wait and not been read yet names what it waits on", () => {
   assert.equal(pendingText([{ kind: "fleetJob", id: "fj-1" }, { kind: "ciRun", repository: "a11ign/x", runId: 9 }]), "Waiting on fleet job fj-1; CI run a11ign/x#9");
 });
+
+test("A11-275: the card says an ask for the person's session is asked and unanswered, then answered", () => {
+  const ask = (result: string | null): Reading => ({ wait: { kind: "session", ask: "run `agent-org update` on the Mac" }, status: result === null ? "pending" : "finished", result });
+  assert.equal(waitText([ask(null)], NOW), "Waiting on the person's session: run `agent-org update` on the Mac (asked, no answer yet)");
+  assert.equal(waitText([ask("installed 0.312.0")], NOW), "Waiting on the person's session: run `agent-org update` on the Mac (answered)");
+  assert.equal(pendingText([{ kind: "session", ask: "a".repeat(100) }]), `Waiting on the person's session: ${"a".repeat(80)}...`);
+});

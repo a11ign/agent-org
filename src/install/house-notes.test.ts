@@ -64,3 +64,11 @@ test("A11-245: the shipped working lines say to declare a wait the board reads a
   const own = lines.find((line) => line.startsWith("- Still running your own background work")) ?? "";
   assert.ok(own.includes("\"waitingOn\": \"<what>\", \"until\": \"<ISO time>\""), "the string form stays, for a worker's own shell or Monitor");
 });
+
+test("A11-275: the shipped worker notes send an ask only the person's session can do to a `session` wait, with its shape and both routes, and never to needs-human", () => {
+  assert.ok(WORKER_NOTES.includes("- Waiting on something only the person's session can do (running a command on the person's machine, reading the board, a live check): { \"kind\": \"working\", \"reason\": \"what you ask\", \"waitingOn\": [ { \"session\": \"<the exact command, where it runs, and what a pass looks like>\" } ], \"until\": \"<ISO time>\" }"));
+  assert.ok(WORKER_NOTES.includes("`GET /api/session-asks`") && WORKER_NOTES.includes("`POST /api/session-asks/<KEY>/answer`"));
+  assert.ok(WORKER_NOTES.includes("Never write `needs-human` for it."));
+  assert.ok(WORKER_NOTES.includes("A check that only the person's session can run now is not a stop: ask it with a `session` wait (below)."));
+  assert.ok(WORKER_NOTES.includes("`session` wait") && WORKER_NOTES.indexOf("## Proof before merge") < WORKER_NOTES.indexOf("## Outcome file shape"), "the sentence in Proof before merge points at the shape below it");
+});

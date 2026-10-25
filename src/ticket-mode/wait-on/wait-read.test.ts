@@ -201,3 +201,40 @@ test("A11-245: the fleet program is run with no shell, answers what it printed, 
   const refusing = fleetThat('echo "ran" > /dev/null');
   for (const id of ["--help", "-h", "a b", ""]) await assert.rejects(refusing(id), /is not a fleet job ID/, `an ID of ${JSON.stringify(id)} is never handed to the program`);
 });
+
+test("A11-275: an ask for the person's session is pending until the board holds its result, and then finished with it", async () => {
+  const ask = "run `agent-org update` on the Mac";
+  const wait: Wait = { kind: "session", ask };
+  const asked: string[] = [];
+  const answers = new Map<string, string>();
+  const { seams } = seamsOf({});
+  const withAnswers: WaitSeams = { ...seams, sessionResult: (text) => { asked.push(text); return answers.get(text) ?? null; } };
+  assert.deepEqual(await readWait(wait, withAnswers), { wait, status: "pending", result: null });
+  answers.set(ask, "installed 0.312.0");
+  assert.deepEqual(await readWait(wait, withAnswers), { wait, status: "finished", result: "installed 0.312.0" });
+  assert.deepEqual(asked, [ask, ask]);
+});
+
+test("A11-275: an ask the board cannot look up, or whose record throws, is unreadable and never a verdict", async () => {
+  const wait: Wait = { kind: "session", ask: "a" };
+  const { seams } = seamsOf({});
+  const none = await readWait(wait, seams);
+  assert.deepEqual([none.status, "why" in none && none.why], ["unreadable", "the board keeps no answers from the person's session here"]);
+  const broken = await readWait(wait, { ...seams, sessionResult: () => { throw new Error("session-answers.json is not a record of the session's answers"); } });
+  assert.deepEqual([broken.status, "why" in broken && broken.why], ["unreadable", "session-answers.json is not a record of the session's answers"]);
+});
+
+test("A11-275: a finished ask is not read again, and a pending one is read on every pass", async () => {
+  const wait: Wait = { kind: "session", ask: "a" };
+  let result: string | null = null;
+  let reads = 0;
+  const { seams } = seamsOf({});
+  const counting: WaitSeams = { ...seams, sessionResult: () => { reads += 1; return result; } };
+  const first = await readWaits([wait], new Map(), counting);
+  assert.equal(first[0].status, "pending");
+  result = "ok";
+  const second = await readWaits([wait], new Map(first.map((reading) => [waitKey(reading.wait), reading])), counting);
+  assert.equal(second[0].status, "finished");
+  await readWaits([wait], new Map(second.map((reading) => [waitKey(reading.wait), reading])), counting);
+  assert.equal(reads, 2, "the finished reading is kept");
+});

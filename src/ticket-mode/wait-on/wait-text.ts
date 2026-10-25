@@ -39,6 +39,7 @@ function detailOf(reading: Reading, now: number): string {
     if (pull.review !== null) return pull.review === "APPROVED" ? "approved" : "changes requested";
     return reading.wait.until === "reviewed" ? "open, not reviewed yet" : "open";
   }
+  if ("result" in reading) return reading.result === null ? "asked, no answer yet" : "answered";
   return reading.status === "finished" ? "done" : reading.status === "failed" ? "canceled" : reading.stateType;
 }
 

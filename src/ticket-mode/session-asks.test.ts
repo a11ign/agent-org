@@ -2,18 +2,23 @@
 // A11-277: an After-merge check the session runs is sent to it through `GET /api/session-asks`, with its ticket, its line and what would close it; a Needs-you check is not
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { createBoard, type QueueView } from "./server.ts";
+import { emptyQueue, saveQueue } from "./queue.ts";
+import { enqueue, type Queue, type WorkingNote } from "./queue/queue-entries-and-outcomes.ts";
+import { sessionAnswersPath } from "./session-answers.ts";
+import type { Ticket } from "./source.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { BOARD_LINES_2026_10_25 } from "./after-merge/board-lines-fixture.ts";
 import { emptyChecks, seedChecks, type ChecksFile, type ListedRun, type PlannedCheck } from "./after-merge/checks.ts";
 import { markOverdue, OVERDUE_MS } from "./after-merge/dispatch.ts";
 import { afterMergeChecksPath, changeChecks, loadChecks, saveChecks } from "./after-merge/store.ts";
 import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
-import { DEFAULT_CHECK_EVIDENCE, type SessionAsksView } from "./session-asks.ts";
+import { DEFAULT_CHECK_EVIDENCE, type AfterMergeAsk, type SessionAsksView } from "./session-asks.ts";
 
 const LINE = "Chairman session: the next major arrives as a ticket.";
 const PERSON_LINE = "The chairman chooses the name and licence.";
@@ -21,24 +26,31 @@ const PERSON_LINE = "The chairman chooses the name and licence.";
 const run = (key: string, lines: readonly string[]): ListedRun => ({ ticket: { key, url: `https://linear.app/a11ign/issue/${key}` }, finishedAt: 1_000, afterMerge: lines.map((line) => ({ line, owner: null })) });
 
 /** A board over a stub pool whose clock `clock.at` says, and whose state directory holds the checks `file` gives. */
-function board(file: ChecksFile = emptyChecks()) {
+function board(file: ChecksFile = emptyChecks(), queue?: Queue) {
   const dir = tmpDir("session-asks-");
   const clock = { at: 9_000 };
   const settings = parseTicketSettings({ clones: { "agent-org": "/r/agent-org" }, stateDir: dir });
   const noop = () => {};
   const pool = { tick: async () => {}, stop: noop, close: noop, dismiss: async () => {}, remove: async () => {}, respond: noop, reconcile: noop, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: noop,
     releaseReviewers: noop, retargetStacked: noop, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: noop, stopWriterRun: noop, reviewNewHeads: noop };
-  const made = createBoard({ settings, source: createFakeTracker(), codeHost: createFakeCodeHost(), key: "k".repeat(48), queuePath: join(dir, "tickets", "queue.json"), choicePath: join(dir, "choice.json"),
+  const queuePath = join(dir, "tickets", "queue.json");
+  if (queue !== undefined) saveQueue(queuePath, queue);
+  const made = createBoard({ settings, source: createFakeTracker(), codeHost: createFakeCodeHost(), key: "k".repeat(48), queuePath, choicePath: join(dir, "choice.json"),
     pool, now: () => clock.at, version: null, next: () => null });
   const path = afterMergeChecksPath(dir);
   saveChecks(path, file);
-  const asks = async (since?: number) => {
+  const everyAsk = async (since?: number) => {
     const [status, view] = await made.api("GET", "/api/session-asks", {}, new URLSearchParams(since === undefined ? {} : { since: String(since) }));
     assert.equal(status, 200);
     return view as SessionAsksView;
   };
+  /** The After-merge checks the session is asked to run: the first kind of ask. */
+  const asks = async (since?: number) => {
+    const view = await everyAsk(since);
+    return { at: view.at, asks: view.asks.filter((ask): ask is AfterMergeAsk => ask.kind === "after-merge-check") };
+  };
   const listed = async () => ((await made.api("GET", "/api/queue", {}))[1] as QueueView).afterMergeChecks;
-  return { ...made, dir, path, clock, asks, listed };
+  return { ...made, dir, path, clock, asks, everyAsk, listed };
 }
 
 const planned = (key: string, checks: readonly PlannedCheck[]) => new Map([[key, checks]]);
@@ -102,4 +114,67 @@ test("A11-277: the 33 After-merge lines on the board on 2026-10-25 each read an 
   const sent = (await asks()).asks;
   assert.equal(sent.length, 33);
   assert.deepEqual(new Set(sent.map(({ line }) => line)), new Set(BOARD_LINES_2026_10_25.map(([, line]) => line)), "every line is sent to the session");
+});
+
+const ASK = "On the person's Mac run `agent-org update` and quote its last line; a pass reads 'installed 0.312.0'";
+const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/a11ign/issue/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "A11", project: null, priority: 0 }) as Ticket;
+
+/** A queue whose runs wait as `notes` say, by ticket key, with the pull requests `prs` gives. */
+function queueOf(notes: Record<string, WorkingNote>, prs: Record<string, string[]> = {}): Queue {
+  const queued = enqueue(emptyQueue(5), Object.keys(notes).map(ticket), { model: "sonnet", effort: "high" }, 0, null);
+  return { ...queued, entries: queued.entries.map((entry) => ({ ...entry, working: notes[entry.ticket.key], ...(prs[entry.ticket.key] === undefined ? {} : { review: prs[entry.ticket.key].map((url) => ({ repo: "a11ign/agent-org", url })) }) })) };
+}
+
+const waitingOn = (ask: string, at: number, over: Partial<WorkingNote> = {}): WorkingNote => ({ reason: "needs the Mac", at, waits: [{ kind: "session", ask }], ...over });
+
+test("A11-275: a run waiting on the person's session is listed as a waiting-run ask, with its ticket, pull requests, ask, when it was declared and the route that answers it", async () => {
+  const pull = "https://github.com/a11ign/agent-org/pull/1906";
+  const { everyAsk } = board(emptyChecks(), queueOf({ "A11-266": waitingOn(ASK, 4_000) }, { "A11-266": [pull] }));
+  assert.deepEqual(await everyAsk(), { at: 9_000, asks: [
+    { kind: "waiting-run", key: "A11-266", url: "https://linear.app/a11ign/issue/A11-266", pullRequests: [pull], ask: ASK, sentAt: 4_000, answer: "/api/session-asks/A11-266/answer" },
+  ] });
+  assert.deepEqual((await everyAsk()).asks.map(({ kind }) => kind), ["waiting-run"], "listing it again changes nothing");
+});
+
+test("A11-275: listing a waiting run writes nothing, and the After-merge checks still list as before beside it", async () => {
+  const seeded = seedChecks(emptyChecks(), [run("A11-235", [LINE])], 1_000, planned("A11-235", [{ line: LINE, runner: "session", evidence: "one line" }]));
+  const { everyAsk, dir, path } = board(seeded, queueOf({ "A11-266": waitingOn(ASK, 4_000) }));
+  const view = await everyAsk();
+  assert.deepEqual(view.asks.map(({ kind }) => kind), ["after-merge-check", "waiting-run"], "the first kind, then the second");
+  assert.equal(view.asks[0].kind === "after-merge-check" && view.asks[0].sentAt, 9_000, "an After-merge check is sent when first listed");
+  assert.equal(existsSync(sessionAnswersPath(dir)), false, "the waiting run's listing wrote no answers file");
+  assert.equal(loadChecks(path).checks["A11-235#1"].sentAt, 9_000);
+});
+
+test("A11-275: a run whose ask has an answer is not listed, nor is one already woken, stalled or waiting on something else", async () => {
+  const { everyAsk, dir } = board(emptyChecks(), queueOf({
+    "A11-1": waitingOn(ASK, 1_000), "A11-2": waitingOn(ASK, 2_000, { woke: { at: 3_000, why: "late" } }), "A11-3": waitingOn(ASK, 2_000, { stalled: true }),
+    "A11-4": { reason: "r", at: 2_000, waits: [{ kind: "fleetJob", id: "fj-1" }] }, "A11-5": waitingOn(ASK, 2_000, { repeat: true }),
+  }));
+  assert.deepEqual((await everyAsk()).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-1"]);
+  writeFileSync(sessionAnswersPath(dir), JSON.stringify({ answers: [{ key: "A11-1", ask: ASK, at: 1_000, result: "ok", answeredAt: 1_500 }] }));
+  assert.deepEqual((await everyAsk()).asks, [], "answered for this declaration");
+  writeFileSync(sessionAnswersPath(dir), JSON.stringify({ answers: [{ key: "A11-1", ask: ASK, at: 500, result: "ok", answeredAt: 600 }] }));
+  assert.equal((await everyAsk()).asks.length, 1, "an answer to an earlier declaration of the same words is not this one's");
+});
+
+test("A11-275: ?since lists only the waiting runs declared after the read, oldest first", async () => {
+  const { everyAsk } = board(emptyChecks(), queueOf({ "A11-1": waitingOn(ASK, 3_000), "A11-2": waitingOn("another ask", 1_000), "A11-3": waitingOn(ASK, 8_000) }));
+  assert.deepEqual((await everyAsk()).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-2", "A11-1", "A11-3"]);
+  assert.deepEqual((await everyAsk(3_000)).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-3"]);
+  assert.deepEqual((await everyAsk(8_000)).asks, []);
+});
+
+test("A11-275: a batch is one run, listed once under its first ticket; one run with two asks lists both", async () => {
+  const { everyAsk } = board(emptyChecks(), queueOf({ "A11-1": { reason: "r", at: 1_000, waits: [{ kind: "session", ask: "first" }, { kind: "session", ask: "second" }] }, "A11-2": waitingOn("third", 2_000) }));
+  assert.deepEqual((await everyAsk()).asks.map((ask) => ask.kind === "waiting-run" && [ask.key, ask.ask]), [["A11-1", "first"], ["A11-1", "second"], ["A11-2", "third"]]);
+  const queued = queueOf({ "A11-1": waitingOn(ASK, 1_000), "A11-2": waitingOn(ASK, 1_000) });
+  const batched: Queue = { ...queued, entries: queued.entries.map((entry) => ({ ...entry, batch: "b1" })) };
+  assert.deepEqual((await board(emptyChecks(), batched).everyAsk()).asks.map((ask) => ask.kind === "waiting-run" && ask.key), ["A11-1"]);
+});
+
+test("A11-275: a file of answers that cannot be read makes the queue throw, not list nothing", async () => {
+  const { dir, api } = board(emptyChecks(), queueOf({ "A11-1": waitingOn(ASK, 1_000) }));
+  writeFileSync(sessionAnswersPath(dir), "not json");
+  await assert.rejects(async () => api("GET", "/api/session-asks", {}, new URLSearchParams()), SyntaxError);
 });

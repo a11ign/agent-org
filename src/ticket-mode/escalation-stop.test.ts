@@ -66,6 +66,18 @@ test("A11-257: a needs-human outcome that names no item, or one that is not on t
   assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 1 }, () => stopVerdict(bound).code), [2, 2, 0], "an agent is never held for ever: the board marks the stop that gets through");
 });
 
+test("A11-275: a worker that stops needs-human on an ask only the person's session can do is refused, and told to declare a `session` wait", () => {
+  const dir = tmpDir("ticket-hook-escalation-");
+  write(dir, { kind: "needs-human", reason: "run `agent-org update` on the Mac and quote its last line" });
+  const refused = stopVerdict(dir);
+  assert.equal(refused.code, 2, "an ask for the session names no item of the list, so it is no stop");
+  const said = refused.say.join("\n");
+  assert.ok(said.includes("\"waitingOn\": [ { \"session\": \"<the exact command, where it runs, and what a pass looks like>\" } ]"), "the refusal carries the shape of the wait it should declare");
+  assert.ok(said.includes("`POST /api/session-asks/<KEY>/answer`"));
+  write(dir, { kind: "working", reason: "needs the Mac", waitingOn: [{ session: "run `agent-org update` on the Mac and quote its last line" }], until: "2099-01-01T00:00:00Z" });
+  assert.equal(stopVerdict(dir).code, 0, "the declared wait is the stop it is allowed");
+});
+
 test("A11-257: an on-list question still stops", () => {
   for (const id of ["outward", "access", "discard", "frozen", "legal", "reserved", "contradicts"]) {
     const dir = tmpDir("ticket-hook-escalation-");
