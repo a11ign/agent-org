@@ -429,6 +429,12 @@ test("A11-80: a worker may end a turn on working only while its own background w
   ]) assert.match(brief, pattern);
 });
 
+test("A11-236: the brief tells a worker to write the job and the time before a long wait, and says what the board does with them", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.ok(brief.includes("Before a long wait, write `{ \"kind\": \"working\", \"reason\": \"...\", \"waitingOn\": \"<what>\", \"until\": \"<ISO time>\" }`"), "the shape, as the ticket words it");
+  assert.match(brief, /the board shows the run as waiting on background work until `until` \(3 hours after you wrote the file when there is no `until`\), and marks it stalled after that if no newer outcome came, naming what it waited on/);
+});
+
 test("A11-85: the brief says how to wait on a process started detached: a Monitor on its PID or its log, never a bare claim of working", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.match(brief, /A process you started detached is not background work of yours until a Monitor holds it: it wakes nothing when it ends, so arm a Monitor on its PID or its log \(`until ! kill -0 <pid>; do sleep 5; done`\) before you write `working`/);

@@ -269,17 +269,29 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   return kind === "stopped" ? "cancelled" : "failed";
 }
 
+/** How long a wait has run, as the board says a duration: `5 min`, `1 h 28 min`. PURE. */
+function waitedFor(ms: number): string {
+  const minutes = Math.max(0, Math.round(ms / 60_000));
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
 /**
- * The note a running run shows from its worker's `working` outcome: its reason, which says what of its own is still running, or, once its agent
- * has sat idle with no newer outcome for `tickets.stallMinutes`, that it has stalled, with that reason. Null for any other run. The run's status
- * stays In progress either way: nothing is asked of a person, and a stalled run is only flagged so it is not forgotten.
+ * The note a running run shows from its worker's `working` outcome: its reason, which says what of its own is still running; `Waiting on background work`
+ * when the board reads the run as waiting on it (A11-236), with how long it has, counted from the outcome's time, when `now` is given, and the job it named
+ * in place of the reason; or, once its agent has sat idle with no newer outcome for `tickets.stallMinutes`, or past the end of its wait, that it has stalled,
+ * with that reason. Null for any other run. The run's status stays In progress either way: nothing is asked of a person, and a stalled run is only flagged
+ * so it is not forgotten.
  */
-export function workingNote(entry: ViewEntry): Readonly<{ text: string; stalled: boolean }> | null {
+export function workingNote(entry: ViewEntry, now?: number): Readonly<{ text: string; stalled: boolean; waiting: boolean }> | null {
   const note = entry.working;
   if (entry.phase !== "running" || note === undefined) return null;
-  if (note.stalled !== true) return { text: note.reason, stalled: false };
-  // `stallReason` is queue.ts's BACKGROUND_GONE when the pane showed no background work; this module imports nothing, so it reads the reason as text.
-  return { text: `Stalled: ${note.stallReason ?? "idle with no newer outcome"} since it said: ${note.reason}`, stalled: true };
+  if (note.stalled === true) {
+    // `stallReason` is queue.ts's BACKGROUND_GONE when the pane showed no background work; this module imports nothing, so it reads the reason as text.
+    return { text: `Stalled: ${note.stallReason ?? "idle with no newer outcome"} since it said: ${note.reason}`, stalled: true, waiting: false };
+  }
+  if (note.waiting !== true) return { text: note.reason, stalled: false, waiting: false };
+  const lasted = now === undefined || note.at === undefined ? "" : ` for ${waitedFor(now - note.at)}`;
+  return { text: `Waiting on background work${lasted}: ${note.waitingOn ?? note.reason}`, stalled: false, waiting: true };
 }
 
 /**

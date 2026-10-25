@@ -963,21 +963,34 @@ test("A11-80: a running run whose worker wrote working is In progress, not Needs
   assert.equal(runStatus(working), "working", "In progress");
   assert.equal(statusCounts([working]).get("needs-you"), 0);
   assert.equal(isParked(working), false, "it holds its workspace as a live run, not parked");
-  assert.deepEqual(workingNote(working), { text: "the roll is still running", stalled: false });
+  assert.deepEqual(workingNote(working), { text: "the roll is still running", stalled: false, waiting: false });
   const stalled = { ...working, working: { reason: "the roll is still running", stalled: true } };
   assert.equal(runStatus(stalled), "working", "a stall is flagged, not a status change");
-  assert.deepEqual(workingNote(stalled), { text: "Stalled: idle with no newer outcome since it said: the roll is still running", stalled: true });
+  assert.deepEqual(workingNote(stalled), { text: "Stalled: idle with no newer outcome since it said: the roll is still running", stalled: true, waiting: false });
   assert.equal(workingNote({ ticket: { key: "NBF-1" }, phase: "running" }), null);
   assert.equal(workingNote({ ...working, phase: "finished" }), null, "a finished run's note is its outcome's");
 });
 
 test("A11-85: a stall the pane's background work caused says so, with the reason the board gave, and an idle stall keeps its own words", () => {
   const working = { ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", working: { reason: "the fleet patch runs detached", stalled: true, stallReason: "background work gone" } } satisfies ViewEntry;
-  assert.deepEqual(workingNote(working), { text: "Stalled: background work gone since it said: the fleet patch runs detached", stalled: true }, "POSITIVE: the background stall says the work is gone");
+  assert.deepEqual(workingNote(working), { text: "Stalled: background work gone since it said: the fleet patch runs detached", stalled: true, waiting: false }, "POSITIVE: the background stall says the work is gone");
   const idle = { ...working, working: { reason: "the fleet patch runs detached", stalled: true } };
-  assert.deepEqual(workingNote(idle), { text: "Stalled: idle with no newer outcome since it said: the fleet patch runs detached", stalled: true }, "CONTROL: a stall with no reason keeps the idle words");
+  assert.deepEqual(workingNote(idle), { text: "Stalled: idle with no newer outcome since it said: the fleet patch runs detached", stalled: true, waiting: false }, "CONTROL: a stall with no reason keeps the idle words");
   const unstalled = { ...working, working: { reason: "the fleet patch runs detached", stallReason: "background work gone" } };
-  assert.deepEqual(workingNote(unstalled), { text: "the fleet patch runs detached", stalled: false }, "CONTROL: a reason with no stall is only the note");
+  assert.deepEqual(workingNote(unstalled), { text: "the fleet patch runs detached", stalled: false, waiting: false }, "CONTROL: a reason with no stall is only the note");
+});
+
+test("A11-236: a waiting run reads Waiting on background work, with how long when it is given the time, the job it named in place of its reason, and a stall past the bound names the job", () => {
+  const run = (working: NonNullable<ViewEntry["working"]>): ViewEntry => ({ ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", working });
+  const waiting = run({ reason: "two shells run", at: 1000, waiting: true, waitingOn: "the fleet captures on three boxes" });
+  assert.deepEqual(workingNote(waiting, 1000 + 54 * 60_000), { text: "Waiting on background work for 54 min: the fleet captures on three boxes", stalled: false, waiting: true });
+  assert.equal(workingNote(waiting, 1000 + 88 * 60_000)?.text, "Waiting on background work for 1 h 28 min: the fleet captures on three boxes", "worded like the board's other durations");
+  assert.equal(workingNote(waiting)?.text, "Waiting on background work: the fleet captures on three boxes", "without a time there is no duration");
+  assert.equal(workingNote(run({ reason: "two shells run", at: 1000, waiting: true }), 1000 + 5 * 60_000)?.text, "Waiting on background work for 5 min: two shells run", "with no job named it quotes the reason");
+  assert.equal(runStatus(waiting), "working", "the run stays In progress");
+  const stalled = run({ reason: "two shells run", at: 1000, stalled: true, stallReason: "waited past 2026-10-24T23:00:00.000Z on the fleet captures on three boxes" });
+  assert.deepEqual(workingNote(stalled, 1e9), { text: "Stalled: waited past 2026-10-24T23:00:00.000Z on the fleet captures on three boxes since it said: two shells run", stalled: true, waiting: false });
+  assert.equal(reasonOf(waiting, 1000 + 54 * 60_000).line, "Waiting on background work for 54 min: the fleet captures on three boxes", "the card's reason line carries it");
 });
 
 // A11-82: a queued run waits on a path another run holds in its repository.

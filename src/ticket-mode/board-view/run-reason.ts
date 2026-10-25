@@ -32,9 +32,9 @@ export function promptNote(entry: ViewEntry): string | null {
 }
 
 /** What the worker says of a run: its handed-back reason, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
-function askedReason(entry: ViewEntry): string | null {
+function askedReason(entry: ViewEntry, now?: number): string | null {
   const outcome = entry.outcome;
-  const note = workingNote(entry);
+  const note = workingNote(entry, now);
   if (entry.handedBack) return entry.handedBack;
   if (note !== null && !note.stalled) return note.text;
   if (outcome === undefined) return null;
@@ -114,12 +114,12 @@ function mergeWait(entry: ViewEntry): string | null {
 /**
  * The reason line a run's card shows, and the question it keeps one click away. A needs-human run whose pull requests answered it says "Answered: awaiting
  * review" or "Approved" from them, and keeps what it asked as `question`. A text the card already shows as the rebase, retarget or verdict note is not said a
- * second time, as the line or as the question (A11-153). PURE.
+ * second time, as the line or as the question (A11-153). `now`, when given, lets a run waiting on background work say for how long (A11-236). PURE.
  */
-export function reasonOf(entry: ViewEntry): Readonly<{ line: string | null; question: string | null }> {
+export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: string | null; question: string | null }> {
   const shown = [rebaseNote(entry), retargetNote(entry), verdictNote(entry), checkNote(entry)];
   const once = (text: string | null): string | null => (text === null || shown.includes(text) ? null : text);
-  const asked = once(askedReason(entry));
+  const asked = once(askedReason(entry, now));
   const answer = pullAnswer(entry);
   if (answer !== null) return { line: ANSWER_LINE[answer], question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).
