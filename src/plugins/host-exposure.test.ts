@@ -55,3 +55,16 @@ test("A11-279: the instance's host file is the one the instance resolves without
   writeFileSync(join(home, ".agent-org", "host-file"), recorded);
   assert.deepEqual(await portsOf(env, home), { ui: 9443, terminal: 9444 });
 });
+
+test("A11-279: an instance host file that is there and is not valid refuses, naming it, instead of reading as one that names no exposure", async () => {
+  const { env, home } = machine({}, TAILSCALE);
+  const instanceFile = join(home, ".agent-org", "host.json");
+  for (const text of ["{ not json", "[1]", JSON.stringify({ clones: { a: "/src/a" }, tickets: { providers: { exposure: { provider: "nowhere" } } } })]) {
+    writeFileSync(instanceFile, text);
+    forgetActivation();
+    await assert.rejects(hostExposure(env, home), (error: unknown) => error instanceof Error && error.message.length > 0, text);
+  }
+  writeFileSync(instanceFile, "{ not json");
+  forgetActivation();
+  await assert.rejects(hostExposure(env, home), (error: unknown) => error instanceof Error && error.message.includes(instanceFile));
+});

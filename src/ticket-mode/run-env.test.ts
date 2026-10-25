@@ -31,10 +31,12 @@ test("A11-279: livePaneEnv asks herdr for the pane's claude process and reads th
   assert.equal(livePaneEnv(() => infoOf([{ name: "claude", pid: 77 }]), "tickets", () => { throw new Error("EACCES"); })("w1:p1"), null, "/proc refuses");
 });
 
-test("A11-279: lostKeys lists the keys the pane lacks, and none when it holds them all or holds one with another value", () => {
+test("A11-279: lostKeys lists the keys the pane lacks or holds with another value, except the host file's path, which only has to be there", () => {
   const wanted = runEnvOf({ hostFile: "/h.json" }, { ticket: { key: "A11-1", branch: "a11-1" } } as never);
   assert.deepEqual(wanted, { AGENT_ORG_TICKET: "A11-1", AGENT_ORG_TICKET_BRANCH: "a11-1", AGENT_ORG_TICKET_HOST: "/h.json" });
   assert.deepEqual(lostKeys(wanted, { ...wanted, PATH: "/bin" }), []);
   assert.deepEqual(lostKeys(wanted, { PATH: "/bin" }), ["AGENT_ORG_TICKET", "AGENT_ORG_TICKET_BRANCH", "AGENT_ORG_TICKET_HOST"]);
   assert.deepEqual(lostKeys(wanted, { ...wanted, AGENT_ORG_TICKET_HOST: "/moved/host.json" }), [], "a host file that moved since the run started is not a lost environment");
+  assert.deepEqual(lostKeys(wanted, { ...wanted, AGENT_ORG_TICKET: "A11-2" }), ["AGENT_ORG_TICKET"], "another run's ticket is");
+  assert.deepEqual(lostKeys(wanted, { ...wanted, AGENT_ORG_TICKET_BRANCH: "a11-2" }), ["AGENT_ORG_TICKET_BRANCH"]);
 });

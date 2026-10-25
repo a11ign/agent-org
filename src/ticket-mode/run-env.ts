@@ -55,8 +55,9 @@ export function livePaneEnv(herdr: Herdr, herdrSession: string, readEnviron: (pi
 }
 
 /**
- * The keys of `wanted` that `held` lacks. A key held with another value is not lost: the host file's path, say, may have moved since the run started, and the run's worker is healthy with the one it has. A pane restored by
- * herdr holds none of them. PURE.
+ * The keys of `wanted` that `held` lacks or holds with another value, which is how "as the board set it at start" is checked: a pane herdr restored holds none of them. The host file's path is the one key checked
+ * for presence alone: it is the board's current `hostFile`, which may have moved since the run started (a re-onboard), and the worker's `ticket:worktree` is healthy with the path it has. The ticket and its branch come
+ * from the run's own entry, so a different value there is a wrong run's environment. PURE.
  */
 export const lostKeys = (wanted: Readonly<Record<string, string>>, held: Readonly<Record<string, string>>): string[] =>
-  Object.keys(wanted).filter((key) => held[key] === undefined);
+  Object.entries(wanted).filter(([key, value]) => held[key] === undefined || (key !== TICKET_ENV.host && held[key] !== value)).map(([key]) => key);

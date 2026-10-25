@@ -468,14 +468,20 @@ test("A11-279: a run noted as lacking its environment while it worked is not sta
   assert.equal(createdWith(run.herdr.calls).length - before, 1);
 });
 
-test("A11-279: a pane that kept its environment under a moved host file is resumed where it is: only an absent key is a lost environment", async () => {
+/** One live run whose pane holds `env` after a restart of herdr's service, one pass run with its agent idle, and the number of workspaces opened before it. */
+async function restartedHolding(env: Record<string, string>) {
   const run = await liveRuns(["NBF-1"]);
   run.held.herdr = "2";
-  run.herdr.envs.set("w1:p1", { AGENT_ORG_TICKET: "NBF-1", AGENT_ORG_TICKET_BRANCH: "nbf-1", AGENT_ORG_TICKET_HOST: "/old/host.json" });
+  run.herdr.envs.set("w1:p1", env);
   const before = createdWith(run.herdr.calls).length;
   run.status.set(herdrName("NBF-1"), "idle");
   await run.advance(30_000);
-  assert.deepEqual([run.resumes("w1:p1").length, createdWith(run.herdr.calls).length], [1, before]);
+  return { run, opened: createdWith(run.herdr.calls).length - before };
+}
+
+test("A11-279: a pane that kept its environment under a moved host file is resumed where it is: the host file's path only has to be there", async () => {
+  const { run, opened } = await restartedHolding({ AGENT_ORG_TICKET: "NBF-1", AGENT_ORG_TICKET_BRANCH: "nbf-1", AGENT_ORG_TICKET_HOST: "/old/host.json" });
+  assert.deepEqual([run.resumes("w1:p1").length, opened], [1, 0]);
 });
 
 test("A11-279: a run a person stops while the board starts it again keeps the stop: the workspace just opened is closed", async () => {
@@ -492,4 +498,10 @@ test("A11-279: a card whose prompt herdr refused still says the environment is m
   const run = await liveRuns(["NBF-1"]);
   const entry = { ...run.entry("NBF-1"), resume: { at: T0, after: "restart" as const, refused: "agent target w1:p1 is busy", environment: "missing" as const } };
   assert.equal(resumeLine(entry as never), "could not be prompted: agent target w1:p1 is busy; environment missing: the gh wrapper will refuse its pull request until it is restarted");
+});
+
+test("A11-279: a pane that holds another run's ticket is started again with its own: the environment is checked by value, as the board set it at start", async () => {
+  const { run, opened } = await restartedHolding({ AGENT_ORG_TICKET: "NBF-9", AGENT_ORG_TICKET_BRANCH: "nbf-1", AGENT_ORG_TICKET_HOST: "/work/.agent-org/host.json" });
+  assert.equal(opened, 1);
+  assert.equal(run.herdr.envs.get(run.entry("NBF-1").pane ?? "")?.AGENT_ORG_TICKET, "NBF-1");
 });

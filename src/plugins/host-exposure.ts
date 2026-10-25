@@ -7,6 +7,7 @@
 // THE PROJECT'S HOST FILE MAY NAME NO EXPOSURE (A11-279). The tunnel's installed unit sets `AGENT_ORG_HOST` to the project's host file, which names no exposure provider; only the instance's own host file says
 // `tailscale`. On 2026-10-25 the unit resolved `local` from the first and failed at boot ("local serves on loopback only"). So when `AGENT_ORG_HOST`'s file names no exposure, the instance's host file is read
 // (the file the instance resolves without `AGENT_ORG_HOST`: `host-file`, its unit's, else `<home>/host.json`) and its exposure is used. A host that names none in either still resolves `local`.
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { hostFilePath } from "../install/paths.ts";
 import { readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
@@ -19,16 +20,15 @@ type Env = Readonly<Record<string, string | undefined>>;
 /** Whether a host file names an exposure provider, in its block or by the `tickets.serve` alias. PURE. */
 const namesExposure = (settings: TicketSettings): boolean => settings.providers.blocks.exposure.from !== "default";
 
-/** The settings of the instance's own host file, or null when it is the same file as the project's, cannot be read, or names no exposure either. */
+/**
+ * The settings of the instance's own host file, or null when it is the same file as the project's, there is no such file, or it names no exposure either. A file that is there and cannot be read or is not valid REFUSES,
+ * naming it, as the project's does: it would otherwise read as "the instance names no exposure", and the tunnel would fail as `local` for a reason it does not say.
+ */
 function instanceSettings(env: Env, home: string, project: string): TicketSettings | null {
   const path = hostFilePath({ ...env, AGENT_ORG_HOST: undefined }, home);
-  if (path === project) return null;
-  try {
-    const settings = readTicketSettings({ ...env, AGENT_ORG_HOST: path }, undefined, home);
-    return namesExposure(settings) ? settings : null;
-  } catch {
-    return null;
-  }
+  if (path === project || !existsSync(path)) return null;
+  const settings = readTicketSettings({ ...env, AGENT_ORG_HOST: path }, undefined, home);
+  return namesExposure(settings) ? settings : null;
 }
 
 /**
