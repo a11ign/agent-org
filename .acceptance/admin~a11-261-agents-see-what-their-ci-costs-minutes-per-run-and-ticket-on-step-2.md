@@ -6,12 +6,12 @@ Acceptance:
 
 ```bash
 # weigh.test.ts: minutes per head and per OS weight (macOS ×10, Windows ×2, self-hosted 0, rounding up per job, pushes by distinct head, run and ticket totals)
-# budget.test.ts, store.test.ts, hold.test.ts: the warning and the hold thresholds (once, at 2× and each further budget, 0 is none), the settled runs, the held run's two passes
-# watch.test.ts: the sweep against the in-memory code host: the warning in the live pane, the hold at 2× (stopped, queued with its session, the card's reason, the next round's brief), a budget of 0, a host without readBranchCi
-# ci-note.test.ts, server.test.ts: the card's wording; /api/queue sends the figures and not the runs
-# ci-spend.test.ts, conformance.test.ts, code-host.test.ts: the GitHub plugin's reads and the contract's two new checks
-# rules.test.ts: the brief text (the rule, and the held section); settings.test.ts: tickets.ciBudgetMinutes
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/ci-spend src/ticket-mode/board-view/ci-note.test.ts plugins/github/ci-spend.test.ts plugins/github/conformance.test.ts plugins/github/index.test.ts src/plugins/fakes/code-host.test.ts src/plugins/built-in.test.ts src/plugins/cli.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/queue.test.ts
+# budget.test.ts, store.test.ts, hold.test.ts, view.test.ts: the warning and the hold thresholds (once, at 2× and each further budget, 0 is none), the settled runs, the held run's two passes, what the page is sent
+# ci-note.test.ts: the card's wording; ci-spend.test.ts, conformance.test.ts, code-host.test.ts: the GitHub plugin's reads and the contract's two new checks
+# rules.test.ts: the brief text (the rule, and the held section); settings.test.ts: tickets.ciBudgetMinutes; queue.test.ts: a review round keeps what it kept
+# The sweep against the in-memory code host (src/ticket-mode/ci-spend/watch.test.ts: the warning in the live pane, the hold at 2× with the card's reason and the next round's brief, a budget of 0, a host without readBranchCi)
+# and /api/queue's `ci` (server.test.ts) run in the suite job: they build a pool, which reads the repository's history.
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/ci-spend/weigh.test.ts src/ticket-mode/ci-spend/budget.test.ts src/ticket-mode/ci-spend/store.test.ts src/ticket-mode/ci-spend/hold.test.ts src/ticket-mode/ci-spend/view.test.ts src/ticket-mode/ci-spend/rules.test.ts src/ticket-mode/board-view/ci-note.test.ts plugins/github/ci-spend.test.ts plugins/github/conformance.test.ts plugins/github/index.test.ts src/plugins/fakes/code-host.test.ts src/plugins/built-in.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/queue.test.ts
 npm run typecheck
 ```
 
