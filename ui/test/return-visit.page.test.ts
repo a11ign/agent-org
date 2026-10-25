@@ -23,7 +23,7 @@ const DRAW_MS = 10_000;
 /** The frames a page has drawn with a skeleton showing, counted from its first, and the errors it has logged. */
 type Seen = Readonly<{ skeletonFrames: () => Promise<number>; errors: string[] }>;
 
-/** Counts every frame of every page of `context` that shows a skeleton, and collects what `page` logs as an error. */
+/** Counts every frame of every page of `context` that shows a skeleton, and collects the errors `page`'s code throws or logs: a response the stand-in answers with a failure is not one. */
 async function watch(context: BrowserContext, page: Page): Promise<Seen> {
   await context.addInitScript(() => {
     const seen = { frames: 0 };
@@ -35,7 +35,7 @@ async function watch(context: BrowserContext, page: Page): Promise<Seen> {
     requestAnimationFrame(frame);
   });
   const errors: string[] = [];
-  page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
+  page.on("console", (message) => message.type() === "error" && !message.text().startsWith("Failed to load resource") && errors.push(message.text()));
   page.on("pageerror", (error) => errors.push(error.message));
   return { skeletonFrames: () => page.evaluate(() => (window as unknown as { skeletonFrames: { frames: number } }).skeletonFrames.frames), errors };
 }
