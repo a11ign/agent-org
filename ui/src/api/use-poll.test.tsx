@@ -375,6 +375,8 @@ function fetchThroughProxy(broken: Break, kind: Connection["kind"]) {
   const connections = {
     get: (name: string) => (name === connection.name ? connection : undefined),
     reach: async () => { if (broken === "reach") throw new Unreachable("ssh: connection timed out"); return TARGET; },
+    restart: async () => TARGET,
+    answered: () => undefined,
     forget: () => undefined,
     close: () => undefined,
   } as unknown as Connections;

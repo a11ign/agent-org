@@ -16,6 +16,18 @@ export type ClosedWorkRecord =
   | Readonly<{ kind: "unique"; posted?: boolean } & ClosedWork>
   | Readonly<{ kind: "none"; posted?: boolean; number: number; url: string; base: string; branch: string; head: string }>;
 
+const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+const isCommits = (value: unknown): boolean => Array.isArray(value) && value.every((commit: Partial<ClosedCommit> | null) => typeof commit?.sha === "string" && typeof commit.subject === "string");
+
+/** Whether `value` is a record the sweep wrote: of a known kind, naming its pull request, and a unique one with its commits and files. PURE. */
+export function isClosedWorkRecord(value: unknown): value is ClosedWorkRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Partial<Record<keyof Extract<ClosedWorkRecord, { kind: "unique" }>, unknown>>;
+  if (!Number.isInteger(record.number)) return false;
+  if (record.kind === "none") return true;
+  return record.kind === "unique" && isCommits(record.commits) && isStrings(record.files) && typeof record.url === "string" && typeof record.branch === "string" && typeof record.base === "string" && typeof record.head === "string";
+}
+
 /** The record of a pull request's closed work: unique when its compare found a commit ahead of its base, and none when everything it held is on the base. PURE. */
 export const recordOf = (work: ClosedWork): ClosedWorkRecord => (work.commits.length > 0 ? { kind: "unique", ...work }
   : { kind: "none", number: work.number, url: work.url, base: work.base, branch: work.branch, head: work.head });

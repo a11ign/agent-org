@@ -25,14 +25,18 @@ export type Forward = (target: Target, request: ForwardRequest) => Promise<Forwa
 const FORWARD_MS = 30_000;
 /** The most an instance's answer may hold. The largest is a list of tickets. */
 const ANSWER_BYTES = 8 * 1024 * 1024;
-const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings", "/api/plugins"]);
+const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings", "/api/plugins", "/api/health"]);
 const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/terminal-run", "/api/writer", "/api/grill-ticket",
   "/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action"]);
+/** Reads that are passed on but never kept for an SSH connection's last known: the loop's health (A11-282) changes on every read, is polled every 10 s, and is no use once old. */
+const NEVER_KEPT = new Set(["/api/health"]);
 /** The Settings page's edits of a file, and its install, enable, disable and uninstall of a plugin (A11-163): they change a `.agent-org` file, which only the machine that holds it may do (A11-132). */
 const SETTINGS_EDITS = new Set(["/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|talk|stop|close|dismiss|apply-edit|discard-edit)$/;
 /** A new-ticket request's own actions: `/api/writer/<run>/stop` and `/api/writer/<run>/dismiss`. */
 const WRITER_ACTION = /^\/api\/writer\/[A-Za-z0-9_-]+\/(?:stop|dismiss)$/;
+/** How a forward fails when nothing is at the other end of the tunnel's socket any more: closed under the request, refused, or removed. */
+const LINK_LOST = /\b(?:ECONNRESET|ECONNREFUSED|ENOENT|EPIPE)\b|socket hang up/;
 
 /** Whether the page may make this call to an instance: one of the routes it calls there, by the method it calls it with. */
 export function passedOn(method: string, pathname: string): boolean {
@@ -74,9 +78,35 @@ export const httpForward: Forward = (target, { method, path, body }) => new Prom
   outgoing.end(body ?? undefined);
 });
 
+/** Whether a forward failed because the link under it is gone, rather than because the instance was slow or answered too much. */
+export function linkLost(err: unknown): boolean {
+  return LINK_LOST.test(`${(err as NodeJS.ErrnoException)?.code ?? ""} ${String((err as Error)?.message ?? err)}`);
+}
+
+/**
+ * Send `request` to `target`, and the target that answered. When an ssh connection's tunnel is found dead, it is opened again at once, and a GET
+ * is sent once more on the new one; a POST is not, as it may have arrived. THROWS the forward's own error, or `Unreachable` when the tunnel
+ * cannot be opened again.
+ */
+async function sendOn(connections: Connections, name: string, target: Target, request: ForwardRequest, forward: Forward): Promise<{ answer: ForwardAnswer; target: Target }> {
+  try {
+    return { answer: await forward(target, request), target };
+  } catch (err) {
+    if (connections.get(name)?.kind !== "ssh" || !linkLost(err)) throw err;
+    const reopening = connections.restart(name, target);
+    if (request.method !== "GET") {
+      void reopening.catch(() => {});
+      throw err;
+    }
+    const reopened = await reopening;
+    return { answer: await forward(reopened, request), target: reopened };
+  }
+}
+
 /**
  * A paired browser's call to connection `name`, passed on to its instance: the status and JSON value to answer with. A connection that
- * cannot be reached answers 502 with "cannot reach <name> <how>: <reason>". An instance that refuses the key has it read again next time.
+ * cannot be reached answers 502 with "cannot reach <name> <how>: <reason>". An instance that refuses the key has it read again next time. An
+ * ssh connection whose tunnel is found dead by a request has it opened again at once, and a GET is answered from a second try on the new one.
  *
  * With `lastKnown`, an SSH connection's page reads (a GET with no query that answered 200) are kept, and a 502 "cannot reach" answer to such a read then carries `lastKnown: { value, readAt }`
  * beside its `error`, when one was kept for that path, so the page can show what it last saw. The `error` sentence is the same as without it. A local or https connection, a POST,
@@ -91,25 +121,29 @@ export async function proxy(connections: Connections, name: string, request: For
   // A remote instance's files are edited on that machine, so nothing this page forwards changes them there.
   if (SETTINGS_EDITS.has(pathname) && connection.kind !== "local") return [403, { error: `${name}'s settings are not changed from here: its files are edited on that machine, and this connection is ${how}` }];
   // A page of a scope read on demand (`?assignee=&after=`) is a cursor, not a state to come back to: only a read with no query is kept.
-  const remembers = lastKnown !== undefined && connection.kind === "ssh" && request.method === "GET" && !request.path.includes("?");
+  const remembers = lastKnown !== undefined && connection.kind === "ssh" && request.method === "GET" && !request.path.includes("?") && !NEVER_KEPT.has(pathname);
   const identity = connection.kind === "ssh" ? connection.ssh : "";
   /** The 502 for a connection that cannot be reached: its sentence, and the last good answer to this path when one was kept. */
   const cannotReach = (error: string): [number, unknown] => {
     const kept = remembers ? lastKnown.recall(name, identity, request.path) : undefined;
     return [502, kept === undefined ? { error } : { error, lastKnown: kept }];
   };
-  let target: Target;
+  const unreachable = (err: unknown) => cannotReach(`cannot reach ${name} ${how}: ${err instanceof Unreachable ? err.message : redact(String(err))}`);
+  let reached: Target;
   try {
-    target = await connections.reach(name);
+    reached = await connections.reach(name);
   } catch (err) {
-    return cannotReach(`cannot reach ${name} ${how}: ${err instanceof Unreachable ? err.message : redact(String(err))}`);
+    return unreachable(err);
   }
   let answer: ForwardAnswer;
+  let target: Target;
   try {
-    answer = await forward(target, request);
+    ({ answer, target } = await sendOn(connections, name, reached, request, forward));
   } catch (err) {
+    if (err instanceof Unreachable) return unreachable(err);
     return cannotReach(`cannot reach ${name}'s instance ${how}: ${redact(String((err as Error)?.message ?? err))}. Is agent-org ticket:serve running there?`);
   }
+  connections.answered(name, target);
   if (answer.status === 401) {
     connections.forget(name);
     return cannotReach(`cannot reach ${name} ${how}: its instance refused the key, which is read again on the next request`);

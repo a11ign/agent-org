@@ -43,6 +43,7 @@ import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 import type { TerminalRun } from "./terminal-pair.ts";
 import { buildCandidates, fileHeaders, findBuild, isAssetPath, isPage, locate, movedFromNext } from "./ui-build.ts";
+import { startLoopMonitor, type LoopReading } from "./loop-delay.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** What a browser that has not paired is shown, in place of the board. */
@@ -190,6 +191,8 @@ export type UiDeps = Readonly<{
   exposure?: Exposure;
   /** The directories the built UI is looked for in, in order, each counted when it holds `index.html`. Absent, `ui-build/` beside the running version, then the checkout's `ui/dist/` (A11-190). */
   uiBuilds?: readonly string[];
+  /** This service's own loop delay, which its root `/api/health` answers (A11-282). Absent, the route is not served, as on a service from before it. */
+  loop?: () => LoopReading;
 }>;
 
 /**
@@ -341,6 +344,7 @@ export function createUi(deps: UiDeps) {
     if (request.method === "GET" && url.pathname === "/api/connections") {
       return sendJson(response, 200, connectionsView(read));
     }
+    if (request.method === "GET" && url.pathname === "/api/health" && deps.loop !== undefined) return sendJson(response, 200, { loop: { page: deps.loop() } });
     const call = CONNECTION_PATH.exec(url.pathname);
     if (call !== null) return proxyConnection(request, response, by, call[1], `${call[2]}${url.search}`);
     const readsPage = request.method === "GET" || request.method === "HEAD";
@@ -355,6 +359,7 @@ export function createUi(deps: UiDeps) {
 
 async function serve(): Promise<void> {
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:ui" });
+  const loop = startLoopMonitor();
   const settings = readTicketSettings();
   // The page is served by the enabled exposure plugin (`plugins/local`, unless the host file names another); it builds that and nothing else, so it reads no tracker key.
   const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones }), undefined, ["exposure"]);
@@ -365,7 +370,7 @@ async function serve(): Promise<void> {
   if (read.refusal !== null) log(read.refusal);
   const connections = createConnections(read.connections, { local: { port: settings.port, keyPath } });
   const pairing = createPairing();
-  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections, lastKnown: createLastKnown(lastKnownDir(settings.stateDir)), exposure: active.exposure() });
+  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections, lastKnown: createLastKnown(lastKnownDir(settings.stateDir)), exposure: active.exposure(), loop: loop.read });
   // Every tunnel this service opened ends with it.
   process.on("exit", () => connections.close());
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));

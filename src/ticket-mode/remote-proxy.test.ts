@@ -21,12 +21,15 @@ const PERSONAL: Connection = { name: "personal", kind: "ssh", ssh: "agents", age
 const overSsh = (socket: string, terminalLocal: number | null = null): Target =>
   ({ key: KEY, host: "127.0.0.1:4747", address: { socket }, terminal: (template) => localTerminal(template, terminalLocal) });
 
-/** Connections whose one, `connection`, always reaches `target`, or always fails with `reason`, counting each `forget`. */
+/** Connections whose one, `connection`, always reaches `target`, or always fails with `reason`, counting each `forget` and `restart`. */
 function fixed(target: Target | string, connection: Connection = PERSONAL) {
-  const counts = { forgot: 0 };
+  const counts = { forgot: 0, restarted: 0, answered: 0 };
+  const reach = async () => { if (typeof target === "string") throw new Unreachable(target); return target; };
   const connections = {
     get: (name: string) => (name === connection.name ? connection : undefined),
-    reach: async () => { if (typeof target === "string") throw new Unreachable(target); return target; },
+    reach,
+    restart: async () => { counts.restarted += 1; return reach(); },
+    answered: () => { counts.answered += 1; },
     forget: () => { counts.forgot += 1; },
     close: () => {},
   } as Connections;
@@ -280,6 +283,16 @@ test("A11-195: a path nothing was read from has no last known, and a read with a
   }
 });
 
+test("A11-282: an SSH connection's health is passed on but never kept, since it changes on every read and is polled", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
+  const up = fixed(overSsh("/s"));
+  const instance = flaky({ loop: { board: { p99Ms: 4 } } });
+  const request = { method: "GET", path: "/api/health", body: null };
+  assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [200, { loop: { board: { p99Ms: 4 } } }]);
+  instance.state.down = true;
+  assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE }]);
+});
+
 test("A11-195: a local or https connection, a POST, a refusal and a body that is not JSON are neither kept nor recalled", async () => {
   const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
   const read = { method: "GET", path: "/api/tickets", body: null };
@@ -332,4 +345,126 @@ test("A11-195: a connection pointed at another ssh target is not answered with t
   instance.state.down = true;
   const repointed = fixed(overSsh("/s"), { ...PERSONAL, ssh: "me@elsewhere" });
   assert.deepEqual(await proxy(repointed.remotes, "personal", request, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE }]);
+});
+
+/** Connections whose one ssh connection's tunnel is `before` until it is restarted, then `after`, or fails to open again with `reopenFails`. */
+function restartable(before: Target, after: Target, reopenFails: string | null = null) {
+  const restarts: Target[] = [];
+  const answered: Target[] = [];
+  let current = before;
+  const connections = {
+    get: (name: string) => (name === PERSONAL.name ? PERSONAL : undefined),
+    reach: async () => current,
+    restart: async (_name: string, failed: Target) => {
+      restarts.push(failed);
+      if (reopenFails !== null) throw new Unreachable(reopenFails);
+      current = after;
+      return after;
+    },
+    answered: (_name: string, target: Target) => { answered.push(target); },
+    forget: () => {},
+    close: () => {},
+  } as Connections;
+  return { connections, restarts, answered };
+}
+
+/** A forward that fails with `err` on the tunnel at `dead`'s socket, and answers `body` on any other, recording each request and where it went. */
+function deadOn(dead: Target, err: Error, body: unknown = { entries: [] }) {
+  const sent: { socket: string; method: string; path: string }[] = [];
+  const forward: Forward = async (target, request) => {
+    const socket = (target.address as { socket: string }).socket;
+    sent.push({ socket, method: request.method, path: request.path });
+    if (target === dead) throw err;
+    return { status: 200, body: JSON.stringify(body) };
+  };
+  return { forward, sent };
+}
+
+const hungUp = () => Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+
+test("A11-270: a GET whose tunnel hung up restarts the tunnel and is answered from a second try on the new one", async () => {
+  const before = overSsh("/old.sock");
+  const after = overSsh("/new.sock");
+  const { connections, restarts, answered } = restartable(before, after);
+  const instance = deadOn(before, hungUp());
+  assert.deepEqual(await proxy(connections, "personal", { method: "GET", path: "/api/queue", body: null }, instance.forward), [200, { entries: [] }]);
+  assert.deepEqual(restarts, [before], "the tunnel the request failed on is the one restarted");
+  assert.deepEqual(instance.sent.map((s) => s.socket), ["/old.sock", "/new.sock"]);
+  assert.deepEqual(answered, [after], "the new tunnel is told it works");
+});
+
+test("A11-270: any answer from the instance tells its tunnel it works, and a request that fails tells it nothing", async () => {
+  for (const [status, body] of [[200, "{}"], [500, "{\"error\":\"x\"}"], [401, "{}"]] as const) {
+    const up = fixed(overSsh("/s"));
+    await proxy(up.remotes, "personal", { method: "GET", path: "/api/queue", body: null }, async () => ({ status, body }));
+    assert.equal(up.counts.answered, 1, String(status));
+  }
+  const down = fixed(overSsh("/s"));
+  const failing = flaky([]);
+  failing.state.down = true;
+  await proxy(down.remotes, "personal", { method: "GET", path: "/api/queue", body: null }, failing.forward);
+  assert.equal(down.counts.answered, 0);
+});
+
+test("A11-270: the configuration read on a restarted tunnel gives the terminal address through the new tunnel", async () => {
+  const before = overSsh("/old.sock", 50001);
+  const after = overSsh("/new.sock", 50009);
+  const { connections } = restartable(before, after);
+  const instance = deadOn(before, hungUp(), { terminal: TERMINAL });
+  const [, config] = await proxy(connections, "personal", { method: "GET", path: "/api/config", body: null }, instance.forward);
+  assert.equal((config as { terminal: string }).terminal, "http://127.0.0.1:50009/?ws={workspace}&pane={pane}&view=terminal");
+});
+
+test("A11-270: a POST whose tunnel hung up restarts the tunnel but is never sent twice, as it may have arrived", async () => {
+  const before = overSsh("/old.sock");
+  const { connections, restarts } = restartable(before, overSsh("/new.sock"));
+  const instance = deadOn(before, hungUp());
+  assert.deepEqual(await proxy(connections, "personal", { method: "POST", path: "/api/paused", body: "{}" }, instance.forward),
+    [502, { error: CANNOT_REACH_INSTANCE }], "answered as today");
+  assert.deepEqual(instance.sent, [{ socket: "/old.sock", method: "POST", path: "/api/paused" }]);
+  assert.equal(restarts.length, 1, "the next request finds a new tunnel");
+});
+
+test("A11-270: each way a tunnel's socket is found dead restarts it, and a slow instance or an answer too big does not", async () => {
+  const lost = [hungUp(), Object.assign(new Error("connect ECONNREFUSED /s/board.sock"), { code: "ECONNREFUSED" }),
+    Object.assign(new Error("connect ENOENT /s/board.sock"), { code: "ENOENT" }), Object.assign(new Error("write EPIPE"), { code: "EPIPE" })];
+  for (const err of lost) {
+    const before = overSsh("/old.sock");
+    const { connections, restarts } = restartable(before, overSsh("/new.sock"));
+    assert.equal((await proxy(connections, "personal", { method: "GET", path: "/api/queue", body: null }, deadOn(before, err).forward))[0], 200, err.message);
+    assert.equal(restarts.length, 1, err.message);
+  }
+  for (const err of [new Error("no answer within 30 seconds"), new Error("an answer over 8388608 bytes")]) {
+    const before = overSsh("/old.sock");
+    const { connections, restarts } = restartable(before, overSsh("/new.sock"));
+    const [status, answer] = await proxy(connections, "personal", { method: "GET", path: "/api/queue", body: null }, deadOn(before, err).forward);
+    assert.deepEqual([status, answer], [502, { error: `cannot reach personal's instance over SSH: ${err.message}. Is agent-org ticket:serve running there?` }]);
+    assert.equal(restarts.length, 0, err.message);
+  }
+});
+
+test("A11-270: a GET whose second try fails too, or whose tunnel cannot be opened again, is answered as today with its last known read", async () => {
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")), { now: () => Date.parse("2026-10-25T10:00:00.000Z") });
+  const request = { method: "GET", path: "/api/tickets", body: null };
+  const kept = { value: [{ key: "A11-1" }], readAt: "2026-10-25T10:00:00.000Z" };
+  await proxy(fixed(overSsh("/s")).remotes, "personal", request, flaky(kept.value).forward, store);
+  const still = fixed(overSsh("/s"));
+  const down = flaky([]);
+  down.state.down = true;
+  assert.deepEqual(await proxy(still.remotes, "personal", request, down.forward, store), [502, { error: CANNOT_REACH_INSTANCE, lastKnown: kept }]);
+  assert.equal(still.counts.restarted, 1, "one restart, one second try");
+  const before = overSsh("/old.sock");
+  const { connections } = restartable(before, overSsh("/new.sock"), "ssh: connect to host agents port 22: Connection refused");
+  assert.deepEqual(await proxy(connections, "personal", request, deadOn(before, hungUp()).forward, store),
+    [502, { error: "cannot reach personal over SSH: ssh: connect to host agents port 22: Connection refused", lastKnown: kept }]);
+});
+
+test("A11-270: a local or https connection whose request hangs up is not restarted, as it has no tunnel", async () => {
+  for (const connection of [{ name: "personal", kind: "local" }, { name: "personal", kind: "https", origin: "https://agents.example.com", keyFile: "/k" }] as Connection[]) {
+    const here = fixed(overSsh("/s"), connection);
+    const down = flaky([]);
+    down.state.down = true;
+    assert.equal((await proxy(here.remotes, "personal", { method: "GET", path: "/api/queue", body: null }, down.forward))[0], 502);
+    assert.equal(here.counts.restarted, 0, connection.kind);
+  }
 });

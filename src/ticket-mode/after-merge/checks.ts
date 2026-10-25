@@ -31,6 +31,10 @@ export type CheckRecord = Readonly<{
   evidence?: string;
   /** When the check was listed: its run's finish, or the sweep that copied it when the run has none. */
   listedAt: number;
+  /** When the check was sent: the first time the session's queue listed it, or the first sweep that showed it under Needs you; moved to when it fell overdue. Absent while it has not been sent. */
+  sentAt?: number;
+  /** When the check fell overdue and was sent to its runner again, once. Absent while it is not overdue. */
+  overdueAt?: number;
   state: CheckState;
   /** The one line of evidence a pass or a fail was closed with, or the reason a check was superseded. */
   result?: string;

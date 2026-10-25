@@ -3,6 +3,7 @@
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { closedWorkOf } from "./closed-work-account.ts";
 import { findingsOf } from "./pool-ticket-text.ts";
 import { ticketReadOf } from "./ticket-read.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
@@ -97,6 +98,8 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   const read = ticketReadOf(ticket, ctx.now());
   const findings = findingsOf(entry);
   const dir = ticketDir(settings, ticket.key);
+  // The work pull requests of this ticket held when they were closed without merging, which the board listed (A11-249): the plan and the pull request account for it.
+  const closed = closedWorkOf(dir);
   const folder = ticketFolder(settings, ticket.key);
   clearRunDir(ctx, folder, dir);
   const attachments = await source.download(ticket, dir);
@@ -115,7 +118,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
     const claims = heldClaims(store.get().entries, [entry]);
     writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, run: settings.planner.run,
-      notes, connectors, read, blockers: entry.blockers, findings, claims, ...(replan ? { replan } : {}) }));
+      notes, connectors, read, blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}) }));
     writeClaimsGiven(dir, claims);
     const urls = findings.map(({ url }) => url);
     writeFindingsGiven(dir, [{ key: ticket.key, planDir, urls }]);
@@ -126,7 +129,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, findings, numberedSteps: startedSteps(store.get().entries, entry), opened: openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
+      read, findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
   writeRunFiles(ctx, entry, folder, dir);
@@ -221,7 +224,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
     const ticket = await current(ctx, member.ticket);
     const own = ticketDir(settings, ticket.key);
     mkdirSync(own, { recursive: true });
-    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), blockers: member.blockers, findings: findingsOf(member) });
+    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), blockers: member.blockers, findings: findingsOf(member), closed: closedWorkOf(own) });
   }
   const planDir = emptyPlanDir(dir);
   const claims = heldClaims(store.get().entries, members);

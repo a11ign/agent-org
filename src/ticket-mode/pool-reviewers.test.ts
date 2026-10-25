@@ -32,7 +32,7 @@ test("A11-161: where the gate does not load, a sweep with reviews required and t
 // A11-213: the reviewer cannot read the tracker, so the ticket's explicit decisions reach it in the brief, from the run that holds the pull request.
 const HELD_PR = "https://github.com/o/r/pull/7";
 const DESCRIPTION = "## Problem\n\nThe policy must reach the second repository.\n\nThis step widens the policy by the chairman's decision on 2026-10-24.\n\n## Done-when\n\n### Before merge\n\n- applied";
-const holding = (description: string, url = HELD_PR): PoolContext => ({ settings: { plan: null }, store: { get: () => ({ entries: [{ ticket: { key: "A11-203", description }, review: [{ repo: "r", url }] } as unknown as Entry] }) } }) as unknown as PoolContext;
+const holding = (description: string, url = HELD_PR): PoolContext => ({ settings: { plan: null, stateDir: tmpDir("brief-held-") }, store: { get: () => ({ entries: [{ ticket: { key: "A11-203", description }, review: [{ repo: "r", url }] } as unknown as Entry] }) } }) as unknown as PoolContext;
 const state = { view: { body: "" } } as unknown as ReviewState;
 
 test("A11-213: a brief carries the decisions of the ticket whose run holds the pull request, with its Done-when", () => {
@@ -44,6 +44,30 @@ test("A11-213: a brief carries the decisions of the ticket whose run holds the p
 test("A11-213: a ticket with no decision, and a pull request no run holds, give a brief with none", () => {
   assert.deepEqual(briefOf(holding("## Problem\n\nA problem."), HELD_PR, state), { doneWhen: null });
   assert.deepEqual(briefOf(holding(DESCRIPTION), "https://github.com/o/r/pull/8", state), { doneWhen: null }, "one a person opened has no ticket to quote");
+});
+
+// A11-249: the work the ticket's earlier pull requests held when they were closed unmerged reaches the reviewer too, from the records the board kept in the ticket's folder.
+const CLOSED_COMMIT = "a".repeat(40);
+
+/** A context whose run holds the pull request, with a record of closed pull request #14 that held one commit and one file in the ticket's folder, and a record of #15 that held nothing. */
+function holdingWithClosedWork(): PoolContext {
+  const ctx = holding(DESCRIPTION);
+  const dir = join(ticketDir(ctx.settings, "A11-203"), "closed-pulls");
+  mkdirSync(dir, { recursive: true });
+  const base = { url: "https://github.com/o/r/pull/14", base: "main", branch: "admin/a11-229-x", head: CLOSED_COMMIT };
+  writeFileSync(join(dir, "o-r-14.json"), JSON.stringify({ kind: "unique", number: 14, ...base, commits: [{ sha: CLOSED_COMMIT, subject: "feat: refuse unknown options" }], files: ["src/check-report.ts"], filesComplete: true }));
+  writeFileSync(join(dir, "o-r-15.json"), JSON.stringify({ kind: "none", number: 15, ...base, url: "https://github.com/o/r/pull/15" }));
+  return ctx;
+}
+
+test("A11-249: a brief carries the closed work of the ticket's earlier pull requests, one line per commit and file, and leaves out a pull request that held nothing", () => {
+  const closedWork = briefOf(holdingWithClosedWork(), HELD_PR, state).closedWork ?? "";
+  assert.ok(closedWork.includes(`- commit ${CLOSED_COMMIT} feat: refuse unknown options`) && closedWork.includes("- file src/check-report.ts") && closedWork.includes("work not on main"), closedWork);
+  assert.ok(!closedWork.includes("#15"), "a record of kind none asks for no account");
+});
+
+test("A11-249: a ticket with no closed work gives a brief with no closedWork key", () => {
+  assert.equal("closedWork" in briefOf(holding(DESCRIPTION), HELD_PR, state), false);
 });
 
 // A11-257: the plan's decisions reach the reviewer too, from the plan files the run holds, beside the ticket's own and with the escalation list.

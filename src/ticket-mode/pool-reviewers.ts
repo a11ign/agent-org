@@ -29,6 +29,8 @@ import { AWAITING_PERSON_LINE, claimWarning, type PullRead, pullReviewText, REVI
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import { herdrStartRefusalReason } from "../herdr-agents.ts";
+import { closedWorkLines, closedWorkOf } from "./closed-work-account.ts";
+import { ticketDir } from "./ticket-paths.ts";
 import { doneWhenOf } from "./done-when.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { partialStepOf } from "./board-view/plan-steps.ts";
@@ -127,10 +129,13 @@ export function briefOf(ctx: PoolContext, url: string, state: ReviewState): Revi
   const decisions = decisionsOf(held?.ticket.description);
   // The plan's decisions bind the reviewer beside the ticket's (A11-257, contract 1.8), with the escalation list that is the one thing they cannot override.
   const planned = held === undefined ? null : planDecisions(ctx, held.ticket.key);
+  // What the ticket's earlier pull requests held when they were closed unmerged: the reviewer cannot read the ticket's folder, so it is handed the list (A11-249).
+  const closedWork = held === undefined ? null : closedWorkLines(closedWorkOf(ticketDir(ctx.settings, held.ticket.key)));
   return {
     doneWhen: doneWhenOf(held?.ticket.description),
     ...(decisions === null ? {} : { decisions }),
     ...(planned === null ? {} : { planDecisions: planned, escalation: escalationList() }),
+    ...(closedWork === null ? {} : { closedWork }),
     ...(step === null ? {} : { step: { ...step, section: held === undefined ? null : planStepSection(ctx, held.ticket.key, step.step) } }),
   };
 }

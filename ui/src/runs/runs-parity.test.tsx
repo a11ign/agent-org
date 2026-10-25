@@ -105,7 +105,7 @@ describe("the After-merge checks list", () => {
     const list = within(screen.getByRole("region", { name: "After-merge checks" }));
     expect(list.getByRole("link", { name: "A11-70" }).getAttribute("href")).toBe("https://linear.app/a11ign/issue/A11-70");
     expect(list.getByText("The chairman: check the release is out", { exact: false })).toBeTruthy();
-    expect(list.getByText(/^Runs it: The chairman · you · /)).toBeTruthy();
+    expect(list.getByText(/^Runs it: The chairman · the session · /)).toBeTruthy(); // on no escalation item, so the session runs it
     expect(textOf(document.querySelector(".runs-extra-head"))).toBe("After-merge checks2");
   });
 

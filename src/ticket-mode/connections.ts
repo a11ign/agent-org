@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { readBoardKey } from "./board-key.ts";
-import { createRemotes, localTerminal, redact, Unreachable, type Remotes } from "./remote.ts";
+import { createRemotes, localTerminal, redact, Unreachable, type Link, type Remotes } from "./remote.ts";
 
 export type LocalConnection = Readonly<{ name: string; kind: "local" }>;
 export type SshConnection = Readonly<{ name: string; kind: "ssh"; ssh: string; agentOrg: string }>;
@@ -159,6 +159,11 @@ type Options = Readonly<{
   readKey?: typeof readBoardKey;
 }>;
 
+/** How a request reaches an ssh connection's instance through `link`, its tunnel: as its own host on the remote's loopback. */
+function throughTunnel(link: Link): Target {
+  return { key: link.key, host: `127.0.0.1:${link.port}`, address: { socket: link.socket }, terminal: (template) => localTerminal(template, link.terminalLocal) };
+}
+
 /** What reaches each of `connections`. An ssh connection's tunnel is opened the first time it is reached, and held open until `close`. */
 export function createConnections(connections: readonly Connection[], options: Options) {
   const byName = new Map(connections.map((connection) => [connection.name, connection]));
@@ -173,23 +178,36 @@ export function createConnections(connections: readonly Connection[], options: O
     }
   };
 
+  /** How to reach `name` now. THROWS `Unreachable` with the reason when it cannot be reached. */
+  async function reach(name: string): Promise<Target> {
+    const connection = byName.get(name);
+    if (connection === undefined) throw new Unreachable(`no connection ${name}`);
+    if (connection.kind === "local") {
+      const { port, keyPath } = options.local;
+      return { key: keyIn(keyPath), host: `127.0.0.1:${port}`, address: { origin: `http://127.0.0.1:${port}` }, terminal: (template) => template };
+    }
+    if (connection.kind === "https") {
+      return { key: keyIn(connection.keyFile, KEY_FILE_REMEDIES), host: new URL(connection.origin).host, address: { origin: connection.origin },
+        terminal: (template) => localTerminal(template, null) };
+    }
+    return throughTunnel(await remotes.reach(name));
+  }
+
   return {
     /** The connection named `name`, or undefined. */
     get: (name: string): Connection | undefined => byName.get(name),
-    /** How to reach `name` now. THROWS `Unreachable` with the reason when it cannot be reached. */
-    async reach(name: string): Promise<Target> {
-      const connection = byName.get(name);
-      if (connection === undefined) throw new Unreachable(`no connection ${name}`);
-      if (connection.kind === "local") {
-        const { port, keyPath } = options.local;
-        return { key: keyIn(keyPath), host: `127.0.0.1:${port}`, address: { origin: `http://127.0.0.1:${port}` }, terminal: (template) => template };
-      }
-      if (connection.kind === "https") {
-        return { key: keyIn(connection.keyFile, KEY_FILE_REMEDIES), host: new URL(connection.origin).host, address: { origin: connection.origin },
-          terminal: (template) => localTerminal(template, null) };
-      }
-      const link = await remotes.reach(name);
-      return { key: link.key, host: `127.0.0.1:${link.port}`, address: { socket: link.socket }, terminal: (template) => localTerminal(template, link.terminalLocal) };
+    reach,
+    /**
+     * Open `name`'s tunnel again now, because a request sent to `failed` found it dead, and how to reach it then. Only an ssh connection has a
+     * tunnel: any other is reached as it is. THROWS `Unreachable` with the reason when it cannot be reached.
+     */
+    async restart(name: string, failed: Target): Promise<Target> {
+      if (byName.get(name)?.kind !== "ssh" || !("socket" in failed.address)) return reach(name);
+      return throughTunnel(await remotes.restart(name, failed.address.socket));
+    },
+    /** A request sent to `target` was answered, so the tunnel under it works. Only an ssh connection has a tunnel. */
+    answered(name: string, target: Target): void {
+      if (byName.get(name)?.kind === "ssh" && "socket" in target.address) remotes.answered(name, target.address.socket);
     },
     /** Read `name`'s key again on its next reach: its instance refused the one held. Only an ssh connection holds one. */
     forget(name: string): void {

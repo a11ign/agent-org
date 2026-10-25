@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CI_COST_RULE } from "./ci-rule.ts";
-import { DECISION_RULE, decisionWords, IMPOSSIBLE_BEFORE_MERGE_RULE, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
+import { closedWorkWords, DECISION_RULE, decisionWords, IMPOSSIBLE_BEFORE_MERGE_RULE, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
 
 const GATE = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
 const DONE_WHEN = "## Done-when\n\n### Before merge\n\n- a test\n\n### After merge (who runs it)\n\n- the chairman, after 0.9.0";
@@ -234,4 +234,17 @@ test("A11-257: a brief with no plan decisions gets the prompt it always got, and
   assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN, decisions: DECISION }).includes(PLAN_DECISION_RULE), "and no rule about decisions of a plan that is not there");
   assert.match(planDecisionWords("z".repeat(9000), undefined), /\[cut: 1000 more characters on the pull request\]/);
   assert.ok(!planDecisionWords("a", undefined).includes("Only these reach a person"), "the list is quoted only when the brief carries it");
+});
+
+test("A11-249: a first review and a reprompt with closed work in the brief carry the list and the rule that a missing item is a finding, after the Done-when; without closed work the prompt is unchanged", () => {
+  const closedWork = "Closed pull request #14 (https://github.com/o/r/pull/14), branch b, work not on main:\n- commit " + "a".repeat(40) + " feat: refuse unknown options\n- file src/check-report.ts";
+  const words = reviewWords(GATE, { doneWhen: DONE_WHEN, closedWork });
+  assert.ok(words.includes(closedWork), "the list, whole");
+  assert.match(words, /`## Work from closed pull requests` section must say, for each commit and file, carried over \(where\) or dropped \(why\)\. Check each claim against the diff\./);
+  assert.match(words, /Each item the section leaves out, and each `carried over` the diff does not show, is a finding\./);
+  assert.ok(words.indexOf(DONE_WHEN) < words.indexOf(closedWork) && words.indexOf(closedWork) < words.indexOf(IMPOSSIBLE_BEFORE_MERGE_RULE), "after the Done-when, before the Before-merge rule");
+  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), reviewWords(GATE, { doneWhen: DONE_WHEN, ...{} }), "no closed work, no change");
+  assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN }).includes("Work from closed pull requests"));
+  assert.equal(closedWorkWords(undefined), "");
+  assert.match(closedWorkWords("x".repeat(20000)), /\[cut: 4000 more characters on the pull request\]/, "a long list is cut and says so");
 });
