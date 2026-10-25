@@ -13,7 +13,7 @@ import { clearDrain, drainPath, readDrain, writeDrain, type Drain } from "./upda
 import { migrateInstall } from "./tool-migrate.ts";
 import type { RunResult, ServiceDeps, ServiceName, ServiceState } from "./service.ts";
 import { toolVersionAt, versionNameOf } from "./tool-versions.ts";
-import { buildVersion, completeUiBuild, currentVersionName, fetchMirror, mainVersionName, mirrorGit, pruneVersions, seedMirror, swapCurrent } from "./tool-install.ts";
+import { buildVersion, completeUiBuild, currentVersionName, fetchMirror, mainVersionName, mirrorGit, pruneVersions, seedMirror, swapCurrent, uiBuildReleased } from "./tool-install.ts";
 import type { UpdateDeps } from "./update.ts";
 import type { UpdateStatus } from "./update-safety.ts";
 import type { UiSource } from "./ui-asset.ts";
@@ -102,6 +102,7 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
       return buildVersion({ tool, name, ref, ...uiSource(), exec: (_file, _args, run) => { installs.push(name); mkdirSync(join((run as { cwd: string }).cwd, "node_modules"), { recursive: true }); } });
     },
     completeUi: (name) => completeUiBuild({ tool, name, ...uiSource() }),
+    released: (tag) => uiBuildReleased({ tool, tag, ui: state.ui }),
     swap: (name) => swapCurrent(tool, name),
     current: () => currentVersionName(tool),
     pinned: () => undefined,

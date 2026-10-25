@@ -16,7 +16,7 @@ import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
-import { createUi, endedPage, isEnded, missingBuildPage, pairedBy, sameTerminal } from "./ui-server.ts";
+import { createUi, endedPage, isEnded, missingBuildPage, noBuildOf, pairedBy, sameTerminal, updatingPage } from "./ui-server.ts";
 import type { TerminalMint } from "./terminal-pair.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
@@ -71,8 +71,8 @@ function sshRunner(fails = false) {
 }
 
 /** The page's service for `list`, in front of this machine's real instance, with ssh connections answered by `forward` or failing. */
-async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal, queue, terminal, lookupFails = false, uiBuilds, remembering }: { refusal?: string | null; sshFails?: boolean;
-  mintTerminal?: () => Promise<TerminalMint>; queue?: object; terminal?: string; lookupFails?: boolean; uiBuilds?: readonly string[]; remembering?: { stateDir: string; down: { value: boolean } } } = {}) {
+async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal, queue, terminal, lookupFails = false, uiBuilds, noBuild, remembering }: { refusal?: string | null; sshFails?: boolean;
+  mintTerminal?: () => Promise<TerminalMint>; queue?: object; terminal?: string; lookupFails?: boolean; uiBuilds?: readonly string[]; noBuild?: "updating" | "missing"; remembering?: { stateDir: string; down: { value: boolean } } } = {}) {
   const local = await instance(mintTerminal, { queue, terminal });
   const ssh = sshRunner(sshFails);
   const forwarded: { path: string; key: string; host: string }[] = [];
@@ -88,7 +88,7 @@ async function ui(list: readonly Connection[], { refusal = null, sshFails = fals
     return { status: 200, body: JSON.stringify({ entries: [], max: 1, paused: false }) };
   };
   const sessions = browserSessions(browserSessionsPath(local.stateDir), () => 7);
-  const served = await listen((port) => createUi({ port, key: local.key, sessions, read, connections, forward, uiBuilds, ...(remembering === undefined ? {} : { lastKnown: createLastKnown(lastKnownDir(remembering.stateDir)) }) }).handle);
+  const served = await listen((port) => createUi({ port, key: local.key, sessions, read, connections, forward, uiBuilds, noBuild, ...(remembering === undefined ? {} : { lastKnown: createLastKnown(lastKnownDir(remembering.stateDir)) }) }).handle);
   return { ...served, local, ssh, forwarded, close: async () => { await served.close(); await local.close(); } };
 }
 
@@ -724,7 +724,7 @@ test("A11-202: with no build, every page answers a plain 503 page that says the 
   const empty = tmpDir("ui-next-empty-");
   mkdirSync(join(empty, "ui-build"));
   const candidates = [join(empty, "ui-build"), join(empty, "ui", "dist")];
-  const u = await ui([WORK], { uiBuilds: candidates });
+  const u = await ui([WORK], { uiBuilds: candidates, noBuild: "missing" });
   try {
     const cookie = await pairedCookie(u.base, u.local.key);
     for (const path of ["/", "/tickets", "/settings/", "/runs/A11-1", "/_astro/app.abc123.js"]) {
@@ -747,6 +747,53 @@ test("A11-202: with no build, every page answers a plain 503 page that says the 
   } finally {
     await u.close();
   }
+});
+
+/** What a paired browser is answered with for each of `paths`: the response and its text. */
+async function answersFor(u: Awaited<ReturnType<typeof ui>>, paths: readonly string[]) {
+  const cookie = await pairedCookie(u.base, u.local.key);
+  return Promise.all(paths.map(async (path) => {
+    const answer = await fetch(`${u.base}${path}`, { headers: { cookie }, redirect: "manual" });
+    return { path, answer, text: await answer.text(), cookie };
+  }));
+}
+
+test("A11-284: a release install with no build answers the Updating page, a 503 that reloads itself, and never the missing-build page; the instance calls still answer", async () => {
+  const u = await ui([WORK], { uiBuilds: [join(tmpDir("ui-updating-"), "ui-build")], noBuild: "updating" });
+  try {
+    const answers = await answersFor(u, ["/", "/tickets", "/runs/A11-1", "/_astro/app.abc123.js"]);
+    for (const { path, answer, text } of answers) {
+      assert.deepEqual([answer.status, answer.headers.get("retry-after"), answer.headers.get("cache-control")], [503, "5", "no-store"], path);
+      assert.match(text, /<meta http-equiv="refresh" content="5">/, path);
+      assert.match(text, /<h1>Updating Atomaut<\/h1>/, path);
+      assert.doesNotMatch(text, /The UI build is missing|pnpm ui:build/, `${path}: never the error page`);
+    }
+    assert.equal((await fetch(`${u.base}/c/work/api/tickets`, { headers: { cookie: answers[0].cookie } })).status, 200, "a call to an instance is answered");
+  } finally {
+    await u.close();
+  }
+});
+
+test("A11-284: no build is the Updating page only in a release folder whose release declares a UI build; a release without one, a main folder and a checkout say it is missing", () => {
+  const tool = tmpDir("ui-nobuild-");
+  const folder = (name: string, manifest: object) => {
+    mkdirSync(join(tool, "versions", name), { recursive: true });
+    writeFileSync(join(tool, "versions", name, "package.json"), JSON.stringify(manifest));
+    return join(tool, "versions", name);
+  };
+  const ships = { agentOrg: { shipsUiBuild: true } };
+  assert.equal(noBuildOf(folder("v0.3.0", ships)), "updating");
+  assert.equal(noBuildOf(folder("v0.2.0", {})), "missing", "a release before the marker will never have a build");
+  assert.equal(noBuildOf(folder("main-abc12345", ships)), "missing");
+  assert.equal(noBuildOf(tmpDir("ui-checkout-")), "missing");
+});
+
+test("A11-284: the Updating page names the version the board is moving to, escaped, and has no controls", () => {
+  const page = updatingPage("v0.2.0");
+  assert.match(page, /The board is moving to v0\.2\.0 and is fetching its UI\. This page reloads itself every few seconds\./);
+  assert.doesNotMatch(page, /<(a|button|input|form|script)\b/);
+  assert.equal(updatingPage("<b>x</b>").includes("<b>"), false);
+  assert.match(updatingPage(null), /The board is updating and is fetching its UI\./);
 });
 
 test("A11-190: a file that cannot be read is a plain 404, never a stack trace", { skip: process.getuid?.() === 0 && "root reads any file" }, async () => {

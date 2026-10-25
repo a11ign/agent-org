@@ -1,6 +1,7 @@
 // no-token: none -- git runs in a remote this file builds; the dependency installs and the services are stand-ins (`update-fixture.ts`)
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,12 +13,12 @@ import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { fakePluginDeps } from "../plugins/fakes/deps.ts";
 import type { PluginDeps } from "../plugins/manifest.ts";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
-import { stubServices, updateFixture } from "./update-fixture.ts";
+import { HOUR, stubServices, updateFixture } from "./update-fixture.ts";
 import { herdrStatusPath, readHerdrStatus } from "./herdr-upkeep.ts";
 import { unitFor, type RunResult } from "./service.ts";
 import { herdrConfigDir } from "./terminal.ts";
 import { bsdtarLikeExec, publishUiAsset, startReleaseServer } from "./fixtures/release-server.ts";
-import { swapCurrent } from "./tool-install.ts";
+import { swapCurrent, uiBuildReleased } from "./tool-install.ts";
 
 /** An install at v0.1.0 in version folders, running from it, with v0.2.0 and v0.10.0 cut since. */
 function installed(states: Parameters<typeof updateFixture>[0] = { states: { instance: "running" } }) {
@@ -319,7 +320,7 @@ test("A11-191: update downloads the UI build of the release it moves to, verifie
   assert.equal(currentVersionName(f.tool), "v0.2.0");
   assert.equal(readFileSync(join(versionDir(f, "v0.2.0"), "ui-build", "index.html"), "utf8"), "<title>v0.2.0</title>\n");
   assert.ok(f.said.includes("agent-org update: ✓ UI build for v0.2.0 installed (2 files)"), f.said.join("\n"));
-  assert.deepEqual(server.requests(), ["/v0.2.0/agent-org-ui-v0.2.0.tar.gz.sha256", "/v0.2.0/agent-org-ui-v0.2.0.tar.gz"]);
+  assert.deepEqual(server.requests(), ["/v0.2.0/agent-org-ui-v0.2.0.tar.gz.sha256", "/v0.2.0/agent-org-ui-v0.2.0.tar.gz.sha256", "/v0.2.0/agent-org-ui-v0.2.0.tar.gz"], "the checksum is asked for once to see the release is released, then fetched with its tarball");
 });
 
 test("A11-191: a release before the marker installs as it always did: no request is made and no ui-build is made", async () => {
@@ -334,17 +335,105 @@ test("A11-191: a release before the marker installs as it always did: no request
   assert.deepEqual(server.requests(), [], "and the update that finds nothing newer asks for nothing either");
 });
 
-test("A11-191: a release whose build is not attached yet is refused and current stays; the dependency install is not spent on it; the next update installs it once it is attached", async () => {
-  const { f, attach } = await shippingInstalledAt("0.1.0", false);
+/** v0.1.0 installed, v0.2.0 released with its build, and v0.3.0 cut with no build attached yet. */
+async function installedWithLateRelease() {
+  const made = await shippingInstalledAt("0.1.0", false);
+  shipRelease(made, "0.2.0");
+  made.f.release("0.3.0", "a fix", SHIPS);
+  return made;
+}
+
+test("A11-284: a release whose declared build is not attached yet is not released: the update stays on the current version without an error, restarts nothing, and moves once the build is attached", async () => {
+  const { f, server, attach } = await shippingInstalledAt("0.1.0", false);
+  f.states.ui = "running";
+  f.release("0.2.0", "a fix", SHIPS);
+  for (const record of [f.installs, f.restarted, f.said, f.statuses]) record.length = 0;
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), false);
+  assert.equal(currentVersionName(f.tool), "v0.1.0");
+  assert.deepEqual(versionNames(f), ["v0.1.0"], "no v0.2.0 and no .partial is left");
+  assert.deepEqual(f.installs, [], "the dependency install is not spent on it");
+  assert.deepEqual(f.restarted, [], "no service restarts onto a version without its build");
+  assert.ok(f.said.includes("agent-org update: v0.2.0 has not attached its UI build yet, so it is not released until it has; agent-org stays at v0.1.0 and the next update tries again"), f.said.join("\n"));
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.statuses.map(({ installed, latest }) => [installed, latest]), [["v0.1.0", "v0.1.0"]], "the status reports no release newer than the installed one");
+  assert.deepEqual(server.requests(), ["/v0.2.0/agent-org-ui-v0.2.0.tar.gz.sha256"], "one probe, and no download");
+  attach("v0.2.0");
+  f.said.length = 0;
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), true);
+  assert.equal(currentVersionName(f.tool), "v0.2.0");
+  assert.deepEqual(f.restarted, ["instance", "ui"], "the services restart once, after the build is in place");
+  assert.equal(readFileSync(join(versionDir(f, "v0.2.0"), "ui-build", "index.html"), "utf8"), "<title>v0.2.0</title>\n");
+  assert.equal(f.said.some((line) => /not released/.test(line)), false);
+});
+
+test("A11-284: only the release whose build is late is skipped: the update moves to the newest release that has its build", async () => {
+  const { f } = await installedWithLateRelease();
+  f.said.length = 0;
+  f.statuses.length = 0;
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), true);
+  assert.equal(currentVersionName(f.tool), "v0.2.0");
+  assert.ok(f.said.includes("agent-org update: v0.3.0 has not attached its UI build yet, so it is not released until it has; the next update tries again"), f.said.join("\n"));
+  assert.deepEqual(f.statuses.map(({ installed, latest }) => [installed, latest]), [["v0.2.0", "v0.2.0"]]);
+});
+
+test("A11-284: the walk stops at the installed version and never asks about it, and a release before the marker is released without a request", async () => {
+  const { f, server } = await shippingInstalledAt("0.1.0", true);
+  const before = server.requests().length;
+  f.release("0.2.0", "a fix", SHIPS);
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), false);
+  assert.deepEqual(server.requests().slice(before), ["/v0.2.0/agent-org-ui-v0.2.0.tar.gz.sha256"], "v0.2.0 is asked about, and the installed v0.1.0 is not");
+  f.release("0.3.0");
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), true);
+  assert.equal(currentVersionName(f.tool), "v0.3.0");
+  assert.equal(server.requests().length, before + 1, "v0.3.0 declares no build, so no request was made for it");
+});
+
+test("A11-284: a tag whose build CI never attaches is skipped for an hour after its commit and then fails the update as before, so a lost build is not hidden", async () => {
+  const { f } = await shippingInstalledAt("0.1.0", false);
+  f.release("0.2.0", "a fix", SHIPS);
+  f.state.now = Date.now() + 2 * HOUR;
+  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps()), (err: Error) => err instanceof UpdateRefusal && /^agent-org stays at v0\.1\.0, not moved to v0\.2\.0, because building it failed: UI build download failed: v0\.2\.0 has not attached its UI build yet/.test(err.message));
+  assert.equal(currentVersionName(f.tool), "v0.1.0");
+  f.state.now = Date.now();
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), false, "inside the hour it is not released yet");
+});
+
+test("A11-284: an installed version that is not one of the tags is not walked: the newest tag is targeted, and a missing build fails as before, never a move to an older release", async () => {
+  const { f } = await installedWithLateRelease();
+  f.runFromVersion("v0.9.9");
+  rmSync(join(f.tool, "current"), { force: true });
+  f.said.length = 0;
+  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps()), (err: Error) => err instanceof UpdateRefusal && /not moved to v0\.3\.0, because building it failed/.test(err.message));
+  assert.equal(f.said.some((line) => /not released/.test(line)), false);
+});
+
+test("A11-284: a version folder that already holds its build is released whatever the release answers now", async () => {
+  const { f, server } = await shippingInstalledAt("0.1.0", true);
+  const ui = { releases: () => server.url, exec: execFileSync };
+  assert.equal(uiBuildReleased({ tool: f.tool, tag: "v0.1.0", ui }), "attached");
+  rmSync(join(server.root, "v0.1.0"), { recursive: true });
+  assert.equal(uiBuildReleased({ tool: f.tool, tag: "v0.1.0", ui }), "attached", "the asset is gone, the folder has its build");
+  assert.equal(uiBuildReleased({ tool: f.tool, tag: "v0.7.0", ui }), "not-yet", "a folder that is not there is asked for");
+});
+
+test("A11-284: a probe that cannot tell (HTTP 503, no server) is not 'not released': the tag is targeted and the build fails the update as before, with current unchanged", async () => {
+  for (const breakServer of [({ f, server }: Awaited<ReturnType<typeof shipping>>) => f.fetchUiFrom(server.url, () => "503"), ({ f }: Awaited<ReturnType<typeof shipping>>) => f.fetchUiFrom("http://127.0.0.1:1/dl")]) {
+    const made = await shippingInstalledAt("0.1.0", false);
+    made.f.release("0.2.0", "a fix", SHIPS);
+    breakServer(made);
+    assert.throws(() => update({ version: undefined, channel: "release" }, made.f.deps()), (err: Error) => err instanceof UpdateRefusal && /^agent-org stays at v0\.1\.0, not moved to v0\.2\.0, because building it failed: UI build download failed/.test(err.message));
+    assert.equal(currentVersionName(made.f.tool), "v0.1.0");
+  }
+});
+
+test("A11-284: a version named with --version is not walked: an unattached one is refused as before and current stays", async () => {
+  const { f } = await shippingInstalledAt("0.1.0", false);
   f.release("0.2.0", "a fix", SHIPS);
   f.installs.length = 0;
-  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps()), (err: Error) => err instanceof UpdateRefusal && /stays at v0\.1\.0, not moved to v0\.2\.0.*v0\.2\.0 has not attached its UI build yet \(CI attaches it a few minutes after the release\)/.test(err.message));
+  assert.throws(() => update({ version: "v0.2.0", channel: "release" }, f.deps()), (err: Error) => err instanceof UpdateRefusal && /stays at v0\.1\.0, not moved to v0\.2\.0.*v0\.2\.0 has not attached its UI build yet \(CI attaches it a few minutes after the release\)/.test(err.message));
   assert.equal(currentVersionName(f.tool), "v0.1.0");
   assert.deepEqual(versionNames(f), ["v0.1.0"], "no v0.2.0 and no .partial is left");
   assert.deepEqual(f.installs, [], "the missing build is found before pnpm runs");
-  attach("v0.2.0");
-  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), true);
-  assert.equal(currentVersionName(f.tool), "v0.2.0");
 });
 
 test("A11-191: a checksum that does not match fails the move, leaves current where it was, and leaves no folder", async () => {
@@ -394,7 +483,6 @@ test("A11-266: a build that cannot be fetched for the folder that is already cur
 
 // A11-266: a declared build that cannot be fetched fails the update, naming the step and the error, and leaves current where it was.
 const DOWNLOADS: readonly (readonly [string, (f: Awaited<ReturnType<typeof shipping>>) => void, RegExp])[] = [
-  ["a 404, the build not attached yet", () => undefined, /^agent-org stays at v0\.1\.0, not moved to v0\.2\.0, because building it failed: UI build download failed: v0\.2\.0 has not attached its UI build yet/],
   ["a 503", ({ f, server }) => f.fetchUiFrom(server.url, () => "503"), /because building it failed: UI build download failed: .*agent-org-ui-v0\.2\.0\.tar\.gz\.sha256 could not be downloaded \(HTTP 503\)/],
   ["no server", ({ f }) => f.fetchUiFrom("http://127.0.0.1:1/dl"), /because building it failed: UI build download failed: http:\/\/127\.0\.0\.1:1\/dl\/v0\.2\.0\/agent-org-ui-v0\.2\.0\.tar\.gz\.sha256 could not be downloaded \(.*[Cc]onnect/],
 ];

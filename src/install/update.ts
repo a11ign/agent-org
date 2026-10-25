@@ -15,6 +15,9 @@
 // THE FIRST UPDATE FROM A CHECKOUT INSTALL MIGRATES: the checkout `install.sh` made (or the agents host's clone) is not under `versions/`, so the mirror is seeded from its remote, the units, the
 // launcher and the host file's `tool` are rewritten once to run through `<tool>/current`, and the services restart on it. The checkout itself is left untouched: runs that started on it keep calling it.
 // Each run writes the status file `doctor` reads.
+//
+// A RELEASE COUNTS AS RELEASED ONLY ONCE ITS UI BUILD IS ATTACHED (A11-284). The tag exists minutes before CI attaches `agent-org-ui-<tag>.tar.gz`, so following the newest release walks the tags newest first and skips
+// one that declares a UI build and answers 404 for its checksum: it is said in a line, `current` stays, nothing restarts, and the update exits 0. The walk stops at the installed version. A named version is not walked.
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -33,12 +36,13 @@ import { hostSettings, readLiveRuns, readQueue } from "./instance-queue.ts";
 import { toolRootsInUse } from "../ticket-mode/queue/queue-pins.ts";
 import type { TicketSettings } from "../ticket-mode/settings.ts";
 import { pinnedPnpm } from "./pnpm.ts";
+import { declaresUiBuildIn, type UiAttached } from "./ui-asset.ts";
 import { runProgram, stateOfRecord, updateConventions, type ConventionsUpdate, type Run } from "./plugin-install.ts";
 import { readUpdateStatus, updateStatusPath, writeUpdateStatus, type UpdateStatus } from "./update-safety.ts";
 import { clearDrain, drainPath, readDrain, writeDrain, type Drain, type DrainRecord } from "./update-drain.ts";
 import { breakingLines } from "./breaking-release.ts";
 import { toolDir, toolVersionAt } from "./tool-versions.ts";
-import { buildVersion, completeUiBuild, withUpdateLock, currentVersionName, fetchMirror, mainVersionName, mirrorGit, mirrorTags, pruneVersions, seedMirror, swapCurrent, type Build, type Exec, type Git } from "./tool-install.ts";
+import { buildVersion, completeUiBuild, withUpdateLock, currentVersionName, fetchMirror, mainVersionName, mirrorGit, mirrorTags, pruneVersions, seedMirror, swapCurrent, uiBuildReleased, type Build, type Exec, type Git } from "./tool-install.ts";
 import { migrateInstall } from "./tool-migrate.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { HOUR_MS } from "./update-safety.ts";
@@ -63,6 +67,8 @@ export type UpdateDeps = Readonly<{
   build: (name: string, ref: string) => Build;
   /** Give the version folder `name` the UI build its release declares and it lacks (A11-191). */
   completeUi: (name: string) => Build;
+  /** Whether the release `tag` has its UI build attached (A11-284): a 404 for it is `not-yet`, and any other failure to ask is `unknown`. */
+  released: (tag: string) => UiAttached;
   /** Point `current` at `versions/<name>`. */
   swap: (name: string) => void;
   /** The version `current` names, or null when there is none (an install that has not migrated). */
@@ -175,17 +181,66 @@ function keepHerdr(deps: UpdateDeps): void {
   sayUpkeep(deps, deps.herdr());
 }
 
-/** The release the move is to, or the main build. REFUSES when the mirror holds no such release: no fallback to `origin/main`, the host runs a release or the last one it ran. */
-function targetOf(deps: UpdateDeps, version: string | undefined, channel: Channel): Target {
-  if (channel === "main") return { name: mainVersionName(deps.git), ref: "refs/heads/main" };
+/** What the move is to; the release `latest` the status file reports (the target when following the newest, else the newest tag of the mirror); and the newer tags left alone for want of their UI build. */
+type Choice = Readonly<{ target: Target; latest: string; notReleased: readonly string[] }>;
+
+const refuseNoRelease = (tags: readonly string[], wanted: string): never => {
+  const why = wanted === LATEST ? `it holds no release tag after fetching them; the tags it has: ${tags.join(", ") || "none"}` : `${wanted} is not a release it holds; the release tags it has: ${tags.filter(isReleaseTag).join(", ") || "none"}`;
+  throw new UpdateRefusal(`agent-org was not moved: ${why}. It stays where it is and does not fall back to main.`);
+};
+
+/** How long after its commit a tag may wait for its UI build and still count as not released yet. Past it the tag is targeted and the build fails loudly, so a build that CI never attaches is not hidden. */
+const ATTACH_GRACE_HOURS = 1;
+
+/** Whether the tag's commit is older than {@link ATTACH_GRACE_HOURS}. A date that cannot be read is not old. */
+function pastGrace(deps: UpdateDeps, tag: string): boolean {
+  try {
+    return deps.now() - Date.parse(deps.git(["log", "-1", "--format=%cI", `refs/tags/${tag}`]).trim()) > ATTACH_GRACE_HOURS * HOUR_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the release `tag` is yet to be released (A11-284): it declares a UI build (`agentOrg.shipsUiBuild` in its `package.json`), CI has not attached it, and the tag is young enough for CI to
+ * still be at it. A manifest that cannot be read and a probe that cannot tell are not "not yet": the tag is targeted and the build reports the real failure.
+ */
+function awaitsUiBuild(deps: UpdateDeps, tag: string): boolean {
+  let manifest: string;
+  try {
+    manifest = deps.git(["show", `refs/tags/${tag}:package.json`]);
+  } catch {
+    return false;
+  }
+  return declaresUiBuildIn(manifest) && !pastGrace(deps, tag) && deps.released(tag) === "not-yet";
+}
+
+/**
+ * The newest RELEASED release (A11-284). A tag exists minutes before CI attaches its UI build, and a release counts as released only once the build it declares is attached, so the tags are walked
+ * newest first, each one that awaits its build is skipped, and the walk stops at the installed version, which is never asked about and never gone below. An installed version that is not one of the
+ * tags (a main build, a checkout) gives the walk nothing to stop at, so it is not walked: the newest tag is the answer and the build reports why it cannot be had.
+ */
+function newestReleased(deps: UpdateDeps, newestFirst: readonly string[], installed: string | null): Readonly<{ tag: string; notReleased: string[] }> {
+  const [newest = ""] = newestFirst;
+  if (installed === null || !newestFirst.includes(installed)) return { tag: newest, notReleased: [] };
+  const tag = newestFirst.find((candidate) => candidate === installed || !awaitsUiBuild(deps, candidate)) ?? newest;
+  return { tag, notReleased: newestFirst.slice(0, newestFirst.indexOf(tag)) };
+}
+
+/**
+ * The release the move is to, or the main build. REFUSES when the mirror holds no such release: no fallback to `origin/main`, the host runs a release or the last one it ran. A named version (`--version`
+ * or the host file's `toolVersion`) is the person's choice and is targeted as it is; following the newest targets the newest released one.
+ */
+function choose(deps: UpdateDeps, version: string | undefined, channel: Channel): Choice {
+  if (channel === "main") return { target: { name: mainVersionName(deps.git), ref: "refs/heads/main" }, latest: "main", notReleased: [] };
   const wanted = version ?? deps.pinned() ?? LATEST;
   const tags = mirrorTags(deps.git);
   const tag = chooseReleaseTag(tags, wanted);
-  if (tag === null) {
-    const why = wanted === LATEST ? `it holds no release tag after fetching them; the tags it has: ${tags.join(", ") || "none"}` : `${wanted} is not a release it holds; the release tags it has: ${tags.filter(isReleaseTag).join(", ") || "none"}`;
-    throw new UpdateRefusal(`agent-org was not moved: ${why}. It stays where it is and does not fall back to main.`);
-  }
-  return { name: tag, ref: `refs/tags/${tag}` };
+  if (tag === null) return refuseNoRelease(tags, wanted);
+  const newestFirst = tags.filter(isReleaseTag).toSorted((a, b) => compareReleaseTags(b, a));
+  if (wanted !== LATEST) return { target: { name: tag, ref: `refs/tags/${tag}` }, latest: newestFirst[0], notReleased: [] };
+  const released = newestReleased(deps, newestFirst, installedName(deps));
+  return { target: { name: released.tag, ref: `refs/tags/${released.tag}` }, latest: released.tag, notReleased: released.notReleased };
 }
 
 /** The version this install is at: the folder `current` names, else the version of the code running this (an install that has not migrated). */
@@ -208,8 +263,9 @@ function moveTool({ version, channel, force = false }: { version: string | undef
   // Read BEFORE the move: a restart is for a service that ran the old version, and nothing else.
   const running = TOOL_SERVICES.filter((name) => deps.state(name) === "running");
   deps.fetch(channel);
-  const target = targetOf(deps, version, channel);
+  const { target, latest, notReleased } = choose(deps, version, channel);
   const installed = installedName(deps);
+  sayNotReleased(deps, notReleased, target.name === deps.current() ? target.name : null);
   if (target.name === deps.current()) {
     // Nothing newer. A drain record for a release already applied is over (an update that stopped between its swap and its cleanup), and a unit that still names an earlier install's
     // checkout (install.sh ran over it, or the checkout's own timer ran the first update) is pointed at `current` now.
@@ -219,7 +275,7 @@ function moveTool({ version, channel, force = false }: { version: string | undef
     const migrated = deps.migrate();
     sayMigrated(deps, migrated);
     if (migrated.length > 0) restartRunning(deps, running);
-    finish(deps, channel, target.name, installed);
+    finish(deps, channel, { latest, installed });
     // After the status file and the restarts: what the update keeps true is kept, and the update still does not report success with the build missing.
     if (noBuild !== null) throw new UpdateRefusal(`agent-org is at ${target.name}, but it has no UI build, so the board shows "The UI build is missing": ${noBuild}`);
     return false;
@@ -234,8 +290,8 @@ function moveTool({ version, channel, force = false }: { version: string | undef
   if (built.said !== undefined) deps.out.log(`agent-org update: ${built.said}`);
   // Read after the build, which can take minutes: a run that started meanwhile is live, and one that finished is not waited for.
   const live = running.includes("instance") ? deps.liveRuns() : null;
-  if (mustDrain({ breaking: breaking.length > 0, force, live })) return drain(deps, { target, installed, channel, live: live ?? 0, lines: breaking.map((line) => `${line.release}: ${line.summary}`) });
-  return apply(deps, { target, installed, running, channel });
+  if (mustDrain({ breaking: breaking.length > 0, force, live })) return drain(deps, { target, latest, installed, channel, live: live ?? 0, lines: breaking.map((line) => `${line.release}: ${line.summary}`) });
+  return apply(deps, { target, latest, installed, running, channel });
 }
 
 /** Whether a breaking release waits on live runs: it is breaking, `--force` is not given, and the instance has a live run (a queue that cannot be read has none to wait for). */
@@ -244,7 +300,7 @@ function mustDrain({ breaking, force, live }: { breaking: boolean; force: boolea
 }
 
 /** Write the drain record, keeping the start of an earlier one: a release that supersedes the one being waited for does not give the live runs a fresh wait. */
-function drain(deps: UpdateDeps, { target, installed, channel, live, lines }: { target: Target; installed: string | null; channel: Channel; live: number; lines: readonly string[] }): false {
+function drain(deps: UpdateDeps, { target, latest, installed, channel, live, lines }: { target: Target; latest: string; installed: string | null; channel: Channel; live: number; lines: readonly string[] }): false {
   const earlier = deps.drain.read();
   const since = earlier.kind === "draining" ? earlier.record : null;
   const startedAt = since === null ? deps.now() : Date.parse(since.since);
@@ -254,12 +310,12 @@ function drain(deps: UpdateDeps, { target, installed, channel, live, lines }: { 
   });
   deps.out.log(`agent-org update: ${target.name} is breaking (${lines.join("; ")}). ${live} ${live === 1 ? "run is" : "runs are"} live, so it is built and waits: no new run starts, the live runs finish, and any still live `
     + `${deps.maxDeferHours} ${deps.maxDeferHours === 1 ? "hour" : "hours"} after ${new Date(startedAt).toISOString()} are stopped and re-queued. \`agent-org update --force\` applies it now.`);
-  recordStatus(deps, channel, target.name, installed ?? target.name);
+  recordStatus(deps, channel, { latest, installed: installed ?? target.name });
   return false;
 }
 
 /** Swap `current`, point the units at it (the first update from a checkout rewrites them once), restart what ran, and clean up. */
-function apply(deps: UpdateDeps, { target, installed, running, channel }: { target: Target; installed: string | null; running: readonly ServiceName[]; channel: Channel }): boolean {
+function apply(deps: UpdateDeps, { target, latest, installed, running, channel }: { target: Target; latest: string; installed: string | null; running: readonly ServiceName[]; channel: Channel }): boolean {
   try {
     deps.swap(target.name);
   } catch (err) {
@@ -271,7 +327,7 @@ function apply(deps: UpdateDeps, { target, installed, running, channel }: { targ
   // Restarts come before the status file: a status that cannot be written must not leave a moved install's services on the old modules.
   restartRunning(deps, running);
   deps.drain.clear();
-  finish(deps, channel, target.name, target.name);
+  finish(deps, channel, { latest, installed: target.name });
   return true;
 }
 
@@ -301,17 +357,23 @@ function restartRunning(deps: UpdateDeps, running: readonly ServiceName[]): void
 }
 
 /** The status file, and the folders no run uses any more. A queue that cannot be read prunes nothing. */
-function finish(deps: UpdateDeps, channel: Channel, latest: string, installed: string | null): void {
+function finish(deps: UpdateDeps, channel: Channel, { latest, installed }: { latest: string; installed: string | null }): void {
   const inUse = deps.inUse();
   if (inUse !== null) {
     const removed = deps.prune(inUse);
     if (removed.length > 0) deps.out.log(`agent-org update: removed ${removed.join(", ")}, which no run uses`);
   }
-  recordStatus(deps, channel, latest, installed ?? latest);
+  recordStatus(deps, channel, { latest, installed: installed ?? latest });
 }
 
-/** Writes what this run saw: the install, and the newest release. `doctor` reads it. */
-function recordStatus(deps: UpdateDeps, channel: Channel, latest: string, installed: string): void {
+/** Says each release this update left alone because CI has not attached its UI build yet (A11-284): not an error, it is how every release looks for a few minutes. */
+function sayNotReleased(deps: UpdateDeps, tags: readonly string[], staysAt: string | null): void {
+  const then = staysAt === null ? "the next update tries again" : `agent-org stays at ${staysAt} and the next update tries again`;
+  for (const tag of tags) deps.out.log(`agent-org update: ${tag} has not attached its UI build yet, so it is not released until it has; ${then}`);
+}
+
+/** Writes what this run saw: the install, and the newest release that is released. `doctor` reads it, so an unreleased tag is never a version to be behind. */
+function recordStatus(deps: UpdateDeps, channel: Channel, { latest, installed }: { latest: string; installed: string }): void {
   const date = (ref: string): string => {
     try {
       return deps.git(["log", "-1", "--format=%cI", ref]).trim();
@@ -319,15 +381,7 @@ function recordStatus(deps: UpdateDeps, channel: Channel, latest: string, instal
       return new Date(deps.now()).toISOString();
     }
   };
-  const newest = channel === "main" ? { name: "main", since: date("refs/heads/main") } : releaseNewest(deps);
-  deps.status.write({ checkedAt: new Date(deps.now()).toISOString(), channel, installed, latest: newest?.name ?? latest, latestSince: newest?.since ?? date(`refs/tags/${latest}`) });
-}
-
-/** The newest release the mirror holds, and the date its commit was made. */
-function releaseNewest(deps: UpdateDeps): { name: string; since: string } | null {
-  const tag = mirrorTags(deps.git).filter(isReleaseTag).toSorted(compareReleaseTags).at(-1);
-  if (tag === undefined) return null;
-  return { name: tag, since: deps.git(["log", "-1", "--format=%cI", `refs/tags/${tag}`]).trim() };
+  deps.status.write({ checkedAt: new Date(deps.now()).toISOString(), channel, installed, latest, latestSince: date(channel === "main" ? "refs/heads/main" : `refs/tags/${latest}`) });
 }
 
 /** The `toolVersion` the host file pins, when it is a release tag (`latest` is no pin). */
@@ -366,6 +420,7 @@ function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"], newestHerdr: HerdrNewes
     },
     build: (name, ref) => buildVersion({ tool, name, ref, exec, pnpm: pinnedPnpm }),
     completeUi: (name) => completeUiBuild({ tool, name }),
+    released: (tag) => uiBuildReleased({ tool, tag }),
     swap: (name) => swapCurrent(tool, name),
     current: () => currentVersionName(tool),
     pinned: () => pinnedVersion(),
