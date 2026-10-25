@@ -232,9 +232,9 @@ export function setMax(queue: Queue, max: number): Queue {
 }
 
 export function markStarting(queue: Queue, key: string, now: number, worker?: RunWorker): Queue {
-  // The round that follows a stop for an update is under way: the board stops saying the run was stopped (A11-169). What a start records of the run's plan and machine is read again
-  // for this start, so the earlier one's is dropped (A11-219).
-  return replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, plannedSteps: _planned, currentStep: _step, ...entry }) =>
+  // The round that follows a stop for an update or for a wait on another ticket is under way: the board stops saying the run was stopped, and no longer holds it (A11-169, A11-272). What a start
+  // records of the run's plan and machine is read again for this start, so the earlier one's is dropped (A11-219).
+  return replace(queue, key, ({ sessionWait: _held, stoppedForUpdate: _stopped, stoppedForBlocker: _behind, plannedSteps: _planned, currentStep: _step, ...entry }) =>
     ({ ...entry, phase: "starting", startedAt: now, ...(worker === undefined ? {} : { worker }) }));
 }
 

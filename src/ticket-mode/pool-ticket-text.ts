@@ -26,6 +26,7 @@ import { ticketDir } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
 import { type PoolContext } from "./pool-context.ts";
 import type { MergedFindings } from "../plugins/contracts/code-host.ts";
+import { resumesStoppedSession } from "./queue/queue-blocker-wait.ts";
 
 /** The most a findings file holds, as a plan file's: a pull request body past it is cut, and the file says so. */
 const FINDINGS_FILE_BYTES = PLAN_FILE_BYTES;
@@ -269,7 +270,7 @@ function watchedKeys(ctx: PoolContext): string[] {
     if (entry.review !== undefined && entry.phase === "queued") return false;
     if (entry.talk === true) return false;
     if (holdsBlockedPull(ctx, entry)) return true;
-    if (entry.phase === "queued") return entry.plan === undefined && entry.plannedAgainst !== undefined && entry.stoppedForUpdate === undefined && canReplan(ctx);
+    if (entry.phase === "queued") return entry.plan === undefined && entry.plannedAgainst !== undefined && !resumesStoppedSession(entry) && canReplan(ctx);
     return entry.phase === "running" && entry.briefedAgainst !== undefined && !isPlanning(ctx, entry);
   });
   return [...new Set(watched.map(({ ticket }) => ticket.key))];
@@ -375,8 +376,8 @@ async function copyPreviousPlan(ctx: PoolContext, ticket: Ticket, titles: readon
 
 /** Why a queued run's stamped plan must be written again against `fresh`, or null when it holds: the description changed, or a blocker's findings reached the run after the plan was written. PURE. */
 function staleReason(entry: Entry, fresh: Ticket): "description" | "findings" | null {
-  // A run an update stopped while it worked resumes its own session; its worker was told of a change as it happened (A11-169).
-  if (entry.plannedAgainst === undefined || entry.stoppedForUpdate !== undefined) return null;
+  // A run the board stopped while it worked resumes its own session; its worker was told of a change as it happened (A11-169), and reads its blockers' work in its brief (A11-272).
+  if (entry.plannedAgainst === undefined || resumesStoppedSession(entry)) return null;
   if (entry.plannedAgainst.hash !== descriptionHash(fresh.description)) return "description";
   return unnamedFindings(entry).length > 0 ? "findings" : null;
 }

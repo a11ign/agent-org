@@ -23,7 +23,7 @@ const ROUND_WORDS: Readonly<Record<RoundCause, string>> = {
 
 const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", answer: "the board's answer", terminal: "the run's own terminal" };
 
-const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again" };
+const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket" };
 
 /** How long ago an event was: "just now" inside the first minute, then "5 min ago". */
 const agoOf = (at: number, now: number): string => (now - at < 60_000 ? "just now" : `${since(at, now)} ago`);

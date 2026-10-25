@@ -8,6 +8,7 @@ import type { HeldClaim } from "../path-claims.ts";
 import { currentStepOf, currentStepPaths } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
 import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
+import { blockersOf, waitedOn } from "./waits-on.ts";
 
 /** Split a repository-prefixed path, `<repo>:<path>`, into its repository and its path within it. PURE. */
 const repoPath = (path: string): [string, string] => {
@@ -73,11 +74,12 @@ const holds = (entry: ViewEntry): boolean => {
 };
 
 /**
- * Whether a holder is exempt from a queued run: one of its own blockers, or a run that is blocked by it. Those are sequenced on purpose
- * (`waitsOn`, `stackedOn`), so they are never held against each other.
+ * Whether a holder is exempt from a queued run: one of its own blockers, or a run that waits on it. Those are sequenced on purpose (`waitsOn`, `stackedOn`), so they
+ * are never held against each other. A holder waits on a ticket it is blocked by, and also on one its worker declared a wait on, directly or through the tickets those wait on
+ * ({@link waitedOn}, A11-272): a run parked on a wait would otherwise hold its files against the very ticket it waits for. PURE.
  */
-const exempt = (entry: ViewEntry, other: ViewEntry): boolean =>
-  (entry.blockers ?? []).some(({ key }) => key === other.ticket.key) || (other.blockers ?? []).some(({ key }) => key === entry.ticket.key);
+const exempt = (entry: ViewEntry, other: ViewEntry, entries: readonly ViewEntry[]): boolean =>
+  blockersOf(entry).some(({ key }) => key === other.ticket.key) || waitedOn(other, entries).has(entry.ticket.key);
 
 /**
  * The counted paths a queued run contests: none for a run that holds no path (see {@link pathless}), or was started anyway past its overlap
@@ -89,7 +91,7 @@ const contested = (entry: ViewEntry): string[] => pathless(entry) || entry.overl
 const pathless = (entry: ViewEntry): boolean => entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined;
 
 /** Whether `other` is a run a queued run contests paths with: a run that holds its footprint, other than its own and not sequenced with it. PURE. */
-const competes = (entry: ViewEntry, other: ViewEntry): boolean => other.ticket.key !== entry.ticket.key && holds(other) && !exempt(entry, other);
+const competes = (entry: ViewEntry, other: ViewEntry, entries: readonly ViewEntry[]): boolean => other.ticket.key !== entry.ticket.key && holds(other) && !exempt(entry, other, entries);
 
 /**
  * One path two runs both claim: `path` is the narrower of the two, the file where one is a file, and within its repository. `folderOf` is the key of the run whose directory claim made the overlap, and `folder` that
@@ -139,7 +141,7 @@ export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): Ov
   const mine = contested(entry);
   if (mine.length === 0) return null;
   for (const other of entries) {
-    if (!competes(entry, other)) continue;
+    if (!competes(entry, other, entries)) continue;
     const held = footprintOf(other);
     const path = mine.find((own) => held.some((theirs) => pathsOverlap(own, theirs)));
     if (path !== undefined) return { key: other.ticket.key, pull: parsePull(openPulls(other)[0]?.url ?? "")?.number ?? null, path: repoPath(path)[1], overlaps: overlapsBetween(mine, held, { waiting: entry.ticket.key, holder: other.ticket.key }) };
@@ -154,7 +156,7 @@ export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): Ov
  */
 export function heldClaims(entries: readonly ViewEntry[], selves: readonly ViewEntry[]): HeldClaim[] {
   const keys = new Set(selves.map(({ ticket }) => ticket.key));
-  return entries.filter((other) => !keys.has(other.ticket.key) && !selves.some((self) => exempt(self, other))).flatMap((other) => {
+  return entries.filter((other) => !keys.has(other.ticket.key) && !selves.some((self) => exempt(self, other, entries))).flatMap((other) => {
     const paths = holds(other) ? footprintOf(other) : contested(other);
     return paths.length === 0 ? [] : [{ key: other.ticket.key, state: claimState(other), paths }];
   });
@@ -173,7 +175,7 @@ function claimState(run: ViewEntry): string {
 function unreadWait(entry: ViewEntry, entries: readonly ViewEntry[], mine: readonly string[]): OverlapWait | null {
   const repos = new Set(mine.map((path) => repoPath(path)[0]));
   for (const other of entries) {
-    if (!competes(entry, other) || other.phase !== "finished" || other.pullFiles !== undefined) continue;
+    if (!competes(entry, other, entries) || other.phase !== "finished" || other.pullFiles !== undefined) continue;
     const pull = openPulls(other).find(({ repo }) => repo !== undefined && repos.has(repo));
     if (pull !== undefined) return { key: other.ticket.key, pull: parsePull(pull.url)?.number ?? null, path: null, overlaps: [] };
   }
@@ -189,7 +191,7 @@ export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): st
   const mine = contested(entry);
   if (mine.length === 0) return null;
   const repos = new Set(mine.map((path) => repoPath(path)[0]));
-  const notes = entries.filter((other) => competes(entry, other)).flatMap((other) => openPulls(other)
+  const notes = entries.filter((other) => competes(entry, other, entries)).flatMap((other) => openPulls(other)
     .filter(({ url, repo }) => repo !== undefined && repos.has(repo) && (other.pullFiles?.[url] ?? []).includes(""))
     .map(({ url }) => `${other.ticket.key} #${parsePull(url)?.number ?? url} lists only part of its changed files, so a clash in the rest shows only as a conflict on the pull request.`));
   return notes.length === 0 ? null : notes.join(" ");

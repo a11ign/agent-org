@@ -11,6 +11,7 @@ import type { Priority } from "../writer.ts";
 import type { Placement } from "../writer-placement.ts";
 import { needsDecision } from "../open-decisions.ts";
 import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
+import type { StoppedForBlocker } from "./queue-blocker-wait.ts";
 import type { TicketRead } from "../ticket-read.ts";
 import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
 import { logEvent, type RunEvent } from "./run-log.ts";
@@ -379,6 +380,8 @@ export type Entry = Readonly<{
   pluginCopy?: readonly PluginCopy[];
   /** Set when a breaking update stopped this run and queued it again; its round resumes the same session on the new version. */
   stoppedForUpdate?: StoppedForUpdate;
+  /** Set when its worker declared a wait on other tickets and the board stopped the run and queued it again behind them (A11-272); its round resumes the same session once they are done. */
+  stoppedForBlocker?: StoppedForBlocker;
   /** Set when the board took this run's live pane back after a restart, or after it had marked the run crashed (A11-240): the card says so. A retry or a review round, which build the entry afresh, drop it. */
   readopted?: Readopted;
   /** Set on a run a restart lost, when it was queued again (A11-240): the run is queued again once, so a second loss in the same chain ends it. A retry or a review round, which build the entry afresh, drop it. */

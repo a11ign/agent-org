@@ -22,6 +22,7 @@ import { type PoolContext } from "./pool-context.ts";
 import { openedPullsOf } from "./opened-pulls.ts";
 import { pluginCopiesOf } from "./pool-pin.ts";
 import { recordPluginCopy } from "./queue/queue-pins.ts";
+import { resumesStoppedSession } from "./queue/queue-blocker-wait.ts";
 import { type FindingsGiven } from "./blocker-findings-check.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, type HeldClaim } from "./path-claims.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
@@ -101,8 +102,8 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   const parent = await parentOf(ctx, ticket, dir);
   const notes = notesFile(settings.brief, "tickets.brief");
   const connectors = settings.connectors;
-  // A run the board stopped for an update resumes its own Claude session on the new version (A11-169), whatever kind of run it was.
-  let resume: string | undefined = entry.stoppedForUpdate === undefined ? undefined : sessionToResume(ctx, entry);
+  // A run the board stopped resumes its own Claude session, whatever kind of run it was: on the new version after an update (A11-169), or once the tickets its worker waited on are done (A11-272).
+  let resume: string | undefined = resumesStoppedSession(entry) ? sessionToResume(ctx, entry) : undefined;
   if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
