@@ -18,6 +18,7 @@
 // THE READER ITSELF IS A LEAF, `pane-dialog-read.ts`, which imports nothing, so ticket mode can use it. THIS FILE: `node:` imports and two small leaves. The seams that need a project (herdr, the queue, the clock) are the caller's.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { herdrAgentName } from "./herdr-agents.ts";
 import { dirname } from "node:path";
 import { TOOL_DRIFT_KIND } from "./agent-tool-update.ts";
 import { DEFAULT_ANSWERER, isLimitMenu, isWorkerSession } from "./worker-state.ts";
@@ -50,7 +51,7 @@ export function dialogOwner(label: string): string {
  * @param {{ label: string, owner: string, dialog: Dialog }} what @returns {string}
  */
 export function dialogOrder({ label, owner, dialog }: { label: string; owner: string; dialog: Dialog }): string {
-  const read = `\`herdr --session org agent read ${label} --source recent\``;
+  const read = `\`herdr --session org agent read ${herdrAgentName(label)} --source recent\``;
   return `Class: ${TOOL_DRIFT_KIND}\n\n`
     + `INCIDENT: ${label} is showing a menu or dialog that is waiting for a choice, and nobody is answering it (${homeProjectDeclaration().tracker[0].repo}#4437: an agent session never meets a dialog).\n`
     + `Question: ${dialog.question}\n`

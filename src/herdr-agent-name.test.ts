@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HERDR_AGENT_NAME, agentStartArgs, herdrAgentName } from "./herdr-agents.ts";
 import { reviewerInstance, reviewerSeat, seatName } from "./review-attribution.ts";
+import { dialogOrder } from "./pane-dialog.ts";
 import { herdrName } from "./ticket-mode/pool-herdr.ts";
 
 const LONG_KEY = "announcement-emulator-with-a-very-long-repository-name";
@@ -33,8 +34,6 @@ test("A11-241: every kind of herdr agent name, from long inputs, is within 32 ch
     assert.match(name, HERDR_AGENT_NAME, `${kind}: ${name}`);
     assert.ok(name.length <= 32, `${kind}: ${name} is ${name.length} characters`);
   }
-  // The names the board makes itself are already within the rule, whatever their inputs.
-  for (const name of [longNames().ticketRun, longNames().batchPlanner, longNames().writer, longNames().publish]) assert.match(name, HERDR_AGENT_NAME);
 });
 
 test("A11-241: a name herdr already accepts comes back unchanged, so no running agent changes name", () => {
@@ -85,4 +84,11 @@ test("A11-241: the seat label stays parseable by its own reader, and the agent s
   const args = agentStartArgs(label, "codex", "w1:p1", ["--flag"], { session: "tickets" });
   assert.deepEqual(args, ["--session", "tickets", "agent", "start", herdrAgentName(label), "--kind", "codex", "--pane", "w1:p1", "--", "--flag"]);
   assert.ok(args[4].length <= 32);
+});
+
+test("A11-241: the order that tells an agent which pane to read names the agent herdr knows, not the long label", () => {
+  const label = "reviewer-announcement-emulator-11";
+  const order = dialogOrder({ label, owner: label, dialog: { question: "Trust this folder?", choices: ["Yes", "No"] } as never });
+  assert.ok(order.includes(`agent read ${herdrAgentName(label)} --source recent`), order);
+  assert.ok(!order.includes(`agent read ${label} `));
 });
