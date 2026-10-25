@@ -37,15 +37,53 @@ export const DEPENDENCY_PULLS = { bot: `https://github.com/${REPOSITORY}/pull/11
 export const CLOSED = `https://github.com/${REPOSITORY}/pull/13`;
 export const CLOSED_HEAD = "9".repeat(40);
 export const CLOSED_COMMITS = [{ sha: "8".repeat(40), subject: "feat: check-report refuses unknown options" }, { sha: CLOSED_HEAD, subject: "test: a browser.newContext() suite" }];
+/** The merge group a removal of pull request 7 was from, the `merge_group` run on its commit, and the job of it that failed (contract 1.21). */
+export const QUEUE_GROUP = "e".repeat(40);
+export const QUEUE_RUN_ID = 55;
+export const QUEUE_JOB = "middleware";
 /** A workflow run GitHub holds, halfway through (contract 1.17). */
 export const CI_RUN_ID = 77;
 
 const REFUSED = { status: 1, stdout: "", stderr: "gh: Could not resolve to a PullRequest (HTTP 404)\n" };
 
+type Answer = { status: number; stdout: string; stderr: string };
+
+/** The gh calls of the merge queue's failure read and the hold (contract 1.21), or null for any other: the `merge_group` run on the group's commit, its jobs, and the labels of pull request 7, which `labels` keeps. */
+function queueCalls(args: readonly string[], labels: string[]): Answer | null {
+  const ok = (stdout: string): Answer => ({ status: 0, stdout, stderr: "" });
+  const labelPath = `repos/${REPOSITORY}/issues/7/labels`;
+  if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/actions/runs?event=merge_group&head_sha=${QUEUE_GROUP}&per_page=100`)) {
+    return ok(JSON.stringify({ workflow_runs: [{ id: QUEUE_RUN_ID, html_url: `https://github.com/${REPOSITORY}/actions/runs/${QUEUE_RUN_ID}`, conclusion: "failure" }] }));
+  }
+  if (args[0] === "api" && args.some((arg) => arg.startsWith(`repos/${REPOSITORY}/actions/runs?event=merge_group`))) return ok(JSON.stringify({ workflow_runs: [] }));
+  if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/actions/runs/${QUEUE_RUN_ID}/jobs?filter=latest&per_page=100`)) {
+    return ok(JSON.stringify({ jobs: [
+      { id: 56, name: QUEUE_JOB, conclusion: "failure", steps: [{ name: "Set up job", number: 1, conclusion: "success" }, { name: "The Dependabot config is what the toolchain generates", number: 2, conclusion: "failure" }] },
+      { id: 57, name: "lint", conclusion: "success", steps: [] },
+    ] }));
+  }
+  if (args[0] === "label" && args[1] === "create") return args.includes(REPOSITORY) ? ok("") : { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+  if (args[0] === "api" && args.includes(`${labelPath}?per_page=100`)) return ok(JSON.stringify(labels.map((name) => ({ name }))));
+  if (args[0] === "api" && args.includes("POST") && args.includes(labelPath)) {
+    labels.push(...args.filter((arg) => arg.startsWith("labels[]=")).map((arg) => arg.slice("labels[]=".length)));
+    return ok("[]");
+  }
+  const lifted = args.find((arg) => arg.startsWith(`${labelPath}/`));
+  if (args[0] === "api" && args.includes("DELETE") && lifted !== undefined) {
+    const at = labels.indexOf(decodeURIComponent(lifted.slice(labelPath.length + 1)));
+    if (at === -1) return { status: 1, stdout: "", stderr: "gh: Label does not exist (HTTP 404)\n" };
+    labels.splice(at, 1);
+    return ok("[]");
+  }
+  return null;
+}
+
 /** The gh calls the plugin makes, answered from pull request 7: its feedback, its fields, its state and the list it is in. */
 function github(calls: string[][] = []) {
   /** The statuses on the claim head, as GitHub keeps them: a POST adds one, and the listing prints one tab-separated line for each. */
   const statuses: { id: number; context: string; created_at: string; description: string }[] = [];
+  /** The labels on pull request 7, as GitHub keeps them: the hold is added by a POST and removed by a DELETE. */
+  const labels: string[] = [];
   return (file: string, args: readonly string[]) => {
     calls.push([file, ...args]);
     if (file !== "gh") return { status: null, stdout: "", stderr: `${file} cannot start` };
@@ -58,6 +96,8 @@ function github(calls: string[][] = []) {
     if (args[0] === "api" && args[1] === "graphql" && args.includes("n=9")) return ok(JSON.stringify({ merged: false, autoMergeRequest: null, mergeQueueEntry: null }));
     if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/issues/9/comments`)) return ok(`${JSON.stringify(`<!-- agent-org:stack-merge head=${STACK_REFUSAL_HEAD} -->\nGitHub refused the stack merge of #9: ${STACK_REFUSAL_REASON}`)}\n`);
     if (args[0] === "run" && args[1] === "view") return args[2] === String(CI_RUN_ID) ? ok(JSON.stringify({ status: "in_progress", conclusion: "", url: `https://github.com/${REPOSITORY}/actions/runs/${CI_RUN_ID}`, name: "ci", jobs: [{ status: "completed" }, { status: "in_progress" }] })) : REFUSED;
+    const queued = queueCalls(args, labels);
+    if (queued !== null) return queued;
     if (args[0] === "search" && args[1] === "prs") {
       const repositories = args.flatMap((arg, at) => (args[at - 1] === "--repo" ? [arg] : []));
       if (repositories.some((repository) => repository !== REPOSITORY)) return REFUSED;
@@ -117,7 +157,7 @@ const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRep
 test("the GitHub plugin passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
   const host = create({}, fakePluginDeps({ exec: github(), policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));
   const { passed, skipped } = await runCodeHostConformance(host, {
-    pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED, closed: CLOSED,
+    pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED, closed: CLOSED, queueFailure: { groupCommit: QUEUE_GROUP, job: QUEUE_JOB },
     stackRefusal: { pull: STACKED, head: STACK_REFUSAL_HEAD, reason: STACK_REFUSAL_REASON }, stackRequestRefused: NO_ARM_BOT, ciRun: { repository: REPOSITORY, runId: CI_RUN_ID },
     named: { key: NAMED_KEY, repository: REPOSITORY, url: NAMED, state: "merged" }, dependency: { repository: REPOSITORY, url: DEPENDENCY_PULLS.bot, foreign: DEPENDENCY_PULLS.foreign },
     remote: { urls: [`https://github.com/${REPOSITORY}.git`, `git@github.com:${REPOSITORY}.git`], repository: { name: "repo", fullName: REPOSITORY } },
@@ -143,7 +183,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
     "the rows' rules for arming answer as the callers that arm and guard expect",
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged", "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ["readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"],
@@ -157,7 +197,10 @@ test("every call the plugin makes is to gh, and the contract's reads make no wri
   await runCodeHostConformance(host, { pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot" });
   assert.ok(calls.length > 0, "POSITIVE CONTROL: the suite asked GitHub something");
   assert.deepEqual([...new Set(calls.map(([file]) => file))], ["gh"]);
-  for (const [, ...args] of calls) assert.equal(args.some((arg) => ["--method", "-X", "edit", "merge", "close", "create"].includes(arg)), false, `a read of a pull request wrote: gh ${args.join(" ")}`);
+  // The one write the suite makes of a pull request is the hold (contract 1.21): the label `hold:board`, made if the repository has none, then put on and taken off.
+  const isHold = (args: readonly string[]) => args.some((arg) => arg.includes("hold:board") || arg.includes("hold%3Aboard"));
+  for (const [, ...args] of calls.filter(([, ...args]) => !isHold(args))) assert.equal(args.some((arg) => ["--method", "-X", "edit", "merge", "close", "create"].includes(arg)), false, `a read of a pull request wrote: gh ${args.join(" ")}`);
+  assert.ok(calls.some(([, ...args]) => isHold(args) && args.includes("POST")), "POSITIVE CONTROL: the hold was put on, so the filter above leaves a real write out");
 });
 
 // A rows that hides a refusal is wrong, and the suite says which: a read that answers an empty list for "could not ask" is how a caller files again what a person closed, and a write that swallows its

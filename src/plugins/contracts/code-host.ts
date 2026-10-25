@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.20 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.21 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.21 (A11-264): `PullFeedback.queue`, OPTIONAL: what the merge queue did to a pull request since its head last moved (is it queued, and each removal with its reason, actor and the merge group's commit), read in the same query as the rest of the feedback; `readQueueFailure`, OPTIONAL: the failing `merge_group` run behind one removal, its failing jobs and their first failing step; and `holdFromQueue`, OPTIONAL: put the `hold:board` label on a pull request, or take it off, which every arm bot in the org already honours. A plugin of 1.20 is read as one that reads no queue, and the board then behaves as it did.
 // 1.20 (A11-249): `readClosedWork`, OPTIONAL: what a pull request closed without merging still held, the commits on its head that are not on its base and the files they change, as the host's compare reads them, which the board lists on the ticket so the work is never lost with the pull request. A plugin of 1.19 is read as one that cannot be asked, and the board then lists nothing.
 // 1.19 (A11-255): `openDependencyPulls`, OPTIONAL: the open pull requests of a repository that the host's dependency bot (`DEPENDENCY_PULL_AUTHOR`) opened, with their title, branch, head, author and body, which the board reads to turn a major update, or a grouped update that stays red, into a ticket. The host filters by author, so a pull request anyone else opens with a bot-like title is never returned. A plugin of 1.18 is read as one that cannot be asked, and the board then files no dependency ticket.
 // 1.18 (A11-240): `pullsNaming`, OPTIONAL: the pull requests of some repositories whose title or body names a ticket's key, with their state, which a run that is queued again is told of and which Respond finds a pull request to answer by when the board never recorded one. A plugin of 1.17 is read as one that cannot be asked, and everything is then as it was: the board's own record is all there is.
@@ -52,7 +53,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.20";
+export const CODE_HOST_CONTRACT_VERSION = "1.21";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -79,6 +80,23 @@ export type DefaultBranchRed = Readonly<{ branch: string; head: string; failing:
  * refused for another reason, in its own first line (`refused`), such as a head that moved since it was read.
  */
 export type UpdateBranchResult = Readonly<{ kind: "updated" }> | Readonly<{ kind: "conflict" }> | Readonly<{ kind: "up-to-date" }> | Readonly<{ kind: "refused"; reason: string }>;
+
+/**
+ * One time the merge queue removed a pull request (contract 1.21): when (`at`, epoch milliseconds), the host's own `reason` (`failed_checks` for a failed `merge_group` run, and others such as a merge conflict or a manual removal), who removed it (`actor`, or null
+ * when the host does not say) and the commit of the merge group it was removed from (`groupCommit`, or null), which is the `head_sha` of that group's `merge_group` run.
+ */
+export type QueueRemoval = Readonly<{ at: number; reason: string; actor: string | null; groupCommit: string | null }>;
+
+/**
+ * What the merge queue did to a pull request since its head last moved (contract 1.21): `queued` is whether it is in the queue now, and `removals` are the times the queue removed it after the newest commit or force-push the host read, oldest first. A pull request pushed to since has none.
+ */
+export type PullQueue = Readonly<{ queued: boolean; removals: readonly QueueRemoval[] }>;
+
+/** One job of a failed `merge_group` run (contract 1.21): its name, its first failing step (null when the host names none) and the address of its page, which names the log to read as a check's does. */
+export type QueueFailureJob = Readonly<{ name: string; step: string | null; detailsUrl: string }>;
+
+/** The failing `merge_group` run behind one removal (contract 1.21): its id and address, and every job of it that failed or timed out. */
+export type QueueFailure = Readonly<{ runId: number; runUrl: string; jobs: readonly QueueFailureJob[] }>;
 
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{
@@ -120,6 +138,8 @@ export type PullFeedback = Readonly<{
   pendingRequired?: readonly string[];
   /** The pull request's body (contract 1.13), where a `Blocked-by:` line names the ticket that owns what it is waiting on. Absent when the host does not say. */
   body?: string;
+  /** What the merge queue did to it since its head last moved (contract 1.21). Absent when the host does not say, which is not the same as no removals. */
+  queue?: PullQueue;
   /** The files it changes, by path within its repository. */
   files: readonly string[];
   /** Whether `files` is all of them. Read a page of 100 at a time, up to {@link MAX_FILE_PAGES}: a list cut off there is not complete. */
@@ -330,6 +350,16 @@ export interface CodeHost extends CodeHostPort {
    * all null. Null is never "there are none". The host filters by AUTHOR, never by title (and without a search-backed flag such as `gh pr list --author`, whose allowance is small): this is the trust boundary of the board's dependency tickets. A host without it is read as one that cannot be asked (contract 1.19).
    */
   openDependencyPulls?(repository: string): readonly DependencyPull[] | null;
+  /**
+   * The failing `merge_group` run behind the removal from the merge group at commit `groupCommit` of the pull request at `url` (contract 1.21), or null for "could not ask": an address that is no pull request of the host, no run for that commit and a refused read are all null. Null is never "no job failed".
+   * A host without it is read as one that cannot be asked, and the board then names the removal without the run's errors.
+   */
+  readQueueFailure?(url: string, groupCommit: string): QueueFailure | null;
+  /**
+   * Puts the `hold:board` label on the pull request at `url` (`on`), or takes it off (contract 1.21), and answers whether the label is now as asked. THROWS, with the host's own first line, when it could not ask or was refused. Taking off a label that is not there is done. A host without it cannot hold a pull request
+   * from the arm bot, and the board then names the removals alone.
+   */
+  holdFromQueue?(url: string, on: boolean): boolean;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
   /**

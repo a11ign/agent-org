@@ -17,6 +17,7 @@ import { openPullUrlsOf } from "./open-pulls.ts";
 import { createRepositories } from "./repositories.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
 import { readClosedWork } from "./closed-work.ts";
+import { holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
 import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
 import { readReplies } from "./replies.ts";
@@ -76,6 +77,8 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     repoCloneArgs,
     readOwnLogin: () => readOwnLogin(gh),
     readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, gh, deps.policy, alsoIgnore),
+    readQueueFailure: (url, groupCommit) => readQueueFailure(url, groupCommit, gh),
+    holdFromQueue: (url, on) => (on ? holdPullRequest(url, gh) : releasePullRequest(url, gh)),
     readDefaultBranchRed: (repository) => readDefaultBranchRed(repository, gh, deps.policy),
     readReplies: (url, request) => readReplies(url, request, gh),
     readReviewState: (url) => readReviewState(url, gh, deps.policy),
