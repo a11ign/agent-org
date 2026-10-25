@@ -49,21 +49,26 @@ const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merg
  * Respond to review acts on, and a null note (a push, an approval, a round) clears a `handedBack` this wrote, recognised by its sentence form as a conflict's is. It never replaces another `handedBack`, and it
  * is written only over a run that waits on a review or a merge ({@link NOTEABLE}): one that reads Needs you for its own reason (a disputed review the worker handed back), one that failed or concluded, and one that is over keep their own words. PURE.
  */
-export function recordStaleBlock(queue: Queue, key: string, note: string | null, now?: number): Queue {
-  const noted = withStaleBlock(queue, key, note);
-  // Needs you is logged once, for the note that is new (A11-219).
+export const recordStaleBlock = (queue: Queue, key: string, note: string | null, now?: number): Queue => recordHandedBackNote(queue, key, note, isStaleBlockNote, now);
+
+/**
+ * A board note written as a finished run's `handedBack` and recognised by its sentence form (`isOwn`): a null note clears a `handedBack` that is this note and no other, and a note is written only over a run that waits on a
+ * review or a merge ({@link NOTEABLE}) and has no `handedBack` of another kind. Needs you is logged once, for the note that is new (A11-219). PURE.
+ */
+export function recordHandedBackNote(queue: Queue, key: string, note: string | null, isOwn: (text: string | undefined) => boolean, now?: number): Queue {
+  const noted = withNote(queue, key, note, isOwn);
   return note !== null && find(noted, key)?.handedBack === note && find(queue, key)?.handedBack !== note ? logEvent(noted, key, now, { kind: "needs-you", reason: shortReason(note) ?? note }) : noted;
 }
 
-/** The queue with the stale-block `note` written over the run, or cleared by `null`: see {@link recordStaleBlock}. PURE. */
-function withStaleBlock(queue: Queue, key: string, note: string | null): Queue {
+/** The queue with the `note` written over the run, or cleared by `null`: see {@link recordHandedBackNote}. PURE. */
+function withNote(queue: Queue, key: string, note: string | null, isOwn: (text: string | undefined) => boolean): Queue {
   return replace(queue, key, (entry) => {
     if (entry.phase !== "finished") return entry;
     if (note === null) {
       const { handedBack: _cleared, ...rest } = entry;
-      return isStaleBlockNote(entry.handedBack) ? rest : entry;
+      return isOwn(entry.handedBack) ? rest : entry;
     }
-    const other = entry.handedBack !== undefined && !isStaleBlockNote(entry.handedBack);
+    const other = entry.handedBack !== undefined && !isOwn(entry.handedBack);
     const { handedBack: _own, ...without } = entry;
     if (other || !NOTEABLE.has(runStatus(without))) return entry;
     return { ...entry, handedBack: note };

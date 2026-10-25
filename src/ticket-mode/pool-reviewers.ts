@@ -32,7 +32,7 @@ import { decisionsOf } from "./ticket-decisions.ts";
 import { partialStepOf } from "./board-view/plan-steps.ts";
 import { planStepSection } from "./pool-ticket-text.ts";
 import type { Reply, Review } from "../plugins/contracts/code-host.ts";
-import type { ReviewBodyLine, ReviewBrief } from "../plugins/contracts/reviewer.ts";
+import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef } from "../plugins/contracts/reviewer.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -339,6 +339,40 @@ function forgetMendedClaimProblems(ctx: PoolContext): void {
 }
 
 /**
+ * The dialog the head's reviewer is stopped on and the port could not answer (A11-221, contract 1.6): its first line, or null while the reviewer shows none (a reviewer of 1.5, which has no `unblock`, never does). A dialog the
+ * port answered is logged. One it left is logged once per dialog, and kept on the pull request's read until a look finds none.
+ */
+function stoppedDialog(ctx: PoolContext, reviewer: ReviewerPort, url: string, ref: ReviewerRef): string | null {
+  const before = ctx.pullReads.get(url);
+  // A look that could not be made says nothing of a dialog, so the last look's finding at this head stands.
+  const unread = (why: string): string | null => {
+    sayOnce(ctx, `${url}@${ref.head}#dialog-unread`, `${url}: the reviewer's dialog could not be looked at (${why}); the last look stands until one can`);
+    return before?.head === ref.head ? (before.dialog ?? null) : null;
+  };
+  let seen: ReviewerDialog | null | undefined;
+  try {
+    seen = reviewer.unblock?.(ref);
+  } catch (err) {
+    return unread(messageOf(err));
+  }
+  if (seen === null || seen === undefined) return null;
+  if ("unread" in seen) return unread(seen.unread);
+  if ("answered" in seen) {
+    log(`${url}: answered the reviewer's dialog at ${ref.head.slice(0, 8)}: "${seen.answered}"`);
+    return null;
+  }
+  sayOnce(ctx, `${url}@${ref.head}#dialog:${seen.stuck}`, `${url}: the reviewer stopped on a dialog it cannot answer: "${seen.stuck}"; a person answers it in herdr`);
+  return seen.stuck;
+}
+
+/** Logs `line` once per `key`: the pool looks at the same pull request on every sweep. */
+function sayOnce(ctx: PoolContext, key: string, line: string): void {
+  if (ctx.refusedHeads.has(key)) return;
+  ctx.refusedHeads.add(key);
+  log(line);
+}
+
+/**
  * One open pull request at its current head, as the pool looks at it (A11-119): a posted verdict is remembered, a reviewer that ended without one is looked
  * at (`unpostedVerdict`), a head whose checks have settled green gets its reviewer once (`startFor`), and a posted verdict closes its reviewer. What it
  * read is kept for the board (`pullReads`). Returns the state read and the verdict not posted, or null when GitHub did not say, which the caller says.
@@ -369,9 +403,13 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const tookOver = tookOverOf(started, pullReads.get(url), head);
   const reviewing = reviewer.live(ref);
   const unclaimed = unclaimedNoteOf(started, reviewing ? ctx.reviewerMemory.unclaimed.get(key) : undefined);
+  // A reviewer started for this head with no review posted on it yet, or one re-reviewing a head its block stands on, may be stopped on a dialog (A11-221).
+  const mayShowDialog = reviewerStarted.has(key) && (!posted || reviewerRereviewed.has(key));
+  const dialog = reviewing && mayShowDialog ? stoppedDialog(ctx, reviewer, url, ref) : null;
   const read: PullRead = {
     head, settled: state.settled, reviewing, verdict: reviewWordAt(state.reviews, head),
     earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }), ...(unclaimed === undefined ? {} : { unclaimed }),
+    ...(dialog === null ? {} : { dialog }),
     ...(reviewing && reviewerRereviewed.has(key) && reviewVerdict(state.reviews, head) === "not-convinced" ? { rereview: true } : {}),
   };
   pullReads.set(url, read);

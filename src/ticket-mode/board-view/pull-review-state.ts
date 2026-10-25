@@ -14,6 +14,7 @@ export type ReviewWord = "approved" | "changes requested" | "dismissed";
  * the verdict that is not on the pull request, as the pool says it (null when none), and the expired claim this instance took over on this head, as the pool
  * says it (absent when it took none, A11-149). `rereview` is set while a re-review of the head is under way, asked by a reply to the reviewer's block with no new commit (A11-156). `unclaimed` is set
  * when the head's claim could not be written (A11-172): its `reason` is GitHub's, and `started` is whether the reviewer runs anyway (this instance is the only one seen) or none was started.
+ * `dialog` is the first line of the dialog the reviewer is stopped on and the board cannot answer (A11-221); it is absent on a look that finds none.
  */
 export type PullRead = Readonly<{
   head: string;
@@ -26,7 +27,11 @@ export type PullRead = Readonly<{
   tookOver?: string;
   rereview?: boolean;
   unclaimed?: Readonly<{ reason: string; started: boolean }>;
+  dialog?: string;
 }>;
+
+/** The line a pull request's review reads while its reviewer is stopped on a dialog the board cannot answer (A11-221), `first` being the dialog's first line. */
+export const reviewerDialogLine = (first: string): string => `the reviewer stopped on a dialog it cannot answer: "${first}"`;
 
 /** What each open pull request's line says on a machine where reviews are required and the reviewer is off (A11-161). */
 export const REVIEWER_OFF_LINE = "waiting on the reviewer (off)";
@@ -60,13 +65,14 @@ export function publishingOffLine(status: string, publisher: string | undefined)
 export const shortHead = (head: string): string => head.slice(0, 8);
 
 /**
- * The line a pull request's review state reads as. `null` read is a pull request whose state could not be read. In order: a re-review a reply asked for is
+ * The line a pull request's review state reads as. `null` read is a pull request whose state could not be read. In order: a reviewer stopped on a dialog it cannot answer says so (A11-221), ahead of every state it is also in; a re-review a reply asked for is
  * `re-review asked by reply` at the head, until it posts or ends (A11-156); a reviewer live for the head is `reviewing`, and says the claim it took over, if it took one, or that it runs without a claim (A11-172);
  * a start refused because the claim could not be written says `cannot claim for review: <reason>`, ahead of a verdict, so a re-review that cannot be claimed is seen too; a verdict on the head is its word; a newest `changes requested` on an earlier head says the
  * new head is not reviewed yet; checks not settled say so; a refused start says why; otherwise the head is awaiting review.
  */
 export function pullReviewText(read: PullRead | null): string {
   if (read === null) return "review state not read";
+  if (read.dialog !== undefined) return reviewerDialogLine(read.dialog);
   if (read.rereview === true) {
     const note = read.unclaimed?.started === true ? `reviewing without a claim: ${read.unclaimed.reason}` : read.tookOver;
     return note === undefined ? `re-review asked by reply at ${shortHead(read.head)}` : `re-review asked by reply at ${shortHead(read.head)} (${note})`;

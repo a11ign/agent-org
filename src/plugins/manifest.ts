@@ -194,6 +194,8 @@ export type ReviewerBoard = Readonly<{
     firstLine(error: unknown): string;
     /** The agents herdr lists in `session`, or null when it lists none it can read. */
     readAgents(run: (args: string[]) => string, options: Readonly<{ session: string }>): ListedReviewer[] | null;
+    /** The dialog a pane's text shows (contract 1.6, A11-221): its paragraph's lines, which are the question as the pane draws it, and the lines above them, or null when the text shows none. */
+    readDialogLines(pane: string | null): Readonly<{ dialog: Readonly<{ question: string; choices: readonly string[] }>; paragraph: readonly string[]; above: readonly string[] }> | null;
   }>;
   claims: Readonly<{
     REVIEW_LEASE_MS: number;

@@ -1,11 +1,28 @@
 // @ts-check
 // module: the in-memory reviewer (A11-158) -- the reference that passes `runReviewerConformance`, and what core's tests use in place of the atomic reviewer
 //
-// IT STARTS NOTHING: a reviewer is a record of a head. A test sets the verdict file a reviewer wrote and how its turn stands (`wrote`, `turn`), makes the host refuse
+// IT STARTS NOTHING: a reviewer is a record of a head. A test sets the verdict file a reviewer wrote and how its turn stands (`wrote`, `turn`), what its pane shows (`showing`), makes the host refuse
 // (`refuseWith`), and reads what the pool did (`started`, `closed`, `retired`, `reposted`, `reprompted`).
-import type { ReviewBrief, Reviewer, ReviewerPort, ReviewerRef, ReviewerSettled } from "../contracts/reviewer.ts";
+import type { ReviewBrief, Reviewer, ReviewerDialog, ReviewerPort, ReviewerRef, ReviewerSettled } from "../contracts/reviewer.ts";
 
 const key = ({ pr, head }: ReviewerRef): string => `${pr}@${head}`;
+
+/** What each reviewer's pane shows, by `url@head` (A11-221): the answer `unblock` gives (null for a reviewer that is not live), set by a test, and every ref it was asked about. */
+function fakePanes(isLive: (ref: ReviewerRef) => boolean) {
+  const dialogs = new Map<string, ReviewerDialog>();
+  const unblocked: ReviewerRef[] = [];
+  return {
+    unblocked,
+    unblock: (ref: ReviewerRef): ReviewerDialog | null => {
+      unblocked.push(ref);
+      return isLive(ref) ? (dialogs.get(key(ref)) ?? null) : null;
+    },
+    showing: (ref: ReviewerRef, dialog: ReviewerDialog | null): void => {
+      if (dialog === null) dialogs.delete(key(ref));
+      else dialogs.set(key(ref), dialog);
+    },
+  };
+}
 
 export function createFakeReviewer(refusalOfHost: string | null = null) {
   let refusal = refusalOfHost;
@@ -18,6 +35,7 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
   const retired: string[] = [];
   const reposted: { ref: ReviewerRef; file: string }[] = [];
   const reprompted: ReviewerRef[] = [];
+  const panes = fakePanes((ref) => entryOf(ref) !== undefined);
   const entryOf = (ref: ReviewerRef) => live.get(key(ref));
 
   const reviewer: Reviewer = {
@@ -61,6 +79,7 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       briefs.push(brief);
       return entryOf(ref) === undefined ? { refusal: `no reviewer for ${ref.pr}` } : { prompted: true };
     },
+    unblock: panes.unblock,
   };
 
   return Object.assign(reviewer, {
@@ -75,7 +94,9 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       entry.turn = "ended";
       entry.file = file;
     },
-    started, briefs, closed, retired, reposted, reprompted,
+    /** The reviewer for `ref` is blocked on a dialog (`showing`), which `unblock` answers or leaves stuck, or on none (null). */
+    showing: panes.showing,
+    started, briefs, closed, retired, reposted, reprompted, unblocked: panes.unblocked,
   });
 }
 

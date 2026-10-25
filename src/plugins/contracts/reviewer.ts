@@ -1,5 +1,8 @@
 // @ts-check
-// module: the reviewer contract, version 1.5 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 1.6 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+//
+// 1.6 (A11-221): `ReviewerPort.unblock`, OPTIONAL: looks at the pane of a reviewer herdr shows blocked, answers the one dialog it may answer (Codex's "Trust this folder?" for a repository the host file names) and reports any
+// other as stuck, so the pool can tell a person; a look that cannot be made is `unread`, and keeps the last look's finding. A reviewer of 1.5 has no such method and is read as one that never reports a dialog.
 //
 // 1.5 (A11-235): `ReviewBrief.rereview.body`, OPTIONAL: the lines of the pull request description that changed since the reviewer's last look at the head, for a re-review of a block that was answered by editing the description (the
 // replies may then be none). The reviewer checks the answer and still reviews the whole diff. A reviewer of 1.4 ignores it and re-reviews by the replies.
@@ -19,7 +22,7 @@
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.5";
+export const REVIEWER_CONTRACT_VERSION = "1.6";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
@@ -67,7 +70,18 @@ export type ReviewerPort = Readonly<{
   repostVerdict(ref: ReviewerRef, file: string): RepostAnswer;
   /** Sends the reviewer its verdict prompt again, for a reviewer that ended without writing a verdict file (A11-83). */
   reprompt(ref: ReviewerRef, brief?: ReviewBrief): PromptAnswer;
+  /**
+   * OPTIONAL (contract 1.6, A11-221). Looks at the reviewer for `ref` when herdr shows it blocked, and answers a dialog the reviewer may answer by itself (Codex's trust dialog for a repository the host file names): `answered`
+   * is the line it answered. Any other dialog is `stuck`, with its first line, and nothing is pressed. Null when the look was made and nothing is showing (the reviewer is not blocked, or its pane shows no dialog). `unread` is a look that could not be made (herdr did not list the session, or the pane could not be read), with why: it says nothing of whether a dialog shows, so the caller keeps what the last look found. A reviewer without the method never reports a dialog.
+   */
+  unblock?(ref: ReviewerRef): ReviewerDialog | null;
 }>;
+
+/**
+ * What a reviewer's pane showed when it was blocked on a dialog (A11-221, contract 1.6): the line the port `answered` (a dialog it may answer, and did), the first line of the dialog it left `stuck` for a person, which no
+ * key was sent to, or why the pane `unread` could not be looked at.
+ */
+export type ReviewerDialog = Readonly<{ answered: string }> | Readonly<{ stuck: string }> | Readonly<{ unread: string }>;
 
 /** Where a reviewer stands: `working` while its turn runs, `ended` when it has finished its turn (or its agent has exited), `gone` when herdr lists none for its head. */
 export type ReviewerSettled = "working" | "ended" | "gone";
