@@ -2,7 +2,7 @@ import { runActions } from "../../../src/ticket-mode/board-view/pull-status-and-
 import { RUN_STATUSES } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { queueOf, RUNS_OF, type State } from "../../test/run-detail/run-detail-stand.ts";
 import type { RunEntry } from "../runs/runs-model.ts";
-import { boardOf, boardOfStatus, calloutOf, detailOf, headerActionsOf, noPullsText, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf, timesOf, type RunBoard } from "./run-detail-model.ts";
+import { boardOf, boardOfStatus, calloutOf, detailOf, headerActionsOf, logOf, noPullsText, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf, timesOf, type RunBoard } from "./run-detail-model.ts";
 
 const queueFor = (state: State) => queueOf(RUNS_OF[state].runs);
 const runFor = (state: State): RunEntry => {
@@ -235,5 +235,15 @@ describe("the run the page draws from its list entry and its own read (A11-270)"
     const drawn = detailOf(listWithout, own);
     expect(stepsOf(drawn).map(({ n, mark }) => [n, mark])).toEqual([[1, "done"], [2, "now"]]);
     expect(drawn.phase).toBe(listWithout.phase);
+  });
+});
+
+describe("the run's log (A11-270)", () => {
+  const event = { at: 1, kind: "started" } as never;
+  it("is the one the run's own read sent, else the one an older instance's queue carries, else none", () => {
+    const own = { entry: {}, runLog: [event] } as never;
+    expect(logOf({ runLog: { "A11-1": [] } }, own, "A11-1")).toEqual([event]);
+    expect(logOf({ runLog: { "A11-1": [event] } }, null, "A11-1")).toEqual([event]);
+    expect(logOf({}, null, "A11-1")).toEqual([]);
   });
 });

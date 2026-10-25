@@ -55,7 +55,7 @@ async function queueFinished(b: ReturnType<typeof board>, outcome: Outcome): Pro
   b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome, pullHeads })) });
 }
 
-test("A11-219: /api/queue sends a run's planned steps, current step and worker, and its event log, which the server's own queueing began", async () => {
+test("A11-219: /api/queue sends a run's worker, and its own read sends its planned steps, current step and event log, which the server's own queueing began", async () => {
   const b = board();
   await b.api("GET", "/api/tickets", {});
   await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
@@ -64,8 +64,11 @@ test("A11-219: /api/queue sends a run's planned steps, current step and worker, 
   b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((entry) => ({ ...entry, plannedSteps, currentStep: 2, worker })) });
   const [status, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
   assert.equal(status, 200);
-  assert.deepEqual([queue.entries[0].plannedSteps, queue.entries[0].currentStep, queue.entries[0].worker], [plannedSteps, 2, worker]);
-  assert.deepEqual(queue.runLog, { "NBF-1": [{ at: 7, kind: "queued", model: "sonnet", effort: "high", planFirst: false }] });
+  assert.deepEqual([queue.entries[0].plannedSteps, queue.entries[0].currentStep, queue.entries[0].worker, queue.runLog], [undefined, undefined, worker, undefined], "the list sends the worker and leaves the rest to the run's own read (A11-270)");
+  const [ownStatus, own] = await b.api("GET", "/api/queue/NBF-1", {}) as [number, any];
+  assert.equal(ownStatus, 200);
+  assert.deepEqual([own.entry.plannedSteps, own.entry.currentStep, own.entry.worker], [plannedSteps, 2, worker]);
+  assert.deepEqual(own.runLog, [{ at: 7, kind: "queued", model: "sonnet", effort: "high", planFirst: false }]);
 });
 
 test("/api/parents reads the parents of the person's tickets that are not the person's own, and leaves out one it cannot read", async () => {
@@ -277,7 +280,9 @@ test("A11-168: a ticket the list read as In Progress under another's claim, move
   tracker.seed({ ...ticket("NBF-1") });
   const [status, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
   assert.equal(status, 200, "the tracker says Todo now, so the page's old copy does not refuse it");
-  assert.deepEqual(queue.entries.map((e: any) => [e.ticket.key, e.ticket.status]), [["NBF-1", "Backlog"]], "and the entry holds the fresh copy");
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["NBF-1"]);
+  const [, own] = await b.api("GET", "/api/queue/NBF-1", {}) as [number, any];
+  assert.equal(own.entry.ticket.status, "Backlog", "and the entry holds the fresh copy");
 });
 
 test("A11-168: a ticket the list read as claimed by another instance, claimed by this one since, is read again and queued", async () => {

@@ -1,6 +1,6 @@
 // no-token: none -- a board over a stub pool, a fake tracker and a temporary state directory, served on a Unix socket in a temporary directory
 // A11-270: the queue the pages poll is a list of what they draw (under 200 KB on the wire for a queue shaped like the agents host's, which was 1.1 MB), and one run is read in full on demand
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { gunzipSync } from "node:zlib";
@@ -102,6 +102,4 @@ test("A11-270: the rows the pages word are the same from the list as from the fu
   assert.ok(fromList.some((row) => row.wait !== null) && fromList.some((row) => row.learns !== null) && fromList.some((row) => row.readopted !== null) && fromList.some((row) => row.change !== null), "the fixture draws every kind of line compared");
 });
 
-test("A11-270: the closing of the served board", async () => {
-  await served.close();
-});
+after(() => served.close());

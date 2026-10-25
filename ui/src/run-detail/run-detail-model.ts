@@ -9,7 +9,7 @@ import { openPulls, pullsOf, type RunStatus } from "../../../src/ticket-mode/boa
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { clockOf, versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
 import { diffLines, learnsFrom, ticketChangeOf, type DiffLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
-import type { PlannedStep, QueueEntryView, QueueView, RunAction, RunDetailEntry, ViewConnection } from "../api/types.ts";
+import type { PlannedStep, QueueEntryView, RunEvent, QueueView, RunAction, RunDetailEntry, ViewConnection } from "../api/types.ts";
 import { PUBLISH_MERGE_NOTE, PUBLISHED_MERGE_NOTE, PUBLISHING_MERGE_NOTE } from "../runs/publish-model.ts";
 import { actionsOf, type RowAction } from "../runs/run-actions.ts";
 import { labelOf, noteLines, since, timingOf, tokensOf, type NoteContext, type RunEntry } from "../runs/runs-model.ts";
@@ -191,6 +191,15 @@ export type StepRow = Readonly<{ n: number; text: string; mark: StepMark }>;
  */
 export const detailOf = (entry: RunEntry, full: QueueEntryView | null): RunDetailEntry =>
   full === null ? entry : { ...entry, ...(full.entry.plannedSteps === undefined ? {} : { plannedSteps: full.entry.plannedSteps }), ...(full.entry.currentStep === undefined ? {} : { currentStep: full.entry.currentStep }) };
+
+/**
+ * The run's log: the one its own read sent, else, from an instance that does not answer that read (one from before A11-270), the one its queue still carries. Empty until either has come, and then the
+ * Timeline is rebuilt from the run's times. PURE.
+ */
+export function logOf(queue: object, full: QueueEntryView | null, key: string): readonly RunEvent[] {
+  const carried = (queue as Readonly<{ runLog?: Readonly<Record<string, readonly RunEvent[]>> }>).runLog;
+  return full?.runLog ?? carried?.[key] ?? [];
+}
 
 /** How far a run has got: the last step it has passed, and the step it is working on now, if any. */
 type Progress = Readonly<{ passed: number; working: number | undefined }>;

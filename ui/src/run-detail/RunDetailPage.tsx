@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { usePoll } from "../api/use-poll.ts";
 import type { QueueEntryView, QueueView, RunDetailEntry } from "../api/types.ts";
 import { DetailSkeleton } from "../lifecycle/Skeleton.tsx";
@@ -13,7 +14,7 @@ import { Properties } from "./Properties.tsx";
 import { PullRequests } from "./PullRequests.tsx";
 import { RunDisclosures } from "./RunDisclosures.tsx";
 import { Breadcrumb, RunHeader, type HeaderControls } from "./RunHeader.tsx";
-import { boardOf, calloutOf, detailOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
+import { boardOf, calloutOf, detailOf, logOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
 import { Steps } from "./Steps.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { timelineOf } from "./run-timeline-model.ts";
@@ -99,14 +100,20 @@ function RunDetail({ entry, queue, log }: Readonly<{ entry: RunDetailEntry; queu
  */
 function Content({ runKey }: Readonly<{ runKey: string }>) {
   const { queue, connection, client } = useShell();
-  const full = usePoll<QueueEntryView>(client.queueEntry(runKey), { connection, isEmpty: () => false });
+  // Read again whenever the queue answers, so the run's log and steps follow its status (a press has the shell read the queue) and one request is made per poll, not two.
+  const full = usePoll<QueueEntryView>(client.queueEntry(runKey), { connection, isEmpty: () => false, repeat: false });
+  const answered = useRef(queue.data);
+  useEffect(() => {
+    if (answered.current !== queue.data) full.refresh();
+    answered.current = queue.data;
+  }, [queue.data]);
   const skeleton = <DetailSkeleton label={LOADING} />;
   const gone = queue.cached ? skeleton : <RunGone />;
   return (
     <Lifecycle view={queue} skeleton={skeleton} empty={gone} connection={connection?.name ?? ""}>
       {(data) => {
         const entry = data.entries.find((candidate) => candidate.ticket.key === runKey);
-        return entry === undefined ? gone : <RunDetail entry={detailOf(entry, full.data)} queue={data} log={full.data?.runLog ?? []} />;
+        return entry === undefined ? gone : <RunDetail entry={detailOf(entry, full.data)} queue={data} log={logOf(data, full.data, runKey)} />;
       }}
     </Lifecycle>
   );

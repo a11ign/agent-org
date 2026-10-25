@@ -61,7 +61,7 @@ export function footprintOf(entry: ViewEntry): string[] {
 }
 
 /** The tracker's states that end a ticket's work: a run on such a ticket is done, or was dropped, and holds nothing once it is not live. */
-const ENDED_TICKETS: ReadonlySet<string> = new Set(["completed", "canceled", "duplicate"]);
+export const ENDED_TICKETS: ReadonlySet<string> = new Set(["completed", "canceled", "duplicate"]);
 
 /**
  * Whether a run holds its footprint against the runs queued behind it: it is live, or it has a pull request still open and its ticket has not

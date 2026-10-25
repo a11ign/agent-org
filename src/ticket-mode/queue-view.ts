@@ -6,6 +6,7 @@
 // full, with its log, for the run's own page. A run that holds no path (it ended, and so did its ticket) drops the files it once held, which nothing reads of it.
 import type { Entry, Queue, WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import type { CiView } from "./board-view/ci-note.ts";
+import { ENDED_TICKETS } from "./board-view/overlap-hold.ts";
 import type { RunEvent } from "./queue/run-log.ts";
 import type { Board } from "./server.ts";
 import { ciViewOf } from "./ci-spend/view.ts";
@@ -39,8 +40,6 @@ export type RunDetailEntry = Omit<QueueListEntry, "ticket"> & Readonly<Partial<O
 /** What `GET /api/queue/<key>` answers: the run in full, and its log, oldest event first. */
 export type QueueEntryView = Readonly<{ entry: RunDetailEntry; runLog: readonly RunEvent[] }>;
 
-/** The tracker's states that end a ticket's work (`board-view/overlap-hold.ts`): a run on such a ticket holds nothing once it is not live. */
-const ENDED_TICKETS: ReadonlySet<string> = new Set(["completed", "canceled", "duplicate"]);
 /** The phases in which a run holds or contests paths. */
 const PATH_PHASES: ReadonlySet<string> = new Set(["queued", "starting", "running"]);
 

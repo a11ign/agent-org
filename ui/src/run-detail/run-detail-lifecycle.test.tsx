@@ -95,4 +95,21 @@ describe("a run's own read", () => {
       expect(screen.queryByRole("alert")).toBeNull();
     }
   });
+  it("is read again each time the queue answers, so its log follows the status, and once for each answer", async () => {
+    rstest.useFakeTimers();
+    try {
+      const stand = standFetch(detailStand("running"));
+      history.replaceState(null, "", addressOf("running"));
+      render(<RunsApp fetchWith={stand} />);
+      const advance = (ms: number) => act(async () => { await rstest.advanceTimersByTimeAsync(ms); });
+      for (let hop = 0; hop < 6; hop += 1) await advance(0);
+      const reads = () => stand.paths.filter((path) => isRun(path)).length;
+      const queues = () => stand.paths.filter((path) => path.endsWith("/api/queue")).length;
+      const before = [reads(), queues()];
+      await advance(5_000);
+      expect([reads() - before[0], queues() - before[1]]).toEqual([1, 1]);
+    } finally {
+      rstest.useRealTimers();
+    }
+  });
 });

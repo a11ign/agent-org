@@ -1,7 +1,7 @@
 // no-token: none -- a board over a stub pool, a fake tracker and a plugins seam, served on a Unix socket in a temporary directory and reached through the page's proxy as an SSH connection is
 // A11-270: the 1 s budget of a first load over SSH, kept by a test so it cannot slip back. The board has what made it 15 to 25 s on the chairman's Mac: plugin checks that take 5 s or never end,
 // a tracker that takes 0.6 s to list the tickets (the host's `/api/tickets`), and a queue as large as the host's. The tunnel's far end is the board's socket; opening it takes 250 ms.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import type { Connection, Connections, Target } from "./connections.ts";
 import { PAGES, percentile, runPage, timePages, type ReadOf } from "../../scripts/page-timing.ts";
@@ -36,11 +36,11 @@ const served = await serveBoard({ queue, ticketsMs: TRACKER_MS, tickets: 120, pl
   load: async () => ({ loaded: [], unbuilt: [plugin("linear", 5_000), plugin("github", Number.POSITIVE_INFINITY)], refusals: [] }), limitMs: CHECK_LIMIT_MS } });
 const connections = tunnelTo({ key: served.key, host: served.host, address: { socket: served.socket }, terminal: () => null });
 const readOf: ReadOf = (path) => proxy(connections, PERSONAL.name, { method: "GET", path, body: null }, httpForward);
-const pluginsAfter = new Map<number, number>();
+const pluginsReads: number[] = [];
 const timedReads: ReadOf = async (path) => {
   const started = performance.now();
   const answered = await readOf(path);
-  if (path === "/api/plugins") pluginsAfter.set(pluginsAfter.size, performance.now() - started);
+  if (path === "/api/plugins") pluginsReads.push(performance.now() - started);
   return answered;
 };
 
@@ -53,8 +53,8 @@ test("A11-270: every page draws within 1 s at p95 on a first load over SSH, the 
     assert.ok(p95 < BUDGET_MS, `${page}: p95 ${Math.round(p95)} ms, first load ${Math.round(times[0])} ms, over ${BUDGET_MS} ms`);
     assert.ok(times[0] < BUDGET_MS, `${page}: the first load, which opens the tunnel, took ${Math.round(times[0])} ms`);
   }
-  assert.ok(pluginsAfter.size >= RUNS, "the plugins were read on every run of the pages that read them");
-  const slowest = Math.max(...pluginsAfter.values());
+  assert.ok(pluginsReads.length >= RUNS, "the plugins were read on every run of the pages that read them");
+  const slowest = Math.max(...pluginsReads);
   assert.ok(slowest < PLUGINS_MS + OPENING_MS, `the slowest plugins read took ${Math.round(slowest)} ms with checks that take 5 s and never end (the first includes the tunnel's ${OPENING_MS} ms)`);
   const queueBytes = timing.sizes.get("/api/queue") ?? Number.POSITIVE_INFINITY;
   const fullBytes = JSON.stringify(queue).length;
@@ -70,6 +70,4 @@ test("A11-270: a check that never ends or takes longer than its limit is shown a
   assert.equal((answer as PluginsAnswer).checkedAt === null, false);
 });
 
-test("A11-270: the closing of the served board", async () => {
-  await served.close();
-});
+after(() => served.close());

@@ -85,7 +85,8 @@ test("A11-250: POST /api/queue/<KEY>/answer with the instance's key writes the a
     assert.equal(body.entries[0].ticket.key, "NBF-1", "the queue is the answer, as the other verbs give");
     assert.equal(made.held.description, `Fix the toast.\n\n## Decisions (the chairman, 2026-10-25)\n\n* **Question:** ${QUESTION}\n* **Answer:** Keep the current wording.\n`);
     assert.equal(made.prompts().length, 1);
-    assert.equal(body.entries[0].ticket.description, made.held.description, "the run's copy of the ticket is the text written");
+    const own = await (await fetch(`${base}/api/queue/NBF-1`, { headers: { "x-ticket-token": KEY } })).json() as { entry: { ticket: { description: string } } };
+    assert.equal(own.entry.ticket.description, made.held.description, "the run's copy of the ticket, which its own read sends, is the text written");
   });
 });
 

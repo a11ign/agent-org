@@ -55,9 +55,9 @@ export function sendJson(response: ServerResponse, status: number, value: unknow
  */
 export function sendJsonFor(request: Pick<IncomingMessage, "headers">, response: ServerResponse, answer: Readonly<{ status: number; value: unknown }>): void {
   const body = JSON.stringify(answer.value);
-  if (body.length < PACK_FROM_BYTES || !takesGzip(request)) return sendJson(response, answer.status, answer.value);
-  response.writeHead(answer.status, { "Content-Type": "application/json", "Cache-Control": "no-store", "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
-  response.end(gzipSync(body, { level: 3 }));
+  const packed = body.length >= PACK_FROM_BYTES && takesGzip(request);
+  response.writeHead(answer.status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...(packed ? { "Content-Encoding": "gzip", Vary: "Accept-Encoding" } : {}) });
+  response.end(packed ? gzipSync(body, { level: 3 }) : body);
 }
 
 /** A request's JSON object, or `{}` when it has no body. REFUSES a body over `limit` bytes, and one that is not a JSON object. */
