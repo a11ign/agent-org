@@ -22,24 +22,26 @@ const partialWordsOf = (body: string): string | undefined => PARTIAL_LINE.exec(b
 /** What the body's `Partial:` line says remains of the ticket, or null when the body declares the pull request complete. PURE. */
 const partialOf = (body: string): string | null => declaredRemains(partialWordsOf(body) ?? "");
 
-/** Where a `Partial:` line's leading clause ends: a sentence or clause break, a bracket, or a dash with a space on both sides. */
-const CLAUSE_END = /[;.,(]| - | -- | — /;
-/** What a worker writes after `Partial:` when nothing remains, each as the whole of a leading clause (A11-239). A later wording is added here. */
+/** Where one clause of a `Partial:` line ends: a sentence or clause break, a bracket, or a dash with a space on both sides. */
+const CLAUSE_END = /[;.,()]| - | -- | — /;
+/** What a worker writes after `Partial:` when nothing remains, each as the whole of a clause (A11-239). A later wording is added here. */
 const NOTHING_REMAINS: ReadonlySet<string> = new Set(["none", "nothing", "n/a", "na", "nil", "-", "—", "last step", "the last step", "final step", "the final step",
   "nothing remains", "nothing left", "nothing left to do", "nothing more", "no remainder", "none remain", "none remains"]);
+/** What a worker may add to such a clause without naming work: that the step is the end. */
+const SAYS_DONE: ReadonlySet<string> = new Set(["done", "all done", "complete", "completed", "finished", "all finished"]);
 
 /** How many characters of a `Partial:` line a refusal quotes. */
 const SHOWN_WORDS = 60;
 const cutAt = (text: string, length: number): string => text.length > length ? `${text.slice(0, length)}...` : text;
 
 /**
- * Whether the words of a `Partial:` line say that nothing remains (A11-239): `none; this is the last step.` is no remainder, it is the last step, which closes the ticket. The line's LEADING clause
- * (lower-cased, markdown emphasis stripped, cut at the first break) must be one of {@link NOTHING_REMAINS} in full, after one `this is ` or `it is `. A word inside a real remainder
- * (`none of the UI yet`, `the last step adds the card`) is no match. PURE.
+ * Whether the words of a `Partial:` line say that nothing remains (A11-239): `none; this is the last step.` is no remainder, it is the last step, which closes the ticket. Every clause of the line (lower-cased,
+ * markdown emphasis stripped, cut at each break) must be a whole {@link NOTHING_REMAINS} or {@link SAYS_DONE} wording, after one `this is ` or `it is `, and at least one the former. A clause that names
+ * anything else (`none, the board view remains`, `the last step; step 3 remains`, `none of the UI yet`) leaves the line a real remainder. PURE.
  */
 export function saysNothingRemains(words: string): boolean {
-  const clause = words.toLowerCase().replace(/[*_`]/g, "").split(CLAUSE_END)[0].trim().replace(/^(?:this|it) is /, "");
-  return NOTHING_REMAINS.has(clause);
+  const clauses = words.toLowerCase().replace(/[*_`]/g, "").split(CLAUSE_END).map((clause) => clause.trim().replace(/^(?:this|it) is /, "")).filter((clause) => clause !== "");
+  return clauses.some((clause) => NOTHING_REMAINS.has(clause)) && clauses.every((clause) => NOTHING_REMAINS.has(clause) || SAYS_DONE.has(clause));
 }
 
 /** What a pull request's body declares of its ticket (A11-181): that it leaves `remains` to do, or that it completes the ticket. */

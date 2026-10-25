@@ -9,7 +9,7 @@ import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { DEFAULT_KEYWORDS } from "./source.ts";
 import { declarationOf, namedTicketClosesReport, saysNothingRemains, ticketClosesReport } from "./ticket-references.ts";
-import { declaredByBlockerPull } from "./queue/queue-declarations.ts";
+import { declare, declaredByBlockerPull } from "./queue/queue-declarations.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { reasonOf } from "./board-view/run-reason.ts";
 
@@ -18,9 +18,11 @@ const PR = `https://github.com/a11ign/agent-org/pull/${PR_NUMBER}`;
 const LAST_STEP_BODY = "Refs NBF-1\n\nPartial: none; this is the last step.\n";
 
 const NOTHING_REMAINS = ["Partial: none", "Partial: None.", "Partial: nothing", "Partial: n/a", "Partial: N/A", "Partial: last step", "Partial: this is the last step", "Partial: nothing remains",
-  "Partial: none; this is the last step.", "**Partial:** NONE", "- Partial: Nothing remains — done", "Partial: It is the final step", "Partial: nothing left to do, all done", "Partial: nil (the last step)"];
+  "Partial: none; this is the last step.", "**Partial:** NONE", "- Partial: Nothing remains — done", "Partial: It is the final step", "Partial: nothing left to do, all done", "Partial: nil (the last step)", "Partial: none (done)"];
 const REAL_REMAINDERS = ["Partial: step 2 of 3: the board view; step 3 remains", "Partial: none of the UI yet; the board view remains", "Partial: the last step's screenshots remain",
-  "Partial: step 1 of 2; the last step adds the card", "Partial: nothing is wired to the card yet", "Partial: the docs"];
+  "Partial: step 1 of 2; the last step adds the card", "Partial: nothing is wired to the card yet", "Partial: the docs",
+  "Partial: none, the board view remains", "Partial: None, except the docs", "Partial: nothing (the docs remain)", "Partial: nothing - but the docs remain", "Partial: Nothing. Remaining: the docs",
+  "Partial: nothing; step 3 of 3 remains", "Partial: the last step; step 3 remains", "Partial: the last step, then docs", "Partial: n/a (see #12)", "Partial: none, a11ign/lab#150 finishes it", "Partial: none remains: the docs"];
 
 /** The words after `Partial:` on a test line, markdown around the label dropped. */
 const wordsOf = (line: string): string => line.replace(/^.*?Partial:\**\s*/, "");
@@ -122,4 +124,12 @@ test("A11-239: a body that says `Closes` against an outcome `partial` that says 
   const disagreeing = finishedWith("Closes NBF-1\n", "the board view");
   await disagreeing.pool.refreshTracker();
   assert.deepEqual(disagreeing.store.get().entries[0].partialOverruled, { outcome: "the board view", pull: "Closes NBF-1", urls: [PR] });
+});
+
+test("A11-239: sibling pull requests that finish a ticket together, each naming the other in free words after `none`, are a run's `none` as before, and a last-step outcome that names work still disagrees", async () => {
+  const sibling = "Refs NBF-1\n\nPartial: none, a11ign/lab#150 finishes it\n";
+  assert.deepEqual(declare([{ url: PR, declaration: declarationOf(sibling, "NBF-1", DEFAULT_KEYWORDS) }, { url: PR, declaration: declarationOf(sibling, "NBF-1", DEFAULT_KEYWORDS) }], 2), { kind: "none", urls: [PR, PR] });
+  const named = finishedWith("Closes NBF-1\n", "Nothing, the board view remains");
+  await named.pool.refreshTracker();
+  assert.deepEqual(named.store.get().entries[0].partialOverruled, { outcome: "Nothing, the board view remains", pull: "Closes NBF-1", urls: [PR] });
 });
