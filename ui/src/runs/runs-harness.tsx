@@ -6,7 +6,7 @@ import { RunsApp } from "./RunsApp.tsx";
 // What the Runs page's component checks share: the page drawn inside the shell over a stand-in instance, and the ways to look at the rows and the rail.
 beforeEach(() => {
   localStorage.clear();
-  history.replaceState(null, "", "/next/runs");
+  history.replaceState(null, "", "/runs");
 });
 
 /** The Runs page in the shell, reading from a stand-in instance; resolves once the list, the empty panel or the failure has been drawn. */

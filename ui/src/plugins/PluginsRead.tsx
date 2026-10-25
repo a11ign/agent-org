@@ -5,6 +5,7 @@ import type { Client } from "../api/client.ts";
 import type { PluginsAnswer } from "../api/types.ts";
 import type { PollState, PollView } from "../api/use-poll.ts";
 import type { ViewConnection } from "../api/types.ts";
+import { nextDelay } from "../api/poll-schedule.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
 
 /** The plugins as the instance last answered them: `/api/plugins`, with `refresh` to read them again. The shape the shared lifecycle components take. */
@@ -12,7 +13,7 @@ export type PluginsReadValue = PollView<PluginsAnswer> & Readonly<{ refresh: () 
 
 const PluginsReadContext = createContext<PluginsReadValue | null>(null);
 
-type Held = Readonly<{ client: Client; view: PollView<PluginsAnswer> }>;
+type Held = Readonly<{ client: Client; view: PollView<PluginsAnswer>; misses: number }>;
 
 /** The state a failed answer makes: unreachable for an SSH remote its proxy cannot reach, reconnecting for a restart, and an error for anything the server answered with. */
 function failureOf(connection: ViewConnection | null, answer: Extract<Answer<unknown>, { ok: false }>): PollState {
@@ -32,19 +33,30 @@ const LOADING: PollView<PluginsAnswer> = { state: "loading", data: null, refusal
  * `/api/plugins`, read once per connection and again only when `refresh` asks (the page's Retry and "Read the plugins again", and after an action). It is NOT polled and a failure is NOT
  * retried on a backoff, which `usePoll` does even with `repeat: false`: the read runs the plugins' doctor checks (`security`, `claude mcp list`, `gh`), and trying again by itself would run them
  * every minute for as long as a page stays open. The shell's own queue poll is what notices the instance has gone. Never an empty answer: an instance with no plugin still has its concerns.
+ * ONE FAILURE IS RETRIED: the instance that did not answer (it is restarting, or took longer than the page's service waits). The page says "Reconnecting…", which promises it, so it reads again after
+ * 2 seconds, and after twice as long each time it still finds nothing, up to a minute (A11-211's backoff), and stops at the first answer. An answer that is a refusal is not retried.
  */
 export function usePluginsRead(): PluginsReadValue {
   const { client, connection } = useShell();
-  const [held, setHeld] = useState<Held>({ client, view: LOADING });
+  const [held, setHeld] = useState<Held>({ client, view: LOADING, misses: 0 });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const reading = new AbortController();
     void client.plugins(reading.signal).then((answer) => {
       if (reading.signal.aborted) return;
-      setHeld((before) => ({ client, view: viewAfter(before.client === client ? before.view : LOADING, answer, connection) }));
+      setHeld((before) => {
+        const view = viewAfter(before.client === client ? before.view : LOADING, answer, connection);
+        return { client, view, misses: view.state === "reconnecting" ? (before.client === client ? before.misses : 0) + 1 : 0 };
+      });
     });
     return () => reading.abort();
   }, [client, connection, attempt]);
+  const waiting = held.client === client && held.view.state === "reconnecting";
+  useEffect(() => {
+    if (!waiting) return undefined;
+    const timer = setTimeout(() => setAttempt((count) => count + 1), nextDelay(held.misses));
+    return () => clearTimeout(timer);
+  }, [waiting, held.misses]);
   return { ...(held.client === client ? held.view : LOADING), refresh: () => setAttempt((count) => count + 1) };
 }
 

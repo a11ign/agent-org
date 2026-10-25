@@ -10,7 +10,7 @@ import { PluginsRead, useProvidedPluginsRead } from "./PluginsRead.tsx";
 
 beforeEach(() => {
   localStorage.clear();
-  history.replaceState(null, "", "/next/settings/models");
+  history.replaceState(null, "", "/settings/models");
 });
 
 /** Just longer than the first backoff a failing poll waits before it reads again. */

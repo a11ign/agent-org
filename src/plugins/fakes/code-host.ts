@@ -7,7 +7,7 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type ClosedCommit, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type ClosedCommit, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type PullQueue, type QueueFailure, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -18,6 +18,8 @@ export type FakePull = {
   closedWork?: { branch?: string; commits: readonly ClosedCommit[]; files: readonly string[]; filesComplete?: boolean };
   /** A pull request a bot opened (contract 1.19): its title, its branch and who authored it. `openDependencyPulls` returns only those the dependency bot authored. */
   dependency?: { title: string; headRefName: string; author: string };
+  /** What the merge queue did to the pull request (contract 1.21). A pull request given none is one the fake does not say anything of: `PullFeedback.queue` is then absent, which is not "no removals". */
+  queue?: PullQueue;
   feedback: Partial<PullFeedback>; replies: readonly Reply[]; body?: string; reviews: ReviewState["reviews"]; settled: boolean; unrequiredRed?: ReviewState["unrequiredRed"]; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
 };
 
@@ -52,7 +54,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       const authors = (pull.feedback.authors ?? []).filter((author) => !ignored(author));
       const approvedAtHead = pull.reviews.some((review) => review.commit === pull.head && review.state === "APPROVED" && !ignored(review.author));
       return { state: pull.state, feedbackAt: null, failing: [], failures: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
-        base: pull.base, files: pull.files, filesComplete: true, reviewDecision: null, verdictAtHead: verdictAtHead(pull, self), pendingRequired: [], body: pull.body ?? "", ...pull.feedback, authors };
+        base: pull.base, files: pull.files, filesComplete: true, reviewDecision: null, verdictAtHead: verdictAtHead(pull, self), pendingRequired: [], body: pull.body ?? "", ...(pull.queue === undefined ? {} : { queue: pull.queue }), ...pull.feedback, authors };
     },
     readDefaultBranchRed(repository) {
       calls.push(`readDefaultBranchRed ${repository}`);
@@ -231,6 +233,34 @@ function ciRunsOf(state: FakeCiRuns, calls: string[]): Pick<CodeHost, "readCiRun
   };
 }
 
+/**
+ * What the fake holds of the merge queue's reads and the hold (contract 1.21), and what a test sets: the failing run behind a removal (`failures`, by `<url>@<groupCommit>`; one it was given none for cannot be found, and is null), why a hold is refused (`holdRefusal`),
+ * which pull requests carry the hold label now (`held`), and each hold or lift asked for, in order (`holds`). A pull request the fake does not hold cannot be held: the call throws, as the contract says.
+ */
+export type FakeQueues = { failures: Map<string, QueueFailure>; holdRefusal: string | null; held: Set<string>; holds: { url: string; on: boolean }[] };
+
+/** The key a removal's failing run is seeded under. */
+export const queueFailureKey = (url: string, groupCommit: string): string => `${url}@${groupCommit}`;
+
+/** The merge queue's failure read and the hold over what a test seeded. */
+function queuesOf(state: FakeQueues, pulls: Pulls, calls: string[]): Pick<CodeHost, "readQueueFailure" | "holdFromQueue"> {
+  return {
+    readQueueFailure(url, groupCommit) {
+      calls.push(`readQueueFailure ${url} ${groupCommit}`);
+      return pulls.has(url) ? state.failures.get(queueFailureKey(url, groupCommit)) ?? null : null;
+    },
+    holdFromQueue(url, on) {
+      calls.push(`holdFromQueue ${url} ${on}`);
+      if (!pulls.has(url)) throw new Error(`fake code host: no pull request ${url}`);
+      if (state.holdRefusal !== null) throw new Error(state.holdRefusal);
+      state.holds.push({ url, on });
+      if (on) state.held.add(url);
+      else state.held.delete(url);
+      return state.held.has(url) === on;
+    },
+  };
+}
+
 /** Whether a merged pull request of the repository was the head of `base`: the base the run stacked on has landed. */
 const baseMerged = (pulls: Pulls, pull: FakePull): boolean => [...pulls.values()].some((other) => other.repository === pull.repository && other.head === pull.base && other.state === "merged");
 
@@ -376,8 +406,9 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
   const stackMerges: FakeStackMerges = { facts: new Map(), requestRefusal: null, requests: [] };
   const ciRuns: FakeCiRuns = { runs: new Map(), asked: [] };
+  const queues: FakeQueues = { failures: new Map(), holdRefusal: null, held: new Set(), holds: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...closedWorkOf(pulls, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -392,6 +423,8 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     stackMerges,
     /** The workflow runs the fake says it holds, by `owner/name#runId`, and the runs it was asked about, for a test to seed and read (see {@link FakeCiRuns}). */
     ciRuns,
+    /** The failing runs behind removals from the merge queue the fake can find, and the holds it was asked for, for a test to seed and read (see {@link FakeQueues}). */
+    queues,
     /** The owners, repositories and clones the fake's `repositories` group holds, for a test to seed and read (see {@link FakeRepositories}). */
     repositoriesWorld,
     /** Say which owners the fake lists (the account first, as the contract says), or null for a host that cannot be asked. */

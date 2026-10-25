@@ -24,8 +24,9 @@ import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { chromiumProblems, chromiumReport, type ChromiumReport } from "../install/chromium.ts";
 import { TOOL_ROOT } from "../install/paths.ts";
 import { pairingCode } from "./pair-command.ts";
+import { buildCandidates, findBuild } from "./ui-build.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settings.ts";
-import { CaptureRefusal, DEFAULT_SIZE, HERDR_STUB, type Size, captureHost, captureName, parseRoute, parseSize, readySelector, routeAddress } from "./capture.ts";
+import { CaptureRefusal, DEFAULT_SIZE, HERDR_STUB, type Size, captureHost, captureName, parseRoute, parseSize, READY_SELECTOR, routeAddress } from "./capture.ts";
 
 /** How long each child may take to answer on its port before the capture is refused, with what it printed. */
 const START_MS = 30_000;
@@ -47,6 +48,8 @@ export type CaptureDeps = Readonly<{
   checkout: string;
   env: Readonly<Record<string, string | undefined>>;
   chromium: () => ChromiumReport;
+  /** Where the board's build is (`ui-build.ts`), or null when there is none: the board is its missing-build page then, which has no page to capture. */
+  build: () => string | null;
   /** A new, empty throwaway directory, which the capture removes when it ends. */
   tmp: () => string;
   /** A port nothing is listening on, on 127.0.0.1, free when it is asked. */
@@ -156,7 +159,7 @@ async function pairAndShoot(hostPath: string, uiPort: number, request: CaptureRe
   const cookie = await pairedCookie(settings, deps);
   const path = resolve(captureFile(request.out, captureName(request.route, request.size), existsDirectory));
   mkdirSync(resolve(path, ".."), { recursive: true });
-  await deps.shoot({ url: routeAddress(uiPort, request.route), origin: `http://127.0.0.1:${uiPort}`, cookie, size: request.size, ready: readySelector(request.route), path });
+  await deps.shoot({ url: routeAddress(uiPort, request.route), origin: `http://127.0.0.1:${uiPort}`, cookie, size: request.size, ready: READY_SELECTOR, path });
   return path;
 }
 
@@ -167,6 +170,7 @@ async function pairAndShoot(hostPath: string, uiPort: number, request: CaptureRe
 export async function captureRoute(request: CaptureRequest, deps: CaptureDeps): Promise<string> {
   const problems = chromiumProblems(deps.chromium());
   if (problems.length > 0) throw new CaptureRefusal(problems.join("\n"));
+  if (deps.build() === null) throw new CaptureRefusal("this checkout has no board UI build to capture (the board answers its missing-build page): `pnpm ui:build` makes it");
   const dir = deps.tmp();
   const children: Running[] = [];
   // A process that exits without running this `finally` (a signal's exit) still ends the children and removes the directory: `exit` runs synchronously.
@@ -245,6 +249,7 @@ export function defaultCaptureDeps(): CaptureDeps {
     checkout: TOOL_ROOT,
     env: process.env,
     chromium: () => chromiumReport(),
+    build: () => findBuild(buildCandidates()),
     tmp: () => mkdtempSync(join(tmpdir(), "agent-org-capture-")),
     freePort: realFreePort,
     spawn: realSpawn,

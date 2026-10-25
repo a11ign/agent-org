@@ -24,7 +24,7 @@ export type RowContext = Readonly<{
   ticks: Ticks | null;
 }>;
 
-/** Where Run detail is: `/next/runs/<key>`, the key encoded. */
+/** Where Run detail is: `/runs/<key>`, the key encoded. */
 const runHref = (key: string): string => `${runsHref}/${encodeURIComponent(key)}`;
 
 /** The number a pull request's address ends in. */

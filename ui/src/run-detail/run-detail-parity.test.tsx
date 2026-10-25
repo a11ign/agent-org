@@ -25,7 +25,7 @@ const BLOCKER_PULL = "https://github.com/a11ign/agent-org/pull/3";
 const EDIT = { why: "the ticket names a file that moved", base: { title: "Old title", description: "Old description" }, title: "New title" };
 
 /** Run detail for a single run, opened at its address. */
-const open = (run: RunFields) => pageFor("queued", detailStand("queued", { runs: [run] }), `/next/runs/${(run.ticket as { key: string }).key}`);
+const open = (run: RunFields) => pageFor("queued", detailStand("queued", { runs: [run] }), `/runs/${(run.ticket as { key: string }).key}`);
 
 const disclosure = (name: string): HTMLElement => {
   const found = [...document.querySelectorAll<HTMLElement>("details.disclosure")].find((node) => textOf(node.querySelector("summary")).includes(name));

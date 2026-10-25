@@ -5,7 +5,7 @@ import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { TOOL_ROOT } from "../install/paths.ts";
-import { afterNext, buildCandidates, fileHeaders, findBuild, isAssetPath, isNextPath, locate, UI_BUILD_DIR } from "./ui-build.ts";
+import { buildCandidates, fileHeaders, findBuild, isAssetPath, locate, movedFromNext, UI_BUILD_DIR } from "./ui-build.ts";
 
 /** A file made, with its folders, under `dir`. */
 function put(dir: string, relative: string, text = relative): string {
@@ -93,9 +93,15 @@ test("a page is no-cache, a hashed file is cached for a year, any other file is 
   }
 });
 
-test("only /next and what is under it is the UI's", () => {
-  assert.deepEqual(["/next", "/next/", "/next/a/b", "/nextfoo", "/", "/api/next", "/c/work/api/next"].map(isNextPath), [true, true, true, false, false, false, false]);
-  assert.deepEqual(["/next", "/next/", "/next/a/b"].map(afterNext), ["", "/", "/a/b"]);
+test("A11-202: an address under /next goes to the same address without it, with its query, and nothing else moves", () => {
+  assert.deepEqual([["/next", ""], ["/next/", "?connection=x"], ["/next/tickets", ""], ["/next/runs/A11-1", "?connection=x"], ["/next/settings/models", "?a=1&b=2"]].map(([path, search]) => movedFromNext(path, search)),
+    ["/", "/?connection=x", "/tickets", "/runs/A11-1?connection=x", "/settings/models?a=1&b=2"]);
+  assert.deepEqual(["/nextfoo", "/", "/tickets", "/api/next", "/c/work/api/next", "/_astro/next/a.js"].map((path) => movedFromNext(path, "")), [null, null, null, null, null, null]);
+});
+
+test("A11-202: a /next address never moves to another origin, whatever slashes follow it", () => {
+  assert.deepEqual(["/next//evil.example", "/next///evil.example/x", "/next/\\evil.example", "/next//\\evil.example", "/next/%2F/evil.example"].map((path) => movedFromNext(path, "")),
+    ["/evil.example", "/evil.example/x", "/evil.example", "/evil.example", "/%2F/evil.example"]);
 });
 
 test("a path is an asset when it has a file extension or is under _astro/, and a route when not", () => {

@@ -429,7 +429,7 @@
 .banner-line {
   margin: 0;
 }
-.alert-banner-column {
+.alert-banner.alert-banner-column {
   flex-direction: column;
   flex-wrap: nowrap;
   align-items: flex-start;

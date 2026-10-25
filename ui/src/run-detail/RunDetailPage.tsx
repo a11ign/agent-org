@@ -15,6 +15,8 @@ import { RunDisclosures } from "./RunDisclosures.tsx";
 import { Breadcrumb, RunHeader, type HeaderControls } from "./RunHeader.tsx";
 import { boardOf, calloutOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
 import { Steps } from "./Steps.tsx";
+import { Timeline } from "./Timeline.tsx";
+import { timelineOf } from "./run-timeline-model.ts";
 import { useFollowTerminal, useQueueReadAt } from "./use-stale-terminal.ts";
 import { useTalk } from "./use-talk.ts";
 
@@ -70,8 +72,8 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   };
   return (
     <>
-      <FailureBanner sentence={pressed ?? notPublished} title={pressed === null && notPublished !== null ? NOT_PUBLISHED : undefined} onRetry={() => { clear(); inputs.refresh(); }} onDismiss={clear} />
       <Breadcrumb runKey={entry.ticket.key} />
+      <FailureBanner sentence={pressed ?? notPublished} title={pressed === null && notPublished !== null ? NOT_PUBLISHED : undefined} onRetry={() => { clear(); inputs.refresh(); }} onDismiss={clear} />
       <RunHeader entry={entry} queue={queue} board={board} now={Date.now()} controls={controls} />
       <div className="run-columns">
         <div className="detail-main">
@@ -79,6 +81,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
           <RunDisclosures disclosures={disclosuresOf(entry, { queue, publisher: config?.publisher })} />
           <Steps steps={stepsOf(entry)} />
           <PullRequests rows={pullRowsOf(entry)} board={board} />
+          <Timeline rows={timelineOf(entry, queue, Date.now())} />
         </div>
         <Properties entry={entry} values={propertiesOf(entry, queue)} />
       </div>

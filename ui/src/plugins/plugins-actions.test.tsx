@@ -142,7 +142,8 @@ describe("a change that does not go through", () => {
     opened("Publisher");
     fireEvent.click(within(card("Publisher")).getByRole("button", { name: "Disable slack" }));
     const banner = await screen.findByText("Nothing was changed.");
-    expect(banner.parentElement!.textContent).toBe(`Nothing was changed. ${sentence}`);
+    expect(banner.parentElement!.textContent).toBe(`Nothing was changed. ${sentence.replaceAll("`", "")}`);
+    expect([...banner.parentElement!.querySelectorAll("code")].map((code) => code.textContent)).toEqual(["tickets.workers"]);
     expect(banner.closest("[role=alert]")).not.toBeNull();
   });
 

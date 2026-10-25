@@ -1,11 +1,11 @@
-// A11-211: the board's page across an instance restart, in a real browser, against this checkout's own `ticket:ui`.
+// A11-211: the board's page across an instance restart, in a real browser, against this checkout's own `ticket:ui` (the page is Atomaut's Run detail since A11-202).
 //
 //   node scripts/board-restart-check.ts
 //
 // It starts this checkout's board page (`ticket:ui`) on a free port from a throwaway host file and state folder, with a stand-in instance on the port the page proxies to,
-// pairs a headless Chromium, and opens the board. It then stops the instance for longer than one poll, as an update's restart does, and checks what the tab shows:
+// pairs a headless Chromium, and opens the run's page. It then stops the instance for longer than one poll, as an update's restart does, and checks what the tab shows:
 // "Reconnecting…" and no red while it is down, and, once the instance is back on a different pane, the tab focused again shows the current queue, no red, and the run's
-// Open terminal link on the new pane, with no reload. Nothing here touches a real instance, key or port; the throwaway folder and both children are removed on every exit.
+// Talk to it link on the new pane, with no reload. Nothing here touches a real instance, key or port; the throwaway folder and both children are removed on every exit.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -71,13 +71,13 @@ async function startBoard(dir: string, port: number, uiPort: number): Promise<Re
   return { ui, hostPath };
 }
 
-/** What the tab shows: the Reconnecting line when it is visible, the red message, and the run's Open terminal link. */
+/** What the tab shows: the Reconnecting line, the red banner's message, and the href of the run's Talk to it link (the header's), decoded, or empty when the page draws none. */
 const shown = (page: Page) => page.evaluate(() => {
-  const line = document.getElementById("reconnecting");
+  const talk = Array.from(document.querySelectorAll("a")).find((link) => link.textContent.trim() === "Talk to it");
   return {
-    reconnecting: line === null || line.hidden ? "" : line.textContent,
-    error: document.getElementById("error")!.textContent,
-    link: decodeURIComponent(document.querySelector<HTMLAnchorElement>("#run-T-1 a.terminal")?.href ?? ""),
+    reconnecting: document.querySelector(".reconnecting-note")?.textContent ?? "",
+    error: document.querySelector("[role=alert]")?.textContent ?? "",
+    link: decodeURIComponent(talk?.href ?? ""),
   };
 });
 
@@ -103,10 +103,10 @@ async function main(dir: string): Promise<void> {
     const context = await browser.newContext();
     await context.addCookies([{ name: session[1], value: session[2], url: `http://127.0.0.1:${uiPort}` }]);
     const page = await context.newPage();
-    await page.goto(`http://127.0.0.1:${uiPort}/`);
-    await page.waitForSelector("#run-T-1 a.terminal", { state: "attached" });
+    await page.goto(`http://127.0.0.1:${uiPort}/runs/T-1`);
+    await page.getByRole("link", { name: "Talk to it" }).waitFor({ state: "attached" });
     const before = await shown(page);
-    expectThat("the board draws the run's terminal link on its pane", before.link, (link) => link.includes("pane=w1%3Ap1"));
+    expectThat("the run's page draws its Talk to it link on its pane", before.link, (link) => link.includes("pane=w1%3Ap1"));
     expectThat("and shows no red and no Reconnecting line", before, ({ error, reconnecting }) => error === "" && reconnecting === "");
 
     // The tab goes to the background, the instance restarts for longer than one poll, and comes back with the run on another pane.
@@ -124,10 +124,13 @@ async function main(dir: string): Promise<void> {
     // Coming back to the tab: the window is focused, with no reload.
     await page.bringToFront();
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await page.waitForFunction(() => document.getElementById("error")!.textContent === "" && /pane=w2/.test(decodeURIComponent(document.querySelector<HTMLAnchorElement>("#run-T-1 a.terminal")?.href ?? "")), undefined, { timeout: POLL_WAIT_MS }).catch(() => undefined);
+    await page.waitForFunction(() => {
+      const talk = Array.from(document.querySelectorAll("a")).find((link) => link.textContent.trim() === "Talk to it");
+      return document.querySelector("[role=alert]") === null && /pane=w2/.test(decodeURIComponent(talk?.href ?? ""));
+    }, undefined, { timeout: POLL_WAIT_MS }).catch(() => undefined);
     const after = await shown(page);
     expectThat("back at the tab, Reconnecting is gone and there is no red", after, ({ error, reconnecting }) => error === "" && reconnecting === "");
-    expectThat("and the run's terminal link points at the pane it has now", after.link, (link) => link.includes("pane=w2%3Ap1"));
+    expectThat("and the run's Talk to it link points at the pane it has now", after.link, (link) => link.includes("pane=w2%3Ap1"));
     await close(restarted);
   } finally {
     await browser.close();

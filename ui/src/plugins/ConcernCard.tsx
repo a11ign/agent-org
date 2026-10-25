@@ -52,6 +52,9 @@ function Secrets({ plugin }: Readonly<{ plugin: Plugin }>) {
   );
 }
 
+/** What a plugin is and where it is, in the sentence today's board gave it: "Reads the tracker. Bundled with agent-org." */
+const placeOf = (plugin: Plugin): string => `${plugin.description} ${plugin.where}.`;
+
 /** The "Active plugin" choice of a concern with more than one plugin. Picking another acts at once, after the backend's confirmation where it asks for one. */
 function ActivePlugin({ concern }: Readonly<{ concern: Concern }>) {
   const { answer, controls, changes } = usePage();
@@ -69,7 +72,7 @@ function ActivePlugin({ concern }: Readonly<{ concern: Concern }>) {
                 onChange={() => pick?.action != null && changes.act(pick.action, plugin, concern, answer)} />
               <span>
                 <span className="plugin-choice-name">{plugin.name}</span>
-                <span className="plugin-choice-words">{plugin.description}</span>
+                <span className="plugin-choice-words">{placeOf(plugin)}</span>
                 {pick === null || pick.reason === null ? null : <span className="plugin-choice-reason">{pick.action === null ? `Install with ${pick.reason}.` : pick.reason}</span>}
               </span>
             </label>
@@ -130,6 +133,7 @@ function Body({ concern }: Readonly<{ concern: Concern }>) {
   return (
     <div className="plugin-body">
       {checkRowsOf(concern, instance).map((row) => <Check key={`${row.name}|${row.detail}`} row={row} />)}
+      {target === null || hasChoice(concern) ? null : <p className="plugin-note">{placeOf(target)}</p>}
       {target === null ? null : <Secrets plugin={target} />}
       {hasChoice(concern) ? <ActivePlugin concern={concern} /> : null}
       {concern.concern === "publisher" && groups.length > 0 ? <p className="plugin-warning">{PUBLISHER_WARNING}</p> : null}

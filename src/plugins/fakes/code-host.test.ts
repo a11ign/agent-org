@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { runCodeHostConformance } from "../conformance/code-host.ts";
 import { ContractError } from "../conformance/suite.ts";
 import { DEPENDENCY_PULL_AUTHOR, type CodeHost, type WrapperInputs } from "../contracts/code-host.ts";
-import { createFakeCodeHost, fakePullUrl } from "./code-host.ts";
+import { createFakeCodeHost, fakePullUrl, queueFailureKey } from "./code-host.ts";
 
 /** The inputs a wrapper is asked about: a place outside any temporary directory, and the workers' role an App. */
 const INPUTS: WrapperInputs = {
@@ -36,8 +36,11 @@ function seeded() {
   const foreign = host.seedPull("owner/repo", 13, { dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", author: "someone" } });
   // A pull request closed without merging that still holds two commits (contract 1.20).
   const closed = host.seedPull("owner/repo", 20, { state: "closed", closedWork: { branch: "admin/a11-229-x", commits: [{ sha: "e".repeat(40), subject: "feat: one" }, { sha: "f".repeat(40), subject: "feat: two" }], files: ["src/a.ts", "src/b.ts"] } });
+  // The failing `merge_group` run behind a removal of pull request 7 from the merge queue (contract 1.21).
+  const queueFailure = { groupCommit: "b".repeat(40), job: "middleware" };
+  host.queues.failures.set(queueFailureKey(url, queueFailure.groupCommit), { runId: 55, runUrl: "https://github.com/owner/repo/actions/runs/55", jobs: [{ name: queueFailure.job, step: "The Dependabot config is what the toolchain generates", detailsUrl: "https://github.com/owner/repo/actions/runs/55/job/56" }] });
   const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, closed: closed.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, closed: closed.url, queueFailure, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
 }
 
 /**
@@ -72,7 +75,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged", "readClosedWork answers null for a pull request it cannot read or that is open, and reads what a closed one still held",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -359,6 +362,25 @@ test("a code host of contract 1.18, with no openDependencyPulls, still passes th
   const ran = await ranChecks(older, probe, DEPENDENCY_CHECKS);
   assert.deepEqual([ran.skipped.map(({ check }) => check), ran.passed], [DEPENDENCY_CHECKS, []]);
   assert.equal(ran.skipped.filter(({ reason }) => /the code host has no openDependencyPulls/.test(reason)).length, DEPENDENCY_CHECKS.length, "each says why");
+});
+
+const QUEUE_CHECKS = ["readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal", "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read"];
+
+test("a code host of contract 1.20, with no readQueueFailure or holdFromQueue, still passes the suite: both of the merge queue's checks are skipped with the reason", async () => {
+  const { host, probe } = seeded();
+  const older = Object.fromEntries(Object.entries(host).filter(([name]) => name !== "readQueueFailure" && name !== "holdFromQueue")) as CodeHost;
+  assert.deepEqual([typeof host.readQueueFailure, typeof host.holdFromQueue], ["function", "function"], "POSITIVE CONTROL: the fake has the operations the older host lacks");
+  const ran = await ranChecks(older, probe, QUEUE_CHECKS);
+  assert.deepEqual([ran.skipped.map(({ check }) => check), ran.passed], [QUEUE_CHECKS, []]);
+  assert.deepEqual(ran.skipped.map(({ reason }) => /the code host has no (readQueueFailure|holdFromQueue)/.test(reason)), [true, true], "each says why");
+});
+
+test("a code host that reads a run it cannot find as one with no failing job, or answers a hold it cannot make as made, fails each by name (contract 1.21)", async () => {
+  const { host, probe } = seeded();
+  const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
+  assert.deepEqual(await failures({ ...host, readQueueFailure: () => ({ runId: 1, runUrl: "https://github.com/owner/repo/actions/runs/1", jobs: [] }) }), [QUEUE_CHECKS[0]], "a run for what it cannot read");
+  assert.deepEqual(await failures({ ...host, holdFromQueue: () => true }), [QUEUE_CHECKS[1]], "a hold on a pull request it cannot read");
+  assert.deepEqual(await failures({ ...host, holdFromQueue: () => false }), [QUEUE_CHECKS[1]], "a hold that reads back as not asked");
 });
 
 test("a code host that reads a repository it cannot read as one the bot opened nothing in, or lists a pull request the bot did not open, fails each by name (contract 1.19)", async () => {

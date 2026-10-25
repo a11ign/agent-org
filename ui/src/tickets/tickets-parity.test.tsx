@@ -1,7 +1,7 @@
 import { ticket } from "../../test/fixtures.ts";
 import type { QueueView } from "../api/types.ts";
 import { fireEvent, screen, within } from "@testing-library/react";
-import { answers, openPage, rowOf, standOf, textOf } from "./tickets-harness.tsx";
+import { answers, openPage, renderOn, rowOf, standOf, textOf } from "./tickets-harness.tsx";
 
 // What `ui.html`'s Pick tab shows that A11-196's page left off (A11-220): the held notice, the label tags of a row, the no-plan mark, and the count under a parent.
 
@@ -87,5 +87,27 @@ describe("a parent's count", () => {
     const parent = ticket({ key: "A11-53", title: "Parent", children: ["A11-54"] } as never);
     await openPage(standOf(answers([parent, ticket({ key: "A11-54", title: "One", parent: "A11-53" })])));
     expect(within(rowOf("A11-53")).getByText("1 ticket under it")).toBeTruthy();
+  });
+});
+
+// The quiet Reconnecting line of every page (A11-211, PARITY.md): the Tickets page drew nothing at all while the instance restarted.
+describe("the Tickets page while the instance restarts", () => {
+  it("shows the Reconnecting line and the page's skeleton, with no red, when the first read of the tickets finds the instance gone", async () => {
+    renderOn(standOf(answers([], { ticketsFail: { status: 502, error: "no answer within 30 seconds" } })));
+    const line = await screen.findByText("Reconnecting…");
+    expect(line.getAttribute("role")).toBe("status");
+    expect(line.getAttribute("title")).toBe("no answer within 30 seconds");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("status", { name: "Loading tickets" })).toBeTruthy();
+  });
+
+  it("keeps the tickets it read, under the line, when the queue poll finds the instance gone afterwards", async () => {
+    const instance = answers();
+    await openPage(standOf(instance));
+    Object.defineProperty(instance, "queueFails", { value: { status: 503, error: "service unavailable" }, configurable: true, enumerable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await screen.findByText("Reconnecting…");
+    expect(rowOf("A11-1")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

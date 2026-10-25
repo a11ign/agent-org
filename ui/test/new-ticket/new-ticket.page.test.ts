@@ -20,7 +20,7 @@ afterAll(async () => {
 
 /** Where the screenshots go, beside the page's checks: this page's own folder. */
 const CAPTURES = join(UI_ROOT, "captures", "new-ticket");
-const TICKETS = "/next/tickets";
+const TICKETS = "/tickets";
 
 type Opened = Readonly<{ page: Page; asked: Asked; context: BrowserContext; view: { runs: Run[] } }>;
 

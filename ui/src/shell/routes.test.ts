@@ -1,44 +1,44 @@
 import { isSettingsPage, pageOf, runKeyOf, SETTINGS_SECTIONS, settingsHref, settingsSectionHref, TITLES } from "./routes.ts";
 
 describe("runKeyOf", () => {
-  it("is the key in /next/runs/<key>", () => {
-    expect(runKeyOf("/next/runs/A11-1")).toBe("A11-1");
-    expect(runKeyOf("/next/runs/A11-1/")).toBe("A11-1");
+  it("is the key in /runs/<key>", () => {
+    expect(runKeyOf("/runs/A11-1")).toBe("A11-1");
+    expect(runKeyOf("/runs/A11-1/")).toBe("A11-1");
   });
 
   it("decodes a key that was encoded", () => {
-    expect(runKeyOf("/next/runs/A11%2D1")).toBe("A11-1");
+    expect(runKeyOf("/runs/A11%2D1")).toBe("A11-1");
   });
 
   it("keeps a key that is not valid percent-encoding as it is", () => {
-    expect(runKeyOf("/next/runs/100%")).toBe("100%");
+    expect(runKeyOf("/runs/100%")).toBe("100%");
   });
 
-  it.each(["/next/runs", "/next/runs/", "/next/tickets", "/next/runs/A11-1/more", ""])("is null for %j", (path) => {
+  it.each(["/runs", "/runs/", "/tickets", "/runs/A11-1/more", ""])("is null for %j", (path) => {
     expect(runKeyOf(path)).toBeNull();
   });
 });
 
 describe("pageOf", () => {
   it("is Run detail when the runs page is served for a run's path", () => {
-    expect(pageOf("runs", "/next/runs/A11-1")).toBe("run");
+    expect(pageOf("runs", "/runs/A11-1")).toBe("run");
   });
 
   it("is Runs for the list", () => {
-    expect(pageOf("runs", "/next/runs")).toBe("runs");
+    expect(pageOf("runs", "/runs")).toBe("runs");
     expect(pageOf("runs", "")).toBe("runs");
   });
 
   it("is the section the route builds for every other page", () => {
-    expect(pageOf("tickets", "/next/tickets")).toBe("tickets");
-    expect(pageOf("models", "/next/runs/A11-1")).toBe("models");
+    expect(pageOf("tickets", "/tickets")).toBe("tickets");
+    expect(pageOf("models", "/runs/A11-1")).toBe("models");
   });
 });
 
 describe("the addresses", () => {
   it("are the ticket's", () => {
-    expect(settingsHref).toBe("/next/settings/models");
-    expect(SETTINGS_SECTIONS.map(({ id }) => settingsSectionHref(id))).toEqual(["/next/settings/models", "/next/settings/workers", "/next/settings/machine", "/next/settings/plugins"]);
+    expect(settingsHref).toBe("/settings/models");
+    expect(SETTINGS_SECTIONS.map(({ id }) => settingsSectionHref(id))).toEqual(["/settings/models", "/settings/workers", "/settings/machine", "/settings/plugins"]);
   });
 
   it("know which pages are Settings sections", () => {

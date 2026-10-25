@@ -23,11 +23,12 @@ function flaky(tickets: readonly TicketView[] = BACKLOG) {
   return { link, instance };
 }
 
-async function pageOn(stand: Stand, connection = "personal") {
-  history.replaceState(null, "", `/next/tickets?connection=${connection}`);
+async function pageOn(stand: Stand, connection = "personal", { drawn = true }: Readonly<{ drawn?: boolean }> = {}) {
+  history.replaceState(null, "", `/tickets?connection=${connection}`);
   const fetchWith = standFetch(stand);
   const view = render(<ShellProvider fetchWith={fetchWith}><ShellFrame page="tickets"><TicketsPage /></ShellFrame></ShellProvider>);
-  await waitFor(() => expect(screen.queryByRole("status", { name: "Loading tickets" })).toBeNull());
+  // A restarting instance keeps the skeleton, under its quiet line, until it answers.
+  if (drawn) await waitFor(() => expect(screen.queryByRole("status", { name: "Loading tickets" })).toBeNull());
   return { ...view, fetchWith };
 }
 
@@ -188,7 +189,7 @@ describe("a failure that is not an unreachable SSH connection", () => {
 
   it("is not unreachable for a local connection whose reads say they cannot reach it, as the proxy words a restart", async () => {
     const instance: InstanceAnswers = { ...answers(), queueFails: { status: 502, error: REFUSAL }, ticketsFail: { status: 502, error: REFUSAL } };
-    const { fetchWith } = await pageOn({ connections: [HERE], instances: { here: instance } }, "here");
+    const { fetchWith } = await pageOn({ connections: [HERE], instances: { here: instance } }, "here", { drawn: false });
     await waitFor(() => expect(readsOf(fetchWith, "/c/here/api/queue")).toBeGreaterThan(0));
     await refocus();
     expect(screen.queryByText("Last known")).toBeNull();

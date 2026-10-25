@@ -5,7 +5,7 @@
 // `ui.html` cannot be imported and is retired by A11-202.
 import { reviewLinesOf } from "../../../src/ticket-mode/board-view.ts";
 import { learnsLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
-import { checkNote, promptNote, reasonOf, updateLines } from "../../../src/ticket-mode/board-view/run-reason.ts";
+import { checkNote, promptNote, queueNote, reasonOf, updateLines } from "../../../src/ticket-mode/board-view/run-reason.ts";
 import { publishingOffLine } from "../../../src/ticket-mode/board-view/pull-review-state.ts";
 import { readoptNote } from "../../../src/ticket-mode/board-view/readopt-note.ts";
 import { sharedRunNote } from "../../../src/ticket-mode/board-view/run-terminal.ts";
@@ -209,6 +209,7 @@ export function noteLines(entry: RunEntry, { queue, publisher, now }: NoteContex
     verdictNote(entry),
     retargetNote(entry),
     checkNote(entry),
+    queueNote(entry),
     stalled?.stalled === true ? stalled.text : null,
     isParked(entry) ? PARKED_LINE : null,
   ];

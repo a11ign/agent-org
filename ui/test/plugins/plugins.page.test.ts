@@ -25,7 +25,7 @@ afterAll(async () => {
 /** Where the screenshots go, beside the page's checks: this page's own folder. */
 const CAPTURES = join(UI_ROOT, "captures", "plugins");
 
-const PATH = "/next/settings/plugins";
+const PATH = "/settings/plugins";
 
 /** An instance sized as the boards' (37 tickets, three runs running) on a connection. */
 function standOn(connection: ViewConnection): Stand {

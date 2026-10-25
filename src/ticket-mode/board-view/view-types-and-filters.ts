@@ -1,4 +1,5 @@
 import type { MergedStep } from "./plan-steps.ts";
+import type { QueueHead } from "./queue-head.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "./pull-declared.ts";
 
 export type ViewTicket = Readonly<{
@@ -111,6 +112,8 @@ export type ViewEntry = Readonly<{
   stackBase?: StackBaseRecord;
   /** What the board did about the red checks of each open pull request, by URL: the head it was at, and the line the card shows when the checks were rerun or are named for a person (A11-154). */
   checkHeads?: Readonly<Record<string, CheckHead>>;
+  /** What the board did about the merge queue's removals of each open pull request, by URL: the head they were at, and the line the card shows (A11-264). */
+  queueHeads?: Readonly<Record<string, QueueHead>>;
   /** The commit each open pull request of the run was at when it ended, by URL: what its question or work was about (A11-153). Unset until read. */
   outcomeHeads?: Readonly<Record<string, string>>;
   /** Each open pull request's head now, and whether the newest verdict on it is an approval, by URL, as the last watch read them (A11-153). */

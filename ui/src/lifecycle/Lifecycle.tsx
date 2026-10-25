@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { PollView } from "../api/use-poll.ts";
 import { ErrorState } from "./ErrorState.tsx";
+import { ReconnectingNote } from "./ReconnectingNote.tsx";
 import { UnreachableFrame } from "./UnreachableFrame.tsx";
 
 /** What `Lifecycle` needs of the polling hook's result: its state, the last good data, the last refusal, and how to read again. */
@@ -44,9 +45,7 @@ export function Lifecycle<T>({ view, skeleton, empty, connection, onDismiss, chi
     case "reconnecting":
       return (
         <>
-          <p role="status" className="reconnecting-note" title={view.refusal ?? ""}>
-            Reconnecting…
-          </p>
+          <ReconnectingNote refusal={view.refusal} />
           {view.data === null ? skeleton : lastGood()}
         </>
       );

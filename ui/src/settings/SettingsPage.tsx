@@ -45,7 +45,7 @@ function Sections({ section, view, flow, editing, local, onRestore }: Readonly<{
 
 /**
  * The page once the connections are read. It holds what the settings read gives and what is typed over it: the staged changes, and the review, save and restore of the host files. A
- * failed read is above the last one read, if any; with none the page is its skeleton.
+ * failed read is above the last one read, if any; with none the page is its skeleton, while it loads and while the instance restarts.
  */
 function Content({ section }: Readonly<{ section: Section }>) {
   const { client, connection } = useShell();
@@ -68,7 +68,7 @@ function Content({ section }: Readonly<{ section: Section }>) {
       <div className="settings">
         <Header section={section} />
         <ReadFailure read={read} name={connection?.name ?? ""} hasSettings={view !== null} />
-        {view === null ? (read.state === "loading" ? <SettingsSkeleton /> : null) : <Sections section={section} view={view} flow={flow} editing={editing} local={local} onRestore={() => outcome?.kind === "saved" && flow.restore(outcome.file)} />}
+        {view === null ? (read.state === "loading" || read.state === "reconnecting" ? <SettingsSkeleton /> : null) : <Sections section={section} view={view} flow={flow} editing={editing} local={local} onRestore={() => outcome?.kind === "saved" && flow.restore(outcome.file)} />}
       </div>
       <UnsavedBars files={bars} busy={flow.busy} onDiscard={discard} onReview={flow.openReview} />
       {flow.review === null ? null : <ReviewDialog review={flow.review} busy={flow.busy} onBack={flow.closeReview} onSave={flow.save} />}

@@ -11,12 +11,14 @@
   align-items: baseline;
   gap: var(--space-12);
   flex: 1 1 var(--measure-header-basis);
+  flex-wrap: wrap;
 }
 .page-header-title .sk {
   align-self: center;
 }
 .page-count {
   color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
 /* The buttons: the ghost every secondary action is, the accent one for the main action, and the small and quiet forms of each. */

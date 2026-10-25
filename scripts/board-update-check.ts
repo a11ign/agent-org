@@ -4,7 +4,7 @@
 //
 // WHAT RUNS. A throwaway agent-org home with a bare mirror of a throwaway remote that holds three releases of THIS checkout (v0.273.0, v0.280.0 and a breaking v0.281.0), `versions/<tag>` built by
 // `buildVersion`, `current` swapped by `swapCurrent`, and the real `ticket:serve` and `ticket:ui` started through `current`, so each runs on the version's own folder. Its herdr is a stub whose one workspace is
-// listed while a real process (the "worker" in its pane) is alive, as herdr, a service of its own that an update never restarts, lists a live run. The browser is a paired headless Chromium on `/next/runs`.
+// listed while a real process (the "worker" in its pane) is alive, as herdr, a service of its own that an update never restarts, lists a live run. The browser is a paired headless Chromium on `/runs`.
 //
 // WHAT IT DOES. (1) A normal update: `update()` under `withUpdateLock`, in a child process so the browser is driven meanwhile; the build takes a while (a stand-in for the dependency install), then `current`
 // is swapped and the two services are stopped, held down for 70 s and started on the new folder. The page left open shows Updating (from v0.273 to v0.280, the amber pill, the runs sentence), then Slow, then Back
@@ -240,7 +240,7 @@ async function openRuns(browser: Browser, layout: Layout, uiPort: number): Promi
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addCookies([{ name: session[1], value: session[2], url: `http://127.0.0.1:${uiPort}` }]);
   const page = await context.newPage();
-  await page.goto(`http://127.0.0.1:${uiPort}/next/runs`);
+  await page.goto(`http://127.0.0.1:${uiPort}/runs`);
   await page.locator("#run-T-1").waitFor({ timeout: WAIT_MS });
   return page;
 }
@@ -262,7 +262,7 @@ async function normalUpdate(layout: Layout, page: Page, release: (version: strin
   await page.getByRole("heading", { name: "Still updating" }).waitFor({ timeout: SLOW_DOWN_MS });
   expectThat("after a minute of failed polls it is Still updating, with the agent-org doctor note", await textOf(page, ".updating-slow"), (note) => note.includes("agent-org doctor"));
   await page.getByRole("heading", { name: "Updated to v0.280" }).waitFor({ timeout: SLOW_DOWN_MS });
-  expectThat("when the board answers on v0.280 the page shows Updated to v0.280 with Back to Tickets, and the pill is Connected", [await page.getByRole("link", { name: "Back to Tickets" }).getAttribute("href"), await textOf(page, ".pill")], ([href, pill]) => href === "/next/tickets" && pill === "Connected");
+  expectThat("when the board answers on v0.280 the page shows Updated to v0.280 with Back to Tickets, and the pill is Connected", [await page.getByRole("link", { name: "Back to Tickets" }).getAttribute("href"), await textOf(page, ".pill")], ([href, pill]) => href === "/tickets" && pill === "Connected");
   await reloaded(page);
   expectThat("five seconds later the page reloads onto the new version, and shows the Runs page again", await page.locator(".updating-card").count(), (cards) => cards === 0);
   expectThat("the update finished (exit 0)", await normal, (status) => status === 0);

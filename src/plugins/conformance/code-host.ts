@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`; A11-240 adds `pullsNaming`; A11-255 adds `openDependencyPulls`; A11-249 adds `readClosedWork`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
+// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`; A11-240 adds `pullsNaming`; A11-255 adds `openDependencyPulls`; A11-249 adds `readClosedWork`; A11-264 adds `readQueueFailure`, `holdFromQueue` and the queue of `readPullFeedback`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
 //
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
@@ -32,6 +32,8 @@ export type CodeHostProbe = Readonly<{
   named?: Readonly<{ key: string; repository: string; url: string; state: "open" | "merged" | "closed" }>;
   /** A pull request the host holds that was closed without merging, whose head holds at least one commit that is not on its base and a file that commit changes (contract 1.20). A host without `readClosedWork` is not asked. */
   closed?: string;
+  /** The merge group a removal of the probe's pull request was from (`groupCommit`) and the name of the job that failed in its `merge_group` run, which the host holds (contract 1.21). A host without `readQueueFailure` is not asked. */
+  queueFailure?: Readonly<{ groupCommit: string; job: string }>;
   /** A pull request the dependency bot opened (`url`) and one in the same repository that someone else opened with a bot-like title (`foreign`), which must not be listed (contract 1.19). A host without `openDependencyPulls` is not asked. */
   dependency?: Readonly<{ repository: string; url: string; foreign: string }>;
   /** Remote URLs of one repository the host holds, in the forms a checkout's `origin` takes, and the repository each names (contract 1.14). A host without a `repositories` group is not asked. */
@@ -104,6 +106,9 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     expect(feedback.verdictAtHead === undefined || [null, "approved", "changes-requested"].includes(feedback.verdictAtHead), "feedback.verdictAtHead, when the host says it, must be approved, changes-requested or null (contract 1.13)");
     expect(feedback.pendingRequired === undefined || (Array.isArray(feedback.pendingRequired) && feedback.pendingRequired.every(isString)), "feedback.pendingRequired, when the host says it, must be a list of check names (contract 1.13)");
     expect(feedback.body === undefined || isString(feedback.body), "feedback.body, when the host says it, must be text (contract 1.13)");
+    expect(feedback.queue === undefined || (isObject(feedback.queue) && typeof feedback.queue.queued === "boolean" && Array.isArray(feedback.queue.removals)
+      && feedback.queue.removals.every((removal) => isString(removal.reason) && Number.isFinite(removal.at) && (removal.actor === null || isString(removal.actor)) && (removal.groupCommit === null || isString(removal.groupCommit)))),
+    "feedback.queue, when the host says it, must be { queued, removals: [{ at, reason, actor, groupCommit }] } (contract 1.21)");
   },
   "readPullFeedback answers null for a pull request it cannot read": ({ host, probe }) => {
     expect(host.readPullFeedback(probe.missing, probe.self) === null, "readPullFeedback must answer null for what it cannot read: null is never 'no feedback'");
@@ -494,6 +499,29 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const red = host.readDefaultBranchRed!(probe.repository);
       expect(red === null || (isObject(red) && isString(red.branch) && isString(red.head) && Array.isArray(red.failing) && red.failing.every(isString) && (red.passing === undefined || (Array.isArray(red.passing) && red.passing.every(isString)))), `readDefaultBranchRed(${probe.repository}) must read { branch, head, failing, passing? } or be null`);
       expect(host.readDefaultBranchRed!("not a repository") === null, "readDefaultBranchRed must answer null for what it cannot read: null is never 'nothing is red'");
+    },
+  },
+  "readQueueFailure answers null for what it cannot read, and reads the failing job behind a removal": {
+    applies: ({ host }) => typeof host.readQueueFailure === "function",
+    reason: "the code host has no readQueueFailure, which is optional (contract 1.21)",
+    run: ({ host, probe }) => {
+      expect(host.readQueueFailure!(probe.missing, "0".repeat(40)) === null, "readQueueFailure must answer null for what it cannot read: null is never 'no job failed'");
+      expect(host.readQueueFailure!(probe.pull, "0".repeat(40)) === null, "readQueueFailure must answer null for a merge group it holds no run of");
+      if (probe.queueFailure === undefined) return;
+      const failure = host.readQueueFailure!(probe.pull, probe.queueFailure.groupCommit);
+      expect(isObject(failure) && Number.isInteger(failure.runId) && isString(failure.runUrl) && Array.isArray(failure.jobs), `readQueueFailure(${probe.pull}) must read { runId, runUrl, jobs }`);
+      expect(failure.jobs.every((job) => isString(job.name) && (job.step === null || isString(job.step)) && isString(job.detailsUrl)), "each job must be { name, step, detailsUrl }");
+      expect(failure.jobs.some((job) => job.name === probe.queueFailure!.job), `readQueueFailure(${probe.pull}) must list the failing job ${probe.queueFailure.job}`);
+    },
+  },
+  "holdFromQueue puts the hold on a pull request and takes it off, and throws for one it cannot read": {
+    applies: ({ host }) => typeof host.holdFromQueue === "function",
+    reason: "the code host has no holdFromQueue, which is optional (contract 1.21)",
+    run: ({ host, probe }) => {
+      expect(host.holdFromQueue!(probe.pull, true) === true, "holdFromQueue(url, true) must answer true once the hold is on");
+      expect(host.holdFromQueue!(probe.pull, false) === true, "holdFromQueue(url, false) must answer true once the hold is off");
+      expect(host.holdFromQueue!(probe.pull, false) === true, "taking off a hold that is not there must be done, not a refusal");
+      expect(throws(() => host.holdFromQueue!(probe.missing, true)), "holdFromQueue must throw for a pull request it cannot read, never answer as if the hold were on");
     },
   },
   "updateBranch refuses an address that is no pull request, and never throws": {

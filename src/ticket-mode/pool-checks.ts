@@ -14,7 +14,7 @@ import { conflictLine } from "./worker-files.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** The most error lines a round's brief quotes from the logs of all the checks that failed at a head, and the most characters of each: a brief names the failure, it is not the log. */
-const QUOTED_LINES = 40;
+export const QUOTED_LINES = 40;
 const LINE_CHARS = 160;
 
 /** How many of a log's last error lines are read for the cause of a failure: it is at the log's end, and an early line that mentions a rate limit or a refused connection is the code's own output. */
@@ -27,7 +27,7 @@ const HEAD_CHARS = 8;
  * A failing check with what its job's log says of it: the lines to quote, and why it is the infrastructure's and not the code's, when it is. `refusals` are the log's lines that say the check refused
  * (A11-179): a refusal names the ticket that owns what it refuses, and its words are not an error line's.
  */
-type ReadCheck = Readonly<{ name: string; lines: readonly string[]; refusals: readonly string[]; infrastructure: string | null; readable: boolean; detailsUrl: string | null }>;
+export type ReadCheck = Readonly<{ name: string; lines: readonly string[]; refusals: readonly string[]; infrastructure: string | null; readable: boolean; detailsUrl: string | null }>;
 
 /** What a pass over a run's red checks found: the feedback a round answers, or null, and the heads the checks were answered at. */
 export type CheckAnswer = Readonly<{
@@ -69,7 +69,7 @@ function checksToAnswer(read: PullFeedback): readonly FailingCheck[] {
 }
 
 /** One failing check, with its job's log read. A check with no Actions job, or whose log cannot be read, is `readable: false` and is the code's to answer. */
-function readCheck(ctx: PoolContext, check: FailingCheck): ReadCheck {
+export function readCheck(ctx: PoolContext, check: FailingCheck): ReadCheck {
   const unread = { name: check.name, lines: [], refusals: [], infrastructure: null, readable: false, detailsUrl: check.detailsUrl } as const;
   if (check.detailsUrl === null) return unread;
   try {

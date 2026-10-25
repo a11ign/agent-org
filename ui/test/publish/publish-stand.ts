@@ -5,7 +5,7 @@
 import type { ViewPublish } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import type { QueueView } from "../../src/api/types.ts";
 import { PERSONAL, queueingConfig, type InstanceAnswers, type Stand } from "../fixtures.ts";
-import { queueOf as detailQueue, RUNS_OF, TERMINAL, type RunFields } from "../run-detail/run-detail-stand.ts";
+import { queueOf as detailQueue, RUNS_OF, runLogOf, TERMINAL, type RunFields } from "../run-detail/run-detail-stand.ts";
 import { completed, planning, queueWith, ready, working } from "../runs/runs-stand.ts";
 
 const MINUTE = 60_000;
@@ -58,11 +58,13 @@ const withPublish = (queue: QueueView, publish: PublishRun | undefined): QueueVi
 /** The Run detail stand of `board`: the Ready run A11-180 as that board draws it, on a machine with a publisher unless `machine` says none. */
 export function detailOf(board: Exclude<Board, "select">, machine: Machine = {}): Stand {
   const { run, publish } = DETAIL[board];
-  return standOf(withPublish(detailQueue([{ ...READY_RUN, ...run }]), publish), machine);
+  // What the board recorded of the Ready run, and, once it was posted, the publish.
+  const log = (runLogOf("ready")?.[RUN_KEY] ?? []).concat(board === "published" ? [{ at: POSTED_AT, kind: "published" as const, link: MESSAGE }] : []);
+  return standOf(withPublish(detailQueue([{ ...READY_RUN, ...run }], { [RUN_KEY]: log }), publish), machine);
 }
 
 /** Run detail's address for the board. */
-export const detailAddress = `/next/runs/${RUN_KEY}`;
+export const detailAddress = `/runs/${RUN_KEY}`;
 
 /** The Ready to merge run of the Runs board that opens `repo`'s pull request `number`, approved at `head`. */
 function readyRun({ key, title, repo, number, startedAgo, ...more }: Readonly<{ key: string; title: string; repo: string; number: number; startedAgo: number }> & RunFields): RunFields {

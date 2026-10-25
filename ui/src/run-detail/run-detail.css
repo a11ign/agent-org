@@ -279,6 +279,49 @@
   color: var(--color-text);
 }
 
+/* The timeline: a dot for each thing that happened, its words and when, newest first. */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-6);
+  display: flex;
+  flex-direction: column;
+}
+.timeline-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-14);
+  padding: 0 0 var(--space-14);
+}
+.timeline-dot {
+  flex: 0 0 var(--timeline-dot-size);
+  height: var(--timeline-dot-size);
+  margin-top: var(--space-6);
+  border-radius: 50%;
+  background: var(--color-text-disabled);
+}
+.timeline-dot-amber {
+  background: var(--color-warn-text);
+}
+.timeline-dot-green {
+  background: var(--color-success-dot);
+}
+.timeline-dot-violet {
+  background: var(--color-planning);
+}
+.timeline-dot-red {
+  background: var(--color-danger-dot);
+}
+.timeline-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.timeline-when {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+
 /* The pull requests. */
 .pulls-none {
   padding: var(--space-14) var(--space-16);
