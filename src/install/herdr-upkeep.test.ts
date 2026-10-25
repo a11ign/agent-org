@@ -394,11 +394,23 @@ test("A11-287: a terminal that will not restart leaves the stale entry installed
   assert.deepEqual(w.statuses[0].plugins, [{ repo: REPO, newest: "v0.4.13" }]);
 });
 
-test("A11-287: a stopped terminal is not started, and the stale entry is still uninstalled", () => {
+test("A11-287: a stopped terminal is not started and its stale copy stays, since its unit may still name it; with no terminal registered the stale copy goes", () => {
   const plugins = [webUi(OLD_ID, "v0.4.12", "a".repeat(40), 1000), webUi(NEW_ID, "v0.4.13", "b".repeat(40), 2000)];
-  const w = world({ plugins, terminal: "stopped" });
-  assert.deepEqual(w.run().said, ["removed the stale herdr plugin devswha.herdr-web-ui, which v0.4.13 replaced"]);
-  assert.deepEqual(w.restarts, []);
+  const stopped = world({ plugins, terminal: "stopped" });
+  assert.deepEqual(stopped.run(), { said: [], failed: [], newFailures: 0 });
+  assert.deepEqual(stopped.restarts, []);
+  assert.deepEqual(stopped.calls.filter((call) => call.startsWith("plugin uninstall")), []);
+  const none = world({ plugins: [...plugins], terminal: "not-registered" });
+  assert.deepEqual(none.run().said, ["removed the stale herdr plugin devswha.herdr-web-ui, which v0.4.13 replaced"]);
+  assert.deepEqual(none.restarts, []);
+});
+
+test("A11-287: a recorded install failure does not hold the cleanup once a hand install made the plugin current", () => {
+  const plugins = [webUi(OLD_ID, "v0.4.12", "a".repeat(40), 1000), webUi(NEW_ID, "v0.4.13", "b".repeat(40), 2000)];
+  const failed: PluginFailure = { command: "herdr plugin install devswha/herdr-web-ui --ref v0.4.13 -y", tag: "v0.4.13", output: "it broke", at: "2026-10-24T09:00:00.000Z" };
+  const w = world({ plugins, last: { kind: "status", status: { checkedAt: "x", herdr: { newest: "0.9.5" }, plugins: [{ repo: REPO, newest: "v0.4.13", failed }] } } });
+  assert.equal(w.run().said.at(-1), "removed the stale herdr plugin devswha.herdr-web-ui, which v0.4.13 replaced");
+  assert.deepEqual(w.statuses[0].plugins, [{ repo: REPO, newest: "v0.4.13" }]);
 });
 
 test("A11-287: an uninstall that fails, or exits 0 and leaves the entry, is one failure with herdr's output and is held", () => {
@@ -438,6 +450,8 @@ test("A11-287: of several copies of a repository the current one has the highest
   assert.deepEqual(ids([entry("a", "main", 2), entry("b", null, 5)]), ["b", ["a"]], "no release tag on either: the latest install");
   assert.deepEqual(ids([{ plugin_id: "devswha.herdr-web-ui", plugin_root: "/r" }]), ["devswha.herdr-web-ui", []], "no source: the id names the repository");
   assert.deepEqual(ids([entry("a", "v0.4.13", 1), { plugin_id: "someone.else", source: { owner: "someone", repo: "else" } }]), ["a", []]);
+  assert.deepEqual(ids([{ plugin_id: "devswha.herdr-web-ui", plugin_root: "/linked" }, entry(NEW_ID, "v0.4.16", 2)]), [NEW_ID, []], "a copy with no source is a link or a fixture, never stale");
+  assert.deepEqual(ids([entry(NEW_ID, "v0.4.16", 2), { plugin_id: "devswha.herdr-web-ui", plugin_root: "/linked", source: { kind: "local", owner: "me", repo: "fork" } }]), [NEW_ID, []], "a copy from another repository is not this plugin");
   assert.equal(pluginEntries(JSON.stringify([{ plugin_id: "someone.else", source: { owner: "someone", repo: "else" } }]), REPO), null);
   assert.equal(installedPlugin(JSON.stringify([entry(OLD_ID, "v0.4.12", 1), entry(NEW_ID, "v0.4.16", 2)]), REPO)?.ref, "v0.4.16");
 });

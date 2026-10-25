@@ -1290,12 +1290,12 @@ test("A11-287: an older copy still listed beside the newest one is a warning nam
   assert.deepEqual([unknown.warning, unknown.detail], [true, "at v0.4.16, and an older copy is still listed: devswha.herdr-web-ui"], "whether or not the newest release is known");
 });
 
-test("A11-287: a step the last update recorded as not taking for the newest release is a failed row naming the command and the first line of herdr's output; for an older release it is not", async () => {
-  const failed = { command: "herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y", tag: "v0.4.16", output: "bun install failed\nsecond line", at: "2026-10-25T09:50:00.000Z" };
+test("A11-287: a step the last update recorded as not taking for the newest release is a failed row naming the command and the last line of herdr's output; for an older release it is not", async () => {
+  const failed = { command: "herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y", tag: "v0.4.16", output: "bun install\nerror: bun install failed", at: "2026-10-25T09:50:00.000Z" };
   const old = JSON.stringify([copy("devswha.herdr-web-ui", "v0.4.13", 1)]);
   const row = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.16", failed), herdrPlugins: () => old }))[WEB];
-  assert.deepEqual([row.ok, row.detail], [false, "at v0.4.13, the newest release is v0.4.16, and `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` did not take: bun install failed"]);
-  assert.equal(row.fix, "run `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` by hand and read its output; `agent-org update` clears this once the plugin is current");
+  assert.deepEqual([row.ok, row.detail], [false, "at v0.4.13, the newest release is v0.4.16, and `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` did not take: error: bun install failed"]);
+  assert.equal(row.fix, "run `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` by hand and read its output; `agent-org update` stops reporting this once the plugin is current and no older copy is listed");
   const newer = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.17", failed), herdrPlugins: () => old }))[WEB];
   assert.deepEqual([newer.ok, newer.warning], [true, true], "a newer release is out: the update tries it, so this is the ordinary warning");
 });

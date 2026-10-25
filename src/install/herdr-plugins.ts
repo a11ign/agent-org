@@ -43,8 +43,6 @@ function listed(pluginsJson: string | null): unknown[] | null {
 
 function candidateOf(entry: unknown, index: number, wanted: string): Candidate | null {
   if (!isObject(entry) || typeof entry.plugin_id !== "string") return null;
-  // An entry with no `source` (linked by hand, or an old fixture) still matches on its id being `owner.repo`.
-  if (sourceRepo(entry.source) !== wanted && entry.plugin_id.toLowerCase() !== wanted.replace("/", ".")) return null;
   const source = isObject(entry.source) ? entry.source : {};
   const root = entry.plugin_root;
   const plugin: InstalledPlugin = {
@@ -55,6 +53,13 @@ function candidateOf(entry: unknown, index: number, wanted: string): Candidate |
   };
   return { plugin, installedAt: typeof source.installed_unix_ms === "number" ? source.installed_unix_ms : 0, index };
 }
+
+/** Whether the entry was installed from `wanted` (`owner/repo`, lower case) by its `source`. */
+const installedFrom = (entry: unknown, wanted: string): boolean => isObject(entry) && sourceRepo(entry.source) === wanted;
+
+/** Whether the entry has no `source` and its id is the repository's (`owner.repo`): linked by hand, or an old fixture. */
+const namedFor = (entry: unknown, wanted: string): boolean =>
+  isObject(entry) && sourceRepo(entry.source) === null && typeof entry.plugin_id === "string" && entry.plugin_id.toLowerCase() === wanted.replace("/", ".");
 
 const tagOf = (candidate: Candidate): string | null => (candidate.plugin.ref !== null && isReleaseTag(candidate.plugin.ref) ? candidate.plugin.ref : null);
 
@@ -71,7 +76,10 @@ export function pluginEntries(pluginsJson: string | null, repo: string): PluginE
   const plugins = listed(pluginsJson);
   if (plugins === null) return null;
   const wanted = repo.toLowerCase();
-  const found = plugins.flatMap((entry, index) => candidateOf(entry, index, wanted) ?? []).toSorted(compareCandidates);
+  // Copies herdr installed from the repository are the ones that can be stale. An entry with no source is matched by its id only when nothing was installed from the repository: it is a copy a person
+  // linked, or a fixture, and it is never uninstalled in favour of another.
+  const bySource = plugins.flatMap((entry, index) => (installedFrom(entry, wanted) ? (candidateOf(entry, index, wanted) ?? []) : []));
+  const found = (bySource.length > 0 ? bySource : plugins.flatMap((entry, index) => (namedFor(entry, wanted) ? (candidateOf(entry, index, wanted) ?? []) : []))).toSorted(compareCandidates);
   const current = found.at(-1);
   return current === undefined ? null : { current: current.plugin, stale: found.slice(0, -1).map(({ plugin }) => plugin) };
 }

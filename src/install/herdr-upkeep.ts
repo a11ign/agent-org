@@ -350,7 +350,7 @@ function keepPlugin(deps: HerdrUpkeepDeps, lines: Lines, repo: string, found: Pl
   const known = { newest: tag };
   const behind = isBehind(found.current, tag);
   if (!behind && found.stale.length === 0) return recordOf(repo, known, undefined);
-  if (earlier?.tag === tag) return recordOf(repo, known, earlier);
+  if (earlier?.tag === tag && (behind || !earlier.command.startsWith("herdr plugin install"))) return recordOf(repo, known, earlier);
   const moved = behind ? movePlugin(deps, lines, repo, tag, found.current) : { entries: found, movedTo: null };
   if ("failure" in moved) return recordOf(repo, known, moved.failure);
   return recordOf(repo, known, settlePlugin(deps, lines, repo, tag, moved));
@@ -395,8 +395,13 @@ function settlePlugin(deps: HerdrUpkeepDeps, lines: Lines, repo: string, tag: st
   return removeStale(deps, lines, repo, tag, entries.stale);
 }
 
-/** Whether the terminal service runs the current copy now (it restarted, or there was nothing to restart); a refusal is said, and leaves the stale copies its unit may still use. */
+/**
+ * Whether no terminal unit can still name the old copy: the service restarted onto the current one, or none is registered. A STOPPED unit keeps the old `plugin_root` and a service manager may start it
+ * again, so the stale copies stay (quietly: `doctor` warns, and `agent-org start terminal` writes the unit again). A refusal is said, and leaves them too.
+ */
 function terminalRunsCurrent(deps: HerdrUpkeepDeps, lines: Lines, tag: string, { movedTo, staleLeft }: { movedTo: string | null; staleLeft: boolean }): boolean {
+  const state = deps.terminalState();
+  if (state !== "running") return state === "not-registered";
   const refused = restartTerminal(deps, lines, tag);
   if (refused === null) return true;
   const lead = movedTo === null ? `the herdr web ui is at ${tag}, but` : "the herdr web ui moved, but";
@@ -422,11 +427,9 @@ function removeStale(deps: HerdrUpkeepDeps, lines: Lines, repo: string, tag: str
 }
 
 /**
- * The terminal service runs the web UI's code, so it restarts to run the current copy; a terminal a person stopped, or that is not registered, is left as it is (starting it writes its unit from
- * `plugins.json`). @returns why the service manager refused, or null when it restarted or had nothing to restart: a refusal leaves the stale copy its unit may use
+ * Restarts the terminal service, which runs the web UI's code, so it runs the current copy. @returns why the service manager refused, or null when it restarted
  */
 function restartTerminal(deps: HerdrUpkeepDeps, lines: Lines, tag: string): string | null {
-  if (deps.terminalState() !== "running") return null;
   try {
     deps.restartTerminal();
     lines.said.push(`restarted the terminal service so it runs herdr web ui ${tag}`);

@@ -721,7 +721,7 @@ function herdrPluginChecks(deps: DoctorDeps, status: HerdrStatusFile): Check[] {
     if (!("newest" in recorded)) return [stale ?? ok(name, `at ${at}; the newest release could not be read: ${recorded.why}`)];
     if (recorded.failed?.tag === recorded.newest) {
       const { command, output } = recorded.failed;
-      return [failed(name, `at ${at}, the newest release is ${recorded.newest}, and \`${command}\` did not take: ${output.split("\n")[0]}`, `run \`${command}\` by hand and read its output; \`agent-org update\` clears this once the plugin is current`)];
+      return [failed(name, `at ${at}, the newest release is ${recorded.newest}, and \`${command}\` did not take: ${output.split("\n").at(-1)}`, `run \`${command}\` by hand and read its output; \`agent-org update\` stops reporting this once the plugin is current and no older copy is listed`)];
     }
     if (isBehind(found.current, recorded.newest)) return [warned(name, `at ${at}, the newest release is ${recorded.newest}`, `run \`agent-org update\`, which moves it, or \`${pluginInstallCommand(repo, recorded.newest)}\``)];
     return [stale ?? ok(name, `at ${at}, which is the newest release`)];
