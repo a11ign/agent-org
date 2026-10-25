@@ -21,7 +21,7 @@ import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "
 import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.ts";
 import { ciPermissionEvents, observeIncidents } from "./incidents.ts";
 import {
-  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readEpisodeStart, readFixRow, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
+  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readEpisodeStart, readFixRow, readFleetDrift, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
 } from "./readers.ts";
 import { observeStalls } from "./stall.ts";
 import { forgetActivation, substituteCodeHost } from "../../plugins/active.ts";
@@ -87,20 +87,30 @@ function healthy(more: Partial<{ merged: string | null; trunk: unknown; seats: a
   });
 }
 
+
+/** `fleet-watch`'s mirror of control's hourly record: `{ readAt, record }`. `differences` is a list of [box, field, has, wants]. */
+function mirrorOf(differences: [string, string, string | null, string][], record: Record<string, unknown> = {}, readAt: number = NOW - 5 * MINUTE) {
+  return { readAt, record: { checkedAt: iso(NOW - 10 * MINUTE), firstSeenAt: differences.length === 0 ? null : iso(NOW - 3 * 60 * MINUTE), expected: { Windows: "26300.9711" }, unreadable: null,
+    reachable: 14, total: 15, unreachable: ["a11y-worker-6"], freeze: null, carryLost: [],
+    differences: differences.map(([box, field, has, wants]) => ({ box, field, has, wants, carried: false })), ...record } };
+}
+
 /** @param {{ github: any, stateDir?: string, now?: () => number, seats?: any, unitText?: string | Error, fleetStatePath?: string, completedAt?: number | null }} input  `seats` may be a function, read at each sample; `completedAt` is the tick record's time, `null` for none */
-function readersFor({ github, stateDir = freshDirectory(), now = () => NOW, seats = seatsOf("idle"), unitText, fleetStatePath = join(stateDir, "fleet.json"), completedAt = NOW - MINUTE }: { github: any; stateDir?: string; now?: () => number; seats?: any; unitText?: string | Error; fleetStatePath?: string; completedAt?: number | null; }) {
+function readersFor({ github, stateDir = freshDirectory(), now = () => NOW, seats = seatsOf("idle"), unitText, fleetStatePath = join(stateDir, "fleet.json"), fleetDriftPath = join(stateDir, "fleet-drift-mirror.json"), completedAt = NOW - MINUTE }: { github: any; stateDir?: string; now?: () => number; seats?: any; unitText?: string | Error; fleetStatePath?: string; fleetDriftPath?: string; completedAt?: number | null; }) {
   const systemctlCalls: string[][] = /** @type {string[][]} */ ([]);
   const text = unitText ?? systemdShow({ ActiveState: "activating", StateChangeTimestamp: seconds(NOW - 1000), InactiveEnterTimestamp: seconds(NOW - 60_000) });
   const completionPath = join(stateDir, COMPLETION_FILE);
   if (completedAt !== null) writeCompletion(completionPath, { at: completedAt, exit: 0 });
   const readers = createReaders({
-    github, repo: REPO, stateDir, fleetStatePath, completionPath, unit: "example-work-tick.service", now, readSeats: () => (typeof seats === "function" ? seats() : seats),
+    github, repo: REPO, stateDir, fleetStatePath, fleetDriftPath, completionPath, unit: "example-work-tick.service", now, readSeats: () => (typeof seats === "function" ? seats() : seats),
     systemctl: async (argv) => { systemctlCalls.push(argv); if (text instanceof Error) throw text; return text; },
   });
   if (!existsSync(fleetStatePath)) {
     writeFileSync(fleetStatePath, "{}\n");
     utimesSync(fleetStatePath, NOW / 1000, NOW / 1000);
   }
+  // A mirror of a quiet record, so a test about another reader does not see this one fail to ask.
+  if (!existsSync(fleetDriftPath)) writeFileSync(fleetDriftPath, JSON.stringify(mirrorOf([])));
   return { readers, stateDir, systemctlCalls };
 }
 
@@ -477,6 +487,108 @@ describe("readFleetState", () => {
     assert.deepEqual(result.cannotAsk.map(({ source }) => source), ["incident:fleet-down"]);
   });
 });
+
+// ---- readFleetDrift
+
+describe("readFleetDrift", () => {
+  const mirrorFile = (/** @type {unknown} */ content: unknown) => {
+    const path = join(freshDirectory(), "fleet-drift-mirror.json");
+    writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content));
+    return path;
+  };
+
+  test("is the mirrored record cut to names: the box, the field, what it has and what the manifest wants, and nothing else crosses", () => {
+    const path = mirrorFile(mirrorOf([["a11y-worker-5  192.0.2.55:8765", "Windows", "22631.6199", "26300.9711"], ["a11y-worker-2", "Worker code", null, "47dcd71db00697b3"]]));
+    const reading = readFleetDrift({ path });
+    assert.deepEqual(reading, { readAt: NOW - 5 * MINUTE, checkedAt: iso(NOW - 10 * MINUTE), firstSeenAt: iso(NOW - 3 * 60 * MINUTE), unreadable: false, reachable: 14, total: 15, carryLost: [],
+      differences: [{ box: "a11y-worker-5", field: "Windows", has: "22631.6199", wants: "26300.9711", carried: false }, { box: "a11y-worker-2", field: "Worker code", has: null, wants: "47dcd71db00697b3", carried: false }] });
+    assert.doesNotMatch(JSON.stringify(reading), /192\.0\.2|8765|a11y-worker-6/);
+  });
+
+  test("a manifest the check could not read is `unreadable`, without the reason (it may hold a path)", () => {
+    const reading = readFleetDrift({ path: mirrorFile(mirrorOf([], { unreadable: "ENOENT /root/control/deploy-pins.json", firstSeenAt: iso(NOW - 60 * MINUTE) })) });
+    assert.equal(reading.unreadable, true);
+    assert.doesNotMatch(JSON.stringify(reading), /root|ENOENT/);
+  });
+
+  test("`carried` crosses as the box's own fact", () => {
+    const carried = mirrorOf([["a11y-worker-5", "Windows", "1", "2"]]);
+    carried.record.differences[0].carried = true;
+    assert.equal(readFleetDrift({ path: mirrorFile(carried) }).differences[0].carried, true);
+  });
+
+  test("`carryLost` crosses as names: an address is cut", () => {
+    const lost = mirrorOf([], { carryLost: ["a11y-worker-9  192.0.2.9:8765", "a11y-worker-4"], firstSeenAt: iso(NOW - 60 * MINUTE) });
+    assert.deepEqual(readFleetDrift({ path: mirrorFile(lost) }).carryLost, ["a11y-worker-9", "a11y-worker-4"]);
+    assert.deepEqual(readFleetDrift({ path: mirrorFile(mirrorOf([])) }).carryLost, []);
+  });
+
+});
+
+describe("readFleetDrift: a record that is not whole is not a reading", () => {
+  const mirrorFile = (/** @type {unknown} */ content: unknown) => {
+    const path = join(freshDirectory(), "fleet-drift-mirror.json");
+    writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content));
+    return path;
+  };
+
+  // Every field the reading depends on, missing or mistyped: a default (a count of 0, a list of none) would read as a clean fleet and clear an open incident.
+  const MALFORMED: [string, Record<string, unknown>][] = [
+    ["carryLost is a string", { carryLost: "corrupt" }], ["carryLost is missing", { carryLost: undefined }], ["carryLost holds a non-name", { carryLost: ["a11y-worker-9", 7] }],
+    ["unreadable is missing", { unreadable: undefined }], ["unreadable is a boolean", { unreadable: true }], ["unreadable is an object", { unreadable: { code: "ENOENT" } }],
+    ["reachable is missing", { reachable: undefined }], ["reachable is a string", { reachable: "14" }], ["reachable is negative", { reachable: -1 }], ["reachable is fractional", { reachable: 1.5 }],
+    ["total is missing", { total: undefined }], ["total is null", { total: null }],
+    ["firstSeenAt is missing", { firstSeenAt: undefined }], ["firstSeenAt is a number", { firstSeenAt: 12 }],
+    ["checkedAt is a number", { checkedAt: NOW }],
+  ];
+  for (const [what, change] of MALFORMED) {
+    test(`a record where ${what} is not a reading: the reader throws, and the source is cannot-ask with no event (never a clear)`, async () => {
+      const path = mirrorFile(mirrorOf([], change));
+      assert.throws(() => readFleetDrift({ path }), /a mirrored drift record was expected/);
+      const { readers } = readersFor({ github: healthy(), fleetDriftPath: path });
+      const seen = await observeIncidents({ now: () => NOW, readers, log: () => {} });
+      assert.deepEqual(seen.cannotAsk.map(({ source }) => source), ["incident:fleet-drift"]);
+      assert.equal(seen.events.some((event) => event.key === "incident:fleet-drift"), false);
+    });
+  }
+
+  test("a difference whose `has` or `carried` is mistyped is not a reading either", () => {
+    for (const change of [{ has: 12 }, { has: undefined }, { carried: "yes" }, { carried: undefined }]) {
+      const record = mirrorOf([["a11y-worker-5", "Windows", "1", "2"]]);
+      Object.assign(record.record.differences[0], change);
+      assert.throws(() => readFleetDrift({ path: mirrorFile(record) }), /not a box, a field and what the manifest wants/, JSON.stringify(change));
+    }
+  });
+
+  test("NEGATIVE CONTROL: the valid shapes still read (a quiet record, a failing one, a lost one)", () => {
+    for (const record of [mirrorOf([]), mirrorOf([["a11y-worker-5", "Windows", null, "2"]]), mirrorOf([], { carryLost: ["a11y-worker-9"], firstSeenAt: iso(NOW - 60 * MINUTE) }), mirrorOf([], { unreadable: "no pins", firstSeenAt: iso(NOW - 60 * MINUTE) })]) {
+      assert.doesNotThrow(() => readFleetDrift({ path: mirrorFile(record) }));
+    }
+  });
+
+  test("a difference with no box name is not a reading", () => {
+    for (const box of ["", "   "]) assert.throws(() => readFleetDrift({ path: mirrorFile(mirrorOf([[box, "Windows", "1", "2"]])) }), /not a box, a field and what the manifest wants/);
+  });
+
+  test("a missing mirror, a record the hourly check never wrote (`{}`), and a file that is not a mirror each throw: could not ask is not all clear", () => {
+    assert.throws(() => readFleetDrift({ path: join(freshDirectory(), "absent.json") }), /ENOENT/);
+    assert.throws(() => readFleetDrift({ path: mirrorFile({ readAt: NOW, record: {} }) }), /a mirrored drift record was expected/);
+    assert.throws(() => readFleetDrift({ path: mirrorFile("not json at all") }), SyntaxError);
+    assert.throws(() => readFleetDrift({ path: mirrorFile(mirrorOf([], { differences: [{ box: "a11y-worker-5" }] })) }), /not a box, a field and what the manifest wants/);
+  });
+
+  test("through the source: a difference is one open incident:fleet-drift, a quiet record is its clear, and a mirror 3 hours old is cannot-ask", async () => {
+    const drifting = mirrorFile(mirrorOf([["a11y-worker-5", "Windows", "22631.6199", "26300.9711"]]));
+    const open = await observeIncidents({ now: () => NOW, readers: readersFor({ github: healthy(), fleetDriftPath: drifting }).readers, log: () => {} });
+    assert.deepEqual(open.events.filter((event) => event.key === "incident:fleet-drift").map((event) => event.resolved), [false]);
+    const quiet = await observeIncidents({ now: () => NOW, readers: readersFor({ github: healthy(), fleetDriftPath: mirrorFile(mirrorOf([])) }).readers, log: () => {} });
+    assert.deepEqual(quiet.events.filter((event) => event.key === "incident:fleet-drift").map((event) => event.resolved), [true]);
+    const stale = await observeIncidents({ now: () => NOW, readers: readersFor({ github: healthy(), fleetDriftPath: mirrorFile(mirrorOf([], {}, NOW - 3 * 60 * MINUTE)) }).readers, log: () => {} });
+    assert.deepEqual(stale.cannotAsk.map(({ source }) => source), ["incident:fleet-drift"]);
+    assert.equal(stale.events.some((event) => event.key === "incident:fleet-drift"), false);
+  });
+});
+
 
 // ---- readTicks and the samples -----------------------------------------------------------------------------------------------------------
 

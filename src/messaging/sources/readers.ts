@@ -1,5 +1,5 @@
 // THE REAL READS FOR THE STALL AND INCIDENT SOURCES (a11ign/a11ign#3008, row 5b of 13; design #2899). `stall.ts` and `incidents.ts` take every read
-// INJECTED and say so; this file is what the host injects. Seven readers, each returning what its source's own typedef names, and each a
+// INJECTED and say so; this file is what the host injects. The readers below, each returning what its source's own typedef names, and each a
 // read that THROWS on failure: the source turns the throw into `cannot-ask`, never into "all clear" and never into an event.
 //
 //   readLastMerge   the newest merge into `main`, from GitHub                           -> stall:no-merge
@@ -7,6 +7,7 @@
 //   readCiRuns      recent completed runs of every workflow, with their annotations      -> incident:ci-permission
 //   readGateUnit    the work-tick unit's failed state, and when its last run ended       -> incident:gate-crash
 //   readFleetState  the state file `fleet-watch` writes, and when it was written         -> incident:fleet-down
+//   readFleetDrift  control's hourly drift record, as `fleet-watch` mirrors it            -> incident:fleet-drift
 //
 // AND TWO MORE FOR THE LIAISON'S CHECKED FACTS (a11ign/a11ign#3420), which `placeholders.ts` calls rather than a source:
 //   readFleetRoster who `fleet-watch` last saw answer, and who it did not                 -> {{fleet.workers-up}}, {{fleet.workers-down}}
@@ -201,6 +202,52 @@ export function readFleetState({ path }: { path: string; }): { state: Record<str
     state[name] = Math.min(state[name] ?? Infinity, Number(since));
   }
   return { state, writtenAt: statSync(path).mtimeMs };
+}
+
+const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+const isStringOrNull = (value: unknown): boolean => value === null || typeof value === "string";
+const isStringList = (value: unknown): boolean => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * A record the hourly check wrote, with EVERY field the reading depends on present and of its type: the time it was taken, the start of the run (a string or null),
+ * why the manifest could not be read (a string or null), how many boxes answered of how many, the differences and the boxes whose state was lost. `{}` (a check that
+ * never ran) is not one, and neither is a record with a field missing or mistyped: a default there (a count of 0, a list of none) would read as a clean fleet.
+ */
+const isDriftRecord = (record: any): boolean => hasDriftStructure(record) && hasDriftFacts(record);
+
+/** The record's time and the lists it carries. */
+const hasDriftStructure = (record: any): boolean => typeof record?.checkedAt === "string" && Array.isArray(record.differences) && isStringList(record.carryLost);
+
+/** The record's run start, why the manifest could not be read, and how many boxes answered of how many. */
+const hasDriftFacts = (record: any): boolean => isStringOrNull(record.firstSeenAt) && isStringOrNull(record.unreadable) && isCount(record.reachable) && isCount(record.total);
+
+/** What a difference says besides its box: the field, what it has (or null) and what the manifest wants, and whether the box did not answer this hour. */
+const hasDifferenceFacts = (entry: Record<string, unknown>): boolean =>
+  typeof entry.field === "string" && typeof entry.wants === "string" && isStringOrNull(entry.has) && typeof entry.carried === "boolean";
+
+/** One difference cut to names, or `null`: an entry that is not a box, a field and what the manifest wants is a record this reader does not understand. */
+function driftDifference(entry: Record<string, unknown>): import("./incidents.ts").FleetDriftDifference | null {
+  const box = typeof entry?.box === "string" ? workerName(entry.box) : "";
+  if (box === "" || !hasDifferenceFacts(entry)) return null;
+  return { box, field: entry.field as string, has: entry.has as string | null, wants: entry.wants as string, carried: entry.carried as boolean };
+}
+
+/**
+ * Control's hourly drift record, as `fleet-watch` mirrors it onto this host (`runs/fleet-drift-mirror.json`, A11-205): `{ readAt, record }`, `readAt` the epoch ms of the look
+ * that wrote it. **Only names are kept: the box, the field, what it has and what the manifest wants. Nothing else of the record crosses**, so an address could not reach a
+ * message even if the record held one. A MISSING mirror throws, and so does a record that is `{}` (the hourly check has not written one yet) or lacks the shape: each is
+ * "could not ask", never an all-clear. A manifest the check could not read (`unreadable` is a string) fails the check as a difference does.
+ */
+export function readFleetDrift({ path }: { path: string; }): import("./incidents.ts").FleetDriftReading {
+  const stored = JSON.parse(readFileSync(path, "utf8"));
+  const record = stored?.record;
+  if (!isDriftRecord(record)) {
+    throw new TypeError(`${path}: a mirrored drift record was expected (the hourly check has not written one, or the file is not one)`);
+  }
+  const differences = record.differences.map(driftDifference);
+  if (differences.some((difference: unknown) => difference === null)) throw new TypeError(`${path}: a difference in the record is not a box, a field and what the manifest wants`);
+  return { readAt: stored.readAt, checkedAt: record.checkedAt, firstSeenAt: record.firstSeenAt, unreadable: record.unreadable !== null,
+    reachable: record.reachable, total: record.total, differences, carryLost: record.carryLost.map(workerName) };
 }
 
 /** `worker-2` before `worker-10`: the order a person reads a list of numbered machines in. */
@@ -406,11 +453,11 @@ function readFailureLedgerText(path: string): string | null {
 }
 
 /**
- * The eight readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
+ * The readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
  * `completionPath` is where `work-tick.ts` records a completed tick
  */
-export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log, completionPath, ledgerPath = join(stateDir, LEDGER_FILE), failureLedgerPath }: {
-        github: Github; repo: string; stateDir: string; fleetStatePath: string; unit: string | undefined; now: () => number;
+export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log, completionPath, ledgerPath = join(stateDir, LEDGER_FILE), failureLedgerPath, fleetDriftPath }: {
+        github: Github; repo: string; stateDir: string; fleetStatePath: string; fleetDriftPath: string; unit: string | undefined; now: () => number;
         systemctl: (argv: string[]) => Promise<string>; readSeats: () => { label: string; status: string; }[] | null; log?: (line: string) => void;
         completionPath: string; ledgerPath?: string; failureLedgerPath?: string;
     }) {
@@ -420,6 +467,7 @@ export function createReaders({ github, repo, stateDir, fleetStatePath, unit, no
     readCiRuns: () => readCiRuns({ github, repo, stateDir }),
     readGateUnit: () => readGateUnit({ unit, systemctl, recordPath: completionPath }),
     readFleetState: () => readFleetState({ path: fleetStatePath }),
+    readFleetDrift: () => readFleetDrift({ path: fleetDriftPath }),
     readTicks: () => readTicks({ stateDir, log }),
     readFixRow: (key: string) => readFixRow({ github, repo, key }),
     readEpisodeStart: (key: string) => readEpisodeStart({ ledgerPath, key }),

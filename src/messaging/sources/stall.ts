@@ -86,6 +86,7 @@ export const IMPACT = Object.freeze({
   "incident:trunk-red": "Nothing can merge.",
   "incident:gate-crash": "No worker can be woken.",
   "incident:fleet-down": "Captures are paused.",
+  "incident:fleet-drift": "A box off the pins manifest is out of capture until it reads as the manifest again.",
   "incident:ci-permission": "Pull requests waiting on the named workflows cannot get a passing check.",
   "stall:all-idle": "Rows are waiting and no seat is working on them.",
   "stall:no-merge": "No change has reached main.",

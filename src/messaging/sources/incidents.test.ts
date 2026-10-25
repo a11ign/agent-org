@@ -15,7 +15,7 @@ import { after, describe, test } from "node:test";
 import { createMessenger } from "../core.ts";
 import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.ts";
-import { DEFAULT_INCIDENT_CONFIG, ciPermissionEvents, fleetDownEvents, gateCrashEvents, observeIncidents, trunkRedEvents } from "./incidents.ts";
+import { DEFAULT_INCIDENT_CONFIG, ciPermissionEvents, fleetDownEvents, fleetDriftEvents, gateCrashEvents, observeIncidents, trunkRedEvents } from "./incidents.ts";
 import { TICK_INTERVAL_MS } from "./stall.ts";
 
 const MINUTE = 60_000;
@@ -229,6 +229,123 @@ describe("the fleet down, from the state fleet-watch writes (done-when 5)", () =
   });
 });
 
+/** A mirrored hourly drift record as `readFleetDrift` hands it over: `differences` is a list of [box, field, has, wants]. */
+const driftReading = (differences: [string, string, string | null, string][], more: Record<string, unknown> = {}) => ({
+  readAt: NOW - 5 * MINUTE, checkedAt: NOW - 10 * MINUTE, firstSeenAt: differences.length === 0 ? null : NOW - 3 * HOUR, unreadable: false, reachable: 14, total: 15, carryLost: [],
+  differences: differences.map(([box, field, has, wants]) => ({ box, field, has, wants, carried: false })), ...more,
+});
+const KINDS_OF_DIFFERENCE: [string, string | null, string][] = [
+  ["Windows", "22631.6199", "26300.9711"], ["Edge", "155.0.1.1", "156.0.4314.42"], ["NVDA", "2025.3", "2026.1.1"],
+  ["Worker code", "25bb45d9b38d7a62", "47dcd71db00697b3"], ["Worker code", null, "47dcd71db00697b3"],
+];
+
+describe("a box off the pins manifest, from control's hourly record (A11-205)", () => {
+  for (const [field, has, wants] of KINDS_OF_DIFFERENCE) {
+    test(`${field} ${has === null ? "unreported" : "different"}: one open event, naming the box and the field, starting when the record says it began`, () => {
+      const [event] = fleetDriftEvents(driftReading([["a11y-worker-5", field, has, wants]]), NOW, config);
+      assert.equal(event.key, "incident:fleet-drift");
+      assert.equal(event.kind, "incident");
+      assert.equal(event.resolved, false);
+      assert.equal(event.firstSeenAt, NOW - 3 * HOUR, "the record's own start, never the time of the look");
+      assert.equal(event.text, `The fleet is not on its pins manifest: 1 box off the pins manifest: a11y-worker-5 (${field}).`);
+    });
+  }
+
+  test("a box with two differences is named once with both fields, and boxes are counted", () => {
+    const [event] = fleetDriftEvents(driftReading([["a11y-worker-5", "Windows", "1", "2"], ["a11y-worker-5", "Worker code", "a", "b"], ["a11y-worker-2", "Worker code", "a", "b"]]), NOW, config);
+    assert.match(String(event.text), /2 boxes off the pins manifest: a11y-worker-5 \(Windows, Worker code\), a11y-worker-2 \(Worker code\)\./);
+  });
+
+  test("more than five boxes says how many more rather than naming them all", () => {
+    const differences = Array.from({ length: 8 }, (_, index): [string, string, string, string] => [`a11y-worker-${index}`, "Edge", "1", "2"]);
+    assert.match(String(fleetDriftEvents(driftReading(differences), NOW, config)[0].text), /8 boxes.*and 3 more\./);
+  });
+
+  test("the text names boxes and fields and no address", () => {
+    const [event] = fleetDriftEvents(driftReading(KINDS_OF_DIFFERENCE.map(([field, has, wants]): [string, string, string | null, string] => ["a11y-worker-5", field, has, wants])), NOW, config);
+    assert.doesNotMatch(JSON.stringify(event), /\d+\.\d+\.\d+\.\d+:|:8765|\.local|\.lan/);
+  });
+
+  test("NEGATIVE CONTROL: a record with no difference resolves, and says so with the same key", () => {
+    const [event] = fleetDriftEvents(driftReading([]), NOW, config);
+    assert.equal(event.key, "incident:fleet-drift");
+    assert.equal(event.resolved, true);
+    assert.equal(event.firstSeenAt, NOW);
+  });
+
+  test("a manifest that could not be read keeps the incident open, and says no box was compared", () => {
+    const [event] = fleetDriftEvents(driftReading([], { unreadable: true, firstSeenAt: NOW - HOUR }), NOW, config);
+    assert.equal(event.resolved, false);
+    assert.equal(event.firstSeenAt, NOW - HOUR);
+    assert.match(String(event.text), /the pins manifest could not be read, so no box was compared/);
+  });
+
+  test("a box whose last known state was lost is not vouched for: the incident is open and names it, and a clear waits for the loss to end", () => {
+    const [event] = fleetDriftEvents(driftReading([], { carryLost: ["a11y-worker-9", "a11y-worker-4"], firstSeenAt: NOW - HOUR }), NOW, config);
+    assert.equal(event.resolved, false);
+    assert.equal(event.firstSeenAt, NOW - HOUR);
+    assert.equal(event.text, "The fleet is not on its pins manifest: the previous drift record could not be read, so what a11y-worker-9, a11y-worker-4 last read as is lost and they are not known to be on the manifest.");
+    assert.match(String(fleetDriftEvents(driftReading([], { carryLost: ["a11y-worker-9"], firstSeenAt: NOW - HOUR }), NOW, config)[0].text), /last read as is lost and it is not known/);
+    assert.equal(fleetDriftEvents(driftReading([]), NOW, config)[0].resolved, true, "NEGATIVE CONTROL: with nothing lost the same record clears");
+  });
+
+  test("nothing answered and nothing differed is no event: it neither opens nor clears", () => {
+    assert.deepEqual(fleetDriftEvents(driftReading([], { reachable: 0 }), NOW, config), []);
+  });
+
+  test("a mirror older than two hours is not a reading of the fleet, and neither is a record the check stopped writing", () => {
+    assert.throws(() => fleetDriftEvents(driftReading([], { readAt: NOW - 2 * HOUR - MINUTE }), NOW, config), /mirror is 2h 01m old/);
+    assert.throws(() => fleetDriftEvents(driftReading([], { checkedAt: NOW - 3 * HOUR }), NOW, config), /record is 3h 00m old/);
+    assert.equal(fleetDriftEvents(driftReading([], { readAt: NOW - 119 * MINUTE, checkedAt: NOW - 119 * MINUTE }), NOW, config)[0].resolved, true, "just inside two hours is read");
+  });
+
+  test("a failure with no start, and a reading that is not one, cannot be read", () => {
+    assert.throws(() => fleetDriftEvents(driftReading([["a11y-worker-5", "Edge", "1", "2"]], { firstSeenAt: null }), NOW, config), /no time it began/);
+    assert.throws(() => fleetDriftEvents(/** @type {any} */ (null), NOW, config), /list of differences/);
+  });
+
+});
+
+describe("a box off the pins manifest: what a clear claims, and how old a reading may be (A11-205)", () => {
+  test("a clear says how many boxes answered, and how many were not read: it claims no more than was read", () => {
+    assert.equal(fleetDriftEvents(driftReading([], { reachable: 15 }), NOW, config)[0].text, "Every fleet box that answered (15 of 15) reads as the pins manifest again.");
+    assert.equal(fleetDriftEvents(driftReading([], { reachable: 1 }), NOW, config)[0].text,
+      "Every fleet box that answered (1 of 15) reads as the pins manifest again; 14 not read (no answer).");
+  });
+
+  test("a difference on a box that did not answer this hour says it is the last read", () => {
+    const reading = driftReading([["a11y-worker-5", "Windows", "22631.6199", "26300.9711"], ["a11y-worker-2", "Edge", "155.0.1.1", "156.0.4314.42"]]);
+    reading.differences[0].carried = true;
+    assert.match(String(fleetDriftEvents(reading, NOW, config)[0].text), /a11y-worker-5 \(Windows, last read\), a11y-worker-2 \(Edge\)\./);
+  });
+
+  test("a mirror or a record dated well ahead of the clock is not a fresh reading either", () => {
+    assert.throws(() => fleetDriftEvents(driftReading([], { readAt: NOW + 11 * MINUTE }), NOW, config), /mirror is dated 11m 00s in the future|mirror is dated .* in the future/);
+    assert.throws(() => fleetDriftEvents(driftReading([], { checkedAt: NOW + HOUR }), NOW, config), /record is dated .* in the future/);
+    assert.equal(fleetDriftEvents(driftReading([], { readAt: NOW + 5 * MINUTE }), NOW, config)[0].resolved, true, "a few minutes of clock skew is read");
+  });
+
+  test("through the core: open for 29 minutes sends nothing, 31 sends ONE message that names the box, and the clear sends ONE", async () => {
+    const run = messenger();
+    /** The hourly look, `minutes` after the drift began: the mirror and the record are fresh at that moment. */
+    const lookAt = async (minutes: number, differences: [string, string, string | null, string][]) => {
+      run.set(NOW + minutes * MINUTE);
+      const reading = driftReading(differences, { firstSeenAt: differences.length === 0 ? null : NOW, readAt: NOW + minutes * MINUTE, checkedAt: NOW + minutes * MINUTE });
+      await run.tick(fleetDriftEvents(reading, NOW + minutes * MINUTE, config));
+    };
+    const drifting: [string, string, string | null, string][] = [["a11y-worker-5", "Windows", "22631.6199", "26300.9711"]];
+    for (const minutes of [0, 10, 29]) await lookAt(minutes, drifting);
+    assert.equal(run.provider.sent.length, 0);
+    for (const minutes of [31, 40]) await lookAt(minutes, drifting);
+    assert.equal(run.provider.sent.length, 1);
+    assert.match(run.provider.sent[0].text, /a11y-worker-5 \(Windows\)/);
+    await lookAt(70, []);
+    await lookAt(80, []);
+    assert.equal(run.provider.sent.length, 2);
+    assert.match(run.provider.sent[1].text, /^Cleared: Every fleet box that answered \(14 of 15\) reads as the pins manifest again; 1 not read \(no answer\)\./);
+  });
+});
+
 describe("CI permission failures (done-when 5)", () => {
   /** @param {string} name @param {number} concluded @param {string[]} messages */
   const ciRun = (name: string, concluded: number, messages: string[]) => ({
@@ -284,12 +401,13 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
     readGateUnit: () => ({ failed: true, failedAt: NOW - HOUR, lastRunAt: NOW - MINUTE, lastRecordAt: NOW - MINUTE }),
     readFleetState: () => ({ state: { "worker-a": NOW - HOUR } }),
     readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW - HOUR), updated_at: iso(NOW - HOUR), annotations: [{ message: "Resource not accessible by integration" }] }],
+    readFleetDrift: () => driftReading([["a11y-worker-5", "Windows", "22631.6199", "26300.9711"]]),
   };
 
-  test("POSITIVE CONTROL: with every read working all four incidents come back, unresolved", async () => {
+  test("POSITIVE CONTROL: with every read working all five incidents come back, unresolved", async () => {
     const lines: string[] = /** @type {string[]} */ ([]);
     const seen = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers: good });
-    assert.deepEqual(seen.events.map((event) => event.key).sort(), ["incident:ci-permission", "incident:fleet-down", "incident:gate-crash", "incident:trunk-red"]);
+    assert.deepEqual(seen.events.map((event) => event.key).sort(), ["incident:ci-permission", "incident:fleet-down", "incident:fleet-drift", "incident:gate-crash", "incident:trunk-red"]);
     assert.ok(seen.events.every((event) => event.resolved === false));
     assert.deepEqual([seen.cannotAsk, lines], [[], []]);
   });
@@ -299,7 +417,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
       const lines: string[] = /** @type {string[]} */ ([]);
       const readers = { ...good, [name]: () => { throw new Error("gh: HTTP 502"); } };
       const seen = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers });
-      assert.equal(seen.events.length, 3);
+      assert.equal(seen.events.length, 4);
       assert.equal(seen.cannotAsk.length, 1);
       assert.match(lines[0], /^cannot-ask incident:[a-z-]+: .*HTTP 502/);
       const run = messenger();
@@ -316,7 +434,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
 
   test("a reader that is not wired is named", async () => {
     const seen = await observeIncidents({ now: () => NOW, log: () => {}, readers: {} });
-    assert.equal(seen.cannotAsk.length, 4);
+    assert.equal(seen.cannotAsk.length, 5);
     assert.match(seen.cannotAsk[0].reason, /readTrunkRuns/);
   });
 });
@@ -326,23 +444,26 @@ const unresolved = {
   readGateUnit: () => ({ failed: true, failedAt: NOW - HOUR, lastRunAt: NOW - MINUTE, lastRecordAt: NOW - MINUTE }),
   readFleetState: () => ({ state: { "worker-a": NOW - HOUR } }),
   readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW - HOUR), updated_at: iso(NOW - HOUR), annotations: [{ message: "Resource not accessible by integration" }] }],
+  readFleetDrift: () => driftReading([["a11y-worker-5", "Windows", "22631.6199", "26300.9711"]]),
 };
 const green = { readTrunkRuns: () => [trunkRun("success", NOW)], readGateUnit: () => ({ failed: false, lastRunAt: NOW, lastRecordAt: NOW }),
-  readFleetState: () => ({ state: {} }), readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW), updated_at: iso(NOW), annotations: [] }] };
+  readFleetState: () => ({ state: {} }), readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW), updated_at: iso(NOW), annotations: [] }],
+  readFleetDrift: () => driftReading([]) };
 const IMPACTS = {
   "incident:trunk-red": "Impact: Nothing can merge.",
   "incident:gate-crash": "Impact: No worker can be woken.",
   "incident:fleet-down": "Impact: Captures are paused.",
   "incident:ci-permission": "Impact: Pull requests waiting on the named workflows cannot get a passing check.",
+  "incident:fleet-drift": "Impact: A box off the pins manifest is out of capture until it reads as the manifest again.",
 };
 const comment = (/** @type {string} */ text: string, /** @type {number} */ at: number = NOW - 25 * MINUTE) => ({ author: "a11ign-ai-workers", at, text });
 const observeWith = (/** @type {Record<string, unknown>} */ more: Record<string, unknown>) => observeIncidents({ now: () => NOW, log: () => {}, readers: { ...unresolved, ...more } });
 const lineOf = (/** @type {Record<string, unknown>} */ event: Record<string, unknown>, /** @type {string} */ name: string) => String(event.text).split("\n").find((line) => line.startsWith(`${name}:`));
 
 describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11ign#3424, #3419)", () => {
-  test("(1) each of the four kinds carries its Impact line from the table", async () => {
+  test("(1) each of the five kinds carries its Impact line from the table", async () => {
     const { events } = await observeWith({ readFixRow: () => null });
-    assert.equal(events.length, 4);
+    assert.equal(events.length, 5);
     for (const event of events) assert.equal(lineOf(event, "Impact"), IMPACTS[/** @type {keyof typeof IMPACTS} */ (String(event.key))], String(event.key));
   });
 
@@ -375,7 +496,7 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
   test("(4) the cleared message carries how long it lasted, read from when the chairman was told, and asked for by key", async () => {
     const asked: string[] = /** @type {string[]} */ ([]);
     const { events } = await observeIncidents({ now: () => NOW, log: () => {}, readers: { ...green, readEpisodeStart: (/** @type {string} */ key: string) => { asked.push(key); return NOW - 90 * MINUTE; } } });
-    assert.ok(events.every((event) => event.resolved === true), "positive control: all four are resolved events");
+    assert.ok(events.every((event) => event.resolved === true), "positive control: all five are resolved events");
     for (const event of events) assert.match(String(event.text), /\nLasted: at least 1h 30m \(counted from the message that told you\)\.$/);
     assert.deepEqual(asked.sort(), Object.keys(IMPACTS).sort());
   });
@@ -399,7 +520,7 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
     const lines: string[] = /** @type {string[]} */ ([]);
     for (const readers of [{}, { readEpisodeStart: () => null }, { readEpisodeStart: () => { throw new Error("ledger: EACCES"); } }]) {
       const { events } = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers: { ...green, ...readers } });
-      assert.equal(events.length, 4);
+      assert.equal(events.length, 5);
       for (const event of events) assert.match(String(event.text), /\nLasted: not known\.$/);
     }
     assert.match(lines[0], /^cannot-ask episode-start incident:[a-z-]+: .*EACCES/);
@@ -408,7 +529,7 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
   test("(5) a row read that fails says `I could not read it`, and the incident is still sent through the core", async () => {
     const lines: string[] = /** @type {string[]} */ ([]);
     const { events, cannotAsk } = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers: { ...unresolved, readFixRow: () => { throw new Error("gh: HTTP 502"); } } });
-    assert.equal(events.length, 4);
+    assert.equal(events.length, 5);
     for (const event of events) assert.equal(lineOf(event, "Being done"), "Being done: I could not read it.");
     assert.deepEqual(cannotAsk, [], "the row read is not a reason to withhold the incident");
     assert.match(lines[0], /^cannot-ask fix-row incident:[a-z-]+: .*HTTP 502/);

@@ -466,6 +466,9 @@ function refusalToStart({ config, env, github, providers }: { config: MessagingO
 /** `fleet-watch`'s own default state path (`packages/control/src/fleet-watch.mjs`'s `DEFAULT_STATE_PATH`), relative to the checkout its unit runs in: the one this unit runs in. */
 const FLEET_WATCH_STATE = join("runs", "fleet-watch-state.json");
 
+/** Where `fleet-watch` mirrors control's hourly drift record (`FLEET_DRIFT_MIRROR_PATH` there, A11-205), beside its state file. */
+const FLEET_DRIFT_MIRROR = join("runs", "fleet-drift-mirror.json");
+
 /** The work-tick unit's name, or undefined after saying why not. */
 function workTickUnit(root: string, err: (line: string) => void): string | undefined {
   try {
@@ -482,7 +485,7 @@ function workTickUnit(root: string, err: (line: string) => void): string | undef
  */
 function hostReaders({ root, home, now, err, github }: { root: string; home: string; now: () => number; err: (line: string) => void; github: any; }): ReturnType<typeof createReaders> {
   return createReaders({
-    github, repo: trackerRepo(root), stateDir: dirname(defaultLedgerPath(home)), fleetStatePath: join(root, FLEET_WATCH_STATE),
+    github, repo: trackerRepo(root), stateDir: dirname(defaultLedgerPath(home)), fleetStatePath: join(root, FLEET_WATCH_STATE), fleetDriftPath: join(root, FLEET_DRIFT_MIRROR),
     unit: workTickUnit(root, err), now, systemctl: runSystemctl, readSeats: readAgents, log: err,
     // Where the tick writes its record: beside the wake ledger, which with no `--ledger` (as the unit runs) is `wake.ts`'s `ledgerPathFrom` default. NOT imported
     // from `wake.ts`: that module reads the project declaration at import, and a watcher that cannot import is the outage this row exists to see.
