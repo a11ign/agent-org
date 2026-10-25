@@ -747,6 +747,14 @@ test("A11-236: until replaces the three-hour default, longer or shorter, and a n
   assert.deepEqual([at(renewed, 4 * HOUR)?.waiting, at(renewed, 4 * HOUR)?.stalled], [true, undefined], "a newer outcome counts the three hours from its own time");
 });
 
+test("A11-236: an until at or before the outcome's own time is no bound: the three hours count from the file, so a copied example date does not stall a run at once", () => {
+  const at = Date.parse("2026-10-25T08:00:00Z");
+  const noted = noteWorking(runningA(), "A", "r", at, at, { waitingOn: "job", until: Date.parse("2026-01-01T12:00:00Z") });
+  const idle = (now: number) => watchWorking(noted, "A", "idle", now, 30 * MINUTE, "live").entries[0].working;
+  assert.deepEqual([idle(at + HOUR)?.waiting, idle(at + HOUR)?.stalled], [true, undefined], "an hour after the file: waiting");
+  assert.equal(idle(at + 3 * HOUR)?.stallReason, `waited past ${new Date(at + 3 * HOUR).toISOString()} on job`, "stalled at three hours, naming the job");
+});
+
 test("A11-236: working status clears waiting along with the idle clock and the stall, and a note without a job or live work takes the idle clock as before", () => {
   const noted = noteWorking(runningA(), "A", "r", 50, 1000, { waitingOn: "job" });
   const waiting = watchWorking(noted, "A", "idle", 2000, 30 * MINUTE, "live");
