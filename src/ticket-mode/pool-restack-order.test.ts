@@ -18,14 +18,16 @@ const NEXT_BRANCH = "a11-2-the-next-member";
 const NEXT_HEAD = "b".repeat(40);
 const NOW = 1_000_000;
 
-/** A finished run holding `url`, an open pull request that is ready to merge, `stacked` on A11-1's branch or not. */
-const finishedRun = (key: string, url: string, stacked: boolean): Entry => ({
-  ticket: { key, branch: `${key.toLowerCase()}-work` }, phase: "finished", finishedAt: NOW / 2, outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url }] }, pullStates: { [url]: "open" },
-  ...(stacked ? {
-    blockers: [{ key: "A11-1", state: "started", status: "In Review", branch: BOTTOM_BRANCH, pulls: {} }],
-    stackBase: { key: "A11-1", repo: "agent-org", branch: BOTTOM_BRANCH, sha: "d".repeat(40) },
-  } : {}),
+/** A finished run holding `url`, an open pull request that is ready to merge, with `over` laid on it. */
+const finishedRun = (key: string, url: string, over: Record<string, unknown> = {}): Entry => ({
+  ticket: { key, branch: `${key.toLowerCase()}-work` }, phase: "finished", finishedAt: NOW / 2, outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url }] }, pullStates: { [url]: "open" }, ...over,
 }) as unknown as Entry;
+
+/** What makes a run stacked on A11-1's branch. */
+const STACKED_ON_BOTTOM = {
+  blockers: [{ key: "A11-1", state: "started", status: "In Review", branch: BOTTOM_BRANCH, pulls: {} }],
+  stackBase: { key: "A11-1", repo: "agent-org", branch: BOTTOM_BRANCH, sha: "d".repeat(40) },
+};
 
 /** The run of the bottom member, whose pull request merged. */
 const bottomRun = (): Entry => ({ ticket: { key: "A11-1" }, phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: BOTTOM }] }, pullStates: { [BOTTOM]: "merged" } }) as unknown as Entry;
@@ -38,7 +40,7 @@ function conflictingStack(over: { codeHost?: (host: ReturnType<typeof createFake
   host.pullAt(NEXT)!.head = NEXT_HEAD;
   host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
   const fixture = poolFixture({ keys: ["A11-2"], now: () => NOW });
-  fixture.store.set({ ...fixture.store.get(), entries: [bottomRun(), finishedRun("A11-2", NEXT, true)] });
+  fixture.store.set({ ...fixture.store.get(), entries: [bottomRun(), finishedRun("A11-2", NEXT, STACKED_ON_BOTTOM)] });
   const pool = fixture.restart({ codeHost: over.codeHost?.(host) ?? host });
   const next = () => fixture.store.get().entries.find((entry) => entry.ticket.key === "A11-2")!;
   return { host, pool, next, entries: () => fixture.store.get().entries };
@@ -92,7 +94,7 @@ test("A11-82: a run that is not in a stack and conflicts still gets the plain co
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(REPOSITORY, 2, { head: NEXT_BRANCH, feedback: { conflicting: true }, merge: { armed: false, mergeable: false } });
   const fixture = poolFixture({ keys: ["A11-2"], now: () => NOW });
-  fixture.store.set({ ...fixture.store.get(), entries: [finishedRun("A11-2", NEXT, false)] });
+  fixture.store.set({ ...fixture.store.get(), entries: [finishedRun("A11-2", NEXT)] });
   const pool = fixture.restart({ codeHost: host });
   pool.watchFeedback();
   const run = fixture.store.get().entries[0];
