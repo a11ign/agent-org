@@ -181,8 +181,21 @@ export type NoteContext = Readonly<{ queue: QueueView; publisher: ConfigView["pu
 
 const present = (line: string | null | undefined): line is string => line !== null && line !== undefined && line !== "";
 
-/** The lines of a run's card, in the order `ui.html`'s `row()` draws them. The links it puts inside some of them (What changed, the pull requests a plan learns from, the question's disclosure) are Run detail's. PURE. */
-export function noteLines(entry: RunEntry, { queue, publisher, now }: NoteContext): string[] {
+/** The lines of a run's note, in the order `ui.html`'s `row()` draws them, with its CI line among them (Run detail lists them all; the card draws that line apart, `ciLineOf`). The links it puts inside some of them (What changed, the pull requests a plan learns from, the question's disclosure) are Run detail's. PURE. */
+export const noteLines = (entry: RunEntry, context: NoteContext): string[] => linesOf(entry, context, ciNote(entry.ci));
+
+/** A run's CI line as its card draws it apart from the note (A11-261): the words, and the tone they take, `warn` (amber) once the ticket is over its budget or the run is held for it, and `plain` before. */
+export type CiLine = Readonly<{ text: string; tone: "plain" | "warn" }>;
+
+/** The CI line of a run's card, or null when the board has read none. The card draws it in its own element, so the note does not repeat it. PURE. */
+export function ciLineOf(entry: Pick<RunEntry, "ci">): CiLine | null {
+  const text = ciNote(entry.ci);
+  if (text === null) return null;
+  return { text, tone: entry.ci?.state === "ok" ? "plain" : "warn" };
+}
+
+/** The lines of a note, with the CI line, when given, where `ciNote` puts it. */
+function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: string | null): string[] {
   const { entries } = queue;
   const waits = waitsOn(entry, entries);
   const stacked = stackedOn(entry, entries);
@@ -211,15 +224,15 @@ export function noteLines(entry: RunEntry, { queue, publisher, now }: NoteContex
     retargetNote(entry),
     checkNote(entry),
     queueNote(entry),
-    ciNote(entry.ci),
+    ci,
     stalled?.stalled === true ? stalled.text : null,
     isParked(entry) ? PARKED_LINE : null,
   ];
   return lines.filter(present);
 }
 
-/** The note: the lines joined with " · ", or null when there are none. It is clamped to two lines on the page and whole in the row's tooltip. PURE. */
+/** The note: the lines joined with " · ", or null when there are none. It is clamped to two lines on the page and whole in the row's tooltip. The CI line is not in it: the card draws that apart (`ciLineOf`). PURE. */
 export function noteOf(entry: RunEntry, context: NoteContext): string | null {
-  const lines = noteLines(entry, context);
+  const lines = linesOf(entry, context);
   return lines.length === 0 ? null : lines.join(NOTE_JOIN);
 }

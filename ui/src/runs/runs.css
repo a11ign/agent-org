@@ -288,12 +288,19 @@
 .run-tokens {
   font-variant-numeric: tabular-nums;
 }
-.run-note {
+.run-note,
+.run-ci {
   max-width: var(--measure-readable);
   color: var(--color-text-nav);
   font-size: var(--font-size-small);
   line-height: var(--line-height-small);
   overflow-wrap: anywhere;
+}
+.run-ci {
+  font-variant-numeric: tabular-nums;
+}
+.run-ci.tone-warn {
+  color: var(--color-warn-text);
 }
 .clamp {
   display: -webkit-box;
