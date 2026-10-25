@@ -26,8 +26,10 @@ function seeded() {
   const stacked = host.seedPull("owner/repo", 9, { head: "d".repeat(40) });
   host.stackMerges.facts.set(stacked.url, { stacked: true, refusal: { head: "d".repeat(40), reason: "a member below has changes requested" } });
   host.stackMerges.requestRefusal = "Resource not accessible by integration (HTTP 403)";
+  // A workflow run the fake holds, halfway through (contract 1.17).
+  host.ciRuns.runs.set("owner/repo#31", { status: "in_progress", conclusion: null, url: "https://github.com/owner/repo/actions/runs/31", name: "ci", jobs: { done: 1, total: 3 } });
   const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 } } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 } } };
 }
 
 /**
@@ -62,7 +64,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -255,4 +257,31 @@ test("A11-215: the fake answers an update of a branch as the test says, records 
   assert.equal(host.updateBranch!(missing, "h").kind, "refused");
   assert.deepEqual(host.branchUpdates.asked.map(({ url, expectedHead }) => [url, expectedHead]), [[held, "h7"], [held, "h7"], [missing, "h"]]);
   assert.ok(host.calls.includes(`updateBranch ${held} h7`), "and it is in the calls");
+});
+
+const CI_CHECKS = ["readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs"];
+
+test("without a workflow run in the probe the read of one is skipped with the reason, not passed (contract 1.17)", async () => {
+  const { host, probe } = seeded();
+  const { passed, skipped } = await runCodeHostConformance(host, { ...probe, ciRun: undefined });
+  assert.deepEqual(skipped.map(({ check }) => check).filter((check) => CI_CHECKS.includes(check)), [CI_CHECKS[1]]);
+  assert.ok(skipped.filter(({ check }) => check === CI_CHECKS[1]).every(({ reason }) => /the probe names no workflow run/.test(reason)));
+  assert.ok(passed.includes(CI_CHECKS[0]) && !passed.includes(CI_CHECKS[1]));
+});
+
+test("a code host that reads a run it cannot read as unfinished, or a run in a shape the board cannot judge, fails each by name", async () => {
+  const { host, probe } = seeded();
+  const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
+  const reads = host.readCiRun!;
+  const unfinished = { status: "in_progress", conclusion: null, url: "u", name: "n", jobs: null } as const;
+  assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => reads(repository, runId) ?? unfinished }), [CI_CHECKS[0]]);
+  assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => (reads(repository, runId) === null ? null : { ...unfinished, status: "completed" }) }), [CI_CHECKS[1]], "a completed run with no conclusion");
+  assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => (reads(repository, runId) === null ? null : { ...unfinished, jobs: { done: 4, total: 3 } }) }), [CI_CHECKS[1]], "more jobs done than there are");
+});
+
+test("the fake says which runs it was asked about, and answers null for one it was given none for", () => {
+  const { host } = seeded();
+  assert.equal(host.readCiRun!("owner/repo", 31)?.jobs?.total, 3);
+  assert.equal(host.readCiRun!("owner/repo", 32), null);
+  assert.deepEqual(host.ciRuns.asked, ["owner/repo#31", "owner/repo#32"]);
 });
