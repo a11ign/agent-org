@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+Every ticket-mode run now starts with a private `TMPDIR`, `<base>/run-t-<run id>` (`src/ticket-mode/run-isolation.ts`; `<base>` is `A11Y_PRIVATE_TMP_BASE`, else `~/.cache/a11ign/tmp`), so whatever a worker's tests and tools write with `os.tmpdir()` stops piling up in the shared `/tmp` (about 19,600 entries when the agents host panicked on 2026-10-25). `runEnvOf` builds it with the ticket's variables, so a run started again after a restart (A11-279 step 2) gets the same directory, and a run started before this change, which has the ticket's variables and no `TMPDIR`, is not started again for that. The directory is made when the run starts (a failure to make it starts the run on the shared `/tmp` and says so). On every tick the board removes the directory of a run that is neither live nor holds a workspace, one entry per call and at most 500 entries a pass, and not one modified in the last 10 minutes. The instance passes `privateTmpBase`; a pool built without it (every test) gives runs none. A11-279.

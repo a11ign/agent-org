@@ -40,3 +40,11 @@ test("A11-279: lostKeys lists the keys the pane lacks or holds with another valu
   assert.deepEqual(lostKeys(wanted, { ...wanted, AGENT_ORG_TICKET: "A11-2" }), ["AGENT_ORG_TICKET"], "another run's ticket is");
   assert.deepEqual(lostKeys(wanted, { ...wanted, AGENT_ORG_TICKET_BRANCH: "a11-2" }), ["AGENT_ORG_TICKET_BRANCH"]);
 });
+
+test("A11-279: lostKeys never counts TMPDIR: a run started before runs had a private one is healthy, and a pane that lost everything lists the ticket's keys alone", () => {
+  const wanted = runEnvOf({ hostFile: "/h.json", runTmpBase: "/base" }, { ticket: { key: "A11-1", branch: "a11-1" } } as never);
+  assert.equal(wanted.TMPDIR, "/base/run-t-A11-1");
+  assert.deepEqual(lostKeys(wanted, { AGENT_ORG_TICKET: "A11-1", AGENT_ORG_TICKET_BRANCH: "a11-1", AGENT_ORG_TICKET_HOST: "/h.json" }), []);
+  assert.deepEqual(lostKeys(wanted, { ...wanted, TMPDIR: "/tmp/other" }), []);
+  assert.deepEqual(lostKeys(wanted, {}), ["AGENT_ORG_TICKET", "AGENT_ORG_TICKET_BRANCH", "AGENT_ORG_TICKET_HOST"]);
+});

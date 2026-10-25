@@ -108,11 +108,13 @@ export type FixtureOptions = Readonly<{
   restartReads?: PoolDeps["restartReads"];
   /** The repositories the host file's `clones` names, by repository name (A11-286): a test that has the board read a real clone names it here. */
   clones?: Readonly<Record<string, string>>;
+  /** The directory each run's private `TMPDIR` is made under (A11-279): none, so a run gets none, unless a test names one. */
+  privateTmpBase?: string;
 }>;
 
 /** A pool of `keys` queued and started, over fakes. `restart` is a pool over the same queue and state folder with another `hook`, as an instance restarted onto another version is. */
 export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate, source: tracker = source, planFirst = [], descriptions = {},
-  restartReads = { bootId: () => "boot-1", herdrStart: () => "1" }, clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } }: FixtureOptions = {}) {
+  restartReads = { bootId: () => "boot-1", herdrStart: () => "1" }, clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, privateTmpBase }: FixtureOptions = {}) {
   const root = tmpDir("ticket-pin-");
   const settings = parseTicketSettings({ clones, stateDir: join(root, "state"), tickets });
   const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" }, batch: false };
@@ -122,6 +124,7 @@ export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node",
   const herdr = fakeHerdr(status);
   const deps = (over: Partial<PoolDeps>): PoolDeps => ({ settings, source: tracker, hook, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), restartReads, paneEnv: (pane) => herdr.envs.get(pane) ?? null,
+    ...(privateTmpBase === undefined ? {} : { privateTmpBase }),
     ...(drain === undefined ? {} : { drain }), ...(startUpdate === undefined ? {} : { startUpdate }), ...over });
   const pool = createPool(store, deps({}));
   return { root, settings, store, status, herdr, pool, restart: (over: Partial<PoolDeps>) => createPool(store, deps(over)), entry: (key: string) => queue.entries.find((e) => e.ticket.key === key)! };

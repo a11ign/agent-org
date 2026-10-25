@@ -6,6 +6,7 @@ import { type PlannedAgainst, recordPlannedAgainst } from "./queue/queue-ticket-
 import { earlyCompletionComment, recordCompletedByPerson, recordReopenFailure, recordReopened } from "./queue/queue-next-step.ts";
 import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";
 import { runEnvOf } from "./run-env.ts";
+import { makeRunTmp } from "./run-isolation.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
@@ -85,6 +86,12 @@ export async function start(ctx: PoolContext, entry: Entry, folder: string, dir:
   const runId = entry.batch ?? entry.ticket.key;
   // The worker's shell carries its ticket, its branch and the host file, which `ticket:worktree` reads. A batch's run has no one ticket, and makes no worktree.
   const env = runEnvOf(ctx, entry);
+  // The run's private TMPDIR is made before its shell exists. A directory that cannot be made leaves the run on the shared `/tmp`, said once, rather than refusing the run.
+  const refusal = env.TMPDIR === undefined ? null : makeRunTmp(ctx.runTmpBase!, env.TMPDIR);
+  if (refusal !== null) {
+    log(`${runId} was started without a private TMPDIR: ${refusal}`);
+    delete env.TMPDIR;
+  }
   const { model, effort } = runChoice(ctx, entry);
   const cause = entry.asked ? "asked" : entry.feedback !== undefined ? "feedback" : "approved";
   const prompt = first ?? (entry.talk ? talkPrompt(dir) : entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause));
