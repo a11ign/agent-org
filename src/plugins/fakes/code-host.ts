@@ -195,6 +195,28 @@ function branchUpdatesOf(state: FakeBranchUpdates, pulls: Pulls, calls: string[]
 }
 
 /**
+ * What the fake does when asked to close a pull request (contract 1.23), and what a test sets: why it refuses a pull request (`refusals`, by address), and each close, in order (`closed`). A close sets the pull request's state to closed, so it reads `CLOSED`; a pull request
+ * that is closed already is not an error, and its comment is not posted again. A pull request the fake does not hold throws, as a host does for an address that is no pull request of its own.
+ */
+export type FakeCloses = { refusals: Map<string, string>; closed: { url: string; comment: string }[] };
+
+/** The close of a pull request over what a test seeded. */
+function closesOf(state: FakeCloses, pulls: Pulls, calls: string[]): Pick<CodeHost, "closePull"> {
+  return {
+    closePull(url, comment) {
+      calls.push(`closePull ${url}`);
+      const pull = pulls.get(url);
+      if (pull === undefined) throw new Error(`fake code host: no pull request ${url}`);
+      const refusal = state.refusals.get(url);
+      if (refusal !== undefined) throw new Error(refusal);
+      if (pull.state === "closed") return;
+      pull.state = "closed";
+      state.closed.push({ url, comment });
+    },
+  };
+}
+
+/**
  * What the fake holds of the stack merge (contract 1.16), and what a test sets: what a pull request is said to be in a stack (`facts`, by address; a pull request the fake holds and was given none for is not in a stack, based where it is, at its head, and `merged` once it has merged),
  * why the arm bot cannot be asked (`requestRefusal`), and each pull request the arm bot was asked for, in order (`requests`).
  */
@@ -405,12 +427,13 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const repositoriesWorld: FakeRepositories = { owners: login === null ? null : [{ login, kind: "account" }], byOwner: new Map(), cloneFailures: new Map(), cloned: [] };
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
+  const closes: FakeCloses = { refusals: new Map(), closed: [] };
   const stackMerges: FakeStackMerges = { facts: new Map(), requestRefusal: null, requests: [] };
   const ciRuns: FakeCiRuns = { runs: new Map(), asked: [] };
   const branchCi: FakeBranchCi = { runs: new Map(), asked: [] };
   const queues: FakeQueues = { failures: new Map(), holdRefusal: null, held: new Set(), holds: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -421,6 +444,8 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     checksAndClaims,
     /** The updates of branches the fake was asked for, and the answer it gives each pull request, for a test to seed and read (see {@link FakeBranchUpdates}). */
     branchUpdates,
+    /** The pull requests the fake was asked to close, with the comment each was closed with, and why it refuses one, for a test to seed and read (see {@link FakeCloses}). */
+    closes,
     /** What the fake says of each pull request's stack, and the requests it was given to hand to the arm bot, for a test to seed and read (see {@link FakeStackMerges}). */
     stackMerges,
     /** The workflow runs the fake says it holds, by `owner/name#runId`, and the runs it was asked about, for a test to seed and read (see {@link FakeCiRuns}). */

@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.22 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.23 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.23 (A11-248): `closePull`, OPTIONAL: close a pull request with a comment, as the workers' account, which is how the board closes a member of a stack left with no changes of its own once everything it held merged below it. A plugin of 1.22 is read as one that cannot close, and the board then says on the card that the pull request is empty and is to be closed.
 // 1.22 (A11-261): `readBranchCi`, OPTIONAL: the workflow runs on one branch of a repository with each job's runner labels and times, which the board adds up into the CI minutes a ticket's pushes cost (weighted as GitHub bills them) and warns and holds a run on when a ticket passes its budget. A plugin of 1.21 is read as one that reads no branch's CI, and the board then shows and holds nothing.
 // 1.21 (A11-264): `PullFeedback.queue`, OPTIONAL: what the merge queue did to a pull request since its head last moved (is it queued, and each removal with its reason, actor and the merge group's commit), read in the same query as the rest of the feedback; `readQueueFailure`, OPTIONAL: the failing `merge_group` run behind one removal, its failing jobs and their first failing step; and `holdFromQueue`, OPTIONAL: put the `hold:board` label on a pull request, or take it off, which every arm bot in the org already honours. A plugin of 1.20 is read as one that reads no queue, and the board then behaves as it did.
 // 1.20 (A11-249): `readClosedWork`, OPTIONAL: what a pull request closed without merging still held, the commits on its head that are not on its base and the files they change, as the host's compare reads them, which the board lists on the ticket so the work is never lost with the pull request. A plugin of 1.19 is read as one that cannot be asked, and the board then lists nothing.
@@ -54,7 +55,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.22";
+export const CODE_HOST_CONTRACT_VERSION = "1.23";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -335,6 +336,11 @@ export interface CodeHost extends CodeHostPort {
    * answers `refused` with a reason, and an address that is no pull request of the host is `refused`. A host without it cannot update a branch, and the board then holds a pull request as it did before.
    */
   updateBranch?(url: string, expectedHead: string): UpdateBranchResult;
+  /**
+   * Closes the pull request at `url` with `comment` posted on it (contract 1.23), as the workers' account: the board closes a member of a stack that holds nothing of its own, and never a person's pull request. THROWS, with the host's own first line, when the pull request cannot be
+   * closed, and for an address that is no pull request of the host; it answers nothing, so a caller never reads a refusal as a close. A pull request that is already closed is not an error. A host without it cannot close, and the board then says on the card that the pull request is to be closed.
+   */
+  closePull?(url: string, comment: string): void;
   /**
    * What the pull request at `url` is, as the stack merge sees it (contract 1.16), or null for "could not ask": an address that is no pull request of the host, and a pull request the host will not say are both null. Null is never "it is not in a stack".
    * A host without it is read as one the board asks the arm bot for nothing on.

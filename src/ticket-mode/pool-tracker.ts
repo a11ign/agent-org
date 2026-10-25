@@ -27,7 +27,8 @@ import { readPullDeclarations } from "./pool-pull-declarations.ts";
 import { adoptNamedBlockers, releaseMergedBlockers } from "./pool-blocker-cleared.ts";
 import { askUpdate } from "./pool-checks.ts";
 import { recordClosedWork } from "./pool-closed-work.ts";
-import { isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
+import { closeEmptyMember, followHead } from "./pool-restack-close.ts";
+import { isClosedMemberNote, isEmptyMemberNote, isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
 
@@ -353,10 +354,10 @@ function factsOf(ctx: PoolContext, url: string, read: Map<string, StackMergeFact
   return read.get(url) ?? null;
 }
 
-/** What {@link sweepRestacks} decided for a run: the note of each pull request, the pull requests whose branch it moved or found conflicting, and the feedback of the conflict round to start. */
+/** What {@link sweepRestacks} decided for a run: the note of each pull request, the pull requests whose branch it moved, found conflicting or has closed (or is to close), and the feedback of the conflict round to start. */
 type RestackSweep = Readonly<{ notes: Record<string, string>; moved: ReadonlySet<string>; feedback: readonly string[] }>;
 
-/** What the restack decided for one pull request: its note (null clears it), whether its branch moved or conflicts, and the feedback of the conflict round it earns. */
+/** What the restack decided for one pull request: its note (null clears it), whether its branch moved or conflicts or the member is empty, and the feedback of the conflict round it earns. */
 type MemberRestack = Readonly<{ note: string | null; moved: boolean; feedback: string | null }>;
 
 /** The restack notes a run has now, for the pull requests it still holds open. */
@@ -436,11 +437,16 @@ function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates,
   const read = below === null ? null : factsOf(ctx, url, facts);
   if (below === null || read === null) return null;
   const step = restackStep({ facts: read, below, done, previousNote: previous });
-  if (!step.restack) return { note: step.note, moved: false, feedback: null };
+  if (!step.restack) {
+    const closing = done === undefined ? null : closeEmptyMember(ctx, entry, { url, below, done, read, previousNote: previous });
+    const note = closing ?? step.note;
+    // A member that is closed is not handed to the arm bot, on this sweep or the ones before the board lists it closed. One that is empty and could not be closed still is, as it was before.
+    return { note, moved: note !== null && isClosedMemberNote(note), feedback: null };
+  }
   const result = askUpdate(ctx, url, read.head);
   const outcome: RestackOutcome = result.kind === "conflict" ? { kind: "conflict", round } : result;
   const note = restackNote({ url, defaultBranch: read.defaultBranch, below, outcome });
-  if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head });
+  if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head, ...(result.kind === "up-to-date" ? { upToDate: true as const } : {}) });
   if (result.kind === "updated") followHead(ctx, key, url, read.head);
   log(`${key}: ${note}`);
   const feedback = result.kind === "conflict" && round === "round" ? restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }) : null;
@@ -449,7 +455,7 @@ function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates,
 
 /** The restack a pull request's note says was made: the note stands in for the memory a restart lost. A note about a conflict or a refusal does not, so the restack is made again and finds the conflict, or finds it resolved. */
 function doneFromNote(note: string | undefined, url: string): { merged: string } | undefined {
-  const merged = note === undefined || !isRestackedNote(note) ? null : restackedAfter(note, url);
+  const merged = note === undefined || !(isRestackedNote(note) || isEmptyMemberNote(note)) ? null : restackedAfter(note, url);
   return merged === null ? undefined : { merged };
 }
 
@@ -457,10 +463,4 @@ function doneFromNote(note: string | undefined, url: string): { merged: string }
 function belowOf(ctx: PoolContext, blockerKey: string, candidates: readonly string[], done: Readonly<{ merged: string }> | undefined): RestackBelow | null {
   const merged = done !== undefined && candidates.includes(done.merged) ? done.merged : candidates.find((url) => ctx.codeHost.readPullState(url) === "MERGED");
   return merged === undefined ? null : { key: blockerKey, url: merged, state: "MERGED" };
-}
-
-/** A merge pushed to a finished run's pull request moves its head: the head the run ended at moves with it, so the push is not read as a person's (A11-153). */
-function followHead(ctx: PoolContext, key: string, url: string, from: string): void {
-  const to = ctx.codeHost.stackMergeFactsOf?.(url)?.head;
-  if (to !== undefined && to !== from) update(ctx, (queue) => moveOutcomeHeads(queue, key, from, to));
 }
