@@ -432,8 +432,8 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
       choicePath: deps.choicePath, ...(deps.poolDeps?.pluginRecord === undefined ? {} : { pluginRecord: deps.poolDeps.pluginRecord }) })];
   }
   if (method === "GET" && path === "/api/plugins") {
-    // The Plugins section is its own call (A11-163): a plugin's checks run programs, and the rest of the page must not wait on them or fail with them.
-    return [200, await board.plugins.read()];
+    // The Plugins section is its own call (A11-163): a plugin's checks run programs, and the rest of the page must not wait on them or fail with them. `?check` asks for fresh checks (A11-270).
+    return [200, await board.plugins.read({ check: query.has("check") })];
   }
   if (method === "GET" && path === "/api/pick") {
     // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
@@ -838,7 +838,7 @@ export function createBoard(deps: BoardDeps) {
     }
   }
 
-  return { handle, api, pool, store, queueTickets, wake };
+  return { handle, api, pool, store, queueTickets, wake, plugins };
 }
 
 /**

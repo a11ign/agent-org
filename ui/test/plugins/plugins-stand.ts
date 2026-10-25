@@ -53,13 +53,18 @@ export const a11ign = (fields: Partial<ClaudePlugin> = {}): ClaudePlugin => clau
 
 const NO_PROJECT: MessagingState = { provider: null, why: "this machine declares no project" };
 
-/** The answer of `/api/plugins` for a host, the doctor checks of each plugin by name, the Claude plugins the host lists, and what the project says of messaging. */
-export function answerOf({ host = BOARD_HOST, checks = {}, claude = NO_CLAUDE, note = null, messaging = NO_PROJECT, refused = [] }: Readonly<{
+
+/**
+ * The answer of `/api/plugins` for a host, the doctor checks of each plugin by name, the Claude plugins the host lists, and what the project says of messaging, with when the checks finished
+ * (just now, unless a check says otherwise) and whether they are running again.
+ */
+export function answerOf({ host = BOARD_HOST, checks = {}, claude = NO_CLAUDE, note = null, messaging = NO_PROJECT, refused = [], checkedAt = new Date().toISOString(), checking = false }: Readonly<{
   host?: unknown; checks?: Readonly<Record<string, readonly PluginCheck[]>>; claude?: ClaudePlugins; note?: string | null; messaging?: MessagingState; refused?: readonly Readonly<{ plugin: string; why: string }>[];
+  checkedAt?: string | null; checking?: boolean;
 }> = {}): PluginsAnswer {
   const catalog = defaultCatalog();
   const health = pluginHealth({ catalog: { ...catalog, refusals: [...catalog.refusals, ...refused] }, providers: resolveProviders(host, catalog), messaging, load: { loaded: [], unbuilt: [], refusals: [] }, checks, version: "v0.289.0" });
-  return { ...health, claude, attention: attentionOf(health, claude), note, bases: { "host.json": "base-1", "project.json": "base-p1" } };
+  return { ...health, claude, attention: attentionOf(health, claude), note, bases: { "host.json": "base-1", "project.json": "base-p1" }, checkedAt, checking };
 }
 
 /** A failing doctor check, as a plugin reports one. */

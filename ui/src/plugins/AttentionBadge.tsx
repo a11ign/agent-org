@@ -7,11 +7,11 @@ export const attentionWords = (count: number): string => `${count} ${count === 1
 
 /**
  * The count to show, or null to show none: only an answered read counts, and only above zero. A failed read and a read still loading have no count to show, since the last answer may no
- * longer be true.
+ * longer be true, and nor has an answer from before the instance's first checks finished (A11-270), which has no failing check yet.
  */
 export function attentionShown(read: Pick<PluginsReadValue, "state" | "data">): number | null {
   const data: PluginsAnswer | null = read.data;
-  if (read.state !== "ready" || data === null) return null;
+  if (read.state !== "ready" || data === null || data.checkedAt === null) return null;
   return data.attention > 0 ? data.attention : null;
 }
 

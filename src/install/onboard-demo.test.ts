@@ -95,7 +95,11 @@ async function askPlugins(machine: ReturnType<typeof scratchMachine>): Promise<P
   const saved = { PATH: process.env.PATH, HOME: process.env.HOME };
   Object.assign(process.env, { PATH: machine.env.PATH, HOME: machine.home, AGENT_ORG_HOME: machine.state, AGENT_ORG_HOST: machine.env.AGENT_ORG_HOST });
   try {
-    const answer = await fetch(`http://127.0.0.1:${port}/api/plugins`, { headers: { "x-ticket-token": TOKEN } });
+    const ask = () => fetch(`http://127.0.0.1:${port}/api/plugins`, { headers: { "x-ticket-token": TOKEN } });
+    assert.equal((await ask()).status, 200);
+    // The read started the plugins' checks behind it (A11-270): they end on the scratch machine, and the answer read after them holds their rows.
+    await board.plugins.check();
+    const answer = await ask();
     assert.equal(answer.status, 200);
     return await answer.json() as PluginsAnswer;
   } finally {

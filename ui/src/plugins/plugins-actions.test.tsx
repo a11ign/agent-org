@@ -9,7 +9,9 @@ const IN_FORCE = "in force after the board restarts: ticket:serve and ticket:ui.
 const standWith = (host: unknown, fields: Partial<PluginsStand> = {}): PluginsStand => pluginsOf({ answer: () => answerOf({ host }), ...fields });
 const opened = (name: string) => fireEvent.click(head(name));
 const actions = (fetchWith: Parameters<typeof posts>[0]) => posts(fetchWith).filter(({ path }) => path.endsWith("/api/plugins/action")).map(({ body }) => body);
-const reads = (fetchWith: { paths: string[] }) => fetchWith.paths.filter((path) => path.endsWith("/api/plugins")).length;
+/** The plugins reads the page made: its first, and each read again, which asks the instance to run the checks again (A11-270). */
+const reads = (fetchWith: { paths: string[] }) => fetchWith.paths.filter((path) => /\/api\/plugins(\?check)?$/.test(path)).length;
+const checkedAgain = (fetchWith: { paths: string[] }) => fetchWith.paths.filter((path) => path.endsWith("/api/plugins?check")).length;
 
 describe("disable and enable", () => {
   it("disables a plugin with one request that carries the file's base, and says what the backend said, when it is in force and the file it kept", async () => {
@@ -31,6 +33,7 @@ describe("disable and enable", () => {
     opened("Publisher");
     fireEvent.click(within(card("Publisher")).getByRole("button", { name: "Disable slack" }));
     await waitFor(() => expect(reads(fetchWith)).toBe(2));
+    expect(checkedAgain(fetchWith)).toBe(1);
   });
 
   it("offers Enable in Disable's place for a plugin that is switched off, and posts enable", async () => {
@@ -158,6 +161,7 @@ describe("a change that does not go through", () => {
     await waitFor(() => expect(reads(fetchWith)).toBe(2));
     fireEvent.click(screen.getByRole("button", { name: "Read the plugins again" }));
     await waitFor(() => expect(reads(fetchWith)).toBe(3));
+    expect(checkedAgain(fetchWith)).toBe(2);
     expect(screen.queryByRole("button", { name: "Read the plugins again" })).toBeNull();
     // The page now holds the file as it is, so the same action goes through.
     opened("Publisher");

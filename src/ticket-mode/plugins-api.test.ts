@@ -1,12 +1,12 @@
 // no-token: none -- a scratch host file and an injected seam: no plugin is imported, no program runs, and Claude Code's install record is a string
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { PluginModule } from "../plugins/manifest.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
-import { claudePluginsOf, pluginsApi, type PluginsSeam } from "./plugins-api.ts";
+import { claudePluginsOf, FRESH_MS, pluginsApi, type PluginsSeam } from "./plugins-api.ts";
 import { parseTicketSettings } from "./settings.ts";
 
 const RECORD = "/record.json";
@@ -86,6 +86,7 @@ test("A11-201: attention counts an agent-org plugin whose doctor check fails tog
   const failing = { plugin: linear, module: { doctorChecks: () => [{ name: "token", ok: false, detail: "no token", fix: "set one" }] } as unknown as PluginModule };
   const { api, write } = apiOver({}, { record: USER_INSTALL, manifest: declared() }, { load: async () => ({ loaded: [], unbuilt: [failing], refusals: [] }) });
   write({ plugins: ["a11ign@m", "absent@m"] });
+  await api.check();
   const answer = await api.read();
   assert.deepEqual([answer.concerns.flatMap(({ plugins }) => plugins).filter(({ checks }) => checks.some(({ ok }) => !ok)).map(({ name }) => name), answer.attention], [["linear"], 2]);
 });
@@ -93,4 +94,125 @@ test("A11-201: attention counts an agent-org plugin whose doctor check fails tog
 test("A11-201: claudePluginsOf keeps a plugin without a readable contract, named by its entry", () => {
   const states = { readable: true, plugins: [{ plugin: "nbl-ui@applied-ai", installs: [], loads: false, why: "x", installPath: null }] };
   assert.deepEqual(claudePluginsOf({ states, unreachable: ["x"], rows: [], contracts: [] }), { readable: true, plugins: [{ entry: "nbl-ui@applied-ai", name: "nbl-ui", loads: false, why: "x", installs: [], contract: null, rows: [] }] });
+});
+
+// ---- A11-270: the checks are answered from memory, and run again behind the page
+
+const LINEAR = defaultCatalog().plugins.find(({ name }) => name === "linear")!;
+type Gate = { runs: number; release: () => void };
+
+/** A seam whose linear plugin's checks wait until the test releases them, counting each run, on a clock the test moves. */
+function gatedSeam(clock: { at: number }): { seam: PluginsSeam; gate: Gate } {
+  const gate: Gate = { runs: 0, release: () => undefined };
+  const doctorChecks = () => {
+    gate.runs += 1;
+    return new Promise((done) => { gate.release = () => done([{ name: "token", ok: false, detail: "no token", fix: "set one" }]); });
+  };
+  const module = { doctorChecks } as unknown as PluginModule;
+  return { gate, seam: { load: async () => ({ loaded: [], unbuilt: [{ plugin: LINEAR, module }], refusals: [] }), now: () => clock.at } };
+}
+const linearChecks = (answer: Awaited<ReturnType<ReturnType<typeof pluginsApi>["read"]>>) => answer.concerns.flatMap(({ plugins }) => plugins).find(({ name }) => name === "linear")!.checks;
+/** Lets the checks started reach the plugin, or the checks released be kept. */
+const settle = () => new Promise((done) => { setTimeout(done, 10); });
+/** Lets the running checks finish and be kept. */
+async function finish(gate: Gate): Promise<void> {
+  await settle();
+  gate.release();
+  await settle();
+}
+
+test("A11-270: a read never waits on the checks: a cold read answers at once with checkedAt null, no check rows and checking true", async () => {
+  const clock = { at: Date.parse("2026-10-25T14:00:00Z") };
+  const { seam, gate } = gatedSeam(clock);
+  const { api } = apiOver({}, { record: USER_INSTALL, manifest: declared() }, seam);
+  const started = Date.now();
+  const cold = await api.read();
+  assert.ok(Date.now() - started < 300, `answered in ${Date.now() - started} ms while the checks run`);
+  assert.deepEqual([cold.checkedAt, cold.checking, linearChecks(cold)], [null, true, []]);
+  await settle();
+  assert.equal(gate.runs, 1, "the read started the checks");
+  await finish(gate);
+  const warm = await api.read();
+  assert.deepEqual([warm.checkedAt, warm.checking, linearChecks(warm).map(({ name }) => name), warm.attention], ["2026-10-25T14:00:00.000Z", false, ["token"], 1]);
+  assert.equal(gate.runs, 1, "fresh checks are answered from memory, not run again");
+});
+
+test("A11-270: only one run of the checks at a time: reads while they run share it", async () => {
+  const { seam, gate } = gatedSeam({ at: 0 });
+  const { api } = apiOver({}, {}, seam);
+  await Promise.all([api.read(), api.read(), api.read()]);
+  await settle();
+  assert.equal(gate.runs, 1);
+  await finish(gate);
+});
+
+test("A11-270: the checks run again behind the page when they are older than FRESH_MS, and the read meanwhile answers the last ones with their age", async () => {
+  const clock = { at: Date.parse("2026-10-25T14:00:00Z") };
+  const { seam, gate } = gatedSeam(clock);
+  const { api } = apiOver({}, {}, seam);
+  await api.read();
+  await finish(gate);
+  clock.at += FRESH_MS - 1;
+  assert.equal((await api.read()).checking, false);
+  clock.at += 1;
+  const stale = await api.read();
+  await settle();
+  assert.deepEqual([gate.runs, stale.checking, stale.checkedAt, linearChecks(stale).length], [2, true, "2026-10-25T14:00:00.000Z", 1], "the last checks are answered while the new ones run");
+  await finish(gate);
+  assert.equal((await api.read()).checkedAt, "2026-10-25T14:01:00.000Z");
+});
+
+test("A11-270: a change to the host file runs the checks again, and the plugins themselves are read from the file as it is now", async () => {
+  const { seam, gate } = gatedSeam({ at: 0 });
+  const { api, write } = apiOver({}, { record: USER_INSTALL, manifest: declared() }, seam);
+  await api.read();
+  await finish(gate);
+  write({ plugins: ["a11ign@m"] });
+  const changed = await api.read();
+  await settle();
+  assert.deepEqual([gate.runs, changed.checking, changed.claude.plugins.map(({ entry }) => entry)], [2, true, ["a11ign@m"]]);
+  await finish(gate);
+});
+
+test("A11-270: an action runs the checks again once it is done, and its answer is unchanged", async () => {
+  const { seam, gate } = gatedSeam({ at: 0 });
+  const { api, hostPath } = apiOver({}, {}, seam);
+  const before = await api.read();
+  await finish(gate);
+  const done = await api.act({ action: "disable", name: "tailscale", base: before.bases["host.json"] });
+  assert.match(done.said, /^disabled tailscale/);
+  await settle();
+  assert.equal(gate.runs, 2, "the action started the checks");
+  const after = await api.read();
+  assert.equal(after.checking, true);
+  assert.equal(after.concerns.find(({ concern }) => concern === "exposure")?.plugins.find(({ name }) => name === "tailscale")?.state, "disabled", "the plugins are loaded from the file the action wrote");
+  assert.match(readFileSync(hostPath, "utf8"), /"enabled": false/);
+  await finish(gate);
+});
+
+test("A11-270: a read that asks for fresh checks runs them again though the last are fresh, and again after a run that started before it asked", async () => {
+  const { seam, gate } = gatedSeam({ at: 0 });
+  const { api } = apiOver({}, {}, seam);
+  await api.read();
+  await finish(gate);
+  assert.equal((await api.read()).checking, false, "fresh checks are answered from memory");
+  const asked = await api.read({ check: true });
+  await settle();
+  assert.deepEqual([asked.checking, gate.runs], [true, 2]);
+  await api.read({ check: true });
+  await finish(gate);
+  await settle();
+  assert.equal(gate.runs, 3, "the run under way started before the second ask, so the checks run once more after it");
+  await finish(gate);
+  assert.equal((await api.read()).checking, false);
+});
+
+test("A11-270: checks that never finish are one failing row after the time limit, and the read answers at once all the while", async () => {
+  const module = { doctorChecks: () => new Promise(() => undefined) } as unknown as PluginModule;
+  const { api } = apiOver({}, {}, { load: async () => ({ loaded: [], unbuilt: [{ plugin: LINEAR, module }], refusals: [] }), limitMs: 100 });
+  assert.equal((await api.read()).checkedAt, null);
+  await api.check();
+  const answer = await api.read();
+  assert.deepEqual(linearChecks(answer), [{ name: "plugin linear", ok: false, detail: "its checks did not finish within 0.1 seconds", fix: "run agent-org doctor to see them" }]);
+  assert.notEqual(answer.checkedAt, null);
 });
