@@ -4,7 +4,7 @@ import { Lifecycle } from "../lifecycle/Lifecycle.tsx";
 import { FailureBanner } from "../runs/FailureBanner.tsx";
 import { failedPublishSentence, NOT_PUBLISHED, publishState, showsPublish } from "../runs/publish-model.ts";
 import type { RunEntry } from "../runs/runs-model.ts";
-import { usePublish } from "../runs/use-publish.ts";
+import { useDismissable, usePublish } from "../runs/use-publish.ts";
 import { useRunActions } from "../runs/use-run-actions.ts";
 import { runsHref } from "../shell/routes.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
@@ -42,16 +42,18 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   const followTerminal = useFollowTerminal(inputs, entry, useQueueReadAt(read, queue));
   const board = boardOf(entry, queue);
   const headerActions = headerActionsOf(entry, queue);
+  const publishes = showsPublish(config);
+  const failedRun = useDismissable(publishes ? failedPublishSentence(queue, entry.ticket.key) : null);
   const clear = () => {
     actions.clearRefusal();
     talk.clear();
     publisher.clearRefusal();
+    failedRun.dismiss();
   };
-  const publishes = showsPublish(config);
   const publishing = publishes ? publishState(entry, queue) : null;
   // The press's own refusal, then Talk to it's problem, are the page's; a refused Publish and a publish run that failed with this run among its keys are "Not published."
   const pressed = actions.refusal ?? talk.problem;
-  const notPublished = pressed === null ? (publisher.refusal ?? (publishes ? failedPublishSentence(queue, entry.ticket.key) : null)) : null;
+  const notPublished = pressed === null ? (publisher.refusal ?? failedRun.shown) : null;
   const controls: HeaderControls = {
     actions: headerActions,
     terminalHref: terminalHrefOf(entry, headerActions, config?.terminal ?? null, connection),

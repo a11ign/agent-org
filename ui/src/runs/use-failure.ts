@@ -5,7 +5,7 @@ import type { Pool } from "../settings/use-pool.ts";
 import type { SaveState } from "../settings/use-choices.ts";
 import { NOT_PUBLISHED } from "./publish-model.ts";
 import type { RunActions } from "./use-run-actions.ts";
-import type { Publisher } from "./use-publish.ts";
+import { useDismissable, type Publisher } from "./use-publish.ts";
 
 /** What the banner shows: the sentence, and the heading it carries when the sentence is a failed publish. */
 export type Failure = Readonly<{ sentence: string | null; title: string | undefined; retry: () => void; dismiss: () => void }>;
@@ -20,12 +20,14 @@ export function useFailure({ queue, actions, publisher, failedRun, pool }: Reado
   const [cleared, setCleared] = useState<SaveState | null>(null);
   const poolSentence = pool.pauseState.kind === "failed" && pool.pauseState !== cleared ? pool.pauseState.sentence : null;
   const readSentence = queue.state === "error" ? queue.refusal : null;
+  const failed = useDismissable(failedRun);
   const clear = () => {
     actions.clearRefusal();
     publisher.clearRefusal();
+    failed.dismiss();
     setCleared(pool.pauseState);
   };
-  const publishSentence = publisher.refusal ?? failedRun;
+  const publishSentence = publisher.refusal ?? failed.shown;
   const rowSentence = actions.refusal;
   return {
     sentence: rowSentence ?? publishSentence ?? poolSentence ?? readSentence,

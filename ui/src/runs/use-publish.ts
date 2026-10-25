@@ -36,7 +36,7 @@ export function usePublish({ client, refresh }: Readonly<{ client: Client; refre
 }
 
 /** The ticks of the Runs page. */
-export type Picked = Readonly<{ keys: readonly string[]; toggle: (key: string) => void; clear: () => void }>;
+export type Picked = Readonly<{ keys: readonly string[]; toggle: (key: string) => void; clear: () => void; remove: (keys: readonly string[]) => void }>;
 
 /**
  * The runs ticked for Publish. A queue read that shows a ticked run is no longer Ready to merge, or is held by a publish run, drops it for good, as `ui.html` does on every read, so it is not ticked again if it
@@ -51,5 +51,17 @@ export function usePicked(queue: QueueView | null): Picked {
       return after.length === before.length ? before : after;
     });
   }, [queue]);
-  return { keys: queue === null ? picked : prunePicked(picked, queue), toggle: (key) => setPicked((before) => toggled(before, key)), clear: () => setPicked([]) };
+  return { keys: queue === null ? picked : prunePicked(picked, queue), toggle: (key) => setPicked((before) => toggled(before, key)), clear: () => setPicked([]), remove: (gone) => setPicked((before) => before.filter((key) => !gone.includes(key))) };
+}
+
+/**
+ * A sentence the page can hide for good until it changes: the publisher's reason for a publish run that failed. The queue holds that run until the next one starts, so a Dismiss or Retry that only hid the
+ * banner would leave the sentence outranking every later failure (a refused Pause, a failed read). `shown` is null once it is dismissed, and again a fresh sentence once the publish run has been replaced.
+ */
+export function useDismissable(sentence: string | null): Readonly<{ shown: string | null; dismiss: () => void }> {
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  useEffect(() => {
+    if (sentence === null) setDismissed(null);
+  }, [sentence]);
+  return { shown: sentence === dismissed ? null : sentence, dismiss: () => setDismissed(sentence) };
 }

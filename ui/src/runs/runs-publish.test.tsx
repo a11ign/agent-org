@@ -6,6 +6,13 @@ const tickOf = (key: string): HTMLInputElement | null => within(rowOf(key)).quer
 const tick = (key: string) => fireEvent.click(within(rowOf(key)).getByRole("checkbox", { name: `Select ${key} to publish` }));
 const bar = () => screen.queryByRole("region", { name: "Selected runs" });
 const press = (name: string | RegExp) => fireEvent.click(screen.getByRole("button", { name }));
+/** The Runs page on a machine whose publisher takes every post. */
+const acceptingPage = () => pageOn(selectOf({ post: () => ({ entries: [] }) }));
+/** The body of the one post to /api/publish, once it has been made. */
+const publishedBody = async (fetchWith: Parameters<typeof posts>[0]) => {
+  await waitFor(() => expect(posts(fetchWith, "/api/publish")).toHaveLength(1));
+  return posts(fetchWith, "/api/publish")[0].body;
+};
 
 describe("Publish on a machine with no publisher", () => {
   it("draws no tick box, no tick column and no selection bar", async () => {
@@ -52,22 +59,24 @@ describe("Publish on a machine with a publisher", () => {
   });
 
   it("posts the ticked keys, in the order they were ticked, to /api/publish, and empties the selection", async () => {
-    const { fetchWith } = await pageOn(selectOf({ post: () => ({ entries: [] }) }));
+    const { fetchWith } = await acceptingPage();
     tick("A11-29");
     tick("A11-180");
     press("Publish selected (2)");
-    await waitFor(() => expect(posts(fetchWith, "/api/publish")).toHaveLength(1));
-    expect(posts(fetchWith, "/api/publish")[0].body).toEqual({ keys: ["A11-29", "A11-180"] });
+    expect(await publishedBody(fetchWith)).toEqual({ keys: ["A11-29", "A11-180"] });
     await waitFor(() => expect(bar()).toBeNull());
     expect(tickOf("A11-29")?.checked).toBe(false);
   });
 
-  it("posts a single ticked run alone", async () => {
-    const { fetchWith } = await pageOn(selectOf({ post: () => ({ entries: [] }) }));
-    tick("A11-30");
+  it("posts a single ticked run alone, and drops only the runs it posted: one ticked while the post is out stays ticked", async () => {
+    const { fetchWith } = await acceptingPage();
+    tick("A11-180");
     press("Publish selected (1)");
-    await waitFor(() => expect(posts(fetchWith, "/api/publish")).toHaveLength(1));
-    expect(posts(fetchWith, "/api/publish")[0].body).toEqual({ keys: ["A11-30"] });
+    tick("A11-30");
+    expect(await publishedBody(fetchWith)).toEqual({ keys: ["A11-180"] });
+    await waitFor(() => expect(tickOf("A11-180")?.checked).toBe(false));
+    expect(tickOf("A11-30")?.checked).toBe(true);
+    expect(within(bar() as HTMLElement).getByText("1 selected")).toBeTruthy();
   });
 
   it("empties the selection and hides the bar on Clear, posting nothing", async () => {
@@ -90,6 +99,17 @@ describe("Publish on a machine with a publisher", () => {
 });
 
 describe("a publish that did not happen", () => {
+  it("does not let a dismissed publish failure hide the next refusal: a refused Pause is shown", async () => {
+    const failed = { keys: ["A11-30"], phase: "finished", failure: PUBLISHER_REASON };
+    await pageOn(selectOf({ post: () => ({ status: 409, error: "the workers are already paused" }) }, selectRuns(), failed));
+    fireEvent.click(within(await screen.findByRole("alert")).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    press("Pause");
+    const alert = await screen.findByRole("alert");
+    expect(textOf(alert)).toContain("the workers are already paused");
+    expect(within(alert).queryByText("Not published.")).toBeNull();
+  });
+
   it("shows the server's sentence under Not published. when it refuses, and keeps the selection to try again", async () => {
     await pageOn(selectOf({ post: () => ({ status: 409, error: REFUSAL }) }));
     tick("A11-180");

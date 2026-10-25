@@ -82,8 +82,11 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
   const count = queue.data === null ? null : countText(queue.data.entries.length, runningCount(queue.data));
   const ticks = publishes ? { picked: picked.keys, toggle: picked.toggle } : null;
   const context = (data: QueueView): RowContext => ({ queue: data, publisher: config?.publisher, now: Date.now(), busy: actions.busy, disabled, press: actions.press, ticks });
-  // A refusal keeps the ticks, so the person can read the sentence and try again; a post the server took empties them.
-  const post = () => void publisher.publish(picked.keys).then((accepted) => accepted && picked.clear());
+  // A refusal keeps the ticks, so the person can read the sentence and try again; a post the server took drops the runs it posted, and a run ticked while it was out stays ticked.
+  const post = () => {
+    const keys = picked.keys;
+    void publisher.publish(keys).then((accepted) => accepted && picked.remove(keys));
+  };
   return (
     <>
       <Header count={count} loading={queue.state === "loading"} />
