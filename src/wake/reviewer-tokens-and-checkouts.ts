@@ -15,7 +15,7 @@ import { REPO } from "../project-identity.ts";
 import { recordRemoval } from "../worktree-removal.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { cloneOfKey } from "../claim-stall/stall-causes-and-claim-readings.ts";
-import { firstLine, herdrReason, herdrRefusal, openPane, closedNote } from "../herdr-agents.ts";
+import { firstLine, herdrReason, herdrStartRefusal, openPane, closedNote } from "../herdr-agents.ts";
 import { APP_TOKEN_MINT_TIMEOUT_MS, APP_TOKEN_SCRIPT, REVIEWER_CAUSES, REVIEWER_TOKEN_REFRESH_SECONDS, REVIEW_CHECKOUT_ROOT, reviewCheckoutPath, reviewedRepositoryOf, reviewerEnvironment, reviewerTokenDir, spawnInvocation, type ReviewerApp, type ReviewerEntry } from "./pull-request-spawn-orders.ts";
 import { codeRepositoryOf, defaultRun, route } from "./exit-and-limits.ts";
 
@@ -868,7 +868,7 @@ export function spawnReviewer(order: { session: string; cause?: string; causeKey
   try {
     run(outside ? outsideReviewArgs(invocation.args) : invocation.args);
   } catch (err) {
-    return { refusal: `herdr refused to start "${reviewer.session}" (${herdrRefusal(err)})${codexTrustNote(reviewer.session, err, codexConfig)}`
+    return { refusal: `${herdrStartRefusal(reviewer.session, err)}${codexTrustNote(reviewer.session, err, codexConfig)}`
       + closedNote(run, pane.workspace) };
   }
   return { label: reviewer.session, workspace: pane.workspace, profile: invocation.profile };

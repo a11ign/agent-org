@@ -161,16 +161,28 @@ export type Repost = { attempts: number; reason?: string };
 export type Look = { at: number; body: string };
 
 /**
+ * What herdr's refusals to start the reviewer for one `url@head` have come to (A11-241): herdr's reason for the last one, and how many in a row gave that same reason. A different reason starts the count again at 1.
+ * Kept on disk, so a restart does not reset the count and `agent-org doctor`, a separate process, can read it.
+ */
+export type StartRefusal = { reason: string; count: number };
+
+/** The pull request and the head a `url@head` key of the memory names (A11-241). A pull request's address holds no `@`, so the last one splits them. */
+export function splitHeadKey(key: string): { url: string; head: string } {
+  const at = key.lastIndexOf("@");
+  return { url: key.slice(0, at), head: key.slice(at + 1) };
+}
+
+/**
  * What a pool remembers of its reviewers across a restart: the head each seat's reviewer was started for (`heads`, by seat label), the reviewers
  * started (`started`, `url@head`), the verdicts a worker was asked to answer (`resumed`, `url@head`), the re-posts of a verdict not on its pull request
  * (`reposts`, `url@head`), the heads a reply to a block earned one re-review of (`rereviewed`, `url@head`, A11-156), and when each OTHER instance was last seen under the review claim's
  * context on any head (`seen`, by instance name, epoch ms, A11-172), and why a reviewer started WITHOUT a claim has none (`unclaimed`, `url@head` to GitHub's reason, A11-172), which the board keeps saying
- * while it runs, across a restart and for a `ticket:review` start too, and the look each head's newest start had (`looks`, `url@head`, A11-235). The pool holds it and the port reads `heads` and writes `seen`.
+ * while it runs, across a restart and for a `ticket:review` start too, and the look each head's newest start had (`looks`, `url@head`, A11-235), and herdr's refusals to start a head's reviewer (`refusals`, `url@head`, A11-241). The pool holds it and the port reads `heads` and writes `seen`.
  */
-export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string>; reposts: Map<string, Repost>; rereviewed: Set<string>; seen: Map<string, number>; unclaimed: Map<string, string>; looks: Map<string, Look> };
+export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string>; reposts: Map<string, Repost>; rereviewed: Set<string>; seen: Map<string, number>; unclaimed: Map<string, string>; looks: Map<string, Look>; refusals: Map<string, StartRefusal> };
 
 /** Nothing remembered: what a pool starts from when there is no file, and what a file it cannot read is read as. */
-export const noReviewerMemory = (): ReviewerMemory => ({ heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
+export const noReviewerMemory = (): ReviewerMemory => ({ heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
 
 /**
  * The memory on disk. A file that is not there is nothing remembered yet; one that is there and is not what `writeReviewerMemory` writes is
@@ -196,6 +208,9 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
       (typeof value === "object" && value !== null && !Array.isArray(value) ? Object.entries(value).filter((entry): entry is [string, T] => isT(entry[1])) : []);
     // `looks` is absent in a file written before A11-235, and a look that is not the right shape is left out like a `seen` entry: the head then has none, and is re-reviewed by a reply only.
     const lookOf = (value: unknown): value is Look => value !== null && typeof value === "object" && Number.isFinite((value as Look).at) && typeof (value as Look).body === "string";
+    // `refusals` is absent in a file written before A11-241, and in one for a pool whose starts herdr never refused. One that is not the right shape is left out like a `look`: its head is then refused again from a count of 1.
+    const refusalOf = (value: unknown): value is StartRefusal => value !== null && typeof value === "object" && typeof (value as StartRefusal).reason === "string"
+      && Number.isInteger((value as StartRefusal).count) && (value as StartRefusal).count >= 1;
     const repost = (value: any) => value !== null && typeof value === "object" && Number.isInteger(value.attempts) && value.attempts >= 0
       && (value.reason === undefined || typeof value.reason === "string");
     const isMalformedMemory = data === null || typeof data !== "object" || data.heads === null || typeof data.heads !== "object"
@@ -207,7 +222,7 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
     return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed),
       reposts: new Map(Object.entries(reposts) as [string, Repost][]), rereviewed: new Set(rereviewed),
       seen: new Map(entriesOf(data.seen, (at): at is number => typeof at === "number" && Number.isFinite(at))), unclaimed: new Map(entriesOf(data.unclaimed, (reason): reason is string => typeof reason === "string")),
-      looks: new Map(entriesOf(data.looks, lookOf)) }, unreadable: false };
+      looks: new Map(entriesOf(data.looks, lookOf)), refusals: new Map(entriesOf(data.refusals, refusalOf)) }, unreadable: false };
   } catch {
     return nothing({ unreadable: true });
   }
@@ -226,6 +241,8 @@ export function writeReviewerMemory(path: string, memory: ReviewerMemory): void 
     // Likewise: a file for a pool that started every reviewer with its claim reads as it always did.
     ...(memory.unclaimed.size > 0 ? { unclaimed: Object.fromEntries(memory.unclaimed) } : {}),
     // Likewise: a file for a pool that started nothing reads as it always did.
-    ...(memory.looks.size > 0 ? { looks: Object.fromEntries(memory.looks) } : {}) }));
+    ...(memory.looks.size > 0 ? { looks: Object.fromEntries(memory.looks) } : {}),
+    // Likewise: a file for a pool whose starts herdr never refused reads as it always did.
+    ...(memory.refusals.size > 0 ? { refusals: Object.fromEntries(memory.refusals) } : {}) }));
   renameSync(`${path}.tmp`, path);
 }

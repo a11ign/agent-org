@@ -120,6 +120,8 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   const shown = [rebaseNote(entry), retargetNote(entry), verdictNote(entry), checkNote(entry)];
   const once = (text: string | null): string | null => (text === null || shown.includes(text) ? null : text);
   const asked = once(askedReason(entry, now));
+  // A reviewer herdr would not start twice is what the card says first, and the worker's question, if it asked one, stays one click away (A11-241).
+  if (entry.reviewerRefused !== undefined && runStatus(entry) === "needs-you") return { line: entry.reviewerRefused, question: asked };
   const answer = pullAnswer(entry);
   if (answer !== null) return { line: ANSWER_LINE[answer], question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).

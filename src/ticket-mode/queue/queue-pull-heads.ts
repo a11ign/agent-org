@@ -2,7 +2,7 @@
 // module: the heads of a finished run's pull requests, as the pool records them (A11-153), and the note a stale block leaves on the run (A11-213)
 //
 // WHAT A `needs-human` RUN'S PULL REQUEST WAS AT WHEN IT ENDED, AND WHAT IT IS AT NOW, IS HOW THE BOARD TELLS THAT ITS QUESTION WAS ANSWERED (`pull-answer.ts`).
-import { runStatus } from "../board-view/pull-status-and-notes.ts";
+import { WAITS_ON_REVIEW, workStatus } from "../board-view/pull-status-and-notes.ts";
 import { isStaleBlockNote } from "../board-view/stale-block.ts";
 import type { PullHead } from "../board-view/view-types-and-filters.ts";
 import { find, replace, type Queue } from "./queue-entries-and-outcomes.ts";
@@ -41,19 +41,16 @@ const lastVerdict = (queue: Queue, key: string, url: string): Extract<RunEvent, 
 
 const sameVerdict = (last: Extract<RunEvent, { kind: "verdict" }> | undefined, head: string, review: string): boolean => last?.head === head && last.review === review;
 
-/** The statuses a stale-block note may be written over: a run that waits on a review or a merge. Any other has its own reason, or is over (A11-213). */
-const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
-
 /**
  * The board's note on a finished run whose pull request has sat changes requested with no new push and no run (A11-213, {@link staleBlockNote}): it becomes the run's `handedBack`, which reads Needs you and which
  * Respond to review acts on, and a null note (a push, an approval, a round) clears a `handedBack` this wrote, recognised by its sentence form as a conflict's is. It never replaces another `handedBack`, and it
- * is written only over a run that waits on a review or a merge ({@link NOTEABLE}): one that reads Needs you for its own reason (a disputed review the worker handed back), one that failed or concluded, and one that is over keep their own words. PURE.
+ * is written only over a run that waits on a review or a merge ({@link WAITS_ON_REVIEW}): one that reads Needs you for its own reason (a disputed review the worker handed back), one that failed or concluded, and one that is over keep their own words. PURE.
  */
 export const recordStaleBlock = (queue: Queue, key: string, note: string | null, now?: number): Queue => recordHandedBackNote(queue, key, note, isStaleBlockNote, now);
 
 /**
  * A board note written as a finished run's `handedBack` and recognised by its sentence form (`isOwn`): a null note clears a `handedBack` that is this note and no other, and a note is written only over a run that waits on a
- * review or a merge ({@link NOTEABLE}) and has no `handedBack` of another kind. Needs you is logged once, for the note that is new (A11-219). PURE.
+ * review or a merge ({@link WAITS_ON_REVIEW}) and has no `handedBack` of another kind. Needs you is logged once, for the note that is new (A11-219). PURE.
  */
 export function recordHandedBackNote(queue: Queue, key: string, note: string | null, isOwn: (text: string | undefined) => boolean, now?: number): Queue {
   const noted = withNote(queue, key, note, isOwn);
@@ -70,7 +67,7 @@ function withNote(queue: Queue, key: string, note: string | null, isOwn: (text: 
     }
     const other = entry.handedBack !== undefined && !isOwn(entry.handedBack);
     const { handedBack: _own, ...without } = entry;
-    if (other || !NOTEABLE.has(runStatus(without))) return entry;
+    if (other || !WAITS_ON_REVIEW.has(workStatus(without))) return entry;
     return { ...entry, handedBack: note };
   });
 }
