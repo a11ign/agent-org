@@ -53,6 +53,7 @@ import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 import { afterMergeRoute } from "./after-merge/route.ts";
+import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth } from "./health-route.ts";
 import { answerKeyed, holdsRun, plansOf, queueView, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf, type QueueView } from "./read-routes.ts";
@@ -521,7 +522,8 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
     ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
-    ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, query)
+    ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, query)
+    ?? sessionAnswerRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, body)
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 

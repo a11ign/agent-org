@@ -65,6 +65,13 @@ export function escalationList(): string {
 export const AFTER_MERGE_SESSION_SENTENCE = "An After-merge check that the person's session runs is not a stop either: the board sends it to the session's queue (`GET /api/session-asks`, as `kind: \"after-merge-check\"`), "
   + "and the session closes it there with one line of evidence (`POST /api/after-merge/<KEY>/<n>` with `{ \"result\": \"passed\" | \"failed\" | \"superseded\", \"evidence\": \"<one line>\", \"by\": \"session\" }`).";
 
+/** Where an ask only the person's session can do goes (A11-275): a declared `session` wait, never a stop, and how the session answers it. */
+export const SESSION_WAIT_SENTENCE = "An ask that only the person's session can do (running something on the person's machine, reading the board, a live check against a release) is not a stop either. "
+  + "Declare it as a `session` wait, `{ \"kind\": \"working\", \"reason\": \"...\", \"waitingOn\": [ { \"session\": \"<the exact command, where it runs, and what a pass looks like>\" } ], \"until\": \"<ISO time>\" }`, and end the turn: "
+  + "the board lists it in the session's queue (`GET /api/session-asks`, as `kind: \"waiting-run\"`), the session answers it there (`POST /api/session-asks/<KEY>/answer` with `{ \"ask\": \"<the ask>\", \"result\": \"<what it saw>\" }`), and the board wakes you with the result. "
+  + "If you are woken at `until` with the ask unanswered, declare it again with a new `until`; never stop on it. "
+  + "A run whose outcomes include no `working` (a plan, a review round) declares nothing: it names the ask in its plan or pull request body as a check the session runs, and goes on.";
+
 /**
  * What every agent that may stop is told to do with a question, quoted into the planner, worker and review-round briefs (A11-257): a stop is for an item of the list and names its id, and any other question is decided in line
  * with the plan, the ticket's Decisions, the code and the ADRs, taking the option the agent would have recommended, and recorded as a decision made without a person. PURE.
@@ -74,7 +81,7 @@ export const ESCALATION_RULE = `${escalationList()}\n\n`
   + "Record each such choice under \"Decisions made without a person\" (in the plan, or in the pull request body), with its reason, and carry on. "
   + "A `needs-human` outcome names its item in `escalation` (`\"escalation\": \"<id>\"`), and a `QUESTION.md` starts with the line `**Escalation:** <id>`: a stop that names none, or one not on this list, is sent back to you. "
   + "A run that cannot go on because something failed, such as a skill that is missing or a check that never starts, has no question to decide: it says what failed in its `needs-human` reason, and the board shows that stop as \"Off the escalation list:\" so that the cause is fixed. "
-  + AFTER_MERGE_SESSION_SENTENCE;
+  + `${AFTER_MERGE_SESSION_SENTENCE} ${SESSION_WAIT_SENTENCE}`;
 
 /**
  * What the stop hook refuses an agent with when it stops on a question that is not on the list. `what` says which stop and why it is off the list. A run that cannot go on because something FAILED (a check that never started, a

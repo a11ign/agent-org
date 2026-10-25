@@ -111,3 +111,17 @@ test("A11-236: a late wake herdr keeps refusing is offered three times for an un
   assert.deepEqual([marked.stalled, marked.stallReason, marked.woke], [true, "could not wake the worker: no such agent", undefined]);
   assert.equal(undeclaredMark({ ...refused, wakeTries: MAX_WAKE_TRIES - 1 }, AT + BACKGROUND_WAIT_MS, STALL).woke?.why, "late", "two refusals: still offered");
 });
+
+test("A11-275: a run that declared an ask for the person's session is waiting, never stalled and never Needs you, until its deadline", () => {
+  const SESSION: Wait = { kind: "session", ask: "run `agent-org update` on the Mac" };
+  const asked = { wait: SESSION, status: "pending", result: null } as Reading;
+  const text = "Waiting on the person's session: run `agent-org update` on the Mac (asked, no answer yet)";
+  const waiting = declaredMark(note({ waits: [SESSION], until: AT + 120 * MIN }), AT + 100 * MIN, STALL, { verdict: judgeWaits([asked]), readAt: AT + 100 * MIN, text });
+  assert.deepEqual([waiting.waiting, waiting.stalled, waiting.woke, waiting.waitText], [true, undefined, undefined, text]);
+  const unread = declaredMark(note({ waits: [SESSION] }), AT, STALL, null);
+  assert.equal(unread.waitText, "Waiting on the person's session: run `agent-org update` on the Mac", "before any reading, the card names the ask");
+  const answered = declaredMark(note({ waits: [SESSION] }), AT + MIN, STALL, { verdict: judgeWaits([{ wait: SESSION, status: "finished", result: "ok" } as Reading]), readAt: AT + MIN, text });
+  assert.deepEqual([answered.woke, answered.ended], [{ at: AT + MIN, why: "finished" }, [SESSION]], "the answer wakes the worker once");
+  const late = declaredMark(note({ waits: [SESSION], until: AT + 10 * MIN }), AT + 11 * MIN, STALL, { verdict: judgeWaits([asked]), readAt: AT + 11 * MIN, text });
+  assert.deepEqual(late.woke, { at: AT + 11 * MIN, why: "late", on: "the person's session: run `agent-org update` on the Mac" }, "an unanswered ask wakes the worker at its deadline to declare it again");
+});

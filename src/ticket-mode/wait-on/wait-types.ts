@@ -11,8 +11,11 @@ export type PullRequestWait = Readonly<{ kind: "pullRequest"; url: string; until
 /** A ticket, by its key, until the tracker has it done. */
 export type TicketWait = Readonly<{ kind: "ticket"; key: string; until: "done" }>;
 
+/** Something only the person's own session can do (run a command on their machine, read the board): the exact ask, and the session answers it through the board's API (A11-275). */
+export type SessionWait = Readonly<{ kind: "session"; ask: string }>;
+
 /** One event a worker declared it waits on. */
-export type Wait = FleetJobWait | CiRunWait | PullRequestWait | TicketWait;
+export type Wait = FleetJobWait | CiRunWait | PullRequestWait | TicketWait | SessionWait;
 
 /** Why the board woke a worker: what it waited on finished, one of it failed, or the wait passed its deadline (`on` says what was still pending then, when the wait was declared). */
 export type Woke = Readonly<{ at: number; why: "finished" | "failed" | "late"; on?: string }>;
@@ -38,7 +41,8 @@ export type Reading =
   | Readonly<{ wait: FleetJobWait; status: Settled; job: JobFacts }>
   | Readonly<{ wait: CiRunWait; status: Settled; run: CiRun }>
   | Readonly<{ wait: PullRequestWait; status: Settled; pull: PullFacts }>
-  | Readonly<{ wait: TicketWait; status: Settled; stateType: string }>;
+  | Readonly<{ wait: TicketWait; status: Settled; stateType: string }>
+  | Readonly<{ wait: SessionWait; status: "pending" | "finished"; result: string | null }>;
 
 /** An item's identity, the same for the same event however it was spelt: what a reading is remembered by, and what a repeated declaration is compared on. PURE. */
 export function waitKey(wait: Wait): string {
@@ -47,15 +51,29 @@ export function waitKey(wait: Wait): string {
     case "ciRun": return `ciRun:${wait.repository}#${wait.runId}`;
     case "pullRequest": return `pullRequest:${wait.url}:${wait.until}`;
     case "ticket": return `ticket:${wait.key}:${wait.until}`;
+    case "session": return `${wait.kind}:${wait.ask}`;
   }
 }
 
-/** What an item is, in the words the card and the wake prompt use for it: `fleet job fj-1`, `CI run owner/repo#9`, `pull request <address>`, `ticket A11-1`. PURE. */
+/** The longest ask a card or a prompt quotes. */
+const ASK_CHARS = 80;
+
+/** Text on one line: every run of white space, a new line among it, becomes one space. The wake prompt is typed into a pane, where a new line submits it early. PURE. */
+export const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/** An ask as the card and the wake prompt quote it: on one line, cut to {@link ASK_CHARS} characters. PURE. */
+export const askCut = (ask: string): string => {
+  const line = oneLine(ask);
+  return line.length > ASK_CHARS ? `${line.slice(0, ASK_CHARS)}...` : line;
+};
+
+/** What an item is, in the words the card and the wake prompt use for it: `fleet job fj-1`, `CI run owner/repo#9`, `pull request <address>`, `ticket A11-1`, `the person's session: <ask>`. PURE. */
 export function subjectOf(wait: Wait): string {
   switch (wait.kind) {
     case "fleetJob": return `fleet job ${wait.id}`;
     case "ciRun": return `CI run ${wait.repository}#${wait.runId}`;
     case "pullRequest": return `pull request ${wait.url}`;
     case "ticket": return `ticket ${wait.key}`;
+    case "session": return `the person's session: ${askCut(wait.ask)}`;
   }
 }

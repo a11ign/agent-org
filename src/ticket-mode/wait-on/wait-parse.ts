@@ -5,8 +5,11 @@ import { type Wait, waitKey } from "./wait-types.ts";
 /** The most items one wait may declare. */
 export const MAX_WAITS = 20;
 
-/** The item keys a declaration may carry, and the keys that go with each subject: a subject is exactly one of the first four, and `until` goes with the last two. */
-const SUBJECTS = ["fleetJob", "ciRun", "pullRequest", "ticket"] as const;
+/** The item keys a declaration may carry, and the keys that go with each subject: a subject is exactly one of them, and `until` goes with `pullRequest` and `ticket` only. */
+const SUBJECTS = ["fleetJob", "ciRun", "pullRequest", "ticket", "session"] as const;
+
+/** The longest ask a `session` item may write. */
+export const MAX_ASK_CHARS = 1000;
 const UNTIL_VALUES: Readonly<Record<string, readonly string[]>> = { pullRequest: ["merged", "reviewed"], ticket: ["done"] };
 
 /** A fleet job ID: it starts with a letter or digit, so it can never be read as an option of the program it is handed to. */
@@ -54,6 +57,11 @@ function waitOf(subject: string, value: string, until: unknown, at: string): Wai
     }
     case "pullRequest":
       return PULL_REQUEST_URL.test(value) ? { kind: "pullRequest", url: value, until: until as "merged" | "reviewed" } : `${at} pullRequest needs a GitHub pull request address, you wrote ${wrote(value)}`;
+    case "session": {
+      const ask = value.trim();
+      if (ask === "") return `${at} session needs the exact ask for the person's session, you wrote ${wrote(value)}`;
+      return ask.length > MAX_ASK_CHARS ? `${at} session takes an ask of up to ${MAX_ASK_CHARS} characters, you wrote ${ask.length}` : { kind: "session", ask };
+    }
     default:
       return TICKET_KEY.test(value) ? { kind: "ticket", key: value, until: "done" } : `${at} ticket needs a ticket key such as A11-1, you wrote ${wrote(value)}`;
   }
@@ -73,7 +81,7 @@ function itemOf(item: unknown, at: string): Wait | string {
 
 /**
  * The items a `working` outcome's `waitingOn` declares, in the order written with a repeat dropped, or why the value is not a declared wait: it must be a list of 1 to {@link MAX_WAITS} items, each with exactly one of `fleetJob`,
- * `ciRun`, `pullRequest` and `ticket`, and `until` on the last two only. A string `waitingOn` is not a declared wait (it names background work the worker's own shell holds), so the caller never hands one here. PURE.
+ * `ciRun`, `pullRequest`, `ticket` and `session`, and `until` on `pullRequest` and `ticket` only. A string `waitingOn` is not a declared wait (it names background work the worker's own shell holds), so the caller never hands one here. PURE.
  */
 export function parseWaits(value: unknown): readonly Wait[] | string {
   if (!Array.isArray(value)) return `waitingOn needs a list of events to wait on, you wrote ${wrote(value)}`;
