@@ -71,8 +71,24 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(exposure.portState(PORT, LOCAL).kind === "free", "portState() must be free before anything is served");
       expect(exposure.serve(PORT, LOCAL).status === 0, "serve() must serve the port");
       expect(exposure.portState(PORT, LOCAL).kind === "ours", "portState() must say the board's own proxy holds the port");
-      expect(exposure.unserve(PORT).status === 0, "unserve() must remove it");
+      expect(exposure.unserve(PORT, { local: LOCAL }).status === 0, "unserve() must remove it");
       expect(exposure.portState(PORT, LOCAL).kind === "free", "portState() must be free once the port is removed");
+    },
+  },
+  "unserve leaves an entry that is not the caller's (1.2)": {
+    applies: sandboxed,
+    reason: "serving changes the machine, and the implementation was not given a sandbox to serve in",
+    run: async ({ exposure }) => {
+      if ((await addressOf(exposure)) === null) return;
+      expect(exposure.serve(PORT, LOCAL).status === 0, "serve() must serve the port");
+      try {
+        exposure.unserve(PORT, { local: LOCAL + 1 });
+        expect(exposure.portState(PORT, LOCAL).kind === "ours", "unserve() must leave an entry that proxies to another loopback port than the caller's");
+        exposure.unserve(PORT);
+        expect(exposure.portState(PORT, LOCAL).kind === "ours", "unserve() must leave an entry when the caller names no loopback port: it cannot be proven the caller's");
+      } finally {
+        exposure.unserve(PORT, { local: LOCAL });
+      }
     },
   },
   "one path of a port is served open to the internet on its own, and unserve removes it": {
@@ -88,7 +104,7 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(exposure.serve(PORT, LOCAL, { path: HOOK, funnel: true }).status === 0, "serve() must serve the path");
       const state = exposure.portState(PORT, LOCAL, { path: HOOK });
       expect(state.kind === "ours" && state.funnel, "portState() of the path must say the board's proxy holds it, open to the internet");
-      expect(exposure.unserve(PORT, { path: HOOK, funnel: true }).status === 0, "unserve() must remove the path");
+      expect(exposure.unserve(PORT, { path: HOOK, funnel: true, local: LOCAL }).status === 0, "unserve() must remove the path");
       expect(exposure.portState(PORT, LOCAL, { path: HOOK }).kind === "free", "portState() of the path must be free once it is removed");
     },
   },
@@ -109,7 +125,7 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
         expect(exposure.claim(PORT, LOCAL, "ui") === null, "claim() must be null for a port the board's own proxy holds");
         expect(exposure.served().some((entry) => entry === `${address.name}:${PORT}`), "served() must list the host:port entry just served");
       } finally {
-        exposure.unserve(PORT);
+        exposure.unserve(PORT, { local: LOCAL });
       }
     },
   },

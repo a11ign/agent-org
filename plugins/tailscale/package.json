@@ -6,7 +6,7 @@
   "type": "module",
   "agentOrg": {
     "concern": "exposure",
-    "contract": "1.1",
+    "contract": "1.2",
     "description": "Serves the board and the worker terminal on the tailnet.",
     "setUp": "Board served on the tailnet",
     "entry": "index.ts",
