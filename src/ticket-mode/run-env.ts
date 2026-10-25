@@ -1,0 +1,59 @@
+// @ts-check
+// module: a run's pane environment -- what the board sets when it starts a run, read back from the run's Claude process, and the keys a restored pane lost (A11-279)
+//
+// HERDR RESTORES A PANE'S DIRECTORY AND CLAUDE SESSION, NOT ITS ENVIRONMENT. After the 15:20Z crash herdr brought every session back without `AGENT_ORG_TICKET` and the rest, and the gh wrapper refused A11-246's
+// `gh pr create` as if it came from a session that is not a ticket's (`plugins/github/wrapper/gh`). A running process cannot be given variables, so a run that lacks them is started again where it is, with the
+// environment {@link runEnvOf} builds: the same function `start()` passes to `workspace create --env`, so "as the board set it at start" is true by construction.
+import { readFileSync } from "node:fs";
+import { type Herdr } from "./pool-herdr.ts";
+import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { TICKET_ENV } from "./worktree-command.ts";
+
+/** The variables a run's shell carries: its ticket and branch (a batch's run has no one ticket, and none), and the host file `ticket:worktree` reads. PURE. */
+export function runEnvOf({ hostFile }: Readonly<{ hostFile: string | undefined }>, entry: Pick<Entry, "batch" | "ticket">): Record<string, string> {
+  const runId = entry.batch ?? entry.ticket.key;
+  return {
+    ...(entry.batch === undefined ? { [TICKET_ENV.key]: runId, [TICKET_ENV.branch]: entry.ticket.branch } : {}),
+    ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}),
+  };
+}
+
+/** The environment of the Claude process in a pane, or null when it cannot be read: herdr names no Claude process there, or `/proc` refuses it. A read that fails says nothing about the run. */
+export type PaneEnv = (pane: string) => Readonly<Record<string, string>> | null;
+
+/** The pid of the foreground `claude` process herdr reports for a pane, or null. PURE. */
+export function claudePidOf(processInfo: string): number | null {
+  try {
+    const processes = JSON.parse(processInfo)?.result?.process_info?.foreground_processes;
+    if (!Array.isArray(processes)) return null;
+    const claude = processes.find((p) => p?.name === "claude" && Number.isInteger(p?.pid));
+    return claude === undefined ? null : Number(claude.pid);
+  } catch {
+    return null;
+  }
+}
+
+/** The `KEY=value` pairs of a `/proc/<pid>/environ` text, which separates them by NUL. PURE. */
+export function parseEnviron(text: string): Record<string, string> {
+  const pairs = text.split("\0").filter((pair) => pair.includes("="));
+  return Object.fromEntries(pairs.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
+}
+
+/**
+ * The machine's own read of a pane's environment: herdr names the pane's foreground `claude` process (`pane process-info`), and `/proc/<pid>/environ` (the same user's) holds the variables it started with.
+ * Only reads. `readEnviron` is the seam for `/proc`.
+ */
+export function livePaneEnv(herdr: Herdr, herdrSession: string, readEnviron: (pid: number) => string = (pid) => readFileSync(`/proc/${pid}/environ`, "utf8")): PaneEnv {
+  return (pane) => {
+    try {
+      const pid = claudePidOf(herdr(["--session", herdrSession, "pane", "process-info", "--pane", pane]));
+      return pid === null ? null : parseEnviron(readEnviron(pid));
+    } catch {
+      return null;
+    }
+  };
+}
+
+/** The keys of `wanted` that `held` lacks or holds with another value. PURE. */
+export const lostKeys = (wanted: Readonly<Record<string, string>>, held: Readonly<Record<string, string>>): string[] =>
+  Object.entries(wanted).filter(([key, value]) => held[key] !== value).map(([key]) => key);

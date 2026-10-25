@@ -23,6 +23,8 @@ import { type RestackDone } from "./stack-restack.ts";
 import type { WaitPolls } from "./wait-on/wait-watch.ts";
 import type { WaitSeams } from "./wait-on/wait-read.ts";
 import type { RestartReads } from "./pool-resume.ts";
+import { livePaneEnv, type PaneEnv } from "./run-env.ts";
+import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -83,7 +85,12 @@ export type PoolDeps = Readonly<{
   waitSeams?: Partial<Pick<WaitSeams, "fleetJobStatus" | "readTimeoutMs">>;
   /** What the board reads a restart from (A11-279): this boot's id and when herdr's service last started. Absent: the kernel's and the service manager's, which are only read. */
   restartReads?: RestartReads;
+  /** The environment of the Claude process in a pane (A11-279): `herdr pane process-info` and `/proc/<pid>/environ` by default, which only read. A test gives the panes' recorded environments. */
+  paneEnv?: PaneEnv;
 }>;
+
+/** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */
+export type Reseat = Readonly<{ key: string; note: ResumeNote }>;
 
 /** The pool holds the queue through these two, so the server stays its one writer. */
 export type QueueStore = Readonly<{ get: () => Queue; set: (queue: Queue) => void }>;
@@ -164,6 +171,12 @@ export type PoolContext = Readonly<{
   waitPolls: WaitPolls;
   /** Whether this instance's first watch pass has read the restart record (A11-279): that first pass is itself a restart, and only it. */
   restart: { read: boolean };
+  /** The panes that lack the run's environment and are to be started again, by herdr name (A11-279). Filled by the watch, emptied by `reseatRuns` in the same pass. */
+  reseating: Map<string, Reseat>;
+  /** The keys of the environment a restored pane lacked, by herdr name, for a run that was working when it was read: it is started again when its agent first sits at a prompt (A11-279). Kept in memory: an instance that starts reads every run afresh. */
+  envLost: Map<string, readonly string[]>;
+  /** The environment of the Claude process in a pane (A11-279). */
+  paneEnv: PaneEnv;
 }>;
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
@@ -239,5 +252,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
   };
 }

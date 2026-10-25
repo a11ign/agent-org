@@ -403,9 +403,9 @@ export type Entry = Readonly<{
 
 /**
  * The board sent a running run the resume prompt (A11-279): when, and why, after a restart or after its agent sat idle since `idleSince`; `refused` is herdr's reason when it would not take the prompt, which the card
- * says in its place.
+ * says in its place. `environment` is set when the pane had lost the run's environment (A11-279): `restored` when the board started the run again with it, `missing` when it could not.
  */
-export type ResumeNote = Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string }>;
+export type ResumeNote = Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string; environment?: "restored" | "missing" }>;
 
 /** How the board took a live pane back (A11-240): a run caught `starting` by a restart, or one it had marked crashed whose worker was found working, and why it had been crashed. */
 type Readopted = Readonly<{ at: number; from: "starting" }> | Readonly<{ at: number; from: "crashed"; reason: string }>;
