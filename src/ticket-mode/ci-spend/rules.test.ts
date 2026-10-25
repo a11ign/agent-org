@@ -14,18 +14,20 @@ test("A11-261: the rule says to test locally, push once per meaningful change, n
   }
 });
 
-test("A11-261: every worker's brief carries the rule, in the step that tells it to commit and push", () => {
-  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p" });
-  assert.ok(brief.includes("3. Work, commit and push only inside those worktrees."));
-  assert.ok(brief.includes(PUSH_ONCE_RULE));
-  for (const drafts of [true, false]) {
-    const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p", drafts });
-    assert.ok(text.includes(PUSH_ONCE_RULE), `the rule is in the brief with drafts ${drafts}`);
-  }
-  const readyBrief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p", drafts: false });
-  assert.equal(readyBrief.includes("draft pull request"), false, "a drafts-off machine's brief never says draft pull request (worker-files.test.ts holds that)");
-  assert.equal(readyBrief.includes("--draft"), false);
-  assert.ok(brief.indexOf(PUSH_ONCE_RULE) > brief.indexOf("Work, commit and push only") && brief.indexOf(PUSH_ONCE_RULE) < brief.indexOf("## What to do"));
+const briefWith = (drafts?: boolean): string =>
+  briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p", ...(drafts === undefined ? {} : { drafts }) });
+
+test("A11-261: every worker's brief carries the rule, in the step that tells it to commit and push, with drafts on or off", () => {
+  const brief = briefWith();
+  const step = brief.indexOf("3. Work, commit and push only inside those worktrees.");
+  assert.ok(step >= 0 && brief.indexOf(PUSH_ONCE_RULE) > step && brief.indexOf(PUSH_ONCE_RULE) < brief.indexOf("## What to do"));
+  for (const drafts of [true, false]) assert.ok(briefWith(drafts).includes(PUSH_ONCE_RULE), `the rule is in the brief with drafts ${drafts}`);
+});
+
+test("A11-261: a drafts-off machine's brief still never says draft pull request or --draft (worker-files.test.ts holds the same)", () => {
+  const ready = briefWith(false);
+  assert.equal(ready.includes("draft pull request"), false);
+  assert.equal(ready.includes("--draft"), false);
 });
 
 test("A11-261: the shipped worker house notes carry the rule", () => {
