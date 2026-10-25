@@ -84,7 +84,7 @@ describe("the instance switcher", () => {
     localStorage.setItem("ticket-mode.connection", JSON.stringify(["work"]));
     history.replaceState(null, "", "/runs/A11-1?connection=personal");
     await shellOn("tickets", stand);
-    expect(JSON.parse(localStorage.getItem("ticket-mode.connection") ?? "[]")).toEqual(["personal"]);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("ticket-mode.connection") ?? "[]")).toEqual(["personal"]));
     cleanup();
     history.replaceState(null, "", "/tickets?connection=nowhere");
     await shellOn("tickets", stand);
