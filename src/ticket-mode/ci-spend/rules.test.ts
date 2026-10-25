@@ -16,7 +16,7 @@ test("A11-261: the rule says to test locally, push once per meaningful change, n
 
 test("A11-261: every worker's brief carries the rule, in the step that tells it to commit and push", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p" });
-  assert.ok(brief.includes(`3. Work, commit and push only inside those worktrees.`));
+  assert.ok(brief.includes("3. Work, commit and push only inside those worktrees."));
   assert.ok(brief.includes(PUSH_ONCE_RULE));
   assert.equal(brief.includes("draft pull request"), false, "a drafts-off machine's brief never says draft pull request (worker-files.test.ts holds that)");
   assert.ok(brief.indexOf(PUSH_ONCE_RULE) > brief.indexOf("Work, commit and push only") && brief.indexOf(PUSH_ONCE_RULE) < brief.indexOf("## What to do"));
