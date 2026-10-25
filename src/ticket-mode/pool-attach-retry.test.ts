@@ -72,7 +72,7 @@ test("a network error then success attaches with no person: the card says retry 
   assert.equal(calls.length, 1);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome], ["running", undefined], "not ended, and no person");
   assert.equal(entry("NBF-1").working?.reason, "attaching the plan (retry 1)");
-  assert.deepEqual(workingNote(entry("NBF-1")), { text: "attaching the plan (retry 1)", stalled: false });
+  assert.deepEqual(workingNote(entry("NBF-1")), { text: "attaching the plan (retry 1)", stalled: false, waiting: false });
   const afterFirstTry = readFileSync(planFile, "utf8");
   await tick(ATTACH_WAITS_MS[0] - 1);
   assert.equal(calls.length, 1, "the wait is not over, so the tracker is not asked");
