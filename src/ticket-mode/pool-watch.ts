@@ -3,7 +3,7 @@
 
 import { readAgents } from "../herdr-agents.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
-import { log, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
+import { log, messageOf, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
 import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, recordWrittenStep, settle } from "./pool-settle.ts";
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { checkRound, conflictRound, feedbackRound, markResumed, observe, observePublish, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
@@ -12,6 +12,7 @@ import { declineSafetyPrompt, readPrompt, retellDeclined, untoldDecline } from "
 import { join } from "node:path";
 import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mergeBaseInto } from "./pool-base-merge.ts";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
@@ -536,9 +537,12 @@ export function watchFeedback(ctx: PoolContext): void {
     if (!resumesOnConflict(entry)) continue;
     const checks = answerChecks(ctx, entry, open, foreign);
     const removals = answerQueue(ctx, entry, open);
+    // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
+    const reviewer = isWatched(entry) ? reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url)) : [];
+    // A pull request that conflicts or is behind has the base merged into it before a worker is asked (A11-286), unless a round starts in this pass for something else: its worker then finds the branch where it left it, and is told of the conflict.
+    if (!startsAnotherRound(entry, readable, [checks.feedback, removals.feedback, removals.conflict, ...reviewer])) mergeBaseOf(ctx, entry, open);
     if (isWatched(entry)) {
-      // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
-      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), checks.feedback, removals.feedback, removals.conflict, ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
+      const lines = [feedbackSince(readable, entry.finishedAt ?? 0, ctx.baseMerges), checks.feedback, removals.feedback, removals.conflict, ...reviewer]
         .filter((line): line is string => line !== null);
       if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
       else {
@@ -556,6 +560,23 @@ export function watchFeedback(ctx: PoolContext): void {
     flagReviewerDialog(ctx, key);
   }
   if (queued) void tick(ctx);
+}
+
+/**
+ * Merge the base into the open pull requests of a finished run that conflict or are behind (A11-286, {@link mergeBaseInto}). A conflict the host reports as real is decided again, by a second watch, once its files are listed; a second watch that
+ * throws is said, as the sweep's own failure is, and not left to be an unhandled rejection of the process.
+ */
+function mergeBaseOf(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): void {
+  for (const pull of open) {
+    mergeBaseInto(ctx, entry, pull)?.then(() => watchFeedback(ctx)).catch((err: unknown) => log(`${entry.ticket.key}: ${pull.url} could not be answered once its conflict was listed: ${messageOf(err).split("\n")[0]}`));
+  }
+}
+
+/** Whether this pass starts a round of the run's worker for something other than a conflict: new review feedback on a watched run, or any of `lines` (red checks, the merge queue's removals, a reviewer's request). PURE. */
+function startsAnotherRound(entry: Entry, readable: readonly { url: string; read: PullFeedback }[], lines: readonly (string | null)[]): boolean {
+  const since = entry.finishedAt ?? 0;
+  const newFeedback = isWatched(entry) && readable.some(({ read }) => read.state === "open" && read.feedbackAt !== null && read.feedbackAt > since);
+  return newFeedback || lines.some((line) => line !== null);
 }
 
 /** Record what the board did about a run's merge queue removals (`heads`, {@link QueueAnswer.heads}) before the round that answers them is queued. Written only when it changed. */
@@ -601,16 +622,25 @@ function withMergeableForBlocked(heads: Readonly<Record<string, PullHead>>, entr
 const movedFrom = (head: string, read: PullFeedback): boolean => read.state === "open" && read.head !== null && read.head !== head;
 
 /**
- * The board brought a pull request up to date with main (A11-215, the `updated` check record), and the watch now reads it at the head that push made: the run's outcome head moves with it, as it does for agent-org's own merge of a blocker's
+ * The board brought a pull request up to date with main (A11-215, the `updated` check record; A11-286, its merge of the base into a conflicting or behind one), and the watch now reads it at the head that push made: the run's outcome head moves with it, as it does for agent-org's own merge of a blocker's
  * branch (A11-153), because that push is no person's answer to a run that ended `needs-human`. An outcome head at another commit was moved by someone else, and stays.
  */
 function followUpdatesFromMain(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
   for (const { url, read } of readable) {
-    const updated = entry.checkHeads?.[url];
-    if (updated?.step !== "updated" || !movedFrom(updated.head, read) || entry.outcomeHeads?.[url] !== updated.head) continue;
+    const from = headUpdatedFromMain(ctx, entry, url);
+    if (from === undefined || !movedFrom(from, read) || entry.outcomeHeads?.[url] !== from) continue;
     const to = read.head!;
-    update(ctx, (queue) => moveOutcomeHeads(queue, entry.ticket.key, updated.head, to));
+    update(ctx, (queue) => moveOutcomeHeads(queue, entry.ticket.key, from, to));
   }
+}
+
+/** The head the board merged the base into a pull request from: the one the `updated` check record names (A11-215), or the one the board's merge of the base recorded (`merging` or `behind`, A11-286, kept in memory). Undefined when it did neither. */
+function headUpdatedFromMain(ctx: PoolContext, entry: Entry, url: string): string | undefined {
+  const updated = entry.checkHeads?.[url];
+  const merged = ctx.baseMerges.get(url);
+  const heads = [updated?.step === "updated" ? updated.head : undefined, merged?.step === "merging" || merged?.step === "behind" ? merged.head : undefined];
+  // Either record may be the earlier one: the head the run's outcome still holds is the one the next push moves it from.
+  return heads.find((head) => head !== undefined && head === entry.outcomeHeads?.[url]) ?? heads.find((head) => head !== undefined);
 }
 
 /**
@@ -675,7 +705,7 @@ function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { ur
   const { now } = ctx;
   const key = entry.ticket.key;
   const red = [checks.feedback, removals.feedback].filter((line): line is string => line !== null);
-  const lines = [conflictLines(readable), removals.conflict, ...red].filter((line): line is string => line !== null);
+  const lines = [conflictLines(readable, ctx.baseMerges), removals.conflict, ...red].filter((line): line is string => line !== null);
   const feedback = lines.join("\n");
   if (lines.length === 0) {
     recordWithoutRound(ctx, entry, checks, removals);

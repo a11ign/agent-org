@@ -54,10 +54,10 @@ export function stampWorktree(worktree: string, session: string, { write = write
  * NULL IS NOT "nobody is using it" -- it is "nobody said". Every tree made before this shipped answers
  * null, and a caller that reads that as "free" has made the same substitution this row is about.
  *
- * @param {string} worktree @param {{ exists?: typeof existsSync, read?: typeof readFileSync }} [deps]
+ * @param {string} worktree @param {{ exists?: typeof existsSync, read?: (path: string) => string }} [deps]
  * @returns {string | null}
  */
-export function worktreeOwner(worktree: string, { exists = existsSync, read = ((p: string) => readFileSync(p, "utf8")) as typeof readFileSync }: { exists?: typeof existsSync; read?: typeof readFileSync; } = {}): string | null {
+export function worktreeOwner(worktree: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8") }: { exists?: typeof existsSync; read?: (path: string) => string; } = {}): string | null {
   const path = join(worktree, OWNER_FILE);
   if (!exists(path)) return null;
   const owner = String(read(path)).trim();

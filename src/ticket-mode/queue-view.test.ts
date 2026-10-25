@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { gunzipSync } from "node:zlib";
 import { currentStepOf } from "./board-view/plan-steps.ts";
+import { unlistedPulls } from "./board-view.ts";
 import { cutListNote, footprintOf, overlapWait } from "./board-view/overlap-hold.ts";
 import { readoptNote } from "./board-view/readopt-note.ts";
 import { reasonOf } from "./board-view/run-reason.ts";
@@ -48,6 +49,8 @@ test("A11-270: a run in the list has its ticket's key, title and address and no 
   const view = JSON.parse((await read(served, "/api/queue")).body) as QueueView;
   assert.equal(view.entries.length, queue.entries.length, "every run is listed");
   assert.equal("runLog" in view, false);
+  assert.deepEqual(view.openedPullLog, Object.fromEntries(Object.entries(queue.runLog ?? {}).flatMap(([key, events]) => { const opened = events.filter(({ kind }) => kind === "pr-opened"); return opened.length === 0 ? [] : [[key, opened]]; })), "the log is sent as far as the Runs page reads it: the events that opened a pull request");
+  assert.ok(Object.keys(view.openedPullLog).length > 0 && Object.values(view.openedPullLog).every((events) => events.every(({ kind }) => kind === "pr-opened")));
   const first = view.entries[0];
   assert.deepEqual(Object.keys(first.ticket).sort(), ["key", "title", "url"]);
   for (const entry of view.entries) for (const field of Object.keys(entry)) assert.ok(([...LIST_FIELDS, "ci"] as string[]).includes(field), `${entry.ticket.key} sends ${field}`);
@@ -99,6 +102,11 @@ test("A11-270: the rows the pages word are the same from the list as from the fu
   }));
   const fromList = wordings(view.entries);
   assert.deepEqual(fromList, wordings(queue.entries.map(shownEntry)));
+  // 1246 is a pull request only a queued run's log says the board opened; 1247 and 9 belong to no run.
+  const reviews = { "https://github.com/a11ign/agent-org/pull/1246": "approved", "https://github.com/a11ign/agent-org/pull/1247": "approved", "https://github.com/a11ign/agent-org/pull/9": "approved" };
+  const unlisted = unlistedPulls(view.entries, reviews, view.openedPullLog);
+  assert.deepEqual(unlisted, unlistedPulls(queue.entries, reviews, queue.runLog), "the pull requests no run lists are the same from the list as from the full log");
+  assert.deepEqual(unlisted.map(({ url }) => url.split("/").at(-1)), ["1247", "9"]);
   assert.ok(fromList.some((row) => row.wait !== null) && fromList.some((row) => row.learns !== null) && fromList.some((row) => row.readopted !== null) && fromList.some((row) => row.change !== null), "the fixture draws every kind of line compared");
 });
 

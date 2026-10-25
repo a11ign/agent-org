@@ -49,7 +49,7 @@ function useLimit(filter: RunStatus | null): Readonly<{ limit: number; more: () 
 function Lists({ queue, disabled }: Readonly<{ queue: QueueView; disabled: boolean }>) {
   return (
     <>
-      <PullRequestsList entries={queue.entries} reviews={queue.pulls ?? {}} />
+      <PullRequestsList entries={queue.entries} reviews={queue.pulls ?? {}} runLog={queue.openedPullLog} />
       <AfterMergeList checks={queue.afterMergeChecks ?? []} disabled={disabled} />
     </>
   );

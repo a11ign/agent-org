@@ -79,10 +79,10 @@ export function listEntry(entry: Entry, ci?: CiView): QueueListEntry {
 
 /**
  * A run as its own page is sent it, without the copies of its ticket's text the board keeps to tell a change by (`briefedAgainst`, `plannedAgainst`; A11-167): the page draws a change from `ticketChange` and
- * `ticketChanges`, which hold the two texts of a change, and each run already carries its ticket.
+ * `ticketChanges`, which hold the two texts of a change, and each run already carries its ticket. The step a conflict round holds back (`afterRound`, A11-286) is a whole entry of its own, and is not sent.
  */
 export function shownEntry(entry: Entry): Entry {
-  const { briefedAgainst: _briefed, plannedAgainst: _planned, ticketChanges, talkFrom, ...shown } = entry;
+  const { briefedAgainst: _briefed, plannedAgainst: _planned, afterRound: _held, ticketChanges, talkFrom, ...shown } = entry;
   // Only the latest change is drawn; and a talk session's copy of the run it replaced is shown as that run is.
   return { ...shown, ...(ticketChanges ? { ticketChanges: ticketChanges.slice(-1) } : {}), ...(talkFrom ? { talkFrom: shownEntry(talkFrom as Entry) } : {}) };
 }
@@ -101,15 +101,23 @@ const ciOf = (board: ViewBoard, queue: Queue, entry: Entry): CiView | undefined 
 /** What `/api/queue` answers, and every route that changes the queue. The UI's client names this type, so a field renamed here fails its `tsc`. */
 export type QueueView = ReturnType<typeof queueView>;
 
+/** The events of each run's log that say the board opened a pull request for it, by ticket key: the whole of the log the Runs page reads (`unlistedPulls`, A11-286), which is the run's own page's to read in full. */
+function openedPullLog(runLog: Queue["runLog"]): Readonly<Record<string, readonly RunEvent[]>> {
+  return Object.fromEntries(Object.entries(runLog ?? {}).flatMap(([key, events]) => {
+    const opened = events.filter(({ kind }) => kind === "pr-opened");
+    return opened.length === 0 ? [] : [[key, opened]];
+  }));
+}
+
 /** The queue as the pages read it: the stored queue with each run as the list sends it, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
 export function queueView(board: ViewBoard) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
-  // is sent it, without a Grill run's ticket text (A11-134). `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261). The runs' logs are not sent: a
-  // run's page reads its own (`queueEntryView`).
-  const { ciSpend: _ciSpend, runLog: _runLog, ...queue } = board.store.get();
+  // is sent it, without a Grill run's ticket text (A11-134). `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261). The runs' logs are not sent but for the events that
+  // opened a pull request (`openedPullLog`); a run's page reads its own (`queueEntryView`).
+  const { ciSpend: _ciSpend, runLog, ...queue } = board.store.get();
   const entries = queue.entries.map((entry) => listEntry(entry, ciOf(board, board.store.get(), entry)));
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
+  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
     afterMergeChecks: afterMergeView(board.settings.stateDir) };
 }
 

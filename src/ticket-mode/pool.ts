@@ -71,6 +71,9 @@
 // so it is feedback on every watch until a round clears it. The watch is for runs that ended `reviewed` (Ready to merge, or Awaiting review until their pull requests are approved at their head and
 // green there: a run is not ready because its round ended, A11-179) or Published, and for a parked run with a conflict (below); a draft's read is kept for its footprint. A red check that fails on the
 // default branch too, or on another run's pull request that touches none of the run's paths, is named on the card and starts no round (`pool-foreign-checks.ts`).
+// EVERY OPEN PULL REQUEST OF A TICKET IS WATCHED IN ANY PHASE (A11-286). The watch above reads a finished run's pull requests; the ones of a ticket queued for its next step, queued again, running or planned are found from its run log (`kept-pulls.ts`) and read
+// on the same cadence (`watchKeptPulls`, `pool-base-merge.ts`). A pull request that conflicts or is behind has its base merged into it by the code host first (`mergeBaseInto`): the armed auto-merge carries on from the new head, and no worker is asked. Only a
+// conflict the merge reports as real starts a conflict round, naming the files, the base and the merge command, ahead of the step the ticket was queued for, which waits in `afterRound` until the round has pushed. A run that holds a workspace is not pushed to.
 // A PARKED RUN WITH A CONFLICT IS RESUMED TOO (A11-89). A run that parked on a question, or ended with no outcome, still has its pull requests read, and
 // a conflict alone resumes it: its workspace is closed and a round queued (`conflictRound`), within the same three. Nothing else wakes a parked run.
 //
@@ -102,6 +105,7 @@ import { applyEdit, discardEdit, dismiss, remove, respond, stop, stopWriterRun }
 import { answer, type Answer } from "./pool-answer.ts";
 import { close } from "./pool-settle.ts";
 import { tick, watchFeedback } from "./pool-watch.ts";
+import { watchKeptPulls } from "./pool-base-merge.ts";
 import { reconcile } from "./pool-readopt.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
 import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads } from "./pool-reviewers.ts";
@@ -120,7 +124,8 @@ export { startsReviewers, type PoolDeps, type QueueStore } from "./pool-context.
 export { ticketDir, ticketFolder } from "./ticket-paths.ts";
 
 /**
- * The watch of a finished run's pull requests, after the restack of the stacked ones (A11-248). The member above one that merged conflicts with `main` the moment GitHub recomputes it, and the watch
+ * The watch of a finished run's pull requests, after the restack of the stacked ones (A11-248), and then of the pull requests of every other run (A11-286, {@link watchKeptPulls}): the first is done when this returns, and the second runs on
+ * (`keptSweep.done` settles once the pull requests it found conflicting have had their files listed and the conflict round that is due is queued and started). The member above one that merged conflicts with `main` the moment GitHub recomputes it, and the watch
  * would start a plain conflict round that names neither the stack nor the merged member, a round the restack then leaves alone. So the restack goes first: a restack that conflicts starts its own round,
  * which takes the run out of `finished`, and the watch leaves it alone. The restack is idempotent per merged member (its pull requests are read again, and nothing is restacked or asked twice), so it still runs on its own timer too. A restack that throws is said, and the watch runs.
  */
@@ -131,6 +136,7 @@ function restackThenWatch(ctx: PoolContext): void {
     log(`the stacked pull requests could not be restacked before the feedback watch: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`);
   }
   watchFeedback(ctx);
+  ctx.keptSweep.done = watchKeptPulls(ctx).then((queued) => { if (queued) void tick(ctx); });
 }
 
 export function createPool(store: QueueStore, deps: PoolDeps) {
@@ -149,6 +155,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     ensureSession: () => ensureSession(ctx),
     refreshTracker: () => refreshTracker(ctx),
     watchFeedback: () => restackThenWatch(ctx),
+    /** Settles once the sweep of the pull requests no finished run's watch reads (A11-286) that `watchFeedback` last started has been looked at and the conflict round it found is queued and started. Never rejects. */
+    keptWatchDone: () => ctx.keptSweep.done,
     releaseReviewers: () => releaseReviewers(ctx),
     reviewNewHeads: () => reviewNewHeads(ctx),
     /** The review state of each open pull request the pool has read, by url, as the board words it (A11-119). */

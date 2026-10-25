@@ -85,6 +85,29 @@ const BOARD_ROWS: Readonly<Record<Exclude<State, "loading" | "missing">, readonl
   awaiting: ["Pull request opened", "Started"], ready: ["Approved at 1f6009d", "Started"], done: ["Pull request merged", "Started"], failed: ["Run failed", "Started"], cancelled: ["Ticket canceled in the tracker", "Started"],
 };
 
+describe("the Timeline's base-merge rows", () => {
+  it("word each base-merge step of a pull request the board brings up to date, and the step queued again after its conflict round (A11-286)", () => {
+    const rows = rowsOf([
+      { at: NOW - 6 * MINUTE, kind: "base-merge", url: PULL, base: "main", step: "merging" },
+      { at: NOW - 5 * MINUTE, kind: "base-merge", url: PULL, base: "main", step: "behind" },
+      { at: NOW - 4 * MINUTE, kind: "base-merge", url: PULL, base: "main", step: "round" },
+      { at: NOW - 3 * MINUTE, kind: "base-merge", url: PULL, base: "main", step: "waiting" },
+      { at: NOW - 2 * MINUTE, kind: "base-merge", url: PULL, base: "release/2", step: "capped" },
+      { at: NOW - 1 * MINUTE, kind: "requeued", why: "conflict-round" },
+      { at: NOW - 30_000, kind: "base-merge", url: PULL, base: null, step: "merging" },
+    ], { phase: "queued" });
+    expect(rows.map(({ text, when, tone }) => [text, when, tone])).toEqual([
+      ["a11ign/lab #150 conflicts with its base: merging its base in", "just now", "violet"],
+      ["Queued again", "1 min ago · after its conflict round", "grey"],
+      ["a11ign/lab #150 conflicts with release/2: the board's rounds are used up; Respond to review starts another", "2 min ago", "amber"],
+      ["a11ign/lab #150 conflicts with main: waits for the running worker", "3 min ago", "amber"],
+      ["a11ign/lab #150 conflicts with main: conflict round started", "4 min ago", "amber"],
+      ["a11ign/lab #150 is behind main: merging main in", "5 min ago", "violet"],
+      ["a11ign/lab #150 conflicts with main: merging main in", "6 min ago", "violet"],
+    ]);
+  });
+});
+
 describe("the Timeline on Run detail", () => {
   it.each(STATES.filter((state): state is Exclude<State, "loading" | "missing"> => state !== "loading" && state !== "missing"))("%s draws a Timeline of what the board recorded, after the pull requests", async (state) => {
     await pageFor(state);

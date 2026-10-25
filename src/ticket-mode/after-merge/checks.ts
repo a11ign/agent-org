@@ -4,7 +4,7 @@
 // A CHECK OUTLIVES ITS RUN. A11-173 recorded a merged run's After-merge lines on the run, so a row left only when its run was dismissed, and a pass, a fail and a check nobody ran all left the same way. Each line is
 // now copied once into a record of its own, `<KEY>#<n>` (its 1-based place in the run's list, which is recorded once), and leaves the list only when its runner closes it with one line of evidence.
 import { ownerOf } from "../done-when.ts";
-import { isMovedLine } from "../after-merge-move.ts";
+import { isBoardMoved, isMovedLine } from "../after-merge-move.ts";
 import type { AfterMergeLine } from "../board-view/view-types-and-filters.ts";
 import type { ObserveSpec } from "./observe.ts";
 
@@ -86,8 +86,17 @@ const listedLines = (run: ListedRun) => (run.afterMerge ?? []).map(({ line }, in
 /** One After-merge line as a plan's `## After-merge checks` section names it (`plan-section.ts`): the line quoted, who runs it, the escalation item of a person's, what the board watches for, and what would close it. */
 export type PlannedCheck = Readonly<{ line: string; runner: Runner; escalation?: string; observe?: ObserveSpec; evidence: string }>;
 
-/** Whether a plan's `quoted` line names the After-merge `line`: it is the line, or the Before-merge line the board moved to it (A11-275). PURE. */
-export const namesLine = (quoted: string, line: string): boolean => quoted === line.trim() || isMovedLine(line, quoted);
+/**
+ * A line as it is compared (A11-288): a backslash before a quote or a backtick is dropped, typographic double quotes, straight double quotes and backticks are removed, typographic single quotes become `'`, and each run of white space
+ * is one space. A ticket line with inner quotes or backticks, and a plan's copy of it in any of those spellings, are therefore the same line. A record keeps the words as written; only the comparison is normalised. PURE.
+ */
+export const lineKey = (text: string): string => text.replace(/\\(["`])/g, "$1").replace(/[\u201C\u201D\u201E"`]/g, "").replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
+
+/** Whether the After-merge `line` is the Before-merge `quoted` line as the board moved it, compared by {@link lineKey} so a copy with other quotes still names it (A11-288). PURE. */
+const movedLoosely = (line: string, quoted: string): boolean => isBoardMoved(line) && lineKey(line).startsWith(`${lineKey(quoted).replace(/\.$/, "")}. `);
+
+/** Whether a plan's `quoted` line names the After-merge `line`: it is the line, in the spelling {@link lineKey} compares, or the Before-merge line the board moved to it (A11-275). PURE. */
+export const namesLine = (quoted: string, line: string): boolean => lineKey(quoted) === lineKey(line) || isMovedLine(line, quoted) || movedLoosely(line, quoted);
 
 /** The plan's word on a listed line: the last bullet that names it. Undefined for a line the plan does not name. PURE. */
 const plannedFor = (line: string, planned: readonly PlannedCheck[]): PlannedCheck | undefined => planned.findLast((check) => namesLine(check.line, line));

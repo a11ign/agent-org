@@ -8,6 +8,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { checkOutcome, isStale } from "./outcome.ts";
 import { escalationReason } from "./escalation.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
+import type { BaseMergeStep } from "./queue/run-log.ts";
 
 /** The largest file a planning run's plan may hold. A plan is prose; anything bigger is not one. */
 export const PLAN_FILE_BYTES = 1_000_000;
@@ -80,14 +81,48 @@ export function publishResult(outcomeText: string, dir: string): Readonly<{ link
 }
 
 /**
+ * What the board did about a pull request that conflicts with its base or is behind it, at one head (A11-286), as the pool keeps it in memory by the pull request's address: `head` is the commit it was done at, and `step` is
+ * what was done ({@link BaseMergeStep}), or `listing` while the files of a real conflict are being read, or `refused` when the host would not update the branch (`reason`, GitHub's first line), which is asked again on the next sweep.
+ * `files` are the files a real conflict touches: null when they could not be listed, absent before they were. `at` is when the step was recorded (the pool's clock), which tells a merge the host accepted that never moved the head.
+ */
+export type BaseMerge = Readonly<{ head: string; step: BaseMergeStep | "listing" | "refused"; files?: readonly string[] | null; reason?: string; at?: number }>;
+
+/** What the board has done about each pull request's base, by the pull request's address. */
+export type BaseMerges = ReadonlyMap<string, BaseMerge>;
+
+/** The `git` command that merges `base` into a branch, as a conflict round's brief gives it. */
+export const mergeCommand = (base: string | null): string => `git fetch origin ${base ?? "<base>"} && git merge origin/${base ?? "<base>"}`;
+
+/**
+ * The two lines a conflict round adds to the conflict line once the board's own merge of the base reported a real conflict (A11-286): the files it conflicted in (or that they could not be listed), and the merge command to run, so the worker
+ * starts from what the merge found. PURE.
+ */
+export function baseMergeLines(base: string | null, files: readonly string[] | null | undefined): readonly string[] {
+  const named = base ?? "its base";
+  const conflicted = files === undefined || files === null || files.length === 0 ? `Merging ${named} into it conflicted, and the board could not list the files.` : `Merging ${named} into it conflicted in ${files.join(", ")}.`;
+  return [conflicted, `Merge it with: ${mergeCommand(base)}, resolve the files above, run the tests and push.`];
+}
+
+/**
+ * The lines about one conflicting pull request, given what the board did about its base at the head it is read at: none while the board's merge is under way (`merging`, or the files of a conflict are being listed), the conflict line and the two
+ * lines of {@link baseMergeLines} once the merge found a real conflict (`round`), and the conflict line alone otherwise. PURE.
+ */
+function conflictOf(url: string, read: PullFeedback, merges: BaseMerges | undefined): readonly string[] {
+  const done = merges?.get(url);
+  const at = done !== undefined && done.head === read.head ? done : undefined;
+  if (at?.step === "merging" || at?.step === "listing") return [];
+  return [conflictLine(url, read.base), ...(at?.step === "round" ? baseMergeLines(read.base, at.files) : [])];
+}
+
+/**
  * What new feedback, if any, reached a run's pull requests after `since`, the end of its last round, as the round's brief names it: the newest
  * comments and who left them; and each pull request that conflicts with its base. Null when nothing is newer. The checks that failed are not here: they are
- * answered once for each head they are red at, with their log lines (`answerChecks`, A11-154). PURE.
+ * answered once for each head they are red at, with their log lines (`answerChecks`, A11-154). A conflict the board is merging the base into is not named, and one its merge found real is named with the files and the command (`merges`, A11-286). PURE.
  */
-export function feedbackSince(reads: readonly Readonly<{ url: string; read: PullFeedback }>[], since: number): string | null {
+export function feedbackSince(reads: readonly Readonly<{ url: string; read: PullFeedback }>[], since: number, merges?: BaseMerges): string | null {
   const lines = reads.filter(({ read }) => read.state === "open").flatMap(({ url, read }) => [
     // A conflict is a state, so its line does not wait for `since`: it is named on every watch until the pull request is clear of it.
-    ...(read.conflicting ? [conflictLine(url, read.base)] : []),
+    ...(read.conflicting ? conflictOf(url, read, merges) : []),
     ...(read.feedbackAt !== null && read.feedbackAt > since ? [`New review feedback on ${url}, the newest from ${read.authors[0] ?? "someone"}.`] : []),
   ]);
   return lines.length === 0 ? null : lines.join("\n");
@@ -97,7 +132,7 @@ export function feedbackSince(reads: readonly Readonly<{ url: string; read: Pull
  * The conflict lines of a run's open pull requests, as {@link feedbackSince} names them, and no other feedback: all that wakes a parked run
  * (A11-89). Null when none of them conflicts. PURE.
  */
-export function conflictLines(reads: readonly Readonly<{ url: string; read: PullFeedback }>[]): string | null {
-  const lines = reads.filter(({ read }) => read.state === "open" && read.conflicting).map(({ url, read }) => conflictLine(url, read.base));
+export function conflictLines(reads: readonly Readonly<{ url: string; read: PullFeedback }>[], merges?: BaseMerges): string | null {
+  const lines = reads.filter(({ read }) => read.state === "open" && read.conflicting).flatMap(({ url, read }) => conflictOf(url, read, merges));
   return lines.length === 0 ? null : lines.join("\n");
 }

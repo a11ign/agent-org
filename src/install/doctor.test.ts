@@ -1051,7 +1051,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 1.23, plugins/github)",
+    "code host: github (enabled, contract 1.24, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1086,7 +1086,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.23, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.24, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });
@@ -1263,6 +1263,41 @@ test("A11-184: doctor warns when an installed herdr plugin is behind its newest 
   const current = (await herdrRows({ herdrStatus: () => SEEN, herdrPlugins: () => web("v0.4.13") }))["herdr plugin devswha/herdr-web-ui"];
   assert.deepEqual([current.ok, current.warning, current.detail], [true, undefined, "at v0.4.13, which is the newest release"]);
   assert.equal((await herdrRows({ herdrStatus: () => SEEN }))["herdr plugin devswha/herdr-web-ui"], undefined, "no plugins.json lists it");
+});
+
+// A11-287: the web UI's manifest id changed at v0.4.16 and herdr kept both entries; the row reads the current copy by its source, warns on an older copy, and fails on a recorded failure.
+const copy = (id: string, ref: string, at: number) => ({ plugin_id: id, plugin_root: `/h/p/${id}-1`, source: { kind: "github", owner: "devswha", repo: "herdr-web-ui", requested_ref: ref, resolved_commit: "35bf28fa1234567890", installed_unix_ms: at } });
+const WEB = "herdr plugin devswha/herdr-web-ui";
+const newestSeen = (newest: string, failed?: { command: string; tag: string; output: string; at: string }): HerdrStatusFile => ({
+  kind: "status", status: { checkedAt: "2026-10-25T09:50:00.000Z", herdr: { newest: "0.9.5" }, plugins: [{ repo: "devswha/herdr-web-ui", newest, ...(failed === undefined ? {} : { failed }) }] },
+});
+
+test("A11-287: with the old and the renamed entry listed, doctor reads the newest one and is ok once it is at the newest release and the old one is gone", async () => {
+  const renamed = JSON.stringify([copy("devswha.ovis", "v0.4.16", 2)]);
+  const row = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.16"), herdrPlugins: () => renamed }))[WEB];
+  assert.deepEqual([row.ok, row.warning, row.detail, row.fix], [true, undefined, "at v0.4.16, which is the newest release", null]);
+  const both = JSON.stringify([copy("devswha.herdr-web-ui", "v0.4.13", 1), copy("devswha.ovis", "v0.4.16", 2)]);
+  const behindRow = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.17"), herdrPlugins: () => both }))[WEB];
+  assert.deepEqual([behindRow.warning, behindRow.detail], [true, "at v0.4.16, the newest release is v0.4.17"], "the old entry at v0.4.13 is not the one read");
+});
+
+test("A11-287: an older copy still listed beside the newest one is a warning naming the uninstall of each", async () => {
+  const both = JSON.stringify([copy("devswha.herdr-web-ui", "v0.4.13", 1), copy("devswha.ovis", "v0.4.16", 2)]);
+  const row = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.16"), herdrPlugins: () => both }))[WEB];
+  assert.deepEqual([row.ok, row.warning, row.detail], [true, true, "at v0.4.16, and an older copy is still listed: devswha.herdr-web-ui"]);
+  assert.equal(row.fix, "run `herdr plugin uninstall devswha.herdr-web-ui`, which `agent-org update` also runs");
+  const unknown = (await herdrRows({ herdrPlugins: () => both }))[WEB];
+  assert.deepEqual([unknown.warning, unknown.detail], [true, "at v0.4.16, and an older copy is still listed: devswha.herdr-web-ui"], "whether or not the newest release is known");
+});
+
+test("A11-287: a step the last update recorded as not taking for the newest release is a failed row naming the command and the last line of herdr's output; for an older release it is not", async () => {
+  const failed = { command: "herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y", tag: "v0.4.16", output: "bun install\nerror: bun install failed", at: "2026-10-25T09:50:00.000Z" };
+  const old = JSON.stringify([copy("devswha.herdr-web-ui", "v0.4.13", 1)]);
+  const row = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.16", failed), herdrPlugins: () => old }))[WEB];
+  assert.deepEqual([row.ok, row.detail], [false, "at v0.4.13, the newest release is v0.4.16, and `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` did not take: error: bun install failed"]);
+  assert.equal(row.fix, "run `herdr plugin install devswha/herdr-web-ui --ref v0.4.16 -y` by hand and read its output; `agent-org update` stops reporting this once the plugin is current and no older copy is listed");
+  const newer = (await herdrRows({ herdrStatus: () => newestSeen("v0.4.17", failed), herdrPlugins: () => old }))[WEB];
+  assert.deepEqual([newer.ok, newer.warning], [true, true], "a newer release is out: the update tries it, so this is the ordinary warning");
 });
 
 test("A11-184: a herdr status file that cannot be read fails one row, with the command that writes it again", async () => {

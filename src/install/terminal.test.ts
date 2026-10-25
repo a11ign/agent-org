@@ -23,6 +23,15 @@ test("herdr web ui's directory is read from herdr's plugins.json, and an absent 
   assert.equal(pluginRoot(JSON.stringify([{ plugin_id: "devswha.herdr-web-ui", plugin_root: "relative" }])), null);
 });
 
+test("A11-287: herdr web ui's directory is the newest copy's when a renamed manifest id left two, and a lone renamed entry's", () => {
+  const entry = (id: string, ref: string, root: string, at: number) => ({ plugin_id: id, plugin_root: root, source: { kind: "github", owner: "devswha", repo: "herdr-web-ui", requested_ref: ref, installed_unix_ms: at } });
+  const oldRoot = "/home/agent/.config/herdr/plugins/github/devswha.herdr-web-ui-210f619d6b7b";
+  const newRoot = "/home/agent/.config/herdr/plugins/github/devswha.ovis-aa47ee43150f";
+  assert.equal(pluginRoot(JSON.stringify([entry("devswha.herdr-web-ui", "v0.4.13", oldRoot, 1), entry("devswha.ovis", "v0.4.16", newRoot, 2)])), newRoot);
+  assert.equal(pluginRoot(JSON.stringify([entry("devswha.ovis", "v0.4.16", newRoot, 2)])), newRoot, "a lone renamed entry, as a fresh onboard leaves it");
+  assert.equal(pluginRoot(JSON.stringify([entry("devswha.ovis", "v0.4.16", "relative", 2)])), null);
+});
+
 test("the address onboard writes names the run's workspace and pane, and its port is read back as loopback", () => {
   assert.equal(terminalAddress(7318), "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal");
   assert.equal(loopbackPort(terminalAddress(7318)), 7318);

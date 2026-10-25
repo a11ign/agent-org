@@ -79,7 +79,7 @@ const runningOf = (n: number): Entry => ({
 
 const eventsOf = (n: number): RunEvent[] => [
   { kind: "started", at: NOW - 25 * MINUTE, cause: "queue" }, { kind: "round", cause: "asked", reason: null, at: NOW - 20 * MINUTE },
-  { kind: "answered", by: "respond", at: NOW - 15 * MINUTE }, { kind: "finished", at: NOW - 10 * MINUTE, outcome: "ready-pr", ticket: `A11-${n}` },
+  { kind: "answered", by: "respond", at: NOW - 15 * MINUTE }, ...(n % 3 === 0 ? [{ kind: "pr-opened", url: pullOf(n), at: NOW - 12 * MINUTE }] : []), { kind: "finished", at: NOW - 10 * MINUTE, outcome: "ready-pr", ticket: `A11-${n}` },
 ] as unknown as RunEvent[];
 
 /** The host's queue: 134 settled runs, 12 with an open pull request, 12 queued and 5 running, with a log for each. */

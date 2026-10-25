@@ -24,8 +24,17 @@ const REASON_MAX = 160;
  */
 export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approved" | "talk" | "rereview" | "ci-budget";
 
-/** Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, a stop behind a ticket its worker waits on (A11-272), or a hold for its ticket's CI spend (A11-261). */
-export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget";
+/**
+ * Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, a stop behind a ticket its worker waits on (A11-272), a hold for its ticket's CI spend (A11-261), or the step
+ * it waited with while a conflict round on one of its earlier pull requests ran (`conflict-round`, A11-286).
+ */
+export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget" | "conflict-round";
+
+/**
+ * What the board did about a pull request that conflicts with its base or is behind it (A11-286, {@link BaseMergeStep}): it asked the host to merge the base in (`merging`, for a conflict; `behind`, for a branch that is only behind), it started a conflict round
+ * because the merge reported a real conflict (`round`), it left the pull request to the worker that holds the run's workspace (`waiting`), or it could not start a round because the run has used the board's own (`capped`).
+ */
+export type BaseMergeStep = "merging" | "behind" | "round" | "waiting" | "capped";
 
 /** What answered a run that needed a person: a person's Respond, approval or talk, their answer through the board's answer route (A11-250), or the run's own terminal. */
 export type AnsweredBy = "respond" | "approve" | "talk" | "answer" | "terminal";
@@ -44,6 +53,8 @@ type EventBody =
   | Readonly<{ kind: "answered"; by: AnsweredBy }>
   | Readonly<{ kind: "published"; link: string | null }>
   | Readonly<{ kind: "merged"; url: string }>
+  /** `base` is the branch the pull request merges into, or null when the host did not say. */
+  | Readonly<{ kind: "base-merge"; url: string; base: string | null; step: BaseMergeStep }>
   /** `outcome` is the kind of outcome the run ended on, and `reason` the one it gave, where it has one. */
   | Readonly<{ kind: "finished"; outcome: string; reason?: string }>
   | Readonly<{ kind: "dismissed" }>
