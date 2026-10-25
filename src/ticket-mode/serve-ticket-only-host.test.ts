@@ -36,12 +36,17 @@ async function freePort(except?: number): Promise<number> {
   return port === except ? freePort(except) : port;
 }
 
-/** A herdr that answers every call with an empty session, so nothing real is touched: the real one is at ~/.local/bin/herdr. */
-function fakeHerdr(root: string): string {
+/**
+ * The programs the instance runs, as stand-ins, so nothing real is touched: a herdr that answers every call with an empty session (the real one is at ~/.local/bin/herdr), and a gh
+ * that runs `ghScript` (the real wrapper writes its state under the HOME it is given). The Plugins checks the request thread starts run `gh extension list`.
+ */
+function fakeBin(root: string, ghScript = "exit 0"): string {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, "herdr"), "#!/bin/sh\necho '{\"result\":{\"workspaces\":[],\"agents\":[]}}'\n");
+  writeFileSync(join(bin, "gh"), `#!/bin/sh\n${ghScript}\n`);
   chmodSync(join(bin, "herdr"), 0o755);
+  chmodSync(join(bin, "gh"), 0o755);
   return bin;
 }
 
@@ -117,10 +122,11 @@ type Outcome = { code: number | null; stdout: string; stderr: string; started: b
 
 /**
  * Runs `ticket:serve` as the CLI does and waits for it to start (then stops it) or to exit. `host` null leaves `AGENT_ORG_HOST` unset. `options.home` is
- * HOME, and `options.preload` a module loaded before the entry. Refuses after a timeout, so a hang fails the test.
+ * HOME, `options.preload` a module loaded before the entry, `options.gh` the script of the stand-in gh, and `options.stopWhen` what ends it instead of the start line.
+ * Refuses after a timeout, so a hang fails the test.
  */
-function runServe(host: string | null, root: string, options: { home?: string; preload?: string } = {}): Promise<Outcome> {
-  const childEnv: Record<string, string | undefined> = { ...process.env, HOME: options.home ?? process.env.HOME ?? root, PATH: `${fakeHerdr(root)}:${process.env.PATH}` };
+function runServe(host: string | null, root: string, options: { home?: string; preload?: string; gh?: string; stopWhen?: () => boolean } = {}): Promise<Outcome> {
+  const childEnv: Record<string, string | undefined> = { ...process.env, HOME: options.home ?? process.env.HOME ?? root, PATH: `${fakeBin(root, options.gh)}:${process.env.PATH}` };
   if (host === null) delete childEnv[HOST_FILE_ENV];
   else childEnv[HOST_FILE_ENV] = host;
   const args = [...(options.preload === undefined ? [] : ["--import", pathToFileURL(options.preload).href]), SERVER];
@@ -134,7 +140,7 @@ function runServe(host: string | null, root: string, options: { home?: string; p
     const finish = (outcome: Outcome) => { clearTimeout(timer); done(outcome); };
     child.on("exit", (code) => finish({ code, stdout, stderr, started: stdout.includes(STARTED) }));
     const poll = setInterval(() => {
-      if (!stdout.includes(STARTED)) return;
+      if (!(options.stopWhen?.() ?? stdout.includes(STARTED))) return;
       clearInterval(poll);
       child.kill("SIGTERM");
     }, 50);
@@ -256,6 +262,31 @@ test("ticket:serve with AGENT_ORG_HOST unset reads ~/.agent-org/host.json and st
   const outcome = await runServe(null, root, { home });
   assert.equal(outcome.started, true, outcome.stderr);
   assert.doesNotMatch(outcome.stderr, STACK);
+});
+
+// A11-282: the request thread starts the Plugins checks as process groups of their own. A worker's exit handlers do not run when the instance exits, so a stopped instance left them
+// running, and one reached the real gh wrapper after the test had removed its directories and made its HOME again (private-tmp: a file left something in its TMPDIR).
+test("A11-282: stopping the instance stops the plugin checks it started, and the programs they run", async () => {
+  const root = tmpDir("serve-stop-checks-");
+  const pidFile = join(root, "gh.pid");
+  const host = await hostFile(root, {});
+  const outcome = await runServe(host, root, { gh: `echo $$ > ${pidFile}\nexec sleep 60`, stopWhen: () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "" });
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  try {
+    assert.equal(outcome.code, 143, outcome.stderr);
+    let alive = true;
+    for (let waited = 0; alive && waited < 100; waited += 1) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((done) => { setTimeout(done, 30); });
+      } catch {
+        alive = false;
+      }
+    }
+    assert.equal(alive, false, "the gh a check started ended with the instance");
+  } finally {
+    try { process.kill(pid, "SIGKILL"); } catch { /* it ended */ }
+  }
 });
 
 /*

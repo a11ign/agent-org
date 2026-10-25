@@ -6,7 +6,8 @@
 // an empty list, and a `herdr` and a `tailscale` that log their arguments and exit 0, so nothing reaches GitHub, a herdr server or the real tailnet. The instance's `fetch` is the
 // suite's offline one, so the tracker's reads fail at once and nothing reaches Linear. The sweeps run every SWEEP_MS, so one is in progress from the first seconds; the script waits for the first `gh` call, then reads every `GET /api/*` route ROUNDS times (starting none after READS_FOR_MS),
 // each round all at once, and prints each route's p50, p99 and max, the instance's own loop reading (`/api/health`) and the five call sites that held it the longest.
-// It exits 1 when any route's p99 is READ_LIMIT_MS or more, or when the rounds did not all fit in READS_FOR_MS. The throwaway folder and the instance are removed on every exit.
+// It exits 1 when any route the request thread answers has a p99 of READ_LIMIT_MS or more, when the request thread made a synchronous spawn after it listened, or when the rounds did not
+// all fit in READS_FOR_MS. The throwaway folder and the instance are removed on every exit.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -14,7 +15,8 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureHost, HERDR_STUB } from "../src/ticket-mode/capture.ts";
-import type { HealthView } from "../src/ticket-mode/health-route.ts";
+import type { HealthView, RequestHealthView } from "../src/ticket-mode/health-route.ts";
+import type { LoopReading } from "../src/ticket-mode/loop-delay.ts";
 import { HOST_FILE_ENV } from "../src/ticket-mode/settings.ts";
 
 const CHECKOUT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,6 +43,11 @@ const READ_TIMEOUT_MS = 15_000;
  */
 export const ROUTES = ["/api/config", "/api/settings", "/api/plugins", "/api/pick", "/api/people", "/api/tickets", "/api/tickets?assignee=me", "/api/parents", "/api/queue", "/api/writer",
   "/api/session-asks", "/api/health"];
+/**
+ * The GET routes the board thread answers (A11-282): `/api/session-asks` marks each check it lists as sent, a change to the checks file, whose one writer is the board thread. They are
+ * timed and shown, and held to no bound: they wait while the board thread is held, as every write does. A session reads them, never a board page.
+ */
+export const BOARD_THREAD_ROUTES: readonly string[] = ["/api/session-asks"];
 
 /** A free port on 127.0.0.1, found by binding port 0 and letting it go. */
 function freePort(): Promise<number> {
@@ -80,7 +87,7 @@ function throwaway(dir: string, port: number, uiPort: number): Readonly<{ env: N
 }
 
 /** One timed read: how long it took in ms, and its status (0 when no answer came). */
-async function timedRead(port: number, path: string): Promise<Readonly<{ ms: number; status: number; body: string }>> {
+export async function timedRead(port: number, path: string): Promise<Readonly<{ ms: number; status: number; body: string }>> {
   const started = performance.now();
   try {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { "x-ticket-token": BOARD_KEY }, signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
@@ -99,7 +106,7 @@ export function percentile(values: readonly number[], p: number): number {
 
 const round = (ms: number): number => Math.round(ms);
 
-async function waitFor(what: string, holds: () => boolean | Promise<boolean>): Promise<void> {
+export async function waitFor(what: string, holds: () => boolean | Promise<boolean>): Promise<void> {
   const until = Date.now() + START_WAIT_MS;
   while (Date.now() < until) {
     if (await holds()) return;
@@ -109,10 +116,12 @@ async function waitFor(what: string, holds: () => boolean | Promise<boolean>): P
 }
 
 type RouteTimes = Readonly<{ route: string; p50Ms: number; p99Ms: number; maxMs: number; statuses: readonly number[] }>;
-type Result = Readonly<{ routes: readonly RouteTimes[]; health: HealthView | null; rounds: number; ghCalls: number; pass: boolean }>;
+/** What the instance's `/api/health` answers: the request thread's view, or the one thread's of an instance from before it. */
+export type Health = RequestHealthView | HealthView;
+type Result = Readonly<{ routes: readonly RouteTimes[]; health: Health | null; rounds: number; ghCalls: number; pass: boolean }>;
 
-/** A throwaway instance of this checkout, answering on `port`: its environment (whose `AGENT_ORG_HOST` names its host file), the stand-in `gh`'s log, and how to stop it. */
-export type Throwaway = Readonly<{ port: number; env: NodeJS.ProcessEnv; ghLog: string; stop: () => void }>;
+/** A throwaway instance of this checkout, answering on `port` to `key`: its environment (whose `AGENT_ORG_HOST` names its host file), the stand-in `gh`'s log, and how to stop it. */
+export type Throwaway = Readonly<{ port: number; key: string; env: NodeJS.ProcessEnv; ghLog: string; stop: () => void }>;
 
 /** Starts this checkout's `ticket:serve` from a throwaway host in `dir`, and resolves once it answers. Throws with its stderr when it exits first. */
 export async function startThrowawayInstance(dir: string): Promise<Throwaway> {
@@ -129,7 +138,7 @@ export async function startThrowawayInstance(dir: string): Promise<Throwaway> {
     throw err;
   }
   if (instance.exitCode !== null) throw new Error(`the instance exited ${instance.exitCode}: ${stderr.trim()}`);
-  return { port, env, ghLog, stop };
+  return { port, key: BOARD_KEY, env, ghLog, stop };
 }
 
 /** How many rounds `readRounds` makes, and for how long it starts them: ROUNDS and READS_FOR_MS unless a test asks for fewer. */
@@ -139,9 +148,9 @@ export type RoundLimits = Readonly<{ rounds: number; forMs: number }>;
  * Every read route's times and statuses over up to `rounds` rounds, each round all at once, the last health the instance answered, and how many rounds were made. No round
  * starts after `forMs`.
  */
-export async function readRounds(port: number, { rounds, forMs }: RoundLimits = { rounds: ROUNDS, forMs: READS_FOR_MS }): Promise<Readonly<{ routes: readonly RouteTimes[]; health: HealthView | null; rounds: number }>> {
+export async function readRounds(port: number, { rounds, forMs }: RoundLimits = { rounds: ROUNDS, forMs: READS_FOR_MS }): Promise<Readonly<{ routes: readonly RouteTimes[]; health: Health | null; rounds: number }>> {
   const times = new Map<string, { ms: number[]; statuses: number[] }>(ROUTES.map((route) => [route, { ms: [], statuses: [] }]));
-  let health: HealthView | null = null;
+  let health: Health | null = null;
   const until = Date.now() + forMs;
   let done = 0;
   for (; done < rounds && Date.now() < until; done += 1) {
@@ -149,7 +158,7 @@ export async function readRounds(port: number, { rounds, forMs }: RoundLimits = 
     for (const [route, read] of reads) {
       times.get(route)?.ms.push(read.ms);
       times.get(route)?.statuses.push(read.status);
-      if (route === "/api/health" && read.status === 200) health = JSON.parse(read.body) as HealthView;
+      if (route === "/api/health" && read.status === 200) health = JSON.parse(read.body) as Health;
     }
     await sleep(ROUND_GAP_MS);
   }
@@ -160,6 +169,25 @@ export async function readRounds(port: number, { rounds, forMs }: RoundLimits = 
   return { routes, health, rounds: done };
 }
 
+/** How many synchronous spawns the request thread made after it listened: 0 for an instance with one thread, which counts none. PURE. */
+const syncCallsOf = (health: Health | null): number => (health !== null && "requestThreadSyncCalls" in health ? health.requestThreadSyncCalls : 0);
+
+/** Whether a run passes: every round made, every route the request thread answers under READ_LIMIT_MS at p99, and no synchronous spawn on the request thread. PURE. */
+export function passes(routes: readonly RouteTimes[], health: Health | null, rounds: number): boolean {
+  const bounded = routes.filter((route) => !BOARD_THREAD_ROUTES.includes(route.route));
+  return rounds === ROUNDS && bounded.every((route) => route.p99Ms < READ_LIMIT_MS) && syncCallsOf(health) === 0;
+}
+
+/** The loop lines of a health answer: the request thread's and the board thread's, or the one thread's. PURE. */
+function loopLines(health: Health | null): string[] {
+  if (health === null) return ["the instance answered no /api/health"];
+  const line = (name: string, loop: LoopReading) => `${name}: p50 ${loop.p50Ms} ms, p99 ${loop.p99Ms} ms, max ${loop.maxMs} ms over ${Math.round(loop.windowMs / 1000)} s`;
+  if (!("requests" in health.loop)) return [line("the instance's loop", health.loop.board)];
+  const split = health as RequestHealthView;
+  return [line("the request thread's loop", split.loop.requests), line("the board thread's loop", split.loop.board),
+    `the board snapshot was ${split.boardSnapshotAgeMs} ms old; the request thread made ${split.requestThreadSyncCalls} synchronous spawns after it listened`];
+}
+
 /** Starts the throwaway instance, waits for a sweep's first `gh` call, and reads every route while the sweeps run. */
 async function measure(dir: string): Promise<Result> {
   const { port, ghLog, stop } = await startThrowawayInstance(dir);
@@ -167,7 +195,7 @@ async function measure(dir: string): Promise<Result> {
     await waitFor("a sweep's first gh call", () => existsSync(ghLog));
     const { routes, health, rounds } = await readRounds(port);
     const ghCalls = readFileSync(ghLog, "utf8").split("\n").filter(Boolean).length;
-    return { routes, health, rounds, ghCalls, pass: rounds === ROUNDS && routes.every((route) => route.p99Ms < READ_LIMIT_MS) };
+    return { routes, health, rounds, ghCalls, pass: passes(routes, health, rounds) };
   } finally {
     stop();
   }
@@ -178,13 +206,14 @@ export function report({ routes, health, rounds, ghCalls, pass }: Result): strin
   const lines = [`${rounds} of ${ROUNDS} rounds of every read in ${READS_FOR_MS / 1000} s, with a ${GH_SECONDS} s gh and the sweeps every ${SWEEP_MS} ms (${ghCalls} gh calls):`, "",
     "route                     p50 ms   p99 ms   max ms   status"];
   for (const { route, p50Ms, p99Ms, maxMs, statuses } of routes) {
-    lines.push(`${route.padEnd(25)} ${String(p50Ms).padStart(6)}   ${String(p99Ms).padStart(6)}   ${String(maxMs).padStart(6)}   ${statuses.join(",")}${p99Ms >= READ_LIMIT_MS ? "   OVER" : ""}`);
+    const mark = BOARD_THREAD_ROUTES.includes(route) ? "   board thread, not bounded" : p99Ms >= READ_LIMIT_MS ? "   OVER" : "";
+    lines.push(`${route.padEnd(25)} ${String(p50Ms).padStart(6)}   ${String(p99Ms).padStart(6)}   ${String(maxMs).padStart(6)}   ${statuses.join(",")}${mark}`);
   }
-  const loop = health?.loop.board;
-  lines.push("", loop === undefined ? "the instance answered no /api/health" : `the instance's loop: p50 ${loop.p50Ms} ms, p99 ${loop.p99Ms} ms, max ${loop.maxMs} ms over ${Math.round(loop.windowMs / 1000)} s`);
-  lines.push("", "the five sites that held the loop the longest:");
+  lines.push("", ...loopLines(health));
+  lines.push("", "the five sites that held the board loop the longest:");
   for (const site of health?.blocking.slice(0, 5) ?? []) lines.push(`  ${site.site} (${site.program}): ${site.count} calls, ${site.totalMs} ms in all, the longest ${site.maxMs} ms`);
-  lines.push("", pass ? `PASS: every read's p99 is under ${READ_LIMIT_MS} ms` : `FAIL: a read's p99 is ${READ_LIMIT_MS} ms or more, or the rounds did not all fit in ${READS_FOR_MS / 1000} s`);
+  lines.push("", pass ? `PASS: every read the request thread answers has a p99 under ${READ_LIMIT_MS} ms, and it spawned nothing synchronously`
+    : `FAIL: a read's p99 is ${READ_LIMIT_MS} ms or more, the request thread spawned synchronously, or the rounds did not all fit in ${READS_FOR_MS / 1000} s`);
   return `${lines.join("\n")}\n`;
 }
 
