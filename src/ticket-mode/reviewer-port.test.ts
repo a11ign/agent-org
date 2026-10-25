@@ -190,18 +190,18 @@ test("a not-convinced verdict resumes the same worker for a round with the revie
 test("the re-posts a pool remembers are kept on disk, and a memory file from before them reads with none", () => {
   const path = join(tmpDir("reviewer-memory-"), "reviewers.json");
   const memory = { heads: new Map([["reviewer-7", "h1"]]), started: new Set([`${PR_URL}@h1`]), resumed: new Set<string>(),
-    reposts: new Map([[`${PR_URL}@h1`, { attempts: 2, reason: "no key" }]]), rereviewed: new Set([`${PR_URL}@h1`]), seen: new Map<string, number>(), unclaimed: new Map<string, string>(), looks: new Map<string, { at: number; body: string }>() };
+    reposts: new Map([[`${PR_URL}@h1`, { attempts: 2, reason: "no key" }]]), rereviewed: new Set([`${PR_URL}@h1`]), seen: new Map<string, number>(), unclaimed: new Map<string, string>(), looks: new Map<string, { at: number; body: string }>(), refusals: new Map<string, { reason: string; count: number }>() };
   writeReviewerMemory(path, memory);
   assert.deepEqual(readReviewerMemory(path), { memory, unreadable: false });
   writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [] }));
-  assert.deepEqual(readReviewerMemory(path), { memory: { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() }, unreadable: false });
+  assert.deepEqual(readReviewerMemory(path), { memory: { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() }, unreadable: false });
   writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [], reposts: { k: { attempts: "two" } } }));
   assert.equal(readReviewerMemory(path).unreadable, true, "a malformed count is unreadable, never read as nothing remembered");
 });
 
 test("A11-156: the heads a reply earned a re-review of are kept on disk, a file from before them reads with none, and a malformed list is unreadable", () => {
   const path = join(tmpDir("reviewer-memory-"), "reviewers.json");
-  const memory = { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>(), reposts: new Map(), rereviewed: new Set([`${PR_URL}@h1`]), seen: new Map<string, number>(), unclaimed: new Map<string, string>(), looks: new Map<string, { at: number; body: string }>() };
+  const memory = { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>(), reposts: new Map(), rereviewed: new Set([`${PR_URL}@h1`]), seen: new Map<string, number>(), unclaimed: new Map<string, string>(), looks: new Map<string, { at: number; body: string }>(), refusals: new Map<string, { reason: string; count: number }>() };
   writeReviewerMemory(path, memory);
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).rereviewed, [`${PR_URL}@h1`], "written beside started and resumed");
   assert.deepEqual(readReviewerMemory(path), { memory, unreadable: false }, "and read back");
@@ -216,7 +216,7 @@ test("A11-156: the heads a reply earned a re-review of are kept on disk, a file 
 test("A11-172: the instances seen and the starts made without a claim are kept on disk, written only when there are some, and a bad entry is left out without forgetting the started heads", () => {
   const path = join(tmpDir("reviewer-memory-"), "reviewers.json");
   const memory = { heads: new Map<string, string>(), started: new Set([`${PR_URL}@h1`]), resumed: new Set<string>(), reposts: new Map(), rereviewed: new Set<string>(),
-    seen: new Map([["laptop", 1_800_000_000_000]]), unclaimed: new Map([[`${PR_URL}@h1`, "gh: Resource not accessible by integration (HTTP 403)"]]), looks: new Map<string, { at: number; body: string }>() };
+    seen: new Map([["laptop", 1_800_000_000_000]]), unclaimed: new Map([[`${PR_URL}@h1`, "gh: Resource not accessible by integration (HTTP 403)"]]), looks: new Map<string, { at: number; body: string }>(), refusals: new Map<string, { reason: string; count: number }>() };
   writeReviewerMemory(path, memory);
   assert.deepEqual(readReviewerMemory(path), { memory, unreadable: false }, "written and read back");
   writeReviewerMemory(path, { ...memory, seen: new Map(), unclaimed: new Map(), looks: new Map() });
@@ -233,7 +233,7 @@ test("A11-172: the instances seen and the starts made without a claim are kept o
 test("A11-235: the look each head's newest start had is kept on disk, written only when there are some, a file from before it reads with none, and a bad look is left out without forgetting the started heads", () => {
   const path = join(tmpDir("reviewer-memory-"), "reviewers.json");
   const memory = { heads: new Map<string, string>(), started: new Set([`${PR_URL}@h1`]), resumed: new Set<string>(), reposts: new Map(), rereviewed: new Set<string>(), seen: new Map<string, number>(), unclaimed: new Map<string, string>(),
-    looks: new Map([[`${PR_URL}@h1`, { at: 1_800_000_000_000, body: "## Region\n\nplugins/github" }]]) };
+    looks: new Map([[`${PR_URL}@h1`, { at: 1_800_000_000_000, body: "## Region\n\nplugins/github" }]]), refusals: new Map<string, { reason: string; count: number }>() };
   writeReviewerMemory(path, memory);
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).looks, { [`${PR_URL}@h1`]: { at: 1_800_000_000_000, body: "## Region\n\nplugins/github" } }, "written beside started");
   assert.deepEqual(readReviewerMemory(path), { memory, unreadable: false }, "and read back");

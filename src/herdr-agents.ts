@@ -358,3 +358,22 @@ export function herdrRefusal(err: unknown): string {
   }
   return herdrReason(err);
 }
+
+/** What every refusal to start an agent begins with: {@link herdrStartRefusal} writes it and {@link herdrStartRefusalReason} recognises it, so the two cannot drift apart. */
+const START_REFUSAL_PREFIX = 'herdr refused to start "';
+
+/** The words a start that herdr refused is reported in: the agent's name and herdr's own reason (A11-241). */
+export function herdrStartRefusal(name: string, err: unknown): string {
+  return `${START_REFUSAL_PREFIX}${name}" (${herdrRefusal(err)})`;
+}
+
+/**
+ * The part of a refusal that is herdr's: `herdr refused to start "<name>" (<reason>)` plus any note about codex, without the clause {@link closedNote} appends, which names the workspace it closed and so differs
+ * each time. Null for a refusal that is not herdr refusing to start an agent (a claim another instance holds, checks not green, a head that moved): those are not what herdr said. Two starts that herdr
+ * refused for the same reason read the same here (A11-241).
+ */
+export function herdrStartRefusalReason(refusal: string): string | null {
+  if (!refusal.startsWith(START_REFUSAL_PREFIX)) return null;
+  const closed = refusal.search(/ -- (?:AND )?the workspace it opened \(/);
+  return closed === -1 ? refusal : refusal.slice(0, closed);
+}

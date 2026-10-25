@@ -3800,7 +3800,7 @@ test("A11-119: a head with a posted review, or one ticket:review started, is not
   assert.deepEqual(starts, [], "a head with an approval is not started");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
   pulls[1] = feedbackPull({ head: "h2" });
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, [], "a head ticket:review started is not started again");
 });
@@ -3988,7 +3988,7 @@ test("A11-156: an unconvinced re-review is not read as a lost verdict: no repost
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
   const ctx = await sweptWithTicket(port, pulls);
   // The first reviewer started this head in an earlier sweep, so the pool holds it as started.
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
   const logged = await captureStderr(async () => {
     ctx.pool.reviewNewHeads();
     end();
@@ -4110,7 +4110,7 @@ test("A11-156, A11-235: a reply to a watched run's block starts the re-review fr
   const { port, starts, end } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()] }) };
   const ctx = await readyRun(ghFor(pulls), REVIEWING, port, () => 25 * 60_000);
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${approvedPr.url}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${approvedPr.url}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
   await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the block asks the worker for one round");
   await finishRound(ctx);
@@ -5822,7 +5822,7 @@ test("A11-161: switched back on, the reviewer resumes on the next head: one revi
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }), 2: feedbackPull({ head: "h2" }), 3: feedbackPull({ head: "h3" }) };
   await loadReviewerGate();
   const made = setup(1, [], REVIEWING, { gh: ghFor(pulls), reviewerPort: fake });
-  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
   const restarted = made.restart();
   restarted.reviewNewHeads();
   assert.deepEqual(fake.started.map(({ pr, head }) => `${pr}@${head}`).sort(), [`${sweptPr}@h1`, `${SWEPT_REPO_PULL_2}@h2`], "one for each head, and none for the head the memory says was started");
