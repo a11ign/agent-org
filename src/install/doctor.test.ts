@@ -91,7 +91,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
-    shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" } }),
+    shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
     ...over,
   };
 }
@@ -1336,7 +1336,7 @@ test("A11-241: the refusals doctor reads are the ones the pool wrote to its revi
 });
 
 // A11-285: the `agent-org` the person's shell runs is the installed tool. Every reading is injected; the row's logic is in shell-command.test.ts.
-const OLD_ALIAS: ShellReading = { kind: "alias", said: "node ~/old/agent-org/src/bin.ts", launcher: null, copyRoot: "/home/me/old/agent-org", defined: { file: "/home/me/.zshrc", line: 42 }, comparison: { kind: "older", copy: "v0.276.0", installed: "v0.304.1" } };
+const OLD_ALIAS = { kind: "alias", said: "node ~/old/agent-org/src/bin.ts", launcher: null, copyRoot: "/home/me/old/agent-org", defined: { file: "/home/me/.zshrc", line: 42 }, comparison: { kind: "older", copy: "v0.276.0", installed: "v0.304.1" }, noInstall: false } as const satisfies ShellReading;
 
 test("A11-285: doctor's `agent-org command` row comes straight after the launcher row, and passes for the shim", async () => {
   const checks = await diagnose(deps());

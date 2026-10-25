@@ -24,7 +24,7 @@ import { constants, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMANDS, FIXED_ARGS } from "./commands.ts";
-import { GUARDED, guardCopy, type Guarded } from "./install/command-guard.ts";
+import { guardCopy, isGuarded, type Guarded } from "./install/command-guard.ts";
 import { hostFilePath, hostGhConfigDir, readOrNull } from "./install/paths.ts";
 import { shellContext } from "./install/shell-command.ts";
 import { compareWithInstalled } from "./install/tool-copy.ts";
@@ -98,7 +98,7 @@ function runProgram(program: string, args: string[], env: NodeJS.ProcessEnv): Pr
 }
 
 async function main(argv: readonly string[]) {
-  const plan = (GUARDED as readonly string[]).includes(argv[0] ?? "") ? planGuardedInvocation(argv, realGuard()) : planInvocation(argv);
+  const plan = isGuarded(argv[0] ?? "") ? planGuardedInvocation(argv, realGuard()) : planInvocation(argv);
   if ("refusal" in plan) {
     console.error(plan.refusal);
     process.exitCode = REFUSED;

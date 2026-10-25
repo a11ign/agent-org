@@ -14,9 +14,8 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { fixShellCommand, type FixDeps } from "./shell-command-fix.ts";
-import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellContext, type ShellDeps } from "./shell-command.ts";
-import { hostFilePath, readOrNull } from "./paths.ts";
-import type { Check } from "./doctor.ts";
+import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, syntaxOk, type CommandCheck, type ShellContext, type ShellDeps } from "./shell-command.ts";
+import { hostFilePath, readOrNull, type Env } from "./paths.ts";
 
 const OK = 0;
 const NOT_OK = 1;
@@ -24,6 +23,11 @@ const REFUSED = 2;
 const MAX_PASSES = 3;
 const ANSWERED_NO = /^\s*n/i;
 const PROMPT = "Replace it with the installed command? A backup is kept. [Y/n] ";
+
+/** What the fix needs of this machine: the context's folders, the clock, and the person's shell to accept an edited start-up file. */
+export const fixDepsFor = (context: ShellContext, env: Env, now: () => Date): FixDeps => ({
+  home: context.home, binDir: context.binDir, tool: context.tool, now, orgHost: context.orgHost, accepts: (file) => syntaxOk(env.SHELL ?? "", file),
+});
 
 export type CheckIo = Readonly<{
   shell: ShellDeps;
@@ -35,8 +39,8 @@ export type CheckIo = Readonly<{
 
 /** What a run found and did. `before` is the row as the shell showed it, `after` the row once the fix was tried (the same row when nothing was fixed). */
 export type CheckOutcome = Readonly<{
-  before: Check;
-  after: Check;
+  before: CommandCheck;
+  after: CommandCheck;
   /** One line for each change made. */
   fixed: string[];
   /** Why the fix stopped, or null. */
@@ -48,7 +52,7 @@ export type CheckOutcome = Readonly<{
 }>;
 
 /** The row as lines a person (or `install.sh`) reads: a mark, the detail, and the fix under a failing one. */
-function rowLines(row: Check): string[] {
+function rowLines(row: CommandCheck): string[] {
   const mark = row.ok ? (row.warning === true ? "!" : "✓") : "✗";
   return [`${mark} ${row.name}: ${row.detail}`, ...(row.ok && row.warning !== true ? [] : [`    fix: ${row.fix ?? ""}`])];
 }
@@ -71,10 +75,10 @@ export function confirmOnTerminal(): boolean | null {
   }
 }
 
-const judged = (io: CheckIo): Check => judgeShellCommand(readShellCommand(io.shell), io.context);
+const judged = (io: CheckIo): CommandCheck => judgeShellCommand(readShellCommand(io.shell), io.context);
 
 /** Fixes until the row is ok, a pass refuses, or the passes run out: an alias first, then the file on PATH it was hiding. */
-function fixUntilOk(io: CheckIo, first: Check): Pick<CheckOutcome, "after" | "fixed" | "refused"> {
+function fixUntilOk(io: CheckIo, first: CommandCheck): Pick<CheckOutcome, "after" | "fixed" | "refused"> {
   const fixed: string[] = [];
   let row = first;
   for (let pass = 0; pass < MAX_PASSES && !row.ok; pass += 1) {
@@ -101,7 +105,7 @@ export async function checkCommand({ fix, ask }: Readonly<{ fix: boolean; ask: b
 /** The lines the command prints for an outcome. */
 export function outcomeLines({ before, after, fixed, refused, declined, unasked }: CheckOutcome): string[] {
   return [
-    ...(before === after || !before.ok ? rowLines(before) : []),
+    ...rowLines(before),
     ...(unasked ? ["  no terminal to ask on, so it is replaced without asking"] : []),
     ...fixed.map((line) => `  fixed: ${line}`),
     ...(declined ? ["  left as it is"] : []),
@@ -115,7 +119,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     const { values } = parseArgs({ args: process.argv.slice(2), strict: true, options: { fix: { type: "boolean" }, ask: { type: "boolean" } } });
     const home = homedir();
     const context = shellContext(process.env, home, readOrNull(hostFilePath(process.env, home, readOrNull)));
-    const io: CheckIo = { shell: realShellDeps(process.env, home, context.tool), context, fix: { home, binDir: context.binDir, tool: context.tool, now: () => new Date() }, confirm: confirmOnTerminal };
+    const io: CheckIo = { shell: realShellDeps(process.env, home, context.tool), context, fix: fixDepsFor(context, process.env, () => new Date()), confirm: confirmOnTerminal };
     const outcome = await checkCommand({ fix: values.fix === true, ask: values.ask === true }, io);
     console.log(outcomeLines(outcome).join("\n"));
     process.exitCode = outcome.after.ok ? OK : NOT_OK;

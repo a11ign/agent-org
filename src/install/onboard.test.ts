@@ -168,7 +168,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     which: () => "/usr/local/bin/tool",
     ghAs: () => listedGh(),
     replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }),
-    diagnose: async () => [], shell: { env: {}, home, type: () => null, read: () => null, readlink: () => null, which: () => null, compare: () => ({ kind: "no-install" }) },
+    diagnose: async () => [], shell: { env: {}, home, type: () => null, read: () => null, readlink: () => null, which: () => null, compare: () => ({ kind: "no-install" }), hasInstall: () => false },
     chromium: () => BROWSERS_READY, isRoot: () => false,
     startServices: async (names) => { started.push(...names); return names.map((name) => ({ name, ok: true, line: `started the ${name} service`, address: name === "ui" ? "http://127.0.0.1:4748/" : null })); },
     fetch: linearKnowsTheKey, color: false,
@@ -586,7 +586,7 @@ function greenDoctor(home: string): DoctorDeps {
 /** The `agent-org` command a green fake home finds: a file on PATH whose copy is the installed tool (A11-285). */
 function installedShell(home: string): ShellReading {
   const command = join(home, "bin", "agent-org");
-  return { kind: "file", said: command, launcher: command, copyRoot: join(home, ".agent-org", "tool", "current"), defined: { file: command, line: null }, comparison: { kind: "installed" } };
+  return { kind: "file", said: command, launcher: command, copyRoot: join(home, ".agent-org", "tool", "current"), defined: { file: command, line: null }, comparison: { kind: "installed" }, noInstall: false };
 }
 
 /** Every file under `dir`, with its text: what a second run must leave exactly as it was. */

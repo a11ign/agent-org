@@ -10,12 +10,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readlinkSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
-import type { Check } from "./doctor.ts";
 import { compareWithInstalled, type CopyComparison } from "./tool-copy.ts";
 import { currentLink, toolDir } from "./tool-versions.ts";
-import { readOrNull, type Env } from "./paths.ts";
+import { agentOrgHome, readOrNull, type Env } from "./paths.ts";
 
 export const COMMAND_CHECK_NAME = "agent-org command";
+
+/** The row: doctor's `Check`, restated here so this module (which `bin.ts` loads) does not import doctor's whole closure. */
+export type CommandCheck = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null; warning?: true }>;
 const SHELL_TIMEOUT_MS = 10_000;
 const BIN_TS = /\/src\/bin\.ts$/;
 const MAX_LINKS = 8;
@@ -27,7 +29,9 @@ export type Definition = Readonly<{ file: string; line: number | null }>;
 export type ShellReading =
   | Readonly<{ kind: "unreadable"; reason: string }>
   | Readonly<{ kind: "absent" }>
-  | Readonly<{ kind: "alias" | "function" | "file"; said: string; launcher: string | null; copyRoot: string | null; defined: Definition | null; comparison: CopyComparison | null }>;
+  | Readonly<{ kind: "alias" | "function" | "file"; said: string; launcher: string | null; copyRoot: string | null; defined: Definition | null; comparison: CopyComparison | null;
+    /** This machine has no installed tool (no `current`), so there is nothing to compare the command with. */
+    noInstall: boolean }>;
 
 export type ShellDeps = Readonly<{
   env: Env;
@@ -39,6 +43,8 @@ export type ShellDeps = Readonly<{
   readlink: (path: string) => string | null;
   which: (name: string) => string | null;
   compare: (copyRoot: string) => CopyComparison;
+  /** Whether `<tool>/current` names a tool that can run. */
+  hasInstall: () => boolean;
 }>;
 
 /** Runs the person's shell the way a terminal does, with no terminal: login and interactive start-up files are read, stdin is closed, and the answer is waited for ten seconds. */
@@ -57,17 +63,25 @@ const readLink = (path: string): string | null => {
 
 const firstOnPath = (name: string, env: Env): string | null => (env.PATH ?? "").split(delimiter).filter((dir) => dir !== "").map((dir) => join(dir, name)).find((path) => existsSync(path)) ?? null;
 
-/** The machine's own seams: the shell, the files, PATH, and the comparison with the installed tool of `tool`. */
-export function realShellDeps(env: Env, home: string, tool: string): ShellDeps {
-  return { env, home, type: (shell) => typeInShell(shell, env), read: readOrNull, readlink: readLink, which: (name) => firstOnPath(name, env), compare: (copyRoot) => compareWithInstalled(copyRoot, { tool }) };
+/** Whether the shell accepts `file` as a script (`<shell> -n`): the check a fix makes of a start-up file it has edited. With no shell named there is nothing to ask, and a shell that cannot be run accepts nothing. */
+export function syntaxOk(shell: string, file: string): boolean {
+  if (shell === "") return true;
+  const result = spawnSync(shell, ["-n", file], { timeout: SHELL_TIMEOUT_MS, stdio: "ignore" });
+  return result.error === undefined && result.status === 0;
 }
 
-/** `~` and `$HOME` at the start of a path word, as the shell would expand them; other words are returned as they are. */
-export function expandHome(word: string, home: string): string {
+/** The machine's own seams: the shell, the files, PATH, and the comparison with the installed tool of `tool`. */
+export function realShellDeps(env: Env, home: string, tool: string): ShellDeps {
+  return { env, home, type: (shell) => typeInShell(shell, env), read: readOrNull, readlink: readLink, which: (name) => firstOnPath(name, env), compare: (copyRoot) => compareWithInstalled(copyRoot, { tool }), hasInstall: () => existsSync(join(currentLink(tool), "src", "bin.ts")) };
+}
+
+/** `~`, `$HOME` and `$AGENT_ORG_HOME` at the start of a path word, as the shell would expand them; other words are returned as they are. */
+export function expandHome(word: string, { home, env }: Pick<ShellDeps, "home" | "env">): string {
   const stripped = word.replace(/^["']|["']$/g, "");
   if (stripped === "~" || stripped.startsWith("~/")) return home + stripped.slice(1);
-  const variable = /^\$\{?HOME\}?(\/.*)?$/.exec(stripped);
-  return variable === null ? stripped : home + (variable[1] ?? "");
+  const variable = /^\$\{?(HOME|AGENT_ORG_HOME)\}?(\/.*)?$/.exec(stripped);
+  if (variable === null) return stripped;
+  return (variable[1] === "HOME" ? home : agentOrgHome(env, home)) + (variable[2] ?? "");
 }
 
 /** A path as a person writes it: under the home folder as `~/...`. */
@@ -100,13 +114,13 @@ function binOfLauncher(path: string, deps: ShellDeps): string | null {
     if (target === null) break;
     at = isAbsolute(target) ? target : resolve(dirname(at), target);
   }
-  const exec = /^\s*exec\s+\S*node\S*\s+(["']?)([^"'\s]+\/src\/bin\.ts)\1/m.exec(deps.read(at) ?? "");
-  return exec === null ? null : expandHome(exec[2], deps.home);
+  const exec = /^\s*exec\s+(?:"[^"]*"|'[^']*'|\S+)\s+(["']?)([^"'\s]+\/src\/bin\.ts)\1/m.exec(deps.read(at) ?? "");
+  return exec === null ? null : expandHome(exec[2], deps);
 }
 
 /** The `src/bin.ts` a command line (an alias's words, a function's body) runs: a word that is one, else a word that is a launcher file. */
 function binOfCommand(command: string, deps: ShellDeps): { bin: string | null; launcher: string | null } {
-  const words = command.split(/\s+/).filter((word) => word !== "").map((word) => expandHome(word, deps.home));
+  const words = command.split(/\s+/).filter((word) => word !== "").map((word) => expandHome(word, deps));
   const direct = words.find((word) => BIN_TS.test(word));
   if (direct !== undefined) return { bin: direct, launcher: null };
   const launcher = words.find((word) => isAbsolute(word) && (deps.read(word) !== null || deps.readlink(word) !== null));
@@ -133,7 +147,7 @@ function definitionsIn(file: string, kind: "alias" | "function", deps: ShellDeps
     if (/^\s*#/.test(line)) return;
     if ((kind === "alias" ? ALIAS_LINE : FUNCTION_LINE).test(line)) found.push({ file, line: index + 1 });
     const sourced = SOURCE_LINE.exec(line);
-    if (sourced !== null && depth < 1) found.push(...definitionsIn(expandHome(sourced[2], deps.home), kind, deps, depth + 1));
+    if (sourced !== null && depth < 1) found.push(...definitionsIn(expandHome(sourced[2], deps), kind, deps, depth + 1));
   });
   return found;
 }
@@ -157,7 +171,7 @@ function readingOf(said: Said, shell: string, deps: ShellDeps): ShellReading {
   const { bin, launcher } = said.kind === "file" ? { bin: binOfLauncher(said.path, deps), launcher: said.path } : binOfCommand(command, deps);
   const copyRoot = bin === null ? null : dirname(dirname(bin));
   const text = said.kind === "alias" ? said.command : said.kind === "function" ? "a shell function" : said.path;
-  return { kind: said.kind, said: text, launcher, copyRoot, defined, comparison: copyRoot === null ? null : deps.compare(copyRoot) };
+  return { kind: said.kind, said: text, launcher, copyRoot, defined, comparison: copyRoot === null ? null : deps.compare(copyRoot), noInstall: !deps.hasInstall() };
 }
 
 /**
@@ -177,7 +191,9 @@ export function readShellCommand(deps: ShellDeps): ShellReading {
 }
 
 /** What the judgement needs besides the reading. `devTool` is host.json's setting; `binDir` is where the shim lives. */
-export type ShellContext = Readonly<{ tool: string; binDir: string; devTool: string | null; home: string }>;
+export type ShellContext = Readonly<{ tool: string; binDir: string; devTool: string | null; home: string;
+  /** The host file declares a project: `agent-org host:install` owns the launcher in `binDir`, and onboard and `command:check` leave it to it. */
+  orgHost: boolean }>;
 
 const TYPE_FIX = "run `type agent-org` in your shell to see what it runs";
 
@@ -190,13 +206,16 @@ function versionsOf(comparison: CopyComparison | null): string {
   return ` (${comparison.copy}, against the installed ${comparison.installed})`;
 }
 
-function failureOf(reading: Extract<ShellReading, { copyRoot: string | null }>, context: ShellContext): Check {
+function failureOf(reading: Extract<ShellReading, { copyRoot: string | null }>, context: ShellContext): CommandCheck {
   const { tool, binDir, home, devTool } = context;
   const current = currentLink(tool);
   const where = reading.defined === null ? "defined somewhere I could not find in your start-up files" : reading.kind === "file" ? `the file is ${tilde(reading.defined.file, home)}`
     : `defined at ${tilde(reading.defined.file, home)}:${reading.defined.line}`;
   const runs = reading.copyRoot === null ? `something that is not a copy of the tool I could match (${reading.said})` : `${tilde(reading.copyRoot, home)}${versionsOf(reading.comparison)}`;
   const newer = reading.comparison?.kind === "newer-or-same" && devTool === null ? " A checkout used on purpose for development is allowed when host.json names it as `devTool`." : "";
+  const owned = context.orgHost && reading.kind === "file" && reading.launcher === join(binDir, "agent-org");
+  if (owned) return { name: COMMAND_CHECK_NAME, ok: false, detail: `\`agent-org\` in your shell is the launcher ${tilde(binDir, home)}/agent-org, which runs ${runs}, not the installed tool (${tilde(current, home)}).`,
+    fix: `run \`node ${tilde(current, home)}/src/bin.ts host:install\`, which writes the launcher this host's \`host:install\` owns, so that it runs ${tilde(current, home)}` };
   const command = `node ${tilde(current, home)}/src/bin.ts command:check --fix`;
   const edit = reading.kind === "file" ? `replaces ${tilde(reading.defined?.file ?? binDir, home)} with the shim` : `comments out that definition`;
   return {
@@ -209,13 +228,14 @@ function failureOf(reading: Extract<ShellReading, { copyRoot: string | null }>, 
 const samePath = (a: string, b: string): boolean => resolve(a) === resolve(b);
 
 /** The row for the reading: ok when it runs the installed tool through `current` (or a newer development checkout host.json names), a warning when the shell cannot say, else failed. */
-export function judgeShellCommand(reading: ShellReading, context: ShellContext): Check {
+export function judgeShellCommand(reading: ShellReading, context: ShellContext): CommandCheck {
   const { tool, binDir, home, devTool } = context;
   const current = currentLink(tool);
   if (reading.kind === "unreadable") return { name: COMMAND_CHECK_NAME, ok: true, warning: true, detail: reading.reason, fix: TYPE_FIX };
   if (reading.kind === "absent") {
     return { name: COMMAND_CHECK_NAME, ok: true, warning: true, detail: "your login shell finds no `agent-org`", fix: `add ${tilde(binDir, home)} to PATH: export PATH="${tilde(binDir, home)}:$PATH" in your shell's rc file` };
   }
+  if (reading.noInstall) return { name: COMMAND_CHECK_NAME, ok: true, detail: `this machine has no installed tool yet (${tilde(current, home)}), so there is nothing to compare \`agent-org\` with`, fix: null };
   const where = reading.defined === null || reading.defined.line === null ? "" : ` (${tilde(reading.defined.file, home)}:${reading.defined.line})`;
   if (reading.copyRoot !== null && samePath(reading.copyRoot, current)) {
     return { name: COMMAND_CHECK_NAME, ok: true, detail: `${ARTICLE[reading.kind]}${where} runs the installed tool through ${tilde(current, home)}`, fix: null };
@@ -238,5 +258,5 @@ export function shellContext(env: Env, home: string, hostText: string | null): S
     host = {};
   }
   const absolute = (value: unknown): string | null => (typeof value === "string" && isAbsolute(value) ? value : null);
-  return { tool: toolDir(env, home), binDir: absolute(env.AGENT_ORG_BIN_DIR) ?? absolute(host.binDir) ?? join(home, ".local", "bin"), devTool: absolute(host.devTool), home };
+  return { tool: toolDir(env, home), binDir: absolute(env.AGENT_ORG_BIN_DIR) ?? absolute(host.binDir) ?? join(home, ".local", "bin"), devTool: absolute(host.devTool), home, orgHost: Object.hasOwn(host, "primary") };
 }

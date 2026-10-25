@@ -121,7 +121,7 @@ test("an alias the install cannot replace (its file is outside the home folder) 
   const result = w.install({ ZDOTDIR: system });
   assert.equal(result.status, 1, result.stdout);
   assert.doesNotMatch(result.stdout, /agent-org install OK/);
-  for (const said of [/agent-org install FAILED: /, /is an alias, defined at .*\.zshrc:1; it runs ~\/old\/agent-org \(v0\.2\.0, against the installed v0\.10\.0\)/, /is outside your home folder, so it is left as it is/]) {
+  for (const said of [/agent-org install FAILED: /, /is an alias, defined at .*\.zshrc:1; it runs ~\/old\/agent-org \(v0\.2\.0, against the installed v0\.10\.0\)/, /is outside your home folder \(or cannot be read\), so it is left as it is/]) {
     assert.match(result.stdout, said);
   }
   assert.equal(readFileSync(join(system, ".zshrc"), "utf8"), `${ORIGINAL_ALIAS}\n`, "a file outside home is never edited");

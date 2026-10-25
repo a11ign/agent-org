@@ -14,6 +14,9 @@ import { currentLink } from "./tool-versions.ts";
 export const GUARDED = ["update", "host:install", "start"] as const;
 export const OVERRIDE_FLAG = "--allow-older-copy";
 
+/** Whether `command` is one of the three the guard covers. */
+export const isGuarded = (command: string): boolean => (GUARDED as readonly string[]).includes(command);
+
 export type Guarded = Readonly<{ command: string; argv: readonly string[]; copyRoot: string; tool: string; binDir: string; compare: (copyRoot: string) => CopyComparison }>;
 
 /** The words that say which copy ran, set against the installed one. */
@@ -30,7 +33,7 @@ function whichCopy(copyRoot: string, comparison: CopyComparison): string {
 export function guardCopy({ command, argv, copyRoot, tool, binDir, compare }: Guarded): { run: string[] } | { refusal: string } {
   const overridden = argv.includes(OVERRIDE_FLAG);
   const rest = argv.filter((arg) => arg !== OVERRIDE_FLAG);
-  if (!(GUARDED as readonly string[]).includes(command)) return { run: [...argv] };
+  if (!isGuarded(command)) return { run: [...argv] };
   if (overridden) return { run: rest };
   const comparison = compare(copyRoot);
   if (comparison.kind !== "older" && comparison.kind !== "unknown") return { run: rest };

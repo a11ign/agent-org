@@ -85,8 +85,8 @@ import { pickRepositories, type PickedRepository } from "./onboard-repos.ts";
 import { clackPrompts, PromptCancelled, type Prompts } from "./prompts.ts";
 import { type OnboardOutput, onboardOutput } from "./onboard-output.ts";
 import { shimTextFor, writeLauncher } from "./launcher.ts";
-import { checkCommand } from "./shell-command-cli.ts";
-import { COMMAND_CHECK_NAME, realShellDeps, shellContext, type ShellDeps } from "./shell-command.ts";
+import { checkCommand, fixDepsFor } from "./shell-command-cli.ts";
+import { COMMAND_CHECK_NAME, realShellDeps, shellContext, type ShellContext, type ShellDeps } from "./shell-command.ts";
 import { currentLink, toolDir } from "./tool-versions.ts";
 
 export type OnboardOptions = Readonly<{
@@ -735,6 +735,14 @@ function sayNext(board: string | null, say: OnboardOutput): void {
   say.note(row("agent-org doctor", "check everything works"));
 }
 
+/** Writes the shim into `binDir` when there is none there, and says so. */
+function installShim({ binDir, tool }: ShellContext, deps: Session): void {
+  const shim = join(binDir, "agent-org");
+  if (deps.exists(shim)) return;
+  writeLauncher(shim, shimTextFor(tool));
+  deps.say.done("The agent-org command installed", inHome(shim, deps.home));
+}
+
 /**
  * The `agent-org` command (A11-285): on a host that declares no project, the shim that always runs `<tool>/current` is written when there is none; then the same check and fix `install.sh` ends with
  * runs, and says what it replaced and where the backup is. An org host's launcher belongs to `host:install`, so it is not written here. Nothing is done where there is no installed tool: the shim would
@@ -744,13 +752,9 @@ function sayNext(board: string | null, say: OnboardOutput): void {
 async function setUpCommand(host: Readonly<Record<string, unknown>>, deps: Session): Promise<boolean> {
   const context = shellContext(deps.env, deps.home, JSON.stringify(host));
   if (!deps.exists(join(currentLink(context.tool), "src", "bin.ts"))) return false;
-  const shim = join(context.binDir, "agent-org");
-  if (!Object.hasOwn(host, "primary") && !deps.exists(shim)) {
-    writeLauncher(shim, shimTextFor(context.tool));
-    deps.say.done("The agent-org command installed", inHome(shim, deps.home));
-  }
+  if (!Object.hasOwn(host, "primary")) installShim(context, deps);
   const confirm = () => deps.prompts.confirm({ message: "Replace it with the installed command? A backup is kept.", initial: true });
-  const outcome = await checkCommand({ fix: true, ask: deps.interactive }, { shell: deps.shell, context, fix: { home: deps.home, binDir: context.binDir, tool: context.tool, now: deps.now }, confirm });
+  const outcome = await checkCommand({ fix: true, ask: deps.interactive }, { shell: deps.shell, context, fix: fixDepsFor(context, deps.env, deps.now), confirm });
   for (const line of outcome.fixed) deps.say.done(`agent-org command: ${line}`);
   if (outcome.after.ok) return false;
   deps.say.failed(`${outcome.after.name}: ${outcome.after.detail}${outcome.refused === null ? "" : ` (${outcome.refused})`}`, outcome.after.fix ?? "");

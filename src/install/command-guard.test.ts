@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planGuardedInvocation } from "../bin.ts";
-import { GUARDED, guardCopy, OVERRIDE_FLAG } from "./command-guard.ts";
+import { GUARDED, guardCopy, isGuarded, OVERRIDE_FLAG } from "./command-guard.ts";
 import type { CopyComparison } from "./tool-copy.ts";
 
 const COPY = "/home/me/Documents/repos/work/agent-org";
@@ -58,6 +58,7 @@ test("a command outside the three is never compared with the installed tool", ()
   }
   assert.deepEqual(asked, []);
   assert.deepEqual([...GUARDED], ["update", "host:install", "start"]);
+  assert.deepEqual(["update", "host:install", "start", "doctor"].map(isGuarded), [true, true, true, false]);
 });
 
 test("the bin's plan and the guard wire together: agent-org update from an older root never reaches a program", () => {

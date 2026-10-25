@@ -13,7 +13,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { shimTextFor } from "./launcher.ts";
 import type { CopyComparison } from "./tool-copy.ts";
 import { checkCommand, outcomeLines } from "./shell-command-cli.ts";
-import { fixShellCommand } from "./shell-command-fix.ts";
+import { fixShellCommand, type FixDeps } from "./shell-command-fix.ts";
 import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellDeps } from "./shell-command.ts";
 
 const OLD: CopyComparison = { kind: "older", copy: "v0.276.0", installed: "v0.304.1" };
@@ -26,9 +26,11 @@ function world() {
   const tool = join(home, ".agent-org", "tool");
   const binDir = join(home, ".local", "bin");
   mkdirSync(join(tool, "versions", "v0.304.1", "src"), { recursive: true });
+  writeFileSync(join(tool, "versions", "v0.304.1", "src", "bin.ts"), "");
   symlinkSync("versions/v0.304.1", join(tool, "current"));
   mkdirSync(binDir, { recursive: true });
-  const context = { tool, binDir, devTool: null, home };
+  const context = { tool, binDir, devTool: null, home, orgHost: false };
+  const fix: FixDeps = { home, binDir, tool, now: () => NOW, orgHost: false, accepts: () => true };
   const shell = (typed: string | null, compare: ShellDeps["compare"] = () => OLD, env: Record<string, string | undefined> = { SHELL: "/bin/zsh" }): ShellDeps => ({
     ...realShellDeps(env, home, tool), type: () => typed, compare,
   });
@@ -36,7 +38,7 @@ function world() {
     writeFileSync(join(home, name), text);
     return join(home, name);
   };
-  return { home, tool, binDir, context, shell, rc };
+  return { home, tool, binDir, context, shell, rc, fix };
 }
 
 const ZSHRC_WITH_ALIAS = (lines: number) => `${"# a line of the person's own\n".repeat(lines - 1)}alias agent-org='node ~/old/agent-org/src/bin.ts'\nexport EDITOR=vim\n`;
@@ -172,9 +174,10 @@ test("a symlink to bin.ts is followed one link at a time: one to current passes,
 
 test("shellContext reads binDir and devTool from the host file, and binDir from AGENT_ORG_BIN_DIR first", () => {
   const host = JSON.stringify({ binDir: "/srv/bin", devTool: "/src/agent-org" });
-  assert.deepEqual(shellContext({}, "/h", host), { tool: "/h/.agent-org/tool", binDir: "/srv/bin", devTool: "/src/agent-org", home: "/h" });
+  assert.deepEqual(shellContext({}, "/h", host), { tool: "/h/.agent-org/tool", binDir: "/srv/bin", devTool: "/src/agent-org", home: "/h", orgHost: false });
   assert.equal(shellContext({ AGENT_ORG_BIN_DIR: "/mine" }, "/h", host).binDir, "/mine");
-  assert.deepEqual(shellContext({}, "/h", "not json"), { tool: "/h/.agent-org/tool", binDir: "/h/.local/bin", devTool: null, home: "/h" });
+  assert.deepEqual(shellContext({}, "/h", "not json"), { tool: "/h/.agent-org/tool", binDir: "/h/.local/bin", devTool: null, home: "/h", orgHost: false });
+  assert.equal(shellContext({}, "/h", JSON.stringify({ primary: "p" })).orgHost, true, "a host that declares a project is an org host");
   assert.equal(shellContext({}, "/h", JSON.stringify({ devTool: "relative" })).devTool, null, "a relative devTool is no setting");
 });
 
@@ -186,7 +189,7 @@ test("the fix comments out an alias line under a marker, backs the whole file up
   const original = ZSHRC_WITH_ALIAS(3);
   const rc = w.rc(".zshrc", original);
   const reading = readShellCommand(w.shell("agent-org is an alias for node ~/old/agent-org/src/bin.ts\n"));
-  const result = fixShellCommand(reading, { home: w.home, binDir: w.binDir, tool: w.tool, now: () => NOW });
+  const result = fixShellCommand(reading, w.fix);
   assert.equal(result.refused, null);
   const [backup] = backupsIn(w.home);
   assert.equal(backup, ".zshrc.before-agent-org-2026-10-25T19-30-00-000Z");
@@ -204,7 +207,7 @@ test("the fix comments out a function from its first line to its closing brace, 
   const original = "export A=1\nfunction agent-org {\n  node ~/old/agent-org/src/bin.ts \"$@\"\n}\nexport B=2\n";
   const rc = w.rc(".zshrc", original);
   const reading = readShellCommand(w.shell("agent-org is a shell function from /h/.zshrc\n"));
-  assert.equal(fixShellCommand(reading, { home: w.home, binDir: w.binDir, tool: w.tool, now: () => NOW }).refused, null);
+  assert.equal(fixShellCommand(reading, w.fix).refused, null);
   const lines = readFileSync(rc, "utf8").split("\n");
   assert.deepEqual(lines.slice(1, 7).map((line) => line.replace(/^(# agent-org \(A11-285\).*)$/, "MARKER")), ["MARKER", "# function agent-org {", "#   node ~/old/agent-org/src/bin.ts \"$@\"", "# }", "export B=2", ""]);
   assert.equal(readFileSync(join(w.home, backupsIn(w.home)[0]), "utf8"), original);
@@ -214,7 +217,7 @@ test("a function whose body never closes on a line of its own is left as it is, 
   const w = world();
   const rc = w.rc(".zshrc", "agent-org() {\n  node ~/old/agent-org/src/bin.ts \"$@\" ; }  # open\n");
   const reading = readShellCommand(w.shell("agent-org is a shell function from /h/.zshrc\n"));
-  const result = fixShellCommand(reading, { home: w.home, binDir: w.binDir, tool: w.tool, now: () => NOW });
+  const result = fixShellCommand(reading, w.fix);
   assert.match(result.refused ?? "", /no closing `\}` line of its own/);
   assert.equal(readFileSync(rc, "utf8"), "agent-org() {\n  node ~/old/agent-org/src/bin.ts \"$@\" ; }  # open\n");
   assert.deepEqual(backupsIn(w.home), [], "nothing is backed up when nothing is changed");
@@ -226,8 +229,8 @@ test("a start-up file outside the home folder is never edited", () => {
   const file = join(outside, "zshenv");
   writeFileSync(file, "alias agent-org='node /opt/old/src/bin.ts'\n");
   const reading = { ...readShellCommand(w.shell("agent-org is an alias for node /opt/old/src/bin.ts\n")), defined: { file, line: 1 } };
-  const result = fixShellCommand(reading as never, { home: w.home, binDir: w.binDir, tool: w.tool, now: () => NOW });
-  assert.match(result.refused ?? "", /is outside your home folder, so it is left as it is/);
+  const result = fixShellCommand(reading as never, w.fix);
+  assert.match(result.refused ?? "", /is outside your home folder \(or cannot be read\), so it is left as it is/);
   assert.equal(readFileSync(file, "utf8"), "alias agent-org='node /opt/old/src/bin.ts'\n");
   assert.deepEqual(readdirSync(outside), ["zshenv"]);
 });
@@ -237,13 +240,13 @@ test("a file on PATH that is not the shim is renamed to its backup and the shim 
   const stale = join(w.binDir, "agent-org");
   writeFileSync(stale, `#!/bin/sh\nexec node '${w.home}/old/agent-org/src/bin.ts' "$@"\n`, { mode: 0o755 });
   const reading = readShellCommand(w.shell(`agent-org is ${stale}\n`));
-  const result = fixShellCommand(reading, { home: w.home, binDir: w.binDir, tool: w.tool, now: () => NOW });
+  const result = fixShellCommand(reading, w.fix);
   assert.equal(result.refused, null);
   assert.equal(readFileSync(stale, "utf8"), shimTextFor(w.tool));
   assert.match(readFileSync(join(w.binDir, backupsIn(w.binDir)[0]), "utf8"), /old\/agent-org\/src\/bin\.ts/);
   const system = tmpDir("shell-command-usr-");
   writeFileSync(join(system, "agent-org"), `#!/bin/sh\nexec node '${w.home}/old/agent-org/src/bin.ts' "$@"\n`);
-  const outside = fixShellCommand(readShellCommand(w.shell(`agent-org is ${system}/agent-org\n`)), { home: w.home, binDir: w.binDir, tool: w.tool, now: () => NOW });
+  const outside = fixShellCommand(readShellCommand(w.shell(`agent-org is ${system}/agent-org\n`)), w.fix);
   assert.match(outside.refused ?? "", /sudo install -m 755 /);
   assert.equal(existsSync(join(system, "agent-org")), true);
   assert.deepEqual(readdirSync(system), ["agent-org"]);
@@ -260,7 +263,7 @@ function fakeShell(w: ReturnType<typeof world>): ShellDeps {
   return { ...w.shell(null), type, compare: (root) => (root === join(w.tool, "current") ? { kind: "installed" } : OLD) };
 }
 
-const checkOver = (w: ReturnType<typeof world>, confirm: () => boolean | null) => ({ shell: fakeShell(w), context: w.context, fix: { home: w.home, binDir: w.binDir, tool: w.tool, now: () => NOW }, confirm });
+const checkOver = (w: ReturnType<typeof world>, confirm: () => boolean | null) => ({ shell: fakeShell(w), context: w.context, fix: w.fix, confirm });
 
 /** A home whose `.zshrc` holds the old alias on line 2, and the outcome of `command:check` over it with `options`, answering `confirm` when asked. */
 async function checkedOver(options: { fix: boolean; ask: boolean }, confirm: () => boolean | null) {
@@ -316,5 +319,101 @@ test("a fix that is refused leaves the row failing and says why", async () => {
   const outcome = await checkCommand({ fix: true, ask: false }, { ...checkOver(w, () => true), shell });
   assert.equal(outcome.after.ok, false);
   assert.match(outcome.refused ?? "", /no closing `\}` line of its own/);
-  assert.match(outcomeLines(outcome).join("\n"), /\n {2}refused: the function at ~\/\.zshrc:1 has no closing/);
+  assert.match(outcomeLines(outcome).join("\n"), /\n {2}refused: ~\/\.zshrc:1: the function has no closing/);
+});
+
+// The review of the fix (A11-285): what it must not do to a start-up file, and to a machine it should leave alone.
+
+test("a machine with no installed tool has nothing to compare agent-org with, so the row passes whatever the shell runs", () => {
+  const w = world();
+  const none = { ...w.shell("agent-org is an alias for node ~/old/agent-org/src/bin.ts\n"), hasInstall: () => false };
+  const row = judgeShellCommand(readShellCommand(none), w.context);
+  assert.deepEqual([row.ok, row.fix], [true, null]);
+  assert.match(row.detail, /no installed tool yet/);
+});
+
+test("an alias or a wrapper that names the install through $AGENT_ORG_HOME, or runs node through a variable, is the installed tool", () => {
+  const w = world();
+  const viaVariable = judgeShellCommand(readShellCommand({ ...w.shell("agent-org is an alias for node $AGENT_ORG_HOME/tool/current/src/bin.ts\n"), env: { SHELL: "/bin/zsh" } }), w.context);
+  assert.equal(viaVariable.ok, true, viaVariable.detail);
+  const wrapper = join(w.binDir, "agent-org");
+  writeFileSync(wrapper, `#!/bin/sh\nexec "$NODE" '${w.tool}/current/src/bin.ts' "$@"\n`, { mode: 0o755 });
+  assert.equal(judgeShellCommand(readShellCommand(w.shell(`agent-org is ${wrapper}\n`, () => ({ kind: "installed" }))), w.context).ok, true);
+});
+
+test("on an org host the launcher host:install owns is not rewritten by the fix: the row names host:install, and the fix refuses", () => {
+  const w = world();
+  const stale = join(w.binDir, "agent-org");
+  const text = `#!/bin/sh\nexec node "${w.home}/old/agent-org/src/bin.ts" "$@"\n`;
+  writeFileSync(stale, text, { mode: 0o755 });
+  const reading = readShellCommand(w.shell(`agent-org is ${stale}\n`));
+  const row = judgeShellCommand(reading, { ...w.context, orgHost: true });
+  assert.equal(row.ok, false);
+  assert.match(row.fix ?? "", /^run `node ~\/\.agent-org\/tool\/current\/src\/bin\.ts host:install`/);
+  const result = fixShellCommand(reading, { ...w.fix, orgHost: true });
+  assert.match(result.refused ?? "", /is the launcher `agent-org host:install` owns on this host/);
+  assert.equal(readFileSync(stale, "utf8"), text);
+  assert.deepEqual(backupsIn(w.binDir), []);
+});
+
+const FIX_CASES: ReadonlyArray<{ name: string; rc: string; typed: string; why: RegExp }> = [
+  { name: "an alias that shares its line with another command", rc: "alias agent-org='node ~/old/agent-org/src/bin.ts'; export KEEP=1\n", typed: "agent-org is an alias for node ~/old/agent-org/src/bin.ts\n", why: /shares its line with other commands/ },
+  { name: "an alias that continues on the next line", rc: "alias agent-org='node ~/old/agent-org/src/bin.ts' \\\n  --flag\n", typed: "agent-org is an alias for node ~/old/agent-org/src/bin.ts\n", why: /shares its line with other commands, or runs past it/ },
+  { name: "a function whose first line opens a ${...} and never closes", rc: "agent-org() { node ${TOOL}/src/bin.ts \"$@\" ;\n  echo more ; }\n", typed: "agent-org is a shell function from /h/.zshrc\n", why: /no closing `\}` line of its own/ },
+];
+
+for (const { name, rc, typed, why } of FIX_CASES) {
+  test(`the fix leaves ${name} as it is, and says why`, () => {
+    const w = world();
+    const file = w.rc(".zshrc", rc);
+    const result = fixShellCommand(readShellCommand(w.shell(typed)), w.fix);
+    assert.match(result.refused ?? "", why);
+    assert.equal(readFileSync(file, "utf8"), rc);
+    assert.deepEqual(backupsIn(w.home), []);
+  });
+}
+
+test("a definition that is the only statement of a block is put back when the shell refuses the edited file, and its backup is removed", () => {
+  const w = world();
+  const original = "if [ -d ~/repos ]; then\n  alias agent-org='node ~/old/agent-org/src/bin.ts'\nfi\n";
+  const file = w.rc(".zshrc", original);
+  const checked: string[] = [];
+  const result = fixShellCommand(readShellCommand(w.shell("agent-org is an alias for node ~/old/agent-org/src/bin.ts\n")), { ...w.fix, accepts: (path) => { checked.push(readFileSync(path, "utf8")); return false; } });
+  assert.match(result.refused ?? "", /would leave a file your shell refuses/);
+  assert.equal(checked.length, 1);
+  assert.match(checked[0], /# +alias agent-org=/, "the shell was asked about the edited file");
+  assert.equal(readFileSync(file, "utf8"), original, "and the file is back as it was");
+  assert.deepEqual(backupsIn(w.home), []);
+  assert.equal(existsSync(join(w.binDir, "agent-org")), false);
+});
+
+test("the file's bytes survive: a byte that is not UTF-8 is the same byte in the backup and in the edited file", () => {
+  const w = world();
+  const original = Buffer.concat([Buffer.from("# caf"), Buffer.from([0xe9]), Buffer.from(`\n${ZSHRC_WITH_ALIAS(1)}export Z=1\n`)]);
+  const file = join(w.home, ".zshrc");
+  writeFileSync(file, original);
+  const result = fixShellCommand(readShellCommand(w.shell("agent-org is an alias for node ~/old/agent-org/src/bin.ts\n")), w.fix);
+  assert.equal(result.refused, null);
+  assert.deepEqual(readFileSync(join(w.home, backupsIn(w.home)[0])), original, "the backup is the file's own bytes");
+  const edited = readFileSync(file);
+  assert.deepEqual(edited.subarray(0, 6), original.subarray(0, 6), "the byte before the edit is untouched");
+  assert.equal(edited.at(5), 0xe9);
+});
+
+test("a start-up file that is a link is edited where it lives when that is inside home, and left alone when it is not", () => {
+  const w = world();
+  mkdirSync(join(w.home, "dotfiles"));
+  const target = join(w.home, "dotfiles", "zshrc");
+  writeFileSync(target, ZSHRC_WITH_ALIAS(1));
+  symlinkSync(target, join(w.home, ".zshrc"));
+  const typed = "agent-org is an alias for node ~/old/agent-org/src/bin.ts\n";
+  assert.equal(fixShellCommand(readShellCommand(w.shell(typed)), w.fix).refused, null);
+  assert.match(readFileSync(target, "utf8"), /^# agent-org \(A11-285\)/);
+  assert.equal(statSync(join(w.home, ".zshrc")).isFile(), true, "the link is still a link to the same file");
+  const other = world();
+  const elsewhere = tmpDir("shell-command-store-");
+  writeFileSync(join(elsewhere, "zshrc"), ZSHRC_WITH_ALIAS(1));
+  symlinkSync(join(elsewhere, "zshrc"), join(other.home, ".zshrc"));
+  assert.match(fixShellCommand(readShellCommand(other.shell(typed)), other.fix).refused ?? "", /outside your home folder/);
+  assert.equal(readFileSync(join(elsewhere, "zshrc"), "utf8"), ZSHRC_WITH_ALIAS(1));
 });

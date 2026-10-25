@@ -623,7 +623,7 @@ check_command_step() {
   step_begin "Check the agent-org command"
   if [ ! -f "$CURRENT/src/install/shell-command-cli.ts" ]; then
     detail "$TAG has no command check, so the agent-org your shell runs is not compared with it"
-    step_done_quietly "Checked the agent-org command"
+    step_done_quietly "Skipped the agent-org command check ($TAG has none)"
     return 0
   fi
   local output="" status=0 line="" problem_line="" fix_line="" refused_line=""

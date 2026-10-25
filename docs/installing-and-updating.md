@@ -23,6 +23,7 @@ The `agent-org` command is a **shim**: a small script that runs `<agent-org home
 - **ok**: it reaches the installed tool through `current`: the shim, or an alias or function naming `~/.agent-org/tool/current/src/bin.ts`.
 - **ok (development)**: it runs the checkout host.json names as `devTool` (an absolute path), and that checkout is at least as new as the installed tool.
 - **fail**: it runs anything else. The row says what it is (an alias, a function or a file), where it is defined (`~/.zshrc:42`), which copy it runs and that copy's version against the installed one, and the exact fix. A path that names a version folder directly (`tool/versions/v0.306.0`) fails even while `current` names that folder, because the next update leaves it behind.
+- **ok** (nothing to compare): this machine has no installed tool yet (no `current`), as on an install that has not migrated. There is nothing for the command to be compared with.
 - **warn** (passes): the shell could not be asked (it timed out, or answered with nothing the check understands), or it finds no `agent-org` on `PATH`. The row says how to look: `type agent-org`.
 
 To read a fail, take the file and line it names, and run the fix it prints:
@@ -53,8 +54,10 @@ Doctor then passes an `agent-org` that runs that checkout while it is at least a
 
 - An **alias** or a **one-line function** is commented out under the marker `# agent-org (A11-285): replaced by the installed command <binDir>/agent-org on <date>; was:`. A **multi-line function** is commented out up to the first line that is `}` alone.
 - A **file on `PATH`** is renamed to `<file>.before-agent-org-<stamp>`, and the shim is written in its place.
-- Before either, the whole start-up file is kept as `<file>.before-agent-org-<stamp>`. Nothing is deleted.
-- A file outside the home folder (`/usr/local/bin/agent-org`, a system `zshenv`) is never edited; the fix names the command for the person to run.
+- Before either, the whole start-up file is kept as `<file>.before-agent-org-<stamp>`, byte for byte. Nothing is deleted.
+- Only a definition that stands alone is edited: an alias alone on its line, or a function whose closing `}` it can find. An alias that shares its line with another command, or runs past it, is left as it is, and the fix says so. After an edit the person's shell is asked to accept the file (`<shell> -n`); a file it refuses (the definition was the only statement of an `if`, say) is put back exactly as it was, and its backup removed.
+- A start-up file that is a link is edited where it lives, when that is inside the home folder. A file outside the home folder (`/usr/local/bin/agent-org`, a system `zshenv`, a link into one) is never edited; the fix names the command for the person to run.
+- On an org host (the host file declares a `primary` project), the launcher in `binDir` belongs to `agent-org host:install`: `onboard` writes none, `command:check --fix` does not rewrite it, and a stale one fails the row with `host:install` as the fix. An alias or function is fixed there as anywhere.
 
 At a terminal, `install.sh` asks `Replace it with the installed command? A backup is kept. [Y/n]` on `/dev/tty` (it cannot ask on stdin when run as `curl ... | bash`), and onboard asks through its own prompt. With nobody to ask, both replace without asking, and say so.
 
