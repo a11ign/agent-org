@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A plugin may declare its agent-org contract in `metadata.agentOrg` of its `.claude-plugin/plugin.json`: the contract major and the agent-org range it works with, the skills it provides for `planner`, `writer` and `prReview`, and the connectors and commands it needs. `pluginProblems` reads the contract of each plugin a session loads and returns one row per mismatch with the host's keys: a contract major this agent-org does not read, an agent-org version outside the range, a needed connector `tickets.connectors` does not allow, a needed command not on the path, a host key that names a skill the plugin does not provide or a plugin `tickets.plugins` does not enable, and a `tickets.plan` that does not match the plan file the planner writes. A run start is refused with each row's sentence, as it already refuses a plugin the session does not load, and the Settings page reads the same rows. A plugin that declares no contract, and a contract that matches, are unchanged.
