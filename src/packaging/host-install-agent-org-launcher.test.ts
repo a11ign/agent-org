@@ -58,12 +58,13 @@ function stubTool(name: string): string {
 
 /** The fixture host, with a scratch `binDir` and, when given, a `tool`: everything else the install reads is injected below. */
 function hostWith(binDir: string, tool?: string) {
-  return { ...homeHostConfig(), binDir, ...(tool === undefined ? {} : { tool }) };
+  // A scratch home: the launcher runs `<agent-org home>/tool/current` when the machine has one (A11-285), and a test must not find the machine's own.
+  return { ...homeHostConfig(), home: scratch(), binDir, ...(tool === undefined ? {} : { tool }) };
 }
 
 function where(binDir: string, tool?: string) {
   const root = scratch();
-  return { host: hostWith(binDir, tool), scriptDir: binDir, workersDir: join(root, "workers"), leadsDir: join(root, "leads"), out: () => {} };
+  return { host: hostWith(binDir, tool), env: {}, scriptDir: binDir, workersDir: join(root, "workers"), leadsDir: join(root, "leads"), out: () => {} };
 }
 
 function installInto(tool: string): { binDir: string, launcher: string, deps: ReturnType<typeof where> } {

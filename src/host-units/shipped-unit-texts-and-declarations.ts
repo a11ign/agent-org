@@ -6,6 +6,7 @@ import { agentOrgCommand } from "../acceptance-commands/suite-and-checkout-comma
 import { COMMANDS, FIXED_ARGS } from "../commands.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, ProjectDeclarationRefusal } from "../project-config.ts";
 import { roleBriefPath } from "../project-roles.ts";
+import { currentLink, toolDir } from "../install/tool-versions.ts";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 
 /**
@@ -146,9 +147,9 @@ export type UnitsDeclaration = import("../host-config.ts").UnitsDeclaration;
 export type EventsDeclaration = import("../host-config.ts").EventsDeclaration;
 
 /**
- * `declaredKeys` stands in for the project's top-level keys, which decide `OPTIONAL_UNITS`; a fixture directory declares none. `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own `shippedDir`, so a fixture directory is never silently joined by a11ign's eight units. `host` and `units` stand in for the two declarations a template is rendered from.
+ * `declaredKeys` stands in for the project's top-level keys, which decide `OPTIONAL_UNITS`; a fixture directory declares none. `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own `shippedDir`, so a fixture directory is never silently joined by a11ign's eight units. `host` and `units` stand in for the two declarations a template is rendered from. `env` is where `@@tool@@` looks for the installed tool (`AGENT_ORG_HOME`): the process's own when left out.
  */
-export type ShippedDeps = { shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync, host?: HostConfig, units?: UnitsDeclaration, declaredKeys?: ReadonlySet<string>, projectRoot?: string };
+export type ShippedDeps = { shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync, host?: HostConfig, units?: UnitsDeclaration, declaredKeys?: ReadonlySet<string>, projectRoot?: string, env?: NodeJS.ProcessEnv };
 
 /**
  * The unit files this repository ships, sorted so a report reads the same way twice: the tool's (templates listed under the name
@@ -199,13 +200,17 @@ export function namesIn(dir: string, read: typeof readdirSync): string[] {
 }
 
 /**
- * `@@tool@@`, which only the `agent-org` launcher takes: host.json's `tool`, present on a host that has moved to the installed form and
- * ABSENT on one that has not, so a template that asks for it on such a host is refused by name (`renderTemplate`) and never rendered with a
- * guess.
- * @param {HostConfig} host @param {Record<string, string>} values @returns {Record<string, string>}
+ * `@@tool@@`, which only the `agent-org` launcher takes: the installed tool's `current` link when this machine has one (A11-285), else host.json's `tool`. The key is present on a host that has
+ * moved to the installed form and ABSENT on one that has not, so a template that asks for it on such a host is refused by name (`renderTemplate`) and never rendered with a guess.
+ *
+ * THE LAUNCHER RUNS WHAT THE SERVICES RUN. host.json's `tool` is a checkout that `update-tool` moves, while every unit runs `<agent-org home>/tool/current` (`migrateInstall`), so a launcher that
+ * ran the checkout was a second version of the tool on every agent's PATH, and `agent-org doctor` says so. host.json's `tool` itself does not change.
+ * @param {HostConfig} host @param {Record<string, string>} values @param {NodeJS.ProcessEnv} env @returns {Record<string, string>}
  */
-function withTool(host: HostConfig, values: Record<string, string>): Record<string, string> {
-  return host.tool === undefined ? values : { ...values, tool: host.tool };
+function withTool(host: HostConfig, values: Record<string, string>, env: NodeJS.ProcessEnv): Record<string, string> {
+  if (host.tool === undefined) return values;
+  const current = currentLink(toolDir(env, host.home));
+  return { ...values, tool: existsSync(join(current, "src", "bin.ts")) ? current : host.tool };
 }
 
 /**
@@ -213,7 +218,7 @@ function withTool(host: HostConfig, values: Record<string, string>): Record<stri
  * @returns {{ toolDir: string, projectDir: string | null, read: typeof readFileSync, values: () => Record<string, string>, host: () => HostConfig,
  *   beforeTicks: () => BeforeTick[] }}
  */
-export function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host, units }: ShippedDeps = {}): {
+export function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host, units, env = process.env }: ShippedDeps = {}): {
     toolDir: string; projectDir: string | null; read: typeof readFileSync; values: () => Record<string, string>; host: () => HostConfig;
     beforeTicks: () => BeforeTick[];
 } {
@@ -224,7 +229,7 @@ export function shippedContext({ shippedDir, projectUnitsDir, read = readFileSyn
     projectDir: projectUnitsDir !== undefined ? projectUnitsDir : toolDir === SHIPPED_DIR ? PROJECT_UNITS_DIR : null,
     read,
     host: () => host ?? homeHostConfig(),
-    values: () => (values ??= withTool(host ?? homeHostConfig(), templateValues(host ?? homeHostConfig(), units ?? readUnitsDeclaration()))),
+    values: () => (values ??= withTool(host ?? homeHostConfig(), templateValues(host ?? homeHostConfig(), units ?? readUnitsDeclaration()), env)),
     beforeTicks: () => beforeTicksOf(host ?? homeHostConfig(), read),
   };
 }

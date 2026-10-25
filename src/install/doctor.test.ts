@@ -25,6 +25,7 @@ import type { HerdrPlace } from "./herdr-place.ts";
 import type { RunVersion } from "../ticket-mode/queue/queue-pins.ts";
 import { createTailscale, freshState, type TailscaleState } from "../../plugins/tailscale/stub.ts";
 import type { HerdrStatusFile } from "./herdr-upkeep.ts";
+import type { ShellReading } from "./shell-command.ts";
 
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
 /** Where a herdr server runs on a host that has moved it (A11-169): its own service. */
@@ -38,6 +39,8 @@ const HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { prov
 const HOST_WITH_PROJECT = JSON.stringify({ ...JSON.parse(HOST), primary: "p", projects: [] });
 const MCP_LIST = "Checking MCP server health…\n\nbookctx: http://127.0.0.1:8421/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n";
 const KEY = "lin_api_SECRETSECRETSECRET";
+/** The `agent-org` command the doctor tests find on PATH: a file whose copy is the installed tool (A11-285). */
+const SHIM = "/home/me/.local/bin/agent-org";
 const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
 type Answer = { status: number | null; stdout: string; stderr: string };
 /** The GitHub CLI as the doctor tests see it: the extension is `listing`, and a repository's stacks answer `stacks` (a function of the repository). */
@@ -88,6 +91,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
+    shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" } }),
     ...over,
   };
 }
@@ -196,7 +200,7 @@ test("A11-144: a provider row fails when a check it summarises fails, with that 
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["agent-org command", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
@@ -1329,4 +1333,38 @@ test("A11-241: the refusals doctor reads are the ones the pool wrote to its revi
   writeReviewerMemory(reviewerMemoryPath(stateDir), { ...noReviewerMemory(), refusals: new Map([[key, { reason: "herdr refused to start \"r\" (no)", count: 2 }]]) });
   assert.deepEqual(defaultDoctorDeps().reviewerRefusals(stateDir), [{ url: "https://github.com/a11ign/announcement-emulator/pull/11", head: "1a2b3c4d5e6f", count: 2, reason: "herdr refused to start \"r\" (no)" }]);
   assert.deepEqual(defaultDoctorDeps().reviewerRefusals(join(stateDir, "absent")), [], "no memory file is nothing refused");
+});
+
+// A11-285: the `agent-org` the person's shell runs is the installed tool. Every reading is injected; the row's logic is in shell-command.test.ts.
+const OLD_ALIAS: ShellReading = { kind: "alias", said: "node ~/old/agent-org/src/bin.ts", launcher: null, copyRoot: "/home/me/old/agent-org", defined: { file: "/home/me/.zshrc", line: 42 }, comparison: { kind: "older", copy: "v0.276.0", installed: "v0.304.1" } };
+
+test("A11-285: doctor's `agent-org command` row comes straight after the launcher row, and passes for the shim", async () => {
+  const checks = await diagnose(deps());
+  const at = checks.findIndex((check) => check.name === "launcher");
+  assert.equal(checks[at + 1].name, "agent-org command");
+  assert.equal(checks[at + 1].ok, true);
+  assert.match(checks[at + 1].detail, /runs the installed tool through ~\/\.agent-org\/tool\/current/);
+});
+
+/** Doctor's `agent-org command` row for a shell that answers `reading`. */
+const commandRow = async (reading: ShellReading, over: Partial<DoctorDeps> = {}) => byName(await diagnose(deps({ shellCommand: () => reading, ...over })))["agent-org command"];
+
+test("A11-285: an alias to an old checkout fails doctor, naming the line, both versions and the fix", async () => {
+  const row = await commandRow(OLD_ALIAS);
+  assert.equal(row.ok, false);
+  assert.match(row.detail, /an alias, defined at ~\/\.zshrc:42; it runs ~\/old\/agent-org \(v0\.276\.0, against the installed v0\.304\.1\)/);
+  assert.match(row.fix ?? "", /^run `node ~\/\.agent-org\/tool\/current\/src\/bin\.ts command:check --fix`/);
+});
+
+test("A11-285: a shell that cannot be asked is a warning row that passes, with the command that shows what it runs", async () => {
+  const row = await commandRow({ kind: "unreadable", reason: "/bin/zsh could not be asked" });
+  assert.deepEqual([row.ok, row.warning], [true, true]);
+  assert.equal(row.fix, "run `type agent-org` in your shell to see what it runs");
+});
+
+test("A11-285: a development checkout host.json names as devTool passes when it is at least as new, and fails when it is not named", async () => {
+  const dev: ShellReading = { ...OLD_ALIAS, copyRoot: "/home/me/src/agent-org", comparison: { kind: "newer-or-same", copy: "main@1a2b3c4", installed: "v0.304.1" } };
+  const named = await commandRow(dev, { readFile: () => JSON.stringify({ ...JSON.parse(HOST), devTool: "/home/me/src/agent-org" }) });
+  assert.equal(named.ok, true, named.detail);
+  assert.equal((await commandRow(dev)).ok, false);
 });
