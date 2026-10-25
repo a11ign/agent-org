@@ -144,11 +144,12 @@ export type FleetDriftDifference = { box: string; field: string; has: string | n
 /**
  * `fleet-watch`'s mirror of control's hourly record (`runs/fleet-drift-mirror.json`), read: when the mirror was last written, and the record's own time, its
  * run of differences' start (`null` when there is none) and the facts an announcement needs. `unreadable` is true when the manifest could not be read, which
- * fails the check as a difference does. `reachable` of `total` boxes answered.
+ * fails the check as a difference does. `reachable` of `total` boxes answered. `carryLost` names the boxes that did not answer and whose last known state the check
+ * lost (its previous record existed and could not be read): they cannot be vouched for, so they fail the check too.
  */
 export type FleetDriftReading = {
   readAt: number | string; checkedAt: number | string; firstSeenAt: number | string | null; unreadable: boolean; reachable: number; total: number;
-  differences: FleetDriftDifference[];
+  differences: FleetDriftDifference[]; carryLost: string[];
 };
 
 /** Box to the fields it differs on, in the order the record lists them; a field of a box that did not answer says it is the last read. */
@@ -169,13 +170,16 @@ function assertFresh(label: string, at: number | string, now: number, config: ty
 
 const MANIFEST_UNREADABLE = "the pins manifest could not be read, so no box was compared";
 
-/** What is wrong, in a sentence: the boxes off the manifest (the first five), then any other fault of the check itself. */
-function driftSentence(byBox: Map<string, string[]>, otherFault: string): string {
+/** What is wrong, in a sentence: the boxes off the manifest (the first five), then any other faults of the check itself. */
+function driftSentence(byBox: Map<string, string[]>, otherFaults: string[]): string {
   const boxes = [...byBox.entries()].slice(0, MAX_NAMED).map(([box, fields]) => `${box} (${fields.join(", ")})`).join(", ");
   const more = byBox.size > MAX_NAMED ? ` and ${byBox.size - MAX_NAMED} more` : "";
   const named = byBox.size === 0 ? "" : `${byBox.size} box${byBox.size === 1 ? "" : "es"} off the pins manifest: ${boxes}${more}`;
-  return `The fleet is not on its pins manifest: ${[named, otherFault].filter(Boolean).join("; ")}.`;
+  return `The fleet is not on its pins manifest: ${[named, ...otherFaults].filter(Boolean).join("; ")}.`;
 }
+
+const lostSentence = (boxes: string[]): string =>
+  `the previous drift record could not be read, so what ${boxes.join(", ")} last read as is lost and ${boxes.length === 1 ? "it is" : "they are"} not known to be on the manifest`;
 
 /** What a clear claims is what was read: the boxes that answered, and how many did not. */
 function clearSentence({ reachable, total }: FleetDriftReading): string {
@@ -184,8 +188,8 @@ function clearSentence({ reachable, total }: FleetDriftReading): string {
 }
 
 /**
- * A box off the pins manifest, as control's hourly drift check recorded it (A11-205). Open while the record lists a difference or says the manifest could not be
- * read; resolved when it lists none. **`firstSeenAt` is the record's own start of the run** (it carries across hours while the run lasts), never the time of this
+ * A box off the pins manifest, as control's hourly drift check recorded it (A11-205). Open while the record lists a difference, says the manifest could not be
+ * read, or lost the state of a box that did not answer; resolved when it lists none. **`firstSeenAt` is the record's own start of the run** (it carries across hours while the run lasts), never the time of this
  * look. A mirror, or a record, older than two hours throws: a check that stopped leaves a clean-looking file, which is the false all-clear this module refuses.
  * Nothing answered and nothing differed is no event at all: it neither opens nor clears, because nothing was compared.
  */
@@ -195,11 +199,12 @@ export function fleetDriftEvents(reading: FleetDriftReading, now: number, config
   assertFresh("record", reading.checkedAt, now, config);
   const base = { key: "incident:fleet-drift", kind: "incident", severity: "warning", links: [] };
   const byBox = fieldsByBox(reading.differences);
-  if (byBox.size === 0 && !reading.unreadable) {
+  const lost = reading.carryLost;
+  if (byBox.size === 0 && !reading.unreadable && lost.length === 0) {
     return reading.reachable === 0 ? [] : [{ ...base, firstSeenAt: now, text: clearSentence(reading), resolved: true }];
   }
   if (reading.firstSeenAt === null) throw new TypeError("the fleet drift record lists a failure and no time it began");
-  return [{ ...base, firstSeenAt: instant(reading.firstSeenAt, "firstSeenAt"), resolved: false, text: driftSentence(byBox, reading.unreadable ? MANIFEST_UNREADABLE : "") }];
+  return [{ ...base, firstSeenAt: instant(reading.firstSeenAt, "firstSeenAt"), resolved: false, text: driftSentence(byBox, [reading.unreadable ? MANIFEST_UNREADABLE : "", lost.length > 0 ? lostSentence(lost) : ""]) }];
 }
 
 const hasPermissionAnnotation = (run: Record<string, any>): boolean =>

@@ -231,7 +231,8 @@ export function readFleetDrift({ path }: { path: string; }): import("./incidents
   const differences = record.differences.map(driftDifference);
   if (differences.some((difference: unknown) => difference === null)) throw new TypeError(`${path}: a difference in the record is not a box, a field and what the manifest wants`);
   return { readAt: stored.readAt, checkedAt: record.checkedAt, firstSeenAt: stringOrNull(record.firstSeenAt), unreadable: record.unreadable != null,
-    reachable: Number(record.reachable) || 0, total: Number(record.total) || 0, differences };
+    reachable: Number(record.reachable) || 0, total: Number(record.total) || 0, differences,
+    carryLost: Array.isArray(record.carryLost) ? record.carryLost.filter((box: unknown): box is string => typeof box === "string").map(workerName) : [] };
 }
 
 /** `worker-2` before `worker-10`: the order a person reads a list of numbered machines in. */

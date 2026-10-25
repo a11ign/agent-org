@@ -231,7 +231,7 @@ describe("the fleet down, from the state fleet-watch writes (done-when 5)", () =
 
 /** A mirrored hourly drift record as `readFleetDrift` hands it over: `differences` is a list of [box, field, has, wants]. */
 const driftReading = (differences: [string, string, string | null, string][], more: Record<string, unknown> = {}) => ({
-  readAt: NOW - 5 * MINUTE, checkedAt: NOW - 10 * MINUTE, firstSeenAt: differences.length === 0 ? null : NOW - 3 * HOUR, unreadable: false, reachable: 14, total: 15,
+  readAt: NOW - 5 * MINUTE, checkedAt: NOW - 10 * MINUTE, firstSeenAt: differences.length === 0 ? null : NOW - 3 * HOUR, unreadable: false, reachable: 14, total: 15, carryLost: [],
   differences: differences.map(([box, field, has, wants]) => ({ box, field, has, wants, carried: false })), ...more,
 });
 const KINDS_OF_DIFFERENCE: [string, string | null, string][] = [
@@ -278,6 +278,15 @@ describe("a box off the pins manifest, from control's hourly record (A11-205)", 
     assert.equal(event.resolved, false);
     assert.equal(event.firstSeenAt, NOW - HOUR);
     assert.match(String(event.text), /the pins manifest could not be read, so no box was compared/);
+  });
+
+  test("a box whose last known state was lost is not vouched for: the incident is open and names it, and a clear waits for the loss to end", () => {
+    const [event] = fleetDriftEvents(driftReading([], { carryLost: ["a11y-worker-9", "a11y-worker-4"], firstSeenAt: NOW - HOUR }), NOW, config);
+    assert.equal(event.resolved, false);
+    assert.equal(event.firstSeenAt, NOW - HOUR);
+    assert.equal(event.text, "The fleet is not on its pins manifest: the previous drift record could not be read, so what a11y-worker-9, a11y-worker-4 last read as is lost and they are not known to be on the manifest.");
+    assert.match(String(fleetDriftEvents(driftReading([], { carryLost: ["a11y-worker-9"], firstSeenAt: NOW - HOUR }), NOW, config)[0].text), /last read as is lost and it is not known/);
+    assert.equal(fleetDriftEvents(driftReading([]), NOW, config)[0].resolved, true, "NEGATIVE CONTROL: with nothing lost the same record clears");
   });
 
   test("nothing answered and nothing differed is no event: it neither opens nor clears", () => {
