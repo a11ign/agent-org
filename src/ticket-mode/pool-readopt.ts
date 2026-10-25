@@ -3,7 +3,8 @@
 //
 // HERDR DECIDES WHETHER A RUN IS LOST, WHATEVER PHASE THE QUEUE FILE HOLDS IT IN. A run caught `starting` has no workspace on record (`markRunning` records it only after the agent is open), but its herdr name is fixed before
 // it opens anything (`runPlace`), so one listing finds it. A run herdr lists with a pane is ADOPTED: a `running` one carries on as it was, a `starting` one is marked running in the workspace herdr lists, and the ordinary
-// watch takes over (its outcome file is read, and a workspace with no agent still ends after two listings). An adopted pane is sent no key, no prompt and no second start (A11-78): it is never in `startedHere`. A run
+// watch takes over (its outcome file is read, and a workspace with no agent still ends after two listings). An adopted pane is sent no key and no second start (A11-78): it is never in `startedHere`. Its only prompt is the
+// watch's resume of a run left idle at a prompt with no outcome (A11-279, `pool-resume.ts`). A run
 // herdr does not list, or lists with its pane gone, is LOST IN A RESTART, and goes back on the queue once when the board has no pull request on record for it (`loseInRestart`). `unknown` alone does not lose a run: it cannot tell a seat still
 // starting from an ended one (`herdr-agents.ts`), only a pane that is gone can, and the watch ends one that never shows an agent.
 //

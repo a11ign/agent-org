@@ -15,6 +15,7 @@ import { logAnswered, moveBriefing, recordAnswer } from "./queue/queue-answer.ts
 import { herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { runPlace, update } from "./pool-state.ts";
+import { agentTarget } from "./pool-resume.ts";
 import { type TicketSource } from "./source.ts";
 import { RELAY_DECISION } from "./brief-decisions.ts";
 import { descriptionHash, ticketReadOf } from "./ticket-read.ts";
@@ -116,7 +117,7 @@ function deliver(ctx: PoolContext, key: string, told: Told): Answered {
     return { written: true, delivered: false, why: `${key}'s run has no workspace open or is no longer waiting, so nothing is waiting for the answer: it is in the ticket, and the run that works the ticket next reads it first` };
   }
   try {
-    herdr(["--session", settings.herdrSession, "agent", "prompt", runPlace(ctx, current).name, messageOf(current, told)]);
+    herdr(["--session", settings.herdrSession, "agent", "prompt", agentTarget(ctx, runPlace(ctx, current)), messageOf(current, told)]);
   } catch (err) {
     throw new AnswerNotDelivered(`${key}'s answer is in the ticket, but herdr would not take it to the run (${herdrRefusal(err)}): answer again to send it, and nothing is written twice`);
   }

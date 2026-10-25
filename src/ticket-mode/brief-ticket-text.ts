@@ -137,6 +137,19 @@ function openedLine({ url, repo, state, head, failing, declared }: OpenedPull): 
 }
 
 /**
+ * The section a brief opens with when a restart lost the run's session and the board queued it again (A11-279): when, and that its worktree holds the earlier run's work to carry on from, not to start over. A run
+ * no restart lost gets the empty string, so its brief is what it was. `at` is when the board found it lost. PURE.
+ */
+export function lostText(at: number | undefined): string {
+  if (at === undefined) return "";
+  return `## A restart lost this run's session
+
+The agents host, herdr or the board restarted, and at ${new Date(at).toISOString()} the board found this run's herdr workspace gone, so it started the run again. Your worktree is where the earlier run left it, with its commits and any uncommitted changes: \`ticket:worktree\` gives it back. Check \`git status\` and \`git log\` there first, and carry on from the earlier run's work rather than starting again. Re-check anything it was waiting on (a fleet job, a CI run, a pull request) before you wait on it again.
+
+`;
+}
+
+/**
  * The section of a work brief that lists the pull requests the ticket already has on the code host (A11-240), which a run started again is not told by the board's own record: the crash that ended the run before may have emptied it. Nothing when
  * there are none, or the host could not be asked. It says to continue from them: an open one is fixed on its own branch, and a step whose pull request merged is never done again. PURE.
  */
