@@ -26,8 +26,8 @@ export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approve
 /** Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, or a plan written again. */
 export type RequeueWhy = "retry" | "next-step" | "update" | "replan";
 
-/** What answered a run that needed a person: a person's Respond, approval or talk, or the run's own terminal. */
-export type AnsweredBy = "respond" | "approve" | "talk" | "terminal";
+/** What answered a run that needed a person: a person's Respond, approval or talk, their answer through the board's answer route (A11-250), or the run's own terminal. */
+export type AnsweredBy = "respond" | "approve" | "talk" | "answer" | "terminal";
 
 /** What happened, without its time. */
 type EventBody =

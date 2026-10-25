@@ -60,6 +60,7 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
 import { findingsMiss, parseFindingsGiven, retryAsk } from "./blocker-findings-check.ts";
 import { type Order, parseOrder } from "./batch-order.ts";
+import { boardKeyPath } from "./board-key.ts";
 import type { Wait } from "./wait-on/wait-types.ts";
 import { checkOutcome, isStale } from "./outcome.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMisses, parseClaimsGiven, planClaimPaths, siblingClaims } from "./path-claims.ts";
@@ -117,6 +118,20 @@ function readyRefusal(approved: readonly string[]): Refusal {
 const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
+
+/**
+ * The board's key and its queue actions are a person's (A11-250). The server's one boundary is the key, and a run is the same Unix user as the file that holds it: a run that read the key could call the answer route
+ * and write a decision into its own ticket, which only a person's answer may do. So no run names the key's file in a command or opens it with a file tool, and none names a queue action route (`/api/queue/<key>/<verb>`).
+ */
+const KEY_FILE = basename(boardKeyPath(""));
+const BOARD_KEY_REFUSAL: Refusal = { pattern: new RegExp(`(?<![\\w.-])${escapeRegExp(KEY_FILE)}(?![\\w.-])`),
+  why: `the board's key (${KEY_FILE}) is the person's: a run may not name it, and the board's API answers only to it` };
+const BOARD_ROUTE_REFUSAL: Refusal = { pattern: /\/api\/queue\/[^\s/'"]+\/[a-z-]+/,
+  why: "the board's queue actions are the person's, and the answer route alone writes a ticket's Decisions" };
+/** The tools that open a file by its path, and the input that names it: a run may not open the board's key with any of them. */
+const KEY_READERS: Readonly<Record<string, string>> = { Read: "file_path", Grep: "path", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", NotebookEdit: "notebook_path" };
+/** Whether `path` is the board's key file. PURE. */
+const namesKeyFile = (path: string): boolean => basename(path) === KEY_FILE;
 
 /**
  * The connector tools a new-ticket run may call: the reads only, by name (`get`, `list`, `search`, `extract`, `read`, `find`, `fetch`). A run that
@@ -288,6 +303,8 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
     const refused = publish === null && (options.publisherSkills ?? publisherSkills()).some((name) => skill.includes(name));
     return refused ? refuse(`the ${skill} skill is refused: announcing a pull request is the person's`) : ALLOW;
   }
+  const keyed = KEY_READERS[toolName];
+  if (keyed !== undefined && namesKeyFile(String(input[keyed] ?? ""))) return refuse(BOARD_KEY_REFUSAL.why);
   if (FILE_TOOLS.has(toolName)) {
     const file = String(input.file_path ?? input.notebook_path ?? "");
     if (MARK_REFUSAL.pattern.test(file)) return refuse(MARK_REFUSAL.why);
@@ -296,7 +313,7 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   if (toolName !== "Bash") return ALLOW;
   const command = String(input.command ?? "");
   if (/\bgh\s+pr\s+create\b/.test(command) && !/--draft\b/.test(command) && !ready) return refuse("open the pull request as a draft: `gh pr create --draft`");
-  const hit = [...BASH_REFUSALS, HOST_INSTALL_REFUSAL, protectedWriteRefusal(hostPrograms), readyRefusal(approved), MARK_REFUSAL, ...machine]
+  const hit = [...BASH_REFUSALS, HOST_INSTALL_REFUSAL, protectedWriteRefusal(hostPrograms), readyRefusal(approved), MARK_REFUSAL, BOARD_KEY_REFUSAL, BOARD_ROUTE_REFUSAL, ...machine]
     .find(({ pattern }) => pattern.test(command));
   return hit ? refuse(`refused, because ${hit.why}: ${command.split("\n")[0].slice(0, 120)}`) : ALLOW;
 }

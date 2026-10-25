@@ -9,13 +9,14 @@
 const DECISION_HEADING = /^(#{2,4})\s+(?:decisions|behaviou?r)\b/i;
 const ANY_HEADING = /^(#{1,6})\s/;
 const FENCE = /^\s*(```|~~~)/;
+const DECISIONS_HEADING = /^#{2,4}\s+decisions\s*(?:\(.*\))?\s*$/i;
 const CHAIRMAN_DECISION = /chairman['’]s decision|the chairman decided|decided by the chairman/i;
 
 /** One line of a description, and whether a code fence holds it (a fence's own opening and closing lines are held). */
-type Line = Readonly<{ text: string; fenced: boolean }>;
+export type Line = Readonly<{ text: string; fenced: boolean }>;
 
 /** The lines of `description`, each marked with whether a code fence holds it. PURE. */
-function linesOf(description: string): Line[] {
+export function linesOf(description: string): Line[] {
   let inFence = false;
   return description.split("\n").map((text) => {
     const edge = FENCE.test(text);
@@ -26,7 +27,7 @@ function linesOf(description: string): Line[] {
 }
 
 /** The index past the last line of the section whose heading is at `from`: the next heading of its own level or a higher one, outside a fence. PURE. */
-function sectionEnd(lines: readonly Line[], from: number, level: number): number {
+export function sectionEnd(lines: readonly Line[], from: number, level: number): number {
   const next = lines.findIndex(({ text, fenced }, at) => at > from && !fenced && (ANY_HEADING.exec(text)?.[1].length ?? Infinity) <= level);
   return next === -1 ? lines.length : next;
 }
@@ -55,3 +56,7 @@ export function decisionsOf(description: string | null | undefined): string | nu
   const once = [...new Set(quoted)];
   return once.length === 0 ? null : once.join("\n\n");
 }
+
+/** Whether the description has a section headed `Decisions`, outside a code fence: the heading form {@link decisionsOf} reads, without `Behaviour` and the chairman's one-line decisions (A11-250). PURE. */
+export const hasDecisionsSection = (description: string | null | undefined): boolean =>
+  !!description && linesOf(description).some(({ text, fenced }) => !fenced && DECISIONS_HEADING.test(text));
