@@ -3,7 +3,7 @@
 
 import { createGate, shellPreflight, type PreflightExec } from "./preflight.ts";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type HookCommand } from "./worker-files.ts";
 import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.ts";
@@ -274,6 +274,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
     startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, baseMerges: new Map<string, BaseMerge>(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
-    exposure: { at: null, checks: [], said: new Map<string, string>() }, runTmpBase: deps.privateTmpBase,
+    exposure: { at: null, checks: [], said: new Map<string, string>() }, runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase),
   };
 }

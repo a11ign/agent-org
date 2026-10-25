@@ -2,7 +2,7 @@
 // A11-279: every run starts with a private TMPDIR under the private-tmp base, a restored run gets the same one, and the board removes it once the run holds no workspace, within a budget of entries a pass
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { poolFixture } from "./pool-fixture.ts";
@@ -118,6 +118,7 @@ test("A11-279: a finished run's directory is removed on the tick that sees its w
   for (const key of ["NBF-1", "NBF-2", "NBF-3"]) writeFileSync(join(runTmpDir(base, key), "scratch.txt"), "left by a test");
   const old = new Date(run.now() - SWEEP_GRACE_MS - 1);
   for (const key of ["NBF-1", "NBF-2", "NBF-3"]) utimesSync(runTmpDir(base, key), old, old);
+  await run.advance(30_000);
   // NBF-1 concludes (its workspace is closed with the outcome), NBF-2 hands its ticket back (parked: its workspace stays open), NBF-3 works on.
   writeFileSync(join(ticketDir(run.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "checked", reason: "nothing to change" }));
   writeFileSync(join(ticketDir(run.settings, "NBF-2"), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "a question", escalation: "outward" }));
@@ -127,6 +128,8 @@ test("A11-279: a finished run's directory is removed on the tick that sees its w
   assert.deepEqual([run.entry("NBF-1").phase, run.entry("NBF-1").workspace], ["finished", undefined]);
   assert.notEqual(run.entry("NBF-2").workspace, undefined, "parked: its agent is still open");
   await run.advance(30_000);
+  assert.ok(existsSync(runTmpDir(base, "NBF-1")), "inside the grace of the last pass that held it, the ended run's directory is left");
+  await run.advance(SWEEP_GRACE_MS);
   assert.deepEqual(readdirSync(base).toSorted(), ["run-t-NBF-2", "run-t-NBF-3"], "only the concluded run's directory, scratch file and all, is gone");
 });
 
@@ -188,4 +191,28 @@ test("A11-279: the sweep keeps the directory of a live run, of a run that holds 
 
 test("A11-279: a base that does not exist is nothing to sweep", () => {
   assert.doesNotThrow(() => sweepRunTmp(sweepCtx(join(tmpDir("run-isolation-"), "missing"), [], Date.now())));
+});
+
+test("A11-279: the sweep touches the directory of a held run on every pass and makes it again if it is gone, so the tmpfiles rule and another instance's sweep never find it old", () => {
+  const base = tmpDir("run-isolation-");
+  const t = Date.now();
+  const old = new Date(t - 3 * SWEEP_GRACE_MS);
+  mkdirSync(runTmpDir(base, "A11-1"));
+  utimesSync(runTmpDir(base, "A11-1"), old, old);
+  const entries: Partial<Entry>[] = [{ ticket: { key: "A11-1" } as Entry["ticket"], phase: "running" }, { ticket: { key: "A11-2" } as Entry["ticket"], phase: "finished", workspace: "w2" }];
+  sweepRunTmp(sweepCtx(base, entries, t));
+  assert.equal(statSync(runTmpDir(base, "A11-1")).mtimeMs, t, "touched to the pool's clock");
+  assert.ok(existsSync(runTmpDir(base, "A11-2")), "a parked run's directory that the tmpfiles rule removed is made again");
+  // Another instance's sweep, a pass later and with no entry for either, leaves both: they are inside its grace.
+  sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS - 1));
+  assert.deepEqual(readdirSync(base).toSorted(), ["run-t-A11-1", "run-t-A11-2"]);
+});
+
+test("A11-279: a run's directory that is a symlink is removed as itself and its target is left", () => {
+  const base = tmpDir("run-isolation-");
+  const elsewhere = tmpDir("run-isolation-target-");
+  writeFileSync(join(elsewhere, "keep.txt"), "not a run's");
+  symlinkSync(elsewhere, join(base, "run-t-LINK"));
+  sweepRunTmp(sweepCtx(base, [], Date.now()));
+  assert.deepEqual([readdirSync(base), readdirSync(elsewhere)], [[], ["keep.txt"]]);
 });

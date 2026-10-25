@@ -12,8 +12,9 @@
 // A RUN HOLDS ITS DIRECTORY WHILE IT HOLDS A WORKSPACE. A parked run (it ended `needs-human`) still has its agent open for a person to answer, and that agent still has this directory as its `TMPDIR`, so the sweep
 // keeps it, as `queue-pins.ts` keeps a tool version: a run is held when it is live or has a workspace. The sweep removes one entry per call and at most {@link MAX_REMOVALS_PER_PASS} per pass, never one recursive `rm`:
 // the incident was a large directory operation, and a leaver with thousands of entries is taken down over a few passes. A directory modified within {@link SWEEP_GRACE_MS} is left, since a run being started has made it
-// before its workspace is recorded.
-import { mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync } from "node:fs";
+// before its workspace is recorded. The sweep also touches (and, if gone, makes again) the directory of each run it holds, on every pass: the user tmpfiles rule ages `run-*` out after a day and another instance on the same
+// base skips only what was modified in the last minutes, and neither knows the queue.
+import { lstatSync, mkdirSync, readdirSync, rmdirSync, unlinkSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { requirePrivate } from "../private-tmp.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -85,6 +86,35 @@ function heldNames(ctx: PoolContext): Set<string> {
 }
 
 /**
+ * Make sure a held run's directory exists and is fresh. Two other janitors read the directory's age and know nothing of the queue: the user tmpfiles rule (`a11ign-tmp.tmpfiles.conf.in`, `mM:1d`) removes a directory
+ * nothing has written in for a day, and another instance's sweep on the same base skips only a directory modified within {@link SWEEP_GRACE_MS}. A parked run answered the next morning, or a worker on a long CI wait, would
+ * otherwise lose the `TMPDIR` its agent holds. A directory that is gone is made again (a run started before this change has none, and gets an unused one that the sweep removes with the run's end).
+ */
+function keepHeld(ctx: PoolContext, base: string, name: string): void {
+  const dir = join(base, name);
+  const refusal = makeRunTmp(base, dir);
+  if (refusal !== null) return void log(`the private temp directory ${dir} of a run could not be kept: ${refusal}`);
+  const at = new Date(ctx.now());
+  try {
+    utimesSync(dir, at, at);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") log(`the private temp directory ${dir} of a run could not be touched: ${(err as Error).message.split("\n")[0]}`);
+  }
+}
+
+/** Remove `name` under `base` if it is not a real directory (a symlink is removed as itself, never followed), or take its contents within the budget. A directory modified inside the grace is left. */
+function removeEnded(ctx: PoolContext, base: string, name: string, budget: Budget): void {
+  const dir = join(base, name);
+  const info = lstatSync(dir);
+  if (!info.isDirectory()) {
+    unlinkSync(requirePrivate(dir, base));
+    budget.left -= 1;
+  } else if (ctx.now() - info.mtimeMs >= SWEEP_GRACE_MS) {
+    removeWithin(dir, base, budget);
+  }
+}
+
+/**
  * Remove the run directories no held run owns, within {@link MAX_REMOVALS_PER_PASS} entries. Does nothing when the pool gives runs no private directory (`ctx.runTmpBase` unset: every test, and an instance started
  * without one). A directory that cannot be read or removed is said, and tried at the next pass. Never throws.
  */
@@ -99,15 +129,14 @@ export function sweepRunTmp(ctx: PoolContext): void {
     return;
   }
   const held = heldNames(ctx);
+  for (const name of held) keepHeld(ctx, base, name);
   const budget: Budget = { left: MAX_REMOVALS_PER_PASS };
   for (const name of names.filter((each) => !held.has(each))) {
     if (budget.left === 0) return;
-    const dir = join(base, name);
     try {
-      if (ctx.now() - statSync(dir).mtimeMs < SWEEP_GRACE_MS) continue;
-      removeWithin(dir, base, budget);
+      removeEnded(ctx, base, name, budget);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") log(`the private temp directory ${dir} of a run that has ended could not be removed: ${(err as Error).message.split("\n")[0]}`);
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") log(`the private temp directory ${join(base, name)} of a run that has ended could not be removed: ${(err as Error).message.split("\n")[0]}`);
     }
   }
 }
