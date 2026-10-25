@@ -188,6 +188,8 @@ export type ReviewerBoard = Readonly<{
     /** The seat a reviewer's label names: the key of its repository (`""` for the primary's) and its pull request's number, or null for a label that is no reviewer's. */
     reviewerInstance(label: string): Readonly<{ key: string; number: number }> | null;
     reviewerSeat(seat: Readonly<{ repoKey: string; number: number }>): string;
+    /** The reviewer key of each of the host's clones by the clone's name, made from the name and distinct from every other clone's and from `declared`, the project's keys (A11-259). */
+    cloneKeys(clones: Readonly<Record<string, string>>, declared: readonly string[]): ReadonlyMap<string, string>;
   }>;
   herdr: Readonly<{
     ORG_SESSION: string;

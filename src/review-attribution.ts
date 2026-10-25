@@ -46,6 +46,7 @@
  * meaning (a review by a session that is not the pull request's instance is a violation), and the row's
  * own Open-check calls the first by that name. "Parity" now reads as "the owner matches".
  */
+import { isReviewerKey } from "./derived-name.ts";
 
 /** A commit status whose context starts with this is a review attribution; nothing else is. */
 export const ATTRIBUTION_CONTEXT_PREFIX = "review/";
@@ -172,7 +173,7 @@ export function reviewerInstance(label: string): { key: string; number: number; 
   const key = match[1] ?? "";
   // A key that ends in `-<digits>` would make this name parse two ways (`project-config.ts` refuses one at the only place a key
   // enters), so a label of that shape is no instance of any declared repository.
-  if (key !== "" && (!/^[a-z0-9-]+$/.test(key) || /-[0-9]+$/.test(key))) return null;
+  if (key !== "" && !isReviewerKey(key)) return null;
   return { key, number: Number(match[2]) };
 }
 

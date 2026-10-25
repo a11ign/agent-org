@@ -6,6 +6,7 @@
 // before it moved (the seat names, the herdr listing, the claim protocol, the verdict reader), as the modules' own. They are held to `ReviewerBoard`'s signatures where they are assigned below.
 import { readAgents, ORG_SESSION, firstLine, herdrAgentName } from "../herdr-agents.ts";
 import { readDialogLines } from "../pane-dialog-read.ts";
+import { cloneKeys } from "../derived-name.ts";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { headMatches, reviewVerdict } from "../review-verdict.ts";
 import { REVIEW_LEASE_MS, claimHead, othersSeenIn, releasedDescriptionOf } from "../ticket-port/review-claim.ts";
@@ -25,7 +26,7 @@ export const reviewingHelpers = (collaborators: BoardCollaborators): ReviewerHel
     board: () => ({
       ...collaborators,
       seen,
-      attribution: { reviewerInstance, reviewerSeat },
+      attribution: { reviewerInstance, reviewerSeat, cloneKeys },
       herdr: { ORG_SESSION, firstLine, agentName: herdrAgentName, readAgents, readDialogLines },
       claims: { REVIEW_LEASE_MS, claimHead, othersSeenIn, releasedDescriptionOf },
       verdict: { headMatches, reviewVerdict },

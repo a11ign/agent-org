@@ -108,17 +108,16 @@ function pullOf(url: string): { repository: string; number: number } | null {
 type Clones = Readonly<Record<string, string>>;
 
 /**
- * The seat key and checkout of a repository the host clones and the project does not declare (PURE). Its key is its clone's name, which must be a reviewer key (`reviewerInstance`'s grammar)
- * and no declared key of another repository; its owner must be `owner`, the primary's, since `clones` carries names only. Null for a repository that is none of these; a refusal names why a
- * clone of it cannot be a seat.
+ * The seat key and checkout of a repository the host clones and the project does not declare (PURE). Its key is `keys`' for its clone's name (`cloneKeys`: made from the name, so a dotted name such as
+ * `a11ign.github.io` has one, and distinct from every other clone's and every declared key); its owner must be `owner`, the primary's, since `clones` carries names only. Null for a repository that is
+ * none of these. A clone named as a declared key is that declared repository's checkout (`clones` is by key), not a clone of a repository of that name, so it is refused.
  */
-export function clonedSeatOf(repository: string, { owner, clones, codes }: { owner: string; clones: Clones; codes: readonly { key: string; repo: string }[] }): { key: string; clone: string } | { refusal: string } | null {
+export function clonedSeatOf(repository: string, { owner, clones, codes, keys }: { owner: string; clones: Clones; codes: readonly { key: string; repo: string }[]; keys: ReadonlyMap<string, string> }): { key: string; clone: string } | { refusal: string } | null {
   const [repoOwner, name] = repository.split("/");
   if (repoOwner !== owner || !Object.hasOwn(clones, name)) return null;
-  if (!/^[a-z0-9-]+$/.test(name) || /-[0-9]+$/.test(name)) return { refusal: `its name \`${name}\` cannot be a reviewer key (lowercase letters, digits and hyphens, not ending in a number)` };
   const clash = codes.find((code) => code.key === name);
-  if (clash !== undefined) return { refusal: `the project declares \`${name}\` as the key of ${clash.repo}, so the host's clone \`${name}\` would take the same reviewer seat` };
-  return { key: name, clone: clones[name] };
+  if (clash !== undefined) return { refusal: `the project declares \`${name}\` as the key of ${clash.repo}, so the host's clone \`${name}\` is that repository's checkout and not ${repository}'s` };
+  return { key: keys.get(name)!, clone: clones[name] };
 }
 
 /**
@@ -140,13 +139,20 @@ function repoKeyOf(context: Context, repository: string): string | null {
   return config.homeProjectDeclaration().code.find((code) => code.repo === repository)?.key ?? null;
 }
 
-/** The repository a key names: the reverse of {@link repoKeyOf} and {@link clonedSeatOf}, and `null` for a key neither the project declares nor the host clones. */
+/** The reviewer key of each of the host's clones, by the clone's name: made from the name, and distinct from the project's declared keys (A11-259). */
+function cloneKeysOf(context: Context): ReadonlyMap<string, string> {
+  const { clones, attribution } = boardOf(context);
+  return attribution.cloneKeys(clones, gateOf(context).config.homeProjectDeclaration().code.map((code) => code.key));
+}
+
+/** The repository a key names: the reverse of {@link repoKeyOf} and {@link clonedSeatOf}, and `null` for a key neither the project declares nor the host clones. The clone's name is the repository's real name. */
 function repositoryOfKey(context: Context, key: string): string | null {
   const { config, identity } = gateOf(context);
   if (key === "") return identity.REPO;
   const declared = config.homeProjectDeclaration().code.find((code) => code.key === key)?.repo;
   if (declared !== undefined) return declared;
-  return Object.hasOwn(boardOf(context).clones, key) ? `${identity.REPO.split("/")[0]}/${key}` : null;
+  const cloned = [...cloneKeysOf(context)].find(([, cloneKey]) => cloneKey === key)?.[0];
+  return cloned === undefined ? null : `${identity.REPO.split("/")[0]}/${cloned}`;
 }
 
 /** The reviewer's seat for a pull request: `reviewer-<n>` in the primary, `reviewer-<key>-<n>` elsewhere, or a refusal naming why it has none. */
@@ -157,7 +163,7 @@ function seatOf(context: Context, url: string): Seat | { refusal: string } {
   const { attribution } = boardOf(context);
   if (key !== null) return { label: attribution.reviewerSeat({ repoKey: key, number: pull.number }), number: pull.number, key };
   const { config, identity } = gateOf(context);
-  const cloned = clonedSeatOf(pull.repository, { owner: identity.REPO.split("/")[0], clones: boardOf(context).clones, codes: config.homeProjectDeclaration().code });
+  const cloned = clonedSeatOf(pull.repository, { owner: identity.REPO.split("/")[0], clones: boardOf(context).clones, codes: config.homeProjectDeclaration().code, keys: cloneKeysOf(context) });
   if (cloned === null) return { refusal: `no reviewer for ${url}: ${pull.repository} is not a repository the project declares (\`code\` in .agent-org/project.json) and the host does not clone it (\`clones\` in host.json)` };
   if ("refusal" in cloned) return { refusal: `no reviewer for ${url}: ${cloned.refusal}` };
   return { label: attribution.reviewerSeat({ repoKey: cloned.key, number: pull.number }), number: pull.number, key: cloned.key, repository: pull.repository, clone: cloned.clone };
