@@ -27,13 +27,13 @@ const PROJECT = join(HERE, "..", "packaging", "fixtures", "row-claim-file-overla
 const STARTED = "ticket mode instance: 127.0.0.1:";
 const WAIT_MS = 30_000;
 
-/** A port nothing listens on now: listen on 0, read it, close. */
-async function freePort(): Promise<number> {
+/** A port nothing listens on now, and not `except`: listen on 0, read it, close. A closed port is free to be handed out again, so two calls in a row can answer one port. */
+async function freePort(except?: number): Promise<number> {
   const probe = createServer();
   await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((done) => probe.close(() => done()));
-  return port;
+  return port === except ? freePort(except) : port;
 }
 
 /** A herdr that answers every call with an empty session, so nothing real is touched: the real one is at ~/.local/bin/herdr. */
@@ -50,11 +50,12 @@ async function hostFile(root: string, host: Record<string, unknown>, tickets: Re
   const keyPath = join(root, "linear.key");
   writeFileSync(keyPath, "lin_api_test\n");
   const path = join(root, "host.json");
+  const port = await freePort();
   writeFileSync(path, JSON.stringify({
     ...host,
     clones: { demo: join(root, "demo") },
     stateDir: join(root, "state"),
-    tickets: { port: await freePort(), uiPort: await freePort(), linearKey: { path: keyPath }, ...tickets },
+    tickets: { port, uiPort: await freePort(port), linearKey: { path: keyPath }, ...tickets },
   }));
   return path;
 }
