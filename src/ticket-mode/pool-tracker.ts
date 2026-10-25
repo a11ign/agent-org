@@ -26,6 +26,7 @@ import { readPlanSteps } from "./pool-plan-steps.ts";
 import { readPullDeclarations } from "./pool-pull-declarations.ts";
 import { adoptNamedBlockers, releaseMergedBlockers } from "./pool-blocker-cleared.ts";
 import { askUpdate } from "./pool-checks.ts";
+import { recordClosedWork } from "./pool-closed-work.ts";
 import { isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 
@@ -77,6 +78,8 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   }
   // Last, so a restore the tracker is slow to answer delays none of the reads above.
   await restoreStranded(ctx);
+  // A pull request closed without merging holds work no branch has: it is listed, kept and posted on its ticket (A11-249). After the reads above, since each one costs a code host read and a comment.
+  await recordClosedWork(ctx);
   // The heads of the queued runs' stacked blockers come last of all: a git read per branch must not delay the tracker's own reads.
   const queued = store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key);
   if (headsToRead(ctx, queued)) await readHeads(ctx, queued);

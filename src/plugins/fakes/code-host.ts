@@ -7,13 +7,15 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type ClosedCommit, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
   repository: string; number: number; state: "open" | "merged" | "closed"; base: string; head: string; files: string[];
   /** What the pull request found, once it has merged (A11-167). */
   findings?: MergedFindings;
+  /** What the pull request still holds that is not on its base (contract 1.20): its branch's name, its commits and the files they change. One that is given none holds nothing: everything it held is on its base. */
+  closedWork?: { branch?: string; commits: readonly ClosedCommit[]; files: readonly string[]; filesComplete?: boolean };
   /** A pull request a bot opened (contract 1.19): its title, its branch and who authored it. `openDependencyPulls` returns only those the dependency bot authored. */
   dependency?: { title: string; headRefName: string; author: string };
   feedback: Partial<PullFeedback>; replies: readonly Reply[]; body?: string; reviews: ReviewState["reviews"]; settled: boolean; unrequiredRed?: ReviewState["unrequiredRed"]; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
@@ -101,6 +103,20 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       const pull = pulls.get(ref.id);
       if (ref.host !== HOST || pull === undefined) return null;
       return { ref, head: pull.head, checks: [], reviews: [], merge: { state: pull.state, armed: pull.merge.armed, mergeable: pull.merge.mergeable } };
+    },
+  };
+}
+
+/** The read of what a closed pull request still held (contract 1.20) over what a test seeded: null for a pull request that is open, merged or never given, as the contract says. */
+function closedWorkOf(pulls: Pulls, calls: string[]): Pick<CodeHost, "readClosedWork"> {
+  return {
+    readClosedWork(url) {
+      calls.push(`readClosedWork ${url}`);
+      const pull = pulls.get(url);
+      // An open or a merged pull request is not read: its work is not final, or it is on its base.
+      if (pull?.state !== "closed") return null;
+      const { branch = `branch-${pull.number}`, commits = [], files = [], filesComplete = true } = pull.closedWork ?? {};
+      return { number: pull.number, url, base: pull.base, branch, head: pull.head, commits, files, filesComplete };
     },
   };
 }
@@ -361,7 +377,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const stackMerges: FakeStackMerges = { facts: new Map(), requestRefusal: null, requests: [] };
   const ciRuns: FakeCiRuns = { runs: new Map(), asked: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...closedWorkOf(pulls, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
