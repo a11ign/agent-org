@@ -10,7 +10,9 @@ import { poolFixture } from "../pool-fixture.ts";
 import type { Outcome } from "../queue/queue-entries-and-outcomes.ts";
 import type { TicketSource } from "../source.ts";
 import { ticketDir } from "../ticket-paths.ts";
+import { afterMergeLines } from "../done-when.ts";
 import { withMoves } from "../after-merge-move.ts";
+import { namesLine, seedChecks } from "./checks.ts";
 import { AFTER_MERGE_CHECKS_FORMAT, AFTER_MERGE_CHECKS_HEADING, AFTER_MERGE_CHECKS_RULE, afterMergeChecksRefusal, plannedChecks } from "./plan-section.ts";
 import { batchPlanBriefText, planBriefText } from "../worker-files.ts";
 
@@ -174,4 +176,16 @@ test("A11-288: the brief's worked example, written into a plan outside its fence
   assert.deepEqual(plannedChecks([plan]), { checks: [{ line, runner: "session", evidence: "each machine's update log for the next release, quoted on this ticket" }] });
   assert.equal(afterMergeChecksRefusal([plan], ticket, []), null);
   assert.deepEqual(plannedChecks([`# Plan\n\n${AFTER_MERGE_CHECKS_FORMAT}\n`]), { checks: [] }, "the fenced skeleton and example in plan prose are no checks");
+});
+
+test("A11-288: a plan's copy of a moved line, with other quotes, still names the line the board moved, so the sweep gives its record the plan's runner", () => {
+  const line = "The banner says \"UI build missing\" no more.";
+  const moved = withMoves(["Fix it.", "", "## Done-when", "", "### Before merge", "", `* ${line}`, "", "### After merge", "", "* Chairman session: a release lands.", ""].join("\n"), [{ line, reason: "release", who: "Chairman session" }], "2026-10-25");
+  const [, boardMoved] = afterMergeLines(moved);
+  const copy = line.replace(/"/g, "\u201C");
+  assert.equal(namesLine(copy, boardMoved.line), true);
+  assert.equal(namesLine(copy.replace("no more", "any more"), boardMoved.line), false, "POSITIVE CONTROL: a word changed is another line");
+  const file = seedChecks({ checks: {} }, [{ ticket: { key: "NBF-1" }, afterMerge: [boardMoved] }], 1, new Map([["NBF-1", [{ line: copy, runner: "person" as const, escalation: "outward", evidence: "the release note" }]]]));
+  assert.equal(file.checks["NBF-1#1"].runner, "person");
+  assert.equal(file.checks["NBF-1#1"].evidence, "the release note");
 });

@@ -94,6 +94,7 @@ test("A11-288: an over-long Evidence line is sent back to the planner, which fix
   const file = join(run.dir, "after-merge-refused-1.md");
   assert.ok(prompts[0].includes(file), "the prompt names the file");
   assert.ok(!prompts[0].includes("\n"), "one line, as every board prompt is");
+  assert.match(prompts[0], /wakes you with the person's session's answer to this refusal, apply the section it gives/, "and says what to do if the session's answer wakes it");
   const text = readFileSync(file, "utf8");
   assert.ok(text.includes(AFTER_MERGE_CHECKS_FORMAT), "the file holds the exact format");
   assert.ok(text.includes(`${KEY}`) && text.includes(`- ${LINE}`), "and the ticket's After-merge line, with the ticket's key");

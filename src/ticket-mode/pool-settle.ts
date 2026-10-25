@@ -399,7 +399,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
     const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket, closedWorkOf(ticketDir(settings, key))));
-    if ("refusal" in found) return found.afterMerge === undefined ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
+    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const moving = { key, moves: found.moves, briefed: entry.briefedAgainst };
     // A plan that moves nothing awaits nothing before its attach, so the slot it frees is filled in this same pass.
@@ -458,7 +458,7 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   const planDir = join(dir, PLAN_DIR);
   try {
     // A member whose section the board refuses sends the whole run back before any member is attached, so the planner's next `planned` does not attach a plan twice (A11-288).
-    const refused = members.flatMap((member) => formatRefusalIn(ctx, member, join(planDir, member.ticket.key)) ?? []);
+    const refused = canSendBack(entry) ? members.flatMap((member) => formatRefusalIn(ctx, member, join(planDir, member.ticket.key)) ?? []) : [];
     if (refused.length > 0) return sendBack(ctx, entry, refused);
     const handedBack = new Map<string, Outcome>();
     for (const { ticket: { key } } of members) {
@@ -491,6 +491,9 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
     attaching.delete(name);
   }
 }
+
+/** Whether a refused plan can go back to its planner: the run is still running. A finished run whose unreadable outcome was corrected to `planned` (`rereadUnreadable`) has no planner to prompt, so its refusal ends it as before. */
+const canSendBack = (entry: Entry): boolean => entry.phase === "running";
 
 /** Whether a batch member's folder `dir` holds plan files and no question: what {@link planOneOfBatch} hands to {@link attachFiles}. */
 const holdsPlan = (dir: string): boolean => existsSync(dir) && lstatSync(dir).isDirectory() && !existsSync(join(dir, QUESTION_FILE)) && readdirSync(dir).length > 0;

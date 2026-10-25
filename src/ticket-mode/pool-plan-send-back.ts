@@ -19,6 +19,7 @@ import { log, runMembers, runPlace, updateEach } from "./pool-state.ts";
 import { sendToAgent } from "./pool-resume.ts";
 import { noteWorking } from "./queue/queue-transitions.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
+import type { RunPlace } from "./pool-paths.ts";
 
 /** How many times a refused section goes back to the planner before the session is asked. */
 export const MAX_SEND_BACKS = 2;
@@ -85,7 +86,8 @@ const namedRefusals = (refusals: readonly FormatRefusal[]): string => refusals.m
 /** The one-line prompt for the planner: the board prompts are one line, because a new line typed into a pane would submit it early. PURE. */
 const promptFor = (refusals: readonly FormatRefusal[], n: number, file: string): string =>
   `The board refused your plan's ${AFTER_MERGE_CHECKS_HEADING} section (send-back ${n} of ${MAX_SEND_BACKS}): ${oneLine(namedRefusals(refusals), PROMPT_REFUSAL_CHARS)}. `
-  + `Read ${file} for the exact format, fix the section in your plan files, and write {"kind":"planned"} again as the last thing you do.`;
+  + `Read ${file} for the exact format, fix the section in your plan files, and write {"kind":"planned"} again as the last thing you do. `
+  + `If the board later wakes you with the person's session's answer to this refusal, apply the section it gives to your plan files exactly and write {"kind":"planned"} again; if it wakes you at the deadline with no answer, write {"kind":"planned"} again unchanged.`;
 
 /** The ask the session is handed after {@link MAX_SEND_BACKS} refusals, at most {@link MAX_ASK_CHARS} characters: what was refused, where to read it, and what a pass is. PURE. */
 function askFor(refusals: readonly FormatRefusal[], n: number, file: string): string {
@@ -94,30 +96,51 @@ function askFor(refusals: readonly FormatRefusal[], n: number, file: string): st
   return around(oneLine(namedRefusals(refusals), Math.max(0, MAX_ASK_CHARS - around("").length)));
 }
 
+/** What one refusal round is about: the run, where its files are, the round's number, the file written for it and the refusals so far. */
+type Round = Readonly<{ entry: Entry; place: RunPlace; n: number; file: string; refusals: readonly FormatRefusal[]; before: readonly string[] }>;
+
+/** The run's name for the board's log. */
+const whoOf = ({ entry }: Round): string => entry.batch ?? entry.ticket.key;
+
+/**
+ * Count the round and mark the run's `planned` outcome stale, so the board and the stop hook settle that file no more: the planner's next write is its answer. Done only once the planner or the session has been told, so a
+ * prompt herdr refused is offered again by the next pass, which settles the same `planned`.
+ */
+function closeRound(ctx: PoolContext, { place, n, refusals, before }: Round): void {
+  writeFileSync(join(place.dir, SENT_BACK_FILE), `${JSON.stringify({ count: n, refusals: [...before, ...refusals.map(({ key, refusal }) => `${key}: ${refusal}`)] })}\n`);
+  const written = join(place.dir, OUTCOME_FILE);
+  markOutcomeStale(place.dir, existsSync(written) ? statSync(written).mtimeMs : ctx.now());
+}
+
+/** Prompt the planner's own pane with the round's refusals and the file that holds the format. The run stays running. */
+function sendToPlanner(ctx: PoolContext, round: Round): void {
+  writeFileSync(round.file, sendBackText(round.refusals, round.n));
+  const refused = sendToAgent(ctx, round.place, promptFor(round.refusals, round.n, round.file));
+  if (refused !== null) return log(`${whoOf(round)}'s plan could not be sent back to its planner: ${refused}`);
+  closeRound(ctx, round);
+  log(`${whoOf(round)}'s plan: the board refused its ${AFTER_MERGE_CHECKS_HEADING} section, sent back to its planner (${round.n} of ${MAX_SEND_BACKS})`);
+}
+
+/** Hand the run to the person's session: a `working` note with one `session` wait on every ticket of the run, which the session's queue lists. The planner is woken with the session's answer. */
+function handToSession(ctx: PoolContext, round: Round): void {
+  const { entry, n, refusals, file } = round;
+  writeFileSync(file, handOffText(refusals, n));
+  closeRound(ctx, round);
+  const at = ctx.now();
+  const ask = askFor(refusals, n, file);
+  updateEach(ctx, runMembers(ctx, entry), (queue, member) =>
+    noteWorking(queue, member, `the board refused the plan's ${AFTER_MERGE_CHECKS_HEADING} section ${n} times`, at, at, { waits: [{ kind: "session", ask }], until: at + HAND_OFF_MS }));
+  log(`${whoOf(round)}'s plan: the board refused its ${AFTER_MERGE_CHECKS_HEADING} section ${n} times, so the person's session is asked`);
+}
+
 /**
  * Handle the refusals of the `## After-merge checks` sections of the plans a planning run (one ticket, or a batch's members all together) wrote, instead of ending the run on them. While the run has had fewer than
- * {@link MAX_SEND_BACKS} refusals, the planner's own pane is prompted with the refusals and the format, and the run stays running: a prompt herdr refuses counts no send, is logged, and is offered again on the next pass.
- * After that the run is handed to the person's session, as a `working` note with one `session` wait on every ticket of the run, which never ends it for the chairman.
+ * {@link MAX_SEND_BACKS} refusals, the planner's own pane is prompted ({@link sendToPlanner}); after that the run is handed to the person's session ({@link handToSession}), which never ends it for the chairman.
  */
 export function sendBack(ctx: PoolContext, entry: Entry, refusals: readonly FormatRefusal[]): void {
   const place = runPlace(ctx, entry);
   const { count, refusals: before } = sentBefore(place.dir);
   const n = count + 1;
-  const handOff = count >= MAX_SEND_BACKS;
-  const file = join(place.dir, `after-merge-refused-${n}.md`);
-  writeFileSync(file, handOff ? handOffText(refusals, n) : sendBackText(refusals, n));
-  if (!handOff) {
-    const refused = sendToAgent(ctx, place, promptFor(refusals, n, file));
-    if (refused !== null) return log(`${entry.batch ?? entry.ticket.key}'s plan could not be sent back to its planner: ${refused}`);
-  }
-  // Recorded and marked stale only once the planner is told, so a refused prompt is offered again by the next pass, which settles the same `planned`.
-  writeFileSync(join(place.dir, SENT_BACK_FILE), `${JSON.stringify({ count: n, refusals: [...before, ...refusals.map(({ key, refusal }) => `${key}: ${refusal}`)] })}\n`);
-  const written = join(place.dir, OUTCOME_FILE);
-  markOutcomeStale(place.dir, existsSync(written) ? statSync(written).mtimeMs : ctx.now());
-  if (!handOff) return log(`${entry.batch ?? entry.ticket.key}'s plan: the board refused its ${AFTER_MERGE_CHECKS_HEADING} section, sent back to its planner (${n} of ${MAX_SEND_BACKS})`);
-  const at = ctx.now();
-  const ask = askFor(refusals, n, file);
-  updateEach(ctx, runMembers(ctx, entry), (queue, member) =>
-    noteWorking(queue, member, `the board refused the plan's ${AFTER_MERGE_CHECKS_HEADING} section ${n} times`, at, at, { waits: [{ kind: "session", ask }], until: at + HAND_OFF_MS }));
-  log(`${entry.batch ?? entry.ticket.key}'s plan: the board refused its ${AFTER_MERGE_CHECKS_HEADING} section ${n} times, so the person's session is asked`);
+  const round = { entry, place, n, file: join(place.dir, `after-merge-refused-${n}.md`), refusals, before };
+  return count < MAX_SEND_BACKS ? sendToPlanner(ctx, round) : handToSession(ctx, round);
 }
