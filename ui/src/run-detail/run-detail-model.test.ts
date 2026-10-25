@@ -2,7 +2,7 @@ import { runActions } from "../../../src/ticket-mode/board-view/pull-status-and-
 import { RUN_STATUSES } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { queueOf, RUNS_OF, type State } from "../../test/run-detail/run-detail-stand.ts";
 import type { RunEntry } from "../runs/runs-model.ts";
-import { boardOf, boardOfStatus, calloutOf, detailOf, headerActionsOf, logOf, noPullsText, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf, timesOf, type RunBoard } from "./run-detail-model.ts";
+import { boardOf, boardOfStatus, calloutOf, detailOf, drawnBoardOf, headerActionsOf, logOf, noPullsText, statusWordOf, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf, timesOf, type RunBoard } from "./run-detail-model.ts";
 
 const queueFor = (state: State) => queueOf(RUNS_OF[state].runs);
 const runFor = (state: State): RunEntry => {
@@ -37,6 +37,39 @@ describe("which board a run is drawn as", () => {
     ["running", "running"], ["queued", "queued"], ["blocked", "blocked"], ["needs", "needs"], ["handback", "handback"], ["awaiting", "awaiting"], ["ready", "ready"], ["done", "done"], ["failed", "failed"], ["cancelled", "cancelled"],
   ])("gives the stand's %s run the %s board", (state, board) => {
     expect(boardOf(runFor(state), queueFor(state))).toBe(board);
+  });
+});
+
+describe("the callout of a run parked on a wait (A11-272)", () => {
+  const parkedRun = (waitText: string) => ({ ...runFor("running"), working: { reason: "waits", at: Date.now(), waiting: true, waits: [{ kind: "ticket", key: "A11-229", until: "done" }], waitText } }) as unknown as RunEntry;
+
+  it("is titled Waiting, not Working, and says what it waits on and until when", () => {
+    const entry = parkedRun("Waiting on ticket A11-229 (In Progress)");
+    const queue = queueOf([entry as never]);
+    const callout = calloutOf(entry, queue, boardOf(entry, queue));
+    expect(callout.title).toBe("Waiting");
+    expect(callout.paragraphs[0]).toMatch(/^Waiting on ticket A11-229 \(In Progress\), until \d\d:\d\d$/);
+    expect(statusWordOf(entry, queue)).toBe("Waiting");
+  });
+
+  it("draws the header with the Queued board's still ring and quiet colour, not the turning spinner, and a run at work keeps the spinner", () => {
+    const entry = parkedRun("Waiting on ticket A11-229 (In Progress)");
+    const queue = queueOf([entry as never]);
+    expect(drawnBoardOf(entry, queue, "running")).toBe("queued");
+    expect(drawnBoardOf(runFor("running"), queueFor("running"), "running")).toBe("running");
+    expect(drawnBoardOf(runFor("done"), queueFor("done"), "done")).toBe("done");
+  });
+
+  it("is still titled Working for a run at work", () => {
+    expect(calloutOf(runFor("running"), queueFor("running"), "running").title).toBe("Working");
+  });
+
+  it("names the wait cycle a queued ticket is in, as a paragraph of its callout", () => {
+    const files = ["lab:middleware/runtime/main.py"];
+    const parked = { ...parkedRun("Waiting on ticket A11-229 (In Progress)"), ticket: { key: "A11-231" }, paths: files } as unknown as RunEntry;
+    const held = { ...runFor("queued"), ticket: { key: "A11-229" }, paths: files, blockers: undefined } as unknown as RunEntry;
+    const queue = queueOf([parked as never, held as never]);
+    expect(calloutOf(held, queue, "queued").paragraphs).toContain("in a wait cycle: A11-229 → A11-231 → A11-229");
   });
 });
 

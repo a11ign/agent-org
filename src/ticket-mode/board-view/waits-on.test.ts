@@ -2,7 +2,7 @@
 // A11-272: the tickets a run waits on, shared by the overlap hold and the hold of a run stopped behind a ticket
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { blockersOf, waitersOn } from "./waits-on.ts";
+import { blockersOf, declaredWaits, waitersOn } from "./waits-on.ts";
 import type { ViewEntry } from "./view-types-and-filters.ts";
 
 const entry = (key: string, over: Record<string, unknown> = {}) => ({ ticket: { key }, phase: "queued", ...over }) as unknown as ViewEntry;
@@ -44,4 +44,14 @@ test("A11-272: waits are followed back through blockers, each ticket once, throu
   const b = entry("B-1", { blockers: [blocker("C-1")] });
   const c = entry("C-1", { blockers: [blocker("A-1"), blocker("B-1")] });
   assert.deepEqual([...waitersOn("C-1", [a, b, c])].sort(), ["A-1", "B-1"], "B-1 is blocked by C-1, and A-1 waits on B-1; C-1 itself is left out though it waits on B-1");
+});
+
+test("A11-272: the tickets a run's idle worker declared a wait on are the tickets it names and the owners of the pull requests it names, and only while it is live and idle in the wait", () => {
+  const url = "https://github.com/a11ign/lab/pull/7";
+  const owner = entry("B-1", { phase: "finished", outcome: { kind: "ready-pr", prs: [{ url }] } });
+  const waits = [{ kind: "ticket", key: "C-1" }, { kind: "pullRequest", url }, { kind: "fleetJob", id: "fj-1" }];
+  const live = entry("A-1", { phase: "running", working: { reason: "w", waiting: true, waits } });
+  const woken = entry("A-2", { phase: "running", working: { reason: "w", waits } });
+  const queued = entry("A-3", { phase: "queued", working: { reason: "w", waiting: true, waits } });
+  assert.deepEqual([...declaredWaits([live, woken, queued, owner])], [["A-1", ["C-1", "B-1"]], ["A-2", []], ["A-3", []], ["B-1", []]], "woken or at work, and queued: no wait");
 });

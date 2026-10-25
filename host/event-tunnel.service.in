@@ -12,9 +12,14 @@
 #
 # ONLY THIS PATH IS TOUCHED. The node's other serve mounts (the trace pages, on 8443, tailnet-only) are not named, and neither `reset` nor an unscoped `off` is ever run.
 # THE SIGNATURE, NOT THE PATH, IS THE GATE: the receiver refuses anything not signed with the secret (`src/event-receiver.ts`), and the path is public the moment Funnel serves it.
+#
+# IT WAITS FOR ITS EXPOSURE AND TRIES AGAIN (A11-279). This is a USER unit, and a user manager knows no system unit, so `After=tailscaled.service` orders against nothing: on 2026-10-25 the host rebooted, `up` ran before
+# tailscaled had a name, and the unit failed for good. The wait is in `up` (it polls the exposure's readiness for 45 s, inside `TimeoutStartSec`), and a start that still fails is started again after 30 s,
+# with no limit on the tries (`StartLimitIntervalSec=0`), until the exposure is there. `After=` the instance service is the order the board's own serves are put back in.
 Description=a11ign: serve the event receiver's loopback port at its Tailscale Funnel path (a11ign/a11ign#5197)
 Wants=@@prefix@@event-receiver.service
-After=network-online.target tailscaled.service @@prefix@@event-receiver.service
+After=network-online.target tailscaled.service @@prefix@@event-receiver.service agent-org-instance.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -35,6 +40,8 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 ExecStart=%h/.local/bin/node packages/agent-org/src/event-tunnel.ts up
 ExecStop=-%h/.local/bin/node packages/agent-org/src/event-tunnel.ts down
 TimeoutStartSec=60
+Restart=on-failure
+RestartSec=30
 
 [Install]
 WantedBy=default.target

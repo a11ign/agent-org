@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { main, reloadService, runWithin, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
+import { main, reapplyServes, reloadService, runWithin, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
 import { TAILSCALE_UNDER_TESTS } from "../plugins/real-seams.ts";
 import { TAILSCALE_MISSING } from "../../plugins/tailscale/tailnet.ts";
 
@@ -558,4 +558,82 @@ test("A11-279: the service's own run refuses `tailscale` under the test runner, 
     process.env.PATH = previousPath;
   }
   assert.equal(existsSync(log) ? readFileSync(log, "utf8") : "", "", "the stand-in recorded no call");
+});
+
+// ---- A11-279: the serves are checked and put back after a start, not only at `agent-org start`
+
+const BOARD_ENTRY = { Handlers: { "/": { Proxy: "http://127.0.0.1:4748" } } };
+const TERMINAL_ENTRY = { Handlers: { "/": { Proxy: "http://127.0.0.1:7400" } } };
+const serveConfig = (web: Record<string, unknown>) => JSON.stringify({ Web: Object.fromEntries(Object.entries(web).map(([port, entry]) => [`agents.tail1234.ts.net:${port}`, entry])) });
+const TERMINAL_TICKETS = { ...SERVED, terminal: "http://127.0.0.1:7400/?ws={workspace}&pane={pane}&view=terminal" };
+
+/** A tailnet machine whose ui and terminal units are registered and `running` as systemd says (`running` false: stopped), and whose serve config is `serve`. */
+function registered(serve: string, tickets: Record<string, unknown> = TERMINAL_TICKETS, answers: Parameters<typeof onTailnet>[1] = {}, running = true) {
+  const t = onTailnet(tickets, { ...answers, serve });
+  for (const name of ["ui", "terminal"] as const) t.files.set(unitFor(name, t.deps).path, "");
+  const run = t.deps.run;
+  const deps: ServiceDeps = { ...t.deps, run: (file, args) => (file === "systemctl" && args[1] === "is-active" ? done(running ? "active\n" : "inactive\n") : run(file, args)) };
+  return { ...t, deps };
+}
+const serveCalls = (t: ReturnType<typeof onTailnet>) => t.tailscale().filter((call) => call.includes("--bg") || call.includes(" off") || call.includes("reset"));
+
+test("A11-279: after the host restarts with the board's and the terminal's serves gone, both are served again, each to its own loopback port", async () => {
+  const t = registered(serveConfig({}));
+  const checks = await reapplyServes(t.deps);
+  assert.deepEqual(checks, [{ service: "ui", state: "reapplied", port: 9443 }, { service: "terminal", state: "reapplied", port: 9444 }]);
+  assert.deepEqual(serveCalls(t), ["tailscale serve --bg --https=9443 http://127.0.0.1:4748", "tailscale serve --bg --https=9444 http://127.0.0.1:7400"]);
+});
+
+test("A11-279: a serve that is in place is left as it is, and only the missing one is put back", async () => {
+  const both = registered(serveConfig({ 9443: BOARD_ENTRY, 9444: TERMINAL_ENTRY }));
+  assert.deepEqual((await reapplyServes(both.deps)).map(({ state }) => state), ["present", "present"]);
+  assert.deepEqual(serveCalls(both), [], "nothing is served again");
+  const onlyTerminalGone = registered(serveConfig({ 9443: BOARD_ENTRY }));
+  assert.deepEqual((await reapplyServes(onlyTerminalGone.deps)).map(({ service, state }) => `${service} ${state}`), ["ui present", "terminal reapplied"]);
+  assert.deepEqual(serveCalls(onlyTerminalGone), ["tailscale serve --bg --https=9444 http://127.0.0.1:7400"]);
+});
+
+test("A11-279: a port another entry holds, or that is open to the internet, is reported and never replaced or removed", async () => {
+  const other = registered(serveConfig({ 9443: { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } }, 9444: TERMINAL_ENTRY }));
+  const [ui, terminal] = await reapplyServes(other.deps);
+  assert.deepEqual([ui.state, terminal.state], ["foreign", "present"]);
+  assert.match(ui.why ?? "", /port 9443 already serves http:\/\/127\.0\.0\.1:9999 on the tailnet/);
+  assert.deepEqual(serveCalls(other), []);
+  const open = registered(JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": BOARD_ENTRY, "agents.tail1234.ts.net:9444": TERMINAL_ENTRY }, AllowFunnel: { "agents.tail1234.ts.net:9443": true } }));
+  const [funnel] = await reapplyServes(open.deps);
+  assert.match(funnel.why ?? "", /on Funnel, which makes it public/);
+  assert.equal(funnel.state, "foreign");
+  assert.deepEqual(serveCalls(open), []);
+});
+
+test("A11-279: a service `agent-org stop` stopped keeps its unit file and its serve stays off: it is not served again", async () => {
+  const t = registered(serveConfig({}), TERMINAL_TICKETS, {}, false);
+  assert.deepEqual(await reapplyServes(t.deps), []);
+  assert.deepEqual(t.tailscale(), [], "and tailscale is not asked");
+});
+
+test("A11-279: a service that is not registered, and a host whose exposure serves nothing, are not checked", async () => {
+  const unregistered = onTailnet(TERMINAL_TICKETS, { serve: serveConfig({}) });
+  assert.deepEqual(await reapplyServes(unregistered.deps), []);
+  assert.deepEqual(unregistered.tailscale(), [], "and tailscale is not asked");
+  const local = registered(serveConfig({}), LOCAL_BLOCK);
+  assert.deepEqual(await reapplyServes(local.deps), []);
+  assert.deepEqual(local.tailscale(), []);
+});
+
+test("A11-279: a tailscale that is not running is a refused check for each service, with the sentence to act on, and nothing is served", async () => {
+  const stopped = registered(serveConfig({}), TERMINAL_TICKETS, { status: done(JSON.stringify({ BackendState: "Stopped", Self: { DNSName: "agents.tail1234.ts.net." } })) });
+  assert.deepEqual((await reapplyServes(stopped.deps)).map(({ state }) => state), ["refused", "refused"]);
+  assert.match((await reapplyServes(stopped.deps))[0].why ?? "", /is not Running on this machine \(BackendState Stopped\)/);
+  assert.deepEqual(serveCalls(stopped), []);
+});
+
+test("A11-279: a serve tailscale refuses is a refused check that says how to allow it, and a host file that cannot be read refuses the board's serve, and nothing is thrown", async () => {
+  const denied = registered(serveConfig({}), TERMINAL_TICKETS, { put: { status: 1, stdout: "", stderr: "Access denied: serve config denied" } });
+  const [refusedUi] = await reapplyServes(denied.deps);
+  assert.equal(refusedUi.state, "refused");
+  assert.match(refusedUi.why ?? "", /tailscale set --operator=alice/);
+  const unreadable = registered(serveConfig({}));
+  unreadable.files.set(join(unreadable.home, ".agent-org", "host.json"), "{ not json");
+  assert.deepEqual((await reapplyServes(unreadable.deps)).map(({ service, state }) => `${service} ${state}`), ["ui refused"], "the terminal's unit cannot even be worked out from it, so it counts as not registered");
 });

@@ -33,13 +33,15 @@ export const update = (ctx: PoolContext, change: (queue: Queue) => Queue) => {
   return store.set(change(store.get()));
 };
 
-/** Forget a run's bookkeeping: its missed listings, the start dialogs answered on it, whether the pool started it (A11-78), and the plan attach it was trying again (A11-216). Called where its workspace is closed and its record ends. */
+/** Forget a run's bookkeeping: its missed listings, the start dialogs answered on it, whether the pool started it (A11-78), the plan attach it was trying again (A11-216), and the environment its pane lost (A11-279). Called where its workspace is closed and its record ends. */
 export const forgetRun = (ctx: PoolContext, name: string): void => {
-  const { answered, attachRetries, misses, startedHere } = ctx;
+  const { answered, attachRetries, envLost, misses, reseating, startedHere } = ctx;
   misses.delete(name);
   answered.delete(name);
   startedHere.delete(name);
   attachRetries.delete(name);
+  envLost.delete(name);
+  reseating.delete(name);
 };
 
 /** Apply `change` to each of `entries` in turn. */

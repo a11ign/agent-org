@@ -33,13 +33,20 @@ function agentTargetOf(args: readonly string[]): string | undefined {
 
 /**
  * A herdr that opens a workspace per `workspace create`, lists the status a test sets per label, and records every call. Like herdr 0.9.3 it lists every Claude agent with no name and answers
- * `agent_not_found` to an agent addressed by anything but its pane (A11-279). `screens` is what each pane shows, by pane id; a pane not in it shows nothing.
+ * `agent_not_found` to an agent addressed by anything but its pane (A11-279). `screens` is what each pane shows, by pane id; a pane not in it shows nothing. `envs` is the environment each pane's Claude was given by
+ * `workspace create --env`, by pane id; {@link restoreWithoutEnvironment} empties them, as herdr's restore of a pane does (it keeps the directory and the session, not the `--env`). A closed workspace's pane is gone.
  */
 export function fakeHerdr(status: Map<string, string>) {
   const calls: string[][] = [];
   /** Set to herdr's message to have it refuse every `workspace close` with it. */
   const closing: { refusal: string | null } = { refusal: null };
   const screens = new Map<string, string>();
+  const envs = new Map<string, Record<string, string>>();
+  /** Set `on` to have `agent list` report no Claude session for any agent, as herdr does for one it could not read the session of. */
+  const sessionless = { on: false };
+  /** The workspace id of each label a `workspace create` opened; a label not in it is listed as `w<digits of the label>`, as before. */
+  const opened = new Map<string, string>();
+  const workspaceOf = (label: string): string => opened.get(label) ?? `w${label.replace(/\D/g, "")}`;
   let next = 0;
   const run = (args: string[]): string => {
     calls.push(args);
@@ -51,16 +58,26 @@ export function fakeHerdr(status: Map<string, string>) {
     if (args.includes("read")) return target === undefined ? "" : screens.get(target) ?? "";
     if (args.includes("create")) {
       next += 1;
+      opened.set(String(args[args.indexOf("--label") + 1]), `w${next}`);
+      envs.set(`w${next}:p1`, Object.fromEntries(args.flatMap((arg, at) => (args[at - 1] === "--env" ? [[arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)]] : []))));
       return JSON.stringify({ result: { root_pane: { pane_id: `w${next}:p1` }, workspace: { workspace_id: `w${next}` } } });
     }
+    if (args.includes("workspace") && args.includes("close")) {
+      const id = String(args[args.indexOf("close") + 1]);
+      envs.delete(`${id}:p1`);
+      for (const [label, workspace] of opened) if (workspace === id) opened.delete(label);
+      return JSON.stringify({ type: "ok" });
+    }
     if (args.includes("agent") && args.includes("list")) {
-      const own = [...status].map(([label, s]) => ({ name: null, workspace_id: `w${label.replace(/\D/g, "")}`, agent_session: { value: `session-${label}` }, agent_status: s }));
+      const own = [...status].map(([label, s]) => ({ name: null, workspace_id: workspaceOf(label), ...(sessionless.on ? {} : { agent_session: { value: `session-${label}` } }), agent_status: s }));
       return JSON.stringify({ result: { agents: own } });
     }
-    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s, workspace_id: `w${label.replace(/\D/g, "")}` })) } });
+    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s, workspace_id: workspaceOf(label) })) } });
     return JSON.stringify({ type: "ok" });
   };
-  return { run, calls, closing, screens };
+  /** herdr's restore of every pane (a restart of its service, or of the host): each Claude is back, and none has the `--env` it was started with. */
+  const restoreWithoutEnvironment = (): void => { for (const pane of envs.keys()) envs.set(pane, {}); };
+  return { run, calls, closing, screens, envs, sessionless, restoreWithoutEnvironment };
 }
 
 /** The drain store a test holds in memory, with every write kept. */
@@ -102,7 +119,7 @@ export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node",
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
   const deps = (over: Partial<PoolDeps>): PoolDeps => ({ settings, source: tracker, hook, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }),
-    transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), restartReads,
+    transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), restartReads, paneEnv: (pane) => herdr.envs.get(pane) ?? null,
     ...(drain === undefined ? {} : { drain }), ...(startUpdate === undefined ? {} : { startUpdate }), ...over });
   const pool = createPool(store, deps({}));
   return { root, settings, store, status, herdr, pool, restart: (over: Partial<PoolDeps>) => createPool(store, deps(over)), entry: (key: string) => queue.entries.find((e) => e.ticket.key === key)! };

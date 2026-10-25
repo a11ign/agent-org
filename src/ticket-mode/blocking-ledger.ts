@@ -36,6 +36,8 @@ export type LedgerDeps = Readonly<{
   name?: string;
   /** The stack the call site is read from: this call's own unless a test gives one. */
   stack?: () => string;
+  /** Told of every call as it is counted: the request thread counts the ones made after it listens (A11-282). */
+  onCall?: (call: Readonly<{ site: string; program: string; ms: number }>) => void;
 }>;
 
 export type BlockingLedger = Readonly<{
@@ -88,7 +90,7 @@ const ownStack = (): string => {
 const round = (ms: number): number => Math.round(ms * 10) / 10;
 
 /** A ledger of this process's synchronous spawns. `install` it once at start; `worst` reads it. */
-export function createBlockingLedger({ now = () => performance.now(), err = (line) => process.stderr.write(line), name = "agent-org", stack = ownStack }: LedgerDeps = {}): BlockingLedger {
+export function createBlockingLedger({ now = () => performance.now(), err = (line) => process.stderr.write(line), name = "agent-org", stack = ownStack, onCall }: LedgerDeps = {}): BlockingLedger {
   const sites = new Map<string, { site: string; program: string; count: number; totalMs: number; maxMs: number }>();
   let uninstall: (() => void) | null = null;
 
@@ -100,6 +102,7 @@ export function createBlockingLedger({ now = () => performance.now(), err = (lin
     account.maxMs = Math.max(account.maxMs, ms);
     sites.set(key, account);
     if (ms >= SLOW_MS) err(`${name}: a synchronous ${program} held the loop ${Math.round(ms)} ms, at ${site}\n`);
+    onCall?.({ site, program, ms });
   }
 
   /** Counts one call. A ledger that cannot count it (a stack it cannot read, a stderr that refuses the line) counts nothing, and never stands in for the spawn's own answer. */

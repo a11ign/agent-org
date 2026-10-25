@@ -5,7 +5,7 @@ import { PUBLISH_TITLE, PUBLISHING_TITLE, type PublishState } from "../runs/publ
 import type { QueueView, RunAction } from "../api/types.ts";
 import type { RunEntry } from "../runs/runs-model.ts";
 import { RunIcon } from "./icons.tsx";
-import { STATUS_WORD_TONE, statusWordOf, TERMINAL_TITLE, timesOf, type HeaderAction, type RunBoard } from "./run-detail-model.ts";
+import { drawnBoardOf, STATUS_WORD_TONE, statusWordOf, TERMINAL_TITLE, timesOf, type HeaderAction, type RunBoard } from "./run-detail-model.ts";
 
 /** "Runs / A11-183": the way back to the list, and the run's key. */
 export function Breadcrumb({ runKey }: Readonly<{ runKey: string }>) {
@@ -60,13 +60,14 @@ function Buttons({ actions, terminalHref, followTerminal, busy, disabled, onPres
 /** The header: the board's icon, the ticket's title, the status, the timing and when it started, and the buttons. */
 export function RunHeader({ entry, queue, board, now, controls }: Readonly<{ entry: RunEntry; queue: QueueView; board: RunBoard; now: number; controls: HeaderControls }>) {
   const { timing, started } = timesOf(entry, now);
+  const drawn = drawnBoardOf(entry, queue, board);
   return (
     <div className="detail-head">
-      <div className="run-head-icon"><RunIcon board={board} /></div>
+      <div className="run-head-icon"><RunIcon board={drawn} name={drawn === board ? undefined : statusWordOf(entry, queue)} /></div>
       <div className="run-head-title">
         <h1 className="run-title-text">{entry.ticket.title ? entry.ticket.title : entry.ticket.key}</h1>
         <div className="run-head-line">
-          <span className={`run-head-status ${STATUS_WORD_TONE[board]}`}>{statusWordOf(entry, queue)}</span>
+          <span className={`run-head-status ${STATUS_WORD_TONE[drawn]}`}>{statusWordOf(entry, queue)}</span>
           <span aria-hidden="true">·</span>
           <span>{timing}</span>
           <span aria-hidden="true">·</span>

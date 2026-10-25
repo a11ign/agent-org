@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { assetName } from "../../scripts/ui-asset.ts";
 import { bsdtarLikeExec, startReleaseServer, publishUiAsset, tarFailure, type ReleaseServer } from "./fixtures/release-server.ts";
-import { declaresUiBuild, ensureUiBuild, hasUiBuild, releasesUrl, uiAssetName, type UiSource } from "./ui-asset.ts";
+import { declaresUiBuild, declaresUiBuildIn, ensureUiBuild, hasUiBuild, releasesUrl, uiAssetName, uiBuildAttached, type UiSource } from "./ui-asset.ts";
 import { swapCurrent } from "./tool-install.ts";
 
 /** A built UI as `astro build` leaves it: a page and a hashed file. `label` makes two builds differ. */
@@ -52,6 +52,24 @@ test("a release declares its UI build with agentOrg.shipsUiBuild, and nothing el
   mkdirSync(join(folder, "ui"));
   writeFileSync(join(folder, "package.json"), JSON.stringify({ agentOrg: { shipsUiBuild: "yes" } }));
   assert.equal(declaresUiBuild(folder), false, "a release that holds ui/ but does not declare a build (the tags between the UI's scaffold and the marker)");
+});
+
+test("A11-284: the marker is read from a package.json's text", () => {
+  assert.equal(declaresUiBuildIn('{"agentOrg":{"shipsUiBuild":true}}'), true);
+  assert.equal(declaresUiBuildIn('{"agentOrg":{"shipsUiBuild":"yes"}}'), false);
+  assert.equal(declaresUiBuildIn('{"name":"agent-org"}'), false);
+  assert.equal(declaresUiBuildIn("not json"), false);
+});
+
+test("A11-284: a release's build is attached when its checksum answers 200, not yet when it answers 404, and unknown for any other answer", async () => {
+  const { root, server } = await setUp("v0.5.0");
+  assert.equal(uiBuildAttached(from(server), "v0.5.0"), "not-yet", "404");
+  assert.deepEqual(server.requests(), ["/v0.5.0/agent-org-ui-v0.5.0.tar.gz.sha256"], "it asks for the checksum, which is uploaded second");
+  publishUiAsset(server.root, "v0.5.0", distOf(root, "five"));
+  assert.equal(uiBuildAttached(from(server), "v0.5.0"), "attached", "200");
+  assert.equal(uiBuildAttached({ releases: () => "http://x", exec: () => "500" }, "v0.5.0"), "unknown", "HTTP 500");
+  assert.equal(uiBuildAttached({ releases: () => "http://127.0.0.1:1/dl", exec: execFileSync }, "v0.5.0"), "unknown", "no server");
+  assert.equal(uiBuildAttached({ releases: () => null, exec: () => { throw new Error("must not run"); } }, "v0.5.0"), "unknown", "no releases address");
 });
 
 test("the releases URL is the override, else the repository's GitHub releases; any other repository has none", () => {

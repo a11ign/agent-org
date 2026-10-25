@@ -50,7 +50,7 @@ test("A11-272: the deadlock reproduced: NBF-2 is held behind NBF-1's files, and 
   const run = await deadlock(tracker());
   assert.deepEqual([run.entry(WAITER).phase, run.statusOf(BLOCKER)], ["running", "blocked"], "an ordinary overlap: NBF-1 holds the files");
   await run.write(WAITER, WAITS_ON_BLOCKER);
-  assert.equal(run.entry(WAITER).phase, "running", "the first tick only starts the wait's reading");
+  assert.equal(run.entry(WAITER).phase, "queued", "the two wait on each other, so the run lets go on the tick, without waiting for the wait's first reading (pool-wait-cycles.test.ts)");
   assert.ok(["starting", "running"].includes(run.entry(BLOCKER).phase), "a run never holds its files against the ticket it waits on");
 });
 
@@ -64,7 +64,7 @@ test("A11-272: a run that waits on a ticket not done gives up its slot and its f
   assert.equal(waiter.phase, "queued");
   assert.equal(waiter.workspace, undefined);
   assert.equal(run.closes().length, 1, "its workspace was closed");
-  assert.deepEqual(waiter.stoppedForBlocker, { at: T0 + 2 * 60_000, keys: [BLOCKER], others: [] });
+  assert.deepEqual(waiter.stoppedForBlocker, { at: T0 + 60_000, keys: [BLOCKER], others: [] });
   assert.equal(waiter.session, `session-${herdrName(WAITER)}`, "the Claude session its agent had is kept");
   assert.equal(run.statusOf(WAITER), "blocked");
   assert.ok(["starting", "running"].includes(run.entry(BLOCKER).phase), "NBF-2 starts on the files NBF-1 held");
@@ -111,9 +111,8 @@ test("A11-272: a tracker that cannot record a blocker still holds the stopped ru
 
 test("A11-272: a workspace herdr will not close is left running, nothing is queued beside it, and the next tick tries again", async () => {
   const run = await deadlock(tracker());
-  await run.write(WAITER, WAITS_ON_BLOCKER);
   run.herdr.closing.refusal = "the pane is busy";
-  await run.pass();
+  await run.write(WAITER, WAITS_ON_BLOCKER);
   assert.deepEqual([run.entry(WAITER).phase, run.entry(WAITER).workspace, run.entry(WAITER).stoppedForBlocker], ["running", "w1", undefined]);
   run.herdr.closing.refusal = null;
   await run.pass();

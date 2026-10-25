@@ -10,7 +10,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { pinnedPnpm } from "./pnpm.ts";
 import { isReleaseTag } from "../lib/release-tag.ts";
-import { declaresUiBuild, ensureUiBuild, hasUiBuild, releasesUrl, type UiSource } from "./ui-asset.ts";
+import { declaresUiBuild, ensureUiBuild, hasUiBuild, releasesUrl, uiBuildAttached, type UiAttached, type UiSource } from "./ui-asset.ts";
 import { currentLink, mirrorPath, versionFolder, versionsDir } from "./tool-versions.ts";
 
 /** A program run as `execFileSync` runs it; a test passes one that records what it was asked to run. */
@@ -73,6 +73,9 @@ export function completeUiBuild({ tool, name, ui = mirrorUiSource(tool) }: { too
   const step = ensureUiBuild({ folder, name, source: ui });
   return step.state === "failed" ? { state: "failed", folder, reason: step.reason } : { state: "present", folder, ...(step.said === undefined ? {} : { said: step.said }) };
 }
+
+/** Whether the release `tag` has its UI build for this machine (A11-284): a version folder that holds the build is attached, whatever the release now answers, and any other is asked for. */
+export const uiBuildReleased = ({ tool, tag, ui = mirrorUiSource(tool) }: { tool: string; tag: string; ui?: UiSource }): UiAttached => (hasUiBuild(versionFolder(tool, tag)) ? "attached" : uiBuildAttached(ui, tag));
 
 /** `dependencies` of the `package.json` in `folder`: none when there is no file or it names none. */
 function dependenciesIn(folder: string): string[] {

@@ -11,7 +11,7 @@ const ACTION_SIZE = 14;
 
 /** The colour class of each status's icon and label: the boards' (In progress, Planning, Ready to merge, Completed, and the Run detail boards' Queued, Awaiting review, Cancelled and Failed) or `ui.html`'s mapped to them. */
 export const STATUS_TONE: Readonly<Record<RunStatus, string>> = {
-  "needs-you": "tone-warn", talking: "tone-planning", working: "tone-warn", planning: "tone-planning", reviewing: "tone-warn", blocked: "tone-quiet", queued: "tone-quiet",
+  "needs-you": "tone-warn", talking: "tone-planning", working: "tone-warn", waiting: "tone-quiet", planning: "tone-planning", reviewing: "tone-warn", blocked: "tone-quiet", queued: "tone-quiet",
   "awaiting-review": "tone-planning", "ready-to-merge": "tone-success", publishing: "tone-warn", published: "tone-published", checked: "tone-success", completed: "tone-success", failed: "tone-danger", cancelled: "tone-muted",
 };
 
@@ -25,9 +25,13 @@ function Spinner({ track }: Readonly<{ track: string }>) {
   );
 }
 
+/** The ring of Queued, which Waiting takes as well (A11-272): a run parked on a wait has nothing at work in it, so its icon does not turn, and no new design is made for it. */
+const RING = <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" />;
+
 /** The 16-unit icons `ui.html` draws for a status, in `currentColor`. */
 const OWN_SHAPES: Partial<Record<RunStatus, ReactNode>> = {
-  queued: <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" />,
+  queued: RING,
+  waiting: RING,
   blocked: (
     <>
       <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" />

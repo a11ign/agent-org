@@ -19,7 +19,7 @@ export type ViewTicket = Readonly<{
  */
 export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T; children: readonly TicketNode<T>[]; context?: boolean }>;
 
-/** An event a worker declared it waits on (A11-245), as the board reads it: a ticket by its key and a pull request by its address name a ticket's run; a fleet job and a CI run name none. */
+/** An event a worker declared it waits on (A11-245), as the board reads it: a ticket by its key and a pull request by its address name a ticket's run; a fleet job, a CI run and an ask for the person's session name none. */
 type ViewWait = Readonly<{ kind: "ticket"; key: string }> | Readonly<{ kind: "pullRequest"; url: string }> | Readonly<{ kind: "fleetJob" | "ciRun" | "session" }>;
 
 /** The fields of a queue entry the board reads. */
@@ -43,7 +43,7 @@ export type ViewEntry = Readonly<{
   /** What the run's and the ticket's pushes cost in CI, as the server reads it from the workflow runs of the ticket's branch (A11-261). Absent until the board has read a run. */
   ci?: CiView;
   /** The board's last resume prompt to a running run (A11-279): when, after a restart or an idle spell since `idleSince`, and herdr's refusal when it would not take it. */
-  resume?: Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string }>;
+  resume?: Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string; environment?: "restored" | "missing" }>;
   /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
   sessionWait?: string;
   /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */
@@ -412,7 +412,7 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
 export type RunStatus =
-  "needs-you" | "talking" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "checked"
+  "needs-you" | "talking" | "working" | "waiting" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "checked"
   | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
@@ -420,6 +420,7 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
   { status: "needs-you", label: "Needs you" },
   { status: "talking", label: "Talking" },
   { status: "working", label: "In progress" },
+  { status: "waiting", label: "Waiting" },
   { status: "planning", label: "Planning" },
   { status: "reviewing", label: "Reviewing" },
   { status: "blocked", label: "Blocked" },

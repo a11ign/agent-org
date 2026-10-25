@@ -8,7 +8,7 @@ import type { Entry, Queue, WriterRun } from "./queue/queue-entries-and-outcomes
 import type { CiView } from "./board-view/ci-note.ts";
 import { ENDED_TICKETS } from "./board-view/overlap-hold.ts";
 import type { RunEvent } from "./queue/run-log.ts";
-import type { Board } from "./server.ts";
+import type { ReadBoard } from "./read-routes.ts";
 import { ciViewOf } from "./ci-spend/view.ts";
 import { afterMergeView } from "./after-merge/route.ts";
 import type { Ticket } from "./source.ts";
@@ -93,7 +93,7 @@ export function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
   return shown;
 }
 
-type ViewBoard = Pick<Board, "store" | "pool" | "update" | "settings">;
+type ViewBoard = Pick<ReadBoard, "store" | "pool" | "update" | "settings">;
 
 /** The CI of a run for the page, from the runs the board holds (A11-261). */
 const ciOf = (board: ViewBoard, queue: Queue, entry: Entry): CiView | undefined => ciViewOf(queue, entry, board.settings.ciBudgetMinutes);

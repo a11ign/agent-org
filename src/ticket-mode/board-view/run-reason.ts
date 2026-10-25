@@ -44,6 +44,12 @@ export function promptNote(entry: ViewEntry): string | null {
   return `A safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} was declined automatically: ${command}`;
 }
 
+/** What the card says when the pane had lost the run's environment (A11-279): the board started the run again with it, or could not. */
+const ENVIRONMENT_LINES = {
+  restored: "its environment was restored",
+  missing: "environment missing: the gh wrapper will refuse its pull request until it is restarted",
+} as const;
+
 /**
  * What a running run's card says of the board's resume prompt (A11-279), or null when it sent none: "Resumed after a restart at 15:27", "Idle since 15:22, resumed at 15:32", or, when herdr would not take the prompt,
  * "could not be prompted: <herdr's reason>". The times are the viewer's clock, as the card's other times are. PURE.
@@ -51,8 +57,9 @@ export function promptNote(entry: ViewEntry): string | null {
 export function resumeLine(entry: ViewEntry): string | null {
   const { resume } = entry;
   if (entry.phase !== "running" || resume === undefined) return null;
-  if (resume.refused !== undefined) return `could not be prompted: ${resume.refused}`;
-  return resume.after === "restart" ? `Resumed after a restart at ${clockOf(resume.at)}` : `Idle since ${clockOf(resume.idleSince ?? resume.at)}, resumed at ${clockOf(resume.at)}`;
+  if (resume.refused !== undefined) return `could not be prompted: ${resume.refused}${resume.environment === "missing" ? `; ${ENVIRONMENT_LINES.missing}` : ""}`;
+  const what = resume.after === "restart" ? `Resumed after a restart at ${clockOf(resume.at)}` : `Idle since ${clockOf(resume.idleSince ?? resume.at)}, resumed at ${clockOf(resume.at)}`;
+  return resume.environment === undefined ? what : `${what}; ${ENVIRONMENT_LINES[resume.environment]}`;
 }
 
 /** What the worker says of a run: its handed-back reason, the board's resume of it, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */

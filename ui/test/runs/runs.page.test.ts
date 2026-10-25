@@ -52,7 +52,7 @@ describe("the list, over a stand-in instance in Chromium", () => {
     const { page, context } = await open({ stand: runsStand() });
     const rail = page.getByRole("navigation", { name: "Run status" });
     await rail.waitFor();
-    expect(await rail.getByRole("button").count()).toBe(16);
+    expect(await rail.getByRole("button").count()).toBe(17);
     await rail.getByRole("button", { name: /^Ready to merge/ }).click();
     expect(await page.locator(".run-row").count()).toBe(1);
     expect(await page.locator(".runs-footer").count()).toBe(0);

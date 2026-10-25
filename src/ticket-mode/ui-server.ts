@@ -21,6 +21,9 @@
 // THE BUILT UI IS SERVED AT `/` (A11-202, after A11-190 served it under `/next`). Every `GET` or `HEAD` that is not an instance call is answered from the build, so `/`, `/tickets`, `/runs/<key>` and the files
 // under `/_astro/` are its. An unpaired browser's `GET` of a page gets the pairing page. The page reaches an instance through `/api/connections` and `/c/<connection>/api/...`, so nothing of the remote
 // proxy changes. Where the build is looked for, and which file a path maps to, is `ui-build.ts`. An address from the days of `/next` is redirected to the same address without it.
+//
+// NO BUILD IS NEVER THE ERROR PAGE IN AN INSTALL (A11-284). A release install whose build is not found answers `updatingPage` (a 503 that reloads itself) and the build's own page loads when it arrives;
+// only a checkout and the main channel, which no release gives a build, answer `missingBuildPage`.
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -42,7 +45,10 @@ import { createLastKnown, lastKnownDir, type LastKnown } from "./last-known.ts";
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 import type { TerminalRun } from "./terminal-pair.ts";
-import { buildCandidates, fileHeaders, findBuild, isAssetPath, isPage, locate, movedFromNext } from "./ui-build.ts";
+import { fileHeaders, findBuild, isAssetPath, isPage, isReleaseFolder, locate, movedFromNext, servedCandidates } from "./ui-build.ts";
+import { TOOL_ROOT } from "../install/paths.ts";
+import { declaresUiBuild } from "../install/ui-asset.ts";
+import { runningToolVersion } from "../install/tool-versions.ts";
 import { startLoopMonitor, type LoopReading } from "./loop-delay.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -173,6 +179,35 @@ ${places}
 `;
 }
 
+/**
+ * What a release install answers with while its build is not there (A11-284), in place of the missing-build page: it says the board is updating and reloads itself every few seconds, until a
+ * build is found and the build's own page loads. The heading is the words A11-217's card uses. `version` is the version this service runs; unknown, the page does not name one. Every value is escaped. PURE.
+ */
+export function updatingPage(version: string | null): string {
+  const moving = version === null ? "The board is updating" : `The board is moving to ${escapeHtml(version)}`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<title>Updating Atomaut</title>
+<style>body { font-family: system-ui, sans-serif; margin: 16px; line-height: 1.5; max-width: 40rem; }</style>
+</head>
+<body>
+<h1>Updating Atomaut</h1>
+<p>${moving} and is fetching its UI. This page reloads itself every few seconds.</p>
+</body>
+</html>
+`;
+}
+
+/**
+ * What a request is answered with when no build is found at `root` (A11-284). A release version folder whose release declares a UI build is being updated and the build is on the way, so it shows the
+ * page that reloads itself. A release that ships no build will never have one, and a checkout and the main channel never get one from a release: those say it is missing.
+ */
+export const noBuildOf = (root: string = TOOL_ROOT): "updating" | "missing" => (isReleaseFolder(root) && declaresUiBuild(root) ? "updating" : "missing");
+
 export type UiDeps = Readonly<{
   port: number;
   /** This machine's board key, which a request for a pairing code carries. */
@@ -191,6 +226,8 @@ export type UiDeps = Readonly<{
   exposure?: Exposure;
   /** The directories the built UI is looked for in, in order, each counted when it holds `index.html`. Absent, `ui-build/` beside the running version, then the checkout's `ui/dist/` (A11-190). */
   uiBuilds?: readonly string[];
+  /** What a request is answered with when no build is found: the Updating page of a release install, or the missing-build page of a checkout (A11-284). Absent, it follows what the running version is. */
+  noBuild?: "updating" | "missing";
   /** This service's own loop delay, which its root `/api/health` answers (A11-282). Absent, the route is not served, as on a service from before it. */
   loop?: () => LoopReading;
 }>;
@@ -227,15 +264,17 @@ const isCallPath = (path: string): boolean => path.startsWith("/api/") || path.s
 /** Whether `path` is a page of the built UI, which a browser opens: not an instance call and not an asset. An unpaired browser is shown the pairing page for it, and a script or image gets the 401. */
 const isPagePath = (path: string): boolean => !isCallPath(path) && !isAssetPath(path);
 
-function sendMissingBuild(response: ServerResponse, searched: readonly string[]): void {
-  response.writeHead(503, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
-  response.end(missingBuildPage(searched));
+/** The page for a request that finds no build, sent as a 503 (what A11-211 reads as a restart); the Updating page also asks to be asked again in 5 seconds. */
+function sendNoBuild(response: ServerResponse, searched: readonly string[], kind: "updating" | "missing"): void {
+  const updating = kind === "updating";
+  response.writeHead(503, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'", ...(updating ? { "Retry-After": "5" } : {}) });
+  response.end(updating ? updatingPage(runningToolVersion()) : missingBuildPage(searched));
 }
 
 /** A paired request's `GET` or `HEAD` of a path that is not an instance call: a file of the built UI, the page that says there is no build, or a plain 404. Never a stack trace. */
-async function sendBuild(response: ServerResponse, url: URL, candidates: readonly string[]): Promise<void> {
+async function sendBuild(response: ServerResponse, url: URL, { candidates, noBuild }: { candidates: readonly string[]; noBuild: "updating" | "missing" }): Promise<void> {
   const root = findBuild(candidates);
-  if (root === null) return sendMissingBuild(response, candidates);
+  if (root === null) return sendNoBuild(response, candidates, noBuild);
   try {
     const located = locate(root, url.pathname);
     if (located === null) return sendNotFound(response);
@@ -350,7 +389,7 @@ export function createUi(deps: UiDeps) {
     const readsPage = request.method === "GET" || request.method === "HEAD";
     const moved = readsPage ? movedFromNext(url.pathname, url.search) : null;
     if (moved !== null) return redirect(response, moved);
-    if (readsPage && !isCallPath(url.pathname)) return sendBuild(response, url, deps.uiBuilds ?? buildCandidates());
+    if (readsPage && !isCallPath(url.pathname)) return sendBuild(response, url, { candidates: deps.uiBuilds ?? servedCandidates(), noBuild: deps.noBuild ?? noBuildOf() });
     sendJson(response, 404, { error: `no route ${request.method} ${url.pathname}` });
   }
 
