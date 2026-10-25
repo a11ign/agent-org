@@ -316,6 +316,11 @@ export type Entry = Readonly<{
    * it. Dropped when the run ends again or is resumed, since a round records its own.
    */
   outcomeHeads?: Readonly<Record<string, string>>;
+  /**
+   * The open pull requests a `needs-human` run ended with changes requested at their head, by URL, with the head it was blocked at (A11-258): what it stopped on, read by the same read as {@link Entry.outcomeHeads}. The head is kept apart
+   * because agent-org's own merge of main moves `outcomeHeads`, and a review that reads absent on that new head is no lift. A review lifted at the blocked head, with the pull request mergeable, clears the run's question. Unset when none was blocked or the read failed; dropped where `outcomeHeads` is.
+   */
+  outcomeBlocks?: Readonly<Record<string, string>>;
   /** Each open pull request's head now, and whether it is approved at that head, by URL, as the last watch read them (A11-153). Written only when it changes. */
   pullHeads?: Readonly<Record<string, PullHead>>;
   /**
@@ -392,7 +397,20 @@ export type Entry = Readonly<{
   readopted?: Readopted;
   /** Set on a run a restart lost, when it was queued again (A11-240): the run is queued again once, so a second loss in the same chain ends it. A retry or a review round, which build the entry afresh, drop it. */
   lostInRestart?: Readonly<{ at: number }>;
+  /**
+   * When the board first saw a running run's agent idle at a prompt with no outcome but a `working` note (A11-279): its idle clock, which the board resumes it on after ten minutes. Dropped when it is seen working, or
+   * waiting, and when the run ends.
+   */
+  idleSince?: number;
+  /** The board's last resume prompt to this running run (A11-279), which its card says: see {@link ResumeNote}. Dropped once the run writes an outcome after it, and when the run ends. */
+  resume?: ResumeNote;
 }>;
+
+/**
+ * The board sent a running run the resume prompt (A11-279): when, and why, after a restart or after its agent sat idle since `idleSince`; `refused` is herdr's reason when it would not take the prompt, which the card
+ * says in its place.
+ */
+export type ResumeNote = Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string }>;
 
 /** How the board took a live pane back (A11-240): a run caught `starting` by a restart, or one it had marked crashed whose worker was found working, and why it had been crashed. */
 type Readopted = Readonly<{ at: number; from: "starting" }> | Readonly<{ at: number; from: "crashed"; reason: string }>;
@@ -457,6 +475,8 @@ export type WriterRun = Readonly<{
   /** Who places the ticket. A run queued before placement existed has the placement its form implies (`placementOf`). */
   placement: Placement;
   form: WriterForm;
+  /** The key of the team the ticket is filed in (such as `A11`), set by a request the board makes itself (A11-267). A person's request has none: its team is the form's parent's, else the host's. */
+  team?: string;
   /** The model and effort the run is stamped with when it is queued (the Settings choice, else the host file's). Absent on a run queued before that. */
   model?: string;
   effort?: string;

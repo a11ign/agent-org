@@ -40,7 +40,7 @@ export function watchGroup(ctx: SweepContext, ask: (request: TicketRequest) => v
   const key = redGroupKey(repository, pull.number, head);
   if (!due(state.tickets[key], deps.now())) return;
   if (state.reruns[recorded] !== head) return rerunOnce(ctx, { recorded, head, url: pull.url, failures: read.failures });
-  ask({ key, repository, request: redGroupRequest({ repository, url: pull.url, headRefName: pull.headRefName, group, head, jobs: failingJobsOf(ctx, read.failures) }) });
+  ask({ key, repository, request: (team) => redGroupRequest({ team, repository, url: pull.url, headRefName: pull.headRefName, group, head, jobs: failingJobsOf(ctx, read.failures) }) });
 }
 
 /** Rerun the failed checks of a head and record the head. A rerun the host refuses is no reason to wait for ever: the head is recorded as rerun, so the next sweep asks for the ticket, and the refusal is said. */

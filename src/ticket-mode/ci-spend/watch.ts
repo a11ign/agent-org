@@ -4,7 +4,7 @@
 // (`readBranchCi`, contract 1.22). A run reads as soon as its worker pushes, before a pull request exists: that is the point, since the pushes that cost the most are a live worker's. What is read is merged into `Queue.ciSpend` and a completed run is
 // never asked for again. The ticket's weighted total then decides a step (`budget.ts`): past the budget the worker is told once in its pane; at twice it, and at each further whole budget, the run is held (`hold.ts`): a live run is stopped and queued
 // again, a finished one only has the reason on its next round. A code host without the read, or one that cannot be asked, changes nothing and is said once.
-import { sendWake } from "../wait-on/wait-prompt.ts";
+import { sendToAgent } from "../pool-resume.ts";
 import { closedOrGone } from "../pool-drain.ts";
 import { forgetRun, log, runPlace, update } from "../pool-state.ts";
 import { find, isLive, type Entry } from "../queue/queue-entries-and-outcomes.ts";
@@ -122,7 +122,7 @@ const weightedOf = (ctx: PoolContext, key: string): number => totalsOf(runsOf(ct
 
 /** Tell a running worker, in its pane, that its ticket is past the budget. True when herdr took the prompt; a refusal is said and the next sweep tells it again. */
 function tellWorker(ctx: PoolContext, entry: Entry, weighted: number): boolean {
-  const refusal = sendWake(ctx.herdr, ctx.settings.herdrSession, runPlace(ctx, entry).name, warnPrompt(weighted, ctx.settings.ciBudgetMinutes));
+  const refusal = sendToAgent(ctx, runPlace(ctx, entry), warnPrompt(weighted, ctx.settings.ciBudgetMinutes));
   if (refusal !== null) log(`${entry.ticket.key} could not be told its ticket is past its CI budget: ${refusal}`);
   return refusal === null;
 }

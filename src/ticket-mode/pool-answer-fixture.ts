@@ -58,7 +58,7 @@ export function answerFixture({ description = "Fix the toast.", viewer = "Dana B
     await pool.tick();
   }
 
-  /** The prompts herdr was sent, each as the message that followed the agent's name. */
+  /** The prompts herdr was sent, each as the message that followed the agent's pane. */
   const prompts = (): string[][] => made.herdr.calls.filter((args) => args.includes("agent") && args.includes("prompt"));
   return { ...made, pool, held, writes, control, endsOn, dir, prompts };
 }

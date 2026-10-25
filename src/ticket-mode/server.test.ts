@@ -1433,11 +1433,14 @@ test("A11-255: the board's dependency sweep asks the writer for a major, records
   const deps = { codeHost: host, repositories: () => ["o/r"] };
   const b = board(4747, WRITER, deps, creating());
   b.store.set({ ...b.store.get(), paused: false });
-  const sweep = dependencyUpdatesOf(b, { settings: b.settings, source: creating(), key: KEY, queuePath: join(b.dir, "queue.json"), choicePath: join(b.dir, "choice.json"), now: () => 7, ...deps });
+  const tracker = creating();
+  const epicInA11: TicketSource = { ...tracker, read: async (key) => (key === "A11-251" ? { ...ticket(key), team: "A11" } as Ticket : tracker.read(key)) };
+  const sweep = dependencyUpdatesOf(b, { settings: b.settings, source: epicInA11, key: KEY, queuePath: join(b.dir, "queue.json"), choicePath: join(b.dir, "choice.json"), now: () => 7, ...deps });
   await sweep();
   await sweep();
   const [, writing] = await b.api("GET", "/api/writer", {}) as [number, any];
   assert.equal(writing.runs.length, 1, "one request, however often it is swept");
+  assert.equal(writing.runs[0].team, "A11", "the request carries the epic's team (A11-267)");
   assert.equal(JSON.parse(readFileSync(join(b.dir, "dependency-tickets.json"), "utf8")).tickets["o/r:@x/y@2"].state, "requested");
   b.store.set({ ...b.store.get(), writers: b.store.get().writers!.map((run) => ({ ...run, phase: "finished" as const, finishedAt: 4, tickets: [{ key: "NBF-101", url: null, inPick: true }] })) });
   await b.api("POST", "/api/choice", { model: "sonnet", effort: "low" });

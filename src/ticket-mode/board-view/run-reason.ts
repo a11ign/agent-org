@@ -9,10 +9,13 @@ import { openPulls, pullsOf, type ViewEntry } from "./view-types-and-filters.ts"
 import { pullLabel } from "./pull-label.ts";
 import { clockOf, shortVersion, versionLine, type UpdateView } from "./update-banner.ts";
 import { ticketChangeLine } from "./ticket-change.ts";
-import { blockerClearedLine } from "./blocker-cleared.ts";
+import { blockerClearedLine, liftedBlockLine } from "./blocker-cleared.ts";
 
 /** The words a card's reason line says for an answered run, in place of its question. */
-const ANSWER_LINE: Readonly<Record<PullAnswer, string>> = { approved: "Approved", answered: "Answered: awaiting review" };
+const ANSWER_LINE: Readonly<Record<Exclude<PullAnswer, "cleared">, string>> = { approved: "Approved", answered: "Answered: awaiting review" };
+
+/** The line for an answered run: the fixed words of {@link ANSWER_LINE}, or, for a lifted review, the pull requests it was lifted on (A11-258). PURE. */
+const answerLine = (entry: ViewEntry, answer: PullAnswer): string | null => (answer === "cleared" ? liftedBlockLine(entry) : ANSWER_LINE[answer]);
 
 /**
  * The line the board shows for a finished run whose red checks it reran or could not hand to a worker (A11-154), one per pull request, or null when none: that a
@@ -41,12 +44,26 @@ export function promptNote(entry: ViewEntry): string | null {
   return `A safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} was declined automatically: ${command}`;
 }
 
-/** What the worker says of a run: its handed-back reason, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
+/**
+ * What a running run's card says of the board's resume prompt (A11-279), or null when it sent none: "Resumed after a restart at 15:27", "Idle since 15:22, resumed at 15:32", or, when herdr would not take the prompt,
+ * "could not be prompted: <herdr's reason>". The times are the viewer's clock, as the card's other times are. PURE.
+ */
+export function resumeLine(entry: ViewEntry): string | null {
+  const { resume } = entry;
+  if (entry.phase !== "running" || resume === undefined) return null;
+  if (resume.refused !== undefined) return `could not be prompted: ${resume.refused}`;
+  return resume.after === "restart" ? `Resumed after a restart at ${clockOf(resume.at)}` : `Idle since ${clockOf(resume.idleSince ?? resume.at)}, resumed at ${clockOf(resume.at)}`;
+}
+
+/** What the worker says of a run: its handed-back reason, the board's resume of it, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
 function askedReason(entry: ViewEntry, now?: number): string | null {
   const outcome = entry.outcome;
   const note = workingNote(entry, now);
+  const resumed = resumeLine(entry);
   if (entry.handedBack) return entry.handedBack;
-  if (note !== null && !note.stalled) return note.text;
+  // An idle run is never shown as only running: the board's resume comes first, then what its worker last said (A11-279).
+  if (note !== null && !note.stalled) return resumed === null ? note.text : `${resumed}; ${note.text}`;
+  if (resumed !== null) return resumed;
   if (outcome === undefined) return null;
   if (outcome.kind === "wrong-repo") return `Belongs in: ${outcome.where}`;
   if (outcome.kind === "no-outcome") return "Stopped without writing an outcome";
@@ -124,7 +141,7 @@ function mergeWait(entry: ViewEntry): string | null {
 
 /**
  * The reason line a run's card shows, and the question it keeps one click away. A needs-human run whose pull requests answered it says "Answered: awaiting
- * review" or "Approved" from them, and keeps what it asked as `question`; one whose pull requests merged says "the blocker cleared: … merged" (A11-258). A text the card already shows as the rebase, retarget or verdict note is not said a
+ * review" or "Approved" from them, or "the blocker cleared: the requested changes on … were lifted" (A11-258), and keeps what it asked as `question`; one whose pull requests merged says "the blocker cleared: … merged" (A11-258). A text the card already shows as the rebase, retarget or verdict note is not said a
  * second time, as the line or as the question (A11-153). `now`, when given, lets a run waiting on background work say for how long (A11-236). PURE.
  */
 export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: string | null; question: string | null }> {
@@ -134,7 +151,7 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   // A reviewer herdr would not start twice is what the card says first, and the worker's question, if it asked one, stays one click away (A11-241).
   if (entry.reviewerRefused !== undefined && runStatus(entry) === "needs-you") return { line: entry.reviewerRefused, question: asked };
   const answer = pullAnswer(entry);
-  if (answer !== null) return { line: ANSWER_LINE[answer], question: asked };
+  if (answer !== null) return { line: answerLine(entry, answer), question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).
   const asking = entry.handedBack !== undefined && entry.outcome?.kind === "needs-human" ? once(entry.outcome.reason ?? null) : null;
   // A Completed run says what completed it; what its worker said of it (a `done`'s reason, posted on the ticket) is kept one click away (A11-173).

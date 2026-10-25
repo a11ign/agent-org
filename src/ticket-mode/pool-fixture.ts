@@ -1,4 +1,4 @@
-// no-token: gh -- herdr, git, the tracker and the clock are all injected; nothing is spawned
+// no-token: gh -- herdr, git, the tracker, the clock and the restart reads are all injected; nothing is spawned
 // module: a pool over fakes, for the tests of what a run is started on and how an update drains it (A11-169)
 //
 // IT IS `pool.test.ts`'s SETUP IN THE SMALL: a herdr that opens workspaces and reports the status a test sets, the tracker contract's in-memory fake, a queue held in memory, and a state folder of
@@ -19,16 +19,36 @@ const fake = createFakeTracker();
 const source: TicketSource = { assigned: fake.assigned, read: fake.read, download: fake.download, keywords: fake.keywords };
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 
-/** A herdr that opens a workspace per `workspace create`, lists the status a test sets per label, and records every call. */
+/** The `herdr agent` verbs that take an agent target. */
+const TARGETED = ["prompt", "read", "send-keys", "get"];
+
+/** A pane id, as herdr names a workspace's panes: `w1:p1`. */
+const PANE_ID = /^w\d+:p\d+$/;
+
+/** The agent target of an `agent <verb> <target>` call, or undefined for any other call. PURE. */
+function agentTargetOf(args: readonly string[]): string | undefined {
+  const at = args.indexOf("agent");
+  return at !== -1 && TARGETED.includes(args[at + 1] ?? "") ? args[at + 2] : undefined;
+}
+
+/**
+ * A herdr that opens a workspace per `workspace create`, lists the status a test sets per label, and records every call. Like herdr 0.9.3 it lists every Claude agent with no name and answers
+ * `agent_not_found` to an agent addressed by anything but its pane (A11-279). `screens` is what each pane shows, by pane id; a pane not in it shows nothing.
+ */
 export function fakeHerdr(status: Map<string, string>) {
   const calls: string[][] = [];
   /** Set to herdr's message to have it refuse every `workspace close` with it. */
   const closing: { refusal: string | null } = { refusal: null };
+  const screens = new Map<string, string>();
   let next = 0;
   const run = (args: string[]): string => {
     calls.push(args);
     if (closing.refusal !== null && args.includes("workspace") && args.includes("close")) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: closing.refusal } }) });
-    if (args.includes("read")) return "";
+    const target = agentTargetOf(args);
+    if (target !== undefined && !PANE_ID.test(target)) {
+      throw Object.assign(new Error("herdr exited 1"), { stderr: `agent target ${target} not found\n`, stdout: JSON.stringify({ error: { code: "agent_not_found", message: `agent target ${target} not found` } }) });
+    }
+    if (args.includes("read")) return target === undefined ? "" : screens.get(target) ?? "";
     if (args.includes("create")) {
       next += 1;
       return JSON.stringify({ result: { root_pane: { pane_id: `w${next}:p1` }, workspace: { workspace_id: `w${next}` } } });
@@ -40,7 +60,7 @@ export function fakeHerdr(status: Map<string, string>) {
     if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s, workspace_id: `w${label.replace(/\D/g, "")}` })) } });
     return JSON.stringify({ type: "ok" });
   };
-  return { run, calls, closing };
+  return { run, calls, closing, screens };
 }
 
 /** The drain store a test holds in memory, with every write kept. */
@@ -67,10 +87,13 @@ export type FixtureOptions = Readonly<{
   planFirst?: readonly string[];
   /** The description each queued ticket carries, by key; none for a key not named. */
   descriptions?: Readonly<Record<string, string>>;
+  /** What the pool reads a restart from (A11-279): one boot and one herdr start that never change, unless a test gives its own. */
+  restartReads?: PoolDeps["restartReads"];
 }>;
 
 /** A pool of `keys` queued and started, over fakes. `restart` is a pool over the same queue and state folder with another `hook`, as an instance restarted onto another version is. */
-export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate, source: tracker = source, planFirst = [], descriptions = {} }: FixtureOptions = {}) {
+export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate, source: tracker = source, planFirst = [], descriptions = {},
+  restartReads = { bootId: () => "boot-1", herdrStart: () => "1" } }: FixtureOptions = {}) {
   const root = tmpDir("ticket-pin-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state"), tickets });
   const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" }, batch: false };
@@ -79,7 +102,7 @@ export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node",
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
   const deps = (over: Partial<PoolDeps>): PoolDeps => ({ settings, source: tracker, hook, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }),
-    transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(),
+    transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), restartReads,
     ...(drain === undefined ? {} : { drain }), ...(startUpdate === undefined ? {} : { startUpdate }), ...over });
   const pool = createPool(store, deps({}));
   return { root, settings, store, status, herdr, pool, restart: (over: Partial<PoolDeps>) => createPool(store, deps(over)), entry: (key: string) => queue.entries.find((e) => e.ticket.key === key)! };

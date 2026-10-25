@@ -42,6 +42,8 @@ export type ViewEntry = Readonly<{
   ciHold?: Readonly<{ reason: string; released?: true }>;
   /** What the run's and the ticket's pushes cost in CI, as the server reads it from the workflow runs of the ticket's branch (A11-261). Absent until the board has read a run. */
   ci?: CiView;
+  /** The board's last resume prompt to a running run (A11-279): when, after a restart or an idle spell since `idleSince`, and herdr's refusal when it would not take it. */
+  resume?: Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string }>;
   /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
   sessionWait?: string;
   /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */
@@ -126,6 +128,8 @@ export type ViewEntry = Readonly<{
   queueHeads?: Readonly<Record<string, QueueHead>>;
   /** The commit each open pull request of the run was at when it ended, by URL: what its question or work was about (A11-153). Unset until read. */
   outcomeHeads?: Readonly<Record<string, string>>;
+  /** The open pull requests a `needs-human` run ended with changes requested at their head, by URL, with that head: what it stopped on, so a review lifted at that head clears it (A11-258). Unset when none was blocked, or the end could not read them. */
+  outcomeBlocks?: Readonly<Record<string, string>>;
   /** Each open pull request's head now, and whether the newest verdict on it is an approval, by URL, as the last watch read them (A11-153). */
   pullHeads?: Readonly<Record<string, PullHead>>;
 }>;
@@ -137,10 +141,10 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  * A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit, as the last watch read them (A11-153). The rest is what the same read said
  * of the pull request's readiness to merge at that head (A11-179), each field absent until a watch has read it, and when the code host does not say it: `review` is `approved` only when the
  * newest verdict on the head approves and GitHub's own review decision does not still ask for a review or for changes, `changes-requested` when either says changes, and `none` otherwise;
- * `red` is the required checks failing, and `pending` the required checks still running. `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
+ * `red` is the required checks failing, and `pending` the required checks still running, and `mergeable` that GitHub says it merges cleanly (A11-258; `UNKNOWN`, still being computed, is not mergeable). `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
  * stay (A11-213): the stale-block flag counts from it.
  */
-export type PullHead = Readonly<{ head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; blockedSince?: number }>;
+export type PullHead = Readonly<{ head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; blockedSince?: number }>;
 
 /**
  * What the board did about the red checks on one pull request at one head (A11-154): a fix round was started for them (`round`), the checks that failed for an

@@ -74,7 +74,7 @@ import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
   ORDER_FILE, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
-import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, readCreatedKeys } from "./writer.ts";
+import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -557,8 +557,8 @@ type StopIo = Readonly<{
   planNames: (planDir: string) => string[];
 }>;
 
-/** The outcome file a stop is judged on, the stamp a `working` one leaves beside it, and the transcript that may wake it. */
-type StopSubject = Readonly<{ outcome: string; stamp: string; transcriptPath: string | undefined }>;
+/** The outcome file a stop is judged on, the stamp a `working` one leaves beside it, the transcript that may wake it, and whether the run is a new-ticket run, whose outcomes are the writer's (A11-267). */
+type StopSubject = Readonly<{ outcome: string; stamp: string; transcriptPath: string | undefined; writer: boolean }>;
 
 /** A stop's judgment: allowed (`verdict`), or refused with what to ask (`ask`) and the words the count limit uses for it (`stuck`). */
 type Judgment = Readonly<{ verdict: HookResult } | { ask: string; stuck: string }>;
@@ -586,6 +586,7 @@ function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, mtime: nu
 
 /** The judgment of the outcome file as it stands: refused when the contract refuses it, allowed unless it says `working`, and `working` judged on its own. */
 function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: StopIo): Judgment {
+  if (subject.writer) return judgeWriterOutcome(subject.outcome, text);
   const checked = checkOutcome(text);
   if ("problem" in checked) {
     // The field the contract wants is named, so the worker fixes the file in the same turn; a near miss is refused here too (A11-118).
@@ -595,6 +596,16 @@ function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: St
     return { ask: `${checked.problem}. Write ${subject.outcome} again as the last thing you do, in the shape your brief shows.`, stuck };
   }
   return checked.outcome.kind === "working" ? judgeWorking(subject, mtime, io, checked.outcome.waits) : { verdict: ALLOW };
+}
+
+/**
+ * The judgment of a new-ticket run's outcome file (A11-267): the writer's own contract, `parseWriterOutcome`, which is the one the board reads it with (`pool-board-runs.ts`). The kinds a ticket worker ends on are not the writer's:
+ * a writer ends on `created`, `decided` or `needs-human`, so `created` is allowed here and refused for a worker, and a writer's `working` is refused, since nothing in its brief lets it wait.
+ */
+function judgeWriterOutcome(outcome: string, text: string): Judgment {
+  const parsed = parseWriterOutcome(text);
+  if (typeof parsed !== "string") return { verdict: ALLOW };
+  return { ask: `${outcome}: ${parsed}. Write ${outcome} again as the last thing you do, in the shape your brief shows.`, stuck: `on the same invalid outcome in ${outcome}, so this one is allowed and the board fails the run` };
 }
 
 /**
@@ -820,7 +831,7 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
       return ALLOW;
     }
     const judged: Judgment = found !== null
-      ? offListStop(ticketDir, found, io) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath }, found, io)
+      ? offListStop(ticketDir, found, io) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath, writer: exists(join(ticketDir, WRITER_FILE)) }, found, io)
       : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
     if ("verdict" in judged) {
       // A plan that misses a blocker pull request is refused once, before the planner ends, and the refusal is no outcome problem: the count is left as it is (A11-207).

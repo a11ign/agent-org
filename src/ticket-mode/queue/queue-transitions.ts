@@ -357,7 +357,9 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, a `done` says nothing
   // remains to build and drops the declaration (A11-173), and any other keeps what the run had: a review round's `reviewed` says nothing of it.
   // The heads of its pull requests belong to the outcome it replaces: the end of this run records its own (A11-153).
-  const { session: _earlier, working: _note, declined: _refused, prompt: _asked, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, pullHeads: _read, sessionNote: _closed, handedBack: _handed, stoppedForUpdate: _stopped, ...kept } = entry;
+  // The idle clock and the board's resume prompt (A11-279) are a running run's too.
+  const { session: _earlier, working: _note, declined: _refused, prompt: _asked, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, outcomeBlocks: _blocked, pullHeads: _read, sessionNote: _closed, handedBack: _handed, stoppedForUpdate: _stopped,
+    idleSince: _idle, resume: _resumed, ...kept } = entry;
   // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
   const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
   const { review: _borrowed, ...unborrowed } = kept;
@@ -427,7 +429,7 @@ export function batchPlanDone(queue: Queue, key: string, repo: string | null, wa
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */
 export function markResumed(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry)
-    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, pullStates: undefined, outcomeHeads: undefined, pullHeads: undefined,
+    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, pullStates: undefined, outcomeHeads: undefined, outcomeBlocks: undefined, pullHeads: undefined,
       handedBack: undefined, waiting: false, seenWorking: true }
     : entry));
 }
