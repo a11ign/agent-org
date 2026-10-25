@@ -4,7 +4,7 @@
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
 // (`repository`), a pull request address it holds nothing for (`missing`), and the login the host acts as (`self`). A code host is synchronous, as every reader of it is.
-import type { ChangeRef, CodeHost, HostRepository, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeRef, CodeHost, HostRepository, StackMergeRequest, WrapperInputs } from "../contracts/code-host.ts";
 import type { CodeHostRows } from "../contracts/code-host-rows.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 import { refused, throws, withRows, withRunRows, type Subject } from "./rows-support.ts";
@@ -20,6 +20,12 @@ export type CodeHostProbe = Readonly<{
   check?: Readonly<{ detailsUrl: string; log: string }>;
   /** A head a claim may be written on: the repository, the head, and the environment the claim is written with. Writing one is not undone, so a caller seeds a head it can discard. */
   claim?: Readonly<{ repository: string; head: string; environment: Readonly<Record<string, string>> }>;
+  /**
+   * The stack merge (contract 1.16). `stackRefusal` is a pull request the host holds in a stack, with the refusal of its stack merge the arm bot left on it at `head`, whose text contains `reason`. `stackRequestRefused` is a request the host cannot make
+   * (a repository it holds no arm bot for). A host without `stackMergeFactsOf` or `requestStackMerge` is not asked.
+   */
+  stackRefusal?: Readonly<{ pull: string; head: string; reason: string }>;
+  stackRequestRefused?: StackMergeRequest;
   /** Remote URLs of one repository the host holds, in the forms a checkout's `origin` takes, and the repository each names (contract 1.14). A host without a `repositories` group is not asked. */
   remote?: Readonly<{ urls: readonly string[]; repository: HostRepository }>;
 }>;
@@ -468,6 +474,31 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const answer = host.updateBranch!("not a pull request", "0".repeat(40));
       expect(isObject(answer) && answer.kind === "refused" && isString(answer.reason) && answer.reason !== "", "updateBranch must answer { kind: \"refused\", reason } for what is no pull request of the host, not throw or say it updated");
     },
+  },
+  "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked": {
+    applies: ({ host }) => typeof host.stackMergeFactsOf === "function",
+    reason: "the code host has no stackMergeFactsOf, which is optional (contract 1.16)",
+    run: ({ host, probe }) => {
+      expect(host.stackMergeFactsOf!(probe.missing) === null, "stackMergeFactsOf must answer null for a pull request it cannot read: null is never 'it is not in a stack'");
+      const facts = host.stackMergeFactsOf!(probe.pull);
+      expect(isObject(facts) && facts.stacked === false && isString(facts.base) && isString(facts.defaultBranch) && isString(facts.head) && facts.settled === null && facts.refusal === null,
+        `stackMergeFactsOf(${probe.pull}) must read { stacked: false, base, defaultBranch, head, settled: null, refusal: null } for an open pull request in no stack`);
+    },
+  },
+  "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request": {
+    applies: ({ host, probe }) => typeof host.stackMergeFactsOf === "function" && probe.stackRefusal !== undefined,
+    reason: "the code host has no stackMergeFactsOf (optional, contract 1.16) or the probe names no stacked pull request with a refusal",
+    run: ({ host, probe }) => {
+      const { pull, head, reason } = probe.stackRefusal!;
+      const facts = host.stackMergeFactsOf!(pull);
+      expect(isObject(facts) && facts.stacked === true && facts.settled === null, `stackMergeFactsOf(${pull}) must read an open pull request in a stack as stacked and not settled`);
+      expect(isObject(facts.refusal) && facts.refusal.head === head && isString(facts.refusal.reason) && facts.refusal.reason.includes(reason), `stackMergeFactsOf(${pull}) must read the refusal at ${head} with GitHub's reason`);
+    },
+  },
+  "requestStackMerge throws when the request is refused, so no caller reads it as made": {
+    applies: ({ host, probe }) => typeof host.requestStackMerge === "function" && probe.stackRequestRefused !== undefined,
+    reason: "the code host has no requestStackMerge (optional, contract 1.16) or the probe names no request it refuses",
+    run: ({ host, probe }) => expect(throws(() => host.requestStackMerge!(probe.stackRequestRefused!)), "requestStackMerge must throw for a request the host refuses: a hand-back that was not made is never done"),
   },
   "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {
     expect(hasFunctions(repositories, ["readOwners", "readRepositories", "repositoryOfRemote", "cloneCommand", "cloneRepository"]), "the repositories group has readOwners, readRepositories, repositoryOfRemote, cloneCommand and cloneRepository functions");

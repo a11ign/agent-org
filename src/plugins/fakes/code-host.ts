@@ -7,7 +7,7 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, UpdateBranchResult, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, StackMergeFacts, StackMergeRequest, UpdateBranchResult, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -158,6 +158,29 @@ function branchUpdatesOf(state: FakeBranchUpdates, pulls: Pulls, calls: string[]
   };
 }
 
+/**
+ * What the fake holds of the stack merge (contract 1.16), and what a test sets: what a pull request is said to be in a stack (`facts`, by address; a pull request the fake holds and was given none for is not in a stack, based where it is, at its head, and `merged` once it has merged),
+ * why the arm bot cannot be asked (`requestRefusal`), and each pull request the arm bot was asked for, in order (`requests`).
+ */
+export type FakeStackMerges = { facts: Map<string, Partial<StackMergeFacts>>; requestRefusal: string | null; requests: StackMergeRequest[] };
+
+/** The stack merge's reads and its request over what a test seeded. A pull request the fake does not hold cannot be read, and is null. */
+function stackMergesOf(state: FakeStackMerges, pulls: Pulls, calls: string[]): Pick<CodeHost, "stackMergeFactsOf" | "requestStackMerge"> {
+  return {
+    stackMergeFactsOf(url) {
+      calls.push(`stackMergeFactsOf ${url}`);
+      const pull = pulls.get(url);
+      if (pull === undefined) return null;
+      return { stacked: false, base: pull.base, defaultBranch: "main", head: pull.head, settled: pull.state === "merged" ? "merged" : null, refusal: null, ...state.facts.get(url) };
+    },
+    requestStackMerge(request) {
+      calls.push(`requestStackMerge ${request.repo}#${request.number}`);
+      if (state.requestRefusal !== null) throw new Error(state.requestRefusal);
+      state.requests.push(request);
+    },
+  };
+}
+
 /** Whether a merged pull request of the repository was the head of `base`: the base the run stacked on has landed. */
 const baseMerged = (pulls: Pulls, pull: FakePull): boolean => [...pulls.values()].some((other) => other.repository === pull.repository && other.head === pull.base && other.state === "merged");
 
@@ -301,8 +324,9 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const repositoriesWorld: FakeRepositories = { owners: login === null ? null : [{ login, kind: "account" }], byOwner: new Map(), cloneFailures: new Map(), cloned: [] };
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
+  const stackMerges: FakeStackMerges = { facts: new Map(), requestRefusal: null, requests: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -313,6 +337,8 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     checksAndClaims,
     /** The updates of branches the fake was asked for, and the answer it gives each pull request, for a test to seed and read (see {@link FakeBranchUpdates}). */
     branchUpdates,
+    /** What the fake says of each pull request's stack, and the requests it was given to hand to the arm bot, for a test to seed and read (see {@link FakeStackMerges}). */
+    stackMerges,
     /** The owners, repositories and clones the fake's `repositories` group holds, for a test to seed and read (see {@link FakeRepositories}). */
     repositoriesWorld,
     /** Say which owners the fake lists (the account first, as the contract says), or null for a host that cannot be asked. */
