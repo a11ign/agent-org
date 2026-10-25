@@ -1,0 +1,1442 @@
+[
+ {
+  "board": "AtomautTickets",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1328
+  ]
+ },
+ {
+  "board": "AtomautTickets",
+  "width": 390,
+  "boardSize": [
+   390,
+   2173
+  ],
+  "pageSize": [
+   390,
+   2906
+  ]
+ },
+ {
+  "board": "AtomautRuns",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   5261
+  ]
+ },
+ {
+  "board": "AtomautRuns",
+  "width": 390,
+  "boardSize": [
+   390,
+   3533
+  ],
+  "pageSize": [
+   390,
+   12825
+  ]
+ },
+ {
+  "board": "AtomautRunDetail",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetail",
+  "width": 390,
+  "boardSize": [
+   390,
+   1581
+  ],
+  "pageSize": [
+   390,
+   1543
+  ]
+ },
+ {
+  "board": "AtomautNewTicket",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1264
+  ]
+ },
+ {
+  "board": "AtomautNewTicket",
+  "width": 390,
+  "boardSize": [
+   390,
+   1080
+  ],
+  "pageSize": [
+   390,
+   2809
+  ]
+ },
+ {
+  "board": "AtomautSettings",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1326
+  ]
+ },
+ {
+  "board": "AtomautSettings",
+  "width": 390,
+  "boardSize": [
+   390,
+   1781
+  ],
+  "pageSize": [
+   390,
+   2072
+  ]
+ },
+ {
+  "board": "AtomautSettingsWorkers",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1415
+  ]
+ },
+ {
+  "board": "AtomautSettingsWorkers",
+  "width": 390,
+  "boardSize": [
+   390,
+   1497
+  ],
+  "pageSize": [
+   390,
+   2553
+  ]
+ },
+ {
+  "board": "AtomautSettingsMachine",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   2373
+  ]
+ },
+ {
+  "board": "AtomautSettingsMachine",
+  "width": 390,
+  "boardSize": [
+   390,
+   1300
+  ],
+  "pageSize": [
+   390,
+   3797
+  ]
+ },
+ {
+  "board": "AtomautPlugins",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   2413
+  ]
+ },
+ {
+  "board": "AtomautPlugins",
+  "width": 390,
+  "boardSize": [
+   390,
+   1901
+  ],
+  "pageSize": [
+   390,
+   4602
+  ]
+ },
+ {
+  "board": "AtomautUnreachable",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1392
+  ]
+ },
+ {
+  "board": "AtomautUnreachable",
+  "width": 390,
+  "boardSize": [
+   390,
+   1211
+  ],
+  "pageSize": [
+   390,
+   3068
+  ]
+ },
+ {
+  "board": "AtomautTicketsLoading",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautTicketsLoading",
+  "width": 390,
+  "boardSize": [
+   390,
+   1103
+  ],
+  "pageSize": [
+   390,
+   1024
+  ]
+ },
+ {
+  "board": "AtomautTicketsEmpty",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautTicketsEmpty",
+  "width": 390,
+  "boardSize": [
+   390,
+   1185
+  ],
+  "pageSize": [
+   390,
+   865
+  ]
+ },
+ {
+  "board": "AtomautTicketsPaused",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1328
+  ]
+ },
+ {
+  "board": "AtomautTicketsPaused",
+  "width": 390,
+  "boardSize": [
+   390,
+   2184
+  ],
+  "pageSize": [
+   390,
+   2919
+  ]
+ },
+ {
+  "board": "AtomautRunsLoading",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunsLoading",
+  "width": 390,
+  "boardSize": [
+   390,
+   1200
+  ],
+  "pageSize": [
+   390,
+   986
+  ]
+ },
+ {
+  "board": "AtomautRunsEmpty",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunsEmpty",
+  "width": 390,
+  "boardSize": [
+   390,
+   1200
+  ],
+  "pageSize": [
+   390,
+   869
+  ]
+ },
+ {
+  "board": "AtomautRunsPaused",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   5261
+  ]
+ },
+ {
+  "board": "AtomautRunsPaused",
+  "width": 390,
+  "boardSize": [
+   390,
+   2919
+  ],
+  "pageSize": [
+   390,
+   12825
+  ]
+ },
+ {
+  "board": "AtomautRunDetailLoading",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailLoading",
+  "width": 390,
+  "boardSize": [
+   390,
+   1033
+  ],
+  "pageSize": [
+   390,
+   1033
+  ]
+ },
+ {
+  "board": "AtomautRunDetailMissing",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailMissing",
+  "width": 390,
+  "boardSize": [
+   390,
+   1000
+  ],
+  "pageSize": [
+   390,
+   844
+  ]
+ },
+ {
+  "board": "AtomautSettingsLoading",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautSettingsLoading",
+  "width": 390,
+  "boardSize": [
+   390,
+   1300
+  ],
+  "pageSize": [
+   390,
+   1177
+  ]
+ },
+ {
+  "board": "AtomautPluginsLoading",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautPluginsLoading",
+  "width": 390,
+  "boardSize": [
+   390,
+   1200
+  ],
+  "pageSize": [
+   390,
+   1107
+  ]
+ },
+ {
+  "board": "AtomautTicketsDraining",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautTicketsDraining",
+  "width": 390,
+  "boardSize": [
+   390,
+   2162
+  ],
+  "pageSize": [
+   390,
+   844
+  ]
+ },
+ {
+  "board": "AtomautRunsDraining",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1237
+  ],
+  "pageSize": [
+   1440,
+   5372
+  ]
+ },
+ {
+  "board": "AtomautRunsDraining",
+  "width": 390,
+  "boardSize": [
+   390,
+   3031
+  ],
+  "pageSize": [
+   390,
+   12976
+  ]
+ },
+ {
+  "board": "AtomautUpdating",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautUpdating",
+  "width": 390,
+  "boardSize": [
+   390,
+   1080
+  ],
+  "pageSize": [
+   390,
+   1126
+  ]
+ },
+ {
+  "board": "AtomautUpdatingBreaking",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautUpdatingBreaking",
+  "width": 390,
+  "boardSize": [
+   390,
+   1090
+  ],
+  "pageSize": [
+   390,
+   1146
+  ]
+ },
+ {
+  "board": "AtomautUpdatingSlow",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautUpdatingSlow",
+  "width": 390,
+  "boardSize": [
+   390,
+   1194
+  ],
+  "pageSize": [
+   390,
+   1250
+  ]
+ },
+ {
+  "board": "AtomautUpdatingBack",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautUpdatingBack",
+  "width": 390,
+  "boardSize": [
+   390,
+   1100
+  ],
+  "pageSize": [
+   390,
+   1156
+  ]
+ },
+ {
+  "board": "AtomautRunDetailQueued",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailQueued",
+  "width": 390,
+  "boardSize": [
+   390,
+   1128
+  ],
+  "pageSize": [
+   390,
+   1078
+  ]
+ },
+ {
+  "board": "AtomautRunDetailBlocked",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailBlocked",
+  "width": 390,
+  "boardSize": [
+   390,
+   1148
+  ],
+  "pageSize": [
+   390,
+   1170
+  ]
+ },
+ {
+  "board": "AtomautRunDetailNeeds",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailNeeds",
+  "width": 390,
+  "boardSize": [
+   390,
+   1204
+  ],
+  "pageSize": [
+   390,
+   1274
+  ]
+ },
+ {
+  "board": "AtomautRunDetailHandedBack",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailHandedBack",
+  "width": 390,
+  "boardSize": [
+   390,
+   1184
+  ],
+  "pageSize": [
+   390,
+   1246
+  ]
+ },
+ {
+  "board": "AtomautRunDetailAwaiting",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailAwaiting",
+  "width": 390,
+  "boardSize": [
+   390,
+   1181
+  ],
+  "pageSize": [
+   390,
+   1111
+  ]
+ },
+ {
+  "board": "AtomautRunDetailReady",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailReady",
+  "width": 390,
+  "boardSize": [
+   390,
+   1337
+  ],
+  "pageSize": [
+   390,
+   1399
+  ]
+ },
+ {
+  "board": "AtomautRunDetailDone",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailDone",
+  "width": 390,
+  "boardSize": [
+   390,
+   1318
+  ],
+  "pageSize": [
+   390,
+   1454
+  ]
+ },
+ {
+  "board": "AtomautRunDetailFailed",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailFailed",
+  "width": 390,
+  "boardSize": [
+   390,
+   1078
+  ],
+  "pageSize": [
+   390,
+   1140
+  ]
+ },
+ {
+  "board": "AtomautRunDetailCancelled",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailCancelled",
+  "width": 390,
+  "boardSize": [
+   390,
+   1182
+  ],
+  "pageSize": [
+   390,
+   1112
+  ]
+ },
+ {
+  "board": "AtomautNewTicketSubmitting",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1264
+  ]
+ },
+ {
+  "board": "AtomautNewTicketSubmitting",
+  "width": 390,
+  "boardSize": [
+   390,
+   1080
+  ],
+  "pageSize": [
+   390,
+   2809
+  ]
+ },
+ {
+  "board": "AtomautNewTicketError",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1264
+  ]
+ },
+ {
+  "board": "AtomautNewTicketError",
+  "width": 390,
+  "boardSize": [
+   390,
+   1080
+  ],
+  "pageSize": [
+   390,
+   2809
+  ]
+ },
+ {
+  "board": "AtomautNewTicketNoTerminal",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1264
+  ]
+ },
+ {
+  "board": "AtomautNewTicketNoTerminal",
+  "width": 390,
+  "boardSize": [
+   390,
+   1080
+  ],
+  "pageSize": [
+   390,
+   2809
+  ]
+ },
+ {
+  "board": "AtomautNewTicketManual",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1264
+  ]
+ },
+ {
+  "board": "AtomautNewTicketManual",
+  "width": 390,
+  "boardSize": [
+   390,
+   1080
+  ],
+  "pageSize": [
+   390,
+   2809
+  ]
+ },
+ {
+  "board": "AtomautNewTicketQueued",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1353
+  ]
+ },
+ {
+  "board": "AtomautNewTicketQueued",
+  "width": 390,
+  "boardSize": [
+   390,
+   1159
+  ],
+  "pageSize": [
+   390,
+   2964
+  ]
+ },
+ {
+  "board": "AtomautNewTicketWriting",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1353
+  ]
+ },
+ {
+  "board": "AtomautNewTicketWriting",
+  "width": 390,
+  "boardSize": [
+   390,
+   1159
+  ],
+  "pageSize": [
+   390,
+   2964
+  ]
+ },
+ {
+  "board": "AtomautNewTicketWaiting",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1403
+  ]
+ },
+ {
+  "board": "AtomautNewTicketWaiting",
+  "width": 390,
+  "boardSize": [
+   390,
+   1275
+  ],
+  "pageSize": [
+   390,
+   3040
+  ]
+ },
+ {
+  "board": "AtomautNewTicketDone",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1430
+  ]
+ },
+ {
+  "board": "AtomautNewTicketDone",
+  "width": 390,
+  "boardSize": [
+   390,
+   1272
+  ],
+  "pageSize": [
+   390,
+   3077
+  ]
+ },
+ {
+  "board": "AtomautNewTicketFailed",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1080
+  ],
+  "pageSize": [
+   1440,
+   1403
+  ]
+ },
+ {
+  "board": "AtomautNewTicketFailed",
+  "width": 390,
+  "boardSize": [
+   390,
+   1249
+  ],
+  "pageSize": [
+   390,
+   3034
+  ]
+ },
+ {
+  "board": "AtomautSettingsEdited",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1495
+  ]
+ },
+ {
+  "board": "AtomautSettingsEdited",
+  "width": 390,
+  "boardSize": [
+   390,
+   1598
+  ],
+  "pageSize": [
+   390,
+   2666
+  ]
+ },
+ {
+  "board": "AtomautSettingsReview",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1406
+  ]
+ },
+ {
+  "board": "AtomautSettingsReview",
+  "width": 390,
+  "boardSize": [
+   390,
+   1781
+  ],
+  "pageSize": [
+   390,
+   2185
+  ]
+ },
+ {
+  "board": "AtomautSettingsSaved",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1413
+  ]
+ },
+ {
+  "board": "AtomautSettingsSaved",
+  "width": 390,
+  "boardSize": [
+   390,
+   1919
+  ],
+  "pageSize": [
+   390,
+   2210
+  ]
+ },
+ {
+  "board": "AtomautSettingsRefused",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1497
+  ]
+ },
+ {
+  "board": "AtomautSettingsRefused",
+  "width": 390,
+  "boardSize": [
+   390,
+   1892
+  ],
+  "pageSize": [
+   390,
+   2316
+  ]
+ },
+ {
+  "board": "AtomautSettingsConflict",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1477
+  ]
+ },
+ {
+  "board": "AtomautSettingsConflict",
+  "width": 390,
+  "boardSize": [
+   390,
+   1898
+  ],
+  "pageSize": [
+   390,
+   2302
+  ]
+ },
+ {
+  "board": "AtomautSettingsUnreachable",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1300
+  ],
+  "pageSize": [
+   1440,
+   1468
+  ]
+ },
+ {
+  "board": "AtomautSettingsUnreachable",
+  "width": 390,
+  "boardSize": [
+   390,
+   1985
+  ],
+  "pageSize": [
+   390,
+   2348
+  ]
+ },
+ {
+  "board": "AtomautPluginsUnknown",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   2427
+  ]
+ },
+ {
+  "board": "AtomautPluginsUnknown",
+  "width": 390,
+  "boardSize": [
+   390,
+   2058
+  ],
+  "pageSize": [
+   390,
+   4647
+  ]
+ },
+ {
+  "board": "AtomautPluginsConfirm",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   1414
+  ]
+ },
+ {
+  "board": "AtomautPluginsConfirm",
+  "width": 390,
+  "boardSize": [
+   390,
+   1901
+  ],
+  "pageSize": [
+   390,
+   2700
+  ]
+ },
+ {
+  "board": "AtomautPluginsReplace",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   1883
+  ]
+ },
+ {
+  "board": "AtomautPluginsReplace",
+  "width": 390,
+  "boardSize": [
+   390,
+   1901
+  ],
+  "pageSize": [
+   390,
+   3504
+  ]
+ },
+ {
+  "board": "AtomautPluginsApplied",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   1496
+  ]
+ },
+ {
+  "board": "AtomautPluginsApplied",
+  "width": 390,
+  "boardSize": [
+   390,
+   2002
+  ],
+  "pageSize": [
+   390,
+   2822
+  ]
+ },
+ {
+  "board": "AtomautPluginsRefused",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   1495
+  ]
+ },
+ {
+  "board": "AtomautPluginsRefused",
+  "width": 390,
+  "boardSize": [
+   390,
+   2022
+  ],
+  "pageSize": [
+   390,
+   2821
+  ]
+ },
+ {
+  "board": "AtomautPluginsConflict",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1200
+  ],
+  "pageSize": [
+   1440,
+   1479
+  ]
+ },
+ {
+  "board": "AtomautPluginsConflict",
+  "width": 390,
+  "boardSize": [
+   390,
+   2012
+  ],
+  "pageSize": [
+   390,
+   2811
+  ]
+ },
+ {
+  "board": "AtomautRunDetailReadyPublish",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailReadyPublish",
+  "width": 390,
+  "boardSize": [
+   390,
+   1389
+  ],
+  "pageSize": [
+   390,
+   1431
+  ]
+ },
+ {
+  "board": "AtomautRunDetailPublishing",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailPublishing",
+  "width": 390,
+  "boardSize": [
+   390,
+   1495
+  ],
+  "pageSize": [
+   390,
+   1448
+  ]
+ },
+ {
+  "board": "AtomautRunDetailPublished",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailPublished",
+  "width": 390,
+  "boardSize": [
+   390,
+   1517
+  ],
+  "pageSize": [
+   390,
+   1485
+  ]
+ },
+ {
+  "board": "AtomautRunsPublishSelect",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1687
+  ],
+  "pageSize": [
+   1440,
+   1167
+  ]
+ },
+ {
+  "board": "AtomautRunsPublishSelect",
+  "width": 390,
+  "boardSize": [
+   390,
+   4775
+  ],
+  "pageSize": [
+   390,
+   3364
+  ]
+ },
+ {
+  "board": "AtomautRunDetailPublishFailed",
+  "width": 1440,
+  "boardSize": [
+   1440,
+   1000
+  ],
+  "pageSize": [
+   1440,
+   900
+  ]
+ },
+ {
+  "board": "AtomautRunDetailPublishFailed",
+  "width": 390,
+  "boardSize": [
+   390,
+   1513
+  ],
+  "pageSize": [
+   390,
+   1592
+  ]
+ }
+]
