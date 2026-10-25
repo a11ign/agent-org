@@ -13,7 +13,7 @@ import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { fakePluginDeps } from "../plugins/fakes/deps.ts";
 import type { PluginDeps } from "../plugins/manifest.ts";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
-import { HOUR, stubServices, updateFixture } from "./update-fixture.ts";
+import { stubServices, updateFixture } from "./update-fixture.ts";
 import { herdrStatusPath, readHerdrStatus } from "./herdr-upkeep.ts";
 import { unitFor, type RunResult } from "./service.ts";
 import { herdrConfigDir } from "./terminal.ts";
@@ -388,14 +388,16 @@ test("A11-284: the walk stops at the installed version and never asks about it, 
   assert.equal(server.requests().length, before + 1, "v0.3.0 declares no build, so no request was made for it");
 });
 
-test("A11-284: a tag whose build CI never attaches is skipped for an hour after its commit and then fails the update as before, so a lost build is not hidden", async () => {
-  const { f } = await shippingInstalledAt("0.1.0", false);
+test("A11-284: every 404 is not released, however long ago the tag was cut: the update stays put and exits 0 until the build is attached", async () => {
+  const { f, attach } = await shippingInstalledAt("0.1.0", false);
   f.release("0.2.0", "a fix", SHIPS);
-  f.state.now = Date.now() + 2 * HOUR;
-  assert.throws(() => update({ version: undefined, channel: "release" }, f.deps()), (err: Error) => err instanceof UpdateRefusal && /^agent-org stays at v0\.1\.0, not moved to v0\.2\.0, because building it failed: UI build download failed: v0\.2\.0 has not attached its UI build yet/.test(err.message));
+  f.state.now = Date.now() + 48 * 3600e3;
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), false);
   assert.equal(currentVersionName(f.tool), "v0.1.0");
-  f.state.now = Date.now();
-  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), false, "inside the hour it is not released yet");
+  assert.deepEqual(f.errors, []);
+  attach("v0.2.0");
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps()), true);
+  assert.equal(currentVersionName(f.tool), "v0.2.0");
 });
 
 test("A11-284: an installed version that is not one of the tags is not walked: the newest tag is targeted, and a missing build fails as before, never a move to an older release", async () => {

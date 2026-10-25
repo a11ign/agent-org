@@ -189,21 +189,8 @@ const refuseNoRelease = (tags: readonly string[], wanted: string): never => {
   throw new UpdateRefusal(`agent-org was not moved: ${why}. It stays where it is and does not fall back to main.`);
 };
 
-/** How long after its commit a tag may wait for its UI build and still count as not released yet. Past it the tag is targeted and the build fails loudly, so a build that CI never attaches is not hidden. */
-const ATTACH_GRACE_HOURS = 1;
-
-/** Whether the tag's commit is older than {@link ATTACH_GRACE_HOURS}. A date that cannot be read is not old. */
-function pastGrace(deps: UpdateDeps, tag: string): boolean {
-  try {
-    return deps.now() - Date.parse(deps.git(["log", "-1", "--format=%cI", `refs/tags/${tag}`]).trim()) > ATTACH_GRACE_HOURS * HOUR_MS;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Whether the release `tag` is yet to be released (A11-284): it declares a UI build (`agentOrg.shipsUiBuild` in its `package.json`), CI has not attached it, and the tag is young enough for CI to
- * still be at it. A manifest that cannot be read and a probe that cannot tell are not "not yet": the tag is targeted and the build reports the real failure.
+ * Whether the release `tag` is yet to be released (A11-284): it declares a UI build (`agentOrg.shipsUiBuild` in its `package.json`) and CI has not attached it. A manifest that cannot be read and a probe that cannot tell are not "not yet": the tag is targeted and the build reports the real failure.
  */
 function awaitsUiBuild(deps: UpdateDeps, tag: string): boolean {
   let manifest: string;
@@ -212,7 +199,7 @@ function awaitsUiBuild(deps: UpdateDeps, tag: string): boolean {
   } catch {
     return false;
   }
-  return declaresUiBuildIn(manifest) && !pastGrace(deps, tag) && deps.released(tag) === "not-yet";
+  return declaresUiBuildIn(manifest) && deps.released(tag) === "not-yet";
 }
 
 /**
