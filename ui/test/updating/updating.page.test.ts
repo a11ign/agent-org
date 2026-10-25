@@ -4,6 +4,7 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import type { QueueView } from "../../src/api/types.ts";
 import { ticketsBoardStand, type Stand } from "../fixtures.ts";
 import { serveInstance } from "../instance-routes.ts";
+import { withWriter } from "../new-ticket/new-ticket-stand.ts";
 import { runsStand } from "../runs/runs-stand.ts";
 import { overflowProblem, SCREENS } from "../screenshots.ts";
 import { launchBrowser, startSite, UI_ROOT, type Site } from "../site.ts";
@@ -152,11 +153,13 @@ describe("the drain banner, in Chromium", () => {
 
   /** The page `path` over a stand whose queue carries the drain note. */
   async function drainingOn(path: string, width: number): Promise<{ page: Page; context: BrowserContext }> {
-    const stand = path === "/runs" ? runsStand() : ticketsBoardStand();
+    // The Tickets page reads the writer's requests too, so its stand answers them, and its Backlog is open as the board draws it.
+    const stand = path === "/runs" ? runsStand() : (withWriter({ stand: ticketsBoardStand() }).stand as Stand);
     const connection = Object.keys(stand.instances!)[0];
     const answers = stand.instances![connection];
     const queue = { ...answers.queue, update: BREAKING } as unknown as QueueView;
     const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 } });
+    await context.addInitScript(() => localStorage.setItem("ticket-mode.open", '["Backlog"]'));
     await serveInstance(context, { stand: { ...stand, instances: { [connection]: { ...answers, queue } } } });
     const page = await context.newPage();
     await page.goto(`${site.origin}${path}`);

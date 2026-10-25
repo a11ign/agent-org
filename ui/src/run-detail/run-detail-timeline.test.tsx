@@ -26,9 +26,9 @@ describe("the Timeline's rows", () => {
       ["Run finished", "after 20m", "grey"],
       ["Approved at 1f6009d", "a11ign/lab #150 · 20 min ago", "green"],
       ["Pull request opened", "a11ign/lab #150 · 25 min ago", "violet"],
-      ["Started", "30 min ago · opus/max · on agents", "grey"],
+      ["Started", "30 min ago · opus/max", "grey"],
       ["Plan written", "40 min ago", "grey"],
-      ["Queued", "50 min ago · sonnet/high · plan first", "grey"],
+      ["Queued", "50 min ago · sonnet/high, plan first", "grey"],
     ]);
   });
 
@@ -63,6 +63,12 @@ describe("the Timeline's rows", () => {
     const going = timelineOf(entry({ startedAt: NOW - 52 * MINUTE }), { runLog: {} }, NOW);
     expect(going.map(({ text, tone }) => [text, tone])).toEqual([["Started", "amber"], ["Queued", "grey"]]);
     expect(going[0]?.when).toContain("from the run's times");
+    expect(timelineOf(entry({ startedAt: NOW - 52 * MINUTE, planned: true }), { runLog: {} }, NOW)[0]?.when).toBe("52 min ago · sonnet/high, unattended plan · from the run's times");
+  });
+
+  it("end a run that asked a person in the Handed back board's words, in amber", () => {
+    const rows = rowsOf([{ at: NOW - 3 * MINUTE, kind: "started", model: "sonnet", effort: "high", instance: null }, { at: NOW - 30_000, kind: "finished", outcome: "needs-human", reason: "which plan?" }], { phase: "finished" });
+    expect(rows[0]).toEqual({ text: "Handed back to a person", when: "just now", tone: "amber" });
   });
 
   it("end a canceled ticket's run in the Cancelled board's words, and draw nothing for a run with no event", () => {
@@ -75,8 +81,8 @@ describe("the Timeline's rows", () => {
 
 /** The words of each board's Timeline, newest first: the first and the last row. */
 const BOARD_ROWS: Readonly<Record<Exclude<State, "loading" | "missing">, readonly [string, string]>> = {
-  running: ["Started", "Started"], queued: ["Queued", "Queued"], blocked: ["Queued", "Queued"], needs: ["Waiting on a person", "Started"], handback: ["Run finished", "Started"],
-  awaiting: ["Pull request opened", "Started"], ready: ["Run finished", "Started"], done: ["Pull request merged", "Started"], failed: ["Run failed", "Started"], cancelled: ["Ticket canceled in the tracker", "Started"],
+  running: ["Started", "Started"], queued: ["Queued", "Queued"], blocked: ["Queued", "Queued"], needs: ["Waiting on a person", "Started"], handback: ["Handed back to a person", "Started"],
+  awaiting: ["Pull request opened", "Started"], ready: ["Approved at 1f6009d", "Started"], done: ["Pull request merged", "Started"], failed: ["Run failed", "Started"], cancelled: ["Ticket canceled in the tracker", "Started"],
 };
 
 describe("the Timeline on Run detail", () => {

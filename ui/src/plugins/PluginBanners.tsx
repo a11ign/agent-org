@@ -1,3 +1,4 @@
+import { CodeWords } from "../lifecycle/CodeWords.tsx";
 import { AlertIcon } from "../lifecycle/icons.tsx";
 import { sentenceOf } from "../settings/settings-model.ts";
 import { fileWords } from "./plugins-model.ts";
@@ -37,7 +38,7 @@ export function NoticeBanner({ notice, busy, onReadAgain }: Readonly<{ notice: N
     case "applied":
       return (
         <div role="status" className="notice notice-success">
-          <strong className="banner-heading banner-heading-success">{sentenceOf(notice.said).replace(/\.?$/, ".")}</strong>{" "}
+          <strong className="banner-heading banner-heading-success"><CodeWords text={sentenceOf(notice.said).replace(/\.?$/, ".")} /></strong>{" "}
           {notice.inForce.map((words) => sentenceOf(words)).join(" ")}
           {notice.backup === null ? null : <> The previous {fileWords(notice.file)} is kept as <code>{notice.backup}</code>.</>}
         </div>
@@ -45,7 +46,7 @@ export function NoticeBanner({ notice, busy, onReadAgain }: Readonly<{ notice: N
     case "refused":
       return (
         <div role="alert" className="notice notice-danger">
-          <strong className="banner-heading banner-heading-danger">Nothing was changed.</strong> {notice.sentence}
+          <strong className="banner-heading banner-heading-danger">Nothing was changed.</strong> <CodeWords text={notice.sentence} />
         </div>
       );
     case "conflict":
@@ -59,7 +60,7 @@ export function NoticeBanner({ notice, busy, onReadAgain }: Readonly<{ notice: N
       );
     case "failed":
       return (
-        <div role="alert" className="notice notice-danger">{notice.sentence}</div>
+        <div role="alert" className="notice notice-danger"><CodeWords text={notice.sentence} /></div>
       );
   }
 }

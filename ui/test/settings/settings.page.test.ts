@@ -136,7 +136,8 @@ async function captured(board: Board, screen: (typeof SCREENS)[number]): Promise
   const context = await browser.newContext({ viewport: screen, deviceScaleFactor: 1 });
   try {
     await serveInstance(context, { stand: standOn(board.connection ?? HERE, board.hold) });
-    await routeSettings(context, state);
+    // The Loading board is every read still out, the settings' among them: a held instance answers none of them.
+    if (board.hold !== true) await routeSettings(context, state);
     const page = await context.newPage();
     if (board.drive === undefined) await opened(page, board.path);
     else {

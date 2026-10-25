@@ -72,8 +72,8 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   };
   return (
     <>
-      <FailureBanner sentence={pressed ?? notPublished} title={pressed === null && notPublished !== null ? NOT_PUBLISHED : undefined} onRetry={() => { clear(); inputs.refresh(); }} onDismiss={clear} />
       <Breadcrumb runKey={entry.ticket.key} />
+      <FailureBanner sentence={pressed ?? notPublished} title={pressed === null && notPublished !== null ? NOT_PUBLISHED : undefined} onRetry={() => { clear(); inputs.refresh(); }} onDismiss={clear} />
       <RunHeader entry={entry} queue={queue} board={board} now={Date.now()} controls={controls} />
       <div className="run-columns">
         <div className="detail-main">
