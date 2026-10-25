@@ -191,7 +191,8 @@ export type CiLine = Readonly<{ text: string; tone: "plain" | "warn" }>;
 export function ciLineOf(entry: Pick<RunEntry, "ci">): CiLine | null {
   const text = ciNote(entry.ci);
   if (text === null) return null;
-  return { text, tone: entry.ci?.state === "ok" ? "plain" : "warn" };
+  const state = entry.ci?.state;
+  return { text, tone: state === "over" || state === "held" ? "warn" : "plain" };
 }
 
 /** The lines of a note, with the CI line, when given, where `ciNote` puts it. */
