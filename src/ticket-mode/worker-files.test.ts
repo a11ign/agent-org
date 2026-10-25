@@ -236,6 +236,19 @@ test("A11-106: the stack section says pull request, not draft pull request, and 
   assert.ok(text.includes("That is expected, not a failure: do not retarget, rebase, push or merge to fix it."), "and that a stale base is not a failure");
 });
 
+test("A11-238: a stacked worker is told a stacked step needs no person to merge, that the arm bot merges it up to its own pull request, and never to unstack", () => {
+  const draft = "https://github.com/o/nbl-ui-netbox/pull/12";
+  const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } }];
+  const options = { ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
+    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }] };
+  const text = briefText(options);
+  assert.ok(text.includes("7. A stacked step needs no person to merge: once your pull request is approved, its required checks are green and the ones below it have merged, the arm bot merges it with GitHub's stack merge, up to yours and no further, and the board hands it back to the arm bot when needed."),
+    "no person merges a stacked step, and the stack merge stops at the worker's own pull request");
+  assert.ok(text.includes("Never unstack a stack, since another ticket builds on it: `gh stack unstack` is the person's, and the hook refuses it."), "a worker never unstacks");
+  assert.ok(text.includes("Run no other `gh stack` command."), "item 3's rule stays");
+  assert.equal(briefText({ ...options, stackedOn: undefined }).includes("A stacked step needs no person to merge"), false, "a worker with nothing stacked under it is told nothing of the stack merge");
+});
+
 test("A11-116: a stacked run whose blocker has no pull request yet is told its branch is pushed, branches from it, and never rebases it", () => {
   const head = "c".repeat(40);
   const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1-fit", head, pulls: {} }];

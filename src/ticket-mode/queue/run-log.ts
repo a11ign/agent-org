@@ -17,8 +17,11 @@ export const GONE_LOGS_MAX = 50;
 /** The longest a reason is kept in an event: the first line of what was said, cut here. */
 const REASON_MAX = 160;
 
-/** Why a review round was queued: new feedback, red checks, a conflict, a person's Respond (`asked`), a person's approval of draft pull requests, or a talk session. */
-export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approved" | "talk";
+/**
+ * Why a round was started: new feedback, red checks, a conflict, a person's Respond (`asked`), a person's approval of draft pull requests, a talk session, or the reviewer's second look at a blocked head after the block was
+ * answered without a commit (`rereview`), which the board counts as one of its own rounds though it queues no worker.
+ */
+export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approved" | "talk" | "rereview";
 
 /** Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, or a plan written again. */
 export type RequeueWhy = "retry" | "next-step" | "update" | "replan";

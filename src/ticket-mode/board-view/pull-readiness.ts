@@ -33,10 +33,14 @@ function clausesOf(entry: ViewEntry, url: string): string[] {
 }
 
 /**
- * Whether every open pull request of the run is ready to merge: read at its current head, approved there, and with no required check red or running. A run with no open pull request has none to wait for.
- * A pull request the watch has not read, or whose host does not say, is not proven ready. PURE.
+ * Whether one open pull request of the run is ready to merge: read at its current head, approved there, and with no required check red or running. A pull request the watch has not read, or whose host does not say, is not proven ready. PURE.
  */
-export const isReadyToMerge = (entry: ViewEntry): boolean => openPulls(entry).every(({ url }) => clausesOf(entry, url).length === 0);
+export const isPullReadyToMerge = (entry: ViewEntry, url: string): boolean => clausesOf(entry, url).length === 0;
+
+/**
+ * Whether every open pull request of the run is ready to merge ({@link isPullReadyToMerge}). A run with no open pull request has none to wait for. PURE.
+ */
+export const isReadyToMerge = (entry: ViewEntry): boolean => openPulls(entry).every(({ url }) => isPullReadyToMerge(entry, url));
 
 /**
  * What a run waits on before it can be merged, or null when it waits on nothing: one clause for each thing, per open pull request, in the order review, red checks, checks not passed. With more than one

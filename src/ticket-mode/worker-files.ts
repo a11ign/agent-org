@@ -296,6 +296,7 @@ ${bases.map(stackLine).join("\n")}
 4. Say in your pull request body which branch, and which pull request if there is one, yours is stacked on.
 5. The branch you build on may move while you work. Never rebase it, merge it in, or force-push while you work: agent-org merges that branch into yours for you after you stop. If that merge conflicts, a round after that starts with the conflict, and that round merges the branch in by hand. If \`git fetch\` shows that branch rewritten, that is expected: finish your work.
 6. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself. Until it does, or when that pull request's branch was merged without being deleted, your pull request's base can be a stale branch. That is expected, not a failure: do not retarget, rebase, push or merge to fix it.
+7. A stacked step needs no person to merge: once your pull request is approved, its required checks are green and the ones below it have merged, the arm bot merges it with GitHub's stack merge, up to yours and no further, and the board hands it back to the arm bot when needed. Never unstack a stack, since another ticket builds on it: \`gh stack unstack\` is the person's, and the hook refuses it.
 `;
 }
 
