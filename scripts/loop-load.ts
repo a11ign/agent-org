@@ -36,8 +36,8 @@ const START_WAIT_MS = 60_000;
 const READ_TIMEOUT_MS = 15_000;
 /**
  * Every read route of the instance, and its health: each `GET /api/*` route of `server.ts` and its route modules, and the Assignee scope's page of `/api/tickets`.
- * `loop-load-routes.test.ts` holds this list to the routes the source answers. `/api/people` and the scope's page answer 404 on this throwaway host, which lists every
- * ticket at once, and are timed all the same: a 404 waits behind a held loop as long as any answer.
+ * `loop-load-routes.test.ts` holds this list to the routes the source answers. On this throwaway host `/api/people`, `/api/tickets` and the scope's page answer an
+ * error, since its tracker is offline, and are timed all the same: a refusal waits behind a held loop as long as any answer.
  */
 export const ROUTES = ["/api/config", "/api/settings", "/api/plugins", "/api/pick", "/api/people", "/api/tickets", "/api/tickets?assignee=me", "/api/parents", "/api/queue", "/api/writer",
   "/api/session-asks", "/api/health"];
