@@ -94,6 +94,9 @@ const PAST: Readonly<Record<ActionBody["action"], string>> = { install: "install
 
 const isFailure = (value: unknown): value is Failure => typeof value === "object" && value !== null && "status" in value && "error" in value;
 
+/** A read of the plugins: the page's own, and the one that asks the instance to run the checks again (`?check`, A11-270), which a hold holds alike. */
+const PLUGINS_READ = /\/api\/plugins(\?check)?$/;
+
 /** The answer the instance gives to an action: what `runAction` decides, without writing a file. A stale `base` is the conflict, an unconfirmed uninstall or replacing install is refused, and so is a control the plan refuses. */
 export function answerAction(state: PluginsStand, body: ActionBody): PluginActionDone | Failure {
   const own = state.action?.(body);
@@ -142,8 +145,8 @@ export function pluginsFetch(stand: Stand, state: PluginsStand, settings: Settin
     const request = { method: init?.method ?? "GET", body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined };
     paths.push(path);
     requests.push({ ...request, path });
-    if (state.hold === true && request.method === "GET" && /\/api\/plugins$/.test(path)) return new Promise<Response>(() => undefined);
-    if (state.hold instanceof Promise && request.method === "GET" && /\/api\/plugins$/.test(path)) await state.hold;
+    if (state.hold === true && request.method === "GET" && PLUGINS_READ.test(path)) return new Promise<Response>(() => undefined);
+    if (state.hold instanceof Promise && request.method === "GET" && PLUGINS_READ.test(path)) await state.hold;
     const own = answerPlugins(state, path, request);
     if (own !== null) return new Response(own.body, { status: own.status, headers: { "Content-Type": "application/json" } });
     return /\/api\/settings(\/|\?|$)/.test(path) ? settled(input, init) : inner(input, init);

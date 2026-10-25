@@ -193,6 +193,8 @@ describe("a change that follows another", () => {
     opened("Publisher");
     fireEvent.click(within(card("Publisher")).getByRole("button", { name: "Disable slack" }));
     await screen.findByText(/Disabled slack/);
+    // Long enough for a read that is not held to have answered: the button waits on the read, not on a race with it.
+    await new Promise((done) => setTimeout(done, 200));
     const uninstall = within(card("Publisher")).getByRole("button", { name: "Uninstall slack" }) as HTMLButtonElement;
     expect(uninstall.disabled).toBe(true);
     release();
