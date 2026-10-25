@@ -36,7 +36,7 @@ test("A11-248: a pull request restacked after an earlier member is restacked onc
 });
 
 test("A11-248: a note about a conflict is kept at the head it was said at and dropped once the head moves; a restacked note stays true", () => {
-  const conflict = restackNote({ url: PULL, defaultBranch: "main", below: below(), outcome: { kind: "conflict", round: "started" } });
+  const conflict = restackNote({ url: PULL, defaultBranch: "main", below: below(), outcome: { kind: "conflict", round: "round" } });
   const restacked = restackNote({ url: PULL, defaultBranch: "main", below: below(), outcome: { kind: "updated" } });
   const done = { merged: MERGED_BELOW, head: "a".repeat(40) };
   assert.equal(step({ done, previousNote: conflict }).note, conflict, "the head is the one the conflict was found at");
@@ -49,14 +49,14 @@ test("A11-248: each note names the pull request, the default branch and the memb
   const note = (outcome: Parameters<typeof restackNote>[0]["outcome"]) => restackNote({ url: PULL, defaultBranch: "main", below: below(), outcome });
   assert.equal(note({ kind: "updated" }), "#14 restacked on main after #13 merged");
   assert.equal(note({ kind: "up-to-date" }), "#14 restacked on main after #13 merged");
-  assert.equal(note({ kind: "conflict", round: "started" }), "#14 conflicts with main after #13 merged: a conflict round resolves it");
+  assert.equal(note({ kind: "conflict", round: "round" }), "#14 conflicts with main after #13 merged: a conflict round resolves it");
   assert.equal(note({ kind: "conflict", round: "capped" }), "#14 conflicts with main after #13 merged, and the conflict rounds are used up: Respond to review starts another");
   assert.equal(note({ kind: "conflict", round: "none" }), "#14 conflicts with main after #13 merged, and no conflict round starts on this run");
   assert.equal(note({ kind: "refused", reason: "head branch was modified" }), "#14 could not be restacked on main after #13 merged: head branch was modified; agent-org tries again");
 });
 
 test("A11-248: the restack notes are recognised, and only a restacked one is not a problem", () => {
-  const notes = [{ kind: "updated" }, { kind: "conflict", round: "started" }, { kind: "conflict", round: "capped" }, { kind: "refused", reason: "r" }] as const;
+  const notes = [{ kind: "updated" }, { kind: "conflict", round: "round" }, { kind: "conflict", round: "capped" }, { kind: "refused", reason: "r" }] as const;
   for (const outcome of notes) assert.equal(isRestackNote(restackNote({ url: PULL, defaultBranch: "main", below: below(), outcome })), true, outcome.kind);
   assert.equal(isRestackNote(`GitHub refused the stack merge of ${PULL}: no`), false);
   assert.equal(isRestackNote(`Needs retarget: ${PULL} still targets x`), false);

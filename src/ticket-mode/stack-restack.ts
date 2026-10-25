@@ -23,8 +23,11 @@ export type RestackStepInput = Readonly<{
 /** What to do for one pull request: merge the default branch in (`restack`), and the note the card shows meanwhile (null: nothing to say). */
 export type RestackStep = Readonly<{ restack: boolean; note: string | null }>;
 
+/** What a conflict found by the restack earns the run: a conflict round (`round`), none because the board's rounds are used up (`capped`), or none because the board does not resume the run on a conflict (`none`). */
+export type ConflictRound = "round" | "capped" | "none";
+
 /** What the code host answered when the default branch was merged in. */
-export type RestackOutcome = Readonly<{ kind: "updated" | "up-to-date" }> | Readonly<{ kind: "conflict"; round: "started" | "capped" | "none" }> | Readonly<{ kind: "refused"; reason: string }>;
+export type RestackOutcome = Readonly<{ kind: "updated" | "up-to-date" }> | Readonly<{ kind: "conflict"; round: ConflictRound }> | Readonly<{ kind: "refused"; reason: string }>;
 
 const RESTACKED = " restacked on ";
 const CONFLICTS = " conflicts with ";
@@ -63,7 +66,7 @@ export function restackNote({ url, defaultBranch, below, outcome }: { url: strin
     case "up-to-date":
       return `${lead}${RESTACKED}${defaultBranch} ${after}`;
     case "conflict":
-      return outcome.round === "started" ? `${lead}${CONFLICTS}${defaultBranch} ${after}: a conflict round resolves it`
+      return outcome.round === "round" ? `${lead}${CONFLICTS}${defaultBranch} ${after}: a conflict round resolves it`
         : outcome.round === "capped" ? `${lead}${CONFLICTS}${defaultBranch} ${after}, and the conflict rounds are used up: Respond to review starts another`
           : `${lead}${CONFLICTS}${defaultBranch} ${after}, and no conflict round starts on this run`;
     case "refused":

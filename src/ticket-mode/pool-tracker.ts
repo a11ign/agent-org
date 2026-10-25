@@ -25,7 +25,7 @@ import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
 import { readPlanSteps } from "./pool-plan-steps.ts";
 import { readPullDeclarations } from "./pool-pull-declarations.ts";
 import { askUpdate } from "./pool-checks.ts";
-import { isRestackedNote, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
+import { isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
@@ -393,8 +393,8 @@ function restackMembers(ctx: PoolContext, entry: Entry, bases: Readonly<Record<s
 }
 
 /** What a conflict found by the restack earns the run: a conflict round where it resumes on one and has rounds left, none at the cap, and none where the board does not resume it. PURE. */
-function conflictRoundOf(entry: Entry): "started" | "capped" | "none" {
-  if (resumesOnConflict(entry)) return roundsLeft(entry) ? "started" : "capped";
+function conflictRoundOf(entry: Entry): ConflictRound {
+  if (resumesOnConflict(entry)) return roundsLeft(entry) ? "round" : "capped";
   return "none";
 }
 
@@ -409,7 +409,7 @@ function canRestack(ctx: PoolContext, told: { unsupported: boolean }): boolean {
 
 /** One open member of a stack: merge the default branch into it when the member below has merged and it has not been done, and say what happened. Null: nothing is decided for it, so its note stands. */
 function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates, facts, round }: {
-  url: string; stack: StackBaseRecord; candidates: readonly string[]; facts: Map<string, StackMergeFacts | null>; round: "started" | "capped" | "none";
+  url: string; stack: StackBaseRecord; candidates: readonly string[]; facts: Map<string, StackMergeFacts | null>; round: ConflictRound;
 }): MemberRestack | null {
   const key = entry.ticket.key;
   const previous = entry.retargets?.[url];
@@ -425,7 +425,7 @@ function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates,
   if (result.kind !== "refused") ctx.restacked.set(url, { merged: below.url, head: read.head });
   if (result.kind === "updated") followHead(ctx, key, url, read.head);
   log(`${key}: ${note}`);
-  const feedback = result.kind === "conflict" && round === "started" ? restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }) : null;
+  const feedback = result.kind === "conflict" && round === "round" ? restackFeedback({ url, defaultBranch: read.defaultBranch, below, key }) : null;
   return { note, moved: result.kind === "updated" || result.kind === "conflict", feedback };
 }
 
