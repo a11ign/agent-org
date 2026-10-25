@@ -19,6 +19,7 @@ import { withMachineryFlag } from "./org-health.ts";
 import { tellBlocked } from "./worker-state.ts";
 import { tidyRoster } from "./work-tick.ts";
 import { clearContext, promptTarget, readAgent } from "./wake/fyi-queue.ts";
+import { hostSeams } from "./agent-tool-update.ts";
 import { assistantTimestamps, performRelease } from "./wake/ci-class-and-spares.ts";
 import { substituteCodeHost } from "./plugins/active.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -188,4 +189,22 @@ test("A11-241: the Escape that stops a closed row's instance (performRelease, in
   const got = performRelease({ row: 3535, session: LONG, why: "closed", branch: "agent/a-closed-row-ends-3535", worktree: "/home/agent/repos/wt-3535", idleMinutes: null, nudgedAt: null, interrupt: true } as never, deps as never);
   assert.equal(got.released, true, JSON.stringify(got));
   assert.deepEqual(runs.filter((args) => args.includes("send-keys")), [["--session", "org", "agent", "send-keys", SHORT, "esc"]]);
+});
+
+test("A11-241: the smoke scratch pane's workspace, agent start and agent read use one name within herdr's limit, even when its timestamp suffix is long (agent-tool-update)", () => {
+  const herdr = recorder();
+  const created = JSON.stringify({ result: { workspace: { workspace_id: "w1" }, root_pane: { pane_id: "w1:p1" } } });
+  const run = (args: string[]): string => (herdr.run(args) && args.includes("create") ? created : "{}");
+  const now = Date.now;
+  Date.now = () => 10 ** 40;
+  try {
+    hostSeams({ home: "/nonexistent", herdr: run }).smoke("worker", ["--model", "x"]);
+  } finally {
+    Date.now = now;
+  }
+  const create = herdr.calls.find((args) => args.includes("create"))!;
+  const [started] = herdr.named("start");
+  assert.match(started, HERDR_AGENT_NAME);
+  assert.equal(create[create.indexOf("--label") + 1], started, "the workspace label is the agent's name, as it was");
+  assert.deepEqual(herdr.named("read"), [started]);
 });
