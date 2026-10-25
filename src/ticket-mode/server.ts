@@ -26,7 +26,7 @@ import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
-import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
+import { AnswerNotDelivered, createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { gateReviewJudge, loadReviewerGate } from "./reviewer-port.ts";
 import { publisherStateOf, reviewerStateOf } from "./concern-states.ts";
 import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
@@ -77,7 +77,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "claimWarning" | "talk" | "reviewerState">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -659,12 +659,33 @@ async function pluginActionRoute(board: Board, method: string, path: string, bod
   }
 }
 
-/** The routes that act on one queued run: amend, remove, retry, approve, respond, start anyway, stop, close, dismiss, and apply or discard its edit. */
+/**
+ * A person's answer to the run waiting on them (A11-250): `{ answer, who? }`. The pool writes it into the ticket's Decisions and then sends it to the run. The answer is the queue and what the pool did: `written`, `delivered`
+ * and, when the run was not told, `why`. A refusal is a 400 with its reason; an answer in the ticket that herdr would not take to the run is a 502, which says so.
+ */
+async function answerRoute(board: Board, key: string, body: Json): Promise<[number, unknown]> {
+  const { pool, wake } = board;
+  if (pool.answer === undefined) throw new Error("this board takes no answers");
+  if (typeof body.answer !== "string") throw new Error("answer must be the text of the person's answer");
+  if (body.who !== undefined && typeof body.who !== "string") throw new Error("who must be the name the answer is recorded under");
+  try {
+    const answered = await pool.answer(key, { answer: body.answer, ...(body.who === undefined ? {} : { who: body.who }) });
+    wake();
+    return [200, { ...queueView(board), ...answered }];
+  } catch (error) {
+    if (!(error instanceof AnswerNotDelivered)) throw error;
+    wake();
+    return [502, { error: error.message, written: true, delivered: false }];
+  }
+}
+
+/** The routes that act on one queued run: amend, remove, retry, approve, respond, answer, start anyway, stop, close, dismiss, and apply or discard its edit. */
 async function queueActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { store, pool, now, wake } = board;
-  const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|talk|start-anyway|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
+  const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|talk|start-anyway|stop|close|dismiss|apply-edit|discard-edit|answer)$/.exec(path);
   if (method === "POST" && action) {
     const [, key, verb] = action;
+    if (verb === "answer") return answerRoute(board, key, body);
     if (verb === "amend") store.set(amend(store.get(), key, validChange(body, ["model", "effort"])));
     // The pool's, like Dismiss: a queued run's ticket is put back before the run leaves the queue.
     if (verb === "remove") await pool.remove(key);

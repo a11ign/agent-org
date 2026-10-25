@@ -63,13 +63,18 @@ export type FixtureOptions = Readonly<{
   startUpdate?: () => void;
   /** The tracker the pool reads and writes; the in-memory fake's when absent. */
   source?: TicketSource;
+  /** The keys planned first, by a planning run of their own on the planning choice (A11-250): the rest are worked as queued. */
+  planFirst?: readonly string[];
+  /** The description each queued ticket carries, by key; none for a key not named. */
+  descriptions?: Readonly<Record<string, string>>;
 }>;
 
 /** A pool of `keys` queued and started, over fakes. `restart` is a pool over the same queue and state folder with another `hook`, as an instance restarted onto another version is. */
-export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate, source: tracker = source }: FixtureOptions = {}) {
+export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate, source: tracker = source, planFirst = [], descriptions = {} }: FixtureOptions = {}) {
   const root = tmpDir("ticket-pin-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state"), tickets });
-  let queue: Queue = resumeQueue(enqueue(emptyQueue(max), keys.map(ticket), { model: "sonnet", effort: "high" }, 0));
+  const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" }, batch: false };
+  let queue: Queue = resumeQueue(enqueue(emptyQueue(max), keys.map((key) => ({ ...ticket(key), description: descriptions[key] ?? "" })), { model: "sonnet", effort: "high" }, 0, plan));
   const store: QueueStore = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
