@@ -16,9 +16,10 @@ export type RestackBelow = Readonly<{ key: string; url: string; state: string | 
 
 /**
  * The restack the board already made for a pull request: the merged member's address, and the head the pull request was at when its conflict or refusal was said, or when the restack was made (unknown for a restack read back off a note). `upToDate` is that the restack found the
- * branch already current, so a head that did not move is fine; `ownChangesAt` is the head at which the board read a file of the member's own, which it does not read again.
+ * branch already current, so a head that did not move is fine; `ownChangesAt` is the head at which the board read a file of the member's own, which it does not read again, and `emptyAt` the head at which a read found none, which a second read must find again before
+ * the member is closed.
  */
-export type RestackDone = Readonly<{ merged: string; head?: string; upToDate?: true; ownChangesAt?: string }>;
+export type RestackDone = Readonly<{ merged: string; head?: string; upToDate?: true; ownChangesAt?: string; emptyAt?: string }>;
 
 export type RestackStepInput = Readonly<{
   facts: Pick<StackMergeFacts, "base" | "defaultBranch" | "head" | "settled">;
@@ -93,7 +94,10 @@ export const isCloseNote = (note: string): boolean => CLOSED.test(note) || EMPTY
 export const isRestackedNote = (note: string): boolean => AFTER_MERGED.exec(note)?.[2] === RESTACKED;
 
 /** Whether a restack note is a conflict, a refusal, a cap, or an empty member that is not closed: what a pull request needs said before anything else on the card. PURE. */
-export const isRestackProblemNote = (note: string): boolean => isRestackNote(note) && !isRestackedNote(note) && !CLOSED.test(note);
+export const isRestackProblemNote = (note: string): boolean => isRestackNote(note) && !isRestackedNote(note) && !isClosedMemberNote(note);
+
+/** Whether a note says a member was closed because it held nothing of its own. PURE. */
+export const isClosedMemberNote = (note: string): boolean => CLOSED.test(note);
 
 /** Whether a note says a member holds nothing of its own and is not closed yet, which the board tries again or leaves to whoever closes it. PURE. */
 export const isEmptyMemberNote = (note: string): boolean => EMPTY.test(note);
@@ -160,11 +164,17 @@ export type EmptyMemberInput = Readonly<{
 }>;
 
 /**
- * Whether a member left open holds nothing of its own, so the board closes it: the list of its files is complete and every file in it is scaffolding (or there is none), at a head the board can trust. A head is trusted when it is known, is not the head at which a
- * read already found a file of the member's own, and, if the restack moved the branch, is not the head the restack was made at (a read right after a merge may still be of the old one). A restack that found the branch already current moved nothing, so its head is fine. PURE.
+ * Whether a member left open looks to hold nothing of its own: the list of its files is complete and every file in it is scaffolding (or there is none), at a head the board can trust. A head is trusted when it is known, is not the head at which a read already found a
+ * file of the member's own, and, if the restack moved the branch, is not the head the restack was made at (a read right after a merge may still be of the old one). A restack that found the branch already current moved nothing, so its head is fine. PURE.
  */
-export function emptyMember({ files, filesComplete, head, done }: EmptyMemberInput): boolean {
+export function looksEmpty({ files, filesComplete, head, done }: EmptyMemberInput): boolean {
   if (!filesComplete || head === null || holdsOwnFile(files)) return false;
   if (done.ownChangesAt === head) return false;
   return done.upToDate === true || done.head === undefined || done.head !== head;
 }
+
+/**
+ * Whether the board closes a member: it {@link looksEmpty} at a head where an earlier read found it empty too. The file list of a pull request can lag a push (a first file of its own may not be listed yet), and a close is not undone by the next read, so one read
+ * is not enough; the second is made on a later sweep. PURE.
+ */
+export const emptyMember = (input: EmptyMemberInput): boolean => looksEmpty(input) && input.done.emptyAt === input.head;

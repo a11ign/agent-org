@@ -5,9 +5,10 @@
 // notes: this returns the note and the caller records it. The close is the code host's optional `closePull` (contract 1.23), as the workers' account; a host without it gets a note that says the member is to be closed.
 import type { StackMergeFacts } from "../plugins/contracts/code-host.ts";
 import type { PoolContext } from "./pool-context.ts";
+import { settledByPulls } from "./board-view/pull-settled.ts";
 import { log, messageOf } from "./pool-state.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { closeComment, closeNote, emptyMember, holdsOwnFile, isEmptyMemberNote, isRestackedNote, restackNote, type CloseOutcome, type RestackBelow, type RestackDone } from "./stack-restack.ts";
+import { closeComment, closeNote, emptyMember, holdsOwnFile, looksEmpty, isEmptyMemberNote, isRestackedNote, restackNote, type CloseOutcome, type RestackBelow, type RestackDone } from "./stack-restack.ts";
 
 /** The feedback is read for its files and its head, which no account's own words change, so it names no account as the board's own. */
 const NO_ACCOUNT = "";
@@ -17,7 +18,7 @@ export type CloseInput = Readonly<{ url: string; below: RestackBelow; done: Rest
 /**
  * What the board says of an open member it brought up to date on an earlier sweep, once it has read the member's files: that it was closed, that closing it failed (and is tried again), or that this code host cannot close it. A member with a file of its own is
  * remembered by head, so it is not read again at that head, and a member the board had said was empty that now holds a file of its own is back to "restacked". Null: nothing is decided, so its note stands. A member whose restack conflicted or was refused is never
- * looked at, nor one that is queued to merge, merged, or not based on the default branch. NEVER THROWS: a close the code host refuses is a note.
+ * looked at, nor one that is queued to merge, merged, or not based on the default branch, nor one another run is stacked on (closing it would leave that run's base dead). It is closed when a second read, on a later sweep, finds it empty at the same head. NEVER THROWS: a close the code host refuses is a note.
  */
 export function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, below, done, previousNote, read }: CloseInput): string | null {
   const { codeHost } = ctx;
@@ -25,21 +26,30 @@ export function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, below, d
   const feedback = codeHost.readPullFeedback(url, NO_ACCOUNT);
   if (feedback === null || feedback.state !== "open") return null;
   if (holdsOwnFile(feedback.files)) {
-    rememberOwnChanges(ctx, url, done, feedback.head);
+    remember(ctx, url, done, feedback.head, "ownChangesAt");
     return wasSaidEmpty(previousNote) ? restackNote({ url, defaultBranch: read.defaultBranch, below, outcome: { kind: "updated" } }) : null;
   }
-  if (!emptyMember({ files: feedback.files, filesComplete: feedback.filesComplete, head: feedback.head, done })) return null;
+  const observed = { files: feedback.files, filesComplete: feedback.filesComplete, head: feedback.head, done };
+  if (!looksEmpty(observed) || hasMembersAbove(ctx, entry)) return null;
+  if (!emptyMember(observed)) {
+    remember(ctx, url, done, feedback.head, "emptyAt");
+    return null;
+  }
   const note = closeNote({ url, below, outcome: closeOutcome(ctx, url, below) });
   if (note !== previousNote) log(`${entry.ticket.key}: ${note}`);
   return note;
 }
 
+/** Whether another run that is not settled is stacked on this run's branch: closing its pull request would strand that run on a base that never merges. */
+const hasMembersAbove = (ctx: PoolContext, entry: Entry): boolean =>
+  ctx.store.get().entries.some((other) => other.ticket.key !== entry.ticket.key && (other.blockers ?? []).some((blocker) => blocker.key === entry.ticket.key && blocker.branch) && settledByPulls(other) === null);
+
 /** Whether the member is neither queued to merge nor merged, and is based on the default branch, which is where a restacked member is. */
 const isOpenOnDefaultBranch = ({ settled, base, defaultBranch }: Pick<StackMergeFacts, "base" | "defaultBranch" | "settled">): boolean => settled === null && base === defaultBranch;
 
-/** Remembers the head at which a file of the member's own was read, so the member is not read again at it. A head the code host does not say is not remembered. */
-function rememberOwnChanges(ctx: PoolContext, url: string, done: RestackDone, head: string | null): void {
-  if (head !== null) ctx.restacked.set(url, { ...done, ownChangesAt: head });
+/** Remembers the head at which a read found a file of the member's own (`ownChangesAt`, so it is not read again at it) or none (`emptyAt`, which a second read must find again before the member is closed). A head the code host does not say is not remembered. */
+function remember(ctx: PoolContext, url: string, done: RestackDone, head: string | null, what: "ownChangesAt" | "emptyAt"): void {
+  if (head !== null) ctx.restacked.set(url, { ...done, [what]: head });
 }
 
 /** Whether the member's note says it holds nothing of its own and is not closed yet. */

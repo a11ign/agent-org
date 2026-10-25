@@ -49,14 +49,21 @@ function world(over: { codeHost?: (host: ReturnType<typeof createFakeCodeHost>) 
     host.pullAt(NEXT)!.head = MERGED_IN_HEAD;
   };
   const emptied = () => { host.pullAt(NEXT)!.files = [".acceptance/admin~a11-2.md"]; };
-  return { host, pool, next, reads, closes, restacked, emptied, fixture };
+  /** The sweep that reads the member empty a first time, which only remembers it. */
+  const sawEmpty = () => {
+    pool.retargetStacked();
+    assert.equal(closes(), 0, "one read of an empty list closes nothing");
+    assert.equal(next().retargets![NEXT], RESTACKED);
+  };
+  return { host, pool, next, reads, closes, restacked, emptied, sawEmpty, fixture };
 }
 
 test("A11-248: an empty member is closed with a comment, the card says so, and a further sweep closes nothing again", () => {
-  const { host, pool, next, closes, restacked, emptied } = world();
+  const { host, pool, next, closes, restacked, emptied, sawEmpty } = world();
   restacked();
   assert.equal(closes(), 0, "the sweep that restacked it did not close it");
   emptied();
+  sawEmpty();
   pool.retargetStacked();
   assert.deepEqual(host.closes.closed, [{ url: NEXT, comment: "Closed by agent-org: everything #2 held merged with #1, so it has no changes of its own left." }]);
   assert.equal(host.readPullState(NEXT), "CLOSED");
@@ -78,6 +85,7 @@ test("A11-248: a read at the head the restack was made at is not trusted, but th
   current.host.branchUpdates.answers.set(NEXT, { kind: "up-to-date" });
   current.pool.retargetStacked();
   current.emptied();
+  current.sawEmpty();
   current.pool.retargetStacked();
   assert.equal(current.closes(), 1, "nothing moved, so the head is the head");
 });
@@ -106,9 +114,10 @@ test("A11-248: a member whose list of files was cut short is not closed", () => 
 });
 
 test("A11-248: a refused close keeps GitHub's reason on the card and is tried again on the next sweep", () => {
-  const { host, pool, next, closes, restacked, emptied } = world();
+  const { host, pool, next, closes, restacked, emptied, sawEmpty } = world();
   restacked();
   emptied();
+  sawEmpty();
   host.closes.refusals.set(NEXT, "Resource not accessible by integration");
   pool.retargetStacked();
   assert.equal(next().retargets![NEXT], "#2 has no changes of its own after #1 merged, and closing it failed: Resource not accessible by integration; agent-org tries again");
@@ -120,9 +129,10 @@ test("A11-248: a refused close keeps GitHub's reason on the card and is tried ag
 });
 
 test("A11-248: a code host without closePull gets the note that says to close the member, and no call", () => {
-  const { host, pool, next, closes, restacked, emptied } = world({ codeHost: (fake) => ({ ...fake, closePull: undefined }) });
+  const { host, pool, next, closes, restacked, emptied, sawEmpty } = world({ codeHost: (fake) => ({ ...fake, closePull: undefined }) });
   restacked();
   emptied();
+  sawEmpty();
   pool.retargetStacked();
   assert.equal(next().retargets![NEXT], "#2 has no changes of its own after #1 merged: close it, because this code host cannot");
   assert.equal(closes(), 0);
@@ -132,13 +142,15 @@ test("A11-248: a code host without closePull gets the note that says to close th
   assert.equal(next().retargets![NEXT], RESTACKED, "a member that gained a file of its own is not to be closed any more");
 });
 
-test("A11-248: an empty member is not closed by a board that restarted after it was restacked, once its note says it was", () => {
+test("A11-248: a board that restarted after it restacked a member closes it once its note says it was restacked and two reads find it empty", () => {
   const { host, pool, next, closes, restacked, emptied, fixture } = world();
   restacked();
   emptied();
   const restarted = fixture.restart({ codeHost: host });
   restarted.retargetStacked();
-  assert.equal(closes(), 1, "the note stands in for the memory the restart lost");
+  assert.equal(closes(), 0, "the restart lost the first read of it empty");
+  restarted.retargetStacked();
+  assert.equal(closes(), 1, "but the note stands in for the memory of the restack, so it is read and closed");
   assert.equal(next().retargets![NEXT], CLOSED);
   pool.retargetStacked();
   assert.equal(closes(), 1);
@@ -167,9 +179,10 @@ test("A11-248: a member whose restack was refused is never closed, whatever its 
 });
 
 test("A11-248: a closed member starts nothing: the watch and a refresh of the tracker leave the run finished, with no round queued", async () => {
-  const { pool, next, restacked, emptied, host } = world();
+  const { pool, next, restacked, emptied, sawEmpty, host } = world();
   restacked();
   emptied();
+  sawEmpty();
   pool.retargetStacked();
   host.pullAt(NEXT)!.feedback = { conflicting: true };
   host.pullAt(NEXT)!.merge = { armed: false, mergeable: false };
@@ -179,4 +192,54 @@ test("A11-248: a closed member starts nothing: the watch and a refresh of the tr
   assert.equal(next().phase, "finished");
   assert.equal(next().rounds ?? 0, 0, "no round");
   assert.equal(next().feedback, undefined);
+});
+
+test("A11-248: a first read of an empty list that a second read does not repeat closes nothing (a file list can lag a push)", () => {
+  const { host, pool, next, closes, restacked, emptied, sawEmpty } = world();
+  restacked();
+  emptied();
+  sawEmpty();
+  host.pullAt(NEXT)!.files = [".acceptance/admin~a11-2.md", "src/added-after-the-merge.ts"];
+  pool.retargetStacked();
+  pool.retargetStacked();
+  assert.equal(closes(), 0);
+  assert.equal(next().retargets![NEXT], RESTACKED);
+});
+
+test("A11-248: a member another run is stacked on is not closed, so that run keeps a base that can merge", () => {
+  const above = { ticket: { key: "A11-3", branch: "a11-3-work" }, phase: "running", blockers: [{ key: "A11-2", state: "started", status: "In Review", branch: NEXT_BRANCH, pulls: {} }] } as unknown as Entry;
+  const { pool, next, closes, restacked, emptied, fixture, host } = world();
+  fixture.store.set({ ...fixture.store.get(), entries: [...fixture.store.get().entries, above] });
+  restacked();
+  emptied();
+  for (let sweep = 0; sweep < 3; sweep += 1) pool.retargetStacked();
+  assert.equal(closes(), 0);
+  assert.equal(host.readPullState(NEXT), "OPEN");
+  assert.equal(next().retargets![NEXT], RESTACKED);
+});
+
+test("A11-248: a member that is closed is not handed to the arm bot, and one the board could not close still is, as before", () => {
+  /** The reviewer approves the restacked head after the board has read the member empty once. */
+  const approved = (w: ReturnType<typeof world>) => {
+    const ready = { pullHeads: { [NEXT]: { head: MERGED_IN_HEAD, approved: true, review: "approved", red: [], pending: [] } }, outcomeHeads: { [NEXT]: MERGED_IN_HEAD } };
+    w.fixture.store.set({ ...w.fixture.store.get(), entries: w.fixture.store.get().entries.map((entry) => (entry.ticket.key === "A11-2" ? { ...entry, ...ready } : entry)) });
+    w.host.stackMerges.facts.set(NEXT, { stacked: true });
+  };
+  const closed = world();
+  closed.restacked();
+  closed.emptied();
+  closed.sawEmpty();
+  approved(closed);
+  closed.pool.retargetStacked();
+  closed.pool.retargetStacked();
+  assert.deepEqual(closed.host.stackMerges.requests, [], "closed, so there is nothing to merge");
+  assert.equal(closed.next().retargets![NEXT], CLOSED);
+  const refused = world();
+  refused.restacked();
+  refused.emptied();
+  refused.sawEmpty();
+  approved(refused);
+  refused.host.closes.refusals.set(NEXT, "Resource not accessible by integration");
+  refused.pool.retargetStacked();
+  assert.equal(refused.host.stackMerges.requests.length, 1, "an empty member the board cannot close is merged as it was");
 });

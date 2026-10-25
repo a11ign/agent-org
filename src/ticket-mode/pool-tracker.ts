@@ -28,7 +28,7 @@ import { adoptNamedBlockers, releaseMergedBlockers } from "./pool-blocker-cleare
 import { askUpdate } from "./pool-checks.ts";
 import { recordClosedWork } from "./pool-closed-work.ts";
 import { closeEmptyMember } from "./pool-restack-close.ts";
-import { isEmptyMemberNote, isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
+import { isClosedMemberNote, isEmptyMemberNote, isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
 
@@ -439,8 +439,9 @@ function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates,
   const step = restackStep({ facts: read, below, done, previousNote: previous });
   if (!step.restack) {
     const closing = done === undefined ? null : closeEmptyMember(ctx, entry, { url, below, done, read, previousNote: previous });
-    // A note other than "restacked" means the member is empty (closed, or to be closed): it is not handed to the arm bot.
-    return closing === null ? { note: step.note, moved: false, feedback: null } : { note: closing, moved: !isRestackedNote(closing), feedback: null };
+    const note = closing ?? step.note;
+    // A member that is closed is not handed to the arm bot, on this sweep or the ones before the board lists it closed. One that is empty and could not be closed still is, as it was before.
+    return { note, moved: note !== null && isClosedMemberNote(note), feedback: null };
   }
   const result = askUpdate(ctx, url, read.head);
   const outcome: RestackOutcome = result.kind === "conflict" ? { kind: "conflict", round } : result;
