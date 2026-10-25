@@ -88,6 +88,28 @@ test("A11-245: a CI run that completed with success, skipped or neutral is finis
   for (const status of ["queued", "in_progress"] as const) assert.equal((await readWait(CI, seamsOf({ run: run({ status }) }).seams)).status, "pending", status);
 });
 
+test("A11-245: a host that answers a run in a shape the contract does not allow is an unreadable item and rejects nothing", async () => {
+  const seams = seamsOf({ run: undefined as unknown as null }).seams;
+  const broken: WaitSeams = { ...seams, codeHost: { ...seams.codeHost, readCiRun: () => undefined as unknown as null } };
+  const reading = await readWait(CI, broken);
+  assert.equal(reading.status, "unreadable");
+  const all = await readWaits([CI, JOB], new Map(), { ...broken, fleetJobStatus: async () => JSON.stringify(DONE_JOB) });
+  assert.deepEqual(all.map((reading) => reading.status), ["unreadable", "finished"], "one broken item does not take the others with it");
+});
+
+test("A11-245: a tracker that never answers is cut at its timeout and the item is unreadable, while the other items are read", async () => {
+  const hung: WaitSeams = { ...seamsOf({ job: DONE_JOB }).seams, source: { stateTypes: () => new Promise(() => undefined) }, readTimeoutMs: 50 };
+  const started = Date.now();
+  const readings = await readWaits([TICKET, JOB], new Map(), hung);
+  assert.deepEqual(readings.map((reading) => reading.status), ["unreadable", "finished"]);
+  assert.match((readings[0] as { why: string }).why, /the tracker did not answer about A11-243 in 0.05 s/);
+  assert.ok(Date.now() - started < 5_000);
+});
+
+test("A11-245: a fleet job that was canceled, spelt either way, is failed", async () => {
+  assert.equal((await readWait(JOB, seamsOf({ job: { state: "canceled" } }).seams)).status, "failed");
+});
+
 test("A11-245: a CI run is unreadable when the code host says nothing, throws, or has no CI-run read at all", async () => {
   assert.match((await readWait(CI, seamsOf({ run: null }).seams) as { why: string }).why, /could not read the run/);
   assert.match((await readWait(CI, seamsOf({ run: new Error("gh run view failed") }).seams) as { why: string }).why, /gh run view failed/);
@@ -176,4 +198,6 @@ test("A11-245: the fleet program is run with no shell, answers what it printed, 
   await assert.rejects(fleetThat("exec sleep 30", 200)("fj-1"), /^Error: fleet job status fj-1 did not answer in 0.2 s$/);
   assert.ok(Date.now() - started < 5_000, "the program that outlives its timeout does not hold the read");
   await assert.rejects(fleetJobStatusVia({ env: { PATH: "" } })("fj-1"), /failed: /, "a box with no fleet program");
+  const refusing = fleetThat('echo "ran" > /dev/null');
+  for (const id of ["--help", "-h", "a b", ""]) await assert.rejects(refusing(id), /is not a fleet job ID/, `an ID of ${JSON.stringify(id)} is never handed to the program`);
 });

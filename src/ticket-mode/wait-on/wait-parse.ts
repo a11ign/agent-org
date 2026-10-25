@@ -11,7 +11,10 @@ const UNTIL_VALUES: Readonly<Record<string, readonly string[]>> = { pullRequest:
 
 /** A fleet job ID: it starts with a letter or digit, so it can never be read as an option of the program it is handed to. */
 const FLEET_JOB = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const CI_RUN = /^([\w.-]+\/[\w.-]+)#([1-9][0-9]{0,17})$/;
+
+/** Whether a string is a fleet job ID: the one place that decides it, for the parse and again before the ID is handed to the `fleet` program. */
+export const isFleetJobId = (id: string): boolean => FLEET_JOB.test(id);
+const CI_RUN = /^([\w.-]+\/[\w.-]+)#([1-9][0-9]{0,14})$/;
 /** A GitHub pull request's address. */
 export const PULL_REQUEST_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9][0-9]*(?:[/?#]\S*)?$/;
 const TICKET_KEY = /^[A-Za-z][A-Za-z0-9]*-[1-9][0-9]*$/;
@@ -30,22 +33,21 @@ function wrote(value: unknown): string {
   return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }
 
-/** One declared item as a {@link Wait}, or why it is not one. */
-function itemOf(item: unknown, at: string): Wait | string {
-  if (!isObject(item)) return `${at} needs an object with one of ${SUBJECTS.join(", ")}, you wrote ${wrote(item)}`;
+/** The subject key an item names (exactly one of {@link SUBJECTS}, and no key it does not take), or why it names none. */
+function subjectKeyOf(item: Record<string, unknown>, at: string): string {
   const subjects = SUBJECTS.filter((name) => name in item);
   if (subjects.length !== 1) return `${at} needs exactly one of ${SUBJECTS.join(", ")}, you wrote ${subjects.length === 0 ? `${Object.keys(item).join(", ") || "no keys"}` : subjects.join(" and ")}`;
   const subject = subjects[0];
   const allowed: readonly string[] = subject in UNTIL_VALUES ? [subject, "until"] : [subject];
   const extra = Object.keys(item).filter((name) => !allowed.includes(name));
-  if (extra.length > 0) return `${at} (${subject}) has ${extra.join(", ")}, which it does not take${subject in UNTIL_VALUES ? "" : "; until goes only with pullRequest and ticket"}`;
-  const value = item[subject];
-  if (typeof value !== "string") return `${at} ${subject} needs a string, you wrote ${wrote(value)}`;
-  const until = item.until;
-  if (subject in UNTIL_VALUES && (typeof until !== "string" || !UNTIL_VALUES[subject].includes(until))) return `${at} ${subject} needs until: one of ${UNTIL_VALUES[subject].join(" or ")}, you wrote ${wrote(until)}`;
+  return extra.length === 0 ? subject : `${at} (${subject}) has ${extra.join(", ")}, which it does not take${subject in UNTIL_VALUES ? "" : "; until goes only with pullRequest and ticket"}`;
+}
+
+/** The event a subject's value names, once its `until` (if it takes one) has been checked, or why the value is not one. */
+function waitOf(subject: string, value: string, until: unknown, at: string): Wait | string {
   switch (subject) {
     case "fleetJob":
-      return FLEET_JOB.test(value) ? { kind: "fleetJob", id: value } : `${at} fleetJob needs a job ID of letters, digits, dots, dashes and underscores (up to 64), you wrote ${wrote(value)}`;
+      return isFleetJobId(value) ? { kind: "fleetJob", id: value } : `${at} fleetJob needs a job ID of letters, digits, dots, dashes and underscores (up to 64), you wrote ${wrote(value)}`;
     case "ciRun": {
       const match = CI_RUN.exec(value);
       return match === null ? `${at} ciRun needs <owner>/<repo>#<run id>, you wrote ${wrote(value)}` : { kind: "ciRun", repository: match[1], runId: Number(match[2]) };
@@ -55,6 +57,18 @@ function itemOf(item: unknown, at: string): Wait | string {
     default:
       return TICKET_KEY.test(value) ? { kind: "ticket", key: value, until: "done" } : `${at} ticket needs a ticket key such as A11-1, you wrote ${wrote(value)}`;
   }
+}
+
+/** One declared item as a {@link Wait}, or why it is not one. */
+function itemOf(item: unknown, at: string): Wait | string {
+  if (!isObject(item)) return `${at} needs an object with one of ${SUBJECTS.join(", ")}, you wrote ${wrote(item)}`;
+  const subject = subjectKeyOf(item, at);
+  if (!(SUBJECTS as readonly string[]).includes(subject)) return subject;
+  const value = item[subject];
+  if (typeof value !== "string") return `${at} ${subject} needs a string, you wrote ${wrote(value)}`;
+  const until = item.until;
+  if (subject in UNTIL_VALUES && (typeof until !== "string" || !UNTIL_VALUES[subject].includes(until))) return `${at} ${subject} needs until: one of ${UNTIL_VALUES[subject].join(" or ")}, you wrote ${wrote(until)}`;
+  return waitOf(subject, value, until, at);
 }
 
 /**
@@ -81,5 +95,12 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d
 export function parseUntil(value: unknown): number | string {
   if (typeof value !== "string" || !ISO_TIME.test(value)) return `until needs an ISO time such as 2026-10-25T12:00:00Z, you wrote ${wrote(value)}`;
   const at = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`);
-  return Number.isFinite(at) ? at : `until needs an ISO time such as 2026-10-25T12:00:00Z, you wrote ${wrote(value)}`;
+  return Number.isFinite(at) && namesRealDay(value) ? at : `until needs an ISO time such as 2026-10-25T12:00:00Z, you wrote ${wrote(value)}`;
+}
+
+/** Whether the date a time starts with is a day that exists: the date parser rolls 31 February over to 3 March, and a typo would then move the deadline by days. */
+function namesRealDay(time: string): boolean {
+  const [year, month, day] = time.slice(0, "YYYY-MM-DD".length).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }

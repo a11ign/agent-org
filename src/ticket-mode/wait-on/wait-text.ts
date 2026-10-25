@@ -13,8 +13,9 @@ const CLOCK_TO = 16;
 /** The time left, rounded so the text changes rarely: to 5 minutes, at least 5, and to whole hours from an hour on. `null` when nothing is left. PURE. */
 export function roundedEta(remainingMs: number): string | null {
   if (!(remainingMs > 0)) return null;
-  const minutes = Math.max(ROUND_TO_MINUTES, Math.round(remainingMs / MINUTE_MS / ROUND_TO_MINUTES) * ROUND_TO_MINUTES);
-  return minutes < MINUTES_PER_HOUR ? `about ${minutes} min` : `about ${Math.round(minutes / MINUTES_PER_HOUR)} h`;
+  const minutes = remainingMs / MINUTE_MS;
+  const fiveMinutes = Math.max(ROUND_TO_MINUTES, Math.round(minutes / ROUND_TO_MINUTES) * ROUND_TO_MINUTES);
+  return fiveMinutes < MINUTES_PER_HOUR ? `about ${fiveMinutes} min` : `about ${Math.max(1, Math.round(minutes / MINUTES_PER_HOUR))} h`;
 }
 
 const countOf = ({ done, total }: Progress, unit: string): string => `${done} of ${total} ${unit}`;
@@ -39,7 +40,7 @@ function detailOf(reading: Reading, now: number): string {
     if (pull.state === "MERGED") return "merged";
     if (pull.state === "CLOSED") return "closed without merging";
     if (pull.review !== null) return pull.review === "APPROVED" ? "approved" : "changes requested";
-    return reading.wait.kind === "pullRequest" && reading.wait.until === "reviewed" ? "open, not reviewed yet" : "open";
+    return reading.wait.until === "reviewed" ? "open, not reviewed yet" : "open";
   }
   return reading.status === "finished" ? "done" : reading.status === "failed" ? "canceled" : reading.stateType;
 }
@@ -49,6 +50,7 @@ const itemOf = (reading: Reading, now: number): string => `${subjectOf(reading.w
 
 /** The card's line for a run waiting on declared events, from the latest reading of each: `Waiting on fleet job fj-1 (done); CI run a11ign/x#9 (running, 3 of 5 jobs)`. PURE. */
 export function waitText(readings: readonly Reading[], now: number): string {
+  if (readings.length === 0) return "Waiting";
   return `Waiting on ${readings.map((reading) => itemOf(reading, now)).join("; ")}`;
 }
 

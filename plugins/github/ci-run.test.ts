@@ -29,11 +29,15 @@ test("A11-245: the run is asked of its own repository by id, for the fields the 
   assert.equal(CI_RUN_FIELDS, "status,conclusion,url,name,jobs");
 });
 
+test("A11-245: a run held for approval or a runner is queued, not unreadable", () => {
+  for (const status of ["requested", "waiting", "pending"]) assert.equal(readCiRun(REPOSITORY, 42, answering({ ...RUNNING, status }))?.status, "queued", status);
+});
+
 test("A11-245: a run GitHub refuses, or answers in a shape this cannot read, is null and never a verdict", () => {
   const refusing: Gh = (args) => { throw new GhFailure(args, { status: 1, stdout: "", stderr: "gh: Could not resolve to a Run with the databaseId of 42 (HTTP 404)\n" }); };
   assert.equal(readCiRun(REPOSITORY, 42, refusing), null);
   assert.equal(readCiRun(REPOSITORY, 42, () => "not json"), null);
-  assert.equal(readCiRun(REPOSITORY, 42, answering({ ...RUNNING, status: "waiting" })), null, "a status GitHub reports and this does not know");
+  assert.equal(readCiRun(REPOSITORY, 42, answering({ ...RUNNING, status: "stalled" })), null, "a status this does not know");
   assert.equal(readCiRun(REPOSITORY, 42, answering({ ...RUNNING, url: undefined })), null);
   assert.equal(readCiRun(REPOSITORY, 42, answering({ ...RUNNING, status: "completed", conclusion: "" })), null, "a completed run that says nothing of how it ended");
   assert.equal(readCiRun(REPOSITORY, 42, answering({ ...RUNNING, conclusion: "success" })), null, "a conclusion on a run that has not completed");

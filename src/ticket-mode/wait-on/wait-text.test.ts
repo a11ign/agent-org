@@ -15,8 +15,8 @@ test("A11-236: a fleet job reads as the ticket shows it: pages done of total and
 });
 
 test("A11-245: the time left is rounded to 5 minutes, then to hours, so the text changes rarely", () => {
-  const cases: [number, string | null][] = [[0, null], [-5, null], [1, "about 5 min"], [2, "about 5 min"], [3, "about 5 min"], [8, "about 10 min"], [20, "about 20 min"], [21, "about 20 min"], [23, "about 25 min"], [54, "about 55 min"], [58, "about 1 h"],
-    [60, "about 1 h"], [74, "about 1 h"], [89, "about 2 h"], [91, "about 2 h"], [180, "about 3 h"], [600, "about 10 h"]];
+  const cases: [number, string | null][] = [[0, null], [-5, null], [1, "about 5 min"], [2, "about 5 min"], [3, "about 5 min"], [8, "about 10 min"], [20, "about 20 min"], [21, "about 20 min"], [23, "about 25 min"], [54, "about 55 min"], [58, "about 1 h"], [88, "about 1 h"],
+    [60, "about 1 h"], [74, "about 1 h"], [89, "about 1 h"], [90, "about 2 h"], [148, "about 2 h"], [91, "about 2 h"], [180, "about 3 h"], [600, "about 10 h"]];
   for (const [minutes, text] of cases) assert.equal(roundedEta(minutes * MIN), text, `${minutes} min`);
 });
 
@@ -28,6 +28,10 @@ test("A11-245: a job with no estimate or no progress leaves the missing part out
   assert.equal(waitText([job("1", { estimatedFinish: null })], NOW), "Waiting on fleet job 1 (4 of 6 pages)");
   assert.equal(waitText([job("1", { progress: null, state: "queued", estimatedFinish: null })], NOW), "Waiting on fleet job 1 (queued)");
   assert.equal(waitText([job("1", { estimatedFinish: NOW - MIN })], NOW), "Waiting on fleet job 1 (4 of 6 pages)");
+});
+
+test("A11-245: a wait with no readings yet reads as just waiting", () => {
+  assert.equal(waitText([], NOW), "Waiting");
 });
 
 test("A11-245: several items are joined with a semicolon, each in its own words", () => {

@@ -28,7 +28,7 @@ export function lineOf(reading: Reading): string {
     if (pull.state === "MERGED") return `${subject} was merged`;
     if (pull.state === "CLOSED") return `${subject} was closed without merging`;
     if (pull.review !== null) return `${subject} has ${pull.review === "APPROVED" ? "an approving review" : "a review asking for changes"} on its current head`;
-    return `${subject} is still open${reading.wait.kind === "pullRequest" && reading.wait.until === "reviewed" ? " and has no review on its current head" : ""}`;
+    return `${subject} is still open${reading.wait.until === "reviewed" ? " and has no review on its current head" : ""}`;
   }
   return `${subject} is ${reading.status === "finished" ? "done" : reading.status === "failed" ? "canceled" : `not done (${reading.stateType})`}`;
 }

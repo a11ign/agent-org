@@ -1,30 +1,35 @@
 // A leaf of ticket mode, run by no command: one read of each kind of event a worker may declare it waits on (A11-245). Every seam is handed in, so a test answers it and the board's pool supplies the real ones: the code host for CI runs
 // and pull requests, the tracker for tickets, and the `fleet` program for fleet jobs. ONE CALL PER UNFINISHED ITEM; an item already read as finished or failed is not read again. A read that says nothing, throws or runs out of time is
-// `unreadable`, never a verdict. Nothing here throws.
+// `unreadable`, never a verdict. Nothing here throws. The fleet and tracker reads are cut after {@link READ_TIMEOUT_MS}; the code host's reads are synchronous (its contract), so they cannot be cut and are bounded by its own `gh` timeout.
 import { execFile } from "node:child_process";
-import type { CodeHost } from "../../plugins/contracts/code-host.ts";
+import type { CodeHost, ReviewState } from "../../plugins/contracts/code-host.ts";
 import type { TicketSource } from "../../plugins/contracts/tracker.ts";
-import type { CiRunWait, FleetJobWait, JobFacts, Progress, PullRequestWait, Reading, TicketWait, Wait } from "./wait-types.ts";
+import type { CiRunWait, FleetJobWait, JobFacts, Progress, PullFacts, PullRequestWait, Reading, TicketWait, Wait } from "./wait-types.ts";
+import { isFleetJobId } from "./wait-parse.ts";
 import { waitKey } from "./wait-types.ts";
 
 const MS_PER_SECOND = 1000;
 
-/** How long one `fleet job status` may run before it is cut. */
-export const FLEET_TIMEOUT_MS = 30 * MS_PER_SECOND;
+/** How long one `fleet job status`, or one ask of the tracker, may run before it is cut. */
+export const READ_TIMEOUT_MS = 30 * MS_PER_SECOND;
 
 /** What a read of events is given: the code host's reads, the tracker's, and the text `fleet job status <id> --json` prints (it THROWS when the program fails, cannot start or runs out of time). */
 export type WaitSeams = Readonly<{
   codeHost: Pick<CodeHost, "readPullState" | "readReviewState" | "readCiRun">;
   source: Pick<TicketSource, "stateTypes">;
   fleetJobStatus: (id: string) => Promise<string>;
+  /** How long the tracker may take to answer, in milliseconds. {@link READ_TIMEOUT_MS} when absent. */
+  readTimeoutMs?: number;
 }>;
 
 /** What running the program may be given besides the job: how long it may run, and the environment it runs in (a test puts a stub `fleet` on its `PATH`). */
 export type FleetRun = Readonly<{ timeoutMs?: number; env?: NodeJS.ProcessEnv }>;
 
 /** Runs `fleet job status <id> --json` (no shell) and answers what it printed. Rejects, saying so, when it exits non-zero, cannot start or outlives its timeout. */
-export function fleetJobStatusVia({ timeoutMs = FLEET_TIMEOUT_MS, env = process.env }: FleetRun = {}): (id: string) => Promise<string> {
+export function fleetJobStatusVia({ timeoutMs = READ_TIMEOUT_MS, env = process.env }: FleetRun = {}): (id: string) => Promise<string> {
   return (id) => new Promise((resolve, reject) => {
+    // The ID is checked again here: it is handed to a program, and a `Wait` that was built or restored without the shape check must not be read as an option.
+    if (!isFleetJobId(id)) return reject(new Error(`${JSON.stringify(id)} is not a fleet job ID`));
     execFile("fleet", ["job", "status", id, "--json"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", env }, (error, stdout, stderr) => {
       if (error === null) return resolve(stdout);
       const cut = (error as NodeJS.ErrnoException & { killed?: boolean }).killed === true;
@@ -78,7 +83,8 @@ async function readFleetJob(wait: FleetJobWait, seams: WaitSeams): Promise<Readi
   switch (job.state) {
     case "done": return { wait, status: "finished", job };
     case "failed":
-    case "cancelled": return { wait, status: "failed", job: { ...job, reason: job.reason ?? `the job was ${job.state}` } };
+    case "cancelled":
+    case "canceled": return { wait, status: "failed", job: { ...job, reason: job.reason ?? `the job was ${job.state}` } };
     case "queued":
     case "running": return { wait, status: "pending", job };
     default: return unreadable(wait, `the job service gave a state this board does not know: ${job.state}`);
@@ -101,12 +107,22 @@ function readCiRun(wait: CiRunWait, seams: WaitSeams): Reading {
   return { wait, status: run.conclusion !== null && PASSING.has(run.conclusion) ? "finished" : "failed", run };
 }
 
-/** An open pull request's review on its current head: the newest approving or change-requesting review there. Throws what the code host throws; null when the host does not say. */
-function reviewOnHead(wait: PullRequestWait, seams: WaitSeams): "APPROVED" | "CHANGES_REQUESTED" | null | undefined {
-  const state = seams.codeHost.readReviewState(wait.url);
-  if (state === null) return undefined;
+/** The newest approving or change-requesting review on the head the state names, or null when there is none. A review of an older head is not a review of this one. */
+function reviewOnHead(state: ReviewState): PullFacts["review"] {
   const onHead = state.reviews.filter((review) => review.commit === state.head && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED")).sort((a, b) => b.at - a.at);
-  return (onHead[0]?.state as "APPROVED" | "CHANGES_REQUESTED" | undefined) ?? null;
+  return (onHead[0]?.state as PullFacts["review"]) ?? null;
+}
+
+/** An open pull request waited on until reviewed: finished once a review stands on its head. Unreadable when the code host does not say what reviews it has, or throws (the reviewer's gate does not load). */
+function readReview(wait: PullRequestWait, seams: WaitSeams): Reading {
+  try {
+    const state = seams.codeHost.readReviewState(wait.url);
+    if (state === null) return unreadable(wait, "the code host does not say what reviews the pull request has");
+    const review = reviewOnHead(state);
+    return { wait, status: review === null ? "pending" : "finished", pull: { state: "OPEN", review } };
+  } catch (error) {
+    return unreadable(wait, whyOf(error));
+  }
 }
 
 function readPullRequest(wait: PullRequestWait, seams: WaitSeams): Reading {
@@ -116,23 +132,27 @@ function readPullRequest(wait: PullRequestWait, seams: WaitSeams): Reading {
   } catch (error) {
     return unreadable(wait, whyOf(error));
   }
-  if (state !== "OPEN" && state !== "MERGED" && state !== "CLOSED") return unreadable(wait, "the code host could not read the pull request");
   if (state === "MERGED") return { wait, status: "finished", pull: { state, review: null } };
   if (state === "CLOSED") return { wait, status: "failed", pull: { state, review: null } };
-  if (wait.until === "merged") return { wait, status: "pending", pull: { state, review: null } };
+  if (state !== "OPEN") return unreadable(wait, "the code host could not read the pull request");
+  return wait.until === "merged" ? { wait, status: "pending", pull: { state, review: null } } : readReview(wait, seams);
+}
+
+/** The promise's answer, or a rejection saying `what` once `ms` have passed. The timer is cleared either way. */
+async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} in ${ms / MS_PER_SECOND} s`)), ms); });
   try {
-    const review = reviewOnHead(wait, seams);
-    if (review === undefined) return unreadable(wait, "the code host does not say what reviews the pull request has");
-    return { wait, status: review === null ? "pending" : "finished", pull: { state, review } };
-  } catch (error) {
-    return unreadable(wait, whyOf(error));
+    return await Promise.race([promise, late]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function readTicket(wait: TicketWait, seams: WaitSeams): Promise<Reading> {
   if (seams.source.stateTypes === undefined) return unreadable(wait, "the tracker cannot say where a ticket stands");
   try {
-    const stateType = (await seams.source.stateTypes([wait.key])).get(wait.key);
+    const stateType = (await within(seams.source.stateTypes([wait.key]), seams.readTimeoutMs ?? READ_TIMEOUT_MS, `the tracker did not answer about ${wait.key}`)).get(wait.key);
     if (stateType === undefined) return unreadable(wait, "the tracker did not know the ticket");
     return { wait, status: stateType === "completed" ? "finished" : stateType === "canceled" ? "failed" : "pending", stateType };
   } catch (error) {
@@ -140,13 +160,17 @@ async function readTicket(wait: TicketWait, seams: WaitSeams): Promise<Reading> 
   }
 }
 
-/** One item, read once. Never throws. */
+/** One item, read once. Never throws: a host that answers in a shape the contract does not allow is an item that could not be read. */
 export async function readWait(wait: Wait, seams: WaitSeams): Promise<Reading> {
-  switch (wait.kind) {
-    case "fleetJob": return readFleetJob(wait, seams);
-    case "ciRun": return readCiRun(wait, seams);
-    case "pullRequest": return readPullRequest(wait, seams);
-    case "ticket": return readTicket(wait, seams);
+  try {
+    switch (wait.kind) {
+      case "fleetJob": return await readFleetJob(wait, seams);
+      case "ciRun": return readCiRun(wait, seams);
+      case "pullRequest": return readPullRequest(wait, seams);
+      case "ticket": return await readTicket(wait, seams);
+    }
+  } catch (error) {
+    return unreadable(wait, whyOf(error));
   }
 }
 

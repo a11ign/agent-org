@@ -518,8 +518,8 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const { repository, runId } = probe.ciRun!;
       const run = host.readCiRun!(repository, runId);
       expect(isObject(run) && CI_STATUSES.includes(run.status) && isString(run.url) && isString(run.name), `readCiRun(${repository}, ${runId}) must read { status: queued | in_progress | completed, conclusion, url, name, jobs }`);
-      expect((run.status === "completed") === isString(run.conclusion), "a run has a conclusion once it has completed, and has none before");
-      expect(run.jobs === null || (isObject(run.jobs) && Number.isInteger(run.jobs.done) && Number.isInteger(run.jobs.total) && run.jobs.done >= 0 && run.jobs.done <= run.jobs.total), "jobs must be null or { done, total } with done no more than total");
+      expect((run.status === "completed") === (isString(run.conclusion) && run.conclusion !== ""), "a run has a conclusion once it has completed, and has none before");
+      expect(run.jobs === null || (isObject(run.jobs) && Number.isInteger(run.jobs.done) && Number.isInteger(run.jobs.total) && run.jobs.done >= 0 && run.jobs.done <= run.jobs.total && run.jobs.total >= 1), "jobs must be null (none listed) or { done, total } with done no more than total, and at least one job");
     },
   },
   "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {

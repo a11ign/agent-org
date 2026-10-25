@@ -277,6 +277,8 @@ test("a code host that reads a run it cannot read as unfinished, or a run in a s
   assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => reads(repository, runId) ?? unfinished }), [CI_CHECKS[0]]);
   assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => (reads(repository, runId) === null ? null : { ...unfinished, status: "completed" }) }), [CI_CHECKS[1]], "a completed run with no conclusion");
   assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => (reads(repository, runId) === null ? null : { ...unfinished, jobs: { done: 4, total: 3 } }) }), [CI_CHECKS[1]], "more jobs done than there are");
+  assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => (reads(repository, runId) === null ? null : { ...unfinished, jobs: { done: 0, total: 0 } }) }), [CI_CHECKS[1]], "an empty list of jobs is null, not zero of zero");
+  assert.deepEqual(await failures({ ...host, readCiRun: (repository, runId) => (reads(repository, runId) === null ? null : { ...unfinished, status: "completed", conclusion: "" }) }), [CI_CHECKS[1]], "an empty conclusion is none");
 });
 
 test("the fake says which runs it was asked about, and answers null for one it was given none for", () => {
@@ -284,4 +286,14 @@ test("the fake says which runs it was asked about, and answers null for one it w
   assert.equal(host.readCiRun!("owner/repo", 31)?.jobs?.total, 3);
   assert.equal(host.readCiRun!("owner/repo", 32), null);
   assert.deepEqual(host.ciRuns.asked, ["owner/repo#31", "owner/repo#32"]);
+});
+
+test("a code host of contract 1.16, with no readCiRun, still passes the suite: both of the run's checks are skipped with the reason", async () => {
+  const { host, probe } = seeded();
+  const { readCiRun, ...older } = host;
+  assert.equal(typeof readCiRun, "function");
+  const { passed, skipped } = await runCodeHostConformance(older, probe);
+  assert.deepEqual(skipped.map(({ check }) => check).filter((check) => CI_CHECKS.includes(check)), CI_CHECKS);
+  assert.ok(skipped.filter(({ check }) => CI_CHECKS.includes(check)).every(({ reason }) => /the code host has no readCiRun/.test(reason)));
+  assert.ok(!passed.some((check) => CI_CHECKS.includes(check)));
 });
