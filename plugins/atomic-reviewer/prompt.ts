@@ -115,13 +115,26 @@ function contractWords({ doneWhen, step }: Pick<ReviewBrief, "doneWhen" | "step"
   return `${stepWords(step)}\n\n${forLast}`;
 }
 
+/** The most of the closed-work list the prompt quotes: a longer one is cut, and says so. */
+const CLOSED_WORK_LIMIT = 16000;
+
+/**
+ * What a first review is told when the ticket's earlier pull requests were closed without merging, with work not on their base (A11-249): the list, one line per commit and file, and the rule that the pull request body's
+ * `## Work from closed pull requests` section accounts for each. Nothing when the ticket has none, so a prompt without closed work is the one it was.
+ */
+export const closedWorkWords = (closedWork: string | undefined): string => (closedWork === undefined ? ""
+  : `The ticket's earlier pull requests were closed without merging, and held this work, which is not on their base:\n\n${cut(closedWork, CLOSED_WORK_LIMIT)}\n\n`
+    + "The pull request body's `## Work from closed pull requests` section must say, for each commit and file, carried over (where) or dropped (why). Check each claim against the diff. "
+    + "Each item the section leaves out, and each `carried over` the diff does not show, is a finding.");
+
 /** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract and the CI cost rule (A11-261). */
 const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "decisions" | "planDecisions" | "escalation" | "step">, unrequiredRed: readonly string[] | undefined): string =>
   [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief), CI_COST_RULE].filter((words) => words !== "").join("\n\n");
 
-/** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), the CI cost rule (A11-261), then the rule for a Before-merge line no branch can meet (A11-275) and the post-merge rule. */
+/** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), the CI cost rule (A11-261), then the closed work of the ticket's earlier pull requests and the rule that the body accounts for it (A11-249), the rule for a Before-merge line no branch can meet (A11-275) and the post-merge rule. */
 export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, unrequiredRed?: readonly string[]): string {
-  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.planDecisions === undefined ? {} : { planDecisions: brief.planDecisions }), ...(brief?.escalation === undefined ? {} : { escalation: brief.escalation }), ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`;
+  const closed = closedWorkWords(brief?.closedWork);
+  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.planDecisions === undefined ? {} : { planDecisions: brief.planDecisions }), ...(brief?.escalation === undefined ? {} : { escalation: brief.escalation }), ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${closed === "" ? "" : `${closed}\n\n`}${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`;
 }
 
 /**

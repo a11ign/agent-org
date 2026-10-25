@@ -28,6 +28,7 @@ import { heldText, PUSH_ONCE_RULE } from "./ci-spend/rules.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
+import { closedWorkText, type KeptClosedWork } from "./closed-work-account.ts";
 import { diffText, type Finding, findingsText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
@@ -389,9 +390,9 @@ const quoted = (description: string): string => (description.trim() || "(no desc
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
  */
-export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, blockers = [], findings = [], claims = [], replan }: {
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, blockers = [], findings = [], closed = [], claims = [], replan }: {
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
-  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; claims?: readonly HeldClaim[]; replan?: Replan;
+  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; claims?: readonly HeldClaim[]; replan?: Replan;
 }): string {
   const repos = reposText(clones);
   const instruction = plannerInstruction(run, [ticket.key], planDir);
@@ -410,7 +411,7 @@ ${projectRepoLine(ticket, clones)}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${findingsText(blockers, findings)}${replanText(replan)}
+${parentText(parent)}${findingsText(blockers, findings)}${closedWorkText(closed, "plan")}${replanText(replan)}
 ## The repositories on this machine
 
 Read them to plan, but never change them, commit in them or change their branches:
@@ -453,10 +454,10 @@ Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may
 }
 
 /** One ticket of a batch, as its planning brief names it: the ticket, its downloaded files, and the ticket it is part of. */
-export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[] }>;
+export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[] }>;
 
 /** One ticket's section of a batch's brief. Its description is quoted, as a parent's is, so its headings cannot read as the brief's. */
-function batchTicketText({ ticket, attachments, parent, read, blockers = [], findings = [] }: BatchTicket, clones: Readonly<Record<string, string>>): string {
+function batchTicketText({ ticket, attachments, parent, read, blockers = [], findings = [], closed = [] }: BatchTicket, clones: Readonly<Record<string, string>>): string {
   const parentPart = parent === null ? "" : `
 ### ${ticket.key} is part of ${parent.ticket.key}: ${parent.ticket.title}
 
@@ -480,7 +481,7 @@ ${projectRepoLine(ticket, clones)}
 ### Files from ${ticket.key}
 
 ${filesText(attachments)}
-${parentPart}${findingsText(blockers, findings).replace(/^\n## /, "\n### ")}`;
+${parentPart}${findingsText(blockers, findings).replace(/^\n## /, "\n### ")}${closedWorkText(closed, "plan").replace(/^\n## /, "\n### ")}`;
 }
 
 /**
@@ -633,11 +634,11 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], numberedSteps = false, opened = [], held }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], closed = [], numberedSteps = false, opened = [], held }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
-  read?: TicketRead; findings?: readonly Finding[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
+  read?: TicketRead; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -660,7 +661,7 @@ ${readLine(read)}${ticket.description.trim() || "(no description)"}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)), findings)}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}${stepsText(steps)}${openedText(opened)}
+${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)), findings)}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}${stepsText(steps)}${openedText(opened)}${closedWorkText(closed, "pull request")}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:
