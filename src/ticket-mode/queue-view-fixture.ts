@@ -3,9 +3,8 @@
 //
 // 163 runs: 134 finished with their tickets completed, 12 finished with theirs still open, 12 queued and 5 running; each ticket with a 3 KB description, each run with the lists of files, blockers, declarations and log lines
 // a worker leaves on it. The host's `GET /api/queue` was 1.1 MB over a queue this size. The kinds of run are those the pages word differently, so a list view that drops a field a page reads changes a row.
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
@@ -120,7 +119,10 @@ export async function serveBoard({ queue, ticketsMs = 0, tickets = 0, plugins }:
   saveQueue(queuePath, queue);
   const board = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath, choicePath: join(dir, "choice.json"), hostPath, pool, now: () => NOW, version: null, next: () => null, plugins });
   const server = createServer((request, response) => void board.handle(request, response));
-  const socket = join(mkdtempSync(join(tmpdir(), "qv-")), "s");
+  // A short directory: a socket's path is cut near 104 bytes, and the suite's own TMPDIR is longer than that.
+  const socketDir = mkdtempSync("/tmp/ao-qv-");
+  const socket = join(socketDir, "s");
   await new Promise<void>((done) => server.listen(socket, done));
-  return { board, socket, host: `127.0.0.1:${settings.port}`, key: KEY, dir, close: () => new Promise<void>((done) => server.close(() => done())) };
+  server.unref();
+  return { board, socket, host: `127.0.0.1:${settings.port}`, key: KEY, dir, close: () => new Promise<void>((done) => server.close(() => { rmSync(socketDir, { recursive: true, force: true }); done(); })) };
 }
