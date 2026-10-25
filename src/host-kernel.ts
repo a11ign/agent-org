@@ -11,9 +11,17 @@
 //
 // A READ THAT WAS REFUSED IS `NOT READ`, NEVER "UP TO DATE": a missing `/boot` listing and an equal pair of kernels would otherwise print
 // the same nothing. The same holds for the loop guard: a record of the last reboot that cannot be read refuses the reboot.
+//
+// THIS MODULE OWNS THE TEXT OF `/etc/sysctl.d/90-a11ign-hang.conf` ({@link HANG_CONF}, A11-279). WHY THE FILE EXISTS (a11ign/a11ign#3846): on 2026-10-06 the host hung for
+// 2 h 15 min in a soft lockup with nothing noticing, while `/tmp` held about 121,000 test folders. The chairman wrote the file by hand on 2026-10-08 so that a stall
+// reboots the host rather than hangs it (`panic = 10`); `hung_task_panic = 0` is his ruling there. WHY `softlockup_panic` IS NOW 0 (A11-279): on 2026-10-25 a 26 s soft
+// lockup (`ioq-2`, a thread of Claude Code, in `ext4_dx_readdir` on a `/tmp` of 19,600 entries) would have cleared by itself; the panic turned it into a reboot 10 s later that
+// killed every run. A soft lockup is now logged and the board's alert raises it. Oops and RCU stalls still panic: the kernel cannot be trusted after either.
+// The module only HOLDS and COMPARES the text. The run has no root and the one granted command is the reboot, so the chairman applies it ({@link HANG_APPLY}) and
+// {@link hangConfFindings} says, on every `host:check`, when the file or a live value differs. Nothing here writes under `/etc`, so no check can put `1` back.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readAgents, absentSeats } from "./herdr-agents.ts";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
@@ -23,7 +31,8 @@ import { stateEntryPath } from "./host-config.ts";
 import { hostExposure } from "./plugins/host-exposure.ts";
 import { rows } from "./plugins/rows.ts";
 
-export type Finding = { unit: string, problem: string, detail: string };
+/** `manualFix`: `host:install` writes no line of it (the chairman runs a root command), so the host-drift gate must not wake a session every tick to run `host:install` (#3703). */
+export type Finding = { unit: string, problem: string, detail: string, manualFix?: boolean };
 export type RebootRecord = { at: number, from: string, to: string, row?: number, readBackAt?: number };
 export type RecordStore = { read: () => RebootRecord | null, write: (record: RebootRecord | null) => void };
 export type KernelReading = { state: "newer" | "current" | "not-read", running?: string, installed?: string, why?: string };
@@ -45,6 +54,29 @@ export const DRAIN_BOUND_MS = 30 * MINUTE_MS;
 export const DRAIN_POLL_MS = 30_000;
 /** The values #3846's hand read-back posted. Read, never judged: `hung_task_panic=0` is the chairman's ruling there, not a gap. */
 const SYSCTLS = Object.freeze(["softlockup_panic", "panic_on_rcu_stall", "panic_on_oops", "hung_task_panic", "panic"]);
+
+export const HANG_CONF_PATH = "/etc/sysctl.d/90-a11ign-hang.conf";
+/** The four settings the file holds, each with the reason it has that value. `hung_task_panic` is absent on purpose: it stays the kernel's own 0 (#3846, the chairman's ruling). */
+export const HANG_SETTINGS = Object.freeze([
+  { key: "softlockup_panic", value: "0", reason: "A11-279: a soft lockup is logged, and the board's alert raises it. A 26 s stall that would have cleared became a reboot that killed every run." },
+  { key: "panic_on_rcu_stall", value: "1", reason: "an RCU stall means the kernel cannot reclaim memory, and nothing recovers from it: reboot (#3846)." },
+  { key: "panic_on_oops", value: "1", reason: "after an oops the kernel's state is not to be trusted: reboot (#3846)." },
+  { key: "panic", value: "10", reason: "reboot 10 s after a panic, so a host never hangs on one (#3846: 2 h 15 min unnoticed on 2026-10-06)." },
+]);
+/** THE FILE'S EXACT TEXT, printed by `--hang-conf`. */
+export const HANG_CONF = [
+  "# Written by `node src/host-kernel.ts --hang-conf`: agent-org's src/host-kernel.ts owns this text. Change it there, never here.",
+  "# Why this file exists: a11ign/a11ign#3846. On 2026-10-06 the host hung for 2 h 15 min in a soft lockup and nothing noticed. A panic and a reboot beats a hang.",
+  "# Why softlockup_panic is 0: A11-279. On 2026-10-25 a 26 s soft lockup in ext4_dx_readdir would have cleared by itself; the panic rebooted the host and killed every run.",
+  ...HANG_SETTINGS.flatMap(({ key, value, reason }) => [`# ${reason}`, `kernel.${key} = ${value}`]),
+  "",
+].join("\n");
+/** What the chairman runs, as root, to apply {@link HANG_CONF}. This module never does. */
+export const HANG_APPLY = `node src/host-kernel.ts --hang-conf | sudo tee ${HANG_CONF_PATH} && sudo sysctl --system`;
+const KDUMP_LOADED_PATH = "/sys/kernel/kexec_crash_loaded";
+const KDUMP_APPLY = "sudo sed -i 's/^USE_KDUMP=0/USE_KDUMP=1/' /etc/default/kdump-tools && sudo systemctl restart kdump-tools";
+export const PSTORE_ROOT = "/var/lib/systemd/pstore";
+const PSTORE_APPLY = `sudo setfacl -R -m g:adm:rX -m d:g:adm:rX ${PSTORE_ROOT} /var/crash`;
 
 /** @param {string} release `7.0.0-38-generic` @returns {{ nums: number[], flavour: string } | null} null for a name that is not a kernel release */
 export function parseRelease(release: string): { nums: number[]; flavour: string; } | null {
@@ -140,19 +172,128 @@ export function stillOlderFinding(record: RebootRecord | null, reading: KernelRe
       + `is installed, so ${cause}. NO second reboot is made inside 24 h: read the boot loader's default (\`grub-editenv list\`, \`/etc/default/grub\`) and decide.` };
 }
 
+/** Every read the crash-preparedness findings make, injected. `listDir` names a directory's entries and `readFile` returns a file's text; both throw what the file system throws. */
+export type HostReads = { readFile: (path: string) => string, listDir: (path: string) => string[] };
+const realHostReads: HostReads = { readFile: (path) => readFileSync(path, "utf8"), listDir: (path) => readdirSync(path) };
+
+/** @param {unknown} cause @returns {string | undefined} */
+const codeOf = (cause: unknown) => (cause as NodeJS.ErrnoException | null)?.code;
+/** @param {unknown} cause @returns {string | undefined} the path the file system refused, when it says */
+const pathOf = (cause: unknown) => (cause as NodeJS.ErrnoException | null)?.path;
+
 /**
- * WHAT `host:check` RAISES, as FINDINGS (which wake a session; a note does not): the loop guard, and a reboot nobody has read back. The read-back
- * is owed to the row that asked, and a finding is how the org learns that it is, since nothing else runs after a boot.
- * @param {{ uname?: () => string, bootEntries?: () => string[], store?: () => RecordStore, now?: () => number, bootedAt?: () => number }} [deps]
+ * A FINDING THAT STAYS until the chairman runs a root command. Its unit names its source, so a `NOT READ` of one is not the key of another's, and `manualFix` keeps the host-drift
+ * gate from waking a session every tick to run `host:install`, which cannot clear it. `host:check` still prints it.
+ */
+const standing = (source: string, problem: string, detail: string): Finding => ({ unit: `kernel ${source}`, problem, detail, manualFix: true });
+
+/** The `kernel.<key> = <value>` lines of a sysctl file, comments and blanks dropped. @param {string} text @returns {Map<string, string>} */
+function sysctlLines(text: string): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const m = /^\s*kernel\.(\S+)\s*=\s*(\S+)\s*$/.exec(line);
+    if (m !== null) found.set(m[1], m[2]);
+  }
+  return found;
+}
+
+/** @param {HostReads} reads @returns {string[]} what differs from {@link HANG_SETTINGS}, one phrase each; a refused read is phrased `NOT READ: ...`, an absent file is a difference */
+function hangDifferences({ readFile }: HostReads): string[] {
+  const differs: string[] = [];
+  let file: Map<string, string> | undefined;
+  try { file = sysctlLines(readFile(HANG_CONF_PATH)); } catch (cause) {
+    differs.push(codeOf(cause) === "ENOENT" ? `${HANG_CONF_PATH} does not exist` : `NOT READ: ${HANG_CONF_PATH} (${describe(cause)})`);
+  }
+  if (file !== undefined) {
+    for (const { key, value } of HANG_SETTINGS) if (file.get(key) !== value) differs.push(`the file has kernel.${key} = ${file.get(key) ?? "(absent)"}, wanted ${value}`);
+    for (const key of file.keys()) if (!HANG_SETTINGS.some((s) => s.key === key)) differs.push(`the file sets kernel.${key}, which it should not hold`);
+  }
+  for (const { key, value } of HANG_SETTINGS) {
+    try {
+      const live = readFile(`/proc/sys/kernel/${key}`).trim();
+      if (live !== value) differs.push(`kernel.${key} is ${live} now, wanted ${value}`);
+    } catch (cause) { differs.push(`NOT READ: /proc/sys/kernel/${key} (${describe(cause)})`); }
+  }
+  return differs;
+}
+
+/**
+ * THE HANG SETTINGS AGAINST {@link HANG_CONF}: the file's values and the live ones. Both are compared because the file is read only at boot, and a value set by hand
+ * (`sysctl -w`) is gone at the next one. Comments and spacing are not compared. A refused read is `NOT READ`; a difference carries the command either way.
+ * @param {HostReads} reads @returns {Finding[]}
+ */
+export function hangConfFindings(reads: HostReads): Finding[] {
+  const differs = hangDifferences(reads);
+  if (differs.length === 0) return [];
+  const apply = `As root, from the agent-org checkout: \`${HANG_APPLY}\`.`;
+  if (differs.every((d) => d.startsWith("NOT READ"))) return [standing("hang settings", "NOT READ", `${differs.join("; ")}, so whether the hang settings are as wanted is unknown, not "yes". ${apply}`)];
+  return [standing("hang settings", "HANG SETTINGS DIFFER", `${differs.join("; ")}. A soft lockup is meant to be logged, not rebooted (A11-279). ${apply}`)];
+}
+
+/** KDUMP LOADED: `/sys/kernel/kexec_crash_loaded` reads 1 once `kdump-tools` has loaded the capture kernel. Without it the next crash leaves the pstore excerpt and no dump. @param {HostReads} reads @returns {Finding[]} */
+export function kdumpFindings({ readFile }: HostReads): Finding[] {
+  let loaded;
+  try { loaded = readFile(KDUMP_LOADED_PATH).trim(); } catch (cause) {
+    return [standing("kdump", "NOT READ", `${KDUMP_LOADED_PATH} could not be read (${describe(cause)}), so whether kdump is loaded is unknown, not "yes".`)];
+  }
+  if (loaded === "1") return [];
+  return [standing("kdump", "KDUMP NOT LOADED",
+    `${KDUMP_LOADED_PATH} reads ${loaded}: the next crash leaves the pstore excerpt and no full dump. As root: \`${KDUMP_APPLY}\`; then \`cat ${KDUMP_LOADED_PATH}\` reads 1.`)];
+}
+
+/**
+ * The files of the newest numbered folder that holds any, under the pstore archive (`<boot stamp>/<nnn>/<file>`), newest first by number and not by spelling. systemd-pstore writes the
+ * directories world-readable and the FILES 0600 root, so listing the archive proves nothing: the files are what get opened. An entry that is not a folder is passed over.
+ * @param {HostReads} reads @param {string} [root] @returns {string[]}
+ */
+export function newestPstoreRecords({ listDir }: HostReads, root: string = PSTORE_ROOT): string[] {
+  const newestFirst = (names: string[]) => [...names].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  const walk = (dir: string, depth: number): string[] => {
+    const names = newestFirst(listDir(dir));
+    if (depth === 0) return names.map((name) => join(dir, name));
+    for (const name of names) {
+      let found: string[];
+      try { found = walk(join(dir, name), depth - 1); } catch (cause) { if (codeOf(cause) === "ENOTDIR") continue; throw cause; }
+      if (found.length > 0) return found;
+    }
+    return [];
+  };
+  return walk(root, 2);
+}
+
+/**
+ * CRASH RECORDS THIS USER CAN READ. A refusal on the archive or on any file of its newest record is the finding (the diagnosis of 2026-10-25 needed root for it); an archive that is
+ * not there holds no record, so it is not one. Any other failure is `NOT READ`. The finding names the path the file system refused.
+ * @param {HostReads} reads @returns {Finding[]}
+ */
+export function crashRecordsFindings(reads: HostReads): Finding[] {
+  let at = PSTORE_ROOT;
+  try {
+    for (const record of newestPstoreRecords(reads)) { at = record; reads.readFile(record); }
+  } catch (cause) {
+    at = pathOf(cause) ?? at;
+    if (codeOf(cause) === "ENOENT" && at === PSTORE_ROOT) return [];
+    if (codeOf(cause) !== "EACCES" && codeOf(cause) !== "EPERM") return [standing("crash records", "NOT READ", `the crash records under ${PSTORE_ROOT} could not be checked (${describe(cause)}).`)];
+    return [standing("crash records", "CRASH RECORDS NOT READABLE", `${at} is refused to this user, so the next crash needs root to diagnose. As root: \`${PSTORE_APPLY}\`.`)];
+  }
+  return [];
+}
+
+/**
+ * WHAT `host:check` RAISES, as FINDINGS (which wake a session; a note does not): the loop guard, a reboot nobody has read back, and the crash preparedness
+ * (the hang settings, kdump, the crash records). The read-back is owed to the row that asked, and a finding is how the org learns that it is, since nothing else runs after a boot.
+ * `crashSettings: false` leaves the preparedness out, for a host that is not an agent host (no user systemd): a laptop has no such file and is not drifted.
+ * @param {{ uname?: () => string, bootEntries?: () => string[], store?: () => RecordStore, now?: () => number, bootedAt?: () => number, reads?: HostReads, crashSettings?: boolean }} [deps]
  * @returns {Finding[]}
  */
-export function kernelFindings({ uname = realUname, bootEntries = realBootEntries, store = recordStore, now = Date.now, bootedAt = realBootedAt }: { uname?: () => string; bootEntries?: () => string[]; store?: () => RecordStore; now?: () => number; bootedAt?: () => number; } = {}): Finding[] {
+export function kernelFindings({ uname = realUname, bootEntries = realBootEntries, store = recordStore, now = Date.now, bootedAt = realBootedAt, reads = realHostReads, crashSettings = true }: { uname?: () => string; bootEntries?: () => string[]; store?: () => RecordStore; now?: () => number; bootedAt?: () => number; reads?: HostReads; crashSettings?: boolean; } = {}): Finding[] {
+  const preparedness = crashSettings ? [...hangConfFindings(reads), ...kdumpFindings(reads), ...crashRecordsFindings(reads)] : [];
   let record;
   try { record = store().read(); } catch (cause) {
-    return [{ unit: "kernel", problem: "NOT READ", detail: `the record of the last reboot could not be read (${describe(cause)}), so the 24 h loop guard is blind.` }];
+    return [{ unit: "kernel", problem: "NOT READ", detail: `the record of the last reboot could not be read (${describe(cause)}), so the 24 h loop guard is blind.` }, ...preparedness];
   }
   const older = stillOlderFinding(record, kernelReading(uname, bootEntries), now());
-  return [...readBackFindings(record, bootedAt), ...older === null ? [] : [older]];
+  return [...readBackFindings(record, bootedAt), ...older === null ? [] : [older], ...preparedness];
 }
 
 /**
@@ -322,10 +463,15 @@ function valueOf(flags: string[], name: string): string | undefined {
 }
 
 async function main() {
-  refuseUnknownFlags(["--reboot", "--read-back", "--row", "--self"], { entry: import.meta.url, command: "node src/host-kernel.ts" });
+  refuseUnknownFlags(["--reboot", "--read-back", "--hang-conf", "--row", "--self"], { entry: import.meta.url, command: "node src/host-kernel.ts" });
   const flags = process.argv.slice(2);
   const row = valueOf(flags, "--row");
   const self = valueOf(flags, "--self");
+  if (flags.includes("--hang-conf")) {
+    if (flags.some((f) => f !== "--hang-conf")) { process.stderr.write("node src/host-kernel.ts: --hang-conf only prints the file text; run it alone.\n"); process.exitCode = 1; return undefined; }
+    process.stdout.write(HANG_CONF);
+    return undefined;
+  }
   if (flags.includes("--read-back")) return readBackMain();
   if (!flags.includes("--reboot")) {
     const notes = kernelNotes();
