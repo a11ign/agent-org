@@ -25,7 +25,7 @@ const { LONG_RUNNING_TEMPLATES } = await import("./host-config.ts");
 const { hostUnitsInstall, unclassifiedEntries } = await import("./host-units.ts");
 const { HostConfigRefusal, parseHostConfig, renderTemplate, templateValues } = await import("./host-config.ts");
 const { tmpDir } = await import("./lib/tmp-fixture.ts");
-const { EventTunnelFailure, SUBSCRIBED_EVENTS, changeFunnel, declaredTunnel, deliveryLine, ensureSecretFile, main, pathIsServed, recentDeliveries, registerWebhook } = await import("./event-tunnel.ts");
+const { EventTunnelFailure, READY_POLL_MS, READY_WAIT_MS, SUBSCRIBED_EVENTS, changeFunnel, changeTunnel, declaredTunnel, deliveryLine, ensureSecretFile, main, pathIsServed, recentDeliveries, registerWebhook } = await import("./event-tunnel.ts");
 const { createFakeExposure } = await import("./plugins/fakes/exposure.ts");
 
 const TEMPLATE = "event-tunnel.service.in";
@@ -350,4 +350,86 @@ test("#5197: the REAL host declaration opens the funnel and its unit renders", {
   changeFunnel("up", { publicUrl, port: receiver.port }, { out: () => undefined, exposure });
   assert.equal(exposure.entries.get(`443${new URL(publicUrl).pathname}`)?.local, receiver.port, "and `up` serves the declared loopback port");
   assert.doesNotMatch(text, /@@/);
+});
+
+// ---- A11-279: the tunnel starts after its exposure is ready, and a start that fails is started again
+
+/** An exposure that serves the funnel path like the fake, and says it is not ready for its first `notReady` looks. `looks` counts the looks; `order` is what it was asked, in order. */
+function readyAfter(notReady: number) {
+  const exposure = createFakeExposure(NAME);
+  const order: string[] = [];
+  let looks = 0;
+  const wrapped = {
+    ...exposure,
+    readiness: () => { looks += 1; order.push("readiness"); return looks > notReady ? null : "Tailscale is Stopped, not Running"; },
+    serve: (...args: Parameters<typeof exposure.serve>) => { order.push("serve"); return exposure.serve(...args); },
+    unserve: (...args: Parameters<typeof exposure.unserve>) => { order.push("unserve"); return exposure.unserve(...args); },
+  };
+  return { wrapped, order, looks: () => looks };
+}
+
+const noSleep = () => {
+  const slept: number[] = [];
+  return { slept, sleep: async (ms: number) => { slept.push(ms); } };
+};
+
+test("A11-279: `up` waits for the exposure to be ready and serves only after it is, looking every few seconds", async () => {
+  const { wrapped, order } = readyAfter(2);
+  const { slept, sleep } = noSleep();
+  const out: string[] = [];
+  await changeTunnel("up", MOUNT, { out: (line) => { out.push(line); }, sleep, exposure: wrapped, env: {} });
+  assert.deepEqual(order.slice(0, 3), ["readiness", "readiness", "readiness"], "it looked until the exposure was ready");
+  assert.equal(order.indexOf("serve"), 3, "and served only after the look that said it was ready");
+  assert.deepEqual(slept, [READY_POLL_MS, READY_POLL_MS]);
+  assert.match(out[0], /^the exposure is not ready \(Tailscale is Stopped, not Running\): waiting up to 45 s$/);
+  assert.equal(wrapped.portState(443, 8787, { path: "/webhook" }).kind, "ours", "and the path is served");
+});
+
+test("A11-279: an exposure that is ready at once is served without a wait", async () => {
+  const { wrapped, order } = readyAfter(0);
+  const { slept, sleep } = noSleep();
+  await changeTunnel("up", MOUNT, { out: () => undefined, sleep, exposure: wrapped, env: {} });
+  assert.deepEqual([slept, order[0], order.includes("serve")], [[], "readiness", true]);
+});
+
+test("A11-279: an exposure that is never ready fails `up` after the wait, naming why, and serves nothing: the unit's restart tries again", async () => {
+  const { wrapped, order, looks } = readyAfter(Number.MAX_SAFE_INTEGER);
+  const { slept, sleep } = noSleep();
+  await assert.rejects(changeTunnel("up", MOUNT, { out: () => undefined, sleep, exposure: wrapped, env: {} }),
+    (error: unknown) => error instanceof EventTunnelFailure && error.message === "event-tunnel: the exposure was not ready after 45 s: Tailscale is Stopped, not Running");
+  assert.equal(order.includes("serve"), false);
+  assert.equal(slept.reduce((sum, ms) => sum + ms, 0), READY_WAIT_MS, "it waited the whole bound and no longer");
+  assert.equal(looks(), READY_WAIT_MS / READY_POLL_MS + 1);
+  assert.ok(READY_WAIT_MS < 60_000, "inside the unit's TimeoutStartSec, so the failure is the tunnel's and not systemd's timeout");
+});
+
+test("A11-279: `down` does not wait for the exposure: a stop at shutdown is not held up by a tailscale that is already gone", async () => {
+  const { wrapped, order } = readyAfter(Number.MAX_SAFE_INTEGER);
+  const { slept, sleep } = noSleep();
+  await changeTunnel("down", MOUNT, { out: () => undefined, sleep, exposure: wrapped, env: {} });
+  assert.deepEqual([slept, order.includes("readiness")], [[], false]);
+});
+
+test("A11-279: a host whose exposure serves nothing to the internet is refused before any wait, naming the host files read", async () => {
+  const home = tmpDir("tunnel-home-");
+  const local = createFakeExposure();
+  const { slept, sleep } = noSleep();
+  const refusal = (env: NodeJS.ProcessEnv) => changeTunnel("up", MOUNT, { out: () => undefined, sleep, exposure: local, env, home });
+  await assert.rejects(refusal({ AGENT_ORG_HOST: "/work/project/.agent-org/host.json", AGENT_ORG_HOME: home }),
+    (error: unknown) => error instanceof EventTunnelFailure && error.message.startsWith("event-tunnel: the events tunnel needs an exposure that serves to the internet: /work/project/.agent-org/host.json and the instance's ")
+      && error.message.includes(`${home}/host.json name no exposure but local, which serves on loopback only`));
+  await assert.rejects(refusal({ AGENT_ORG_HOME: home }), (error: unknown) => error instanceof EventTunnelFailure && error.message.includes(`serves to the internet: ${home}/host.json name no exposure`) && !error.message.includes("and the instance's"));
+  assert.deepEqual(slept, [], "nothing was waited for");
+});
+
+test("A11-279: the unit starts after the instance, is started again after a failure with no limit on the tries, and its wait is inside its start timeout", () => {
+  const text = unitText(UNIT, FUNNEL);
+  assert.match(text, /^After=network-online\.target tailscaled\.service a11ign-event-receiver\.service agent-org-instance\.service$/m);
+  assert.match(text, /^StartLimitIntervalSec=0$/m, "in [Unit]: a host that boots before tailscale is not given up on");
+  assert.ok(text.indexOf("StartLimitIntervalSec=0") < text.indexOf("[Service]"));
+  assert.match(text, /^Restart=on-failure$/m);
+  assert.match(text, /^RestartSec=30$/m);
+  assert.ok(text.indexOf("Restart=on-failure") > text.indexOf("[Service]") && text.indexOf("Restart=on-failure") < text.indexOf("[Install]"));
+  assert.match(text, /^TimeoutStartSec=60$/m);
+  assert.match(text, /^Type=oneshot$/m);
 });

@@ -602,6 +602,47 @@ export async function startService(name: ServiceName, deps: ServiceDeps): Promis
   return { ...unit, address: `${origins.find((origin) => origin.endsWith(`:${served.port}`)) ?? origins[0]}/` };
 }
 
+/** What {@link reapplyServes} found at one served service's port: this board's entry already there, put back, another's (left alone), or a port it could not read or serve. */
+export type ServeCheck = Readonly<{ service: "ui" | "terminal"; state: "present" | "reapplied" | "foreign" | "refused"; port: number | null; why?: string }>;
+
+/** The services the exposure serves, in the order they are checked. */
+const SERVED_SERVICES = ["ui", "terminal"] as const;
+
+/** The serve check of one running service that the exposure serves: its entry is looked at, and put back when the port is free. PRESENT is the answer for this board's own entry; a port another entry holds is `foreign` and is never touched. */
+async function reapplyOne(name: "ui" | "terminal", deps: ServiceDeps): Promise<ServeCheck | null> {
+  const served = await servedAt(name, deps);
+  if (served === null) return null;
+  const { exposure, port, local } = served;
+  const not = (why: string): ServeCheck => ({ service: name, state: "refused", port, why });
+  const unready = exposure.readiness();
+  if (unready !== null) return not(unready);
+  const state = exposure.portState(port, local);
+  if (state.kind === "ours" && !state.funnel) return { service: name, state: "present", port };
+  if (state.kind !== "free" || state.funnel) return { service: name, state: "foreign", port, why: exposure.claim(port, local, name) ?? `port ${port} serves ${state.proxy ?? "another entry"}` };
+  const result = exposure.serve(port, local);
+  return result.status === 0 ? { service: name, state: "reapplied", port } : not(result.refusal ?? result.stderr);
+}
+
+/**
+ * Put back the board's and the terminal's serves that are gone (A11-279). The exposure's serves were set only when `agent-org start` ran, so a host that restarted, a tailscaled that restarted, or a `tailscale serve` that removed them left
+ * every terminal link dead until a person served them again (2026-10-25: twice). For each service the exposure serves that is REGISTERED AND RUNNING (a service `agent-org stop` stopped keeps its unit file, and its serve was removed on purpose): a port with this board's entry is left as it is, a free port is served again, and a
+ * port another entry holds (or that is open to the internet) is reported and never touched. A host the readers refuse, an exposure that is not ready, and a serve that fails are each one `refused` check with the sentence to act on. NEVER
+ * THROWS: it runs inside the instance's tick. A service that is not registered or not running, and a host on `local`, have no check.
+ */
+export async function reapplyServes(deps: ServiceDeps): Promise<readonly ServeCheck[]> {
+  const checks: ServeCheck[] = [];
+  for (const name of SERVED_SERVICES) {
+    try {
+      if (serviceState(name, deps) !== "running") continue;
+      const check = await reapplyOne(name, deps);
+      if (check !== null) checks.push(check);
+    } catch (err) {
+      checks.push({ service: name, state: "refused", port: null, why: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return checks;
+}
+
 /**
  * Stop the service and keep it from starting at login. The unit file stays, so `start` and `doctor` still find it. A page or terminal that
  * the exposure serves then loses its own entry, and nothing else.

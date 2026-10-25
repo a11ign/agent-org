@@ -54,7 +54,7 @@ const ENVIRONMENT_LINES = {
 export function resumeLine(entry: ViewEntry): string | null {
   const { resume } = entry;
   if (entry.phase !== "running" || resume === undefined) return null;
-  if (resume.refused !== undefined) return `could not be prompted: ${resume.refused}`;
+  if (resume.refused !== undefined) return `could not be prompted: ${resume.refused}${resume.environment === "missing" ? `; ${ENVIRONMENT_LINES.missing}` : ""}`;
   const what = resume.after === "restart" ? `Resumed after a restart at ${clockOf(resume.at)}` : `Idle since ${clockOf(resume.idleSince ?? resume.at)}, resumed at ${clockOf(resume.at)}`;
   return resume.environment === undefined ? what : `${what}; ${ENVIRONMENT_LINES[resume.environment]}`;
 }

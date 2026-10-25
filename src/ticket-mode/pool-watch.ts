@@ -45,6 +45,7 @@ import { answerQueue, type QueueAnswer } from "./pool-merge-queue.ts";
 import { recordQueueHeads } from "./queue/queue-merge-queue.ts";
 import { foreignRedsOf } from "./pool-foreign-checks.ts";
 import { reseatRuns } from "./pool-reseat.ts";
+import { reconcileExposure } from "./pool-exposure.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
@@ -465,6 +466,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
       watch(ctx);
       // A run whose restored pane lost its environment is started again with it, before it is resumed (A11-279).
       await reseatRuns(ctx);
+      // The board's and the terminal's serves are checked and put back, at the instance's first pass and as it runs (A11-279).
+      await reconcileExposure(ctx);
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
       forceDrain(ctx);
       // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).

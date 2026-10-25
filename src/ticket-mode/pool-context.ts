@@ -24,6 +24,8 @@ import type { WaitPolls } from "./wait-on/wait-watch.ts";
 import type { WaitSeams } from "./wait-on/wait-read.ts";
 import type { RestartReads } from "./pool-resume.ts";
 import { livePaneEnv, type PaneEnv } from "./run-env.ts";
+import type { ServeCheck } from "../install/service.ts";
+import type { ExposureState } from "./pool-exposure.ts";
 import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
@@ -87,6 +89,8 @@ export type PoolDeps = Readonly<{
   restartReads?: RestartReads;
   /** The environment of the Claude process in a pane (A11-279): `herdr pane process-info` and `/proc/<pid>/environ` by default, which only read. A test gives the panes' recorded environments. */
   paneEnv?: PaneEnv;
+  /** Checks, and puts back, the board's and the terminal's serves on the exposure (A11-279); the instance passes the machine's. Absent: the pool checks nothing, as in every test. */
+  serveCheck?: () => Promise<readonly ServeCheck[]>;
 }>;
 
 /** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */
@@ -177,6 +181,8 @@ export type PoolContext = Readonly<{
   envLost: Map<string, readonly string[]>;
   /** The environment of the Claude process in a pane (A11-279). */
   paneEnv: PaneEnv;
+  /** What the pool last read of the exposure's serves (A11-279). */
+  exposure: ExposureState;
 }>;
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
@@ -253,5 +259,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
     startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
+    exposure: { at: null, checks: [], said: new Map<string, string>() },
   };
 }

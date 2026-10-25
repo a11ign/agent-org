@@ -249,7 +249,7 @@ function lostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): reado
   return held === null ? [] : lostKeys(runEnvOf(ctx, entry), held);
 }
 
-/** Whether a run noted as lacking its environment while it worked now sits at a prompt with nothing to tell it first: it is started again with the environment ({@link watchIdle}). */
+/** Whether a run noted as lacking its environment while it worked now sits at a prompt with nothing to tell it first: it is started again with the environment ({@link watchIdle}), unless its pane shows background work running, which a new Claude would end. */
 const lostEnvironmentAtPrompt = (ctx: PoolContext, entry: Entry, dir: string, seen: string): boolean =>
   ctx.envLost.has(runPlace(ctx, entry).name) && (seen === "idle" || seen === "done") && awaitsOutcome(entry, dir) && !untoldDecline(ctx, entry);
 
@@ -302,7 +302,7 @@ export function watchIdle(ctx: PoolContext, entry: Entry, seen: string): void {
   if (current === undefined || !resumable(current)) return;
   const place = runPlace(ctx, current);
   const now = ctx.now();
-  if (lostEnvironmentAtPrompt(ctx, current, place.dir, seen)) {
+  if (lostEnvironmentAtPrompt(ctx, current, place.dir, seen) && !backgroundRuns(ctx, place)) {
     ctx.envLost.delete(place.name);
     return resumeOrReseat(ctx, current, place, { at: now, after: "restart" });
   }

@@ -31,7 +31,7 @@ function movableReads() {
 }
 
 /** `keys` started and seen working, each with a `working` note written at T0, on a clock a test moves, by one pool over `deps`. */
-async function liveRuns(keys: readonly string[] = ["NBF-1", "NBF-2"], deps: Partial<PoolDeps> = {}) {
+async function liveRuns(keys: readonly string[] = ["NBF-1", "NBF-2"], deps: Partial<PoolDeps> = {}, beforeStart: (herdr: ReturnType<typeof poolFixture>["herdr"]) => void = () => {}) {
   let clock = T0;
   const { held, reads } = movableReads();
   const made = poolFixture({ keys, max: 3, now: () => clock, restartReads: reads });
@@ -43,6 +43,7 @@ async function liveRuns(keys: readonly string[] = ["NBF-1", "NBF-2"], deps: Part
     return made.herdr.run(args);
   };
   const pool = made.restart({ restartReads: reads, herdr, ...deps });
+  beforeStart(made.herdr);
   await pool.tick();
   for (const key of keys) made.status.set(herdrName(key), "working");
   await pool.tick();
@@ -396,31 +397,25 @@ test("A11-279: a pane that kept its environment is resumed where it is and never
 
 test("A11-279: an environment that cannot be read leaves the run alone, and a run with no session to resume is prompted where it is with its card saying the environment is missing", async () => {
   const unread = await liveRuns(["NBF-1"], { paneEnv: () => null });
-  unread.held.herdr = "2";
-  unread.herdr.restoreWithoutEnvironment();
-  unread.status.set(herdrName("NBF-1"), "idle");
-  await unread.advance(30_000);
+  await restartIdle(unread);
   assert.deepEqual([unread.resumes("w1:p1").length, unread.entry("NBF-1").pane, unread.entry("NBF-1").resume?.environment], [1, "w1:p1", undefined], "resumed in place, not started again");
 
   // herdr reported no Claude session for the run, and its folder holds no transcript.
-  let clock = T0;
-  const { held, reads } = movableReads();
-  const made = poolFixture({ keys: ["NBF-1"], now: () => clock, restartReads: reads });
-  made.herdr.sessionless.on = true;
-  await made.pool.tick();
-  made.status.set(herdrName("NBF-1"), "working");
-  await made.pool.tick();
-  held.herdr = "2";
-  made.herdr.restoreWithoutEnvironment();
-  made.status.set(herdrName("NBF-1"), "idle");
-  clock += 30_000;
-  await made.pool.tick();
-  const prompts = made.herdr.calls.filter((args) => args[3] === "prompt" && args[4] === "w1:p1");
-  assert.equal(prompts.length, 1, "the prompt is sent where it is: the run is not killed");
+  const made = await liveRuns(["NBF-1"], {}, (herdr) => { herdr.sessionless.on = true; });
+  await restartIdle(made);
+  assert.equal(made.resumes("w1:p1").length, 1, "the prompt is sent where it is: the run is not killed");
   assert.equal(made.entry("NBF-1").pane, "w1:p1");
   assert.equal(made.entry("NBF-1").resume?.environment, "missing");
   assert.ok(resumeLine(made.entry("NBF-1"))?.endsWith("environment missing: the gh wrapper will refuse its pull request until it is restarted"));
 });
+
+/** herdr's service restarts and restores the pane without its environment, with the agent idle at its prompt, and one pass runs. */
+async function restartIdle(run: Awaited<ReturnType<typeof liveRuns>>): Promise<void> {
+  run.held.herdr = "2";
+  run.herdr.restoreWithoutEnvironment();
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+}
 
 /** One live run whose pane herdr restored without its environment after a restart of herdr's service, and the number of workspaces opened so far. */
 async function restoredWithoutEnvironment() {
@@ -459,4 +454,42 @@ test("A11-279: the environment start() gives a run's workspace is runEnvOf's, fo
   assert.deepEqual(opened, runEnvOf({ hostFile: "/work/.agent-org/host.json" }, entry));
   assert.deepEqual(runEnvOf({ hostFile: "/work/.agent-org/host.json" }, { ...entry, batch: "b-1" }), { AGENT_ORG_TICKET_HOST: "/work/.agent-org/host.json" });
   assert.deepEqual(runEnvOf({ hostFile: undefined }, { ...entry, batch: "b-1" }), {});
+});
+
+test("A11-279: a run noted as lacking its environment while it worked is not started again while its pane shows background work, and is once that is gone", async () => {
+  const { run, before } = await restoredWithoutEnvironment();
+  await run.advance(30_000);
+  run.herdr.screens.set("w1:p1", "> \n  ⏵⏵ bypass permissions on · 1 shell");
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+  assert.equal(createdWith(run.herdr.calls).length, before, "a new Claude would end the shell");
+  run.herdr.screens.set("w1:p1", "> ");
+  await run.advance(30_000);
+  assert.equal(createdWith(run.herdr.calls).length - before, 1);
+});
+
+test("A11-279: a pane that kept its environment under a moved host file is resumed where it is: only an absent key is a lost environment", async () => {
+  const run = await liveRuns(["NBF-1"]);
+  run.held.herdr = "2";
+  run.herdr.envs.set("w1:p1", { AGENT_ORG_TICKET: "NBF-1", AGENT_ORG_TICKET_BRANCH: "nbf-1", AGENT_ORG_TICKET_HOST: "/old/host.json" });
+  const before = createdWith(run.herdr.calls).length;
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+  assert.deepEqual([run.resumes("w1:p1").length, createdWith(run.herdr.calls).length], [1, before]);
+});
+
+test("A11-279: a run a person stops while the board starts it again keeps the stop: the workspace just opened is closed", async () => {
+  let stopRun: () => void = () => {};
+  const run = await liveRuns(["NBF-1"], { wait: async () => { stopRun(); } });
+  stopRun = () => run.pool.stop("NBF-1");
+  await restartIdle(run);
+  const closed = run.herdr.calls.filter((args) => args.includes("workspace") && args.includes("close")).map((args) => args[args.indexOf("close") + 1]);
+  assert.ok(closed.includes("w2"), `the new workspace was closed (${closed.join(", ")})`);
+  assert.notEqual(run.entry("NBF-1").phase, "running");
+});
+
+test("A11-279: a card whose prompt herdr refused still says the environment is missing", async () => {
+  const run = await liveRuns(["NBF-1"]);
+  const entry = { ...run.entry("NBF-1"), resume: { at: T0, after: "restart" as const, refused: "agent target w1:p1 is busy", environment: "missing" as const } };
+  assert.equal(resumeLine(entry as never), "could not be prompted: agent target w1:p1 is busy; environment missing: the gh wrapper will refuse its pull request until it is restarted");
 });

@@ -54,6 +54,9 @@ export function livePaneEnv(herdr: Herdr, herdrSession: string, readEnviron: (pi
   };
 }
 
-/** The keys of `wanted` that `held` lacks or holds with another value. PURE. */
+/**
+ * The keys of `wanted` that `held` lacks. A key held with another value is not lost: the host file's path, say, may have moved since the run started, and the run's worker is healthy with the one it has. A pane restored by
+ * herdr holds none of them. PURE.
+ */
 export const lostKeys = (wanted: Readonly<Record<string, string>>, held: Readonly<Record<string, string>>): string[] =>
-  Object.entries(wanted).filter(([key, value]) => held[key] !== value).map(([key]) => key);
+  Object.keys(wanted).filter((key) => held[key] === undefined);
