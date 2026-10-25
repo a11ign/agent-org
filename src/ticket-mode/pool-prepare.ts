@@ -8,7 +8,7 @@ import { ticketReadOf } from "./ticket-read.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
-import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
+import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, TALK_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
 import { heldClaims } from "./board-view/overlap-hold.ts";
@@ -22,6 +22,7 @@ import { type PoolContext } from "./pool-context.ts";
 import { openedPullsOf } from "./opened-pulls.ts";
 import { pluginCopiesOf } from "./pool-pin.ts";
 import { recordPluginCopy } from "./queue/queue-pins.ts";
+import { resumesStoppedSession } from "./queue/queue-blocker-wait.ts";
 import { type FindingsGiven } from "./blocker-findings-check.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, type HeldClaim } from "./path-claims.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
@@ -101,8 +102,8 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   const parent = await parentOf(ctx, ticket, dir);
   const notes = notesFile(settings.brief, "tickets.brief");
   const connectors = settings.connectors;
-  // A run the board stopped for an update resumes its own Claude session on the new version (A11-169), whatever kind of run it was.
-  let resume: string | undefined = entry.stoppedForUpdate === undefined ? undefined : sessionToResume(ctx, entry);
+  // A run the board stopped resumes its own Claude session, whatever kind of run it was: on the new version after an update (A11-169), or once the tickets its worker waited on are done (A11-272).
+  let resume: string | undefined = resumesStoppedSession(entry) ? sessionToResume(ctx, entry) : undefined;
   if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
@@ -152,7 +153,7 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
   // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207). So do the paths it listed
   // other tickets as holding, and the retry made for a folder claim (A11-212).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
 }
@@ -190,6 +191,9 @@ export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, di
   writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(ctx, entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
   writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
   writeFileSync(join(dir, PROTECTED_FILE), `${JSON.stringify(protectedPaths(settings.binDir))}\n`);
+  // A talk session has a person in its terminal, so its stop is not held to the escalation list (A11-257); no other run is.
+  if (entry.talk === true) writeFileSync(join(dir, TALK_FILE), "\n");
+  else rmSync(join(dir, TALK_FILE), { force: true });
   // A fresh ticket run on a machine with `tickets.drafts: false` may open its pull request ready; no other run, and no machine that keeps drafts, may.
   if (!settings.drafts && entry.review === undefined && !isPlanning(ctx, entry)) writeFileSync(join(dir, READY_FILE), "\n");
   else rmSync(join(dir, READY_FILE), { force: true });

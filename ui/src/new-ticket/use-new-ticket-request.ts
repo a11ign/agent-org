@@ -22,11 +22,11 @@ export type NewTicketRequest = Readonly<{
 /**
  * The New ticket form and its send. It belongs to the page, not to the dialog, so closing the dialog stops nothing: a send in flight carries on, and a dialog opened again shows
  * where it is. A Grill opens a blank tab in the click, the only moment a browser allows it, and points it at the run's terminal once the run has one (a refusal closes it).
- * `accepted` takes the runs the server answered with, once the request is accepted; the form then goes back to an empty Quick, Auto request.
+ * `accepted` takes the runs the server answered with, once the request is accepted; the form then goes back to an empty Quick, Auto request. `prefill` is the request the form starts with.
  */
-export function useNewTicketRequest(accepted: (view: WritersView) => void): NewTicketRequest {
+export function useNewTicketRequest(accepted: (view: WritersView) => void, prefill = ""): NewTicketRequest {
   const { client, config, connection } = useShell();
-  const [form, setForm] = useState<NewTicketForm>(EMPTY_FORM);
+  const [form, setForm] = useState<NewTicketForm>(() => ({ ...EMPTY_FORM, request: prefill }));
   const [sending, setSending] = useState<Sending>(IDLE);
   const start = writerStart(form, { grill: config?.writerGrill === true });
 

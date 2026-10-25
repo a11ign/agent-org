@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+After-merge checks are records of their own, read for their owner and closed with evidence (A11-277, step 1 of 3). `ownerOf` reads who runs a line from its prefix (`Chairman session: …`, `On the agents host: …`), its subject (`The chairman chooses …`) or A11-173's trailing clause, each at most 6 words, so all 33 lines on the board on 2026-10-25 read an owner. Each listed line is copied once into `<stateDir>/tickets/after-merge-checks.json` by a sweep at the end of the tracker refresh, with its runner (`session`, `person`, or the session "for <role>"), and outlives its run's dismissal. `GET /api/queue` lists the open checks as `afterMergeChecks`, oldest first; `POST /api/after-merge/<KEY>/<n>` closes one passed, failed or superseded with one line of evidence, which the next sweep posts on the ticket once; a failed check offers a pre-filled follow-up, recorded with `POST /api/after-merge/<KEY>/<n>/follow-up`. The Runs page's After-merge list shows each row's runner and age, with Passed, Failed and Superseded, and "File a follow-up" opens the New ticket dialog pre-filled.

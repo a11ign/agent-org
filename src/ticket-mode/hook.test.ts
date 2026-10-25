@@ -128,7 +128,7 @@ test("a copy of the machine's refusals that cannot be read is reported and skipp
 test("A11-152: an outcome written at or before the board's stale mark is no outcome, and a newer one is judged as written", () => {
   const dir = tmpDir("ticket-hook-stale-");
   const outcome = join(dir, "outcome.json");
-  writeFileSync(outcome, JSON.stringify({ kind: "needs-human", reason: "which colour?" }));
+  writeFileSync(outcome, JSON.stringify({ kind: "needs-human", reason: "which colour?", escalation: "reserved" }));
   utimesSync(outcome, 1000, 1000);
   writeFileSync(join(dir, "outcome-stale-before"), "1000000\n");
   const refused = stopVerdict(dir);
@@ -140,14 +140,14 @@ test("A11-152: an outcome written at or before the board's stale mark is no outc
 
 test("A11-152: a stale mark it cannot read makes every outcome stale, and the count still bounds the refusal", () => {
   const dir = tmpDir("ticket-hook-stale-garbled-");
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r" }));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r", escalation: "reserved" }));
   writeFileSync(join(dir, "outcome-stale-before"), "not a time");
   assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 1 }, () => stopVerdict(dir).code), [2, 2, 0]);
 });
 
 test("A11-152: the stop reads the outcome once, and a read that finds no file is not repeated", () => {
   const dir = tmpDir("ticket-hook-read-once-");
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r" }));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r", escalation: "reserved" }));
   let reads = 0;
   const readOutcome = (path: string) => {
     reads += 1;
@@ -169,7 +169,7 @@ test("A11-152: readOutcomeFile takes the text and the mtime from one open file, 
 
 test("A11-152: a stop holds its stop-active mark while it reads the outcome, and takes the mark off whatever it decides", () => {
   const dir = tmpDir("ticket-hook-active-");
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r" }));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r", escalation: "reserved" }));
   let seen = false;
   const readOutcome = (path: string) => {
     seen = existsSync(join(dir, "stop-active"));
@@ -192,7 +192,7 @@ test("a stop with no outcome is refused twice in a row, then allowed; an outcome
   const dir = tmpDir("ticket-hook-stop-");
   const verdicts = Array.from({ length: MAX_STOP_REFUSALS + 1 }, () => stopVerdict(dir).code);
   assert.deepEqual(verdicts, [2, 2, 0]);
-  writeFileSync(join(dir, "outcome.json"), "{\"kind\":\"needs-human\",\"reason\":\"r\"}");
+  writeFileSync(join(dir, "outcome.json"), "{\"kind\":\"needs-human\",\"reason\":\"r\",\"escalation\":\"reserved\"}");
   assert.equal(stopVerdict(dir).code, 0);
   writeFileSync(join(dir, "outcome.json"), "");
   const empty = stopVerdict(dir);
@@ -545,7 +545,7 @@ test("A11-80: a working outcome lets one stop through while background work runs
   writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the second play is still running" }));
   utimesSync(outcome, 2000, 2000);
   assert.equal(stop().code, 0, "working written again, while more of its work runs, lets the stop through");
-  writeFileSync(outcome, JSON.stringify({ kind: "needs-human", reason: "the roll failed on host 3" }));
+  writeFileSync(outcome, JSON.stringify({ kind: "needs-human", reason: "the roll failed on host 3", escalation: "access" }));
   utimesSync(outcome, 2000, 2000);
   assert.equal(stop().code, 0, "a final outcome lets every stop through, whatever its time");
   assert.equal(stop().code, 0);
@@ -873,12 +873,12 @@ test("A11-207: a plan that names every pull request, or a brief that listed none
 });
 
 test("A11-207: only a planned outcome with a list is retried: a needs-human outcome, a run with no list and a plan folder with a question or no plan are not", () => {
-  const asked = planningRun({ kind: "needs-human", reason: "which?" }, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
+  const asked = planningRun({ kind: "needs-human", reason: "which?", escalation: "reserved" }, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
   assert.equal(stopVerdict(asked.dir).code, 0, "a needs-human outcome");
   const unlisted = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { "plan.md": PLAN_WITH() } });
   rmSync(join(unlisted.dir, FINDINGS_GIVEN_FILE));
   assert.equal(stopVerdict(unlisted.dir).code, 0, "a run with no findings-given list (a worker's run, or a board older than this)");
-  const question = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { [QUESTION_FILE]: "which?" } });
+  const question = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], { "A11-191": { [QUESTION_FILE]: "**Escalation:** reserved\n\nwhich?" } });
   assert.equal(stopVerdict(question.dir).code, 0, "a ticket that wrote a question");
   const empty = planningRun(PLANNED, [{ key: "A11-191", urls: [PULL_A] }], {});
   assert.equal(stopVerdict(empty.dir).code, 0, "a plan folder with no plan is the board's refusal, not a findings one");

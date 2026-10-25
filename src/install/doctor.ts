@@ -523,18 +523,18 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
 }
 
 /**
- * The board UI's build (A11-191). It is `ok` when the build `/` serves is there (A11-190's own lookup, so the two cannot disagree), and `ok` when this version ships none; it WARNS when the running
- * version's release ships one and none is found: `/` shows its missing-build page, and the instance's calls still answer. A version folder is fixed by `agent-org update`, which fetches the build the release
- * carries; the main channel has no release to fetch from; a checkout builds it.
+ * The board UI's build (A11-191). It is `ok` when the build `/` serves is there (A11-190's own lookup, so the two cannot disagree), and `ok` when this version ships none; it FAILS when the running
+ * version's release ships one and none is found (A11-266): `/` shows its missing-build page, which is a broken board whatever the instance's calls answer. A version folder is fixed by `agent-org update`,
+ * which fetches the build the release carries; the main channel has no release to fetch from; a checkout builds it.
  */
 function uiBuildCheck(deps: DoctorDeps): Check {
   const { found, declared, looked, version } = deps.uiBuild();
   if (found !== null) return ok("ui build", `/ is served from ${found}`);
   if (!declared) return ok("ui build", "this version ships no UI build");
   const detail = `${version ?? "this version"} should have a UI build and none is in ${looked}, so / shows the missing-build page`;
-  if (version === null) return warned("ui build", detail, "run `pnpm ui:build`");
-  if (!isReleaseTag(version)) return warned("ui build", detail, "main has no release to fetch a UI build from: run `agent-org update --channel release`, which moves to the newest release");
-  return warned("ui build", detail, "run `agent-org update`, which fetches it");
+  if (version === null) return failed("ui build", detail, "run `pnpm ui:build`");
+  if (!isReleaseTag(version)) return failed("ui build", detail, "main has no release to fetch a UI build from: run `agent-org update --channel release`, which moves to the newest release");
+  return failed("ui build", detail, "run `agent-org update`, which fetches it");
 }
 
 /**

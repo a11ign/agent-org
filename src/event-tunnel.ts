@@ -153,7 +153,7 @@ export function changeFunnel(command: "up" | "down", mount: Mount, deps: { out: 
   const path = pathOf(mount);
   if (pathIsServed(exposure, mount) === wanted) return void out(`${path} is already ${wanted ? "served" : "off"}${exposure.ports() === null && !wanted ? " as far as this exposure can tell (it serves on loopback only: a path an earlier exposure opened is that exposure's to remove)" : ""}: nothing to change`);
   out(`${wanted ? "serve" : "unserve"} ${path} on port ${FUNNEL_PORT}, open to the internet`);
-  const result = wanted ? exposure.serve(FUNNEL_PORT, mount.port, { path, funnel: true }) : exposure.unserve(FUNNEL_PORT, { path, funnel: true });
+  const result = wanted ? exposure.serve(FUNNEL_PORT, mount.port, { path, funnel: true }) : exposure.unserve(FUNNEL_PORT, { path, funnel: true, local: mount.port });
   if (result.status !== 0) throw failureOf(exposure, command, path, result.refusal ?? (result.stderr || `exit ${result.status}`));
   if (pathIsServed(exposure, mount) !== wanted) {
     throw new EventTunnelFailure(`the exposure returned and ${path} is still ${wanted ? "NOT served" : "served"}: what it holds at the path says so`);

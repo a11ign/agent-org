@@ -1,7 +1,7 @@
 // no-token: gh -- the queue and the board's words, in memory; nothing is read or spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { overlapWait } from "./board-view/overlap-hold.ts";
+import { heldClaims, overlapWait } from "./board-view/overlap-hold.ts";
 import { runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import type { ViewEntry } from "./board-view/view-types-and-filters.ts";
 import { enqueue } from "./queue/queue-entries-and-outcomes.ts";
@@ -103,4 +103,67 @@ test("A11-212: a hold over many files names the first five and how many more, an
   const waiting = { ticket: { key: "A11-200" }, phase: "queued", paths: ["agent-org:ui/"] } as unknown as ViewEntry;
   assert.equal(waitNote(waiting, [holder, waiting]),
     "Waits on A11-196 #12: both touch ui/src/f0.ts, ui/src/f1.ts, ui/src/f2.ts, ui/src/f3.ts, ui/src/f4.ts, and 3 more; a folder claim, not a shared file: narrow A11-200's `ui/` in its plan");
+});
+
+const MIDDLEWARE = ["lab:middleware/runtime/main.py", "lab:middleware/README.md", "lab:middleware/src/", "lab:middleware-spike.yml"];
+const URL_7 = "https://github.com/a11ign/lab/pull/7";
+
+/** A run parked on its worker's declared wait (A11-245), holding the middleware files: `waits` is what its note declares. */
+const parked = (key: string, waits: readonly unknown[], over: Record<string, unknown> = {}) =>
+  ({ ticket: { key }, phase: "running", paths: MIDDLEWARE, working: { reason: "waiting", waiting: true, waits }, ...over }) as unknown as ViewEntry;
+
+/** A queued run that needs the middleware files. */
+const needsMiddleware = (key: string, over: Record<string, unknown> = {}) => ({ ticket: { key }, phase: "queued", paths: ["lab:middleware/runtime/main.py"], ...over }) as unknown as ViewEntry;
+
+test("A11-272: a run parked on a ticket wait does not hold that ticket behind its files: A11-229 starts on the files A11-231 holds", () => {
+  const holder = parked("A11-231", [{ kind: "ticket", key: "A11-229", until: "done" }]);
+  const waiting = needsMiddleware("A11-229");
+  assert.equal(overlapWait(waiting, [holder, waiting]), null);
+  assert.equal(runStatus(waiting, [holder, waiting]), "queued");
+});
+
+test("A11-272: a run parked on a pull request does not hold a ticket that pull request's ticket is blocked by, directly or two tickets down", () => {
+  const owner = { ticket: { key: "B-1" }, phase: "finished", paths: [], outcome: { kind: "ready-pr", prs: [{ url: URL_7, repo: "lab" }] }, pullFiles: { [URL_7]: ["docs/x.md"] },
+    blockers: [{ key: "C-1", state: "started", status: "In Progress" }] } as unknown as ViewEntry;
+  const middle = needsMiddleware("C-1", { blockers: [{ key: "D-1", state: "started", status: "In Progress" }] });
+  const deepest = needsMiddleware("D-1");
+  const holder = parked("A-1", [{ kind: "pullRequest", url: URL_7, until: "merged" }]);
+  const entries = [holder, owner, middle, deepest];
+  assert.equal(overlapWait(middle, entries), null, "C-1 blocks the ticket whose pull request A-1 waits on");
+  assert.equal(overlapWait(deepest, entries), null, "D-1 blocks C-1");
+});
+
+test("A11-272: a run parked on a fleet job or a CI run still holds a ticket it does not wait on, as before", () => {
+  for (const waits of [[{ kind: "fleetJob", id: "fj-1" }], [{ kind: "ciRun", repository: "a11ign/lab", runId: 9 }]]) {
+    const holder = parked("A-1", waits);
+    const waiting = needsMiddleware("E-1");
+    assert.equal(overlapWait(waiting, [holder, waiting])?.key, "A-1");
+  }
+});
+
+test("A11-272: a run parked on a fleet job does not hold its own blocker's blocker", () => {
+  const holder = parked("A-1", [{ kind: "fleetJob", id: "fj-1" }], { blockers: [{ key: "B-1", state: "started", status: "In Progress" }] });
+  const blocker = { ticket: { key: "B-1" }, phase: "finished", paths: [], outcome: { kind: "ready-pr", prs: [] }, blockers: [{ key: "C-1", state: "started", status: "In Progress" }] } as unknown as ViewEntry;
+  const waiting = needsMiddleware("C-1");
+  assert.equal(overlapWait(waiting, [holder, blocker, waiting]), null);
+});
+
+test("A11-272: a run whose worker was woken from its wait, or works again, holds its files against the ticket it had declared, as before", () => {
+  const woken = { ticket: { key: "A11-231" }, phase: "running", paths: MIDDLEWARE, working: { reason: "back at work", waits: [{ kind: "ticket", key: "A11-229", until: "done" }] } } as unknown as ViewEntry;
+  const waiting = needsMiddleware("A11-229");
+  assert.equal(overlapWait(waiting, [woken, waiting])?.key, "A11-231");
+});
+
+test("A11-272: a holder's exemption does not reach through a blocker that is done", () => {
+  const holder = { ticket: { key: "A-1" }, phase: "running", paths: MIDDLEWARE, blockers: [{ key: "B-1", state: "completed", status: "Done" }] } as unknown as ViewEntry;
+  const done = { ticket: { key: "B-1" }, phase: "finished", paths: [], outcome: { kind: "ready-pr", prs: [] }, blockers: [{ key: "C-1", state: "started", status: "In Progress" }] } as unknown as ViewEntry;
+  const waiting = needsMiddleware("C-1");
+  assert.equal(overlapWait(waiting, [holder, done, waiting])?.key, "A-1");
+});
+
+test("A11-272: a planner is still shown the claims of a run that waits on its ticket only through others, as before", () => {
+  const planned = { ticket: { key: "A11-229" }, phase: "queued", plan: { model: "opus", effort: "max" } } as unknown as ViewEntry;
+  const middle = { ticket: { key: "A11-231" }, phase: "queued", paths: ["lab:a.ts"], blockers: [{ key: "A11-229", state: "unstarted", status: "Todo" }] } as unknown as ViewEntry;
+  const last = { ticket: { key: "A11-232" }, phase: "queued", paths: ["lab:b.ts"], blockers: [{ key: "A11-231", state: "unstarted", status: "Todo" }] } as unknown as ViewEntry;
+  assert.deepEqual(heldClaims([planned, middle, last], [planned]).map(({ key }) => key), ["A11-232"]);
 });

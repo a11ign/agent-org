@@ -34,6 +34,7 @@ import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
+import { releaseTicketWaits } from "./pool-ticket-wait.ts";
 import { readoptCrashed } from "./pool-readopt.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
@@ -126,7 +127,7 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     // The step the worker says it is on is read while it works, so the page shows it as the worker moves on (A11-219).
     recordWrittenStep(ctx, current);
     if ((seen === "idle" || seen === "done") && outcomeWritten(dir)) {
-      settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8")));
+      settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8"), { talk: current.talk === true }));
       // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled. A decline it was not yet told of is told now, not to a run that just ended.
       if (sameRun(ctx, current)) {
         // A plan attach being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the planner (A11-216).
@@ -208,7 +209,7 @@ function closeLeftWorkspace(ctx: PoolContext, entry: Entry): void {
 function newOutcome(ctx: PoolContext, entry: Entry): WrittenOutcome | null {
   const path = join(runPlace(ctx, entry).dir, OUTCOME_FILE);
   if (!existsSync(path) || statSync(path).mtimeMs <= (entry.finishedAt ?? 0)) return null;
-  const outcome = parseOutcome(readFileSync(path, "utf8"));
+  const outcome = parseOutcome(readFileSync(path, "utf8"), { talk: entry.talk === true });
   // A proposed edit is stored with the ticket's text the board read: the file never holds that, so it is set aside for the comparison (A11-91).
   const edit = proposedEdit(entry);
   const stored = edit === undefined ? entry.outcome : { ...entry.outcome, edit: { ...edit, base: undefined } };
@@ -451,6 +452,9 @@ export async function tick(ctx: PoolContext): Promise<void> {
       watch(ctx);
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
       forceDrain(ctx);
+      // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).
+      const releasing = releaseTicketWaits(ctx);
+      if (releasing !== null) await releasing;
       await fill(ctx);
     } while (pass.again);
   } finally {

@@ -1157,17 +1157,20 @@ test("/api/settings reads the project of the host file the suite runs against, t
   assert.ok(view.groups.flatMap((group) => group.rows).some((candidate) => candidate.file === "project.json"), "the project's keys are drawn from its file");
 });
 
-/** A ticket the tracker holds with an open decision in its Acceptance: the page is sent it with `needsDecision` (A11-134). */
+/** A ticket the tracker holds with an open decision in its Acceptance: it is queued like any other, and its planner settles it (A11-257, which replaced A11-134's hold). */
 const DECIDING = { ...ticket("A11-50"), description: "## Acceptance\n\n- Decide whether the list sorts.\n" } as Ticket;
 
-test("A11-134: the page is sent each ticket's open decision as needsDecision, and a ticket with none is sent without one", async () => {
+test("A11-257: the page is sent no needsDecision for a ticket with an open decision, and the queue takes the ticket", async () => {
   const tracker: TicketSource = createFakeTracker([DECIDING, ticket("NBF-2")]);
-  const [, tickets] = await board(4747, {}, {}, tracker).api("GET", "/api/tickets", {}) as [number, any[]];
-  assert.match(tickets[0].needsDecision.reason, /An open decision is still in acceptance: "- Decide whether the list sorts\."/);
-  assert.equal(tickets[1].needsDecision, undefined);
+  const b = board(4747, {}, {}, tracker);
+  const [, tickets] = await b.api("GET", "/api/tickets", {}) as [number, any[]];
+  assert.equal(tickets[0].needsDecision, undefined);
+  const [status, queue] = await b.api("POST", "/api/queue", { keys: ["A11-50"], model: "opus", effort: "high" }) as [number, any];
+  assert.equal(status, 200);
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-50"], "a ticket with an open decision is queued, not refused");
 });
 
-test("A11-134: the queue refuses a ticket with an open decision, naming its line, and Queue its children leaves such a sub-issue out and names it", async () => {
+test("A11-257: Queue its children takes a sub-issue with an open decision with the rest", async () => {
   const sub = { ...ticket("A11-51"), description: "" } as Ticket;
   const tracker: TicketSource = {
     assigned: async () => [DECIDING],
@@ -1176,25 +1179,12 @@ test("A11-134: the queue refuses a ticket with an open decision, naming its line
   };
   const b = board(4747, {}, {}, tracker);
   await b.api("GET", "/api/tickets", {});
-  await assert.rejects(b.api("POST", "/api/queue", { keys: ["A11-50"], model: "opus", effort: "high" }),
-    /^Error: A11-50: An open decision is still in acceptance: "- Decide whether the list sorts\.". Grill it to settle the decision before it is queued\.$/);
-  assert.deepEqual(b.store.get().entries, [], "nothing is queued");
   const [, answer] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "opus", effort: "high" }) as [number, any];
-  assert.deepEqual(answer.keys, ["A11-51"]);
-  assert.match(answer.note, /A11-50 holds an open decision, so not queued: Grill it first/);
+  assert.deepEqual([...answer.keys].sort(), ["A11-50", "A11-51"]);
+  assert.doesNotMatch(String(answer.note), /open decision/);
 });
 
-test("A11-134: a ticket the page copied with an open decision is queued once its tracker text is settled, since the queue reads it again", async () => {
-  const tracker = createFakeTracker([DECIDING]);
-  const b = board(4747, {}, {}, tracker);
-  await b.api("GET", "/api/tickets", {});
-  tracker.seed({ ...DECIDING, description: `${DECIDING.description}\n**Decisions:** settled\n` });
-  const [status, queue] = await b.api("POST", "/api/queue", { keys: ["A11-50"], model: "opus", effort: "high" }) as [number, any];
-  assert.equal(status, 200);
-  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-50"]);
-});
-
-test("A11-134: Grill on a ticket with an open decision queues a grill run on it that files nothing and keeps the text it started from, and is refused without a terminal or a settled ticket", async () => {
+test("A11-257: Grill, a person's own choice, still takes a ticket with an open decision: it queues a grill run on it that files nothing and keeps the text it started from, and is refused without a terminal or a settled ticket", async () => {
   const tracker: TicketSource = createFakeTracker([DECIDING, ticket("NBF-1")]);
   const b = board(4747, WRITER, {}, tracker);
   const [status, writers] = await b.api("POST", "/api/grill-ticket", { key: "A11-50" }) as [number, any];
@@ -1261,7 +1251,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.21", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.21", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1306,7 +1296,7 @@ test("A11-161: the Settings page lists slack and atomic with their folders and s
   const b = pluginsBoard({ ...FRESH_BLOCKS, publish, reviewer: { provider: "atomic" } });
   const view = await readPlugins(b);
   assert.deepEqual(["slack", "atomic"].map((name) => { const e = entryOf(view, name); return [name, e.where, e.contract, e.state]; }),
-    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.7", "enabled"]]);
+    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.8", "enabled"]]);
   const hostBlock = (block: string) => JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers[block];
   const off = await saidBy(b, { action: "disable", name: "slack", base: view.bases["host.json"] });
   assert.match(off, /^disabled slack: the board publishes nothing, and its settings are kept for `enable`$/);

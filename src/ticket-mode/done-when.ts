@@ -40,10 +40,32 @@ function afterFirstSentence(text: string): string {
   return "";
 }
 
-/** Who runs a line, read by the format a ticket writes it in, `<line>. <who runs it>, <when>, with <command>`: the clause after the first sentence, up to its first comma. Null when there is none. PURE. */
-function ownerOf(line: string): string | null {
-  const owner = afterFirstSentence(line).split(",")[0].replace(/\.$/, "").trim();
-  return owner === "" ? null : owner;
+/** The most words, and the most characters, an owner read from a line may have, so a whole clause or sentence is never read as one (A11-277). */
+const OWNER_WORDS = 6;
+const OWNER_CHARS = 40;
+
+/** Whether `text` is short enough to be an owner: 1 to {@link OWNER_WORDS} words, and no more than {@link OWNER_CHARS} characters with no backtick. PURE. */
+const ownerShaped = (text: string): boolean => text !== "" && text.length <= OWNER_CHARS && !text.includes("`") && text.split(/\s+/).length <= OWNER_WORDS;
+
+/** The prefix form, `<owner>: <what is checked>`: the text before the line's first colon, which a space or the line's end follows (A11-277). */
+const PREFIX = /^([^:]*):(?:\s|$)/;
+
+/**
+ * The subject form, `<runner> <verb> …`: a role's session ("The chairman's session", "The release manager's session", "Chairman's session"), the chairman or the person, at the head of the line
+ * and followed by a word in lower case (A11-277). A session is tried before its owner, so "The chairman's session moves" reads the session.
+ */
+const SUBJECT = /^((?:The (?:\S+ ){0,2}\S+|\p{Lu}\S*)['’]s session|The (?:chairman|person))\s+(?=\p{Ll})/u;
+
+/** The trailing form, A11-173's `<line>. <who runs it>, <when>, with <command>`: the clause after the first sentence, up to its first comma. "" when there is none. PURE. */
+const trailingClause = (line: string): string => afterFirstSentence(line).split(",")[0].replace(/\.$/, "").trim();
+
+/**
+ * Who runs a line, read from the first of the forms tickets write it in that the line matches (A11-277): the prefix form ("Chairman session: …", "On the agents host: …"), the subject form
+ * ("The chairman chooses …"), then the trailing form, each only when what it reads is shaped like an owner. Null when the line names no one. PURE.
+ */
+export function ownerOf(line: string): string | null {
+  const read = [PREFIX.exec(line)?.[1]?.trim(), SUBJECT.exec(line)?.[1], trailingClause(line)];
+  return read.find((owner): owner is string => owner !== undefined && ownerShaped(owner)) ?? null;
 }
 
 /** Whether a line goes on with the bullet above it: it is indented and not blank. PURE. */

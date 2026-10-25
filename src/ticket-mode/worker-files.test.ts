@@ -1,6 +1,8 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { ESCALATION_RULE } from "./escalation.ts";
+import { MOVE_RULE } from "./after-merge-move.ts";
 import { outcomeExamples } from "./outcome.ts";
 import type { WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
@@ -145,6 +147,18 @@ test("both briefs tell a worker to stop for a person when a skill they name is m
   for (const brief of [work, plan, batch]) {
     assert.match(brief, /If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files\./);
   }
+});
+
+test("A11-275: both planner briefs tell the planner to move a Before-merge line that needs a release, a person's machine or anything unreachable to After merge, and the worker's brief does not", () => {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.ok(brief.includes(MOVE_RULE), "the rule, whole");
+    assert.match(brief, /needs a published release, a person's own machine, or anything else a worker cannot reach cannot be met before merge/);
+    assert.match(brief, /`## Moved to After merge`, one bullet per line/);
+  }
+  assert.ok(!work.includes(MOVE_RULE), "a worker is briefed with the ticket the board already rewrote");
 });
 
 test("A11-174, A11-209: every unattended brief says to guard variable paths with ${VAR:?}, and that its subagents inherit the rule", () => {
@@ -377,12 +391,12 @@ test("a drafts-off brief opens a ready pull request: its command has no --draft,
   assert.equal(brief.includes("draft-pr"), false);
 });
 
-test("a worker may end on checked when nothing needs to change, and is told needs-human is only for what the person alone can decide", () => {
+test("a worker may end on checked when nothing needs to change, and is told needs-human is only for an item on the escalation list", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes(outcomeExamples(["checked"])), "checked is one of the outcomes, with an example");
   assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is \*\*not finished\*\*/);
   assert.match(brief, /the ticket is only a parent whose work is all in its child tickets \(name them, so the person queues them\)/);
-  assert.match(brief, /Write `needs-human` only for a real question or decision that only the person can make/);
+  assert.match(brief, /Write `needs-human` only for an item on the escalation list, with its id in `escalation`/);
 });
 
 test("A11-91: the worker's brief says when to write done and when checked, lists done with its evidence, and lets it propose an edit to the ticket's text", () => {
@@ -782,22 +796,32 @@ test("A11-135: a writer's settings record each creation as it returns, and no ot
   assert.equal("PostToolUse" in (workerSettings(base) as any).hooks, false, "a build worker records nothing");
 });
 
-test("A11-134: the worker brief says nobody answers it, settles no product decision and ends needs-human with one question, and the old instruction to decide is gone", () => {
+test("A11-257: a worker's unplanned choice appears in the pull request, not as a stop", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
-  assert.ok(brief.includes("Nobody will answer you in this run. Settle no product or design decision the ticket did not settle: end with `needs-human`, naming the one question, and you may state your recommendation. Decide technical matters yourself."));
+  assert.ok(brief.includes("Nobody will answer you in this run. Decide anything that is not on the escalation list yourself, in line with the plan and the ticket's Decisions, and list each such choice under \"Decisions made without a person\" in the pull request body. End with `needs-human` only for an item on the list, naming its id."));
+  assert.equal(brief.includes("Settle no product or design decision"), false, "the old stop is gone");
   assert.equal(brief.includes("so decide"), false);
+  assert.match(brief, /A choice the plan and the ticket leave open, a product one or a technical one, is made in line with the plan and the ticket's Decisions, and listed in the pull request body under the heading "Decisions made without a person", as `Technical:` or `Product:` with its reason/);
   assert.match(brief, /A product decision is what a person sees or does, what a control is called or does/);
-  assert.match(brief, /Write `needs-human` only for a real question[^]*A product or design decision the ticket did not settle is one of these: name the one question, and do not pick an answer\./);
+  assert.match(brief, /Write `needs-human` only for an item on the escalation list, with its id in `escalation`[^]*Any other question you decide yourself and list under "Decisions made without a person" in the pull request body: it is not a reason to stop\./);
+  assert.ok(brief.includes(ESCALATION_RULE), "the worker reads the one list");
+  assert.ok(brief.includes('"escalation": "outward"'), "the needs-human example names its item");
 });
 
-test("A11-134: both planners end a ticket with a decision only a person can make in its QUESTION.md, and never record it as made without asking", () => {
+test("A11-257: both planners decide everything off the escalation list themselves, take the option they would have recommended, and no longer stop for a behaviour grill", () => {
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
   const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
   for (const brief of [plan, batch]) {
-    assert.match(brief, /ends that ticket in its `QUESTION\.md`, with no plan\. It is never recorded under "Decisions made without a person"/);
-    assert.match(brief, /a `Product:` bullet is a defect, and the board refuses that plan/);
+    assert.ok(brief.includes(ESCALATION_RULE), "the planner reads the one list");
+    for (const said of [/You decide everything that is not on the list yourself, from the boards, the code, the ADRs and the ticket's Decisions/, /Where you would have recommended an option, take it\./,
+      /A `QUESTION\.md` is written only for an item on the list, and starts with `\*\*Escalation:\*\* <id>`; the plan check refuses one that does not\./, /a `Product:` bullet is no defect/,
+      /the plan carries the line `\*\*Behaviour:\*\* settled by the planner`, followed by each behaviour decision with its reason/]) assert.match(brief, said);
+    for (const gone of ["the behaviour grill is needed", "ends that ticket in its `QUESTION.md`, with no plan", "a `Product:` bullet is a defect"]) {
+      assert.equal(brief.includes(gone), false, `the old wording is gone: ${gone}`);
+    }
   }
-  assert.match(plan, /the `QUESTION\.md` says the behaviour grill is needed/);
+  assert.match(batch, /or a `QUESTION\.md` when its plan needs an item of the escalation list/);
+  for (const brief of [plan, batch]) assert.match(brief, /A decision of the ticket's that your plan cannot follow is the `contradicts` item: stop with a `QUESTION\.md` that starts `\*\*Escalation:\*\* contradicts`/);
 });
 
 test("A11-134: a Grill run's brief grills one ticket, asks its open line and its screen's behaviour, and files nothing: it ends decided", () => {

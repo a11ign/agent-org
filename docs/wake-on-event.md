@@ -31,6 +31,18 @@ A worker that is woken for a finished or failed wait and then writes a `working`
 
 A newer `working` outcome is a new note, with a fresh deadline and a fresh wake.
 
+## A ticket wait lets the run go (A11-272)
+
+A ticket can take hours or days, and a run left `running` that long holds a slot and its whole footprint: on 2026-10-25 A11-231 waited on A11-229 while A11-229 was held behind A11-231's files. So a `ticket` item is not waited on in the pane. Once the wait's reading is pending and finds a ticket not done, the board (`pool-ticket-wait.ts`, on the tick before slots are filled):
+
+1. records that ticket as a blocker of this one in the tracker (`addBlockers`; a tracker that cannot, or refuses, is said in the log);
+2. closes the run's workspace, as an update's drain does (a workspace herdr will not close is left running and tried again next tick);
+3. queues the ticket again behind it (`requeueBehindBlocker`, `queue/queue-blocker-wait.ts`), with the Claude session its agent had, and `stoppedForBlocker` naming the tickets and the wait's other items.
+
+The queue holds the run until the tracker reads each of those tickets completed or canceled (the wait's own reading's end), through the tracker's relation and, until the tracker lists it, through `stoppedForBlocker` itself, whose tickets the board reads at most once a minute. It never stacks on them, and merged pull requests that leave a ticket open do not let it go, so the worker is not resumed into the wait it declared. When they are done the run starts like any queued run, but it resumes its own session, so the worker that declared the wait is the one that carries on. Its brief lists the blockers and their pull requests. A ticket wait whose ticket is already done when first read is an ordinary declared wait, and the worker is woken for it as above. So is a batch's run, which its tickets share.
+
+A run never holds its files against a ticket it waits on (`board-view/waits-on.ts`): a ticket its idle worker's note declares a wait on, the ticket whose run on the board has a pull request it waits on, and its blockers not yet done, each followed through the tickets those wait on. A worker woken from its wait, or at work again, holds its files as before. A fleet job or a CI run names no ticket, so a run parked on one still holds its files against the others.
+
 ## What each state reads like
 
 | The run is | The card says |

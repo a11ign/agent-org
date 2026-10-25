@@ -9,7 +9,7 @@
 // sends. A run whose workspace is gone has nothing waiting: the answer stays in the ticket, and the run that works the ticket next reads it first.
 
 import { isParked } from "./board-view/pull-status-and-notes.ts";
-import { withAnswer } from "./answer-decision.ts";
+import { WHO_CHARS, withAnswer } from "./answer-decision.ts";
 import { SETTLED, find, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { logAnswered, moveBriefing, recordAnswer } from "./queue/queue-answer.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
@@ -21,8 +21,6 @@ import { descriptionHash, ticketReadOf } from "./ticket-read.ts";
 
 /** The most characters of an answer the route takes: a decision, not a document. */
 export const ANSWER_CHARS = 4_000;
-/** The most characters of the name an entry is headed with. */
-export const WHO_CHARS = 60;
 
 /** What the route is given: the answer, and the name the entry is headed with when the person gives one. */
 export type Answer = Readonly<{ answer: string; who?: string }>;
@@ -34,7 +32,7 @@ export type Answered = Readonly<{ written: true; delivered: boolean; why?: strin
 export class AnswerNotDelivered extends Error {}
 
 /** The board's local date, `YYYY-MM-DD`. */
-function dateOf(at: number): string {
+export function dateOf(at: number): string {
   const day = new Date(at);
   return [day.getFullYear(), day.getMonth() + 1, day.getDate()].map((part, at) => String(part).padStart(at === 0 ? 4 : 2, "0")).join("-");
 }

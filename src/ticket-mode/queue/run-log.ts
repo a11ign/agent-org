@@ -23,8 +23,8 @@ const REASON_MAX = 160;
  */
 export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approved" | "talk" | "rereview";
 
-/** Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, or a plan written again. */
-export type RequeueWhy = "retry" | "next-step" | "update" | "replan";
+/** Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, or a stop behind a ticket its worker waits on (A11-272). */
+export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker";
 
 /** What answered a run that needed a person: a person's Respond, approval or talk, their answer through the board's answer route (A11-250), or the run's own terminal. */
 export type AnsweredBy = "respond" | "approve" | "talk" | "answer" | "terminal";

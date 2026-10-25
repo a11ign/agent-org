@@ -2,7 +2,7 @@ import type { Answer } from "./answer.ts";
 import { mutate } from "./mutate.ts";
 import { send, type Fetch, type Target } from "./request.ts";
 import type {
-  Change, ChoiceView, ConfigView, ConnectionsView, EditFile, People, PickView, PluginActionDone, PluginActionRequest, PluginsAnswer, QueueChildrenView, QueueView, RunAction, RunChoice,
+  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, People, PickView, PluginActionDone, PluginActionRequest, PluginsAnswer, QueueChildrenView, QueueView, RunAction, RunChoice,
   SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
 
@@ -30,6 +30,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
   const read = <T>(path: string): Read<T> => (signal) => send<T>(target, { method: "GET", path, signal });
   const post = <T>(path: string, body?: unknown) => mutate<T>(target, path, body);
   const keyed = (key: string) => `/api/queue/${encodeURIComponent(key)}`;
+  // An After-merge check's id is `<KEY>#<n>`, which its routes name as `<KEY>/<n>` (A11-277).
+  const checked = (id: string) => `/api/after-merge/${id.split("#").map(encodeURIComponent).join("/")}`;
   return {
     /** `ticket:ui`'s own answer: the connections the page offers, always at the root. */
     connections: (signal?: AbortSignal) => send<ConnectionsView>({ ...target, atRoot: true }, { method: "GET", path: "/api/connections", signal }),
@@ -58,6 +60,10 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     /** respond, retry, dismiss, remove, talk, start-anyway, approve, stop, close, apply-edit and discard-edit: a run's own buttons. */
     runAction: (key: string, action: RunAction) => post<QueueView>(`${keyed(key)}/${action}`),
     amend: (key: string, change: Partial<RunChoice>) => post<QueueView>(`${keyed(key)}/amend`, change),
+    /** Close an After-merge check, passed, failed or superseded, with one line of evidence (A11-277). */
+    closeCheck: (id: string, close: CloseRequest) => post<CheckAnswer>(checked(id), close),
+    /** Record a failed check's follow-up: the writer request it was filed by, or null for none. */
+    decideFollowUp: (id: string, writer: string | null) => post<CheckAnswer>(`${checked(id)}/follow-up`, { writer }),
 
     writeTickets: (request: WriterRequest) => post<WritersView>("/api/writer", request),
     grillTicket: (key: string) => post<WritersView>("/api/grill-ticket", { key }),

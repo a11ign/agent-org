@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findingsSection, parseStamp, stampedPlan, unnamedIn, urlsNamedIn, type PlanStamp } from "./plan-stamp.ts";
 import { parsePaths } from "./overlap.ts";
-import { productDecisionIn } from "./open-decisions.ts";
+import { planDecisionsOf } from "./plan-decisions.ts";
 import { descriptionHash } from "./ticket-read.ts";
 
 const DESCRIPTION = "# The ticket\n\n## Paths\n\n- `agent-org:not/a/plan.ts`\n\n> a quoted line\n\n```sh\nnpm test\n```\n\nTrailing  ";
@@ -35,7 +35,7 @@ test("a stamp round-trips: the updatedAt, the hash, the files and the descriptio
 test("the description quoted in a stamp does not change what other readers of the plan see: its Paths heading is not the plan's, and its bullets are not decisions", () => {
   const stamped = stampedPlan(PLAN, stamp({ description: "## Paths\n\n- `agent-org:not/a/plan.ts`\n\n## Decisions made without a person\n\n- Product: x", hash: descriptionHash("## Paths\n\n- `agent-org:not/a/plan.ts`\n\n## Decisions made without a person\n\n- Product: x") }));
   assert.deepEqual(parsePaths(stamped), ["agent-org:src/a.ts"]);
-  assert.equal(productDecisionIn(stamped), null);
+  assert.equal(planDecisionsOf(stamped), "## Decisions made without a person\n\n- Technical: **a.** Evidence: b.", "only the plan's own decisions are read, not the ones the quoted description holds");
 });
 
 test("stamping twice leaves one stamp, the newer", () => {

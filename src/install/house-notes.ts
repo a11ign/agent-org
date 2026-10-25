@@ -8,12 +8,14 @@
 // A FILE THAT EXISTS IS NEVER OVERWRITTEN, and its difference from the shipped text is not an error: a person edits these. The key is set only when the
 // file and the key are both absent, so a host that already has its own notes keeps them.
 import { join } from "node:path";
+import { PUSH_ONCE_RULE } from "../ticket-mode/ci-spend/rules.ts";
+import { escalationList } from "../ticket-mode/escalation.ts";
 import { agentOrgHome, type Env } from "./paths.ts";
 
 export const WORKER_NOTES = `# Worker house rules
 
 - **Identity.** Every \`gh\` call goes out as the GitHub login this machine's \`gh\` uses. Never set \`GH_TOKEN\` by hand.
-- **Toolchain.** Run the repository's own tests, typecheck and lint before you push.
+- **Toolchain and pushes.** ${PUSH_ONCE_RULE}
 - **Releases.** A change to a published package carries a changeset. A change with no release says \`no-release: <reason>\` in the pull request body.
 - **Acceptance.** A pull request carries \`.acceptance/<branch>.md\`. It says what the change does and gives an \`Acceptance:\` bash block that proves it. The reviewer runs that block.
 - **Opening a pull request:** use \`gh pr create\`, ready and not draft. Its body says what changed and how it was verified, names the ticket with \`Closes <ticket key>\` when the pull request completes the ticket, or \`Refs <ticket key>\` with a \`Partial: <what remains>\` line when it does not (a plan step, \`step <N> of <M>\`, never an After-merge line of the Done-when: a pull request that leaves only those names the ticket \`Closes\`; pull requests that finish the ticket together each say \`Refs\`, with the others named in their \`Partial:\` line and no \`partial\` in the outcome), and gives an \`Outside-Region: <path> — <reason>\` line for each path outside the plan.
@@ -31,14 +33,16 @@ The board reads outcome.json strictly. A wrong field name reads as "could not be
 - Waiting on events the board reads for you (your brief lists them): { "kind": "working", "reason": "what you wait for", "waitingOn": [ { "<event>": "<id>" } ], "until": "<ISO time>" }  -- then END YOUR TURN: the board prompts you when all of them have finished or any has failed, and once if \`until\` passes. Never write a wait loop, a \`sleep\` or a \`pgrep -f\` to wait for them.
 - Still running your own background work (a shell or a Monitor): { "kind": "working", "reason": "what is still running", "waitingOn": "<what>", "until": "<ISO time>" }  -- before a long wait; \`waitingOn\` and \`until\` are optional, and the board reads \`until\` as the end of the wait.
 - Nothing to build, done-when holds: { "kind": "checked", "reason": "what you read" }
-- A person must act: { "kind": "needs-human", "reason": "the one thing only they can do" }
+- A person must act, for an item on the escalation list below: { "kind": "needs-human", "reason": "the one thing only they can do", "escalation": "<id>" }
 - Wrong repository: { "kind": "wrong-repo", "where": "owner/repo" }
 
 Before ending your turn, re-read the file you wrote and check each key against this list.
 
 ## Ending a run
 
-Use \`checked\` when you verified something and there is nothing to change. Use \`needs-human\` only for a decision only a person can make.
+Use \`checked\` when you verified something and there is nothing to change. Use \`needs-human\` only for an item on the escalation list, and name its id in \`escalation\`. ${escalationList()}
+
+Everything else you decide yourself, in line with the plan and the ticket's Decisions, and list under "Decisions made without a person" in the pull request body.
 `;
 
 export const REVIEW_NOTES = `# How pull requests are reviewed

@@ -2,6 +2,8 @@
 //
 // THE SHELL'S STAND-IN (`../fixtures.ts`) HOLDS A QUEUE OF BARE PHASES, and a page ticket does not edit it. These are runs with the fields the board's functions read, so `runStatus`, `repoLabel`, the notes and the actions are the backend's
 // own over them. Used by the component checks (as the client's `fetch`, through `standFetch`) and by the page checks (through Playwright's route), so both see the same instance.
+import { emptyChecks, seedChecks, type ListedRun } from "../../../src/ticket-mode/after-merge/checks.ts";
+import { afterMergeChecks as afterMergeChecksOf } from "../../../src/ticket-mode/board-view.ts";
 import type { ViewEntry } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import type { QueueView } from "../../src/api/types.ts";
 import { PERSONAL, queueingConfig, type Failure, type Stand } from "../fixtures.ts";
@@ -80,7 +82,9 @@ export function boardRuns(): RunFields[] {
 
 /** The queue of the boards: `runs`, ten workers, started unless `paused`, and the review line the pool read of the Ready to merge run's pull request. */
 export function queueWith(runs: readonly RunFields[], { paused = false, max = 10, pulls = {} }: Readonly<{ paused?: boolean; max?: number; pulls?: Readonly<Record<string, string>> }> = {}): QueueView {
-  return { entries: runs as unknown as ViewEntry[], max, paused, pulls: { [pullUrl("a11ign/lab", 150)]: "approved at 1f6009d", ...pulls }, update: null, writers: [], held: null, claimWarning: null } as unknown as QueueView;
+  // The board lists the runs' After-merge lines as checks of their own (A11-277), each copied once, open, as its sweep copies them.
+  const afterMergeChecks = afterMergeChecksOf(seedChecks(emptyChecks(), runs as unknown as ListedRun[], Date.now()));
+  return { entries: runs as unknown as ViewEntry[], max, paused, pulls: { [pullUrl("a11ign/lab", 150)]: "approved at 1f6009d", ...pulls }, update: null, writers: [], held: null, claimWarning: null, afterMergeChecks } as unknown as QueueView;
 }
 
 /** The stand the Runs boards draw: `personal`, an instance that queues, with the board's 90 runs unless `runs` says others. `queueFails` makes the queue read fail. */
