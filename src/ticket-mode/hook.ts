@@ -603,14 +603,26 @@ function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: St
  */
 const exemptFromEscalation = (ticketDir: string, io: StopIo): boolean => [TALK_FILE, WRITER_FILE, PUBLISH_FILE].some((file) => io.exists(join(ticketDir, file)));
 
-/** The `QUESTION.md` files of a planning run's plan folders (`findings-given.json` lists them) that name no item of the escalation list, as the ticket's key and the file's path. Empty when the list cannot be read. */
-function offListQuestions(ticketDir: string, io: StopIo): { key: string; path: string }[] {
+/** The `QUESTION.md` files that name no item of the list, as the ticket's key and the file's path; or `unread`, why the run's list of plan folders could not be read, which is not "no question". */
+type OffListQuestions = Readonly<{ found: readonly { key: string; path: string }[] } | { unread: string }>;
+
+/**
+ * The `QUESTION.md` files of a planning run's plan folders (the list its brief wrote lists them) that name no item of the escalation list. A run with no such list has none to check. A list that is there and cannot be read is
+ * `unread` and never an empty answer: the stop is then allowed out loud, as the other plan checks allow it, and the board's own check of a `QUESTION.md` marks one that names no item (`pool-settle.ts`).
+ */
+function offListQuestions(ticketDir: string, io: StopIo): OffListQuestions {
   const given = join(ticketDir, FINDINGS_GIVEN_FILE);
-  const rows = io.exists(given) ? parseFindingsGiven(io.read(given)) : null;
-  return (rows ?? []).flatMap(({ key, planDir }) => {
-    const path = join(planDir, QUESTION_FILE);
-    return io.exists(path) && escalationItem(questionEscalation(io.read(path))) === undefined ? [{ key, path }] : [];
-  });
+  if (!io.exists(given)) return { found: [] };
+  try {
+    const rows = parseFindingsGiven(io.read(given));
+    if (rows === null) return { unread: `${given} is not a list of tickets` };
+    return { found: rows.flatMap(({ key, planDir }) => {
+      const path = join(planDir, QUESTION_FILE);
+      return io.exists(path) && escalationItem(questionEscalation(io.read(path))) === undefined ? [{ key, path }] : [];
+    }) };
+  } catch (err) {
+    return { unread: `${given} cannot be read (${firstLine(err)})` };
+  }
 }
 
 /**
@@ -633,8 +645,10 @@ function offListOutcome(file: string, named: string | undefined): Judgment {
   return { ask: offListRefusal(`${file} is a needs-human outcome that ${wrote} of the escalation list`), stuck: `on a needs-human outcome in ${file} that is not on the escalation list, so this one is allowed and the board marks it "Off the escalation list"` };
 }
 
-/** The judgment of the planner's `QUESTION.md` files that name no item of the list, or null when there are none. */
-function offListQuestion(questions: readonly { key: string; path: string }[]): Judgment | null {
+/** The judgment of the planner's `QUESTION.md` files that name no item of the list, or null when there are none. An unreadable list of plan folders allows the stop out loud. */
+function offListQuestion(checked: OffListQuestions): Judgment | null {
+  if ("unread" in checked) return { verdict: { code: 0, say: [`ticket:hook: ${checked.unread}, so the plan's QUESTION.md files were not checked against the escalation list and the stop is ALLOWED; the board marks one that names no item.`] } };
+  const questions = checked.found;
   if (questions.length === 0) return null;
   const listed = questions.map(({ key, path }) => `${key}: ${path}`).join("; ");
   return { ask: offListRefusal(`${listed} is a question whose first line is not \`**Escalation:** <id>\` with the id of an item of the escalation list`), stuck: `on a QUESTION.md that is not on the escalation list (${listed}), so this one is allowed and the board marks it "Off the escalation list"` };

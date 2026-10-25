@@ -10,7 +10,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { MAX_STOP_REFUSALS, stopVerdict, toolVerdict } from "./hook.ts";
 import { ESCALATION_RULE, OFF_LIST_PREFIX } from "./escalation.ts";
 import { parseOutcome } from "./pool-outcome.ts";
-import { FINDINGS_GIVEN_FILE, PUBLISH_FILE, QUESTION_FILE, TALK_FILE, WRITER_FILE } from "./worker-files.ts";
+import { FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, PUBLISH_FILE, QUESTION_FILE, TALK_FILE, WRITER_FILE } from "./worker-files.ts";
 
 const write = (dir: string, outcome: object): void => writeFileSync(join(dir, "outcome.json"), JSON.stringify(outcome));
 
@@ -99,4 +99,17 @@ test("A11-257: a talk session, a new-ticket run and a publish run may stop on a 
 
 test("A11-257: a worker may not write the talk mark that exempts its run", () => {
   assert.equal(toolVerdict("Bash", { command: `echo > ${TALK_FILE}` }).code, 2);
+});
+
+test("A11-257: a list of plan folders the hook cannot read is not 'no question': the stop is allowed out loud, and a readable list is still checked", () => {
+  const asked = planningRun({ kind: "planned" }, { [QUESTION_FILE]: "Which wording?\n" });
+  assert.equal(stopVerdict(asked.dir).code, 2, "POSITIVE CONTROL: the same question with a readable list is refused");
+  for (const broken of ["{not json", JSON.stringify({ key: "A11-257" }), JSON.stringify([{ key: "A11-257" }])]) {
+    const run = planningRun({ kind: "planned" }, { [QUESTION_FILE]: "Which wording?\n" });
+    writeFileSync(join(run.dir, FINDINGS_GIVEN_FILE), broken);
+    writeFileSync(join(run.dir, FINDINGS_RETRIED_FILE), "{}\n"); // the blocker-findings retry is spent, so only this check speaks
+    const verdict = stopVerdict(run.dir);
+    assert.equal(verdict.code, 0, broken);
+    assert.match(verdict.say.join("\n"), /so the plan's QUESTION\.md files were not checked against the escalation list and the stop is ALLOWED/, `${broken}: the skip is said out loud, not silent`);
+  }
 });
