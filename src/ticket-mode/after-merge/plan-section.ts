@@ -9,7 +9,7 @@ import { ESCALATION_IDS } from "../escalation.ts";
 import { isBoardMoved, type Move } from "../after-merge-move.ts";
 import { linesOf, sectionEnd, type Line } from "../ticket-decisions.ts";
 import { OBSERVE_FORMS, parseObserve } from "./observe.ts";
-import { namesLine, type PlannedCheck, type Runner } from "./checks.ts";
+import { lineKey, namesLine, type PlannedCheck, type Runner } from "./checks.ts";
 
 /** The plan section the planner names each After-merge check's runner in. */
 export const AFTER_MERGE_CHECKS_HEADING = "## After-merge checks";
@@ -17,7 +17,40 @@ export const AFTER_MERGE_CHECKS_HEADING = "## After-merge checks";
 /** The longest a plan's `Evidence:` line may be. */
 export const PLANNED_EVIDENCE_CHARS = 200;
 
-/** What the planner brief says of a ticket's After-merge lines (A11-277), in the single brief and the batch's. */
+/**
+ * The exact shape of the section, as the planner brief shows it and as the board's send-back file repeats it (A11-288), so the two can never describe two formats. The worked example is generic: agent-org is public,
+ * so none of an organisation's own names go in it (`escalation.ts`). Its examples sit inside fences, which {@link sectionLines} skips, so a plan that copies them into its prose is not read as a check.
+ */
+export const AFTER_MERGE_CHECKS_FORMAT = [
+  `The exact format of the \`${AFTER_MERGE_CHECKS_HEADING}\` section:`,
+  "",
+  "```md",
+  AFTER_MERGE_CHECKS_HEADING,
+  "",
+  "- `<the After-merge line, copied verbatim from the ticket>`",
+  "  - Runner: session | person | board",
+  "  - Escalation: <id>            (only for a `person` runner)",
+  "  - Observe: <spec>             (only for a `board` runner)",
+  `  - Evidence: <one line, at most ${PLANNED_EVIDENCE_CHARS} characters: what would close it>`,
+  "```",
+  "",
+  "- Copy the line from the ticket's `### After merge` (or from your `## Moved to After merge`); inner quotes and spacing are matched forgivingly, but the words must be the ticket's.",
+  "- A line that holds a backtick goes inside double backticks.",
+  `- \`Evidence:\` is one line of at most ${PLANNED_EVIDENCE_CHARS} characters, with no line break.`,
+  "- `Escalation:` and `Observe:` only when they apply.",
+  "",
+  "A worked example:",
+  "",
+  "```md",
+  AFTER_MERGE_CHECKS_HEADING,
+  "",
+  "- `Chairman session: the next release reaches every machine with its UI build.`",
+  "  - Runner: session",
+  "  - Evidence: each machine's update log for the next release, quoted on this ticket",
+  "```",
+].join("\n");
+
+/** What the planner brief says of a ticket's After-merge lines (A11-277), in the single brief and the batch's, and the exact format of the section that answers it (A11-288). */
 export const AFTER_MERGE_CHECKS_RULE = "When the ticket's Done-when has `### After merge` lines, or your plan moves a line there, name who runs each one after merge: "
   + `list them in a plan section \`${AFTER_MERGE_CHECKS_HEADING}\`, one bullet per line, as \`\` - \`<the After-merge line, quoted exactly>\` \`\`, with these bullets indented under it: `
   + "`- Runner: session`, `person` or `board`; `- Escalation: <id>`, for a `person` runner, the id of the escalation list's item the check needs the person for; "
@@ -25,7 +58,8 @@ export const AFTER_MERGE_CHECKS_RULE = "When the ticket's Done-when has `### Aft
   + `and \`- Evidence: <one line of at most ${PLANNED_EVIDENCE_CHARS} characters saying what would close it>\`, always. `
   + "`session` is the person's session, which runs every check that is not the person's or the board's, for a named role too. `person` is only for a check on the escalation list; a check the person would run that is not on it is written as `session`. "
   + "`board` is for a check the board sees by itself: a ticket the dependency sweep files (`sweep-ticket`), a review on a named pull request (`review`), a pull request in a repository merged with no person (`queue-merge`), or the board waking a worker on its declared wait (`wake`). "
-  + "Quote a line that holds a backtick inside double backticks. The board refuses a plan whose section quotes a line that is not one of the ticket's After-merge lines or the lines your plan moves there, and a plan that leaves out an After-merge line which names nobody to run it.";
+  + "Quote a line that holds a backtick inside double backticks. The board refuses a plan whose section quotes a line that is not one of the ticket's After-merge lines or the lines your plan moves there, and a plan that leaves out an After-merge line which names nobody to run it. "
+  + `A refusal comes back to you from the board, at most twice, with this format; fix the section and write \`planned\` again.\n\n${AFTER_MERGE_CHECKS_FORMAT}`;
 
 const SECTION_LEVEL = 2;
 const HEADING = /^##(?!#)\s+after[\s-]*merge\s+checks\s*$/i;
@@ -92,7 +126,7 @@ function plannedOf({ line, fields, spilled }: Written): PlannedCheck | string {
   if (runner === "board" && (observe === undefined || typeof observe === "string")) return `"${line}" is the board's and its observe spec ${observe ?? "is missing"}`;
   const evidence = fields.get("evidence") ?? "";
   if (evidence === "" || spilled.has("evidence")) return `"${line}" needs its evidence on one line`;
-  if (evidence.length > PLANNED_EVIDENCE_CHARS) return `"${line}" gives evidence of more than ${PLANNED_EVIDENCE_CHARS} characters`;
+  if (evidence.length > PLANNED_EVIDENCE_CHARS) return `"${line}" gives evidence of ${evidence.length} characters, more than ${PLANNED_EVIDENCE_CHARS}: shorten it to one line of at most ${PLANNED_EVIDENCE_CHARS}`;
   return { line, runner: runner as Runner, ...(escalation === undefined ? {} : { escalation }), ...(typeof observe === "object" ? { observe } : {}), evidence };
 }
 
@@ -113,14 +147,14 @@ export function plannedChecks(plans: readonly string[]): { checks: PlannedCheck[
 
 /**
  * Why the plans' `## After-merge checks` sections are refused against the ticket's `description` as the planner read it and the lines the plan moves to After merge (A11-275), or null when they are not: a check
- * the board cannot record, a quoted line that is not one of the ticket's After-merge lines (compared trimmed), a moved one, or one the board moved already, or an After-merge line that names nobody to run it and
+ * the board cannot record, a quoted line that is not one of the ticket's After-merge lines (compared by {@link lineKey}: quotes, backticks and white space aside), a moved one, or one the board moved already, or an After-merge line that names nobody to run it and
  * that the section leaves out. A line the board moved names its `who`, however long, so it is never one that names nobody. PURE.
  */
 export function afterMergeChecksRefusal(plans: readonly string[], description: string, moves: readonly Move[]): string | null {
   const read = plannedChecks(plans);
   if ("refusal" in read) return read.refusal;
   const ticketLines = afterMergeLines(description);
-  const known = (quoted: string): boolean => moves.some(({ line }) => line === quoted) || ticketLines.some(({ line }) => namesLine(quoted, line));
+  const known = (quoted: string): boolean => moves.some(({ line }) => lineKey(line) === lineKey(quoted)) || ticketLines.some(({ line }) => namesLine(quoted, line));
   const stranger = read.checks.find(({ line }) => !known(line));
   if (stranger !== undefined) return `the plan's \`${AFTER_MERGE_CHECKS_HEADING}\` section quotes "${stranger.line}", which is not one of the ticket's After-merge lines`;
   const ownerless = ticketLines.find(({ line, owner }) => owner === null && !isBoardMoved(line) && !read.checks.some((check) => namesLine(check.line, line)));

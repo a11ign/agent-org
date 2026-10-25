@@ -86,8 +86,14 @@ const listedLines = (run: ListedRun) => (run.afterMerge ?? []).map(({ line }, in
 /** One After-merge line as a plan's `## After-merge checks` section names it (`plan-section.ts`): the line quoted, who runs it, the escalation item of a person's, what the board watches for, and what would close it. */
 export type PlannedCheck = Readonly<{ line: string; runner: Runner; escalation?: string; observe?: ObserveSpec; evidence: string }>;
 
-/** Whether a plan's `quoted` line names the After-merge `line`: it is the line, or the Before-merge line the board moved to it (A11-275). PURE. */
-export const namesLine = (quoted: string, line: string): boolean => quoted === line.trim() || isMovedLine(line, quoted);
+/**
+ * A line as it is compared (A11-288): a backslash before a quote or a backtick is dropped, typographic double quotes, straight double quotes and backticks are removed, typographic single quotes become `'`, and each run of white space
+ * is one space. A ticket line with inner quotes or backticks, and a plan's copy of it in any of those spellings, are therefore the same line. A record keeps the words as written; only the comparison is normalised. PURE.
+ */
+export const lineKey = (text: string): string => text.replace(/\\(["`])/g, "$1").replace(/[\u201C\u201D\u201E"`]/g, "").replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
+
+/** Whether a plan's `quoted` line names the After-merge `line`: it is the line, in the spelling {@link lineKey} compares, or the Before-merge line the board moved to it (A11-275). PURE. */
+export const namesLine = (quoted: string, line: string): boolean => lineKey(quoted) === lineKey(line) || isMovedLine(line, quoted);
 
 /** The plan's word on a listed line: the last bullet that names it. Undefined for a line the plan does not name. PURE. */
 const plannedFor = (line: string, planned: readonly PlannedCheck[]): PlannedCheck | undefined => planned.findLast((check) => namesLine(check.line, line));

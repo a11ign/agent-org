@@ -11,7 +11,8 @@ import type { Outcome } from "../queue/queue-entries-and-outcomes.ts";
 import type { TicketSource } from "../source.ts";
 import { ticketDir } from "../ticket-paths.ts";
 import { withMoves } from "../after-merge-move.ts";
-import { AFTER_MERGE_CHECKS_HEADING, AFTER_MERGE_CHECKS_RULE, afterMergeChecksRefusal, plannedChecks } from "./plan-section.ts";
+import { AFTER_MERGE_CHECKS_FORMAT, AFTER_MERGE_CHECKS_HEADING, AFTER_MERGE_CHECKS_RULE, afterMergeChecksRefusal, plannedChecks } from "./plan-section.ts";
+import { batchPlanBriefText, planBriefText } from "../worker-files.ts";
 
 const OWNERLESS = "The next major arrives as a ticket.";
 const OWNED = "Chairman session: the next stacked step merges with no person.";
@@ -52,7 +53,7 @@ const REFUSED: readonly (readonly [bullets: string, says: RegExp])[] = [
   [`- \`A line the ticket never had.\`\n  - Runner: session\n  - Evidence: x\n${BOARD_MAJOR}`, /quotes "A line the ticket never had\.", which is not one of the ticket's After-merge lines$/],
   [`- \`${OWNED}\`\n  - Runner: session`, /needs its evidence on one line$/],
   [`- \`${OWNED}\`\n  - Runner: session\n  - Evidence: what was seen,\n    and where`, /needs its evidence on one line$/],
-  [`- \`${OWNED}\`\n  - Runner: session\n  - Evidence: ${"x".repeat(201)}`, /gives evidence of more than 200 characters$/],
+  [`- \`${OWNED}\`\n  - Runner: session\n  - Evidence: ${"x".repeat(201)}`, /gives evidence of 201 characters, more than 200: shorten it to one line of at most 200$/],
   [`- ${OWNED}\n  - Runner: session\n  - Evidence: x`, /its bullet ".*" is not `` - `<the After-merge line>` ``$/],
 ];
 
@@ -116,10 +117,61 @@ async function settledPlan(text: string) {
 
 test("A11-277: the board refuses to attach a plan that leaves an owner-less After-merge line out of its section, and attaches one that names its runner", async () => {
   const refused = await settledPlan(NO_SECTION);
-  assert.equal(refused.outcome?.kind, "needs-human");
-  assert.equal(refused.reason, `the ticket's After-merge line "${OWNERLESS}" names nobody to run it: add it to the plan's \`${AFTER_MERGE_CHECKS_HEADING}\` section with its runner`);
+  assert.equal(refused.outcome, undefined, "A11-288: the refusal goes back to the planner, not to a person");
   assert.deepEqual(refused.attached, []);
   const attached = await settledPlan(planWith(BOARD_MAJOR));
   assert.equal(attached.outcome, undefined);
   assert.deepEqual(attached.attached, ["A11-277"]);
+});
+
+const QUOTED_LINE = "Chairman session: none shows \"The UI build is missing\" after `agent-org update`.";
+const QUOTED_TICKET = ["Fix it.", "", "## Done-when", "", "### Before merge", "", "* The tests pass.", "", "### After merge", "", `* ${QUOTED_LINE}`, ""].join("\n");
+const checkOf = (quoted: string): string => planWith(`- ${quoted}\n  - Runner: session\n  - Evidence: the update log`);
+
+test("A11-288: a ticket line with inner double quotes and a backtick is matched by its copy in double backticks, with curly quotes, with an escaped quote, and with a doubled space", () => {
+  const copies = {
+    "double backticks": `\`\`${QUOTED_LINE}\`\``,
+    "curly quotes": `\`\`${QUOTED_LINE.replace(/"The UI build is missing"/, "\u201CThe UI build is missing\u201D")}\`\``,
+    "escaped quote": `\`\`${QUOTED_LINE.replace(/"/g, '\\"')}\`\``,
+    "doubled space": `\`\`${QUOTED_LINE.replace("none shows", "none  shows")}\`\``,
+    "no inner backticks": `\`\`${QUOTED_LINE.replaceAll("`", "")}\`\``,
+  };
+  for (const [what, copy] of Object.entries(copies)) assert.equal(afterMergeChecksRefusal([checkOf(copy)], QUOTED_TICKET, []), null, what);
+  assert.match(afterMergeChecksRefusal([checkOf(`\`\`${QUOTED_LINE.replace("missing", "present")}\`\``)], QUOTED_TICKET, []) ?? "", /which is not one of the ticket's After-merge lines$/, "POSITIVE CONTROL: a word changed is another line");
+});
+
+test("A11-288: a moved line with inner quotes matches its copy in the plan's section", () => {
+  const line = "The banner says \"UI build missing\" no more.";
+  const ticket = ["Fix it.", "", "## Done-when", "", "### Before merge", "", `* ${line}`, "", "### After merge", "", "* Chairman session: a release lands.", ""].join("\n");
+  const move = { line, reason: "release" as const, who: "Chairman session" };
+  const section = planWith(`- \`Chairman session: a release lands.\`\n  - Runner: session\n  - Evidence: the log\n- \`${line.replace(/"/g, "\u201C")}\`\n  - Runner: session\n  - Evidence: the log`);
+  assert.equal(afterMergeChecksRefusal([section], ticket, [move]), null);
+  assert.match(afterMergeChecksRefusal([section], ticket, []) ?? "", /which is not one of the ticket's After-merge lines$/, "POSITIVE CONTROL: not moved, it is a Before-merge line");
+});
+
+test("A11-288: the evidence refusal names the length it found and the bound", () => {
+  const long = "x".repeat(250);
+  const refusal = afterMergeChecksRefusal([planWith(`- \`${OWNED}\`\n  - Runner: session\n  - Evidence: ${long}`)], TICKET, []);
+  assert.match(refusal ?? "", /gives evidence of 250 characters, more than 200: shorten it to one line of at most 200/);
+});
+
+test("A11-288: both planner briefs carry the section's exact format and its worked example", () => {
+  for (const words of ["- `<the After-merge line, copied verbatim from the ticket>`", "  - Runner: session | person | board", "  - Evidence: <one line, at most 200 characters", "  - Escalation: <id>", "  - Observe: <spec>", "A worked example:", "  - Runner: session\n  - Evidence: each machine's update log"]) {
+    assert.ok(AFTER_MERGE_CHECKS_FORMAT.includes(words), words);
+  }
+  const ticket = { key: "A11-1", title: "t", description: "d", url: "https://linear.app/x/A11-1", branch: "a11-1", status: "Backlog", statusOrder: 0, team: "A11", project: null, priority: 0 };
+  const single = planBriefText({ ticket, ticketDir: "/t/A11-1", planDir: "/t/A11-1/plan", attachments: [], clones: {}, run: "x" } as unknown as Parameters<typeof planBriefText>[0]);
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/r", planDir: "/r/plan", clones: {}, run: "x" } as unknown as Parameters<typeof batchPlanBriefText>[0]);
+  assert.ok(single.includes(AFTER_MERGE_CHECKS_FORMAT), "the single brief");
+  assert.ok(batch.includes(AFTER_MERGE_CHECKS_FORMAT), "the batch brief");
+});
+
+test("A11-288: the brief's worked example, written into a plan outside its fence, is a section the board takes", () => {
+  const example = AFTER_MERGE_CHECKS_FORMAT.split("```md\n").at(-1)!.split("\n```")[0];
+  const line = "Chairman session: the next release reaches every machine with its UI build.";
+  const ticket = ["Fix it.", "", "## Done-when", "", "### After merge", "", `* ${line}`, ""].join("\n");
+  const plan = `# Plan\n\n${example}\n\n## Paths\n\n- \`agent-org:src/a.ts\`\n`;
+  assert.deepEqual(plannedChecks([plan]), { checks: [{ line, runner: "session", evidence: "each machine's update log for the next release, quoted on this ticket" }] });
+  assert.equal(afterMergeChecksRefusal([plan], ticket, []), null);
+  assert.deepEqual(plannedChecks([`# Plan\n\n${AFTER_MERGE_CHECKS_FORMAT}\n`]), { checks: [] }, "the fenced skeleton and example in plan prose are no checks");
 });
