@@ -13,7 +13,7 @@ import { isLimitMenu } from "../worker-state.ts";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows } from "../row-claim/own-pr-health-rule.ts";
 import { SPARE_FAMILIES, familyMember } from "../arm-pr.ts";
 import { assertNoLeakInArgv } from "../lib/leak-patterns.ts";
-import { herdrRun, firstLine } from "../herdr-agents.ts";
+import { herdrAgentName, herdrRun, firstLine } from "../herdr-agents.ts";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -181,7 +181,7 @@ export const SESSION_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
  */
 export function sessionAllowance(label: string, { run = defaultRun, home = homedir(), now = Date.now() }: { run?: (args: string[]) => string; home?: string; now?: number; } = {}): { state: "limited"; until: number; text: string; } | { state: "clear"; } | { state: "unknown"; why: string; } {
   try {
-    return allowanceOf(JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent, home, now);
+    return allowanceOf(JSON.parse(run(["--session", "org", "agent", "get", herdrAgentName(label)]))?.result?.agent, home, now);
   } catch (err: any) {
     return { state: "unknown", why: firstLine(err) };
   }
@@ -278,7 +278,7 @@ export function freeLimitMenuSeats(agents: readonly { label: string; status: str
   for (const { label, status } of agents) {
     if (status !== "blocked" || !isLimitMenu(read(label)) || !resetPassed(label, { run, home, now })) continue;
     try {
-      run(["--session", "org", "agent", "send-keys", label, "esc"]);
+      run(["--session", "org", "agent", "send-keys", herdrAgentName(label), "esc"]);
       freed.push(label);
     } catch {
       // not freed: the next tick asks again
@@ -291,7 +291,7 @@ export function freeLimitMenuSeats(agents: readonly { label: string; status: str
 /** Whether the allowance message a seat last said has a reset that has passed. Anything that cannot be read says no. */
 function resetPassed(label: string, { run, home, now }: { run: (args: string[]) => string; home: string; now: number; }): boolean {
   try {
-    const agent = JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent;
+    const agent = JSON.parse(run(["--session", "org", "agent", "get", herdrAgentName(label)]))?.result?.agent;
     if (agent?.agent !== "claude") return false;
     const id = String(agent?.agent_session?.value ?? "");
     if (!SESSION_ID.test(id)) return false;
@@ -633,7 +633,7 @@ export function redPullRequestOf(order: Pick<Enrichable, "cause" | "causeKey">):
 export function paneReader(run: (args: string[]) => string): (label: string) => string | null {
   return (label) => {
     try {
-      return run(["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "40"]);
+      return run(["--session", "org", "agent", "read", herdrAgentName(label), "--source", "recent", "--lines", "40"]);
     } catch {
       return null;
     }

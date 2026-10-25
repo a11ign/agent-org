@@ -18,6 +18,7 @@
 // in lib/" -- a directory listing it reads literally. This file is native to `agent-org` (code moved within the
 // package, not copied in from outside it), so it sits beside `claim-labels.ts` and `project-vocabulary.ts` instead.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 /** The herdr session the org runs in, and the default of every call in this file. */
 export const ORG_SESSION = "org";
@@ -228,6 +229,33 @@ export function herdrReason(err: unknown, max: number = REFUSAL_EXCERPT) {
   return line === undefined ? firstLine(err, max) : line.slice(0, max);
 }
 
+/** herdr 0.9.3's rule for an agent's name (measured 2026-10-25, `invalid_agent_name ... (1-32 characters)`): a lowercase letter, then up to 31 lowercase letters, digits, `-` or `_`. */
+export const HERDR_AGENT_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+
+const AGENT_NAME_MAX = 32;
+const NAME_HASH_LENGTH = 8;
+/** The longest trailing `-<digits>` kept readable in a shortened name; a longer one is left to the hash. */
+const NAME_TAIL_MAX = 12;
+
+/**
+ * THE ONE FUNCTION THAT MAKES A HERDR AGENT NAME (A11-241). A workspace's LABEL is not limited by herdr and stays the full, human name (`reviewer-announcement-emulator-11`); an agent's NAME is limited to
+ * {@link HERDR_AGENT_NAME}, and every `herdr agent <verb> <name>` call addresses the agent by it, so every one of them passes the label through here. PURE and deterministic.
+ *
+ * A name herdr already accepts comes back unchanged, so no running agent changes name. Anything else is lowercased and its other characters made `-` (and prefixed `x-` if it does not start with a letter). If that is
+ * still over 32 characters it becomes `<head><tail>-<hash>`: the head of the name (so the `reviewer-` / `worker-` / `t-` prefix a reader sorts by survives), a trailing `-<number>` when it is short enough to keep,
+ * and 8 hex characters (32 bits) of SHA-256 of the ORIGINAL name, so two long names that share a prefix and a number still get two agents.
+ */
+export function herdrAgentName(full: string): string {
+  let name = full.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+  if (!/^[a-z]/.test(name)) name = `x-${name}`;
+  if (name.length <= AGENT_NAME_MAX) return name;
+  const hash = createHash("sha256").update(full).digest("hex").slice(0, NAME_HASH_LENGTH);
+  const number = /-\d+$/.exec(name)?.[0] ?? "";
+  const tail = number.length > NAME_TAIL_MAX ? "" : number;
+  const head = name.slice(0, AGENT_NAME_MAX - tail.length - 1 - NAME_HASH_LENGTH).replace(/[-_]+$/, "");
+  return `${head}${tail}-${hash}`;
+}
+
 /**
  * THE ONE `agent start` the tick has: an agent of `kind` named `name` in an existing pane, everything after herdr's `--` reaching the agent.
  * A persistent seat's start ({@link startSeat}) and a spawned engineer's ({@link spawnInvocation}) both go through it, so there is one spelling to
@@ -235,7 +263,7 @@ export function herdrReason(err: unknown, max: number = REFUSAL_EXCERPT) {
  * starts an agent with the same spelling, in its own `session`.
  */
 export function agentStartArgs(name: string, kind: string, pane: string, agentTail: string[], { session = ORG_SESSION }: SessionOption = {}): string[] {
-  return ["--session", session, "agent", "start", name, "--kind", kind, "--pane", pane, "--", ...agentTail];
+  return ["--session", session, "agent", "start", herdrAgentName(name), "--kind", kind, "--pane", pane, "--", ...agentTail];
 }
 
 /**
@@ -315,4 +343,15 @@ export function closedNote(run: (args: string[]) => string, workspace: string, {
     return ` -- AND the workspace it opened (${workspace}) could NOT be closed (${herdrReason(err)}): close `
       + "it by hand, or that role reads `unknown` to every tick and is never woken again";
   }
+}
+
+/** Why herdr refused: it answers a refusal as JSON on stdout (`{"error":{"message":...}}`), which {@link herdrReason} (stderr) does not read. */
+export function herdrRefusal(err: unknown): string {
+  try {
+    const message = JSON.parse(String((err as { stdout?: unknown })?.stdout ?? "")).error?.message;
+    if (typeof message === "string") return message;
+  } catch {
+    // not herdr's JSON
+  }
+  return herdrReason(err);
 }

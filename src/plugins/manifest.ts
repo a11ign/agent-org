@@ -192,6 +192,8 @@ export type ReviewerBoard = Readonly<{
   herdr: Readonly<{
     ORG_SESSION: string;
     firstLine(error: unknown): string;
+    /** The name herdr addresses a seat's agent by, made from its label (A11-241): the label itself when herdr accepts it, else a shortened one. */
+    agentName(label: string): string;
     /** The agents herdr lists in `session`, or null when it lists none it can read. */
     readAgents(run: (args: string[]) => string, options: Readonly<{ session: string }>): ListedReviewer[] | null;
     /** The dialog a pane's text shows (contract 1.6, A11-221): its paragraph's lines, which are the question as the pane draws it, and the lines above them, or null when the text shows none. */

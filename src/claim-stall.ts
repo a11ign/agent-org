@@ -25,6 +25,7 @@ import { dirname, resolve } from "node:path";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { idleLimitMs, idleNudgePrompt, stoppedNudgePrompt, declareNudgePrompt, isStoppedHolder, redOwnPrs, redCheckNudgePrompt, unansweredNudgeNote } from "./idle-claimant.ts";
 import { recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
+import { herdrAgentName } from "./herdr-agents.ts";
 import { ownsPr } from "./pr-ownership.ts";
 import { pausedNow } from "./account-limit.ts";
 import { claimRecordOf, type RowComment } from "./claim-record.ts";
@@ -367,7 +368,7 @@ export function restartNotices({ readings, sessions, acked, delivered }: {
   for (const { facts, reading } of readings) {
     const slot = `${facts.session}/${facts.row}`;
     const remembered = typeof acked[slot] === "string" ? acked[slot] : undefined;
-    const current = sessions?.get(facts.session);
+    const current = sessions?.get(herdrAgentName(facts.session));
     if (remembered !== undefined) after[slot] = remembered;
     if (current === undefined || facts.nothing === true) continue;
     if (remembered === undefined) { after[slot] = current; continue; }

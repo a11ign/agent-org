@@ -19,7 +19,7 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFi
 import { pathToFileURL } from "node:url";
 import { claimRecordOf } from "./claim-record.ts";
 import { DEFAULT_ANSWERER, MANAGER_SEATS, decidedBy } from "./decided-by.ts";
-import { herdrRun } from "./herdr-agents.ts";
+import { herdrAgentName, herdrRun } from "./herdr-agents.ts";
 import type { BlockerWriter } from "./ticket-port/port.ts";
 import { TRACKER, githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 import { rows } from "./plugins/rows.ts";
@@ -329,7 +329,7 @@ export function isLimitMenu(pane: string | null): boolean {
 /** The recent screen of a seat, or `null` when herdr cannot give it. */
 function paneOf(label: string): string | null {
   try {
-    return herdrRun(["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "40"]);
+    return herdrRun(["--session", "org", "agent", "read", herdrAgentName(label), "--source", "recent", "--lines", "40"]);
   } catch {
     return null;
   }

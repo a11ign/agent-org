@@ -31,7 +31,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
-import { readAgents } from "./herdr-agents.ts";
+import { herdrAgentName, readAgents } from "./herdr-agents.ts";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 /** The incident's kind, the epic's class. Not seeded in `FAILURE_KINDS`, which a test pins at the six first-move kinds; `repeatsIn` reads any key. */
@@ -403,7 +403,7 @@ function readInstalledVersions(codex: (args: string[], timeout?: number) => stri
 /** One scratch workspace in herdr's `org` session, started the way the org starts a seat, read, and CLOSED on every road. */
 function smokeScratchPane(herdr: (args: string[]) => string, kind: SmokeKind, startArgs: string[]): SmokeRaw {
   const product = SMOKES.find((s) => s.kind === kind)!.product;
-  const name = `smoke-${kind}-${Date.now().toString(36)}`;
+  const name = herdrAgentName(`smoke-${kind}-${Date.now().toString(36)}`);
   let workspace: string | undefined;
   try {
     const created = JSON.parse(herdr(["--session", "org", "workspace", "create", "--label", name, "--no-focus"]));

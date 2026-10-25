@@ -269,9 +269,10 @@ function promptWords(context: Context, seat: { label: string; key: string }, sta
 /** Sends the seat's agent its prompt (`promptWords`). */
 function sendPrompt(context: Context, seat: { label: string; key: string }, state: ReviewState, ref: ReviewerRef, brief: ReviewBrief | undefined): { sent: true } | { refusal: string } {
   const words = promptWords(context, seat, state, ref, brief);
-  const { session, run } = boardOf(context);
+  const board = boardOf(context);
+  const { session, run } = board;
   try {
-    run(["--session", session, "agent", "prompt", seat.label, words]);
+    run(["--session", session, "agent", "prompt", board.herdr.agentName(seat.label), words]);
     return { sent: true };
   } catch (err) {
     return { refusal: err instanceof Error ? err.message.split("\n")[0] : String(err) };
@@ -471,7 +472,7 @@ function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerD
   if (!agents.some((agent) => agent.label === seat.label && agent.status === BLOCKED_STATUS)) return null;
   let pane: string;
   try {
-    pane = board.run(["--session", board.session, "agent", "read", seat.label, "--source", "visible"]);
+    pane = board.run(["--session", board.session, "agent", "read", board.herdr.agentName(seat.label), "--source", "visible"]);
   } catch (err) {
     return { unread: `${seat.label}'s pane could not be read (${board.herdr.firstLine(err)})` };
   }
@@ -492,7 +493,7 @@ function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerD
 /** Sends `enter` to the seat's agent, which answers the dialog's selected option: whether herdr took it. */
 function pressEnter(board: ReviewerBoard, label: string): boolean {
   try {
-    board.run(["--session", board.session, "agent", "send-keys", label, "enter"]);
+    board.run(["--session", board.session, "agent", "send-keys", board.herdr.agentName(label), "enter"]);
     return true;
   } catch {
     return false;

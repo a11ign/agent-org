@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { herdrAgentName } from "../herdr-agents.ts";
 import { reviewerInstance } from "../review-attribution.ts";
 import { reviewerDoorPath } from "../reviewer-door-path.ts";
 import { OUTSIDE, VERDICT_DELIVERY_FLAG, outsideVerdictBlock, postOutsideVerdicts, type DoorRun } from "../review-trust.ts";
@@ -554,7 +555,7 @@ export function appendSpareCycle(path: string, cycle: SpareCycle) {
 export function outsidePaneReader(run: (args: string[]) => string): (label: string) => string | null {
   return (label) => {
     try {
-      return run(["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "400"]);
+      return run(["--session", "org", "agent", "read", herdrAgentName(label), "--source", "recent", "--lines", "400"]);
     } catch {
       return null;
     }

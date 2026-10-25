@@ -54,7 +54,7 @@ export { childrenCpuMs };
 // from `wake`, because `afterGate` returns `deliver: false` on a QUIET gate and `wake` is then never
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
 // menu since nobody knows when.
-import { readAgents } from "./herdr-agents.ts";
+import { herdrAgentName, readAgents } from "./herdr-agents.ts";
 import { readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownReviewers } from "./wake/seat-reset.ts";
 import { tearDownSpares, recoverNow } from "./wake/ci-class-and-spares.ts";
 import { startAbsentSeats, checkChairmanPath } from "./wake/release-line-and-seats.ts";
@@ -642,11 +642,11 @@ function raiseDialogsNow(roster: NonNullable<ReturnType<typeof readAgents>>, led
  * produces no order, so a quiet gate is the tick on which it most needs doing.
  * @param {NonNullable<ReturnType<typeof readAgents>>} roster @param {string} ledgerPath @param {Run["meter"]} meter
  */
-function tidyRoster(roster: NonNullable<ReturnType<typeof readAgents>>, ledgerPath: string, meter: Run["meter"]) {
+export function tidyRoster(roster: NonNullable<ReturnType<typeof readAgents>>, ledgerPath: string, meter: Run["meter"]) {
   // #460: A BLOCKED WORKER IS TOLD ONCE PER STALL to declare `blocked <row> <reason>` or decide and record why, and then it is no longer a line said every
   // tick (seven lines in fourteen minutes for `worker-4202`, 2026-10-09). What could not be told keeps the report it always had.
   const told = tellBlocked({ roster, path: stateEntryPath(BLOCKED_TOLD_FILE),
-    send: (label, text) => { defaultRun(["--session", "org", "agent", "prompt", label, text]); },
+    send: (label, text) => { defaultRun(["--session", "org", "agent", "prompt", herdrAgentName(label), text]); },
     report: (line) => process.stderr.write(`${line}\n`) });
   if (told.sent.length > 0) process.stderr.write(`BLOCKED ${told.sent.join(", ")} -- told to declare \`worker:state blocked <row> <reason>\` or decide and record why (once per stall).\n`);
   const blocked = told.untold;
