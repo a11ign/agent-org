@@ -33,6 +33,24 @@ describe("the page while the plugins are read", () => {
   });
 });
 
+describe("where a plugin is", () => {
+  it("is said with what the plugin is, as today's board said it, on a concern of one plugin and on each plugin a concern chooses between", async () => {
+    const answer = answerOf();
+    await pageOn({ plugins: pluginsOf({ answer: () => answer }) });
+    const placeOf = ({ description, where }: { description: string; where: string }) => `${description} ${where}.`;
+    const concerns = answer.concerns.filter(({ plugins }) => plugins.length > 0);
+    const single = concerns.find(({ plugins }) => plugins.length === 1);
+    const choice = concerns.find(({ plugins }) => plugins.length > 1);
+    if (single === undefined || choice === undefined) throw new Error("the stand has no concern of one plugin and one with a choice");
+    const titled = (label: string): string => `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
+    const opened = (label: string): void => { if (head(label).getAttribute("aria-expanded") !== "true") fireEvent.click(head(label)); };
+    opened(titled(single.label));
+    expect(within(card(titled(single.label))).getByText(placeOf(single.plugins[0])).className).toContain("plugin-note");
+    opened(titled(choice.label));
+    for (const plugin of choice.plugins) expect(within(card(titled(choice.label))).getByText(placeOf(plugin))).toBeTruthy();
+  });
+});
+
 describe("the page when the plugins are read", () => {
   it("counts the concerns on Integrations and the Claude plugins on the other tab", async () => {
     await pageOn({ plugins: pluginsOf({ answer: () => answerOf({ claude: { readable: true, plugins: [a11ign()] } }) }) });

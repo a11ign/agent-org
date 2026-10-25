@@ -24,7 +24,7 @@ function flaky(tickets: readonly TicketView[] = BACKLOG) {
 }
 
 async function pageOn(stand: Stand, connection = "personal") {
-  history.replaceState(null, "", `/next/tickets?connection=${connection}`);
+  history.replaceState(null, "", `/tickets?connection=${connection}`);
   const fetchWith = standFetch(stand);
   const view = render(<ShellProvider fetchWith={fetchWith}><ShellFrame page="tickets"><TicketsPage /></ShellFrame></ShellProvider>);
   await waitFor(() => expect(screen.queryByRole("status", { name: "Loading tickets" })).toBeNull());

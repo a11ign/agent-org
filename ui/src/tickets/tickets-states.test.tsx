@@ -64,7 +64,7 @@ describe("the paused, error and unreachable states", () => {
     await openPage(standOf(answers(BACKLOG, { queue: { ...queueOf(), paused: true } as unknown as QueueView })));
     const banner = screen.getByText("Workers are paused. Tickets you queue wait until you start workers.");
     expect(banner.closest("[role=status]")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Start workers on Runs" }).getAttribute("href")).toBe("/next/runs");
+    expect(screen.getByRole("link", { name: "Start workers on Runs" }).getAttribute("href")).toBe("/runs");
   });
 
   it("has no paused banner while workers run", async () => {

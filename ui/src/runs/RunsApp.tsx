@@ -20,7 +20,7 @@ function RunsInShell() {
 }
 
 /**
- * The island of the runs route. The route also serves `/next/runs/<key>`, which a static build cannot list: that path is Run detail, which the page draws in the shell and titles as the board does. `fetchWith` is for a test;
+ * The island of the runs route. The route also serves `/runs/<key>`, which a static build cannot list: that path is Run detail, which the page draws in the shell and titles as the board does. `fetchWith` is for a test;
  * the page uses the browser's.
  */
 export function RunsApp({ fetchWith }: Readonly<{ fetchWith?: Fetch }>) {

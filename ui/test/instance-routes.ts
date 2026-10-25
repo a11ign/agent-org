@@ -1,7 +1,7 @@
-// module: answers a page's calls in Chromium -- `/api/connections` and `/c/<name>/api/...` from a stand-in instance, and `/next/runs/<key>` as `ticket:ui` does
+// module: answers a page's calls in Chromium -- `/api/connections` and `/c/<name>/api/...` from a stand-in instance, and `/runs/<key>` as `ticket:ui` does
 //
 // THE BUILD IS STATIC AND `astro preview` KNOWS NO INSTANCE, so a page check answers the calls itself through `context.route` (the same stand-in the component checks use,
-// `fixtures.ts`). `/next/runs/<key>` has no file of its own: `ticket:ui` answers it with the nearest page above (`ui-build.ts`'s `locate`), so this does too, from the same function.
+// `fixtures.ts`). `/runs/<key>` has no file of its own: `ticket:ui` answers it with the nearest page above (`ui-build.ts`'s `locate`), so this does too, from the same function.
 // Every page is sent with the policy `ticket:ui` sends, so a page that needs more than it allows (a linked stylesheet, say) fails its check here.
 import { join } from "node:path";
 import type { BrowserContext, Route } from "playwright-core";
@@ -10,8 +10,7 @@ import { answerFor, type Request, type Stand } from "./fixtures.ts";
 import { UI_ROOT } from "./site.ts";
 
 const DIST = join(UI_ROOT, "dist");
-const NEXT = "/next";
-const RUNS = `${NEXT}/runs/`;
+const RUNS = "/runs/";
 
 /** The policy `ticket:ui` sends with every page (`PAGE_CSP` in `ui-server.ts`). */
 export const PAGE_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";
@@ -21,9 +20,9 @@ export type Serving = Readonly<{ stand?: Stand; hold?: boolean }>;
 
 const isInstanceCall = (pathname: string): boolean => pathname === "/api/connections" || /^\/(c\/[^/]+\/)?api\//.test(pathname);
 
-/** Answers a page of the build: `/next/runs/<key>` with the runs page, as `ticket:ui` does, and any other document as the preview serves it, with the page's policy. */
+/** Answers a page of the build: `/runs/<key>` with the runs page, as `ticket:ui` does, and any other document as the preview serves it, with the page's policy. */
 async function sendPage(route: Route, pathname: string): Promise<void> {
-  const page = pathname.startsWith(RUNS) ? locate(DIST, pathname.slice(NEXT.length)) : null;
+  const page = pathname.startsWith(RUNS) ? locate(DIST, pathname) : null;
   if (page !== null) return route.fulfill({ path: page.file, contentType: "text/html; charset=utf-8", headers: { "content-security-policy": PAGE_CSP } });
   const response = await route.fetch();
   return route.fulfill({ response, headers: { ...response.headers(), "content-security-policy": PAGE_CSP } });

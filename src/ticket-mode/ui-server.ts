@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-// command: ticket:ui -- ticket mode's board page on 127.0.0.1, showing each instance its connections file names: this machine's, and others'
+// command: ticket:ui -- ticket mode's board (Atomaut) on 127.0.0.1, showing each instance its connections file names: this machine's, and others'
 //
 // THE PAGE'S SERVICE HOLDS NO QUEUE. It serves the page and passes a paired browser's `/c/<connection>/api/...` calls on to that connection's
 // instance with the instance's key (`connections.ts`, `remote-proxy.ts`). Each instance keeps its own queue, workers and limit. The page never
@@ -18,13 +18,13 @@
 // A LINK WHOSE RUN HAS ENDED says so instead (A11-129): herdr web ui's page spins for a terminal that is gone, so the board answers a page of its own,
 // with a link to the run, and no code is minted. A failed lookup of the run redirects as it always has.
 //
-// THE BUILT UI IS SERVED AT `/next/` BESIDE TODAY'S PAGE (A11-190). It is paired the same way as `/` (an unpaired browser's `GET` gets the pairing page), and it reaches an instance through
-// the same `/api/connections` and `/c/<connection>/api/...` routes, so nothing of the remote proxy changes. Where the build is looked for, and which file a path maps to, is `ui-build.ts`.
+// THE BUILT UI IS SERVED AT `/` (A11-202, after A11-190 served it under `/next`). Every `GET` or `HEAD` that is not an instance call is answered from the build, so `/`, `/tickets`, `/runs/<key>` and the files
+// under `/_astro/` are its. An unpaired browser's `GET` of a page gets the pairing page. The page reaches an instance through `/api/connections` and `/c/<connection>/api/...`, so nothing of the remote
+// proxy changes. Where the build is looked for, and which file a path maps to, is `ui-build.ts`. An address from the days of `/next` is redirected to the same address without it.
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { stripTypeScriptTypes } from "node:module";
 import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -38,27 +38,15 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json, type Served } from "./local-http.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { createLastKnown, lastKnownDir, type LastKnown } from "./last-known.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 import type { TerminalRun } from "./terminal-pair.ts";
-import { afterNext, buildCandidates, fileHeaders, findBuild, isAssetPath, isNextPath, isPage, locate } from "./ui-build.ts";
+import { buildCandidates, fileHeaders, findBuild, isAssetPath, isPage, locate, movedFromNext } from "./ui-build.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PAGE = join(HERE, "ui.html");
 /** What a browser that has not paired is shown, in place of the board. */
 const PAIR_PAGE = join(HERE, "pair.html");
-/** The page's logic, written in TypeScript so its tests run it, and sent to the browser with the types stripped. */
-const VIEW = join(HERE, "board-view.ts");
-/** The scaffolding directories both the board and the Region read (`src/scaffold-dirs.ts`), joined to the board script so the names are in its scope. */
-const SCAFFOLD_DIRS_FILE = join(HERE, "..", "scaffold-dirs.ts");
-/** The Pick view's label filters, sent the same way. Each module the page imports is one the browser can run as it is: it imports nothing. */
-const LABEL_FILTERS = join(HERE, "label-filters.ts");
-/** The Pick view's Assignee filter, sent the same way: it imports nothing, so the browser runs it as it is. */
-const ASSIGNEE_FILTER = join(HERE, "assignee-filter.ts");
-/** The Settings page's search, sent the same way: it imports nothing, so the browser runs it as it is (A11-146). */
-const SETTINGS_SEARCH = join(HERE, "settings-search.ts");
-/** The Settings page's Plugins section: its words and rules, sent the same way (A11-163). */
-const PLUGINS_SECTION = join(HERE, "plugins-section.ts");
 const COOKIE = "ticket_session";
 /** The most a pairing request may send. It is read before the request is known to be anyone's, so it is kept small. */
 const PAIR_BODY_BYTES = 1024;
@@ -102,20 +90,22 @@ export function isEnded(answer: unknown): answer is EndedRun {
   return state === "ended" && (outcome === "failed" || outcome === "finished") && typeof run === "string";
 }
 
-/** Where the board shows a run's card, by the id the page gives it; empty for a run with no card of its own. */
-const cardId = ({ kind, run }: EndedRun): string => (kind === "writer" ? `writer-${run}` : kind === "ticket" ? `run-${run}` : "");
+/**
+ * Where the board shows an ended run (A11-202): a ticket run has its own page, a writer run's card is on the Tickets page (a request card has no address of its own), and a run with
+ * no card of its own is the board's front page. The connection the link is for is named in the query, as the board's `ShellProvider` reads it (A11-129).
+ */
+const boardPathOf = ({ kind, run }: EndedRun): string => (kind === "ticket" ? `/runs/${encodeURIComponent(run)}` : kind === "writer" ? "/tickets" : "/");
 
 /** The text with each character that could open markup written as its numeric reference, so a value is shown and never read as HTML. PURE. */
 const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
 /**
  * The page a worker link answers with when its run has ended: what ended, why if it says, and a link to the run on the board. The board opens with the
- * connection selected and scrolled to the run's card (A11-129). Every value is escaped.
+ * connection selected, on the run's own page for a ticket run (A11-129, A11-202). Every value is escaped.
  */
 export function endedPage(connection: string, ended: EndedRun): string {
   const heading = escapeHtml(`This run ended: ${ended.outcome}`);
-  const anchor = cardId(ended);
-  const href = escapeHtml(`/?connection=${encodeURIComponent(connection)}${anchor === "" ? "" : `#${encodeURIComponent(anchor)}`}`);
+  const href = escapeHtml(`${boardPathOf(ended)}?connection=${encodeURIComponent(connection)}`);
   const reason = ended.reason === undefined || ended.reason === "" ? "" : `<p>${escapeHtml(ended.reason)}</p>`;
   return `<!doctype html>
 <html lang="en">
@@ -154,10 +144,10 @@ function sendEnded(response: ServerResponse, connection: string, ended: EndedRun
   response.end(endedPage(connection, ended));
 }
 
-/** The page's content security policy: its own origin's scripts and images, and inline styles and scripts, which both the board and the built UI's island bootstrap use. */
+/** The page's content security policy: its own origin's scripts and images, and inline styles and scripts, which the built UI's island bootstrap and its old-address redirect use. */
 const PAGE_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";
 
-/** What `/next` shows when no build is found: that it is missing, how to get it, and where it was looked for. Every value is escaped. PURE. */
+/** What every page shows when no build is found: that it is missing, how to get it, and where it was looked for. Every value is escaped. PURE. */
 export function missingBuildPage(searched: readonly string[]): string {
   const places = searched.map((dir) => `<li><code>${escapeHtml(dir)}</code></li>`).join("\n");
   return `<!doctype html>
@@ -203,46 +193,6 @@ export type UiDeps = Readonly<{
 }>;
 
 /**
- * `board-view.ts` as the browser can run it: Node's own type stripping, so what the tests ran is what the page runs. The page loads ONE script, so the
- * files `board-view.ts` was split into (`board-view/`) are joined to it: one scope, with their relative imports dropped, as they are not modules here.
- */
-export function boardViewScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  const dir = join(HERE, "board-view");
-  const parts = existsSync(dir)
-    ? readdirSync(dir).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts")).sort().map((name) => join(dir, name))
-    : [];
-  // An import statement ends at its `;`, so one match never runs past it: a multi-line import from a sibling file goes, a `node:` import stays.
-  const joined = [VIEW, SCAFFOLD_DIRS_FILE, ...parts].map((path) => read(path).replace(/^import\s+[^;]*?\bfrom\s+"\.[^"]*";[ \t]*$/gm, "")).join("\n");
-  return stripTypeScriptTypes(joined);
-}
-
-/** `label-filters.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
-export function labelFiltersScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  return stripTypeScriptTypes(read(LABEL_FILTERS));
-}
-
-/** `assignee-filter.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
-export function assigneeFilterScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  return stripTypeScriptTypes(read(ASSIGNEE_FILTER));
-}
-
-/** `settings-search.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
-export function settingsSearchScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  return stripTypeScriptTypes(read(SETTINGS_SEARCH));
-}
-
-/** `plugins-section.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
-export function pluginsSectionScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  return stripTypeScriptTypes(read(PLUGINS_SECTION));
-}
-
-/** The page's modules, by the path it imports each from. */
-const SCRIPTS: Readonly<Record<string, () => string>> = {
-  "/board-view.js": () => boardViewScript(), "/label-filters.js": () => labelFiltersScript(), "/assignee-filter.js": () => assigneeFilterScript(),
-  "/settings-search.js": () => settingsSearchScript(), "/plugins-section.js": () => pluginsSectionScript(),
-};
-
-/**
  * What the request is paired by: the board key in its `x-ticket-token` header, a paired browser's session in its cookie when it sends no
  * header, or nothing.
  */
@@ -253,9 +203,9 @@ export function pairedBy(request: Pick<IncomingMessage, "headers">, key: string,
   return cookie !== undefined && sessions.holds(cookie) ? "browser" : null;
 }
 
-function sendHtml(response: ServerResponse, path: string): void {
+function sendPairPage(response: ServerResponse): void {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": PAGE_CSP });
-  response.end(readFileSync(path, "utf8"));
+  response.end(readFileSync(PAIR_PAGE, "utf8"));
 }
 
 function redirect(response: ServerResponse, location: string): void {
@@ -268,22 +218,23 @@ function sendNotFound(response: ServerResponse): void {
   response.end("not found");
 }
 
-/** Whether `path` is a page of the built UI, which a browser opens: under `/next` and not an asset. An unpaired browser is shown the pairing page for it, and a script or image gets the 401. */
-const isNextPagePath = (path: string): boolean => isNextPath(path) && !isAssetPath(afterNext(path));
+/** Whether `path` is an instance call (`/api/...`) or a call to a connection's instance (`/c/...`): the paths that are never a page of the build, whatever follows them. */
+const isCallPath = (path: string): boolean => path.startsWith("/api/") || path.startsWith("/c/");
+
+/** Whether `path` is a page of the built UI, which a browser opens: not an instance call and not an asset. An unpaired browser is shown the pairing page for it, and a script or image gets the 401. */
+const isPagePath = (path: string): boolean => !isCallPath(path) && !isAssetPath(path);
 
 function sendMissingBuild(response: ServerResponse, searched: readonly string[]): void {
   response.writeHead(503, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
   response.end(missingBuildPage(searched));
 }
 
-/** A paired request's `GET` or `HEAD` of `/next` or a path under it: a file of the built UI, the page that says there is no build, or a plain 404. Never a stack trace. */
-async function sendNext(response: ServerResponse, url: URL, candidates: readonly string[]): Promise<void> {
+/** A paired request's `GET` or `HEAD` of a path that is not an instance call: a file of the built UI, the page that says there is no build, or a plain 404. Never a stack trace. */
+async function sendBuild(response: ServerResponse, url: URL, candidates: readonly string[]): Promise<void> {
   const root = findBuild(candidates);
   if (root === null) return sendMissingBuild(response, candidates);
-  // Relative asset addresses on the page resolve against `/next/`, so the bare address goes there.
-  if (url.pathname === "/next") return redirect(response, `/next/${url.search}`);
   try {
-    const located = locate(root, afterNext(url.pathname));
+    const located = locate(root, url.pathname);
     if (located === null) return sendNotFound(response);
     const body = await readFile(located.file);
     const csp = isPage(located.relative) ? { "Content-Security-Policy": PAGE_CSP } : {};
@@ -297,7 +248,7 @@ async function sendNext(response: ServerResponse, url: URL, candidates: readonly
 
 /** What a request that has not paired may do: see the pairing page, and trade a live code at `POST /pair` for a session of its own. */
 async function pairBrowser(request: IncomingMessage, response: ServerResponse, path: string, { port, pairing, sessions }: Readonly<{ port: number; pairing: Pairing; sessions: BrowserSessions }>): Promise<void> {
-  if (request.method === "GET" && (path === "/" || isNextPagePath(path))) return sendHtml(response, PAIR_PAGE);
+  if (request.method === "GET" && isPagePath(path)) return sendPairPage(response);
   if (request.method !== "POST" || path !== "/pair") {
     return sendJson(response, 401, { error: `this browser is not paired: open http://127.0.0.1:${port}/ and type the code agent-org ticket:pair prints` });
   }
@@ -387,18 +338,15 @@ export function createUi(deps: UiDeps) {
     }
     const worker = TERMINAL_LINK.exec(url.pathname);
     if (request.method === "GET" && worker !== null) return workerLink(response, by, worker[1], url.searchParams.get("link"));
-    const script = request.method === "GET" && Object.hasOwn(SCRIPTS, url.pathname) ? SCRIPTS[url.pathname] : undefined;
-    if (script !== undefined) {
-      response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
-      return void response.end(script());
-    }
-    if ((request.method === "GET" || request.method === "HEAD") && isNextPath(url.pathname)) return sendNext(response, url, deps.uiBuilds ?? buildCandidates());
-    if (request.method === "GET" && url.pathname === "/") return sendHtml(response, PAGE);
     if (request.method === "GET" && url.pathname === "/api/connections") {
       return sendJson(response, 200, connectionsView(read));
     }
     const call = CONNECTION_PATH.exec(url.pathname);
     if (call !== null) return proxyConnection(request, response, by, call[1], `${call[2]}${url.search}`);
+    const readsPage = request.method === "GET" || request.method === "HEAD";
+    const moved = readsPage ? movedFromNext(url.pathname, url.search) : null;
+    if (moved !== null) return redirect(response, moved);
+    if (readsPage && !isCallPath(url.pathname)) return sendBuild(response, url, deps.uiBuilds ?? buildCandidates());
     sendJson(response, 404, { error: `no route ${request.method} ${url.pathname}` });
   }
 

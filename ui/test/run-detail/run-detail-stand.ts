@@ -3,6 +3,7 @@
 // THE SHELL'S STAND-IN (`../fixtures.ts`) HOLDS A QUEUE OF BARE PHASES, and a page ticket does not edit it. These are runs with the fields `runStatus`, `runActions`, `reasonOf`, `waitNote` and `promptNote` read, so the page's words
 // are the backend's own over them. Used by the component checks (as the client's `fetch`, through `standFetch`) and by the page checks (through Playwright's route), so both see the same instance.
 import type { ViewEntry } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
+import type { RunEvent } from "../../../src/ticket-mode/queue/run-log.ts";
 import type { QueueView } from "../../src/api/types.ts";
 import { PERSONAL, queueingConfig, type Failure, type Stand } from "../fixtures.ts";
 
@@ -71,9 +72,36 @@ export const RUNS_OF: Readonly<Record<State, StateRuns>> = {
   cancelled: { key: "A11-30", runs: [finishedRun({ key: "A11-30", title: "Renovate opens no PROJECT_REF bump on agent-org: read why and fix it, so agent-org#1267 can proceed", tookMinutes: 3, startedAgo: 60 * MINUTE, trackerState: "canceled", outcome: { kind: "stopped" } })] },
 };
 
-/** The queue the page reads: `runs` on it, ten workers, started, and the pool's review line of the Ready to merge run's pull request. The instance runs v0.286.1. */
-export function queueOf(runs: readonly RunFields[]): QueueView {
-  return { entries: runs as unknown as ViewEntry[], max: 10, paused: false, pulls: { [LAB_PULL.url]: "approved at 1f6009d" }, update: { note: null, version: "v0.286.1" }, writers: [], held: null, claimWarning: null } as unknown as QueueView;
+const STARTED = (run: RunFields): RunEvent => ({ at: run.startedAt as number, kind: "started", model: "sonnet", effort: "high", instance: "agents" });
+const FINISHED = (run: RunFields, outcome: string, reason?: string): RunEvent => ({ at: run.finishedAt as number, kind: "finished", outcome, ...(reason === undefined ? {} : { reason }) });
+const QUEUED_PLAN_FIRST = (run: RunFields): RunEvent => ({ at: run.queuedAt as number, kind: "queued", model: "sonnet", effort: "high", planFirst: true });
+const QUEUED = (run: RunFields): RunEvent => ({ at: run.queuedAt as number, kind: "queued", model: "sonnet", effort: "high", planFirst: false });
+
+/** What the board recorded of each state's run, as `Queue.runLog` holds it: oldest first, the events each Run detail board's Timeline draws. */
+const LOG_OF: Readonly<Partial<Record<State, (run: RunFields) => readonly RunEvent[]>>> = {
+  running: (run) => [STARTED(run)],
+  queued: (run) => [QUEUED_PLAN_FIRST(run)],
+  blocked: (run) => [QUEUED(run)],
+  needs: (run) => [STARTED(run), { at: Date.now(), kind: "needs-you", reason: "Do you want to overwrite fleet.ts?" }],
+  handback: (run) => [STARTED(run), FINISHED(run, "needs-human", "Two plans disagree")],
+  awaiting: (run) => [STARTED(run), { at: (run.startedAt as number) + 10 * MINUTE, kind: "pr-opened", url: A11IGN_PULL.url }],
+  ready: (run) => [STARTED(run), { at: (run.startedAt as number) + 10 * MINUTE, kind: "verdict", url: LAB_PULL.url, head: "1f6009d3a5c0", review: "approved" }, FINISHED(run, "reviewed")],
+  done: (run) => [STARTED(run), FINISHED(run, "ready-pr"), { at: run.finishedAt as number, kind: "merged", url: pullUrl("a11ign/lab", 149) }, { at: run.finishedAt as number, kind: "merged", url: A11IGN_PULL.url }],
+  failed: (run) => [STARTED(run), FINISHED(run, "crashed", "The worker's session ended with an error: out of memory")],
+  cancelled: (run) => [STARTED(run), FINISHED(run, "stopped")],
+};
+
+/** The log of the run each board opens, under its ticket's key, or none for a board whose run has none. */
+export function runLogOf(state: State): Readonly<Record<string, readonly RunEvent[]>> | undefined {
+  const { key, runs } = RUNS_OF[state];
+  const run = runs.find((candidate) => (candidate.ticket as { key: string }).key === key);
+  const log = run === undefined ? undefined : LOG_OF[state]?.(run);
+  return log === undefined ? undefined : { [key]: log };
+}
+
+/** The queue the page reads: `runs` on it, ten workers, started, and the pool's review line of the Ready to merge run's pull request. The instance runs v0.286.1. `runLog` is what the board recorded of the runs. */
+export function queueOf(runs: readonly RunFields[], runLog?: Readonly<Record<string, readonly RunEvent[]>>): QueueView {
+  return { entries: runs as unknown as ViewEntry[], max: 10, paused: false, pulls: { [LAB_PULL.url]: "approved at 1f6009d" }, update: { note: null, version: "v0.286.1" }, writers: [], held: null, claimWarning: null, ...(runLog === undefined ? {} : { runLog }) } as unknown as QueueView;
 }
 
 /** The terminal the stand's machine names when a check asks for one. */
@@ -84,9 +112,9 @@ export function detailStand(state: State, { runs, terminal = null, post, queueFa
   return {
     connections: [PERSONAL],
     ...(state === "loading" ? { holdInstance: true } : {}),
-    instances: { personal: { config: queueingConfig({ terminal } as never), queue: queueOf(runs ?? RUNS_OF[state].runs), ...(post === undefined ? {} : { post }), ...(queueFails === undefined ? {} : { queueFails }) } },
+    instances: { personal: { config: queueingConfig({ terminal } as never), queue: queueOf(runs ?? RUNS_OF[state].runs, runs === undefined ? runLogOf(state) : undefined), ...(post === undefined ? {} : { post }), ...(queueFails === undefined ? {} : { queueFails }) } },
   };
 }
 
 /** The address a board is opened at. */
-export const addressOf = (state: State): string => `/next/runs/${RUNS_OF[state].key}`;
+export const addressOf = (state: State): string => `/runs/${RUNS_OF[state].key}`;

@@ -250,10 +250,6 @@
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-h1);
 }
-.placeholder-note {
-  margin: 0;
-  color: var(--color-text-muted);
-}
 
 /* The boards' media rule: a custom property cannot be read in a media query, so 820px is written here, once, beside the sidebar width it mirrors. */
 @media (max-width: 820px) {

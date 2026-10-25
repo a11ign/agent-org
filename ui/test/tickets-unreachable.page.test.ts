@@ -21,7 +21,7 @@ afterAll(async () => {
   await site?.stop();
 });
 
-const ROUTE = "/next/tickets";
+const ROUTE = "/tickets";
 const REFUSAL = "cannot reach personal over SSH: agents: Permission denied (publickey).";
 
 /** The Tickets board's instance as an SSH connection that can be taken down, beside this machine's. */

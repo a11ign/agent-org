@@ -117,9 +117,9 @@ describe("UnreachableFrame", () => {
 
 describe("EmptyState", () => {
   it("shows its title and text, and its actions when it has them", () => {
-    render(<EmptyState title="No runs yet" text="Queue tickets." actions={<a href="/next/tickets">Go to Tickets</a>} />);
+    render(<EmptyState title="No runs yet" text="Queue tickets." actions={<a href="/tickets">Go to Tickets</a>} />);
     expect(screen.getByText("No runs yet")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Go to Tickets" }).getAttribute("href")).toBe("/next/tickets");
+    expect(screen.getByRole("link", { name: "Go to Tickets" }).getAttribute("href")).toBe("/tickets");
   });
 });
 

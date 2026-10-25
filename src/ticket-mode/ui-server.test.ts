@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
@@ -17,7 +16,7 @@ import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
-import { assigneeFilterScript, boardViewScript, createUi, endedPage, isEnded, labelFiltersScript, missingBuildPage, pairedBy, sameTerminal } from "./ui-server.ts";
+import { createUi, endedPage, isEnded, missingBuildPage, pairedBy, sameTerminal } from "./ui-server.ts";
 import type { TerminalMint } from "./terminal-pair.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
@@ -96,12 +95,6 @@ async function ui(list: readonly Connection[], { refusal = null, sshFails = fals
 const WORK: Connection = { name: "work", kind: "local" };
 const PERSONAL: Connection = { name: "personal", kind: "ssh", ssh: "agents", agentOrg: "agent-org" };
 
-/** A served script written to a fresh folder as `name`, imported the way the browser imports it. */
-async function importServed(prefix: string, name: string, script: string) {
-  const file = join(tmpDir(prefix), name);
-  writeFileSync(file, script);
-  return import(pathToFileURL(file).href);
-}
 const pairWith = (base: string, code: string) => fetch(`${base}/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
 
 async function pairedCookie(base: string, key: string): Promise<string> {
@@ -110,7 +103,7 @@ async function pairedCookie(base: string, key: string): Promise<string> {
 }
 
 test("a browser that has not paired gets the pairing page and no API, and a code from ticket:pair gets it a cookie that lasts a year", async () => {
-  const u = await ui([WORK]);
+  const u = await ui([WORK], { uiBuilds: [builtUi().root] });
   try {
     assert.equal((await fetch(`${u.base}/c/work/api/queue`)).status, 401);
     const unpaired = await fetch(`${u.base}/`);
@@ -124,7 +117,7 @@ test("a browser that has not paired gets the pairing page and no API, and a code
     assert.match(cookie, /^ticket_session=[0-9a-f]{48}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/);
     assert.equal(cookie.includes(u.local.key), false, "the browser gets a session of its own, not the key");
     const page = await fetch(`${u.base}/`, { headers: { cookie: cookie.split(";")[0] } });
-    assert.match(await page.text(), /<title>Ticket queue<\/title>/);
+    assert.match(await page.text(), /<title>Next root<\/title>/, "a paired browser's / is the built UI");
     assert.equal((await pairWith(u.base, code)).status, 401, "a code pairs one browser");
   } finally {
     await u.close();
@@ -300,41 +293,10 @@ test("a request is paired by the board key in its header, or by a session the se
   assert.equal(pairedBy({ headers: {} }, KEY, sessions), null);
 });
 
-test("the page's logic is served as JavaScript the browser can import, and it is the tested module, types stripped", async () => {
-  const script = boardViewScript();
-  assert.doesNotMatch(script, /:\s*readonly ViewTicket\[\]|export type /, "no type annotation reaches the browser");
-  const view = await importServed("ticket-board-view-", "board-view.mjs", script);
-  const tickets = [{ key: "A-1", title: "x", status: "Backlog", statusOrder: 0, priority: 2, project: "P" }];
-  assert.deepEqual(view.visibleTickets(tickets, { projects: new Set(["P"]) }).map((t: { key: string }) => t.key), ["A-1"], "the browser's copy filters as the tested one does");
-});
-
-test("the label filters are served as JavaScript the browser can import, types stripped, and filter as the tested module does", async () => {
-  const script = labelFiltersScript();
-  assert.doesNotMatch(script, /export type |: readonly Labelled\[\]/, "no type annotation reaches the browser");
-  const filters = await importServed("ticket-label-filters-", "label-filters.mjs", script);
-  const tickets = [{ key: "A-1", labels: [{ name: "Fleet", group: "Goal" }] }, { key: "A-2", labels: [] }];
-  assert.deepEqual(filters.withLabels(tickets, new Set([filters.labelChoice("Goal", "Fleet")])).map((t: { key: string }) => t.key), ["A-1"]);
-});
-
-test("the assignee filter is served as JavaScript the browser can import, types stripped, and chooses as the tested module does", async () => {
-  const script = assigneeFilterScript();
-  assert.doesNotMatch(script, /export type |: readonly Owned\[\]/, "no type annotation reaches the browser");
-  const filter = await importServed("ticket-assignee-filter-", "assignee-filter.mjs", script);
-  const tickets = [{ key: "A-1", assignee: { id: "u1", name: "Dan Beck" } }, { key: "A-2", assignee: null }];
-  assert.deepEqual(filter.inScope(tickets[1], filter.UNASSIGNED, null), true, "the browser's copy chooses as the tested one does");
-  assert.deepEqual(filter.inScope(tickets[0], "u1", null), true);
-});
-
-test("a paired browser gets all of the page's modules, and a ticket's labels reach it through a connection with nothing new passed on", async () => {
+test("a ticket's labels reach a paired browser through a connection, with nothing new passed on", async () => {
   const u = await ui([WORK]);
   try {
     const cookie = await pairedCookie(u.base, u.local.key);
-    for (const path of ["/board-view.js", "/label-filters.js", "/assignee-filter.js", "/settings-search.js", "/plugins-section.js"]) {
-      const served = await fetch(`${u.base}${path}`, { headers: { cookie } });
-      assert.equal(served.status, 200, path);
-      assert.match(String(served.headers.get("content-type")), /^text\/javascript/, path);
-    }
-    assert.equal((await fetch(`${u.base}/label-filters.js`)).status, 401, "an unpaired browser gets no module");
     const tickets = await (await fetch(`${u.base}/c/work/api/tickets`, { headers: { cookie } })).json() as { labels?: unknown }[];
     assert.deepEqual(tickets[0].labels, LABELS, "the Pick route the page already reads carries them");
   } finally {
@@ -479,7 +441,7 @@ test("A11-129: a worker link whose run has ended answers a page that says so, wi
     const page = await ended.text();
     assert.match(page, /<h1>This run ended: failed<\/h1>/);
     assert.match(page, /its agent exited: its herdr workspace is gone/);
-    assert.match(page, /href="\/\?connection=work#writer-w1"/, "a link to the run on the board, with its connection chosen and its card named");
+    assert.match(page, /href="\/tickets\?connection=work"/, "a writer run's request cards are on the Tickets page, which opens with the connection chosen");
     assert.equal(asked, 0, "no code is minted for a run that is over");
     const live = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent("http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal")}`, { headers: { cookie }, redirect: "manual" });
     assert.equal(live.status, 302, "a link no run holds still redirects, as it always has");
@@ -513,8 +475,8 @@ test("A11-129: only an answer naming an ended run ends a worker link, and the en
   assert.match(page, /<h1>This run ended: finished<\/h1>/);
   assert.doesNotMatch(page, /<script>/, "the reason is text");
   assert.match(page, /&#60;script&#62;/);
-  assert.match(page, /href="\/\?connection=a%3Cb#run-NBF-1"/, "a ticket run links to its row, with its connection chosen");
-  assert.match(endedPage("work", { state: "ended", outcome: "failed", run: "p1", kind: "publish" }), /href="\/\?connection=work"/, "a publish run has no card of its own, so the board opens at the top");
+  assert.match(page, /href="\/runs\/NBF-1\?connection=a%3Cb"/, "a ticket run links to its own page, with its connection chosen");
+  assert.match(endedPage("work", { state: "ended", outcome: "failed", run: "p1", kind: "publish" }), /href="\/\?connection=work"/, "a publish run has no page of its own, so the board opens at its front page");
 });
 
 test("a worker link is followed only for a paired browser, and a link that is not this connection's worker terminal is refused before any code is asked for", async () => {
@@ -570,12 +532,12 @@ test("A11-162: a page whose exposure serves nothing (local) answers its loopback
   }
 });
 
-/** A built UI in a fresh folder, as Astro writes it under `base: "/next"`, beside a file that is not the build's. */
+/** A built UI in a fresh folder, as Astro writes it under `base: "/"`, beside a file that is not the build's. */
 function builtUi() {
-  const base = tmpDir("ui-next-build-");
+  const base = tmpDir("ui-build-");
   const root = join(base, "build");
   const files: Record<string, string> = {
-    "index.html": "<!doctype html><title>Next root</title>", "settings/index.html": "<!doctype html><title>Next settings</title>",
+    "index.html": "<!doctype html><title>Next root</title>", "settings/index.html": "<!doctype html><title>Next settings</title>", "runs/index.html": "<!doctype html><title>Next runs</title>",
     "_astro/app.abc123.js": "console.log('app');", "favicon.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
   };
   for (const [name, text] of Object.entries(files)) {
@@ -608,23 +570,18 @@ function rawRequest(base: string, path: string, { method = "GET", headers = {} }
   });
 }
 
-test("A11-190: a paired browser is served the built page at /next/ with no-cache and the board's own policy, and a route falls back to the page above it", async () => {
+test("A11-202: a paired browser is served the built page at / with no-cache and the page policy, and a route falls back to the page above it", async () => {
   const { u, cookie } = await pairedOverBuild();
   try {
-    const board = await fetch(`${u.base}/`, { headers: { cookie } });
-    const page = await fetch(`${u.base}/next/`, { headers: { cookie } });
+    const page = await fetch(`${u.base}/`, { headers: { cookie } });
     assert.equal(page.status, 200);
     assert.equal(await page.text(), "<!doctype html><title>Next root</title>");
     assert.deepEqual(typeAndCache(page), { type: "text/html; charset=utf-8", cache: "no-cache", sniff: "nosniff" });
-    assert.equal(page.headers.get("content-security-policy"), board.headers.get("content-security-policy"), "the same policy as the board's page");
     assert.match(String(page.headers.get("content-security-policy")), /script-src 'self' 'unsafe-inline'/);
-    for (const [path, title] of [["/next/settings/", "Next settings"], ["/next/settings", "Next settings"], ["/next/settings/deep/route", "Next settings"], ["/next/boards/12", "Next root"]]) {
+    for (const [path, title] of [["/settings/", "Next settings"], ["/settings", "Next settings"], ["/settings/deep/route", "Next settings"], ["/runs/A11-1", "Next runs"], ["/boards/12", "Next root"]]) {
       assert.match(await (await fetch(`${u.base}${path}`, { headers: { cookie } })).text(), new RegExp(`<title>${title}</title>`), path);
     }
-    const bare = await fetch(`${u.base}/next?tab=a`, { headers: { cookie }, redirect: "manual" });
-    assert.equal(bare.status, 302);
-    assert.equal(bare.headers.get("location"), "/next/?tab=a", "the bare address goes to the slash, with its query, so relative addresses resolve");
-    const head = await rawRequest(u.base, "/next/", { method: "HEAD", headers: { cookie } });
+    const head = await rawRequest(u.base, "/", { method: "HEAD", headers: { cookie } });
     assert.equal(head.status, 200);
     assert.equal(head.headers["cache-control"], "no-cache");
     assert.equal(head.body, "");
@@ -633,17 +590,53 @@ test("A11-190: a paired browser is served the built page at /next/ with no-cache
   }
 });
 
+test("A11-202: /next and what is under it is redirected to the same address without it, with its query, and never to another origin", async () => {
+  const { u, cookie } = await pairedOverBuild();
+  try {
+    for (const [from, to] of [["/next", "/"], ["/next/", "/"], ["/next?connection=x", "/?connection=x"], ["/next/tickets", "/tickets"], ["/next/runs/A11-1?connection=x", "/runs/A11-1?connection=x"],
+      ["/next/settings/plugins", "/settings/plugins"], ["/next//evil.example", "/evil.example"], ["/next/%5Cevil.example", "/%5Cevil.example"]]) {
+      const moved = await fetch(`${u.base}${from}`, { headers: { cookie }, redirect: "manual" });
+      assert.equal(moved.status, 302, from);
+      assert.equal(moved.headers.get("location"), to, from);
+      assert.equal(moved.headers.get("cache-control"), "no-store", `${from}: a redirect is not kept past the next release`);
+    }
+    const head = await rawRequest(u.base, "/next/runs", { method: "HEAD", headers: { cookie } });
+    assert.deepEqual([head.status, head.headers.location], [302, "/runs"]);
+    assert.equal((await fetch(`${u.base}/nextfoo`, { headers: { cookie }, redirect: "manual" })).status, 200, "/nextfoo is not under /next: it is a route like any other, answered with the root page");
+    const post = await fetch(`${u.base}/next/tickets`, { method: "POST", headers: { cookie, "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(post.status, 404, "only a read moves");
+  } finally {
+    await u.close();
+  }
+});
+
+test("A11-202: /next is redirected with no build too, and a call is never redirected or answered with a page", async () => {
+  const empty = tmpDir("ui-next-empty-");
+  const u = await ui([WORK], { uiBuilds: [join(empty, "ui-build")] });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    assert.equal((await fetch(`${u.base}/next/runs`, { headers: { cookie }, redirect: "manual" })).headers.get("location"), "/runs");
+    for (const path of ["/api/next", "/api/nothing", "/c/work/nothing", "/c/work/api"]) {
+      const answer = await fetch(`${u.base}${path}`, { headers: { cookie } });
+      assert.equal(answer.status, 404, path);
+      assert.match(await answer.text(), /no route GET /, `${path}: the plain no-route answer, not the missing-build page`);
+    }
+  } finally {
+    await u.close();
+  }
+});
+
 test("A11-190: a hashed asset is cached for a year, an unhashed file is not, and a missing asset is a 404 and never a page", async () => {
   const { u, cookie } = await pairedOverBuild();
   try {
-    const asset = await fetch(`${u.base}/next/_astro/app.abc123.js`, { headers: { cookie } });
+    const asset = await fetch(`${u.base}/_astro/app.abc123.js`, { headers: { cookie } });
     assert.deepEqual(typeAndCache(asset), { type: "text/javascript; charset=utf-8", cache: "public, max-age=31536000, immutable", sniff: "nosniff" });
     assert.equal(asset.headers.get("content-security-policy"), null, "a script is not a page");
     assert.deepEqual([asset.status, await asset.text()], [200, "console.log('app');"]);
-    const icon = await fetch(`${u.base}/next/favicon.svg`, { headers: { cookie } });
+    const icon = await fetch(`${u.base}/favicon.svg`, { headers: { cookie } });
     assert.equal(icon.headers.get("content-type"), "image/svg+xml");
     assert.equal(icon.headers.get("cache-control"), "no-cache", "its name does not change when its content does");
-    for (const path of ["/next/_astro/gone.js", "/next/_astro/", "/next/missing.png"]) {
+    for (const path of ["/_astro/gone.js", "/_astro/", "/missing.png", "/board-view.js", "/label-filters.js"]) {
       const gone = await fetch(`${u.base}${path}`, { headers: { cookie } });
       assert.equal(gone.status, 404, path);
       assert.equal(gone.headers.get("content-type"), "text/plain; charset=utf-8", path);
@@ -660,7 +653,7 @@ test("A11-190: a path out of the build, plain or encoded, and a link out of it, 
   const u = await ui([WORK], { uiBuilds: [root] });
   try {
     const cookie = await pairedCookie(u.base, u.local.key);
-    for (const path of ["/next/%2e%2e/package.json", "/next/..%2fpackage.json", "/next/..%2f..%2fpackage.json", "/next/_astro/..%2f..%2fpackage.json", "/next/link.json", "/next/a%00b"]) {
+    for (const path of ["/%2e%2e/package.json", "/..%2fpackage.json", "/..%2f..%2fpackage.json", "/_astro/..%2f..%2fpackage.json", "/link.json", "/a%00b"]) {
       const answer = await rawRequest(u.base, path, { headers: { cookie } });
       assert.equal(answer.status, 404, path);
       assert.equal(answer.body.includes("not the build's"), false, path);
@@ -670,57 +663,59 @@ test("A11-190: a path out of the build, plain or encoded, and a link out of it, 
   }
 });
 
-test("A11-190: the same pairing guards /next: an unpaired browser gets the pairing page, an unpaired asset call gets 401, the key and a paired session are served, another Host is refused", async () => {
+test("A11-202: the pairing guards every page: an unpaired browser gets the pairing page, an unpaired asset or call gets 401, the key and a paired session are served, another Host is refused", async () => {
   const { root } = builtUi();
   const u = await ui([WORK], { uiBuilds: [root] });
   try {
-    const unpaired = await fetch(`${u.base}/next/`);
-    assert.equal(unpaired.status, 200);
-    assert.match(await unpaired.text(), /<title>Pair this browser<\/title>/, "as a GET of / is today");
-    assert.match(await (await fetch(`${u.base}/next/settings/`)).text(), /<title>Pair this browser<\/title>/);
-    const asset = await fetch(`${u.base}/next/_astro/app.abc123.js`);
-    assert.equal(asset.status, 401, "nothing under /next is served before pairing");
-    assert.equal((await fetch(`${u.base}/next/_astro/app.abc123.js`, { headers: { cookie: "ticket_session=nope" } })).status, 401);
-    assert.match(await (await fetch(`${u.base}/next/`, { headers: { "x-ticket-token": "wrong" } })).text(), /<title>Pair this browser<\/title>/, "a wrong key is not paired, as for /");
-    assert.equal((await rawRequest(u.base, "/next/", { method: "HEAD" })).status, 401, "a HEAD is not a pairing page");
-    const keyed = await fetch(`${u.base}/next/`, { headers: { "x-ticket-token": u.local.key } });
-    assert.match(await keyed.text(), /<title>Next root<\/title>/, "the board key is served as it is for /");
+    for (const path of ["/", "/tickets", "/runs/A11-1", "/settings/plugins", "/next/tickets"]) {
+      const unpaired = await fetch(`${u.base}${path}`);
+      assert.equal(unpaired.status, 200, path);
+      assert.match(await unpaired.text(), /<title>Pair this browser<\/title>/, path);
+    }
+    for (const path of ["/_astro/app.abc123.js", "/favicon.svg", "/board-view.js", "/api/connections", "/c/work/api/queue", "/api/nothing"]) {
+      assert.equal((await fetch(`${u.base}${path}`)).status, 401, `${path}: nothing but a page is shown before pairing`);
+    }
+    assert.equal((await fetch(`${u.base}/_astro/app.abc123.js`, { headers: { cookie: "ticket_session=nope" } })).status, 401);
+    assert.match(await (await fetch(`${u.base}/`, { headers: { "x-ticket-token": "wrong" } })).text(), /<title>Pair this browser<\/title>/, "a wrong key is not paired");
+    assert.equal((await rawRequest(u.base, "/", { method: "HEAD" })).status, 401, "a HEAD is not a pairing page");
+    const keyed = await fetch(`${u.base}/`, { headers: { "x-ticket-token": u.local.key } });
+    assert.match(await keyed.text(), /<title>Next root<\/title>/, "the board key is served the page");
     const cookie = await pairedCookie(u.base, u.local.key);
-    assert.match(await (await fetch(`${u.base}/next/`, { headers: { cookie } })).text(), /<title>Next root<\/title>/);
-    const rebound = await rawRequest(u.base, "/next/", { headers: { cookie, host: "evil.example" } });
+    assert.match(await (await fetch(`${u.base}/`, { headers: { cookie } })).text(), /<title>Next root<\/title>/);
+    const rebound = await rawRequest(u.base, "/", { headers: { cookie, host: "evil.example" } });
     assert.equal(rebound.status, 403);
     assert.equal(rebound.body.includes("Next root"), false);
-    const post = await fetch(`${u.base}/next/`, { method: "POST", headers: { cookie, "Content-Type": "application/json" }, body: "{}" });
+    const post = await fetch(`${u.base}/`, { method: "POST", headers: { cookie, "Content-Type": "application/json" }, body: "{}" });
     assert.equal(post.status, 404, "only a read is a page");
   } finally {
     await u.close();
   }
 });
 
-test("A11-190: with the same paired session, /next and a remote instance's calls are both answered, through the routes the board uses", async () => {
+test("A11-202: with the same paired session, the page and a remote instance's calls are both answered, through the routes the board uses", async () => {
   const { u, cookie } = await pairedOverBuild(builtUi(), [WORK, PERSONAL]);
   try {
-    assert.match(await (await fetch(`${u.base}/next/`, { headers: { cookie } })).text(), /<title>Next root<\/title>/);
+    assert.match(await (await fetch(`${u.base}/`, { headers: { cookie } })).text(), /<title>Next root<\/title>/);
     const list = await (await fetch(`${u.base}/api/connections`, { headers: { cookie } })).json() as { connections: { name: string }[] };
     assert.deepEqual(list.connections.map(({ name }) => name), ["work", "personal"]);
     const remote = await fetch(`${u.base}/c/personal/api/queue`, { headers: { cookie } });
     assert.equal(remote.status, 200);
     assert.deepEqual(u.forwarded, [{ path: "/api/queue", key: REMOTE_KEY, host: "127.0.0.1:4747" }], "the remote instance's own key went on, not the browser's session");
-    assert.equal((await fetch(`${u.base}/next/_astro/app.abc123.js`, { headers: { cookie } })).status, 200);
+    assert.equal((await fetch(`${u.base}/_astro/app.abc123.js`, { headers: { cookie } })).status, 200);
     assert.equal(u.ssh.ran.flat().join(" ").includes(REMOTE_KEY), false);
   } finally {
     await u.close();
   }
 });
 
-test("A11-190: with no build, /next answers a plain 503 page that says the build is missing and how to get it, with no stack trace", async () => {
+test("A11-202: with no build, every page answers a plain 503 page that says the build is missing and how to get it, and the instance calls still answer", async () => {
   const empty = tmpDir("ui-next-empty-");
   mkdirSync(join(empty, "ui-build"));
   const candidates = [join(empty, "ui-build"), join(empty, "ui", "dist")];
   const u = await ui([WORK], { uiBuilds: candidates });
   try {
     const cookie = await pairedCookie(u.base, u.local.key);
-    for (const path of ["/next/", "/next", "/next/settings/", "/next/_astro/app.abc123.js"]) {
+    for (const path of ["/", "/tickets", "/settings/", "/runs/A11-1", "/_astro/app.abc123.js"]) {
       const answer = await fetch(`${u.base}${path}`, { headers: { cookie }, redirect: "manual" });
       assert.equal(answer.status, 503, path);
       assert.equal(answer.headers.get("content-type"), "text/html; charset=utf-8", path);
@@ -733,7 +728,10 @@ test("A11-190: with no build, /next answers a plain 503 page that says the build
       assert.equal(text.includes(candidates[0]), true, "it names where it looked");
       assert.doesNotMatch(text, /\n\s+at |Error:|node_modules/, "no stack trace");
     }
-    assert.match(await (await fetch(`${u.base}/`, { headers: { cookie } })).text(), /<title>Ticket queue<\/title>/, "the board's own page is untouched");
+    const list = await (await fetch(`${u.base}/api/connections`, { headers: { cookie } })).json() as { connections: { name: string }[] };
+    assert.deepEqual(list.connections.map(({ name }) => name), ["work"], "the connections are answered with no build");
+    assert.equal((await fetch(`${u.base}/c/work/api/tickets`, { headers: { cookie } })).status, 200, "so is a call to an instance");
+    assert.match(await (await fetch(`${u.base}/`)).text(), /<title>Pair this browser<\/title>/, "an unpaired browser is still asked to pair first");
   } finally {
     await u.close();
   }
@@ -744,7 +742,7 @@ test("A11-190: a file that cannot be read is a plain 404, never a stack trace", 
   chmodSync(join(root, "_astro", "app.abc123.js"), 0o000);
   const { u, cookie } = await pairedOverBuild({ base, root });
   try {
-    const answer = await fetch(`${u.base}/next/_astro/app.abc123.js`, { headers: { cookie } });
+    const answer = await fetch(`${u.base}/_astro/app.abc123.js`, { headers: { cookie } });
     assert.equal(answer.status, 404);
     assert.equal(await answer.text(), "not found");
   } finally {
@@ -757,22 +755,4 @@ test("A11-190: the missing-build page shows each directory as text, never as mar
   assert.match(page, /<code>\/v\/&#60;b&#62;x&#60;\/b&#62;&#38;&#34;y<\/code>/);
   assert.equal(page.includes("<b>"), false);
   assert.match(page, /<code>\/v\/ui\/dist<\/code>/);
-});
-
-test("A11-190: / is the board's own page as it was, with a build present or not, and /next adds no route to the instance API", async () => {
-  const { root } = builtUi();
-  for (const uiBuilds of [[root], []]) {
-    const u = await ui([WORK], { uiBuilds });
-    try {
-      const cookie = await pairedCookie(u.base, u.local.key);
-      const board = await fetch(`${u.base}/`, { headers: { cookie } });
-      assert.equal(board.status, 200);
-      assert.equal(board.headers.get("cache-control"), "no-store");
-      assert.match(await board.text(), /<title>Ticket queue<\/title>/);
-      assert.equal((await fetch(`${u.base}/nextfoo`, { headers: { cookie } })).status, 404, "only /next and what is under it");
-      assert.equal((await fetch(`${u.base}/api/next`, { headers: { cookie } })).status, 404);
-    } finally {
-      await u.close();
-    }
-  }
 });

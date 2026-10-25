@@ -1,6 +1,21 @@
 ---
-import Redirect from "../layouts/Redirect.astro";
 import { ticketsHref } from "../shell/routes.ts";
 ---
 
-<Redirect to={ticketsHref} />
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Redirecting to {ticketsHref}</title>
+    <meta name="robots" content="noindex" />
+    {/* `/` was the old board's one page, and its links named the instance and the card in the query and the anchor (A11-129). The anchor never reaches the server, so the browser reads it and goes to the page the link meant. */}
+    <script>
+      import { oldLinkTarget } from "../shell/old-links.ts";
+      location.replace(oldLinkTarget(location.search, location.hash));
+    </script>
+    <noscript><meta http-equiv="refresh" content={`0;url=${ticketsHref}`} /></noscript>
+  </head>
+  <body>
+    <a href={ticketsHref}>Continue to {ticketsHref}</a>
+  </body>
+</html>

@@ -19,7 +19,7 @@ afterAll(async () => {
   await site?.stop();
 });
 
-const TICKETS = "/next/tickets";
+const TICKETS = "/tickets";
 const OPEN_BACKLOG = (context: BrowserContext) => context.addInitScript(() => localStorage.setItem("ticket-mode.open", '["Backlog"]'));
 
 /** The Tickets page in a new context at `width`, its instance calls answered by `serving`, with the Backlog section open as the board draws it. */
@@ -73,7 +73,7 @@ describe("the states, over a stand-in instance in Chromium", () => {
     const { page, context } = await open({ stand: ticketsBoardStand({ paused: true }) });
     const banner = page.getByRole("status").filter({ hasText: "Workers are paused. Tickets you queue wait until you start workers." });
     await banner.waitFor();
-    expect(await banner.getByRole("link", { name: "Start workers on Runs" }).getAttribute("href")).toBe("/next/runs");
+    expect(await banner.getByRole("link", { name: "Start workers on Runs" }).getAttribute("href")).toBe("/runs");
     await context.close();
   });
 

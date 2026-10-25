@@ -9,7 +9,7 @@ import { PluginsApp } from "./PluginsApp.tsx";
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
-  history.replaceState(null, "", "/next/settings/plugins");
+  history.replaceState(null, "", "/settings/plugins");
 });
 
 export const standOf = (connection = HERE): Stand => ({ connections: [connection], instances: { [connection.name]: { config: modelsConfig() } } });

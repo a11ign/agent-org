@@ -101,10 +101,10 @@ test("a capture starts the throwaway instance and board, pairs, shoots the route
   }
   assert.equal(h.shots.length, 1);
   const [shot] = h.shots;
-  assert.equal(shot.url, `http://127.0.0.1:${shot.origin.split(":")[2]}/#/settings`);
+  assert.equal(shot.url, `http://127.0.0.1:${shot.origin.split(":")[2]}/settings`);
   assert.deepEqual(shot.size, { width: 1280, height: 800 });
   assert.deepEqual(shot.cookie, { name: "ticket_session", value: "session-1" }, "the browser carries the session the board gave");
-  assert.equal(shot.ready, "#settings-page:not([hidden])");
+  assert.equal(shot.ready, "main .shell-page h1");
 });
 
 test("the UI is on a port the capture chose, distinct from the instance's, and both children and the directory are gone at the end", async () => {

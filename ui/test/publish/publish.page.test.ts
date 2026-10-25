@@ -20,7 +20,7 @@ afterAll(async () => {
 
 /** Where the screenshots go, beside the page's checks: this page's own folder. Each is the board's page at 1440px and at 390px. */
 const CAPTURES = join(UI_ROOT, "captures", "publish");
-const RUNS = "/next/runs";
+const RUNS = "/runs";
 
 type Opened = Readonly<{ page: Page; context: BrowserContext; asked: Asked }>;
 

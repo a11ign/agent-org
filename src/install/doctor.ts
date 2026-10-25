@@ -77,7 +77,7 @@ export const MIN_NODE_MAJOR = 24;
  */
 export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null; section?: string; warning?: true }>;
 
-/** The board UI's build as this machine has it (A11-191): the folder `/next` is served from, or null; whether the running version's release ships one; and where it is looked for. */
+/** The board UI's build as this machine has it (A11-191): the folder `/` is served from, or null; whether the running version's release ships one; and where it is looked for. */
 export type UiBuildReading = Readonly<{ found: string | null; declared: boolean; looked: string; version: string | null }>;
 
 export type DoctorDeps = Readonly<{
@@ -523,15 +523,15 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
 }
 
 /**
- * The board UI's build (A11-191). It is `ok` when the build `/next` serves is there (A11-190's own lookup, so the two cannot disagree), and `ok` when this version ships none; it WARNS when the running
- * version's release ships one and none is found: `/next` shows its missing-build page, and nothing else is broken. A version folder is fixed by `agent-org update`, which fetches the build the release
+ * The board UI's build (A11-191). It is `ok` when the build `/` serves is there (A11-190's own lookup, so the two cannot disagree), and `ok` when this version ships none; it WARNS when the running
+ * version's release ships one and none is found: `/` shows its missing-build page, and the instance's calls still answer. A version folder is fixed by `agent-org update`, which fetches the build the release
  * carries; the main channel has no release to fetch from; a checkout builds it.
  */
 function uiBuildCheck(deps: DoctorDeps): Check {
   const { found, declared, looked, version } = deps.uiBuild();
-  if (found !== null) return ok("ui build", `/next is served from ${found}`);
+  if (found !== null) return ok("ui build", `/ is served from ${found}`);
   if (!declared) return ok("ui build", "this version ships no UI build");
-  const detail = `${version ?? "this version"} should have a UI build and none is in ${looked}, so /next shows the missing-build page`;
+  const detail = `${version ?? "this version"} should have a UI build and none is in ${looked}, so / shows the missing-build page`;
   if (version === null) return warned("ui build", detail, "run `pnpm ui:build`");
   if (!isReleaseTag(version)) return warned("ui build", detail, "main has no release to fetch a UI build from: run `agent-org update --channel release`, which moves to the newest release");
   return warned("ui build", detail, "run `agent-org update`, which fetches it");

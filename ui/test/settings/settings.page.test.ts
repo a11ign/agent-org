@@ -23,9 +23,9 @@ afterAll(async () => {
 /** Where the screenshots go, beside the page's checks: this page's own folder. */
 const CAPTURES = join(UI_ROOT, "captures", "settings");
 
-const MODELS = "/next/settings/models";
-const WORKERS = "/next/settings/workers";
-const MACHINE = "/next/settings/machine";
+const MODELS = "/settings/models";
+const WORKERS = "/settings/workers";
+const MACHINE = "/settings/machine";
 
 /** An instance sized as the boards draw it (37 tickets, three runs running), on a connection, that offers models, a planner and a writer. */
 function standOn(connection: ViewConnection, hold = false): Stand {
@@ -182,7 +182,7 @@ describe("the page in Chromium, over the built site", () => {
   it("goes from the sub-nav's Plugins entry to the Plugins page", async () => {
     const { page, context } = await open(WORKERS);
     await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name: "Plugins" }).click();
-    await page.waitForURL("**/next/settings/plugins");
+    await page.waitForURL("**/settings/plugins");
     expect(await page.getByRole("heading", { level: 1 }).textContent()).toBe("Plugins");
     await context.close();
   });
@@ -192,7 +192,7 @@ describe("the page in Chromium, over the built site", () => {
     await type(page, "tickets.stallMinutes", "60");
     await page.getByRole("region", { name: "Unsaved changes" }).waitFor();
     await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name: "Machine" }).click();
-    await page.waitForURL("**/next/settings/machine");
+    await page.waitForURL("**/settings/machine");
     await READY(page);
     expect(await page.getByRole("region", { name: "Unsaved changes" }).textContent()).toContain("1 unsaved change");
     await context.close();

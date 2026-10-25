@@ -62,7 +62,7 @@ export function detailOf(board: Exclude<Board, "select">, machine: Machine = {})
 }
 
 /** Run detail's address for the board. */
-export const detailAddress = `/next/runs/${RUN_KEY}`;
+export const detailAddress = `/runs/${RUN_KEY}`;
 
 /** The Ready to merge run of the Runs board that opens `repo`'s pull request `number`, approved at `head`. */
 function readyRun({ key, title, repo, number, startedAgo, ...more }: Readonly<{ key: string; title: string; repo: string; number: number; startedAgo: number }> & RunFields): RunFields {

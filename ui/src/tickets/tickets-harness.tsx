@@ -8,7 +8,7 @@ import { TicketsPage } from "./TicketsPage.tsx";
 // What the Tickets page's component checks share: a stand-in instance, the page drawn inside the shell over it, and the ways to look at the rows.
 beforeEach(() => {
   localStorage.clear();
-  history.replaceState(null, "", "/next/tickets");
+  history.replaceState(null, "", "/tickets");
 });
 
 export const BACKLOG = [

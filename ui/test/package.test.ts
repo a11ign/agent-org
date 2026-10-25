@@ -7,9 +7,9 @@ const readPackage = (path: string): { dependencies?: Record<string, string>; dev
   JSON.parse(readFileSync(path, "utf8"));
 
 describe("the Astro config", () => {
-  it("builds static files under /next, with no adapter and so no server of its own", () => {
+  it("builds static files for the site's root, with no adapter and so no server of its own", () => {
     expect(config.output).toBe("static");
-    expect(config.base).toBe("/next");
+    expect(config.base).toBe("/");
     expect(config.adapter).toBeUndefined();
   });
 

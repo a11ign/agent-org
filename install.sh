@@ -547,7 +547,7 @@ ui_build_step() {
   elif [ "$2" = warn ]; then
     STEP_FAILED=""
     DETAILS=""
-    NOTES="$NOTES""agent-org $TAG is current, but its UI build could not be fetched: $UI_PROBLEM. /next shows the missing-build page until agent-org update fetches it."$'\n'
+    NOTES="$NOTES""agent-org $TAG is current, but its UI build could not be fetched: $UI_PROBLEM. / shows the missing-build page until agent-org update fetches it."$'\n'
   else
     if [ "$1" = "$PARTIAL" ]; then rm -rf "$PARTIAL"; fi
     fail "$UI_PROBLEM, so current stays where it was. $UI_ADVICE"

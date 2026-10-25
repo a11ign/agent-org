@@ -25,7 +25,7 @@ import { chromiumProblems, chromiumReport, type ChromiumReport } from "../instal
 import { TOOL_ROOT } from "../install/paths.ts";
 import { pairingCode } from "./pair-command.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settings.ts";
-import { CaptureRefusal, DEFAULT_SIZE, HERDR_STUB, type Size, captureHost, captureName, parseRoute, parseSize, readySelector, routeAddress } from "./capture.ts";
+import { CaptureRefusal, DEFAULT_SIZE, HERDR_STUB, type Size, captureHost, captureName, parseRoute, parseSize, READY_SELECTOR, routeAddress } from "./capture.ts";
 
 /** How long each child may take to answer on its port before the capture is refused, with what it printed. */
 const START_MS = 30_000;
@@ -156,7 +156,7 @@ async function pairAndShoot(hostPath: string, uiPort: number, request: CaptureRe
   const cookie = await pairedCookie(settings, deps);
   const path = resolve(captureFile(request.out, captureName(request.route, request.size), existsDirectory));
   mkdirSync(resolve(path, ".."), { recursive: true });
-  await deps.shoot({ url: routeAddress(uiPort, request.route), origin: `http://127.0.0.1:${uiPort}`, cookie, size: request.size, ready: readySelector(request.route), path });
+  await deps.shoot({ url: routeAddress(uiPort, request.route), origin: `http://127.0.0.1:${uiPort}`, cookie, size: request.size, ready: READY_SELECTOR, path });
   return path;
 }
 

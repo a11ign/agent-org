@@ -165,7 +165,7 @@ describe("the writer pill and the buttons", () => {
     openDialog();
     const pill = inDialog().getByRole("link", { name: "Ticket writer: opus, low effort. Change in Settings" });
     expect(textOf(pill)).toBe("Writer" + "opus · low");
-    expect(pill.getAttribute("href")).toBe("/next/settings/models");
+    expect(pill.getAttribute("href")).toBe("/settings/models");
     expect(pill.getAttribute("title")).toBe("Ticket writer model and effort. Change in Settings");
   });
 

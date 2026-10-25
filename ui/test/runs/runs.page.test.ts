@@ -20,7 +20,7 @@ afterAll(async () => {
 
 /** Where the screenshots go: this page's own folder. */
 const CAPTURES = join(UI_ROOT, "captures", "runs");
-const RUNS = "/next/runs";
+const RUNS = "/runs";
 
 /** The Runs page in a new context at `width`, its instance calls answered by `serving`. */
 async function open(serving: Serving, width = 1440): Promise<{ page: Page; asked: Awaited<ReturnType<typeof serveInstance>>; context: BrowserContext }> {
@@ -90,7 +90,7 @@ describe("the list, over a stand-in instance in Chromium", () => {
 
   it("opens a run at its address in Run detail", async () => {
     const { page, context } = await open({ stand: runsStand() });
-    expect(await page.locator("#run-A11-184 .run-title").getAttribute("href")).toBe("/next/runs/A11-184");
+    expect(await page.locator("#run-A11-184 .run-title").getAttribute("href")).toBe("/runs/A11-184");
     await context.close();
   });
 });

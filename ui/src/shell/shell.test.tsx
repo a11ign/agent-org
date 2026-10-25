@@ -1,15 +1,30 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { HERE, OTHER, PERSONAL, queueOf, standFetch, ticket, WORK, type InstanceAnswers, type Stand } from "../../test/fixtures.ts";
 import { TicketsPage } from "../tickets/TicketsPage.tsx";
-import { Placeholder } from "./Placeholder.tsx";
+import { EmptyState } from "../lifecycle/EmptyState.tsx";
+import { Lifecycle } from "../lifecycle/Lifecycle.tsx";
+import { ListSkeleton } from "../lifecycle/Skeleton.tsx";
 import type { Page } from "./routes.ts";
 import { ShellFrame } from "./ShellFrame.tsx";
 import { ShellProvider, useShell } from "./ShellProvider.tsx";
 
 beforeEach(() => {
   localStorage.clear();
-  history.replaceState(null, "", "/next/tickets");
+  history.replaceState(null, "", "/tickets");
 });
+
+/** What the shell frames on every page but Tickets in these checks: the queue's lifecycle (the skeleton, the empty panel, the error banner, the unreachable frame) under a heading. The pages' own islands are checked with them. */
+function QueuePage() {
+  const { queue, connection } = useShell();
+  return (
+    <>
+      <h1 className="page-heading">A page</h1>
+      <Lifecycle view={queue} skeleton={<ListSkeleton label="Loading a page" />} empty={<EmptyState title="Nothing here" text="Nothing was read." />} connection={connection?.name ?? ""}>
+        {() => <p>The queue was read.</p>}
+      </Lifecycle>
+    </>
+  );
+}
 
 /** The shell on `page`, reading from a stand-in instance; resolves once the sidebar has its first answers. */
 async function shellOn(page: Page, stand: Stand = {}) {
@@ -17,7 +32,7 @@ async function shellOn(page: Page, stand: Stand = {}) {
   const view = render(
     <ShellProvider fetchWith={fetchWith}>
       <ShellFrame page={page}>
-        {page === "tickets" ? <TicketsPage /> : <Placeholder page={page} runKey={page === "run" ? "A11-7" : null} />}
+        {page === "tickets" ? <TicketsPage /> : <QueuePage />}
       </ShellFrame>
     </ShellProvider>,
   );
@@ -60,7 +75,7 @@ describe("the instance switcher", () => {
 
   it("opens on the connection a link names, over the one remembered", async () => {
     localStorage.setItem("ticket-mode.connection", JSON.stringify(["work"]));
-    history.replaceState(null, "", "/next/tickets?connection=personal");
+    history.replaceState(null, "", "/tickets?connection=personal");
     await shellOn("tickets", stand);
     expect((screen.getByLabelText("Instance") as HTMLSelectElement).value).toBe("personal");
   });
@@ -174,9 +189,9 @@ describe("the main navigation", () => {
 
   it("links Tickets, Runs and Settings to their routes", async () => {
     await shellOn("tickets");
-    expect(screen.getByRole("link", { name: /Tickets/ }).getAttribute("href")).toBe("/next/tickets");
-    expect(screen.getByRole("link", { name: /Runs/ }).getAttribute("href")).toBe("/next/runs");
-    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/next/settings/models");
+    expect(screen.getByRole("link", { name: /Tickets/ }).getAttribute("href")).toBe("/tickets");
+    expect(screen.getByRole("link", { name: /Runs/ }).getAttribute("href")).toBe("/runs");
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings/models");
   });
 
   it("shows the number of runs running beside Runs", async () => {
@@ -186,7 +201,7 @@ describe("the main navigation", () => {
 
   it("hides the Runs badge when nothing is running", async () => {
     await shellOn("runs", { fallback: { queue: queueOf("queued", "finished") } });
-    await screen.findByText("This page is built in A11-197.");
+    await screen.findByText("The queue was read.");
     expect(textOf(screen.getByRole("link", { name: /Runs/ }))).toBe("Runs");
   });
 
@@ -203,7 +218,7 @@ describe("the Settings sub-nav", () => {
     const nav = within(screen.getByRole("navigation", { name: "Settings sections" }));
     expect(nav.getAllByRole("link").map((link) => link.textContent)).toEqual(["Models", "Workers", "Machine", "Plugins"]);
     expect(nav.getAllByRole("link").filter((link) => link.getAttribute("aria-current") === "page").map((link) => link.textContent)).toEqual([label]);
-    expect(nav.getByRole("link", { name: label }).getAttribute("href")).toBe(`/next/settings/${page}`);
+    expect(nav.getByRole("link", { name: label }).getAttribute("href")).toBe(`/settings/${page}`);
   });
 
   it("is not drawn on Tickets, Runs or a run", async () => {
@@ -333,7 +348,7 @@ function sshInstance() {
 
 /** The probe on an SSH remote that answers, and then goes down and is noticed. */
 async function droppedRemote() {
-  history.replaceState(null, "", "/next/runs?connection=personal");
+  history.replaceState(null, "", "/runs?connection=personal");
   const { link, stand } = sshInstance();
   const fetchWith = probeOn(stand);
   await waitFor(() => expect(value("unreachable")).toBe("none"));
@@ -350,7 +365,7 @@ describe("the shell's unreachable state, which every page can use (A11-195)", ()
   });
 
   it("holds the sentence of a tickets read that is unreachable when the page opens", async () => {
-    history.replaceState(null, "", "/next/runs?connection=personal");
+    history.replaceState(null, "", "/runs?connection=personal");
     probeOn({ connections: [PERSONAL], instances: { personal: { ticketsFail: { status: 502, error: REFUSAL } } } });
     await waitFor(() => expect(value("unreachable")).toBe(REFUSAL));
   });
@@ -358,13 +373,13 @@ describe("the shell's unreachable state, which every page can use (A11-195)", ()
 
 describe("the shell's unreachable state: what else it covers (A11-195)", () => {
   it("holds the sentence of a config read that is unreachable while the queue and the tickets answer", async () => {
-    history.replaceState(null, "", "/next/runs?connection=personal");
+    history.replaceState(null, "", "/runs?connection=personal");
     probeOn({ connections: [PERSONAL], instances: { personal: { configFail: { status: 502, error: REFUSAL } } } });
     await waitFor(() => expect(value("unreachable")).toBe(REFUSAL));
   });
 
   it("reads the parents only from a tickets read that answered, so they are read once the connection is back and not from the last known tickets", async () => {
-    history.replaceState(null, "", "/next/runs?connection=personal");
+    history.replaceState(null, "", "/runs?connection=personal");
     const link = { down: true };
     const kept = { value: [ticket({ key: "A11-1" })], readAt: "2026-10-24T10:00:00.000Z" };
     const instance: InstanceAnswers = {
@@ -382,7 +397,7 @@ describe("the shell's unreachable state: what else it covers (A11-195)", () => {
 
   it("is null for a local connection whose reads fail, and for an https one", async () => {
     for (const connection of [HERE, WORK]) {
-      history.replaceState(null, "", `/next/runs?connection=${connection.name}`);
+      history.replaceState(null, "", `/runs?connection=${connection.name}`);
       const fetchWith = probeOn({ connections: [connection], instances: { [connection.name]: { queueFails: { status: 502, error: REFUSAL }, ticketsFail: { status: 502, error: REFUSAL } } } });
       await waitFor(() => expect(fetchWith.paths).toContain(`/c/${connection.name}/api/queue`));
       await refocus();

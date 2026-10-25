@@ -86,7 +86,7 @@ describe("PARITY.md rows", () => {
 });
 
 describe("the checks on a row", () => {
-  const good = ["A feature", "`#id`", "`/next/runs`, below the list", "A11-220", "pattern: status banner"];
+  const good = ["A feature", "`#id`", "`/runs`, below the list", "A11-220", "pattern: status banner"];
   const at = (cells: readonly string[]): Row => ({ cells, line: 1 });
 
   it("passes a row with every cell", () => {

@@ -5,8 +5,8 @@
 // from a fixture, so the test that loads it through `readTicketSettings` breaks when a key is renamed, and the board's key is the one the settings reader
 // reads.
 //
-// THE ROUTE is the board's own hash address: `/settings` is the Settings page (`#/settings`), `/` the board. A route that is not a plain path is refused,
-// so a capture never opens another address.
+// THE ROUTE is a path of the board (Atomaut, A11-202): `/tickets`, `/runs`, `/runs/<key>`, `/settings/models`. `/` and `/settings` are paths too: the first lands on Tickets and the second on
+// Settings' first page. A route that is not a plain path is refused, so a capture never opens another address.
 
 /** The size a capture is taken at when `--size` is not given: the size the worker brief asks for. */
 export const DEFAULT_SIZE = "1280x800";
@@ -34,7 +34,7 @@ export function parseSize(text: string): Size {
   return { width, height };
 }
 
-/** A route as the board names it: `/` for the board, `/settings` for the Settings page. REFUSES anything that is not a plain path. */
+/** A route as the board names it: `/tickets` for the Tickets page, `/settings/models` for a Settings page. REFUSES anything that is not a plain path. */
 export function parseRoute(route: string): string {
   if (!/^\/[A-Za-z0-9_\-/]*$/.test(route)) {
     throw new CaptureRefusal(`the route must be a path of the board such as /settings, not ${JSON.stringify(route)}`);
@@ -52,14 +52,16 @@ export function captureName(route: string, size: Size): string {
   return `${routeSlug(route)}-${size.width}x${size.height}.png`;
 }
 
-/** The address a paired browser opens to show `route` on the board page at `uiPort`: the hash route, as the board reads it. PURE. */
+/** The address a paired browser opens to show `route` on the board at `uiPort`. PURE. */
 export function routeAddress(uiPort: number, route: string): string {
-  const path = parseRoute(route);
-  return path === "/" ? `http://127.0.0.1:${uiPort}/` : `http://127.0.0.1:${uiPort}/#${path}`;
+  return `http://127.0.0.1:${uiPort}${parseRoute(route)}`;
 }
 
-/** The section that is shown once `route` has drawn: the Settings page's, or the board's. PURE. */
-export const readySelector = (route: string): string => (parseRoute(route) === "/settings" ? "#settings-page:not([hidden])" : "#board:not([hidden])");
+/**
+ * What is drawn once a page has read its data (A11-202): its heading, in the page's own column. The shell's skeleton is drawn in the heading's place while a page loads, and the redirect pages
+ * (`/`, `/settings`) have no column at all, so this waits through both. The same for every route.
+ */
+export const READY_SELECTOR = "main .shell-page h1";
 
 /**
  * The host file a throwaway instance and board start from. Only the machine facts a capture needs: this checkout as its one repository, the two ports, a

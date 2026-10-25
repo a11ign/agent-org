@@ -16,7 +16,7 @@ const BACK: UpdateInfo = { version: "v0.280.0", note: null, next: null };
 
 beforeEach(() => {
   localStorage.clear();
-  history.replaceState(null, "", "/next/tickets");
+  history.replaceState(null, "", "/tickets");
   rstest.useFakeTimers();
 });
 afterEach(() => {
@@ -185,7 +185,7 @@ describe("Back", () => {
     expect(titleOf()).toBe("Updated to v0.280");
     shows("The board is back on the new version.", "Runs already working keep going. Each stays on the version it started on, and new runs start on v0.280.");
     expect(stepStates()).toEqual(["done: New version v0.280 is ready", "done: Restarting the board", "done: Reconnecting this page"]);
-    expect(screen.getByRole("link", { name: "Back to Tickets" }).getAttribute("href")).toBe("/next/tickets");
+    expect(screen.getByRole("link", { name: "Back to Tickets" }).getAttribute("href")).toBe("/tickets");
     expect(document.querySelector(".updating-card .spin")).toBeNull();
     expect(pill().textContent).toBe("Connected");
   });
@@ -254,7 +254,7 @@ describe("what is not an update", () => {
   });
 
   it("is never the screen of an SSH remote its proxy cannot reach: that is the unreachable state, with its own pill", async () => {
-    history.replaceState(null, "", "/next/tickets?connection=personal");
+    history.replaceState(null, "", "/tickets?connection=personal");
     const link = { down: false };
     const answers: InstanceAnswers = {
       get queue() { return { ...queueOf("running"), update: NORMAL } as unknown as QueueView; },
@@ -297,7 +297,7 @@ describe("the page keeps trying by itself", () => {
 describe("on the Runs page, which has its own Reconnecting line (A11-211)", () => {
   /** The Runs page over the board's runs, whose queue says `update` and fails while the link is down. */
   async function runsLeftOpen(update: UpdateInfo) {
-    history.replaceState(null, "", "/next/runs");
+    history.replaceState(null, "", "/runs");
     const link = { down: false };
     const answers: InstanceAnswers = {
       config: queueingConfig(),
