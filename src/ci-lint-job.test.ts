@@ -19,11 +19,16 @@ interface Lock { importers: Record<string, { devDependencies?: Record<string, { 
 const REPO = fileURLToPath(new URL("../", import.meta.url));
 const read = (path: string) => readFileSync(`${REPO}${path}`, "utf8");
 
-const PINNED = {
-  "eslint": "10.13.0",
-  "typescript-eslint": "8.71.2",
-  "@george2f/eslint-plugin-clean-code": "0.4.1",
-} as const;
+/**
+ * The packages whose version the lint job must install exactly as reviewed. The test names them and never their versions: a Dependabot bump moves the manifest and the lockfile
+ * together and passes; a hand edit of one side, a range, or a missing entry does not.
+ */
+const LINT_TOOLS = ["eslint", "typescript-eslint", "@george2f/eslint-plugin-clean-code"] as const;
+const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
+/** What a failure of the pin or lockfile check says the invariant is, and how a lint tool's version moves. */
+const LINT_PIN_INVARIANT = `the lint job installs a reviewed ESLint tree from the lockfile. So each of ${LINT_TOOLS.join(", ")} is in devDependencies with an exact version (no range), `
+  + "and pnpm-lock.yaml's root importer has that same specifier and resolves exactly that version. The version itself is free to move: it moves in a Dependabot pull request, "
+  + "or by hand in package.json and pnpm-lock.yaml together.";
 /** The pnpm `release.yml` pins: the lint job uses the same one, so a lockfile means one thing in both places. */
 const PNPM_RELEASE = /pnpm-version: (\S+)/.exec(read(".github/workflows/release.yml"))?.[1] ?? "";
 
@@ -59,26 +64,30 @@ function gateProblems(ci: Workflow): string[] {
 /** The lint script: the scope `eslint.config.ts` covers, with `plugins/` (A11-158), which holds no `.ts` file until the first bundled agent-org plugin lands, so an unmatched pattern is no error, and `ui/` (A11-188), the UI package's `.ts`, `.tsx` and `.astro`. */
 const LINT_SCRIPT = "eslint --no-error-on-unmatched-pattern src scripts plugins ui";
 
-/** The three packages are pinned EXACT (no `^`, no `~`), and the lint script runs the scope `eslint.config.ts` covers. */
+/** Each lint tool is in `devDependencies` with an EXACT specifier (no `^`, no `~`), and the lint script runs the scope `eslint.config.ts` covers. */
 function pinProblems(pins: Pins): string[] {
   const problems: string[] = [];
-  for (const [name, version] of Object.entries(PINNED)) {
+  for (const name of LINT_TOOLS) {
     const range = pins.devDependencies?.[name];
-    if (range !== version) problems.push(`${name} is ${range ?? "not in devDependencies"}, not the exact ${version}`);
+    if (range === undefined) problems.push(`${name} is not in devDependencies`);
+    else if (!EXACT_VERSION.test(range)) problems.push(`${name} is ${range} in devDependencies, a range and not an exact version`);
   }
   if (pins.scripts?.lint !== LINT_SCRIPT) problems.push(`the lint script is ${JSON.stringify(pins.scripts?.lint)}, not \`${LINT_SCRIPT}\``);
   return problems;
 }
 
-/** The lockfile resolves each pinned package to the pinned version: the install the lint job makes is the one that was reviewed. */
-function lockProblems(lock: Lock): string[] {
+/** The lockfile agrees with the manifest on each lint tool: the same specifier, resolved to exactly that version. The install the lint job makes is the one that was reviewed. */
+function lockProblems(lock: Lock, pins: Pins): string[] {
   const devDependencies = lock.importers?.["."]?.devDependencies ?? {};
-  return Object.entries(PINNED).flatMap(([name, version]) => {
+  return LINT_TOOLS.flatMap((name) => {
+    const declared = pins.devDependencies?.[name];
+    if (declared === undefined) return []; // pinProblems names a tool missing from the manifest
     const entry = devDependencies[name];
     if (!entry) return [`pnpm-lock.yaml does not list ${name}`];
     // pnpm writes the peer suffix into `version` (`8.71.2(eslint@10.13.0)(typescript@6.0.3)`), so only the part before the first `(` is the version.
     const resolved = entry.version.split("(")[0];
-    return resolved === version && entry.specifier === version ? [] : [`pnpm-lock.yaml resolves ${name} to ${entry.version} (specifier ${entry.specifier}), not ${version}`];
+    if (entry.specifier !== declared) return [`pnpm-lock.yaml has ${name} at specifier ${entry.specifier}, but package.json declares ${declared}`];
+    return resolved === declared ? [] : [`pnpm-lock.yaml resolves ${name} to ${entry.version}, not the declared ${declared}`];
   });
 }
 
@@ -96,8 +105,8 @@ const editedRun = (job: "lint" | "gate", from: string | RegExp, to: string): Wor
 test("the real files pass every lint check: the lint job, gate, the pins and the lockfile", () => {
   assert.deepEqual(lintJobProblems(ci), []);
   assert.deepEqual(gateProblems(ci), []);
-  assert.deepEqual(pinProblems(pins), []);
-  assert.deepEqual(lockProblems(lock), []);
+  assert.deepEqual(pinProblems(pins), [], LINT_PIN_INVARIANT);
+  assert.deepEqual(lockProblems(lock, pins), [], LINT_PIN_INVARIANT);
 });
 
 test("the lint job check sees each thing it checks, broken on a copy", () => {
@@ -132,19 +141,57 @@ test("the gate check sees a gate that does not need lint, and one that does not 
   assert.match(gateProblems(notRead).join("\n"), /does not read/);
 });
 
-test("the pin check sees a range, and a lint script over another scope, on a copy", () => {
+/** `10.13.0` -> `10.13.1`: a version the real files do not hold, derived so the copies below stay wrong however far a Dependabot update has moved the real ones. */
+const nextPatch = (version: string): string => {
+  const [major, minor, patch] = version.split(".").map(Number);
+  return `${major}.${minor}.${patch + 1}`;
+};
+
+/** The manifest and lockfile as one Dependabot update leaves them: every lint tool moved one patch, on both sides. */
+const bumpedTogether = (): { pins: Pins; lock: Lock } => {
+  const bumpedPins = clone(pins);
+  const bumpedLock = clone(lock);
+  for (const name of LINT_TOOLS) {
+    const next = nextPatch(pins.devDependencies?.[name] ?? "");
+    bumpedPins.devDependencies = { ...bumpedPins.devDependencies, [name]: next };
+    const entry = bumpedLock.importers["."].devDependencies?.[name];
+    if (entry) Object.assign(entry, { specifier: next, version: entry.version.replace(/^[^(]+/, next) });
+  }
+  return { pins: bumpedPins, lock: bumpedLock };
+};
+
+test("a patch bump of every lint tool, in the manifest and the lockfile together, passes", () => {
+  const bumped = bumpedTogether();
+  assert.notDeepEqual(bumped.pins.devDependencies, pins.devDependencies);
+  assert.deepEqual(pinProblems(bumped.pins), []);
+  assert.deepEqual(lockProblems(bumped.lock, bumped.pins), []);
+});
+
+test("the pin check sees a range, a missing tool, and a lint script over another scope, on a copy", () => {
   const floating = clone(pins);
-  floating.devDependencies = { ...floating.devDependencies, eslint: "^10.13.0" };
-  assert.match(pinProblems(floating).join("\n"), /eslint is \^10\.13\.0/);
+  floating.devDependencies = { ...floating.devDependencies, eslint: `^${pins.devDependencies?.eslint}` };
+  assert.match(pinProblems(floating).join("\n"), /eslint is \^\d+\.\d+\.\d+ in devDependencies, a range/);
+
+  const missing = clone(pins);
+  delete missing.devDependencies?.["typescript-eslint"];
+  assert.match(pinProblems(missing).join("\n"), /typescript-eslint is not in devDependencies/);
 
   const otherScope = clone(pins);
   otherScope.scripts = { ...otherScope.scripts, lint: "eslint src" };
   assert.match(pinProblems(otherScope).join("\n"), /lint script/);
 });
 
-test("the lockfile check sees a package that resolves to another version, on a copy", () => {
+test("the lockfile check sees a manifest that disagrees with it, a package that resolves to another version, and a missing entry, on a copy", () => {
+  const bumped = bumpedTogether();
+  assert.match(lockProblems(lock, bumped.pins).join("\n"), /pnpm-lock\.yaml has eslint at specifier .*, but package\.json declares /);
+
   const drifted = clone(lock);
   const entry = drifted.importers["."].devDependencies?.["typescript-eslint"];
-  if (entry) entry.version = "8.71.3";
-  assert.match(lockProblems(drifted).join("\n"), /typescript-eslint to 8\.71\.3/);
+  const drift = nextPatch(pins.devDependencies?.["typescript-eslint"] ?? "");
+  if (entry) entry.version = drift;
+  assert.match(lockProblems(drifted, pins).join("\n"), new RegExp(`typescript-eslint to ${drift.replaceAll(".", "\\.")}`));
+
+  const unlisted = clone(lock);
+  delete unlisted.importers["."].devDependencies?.["@george2f/eslint-plugin-clean-code"];
+  assert.match(lockProblems(unlisted, pins).join("\n"), /does not list @george2f\/eslint-plugin-clean-code/);
 });
