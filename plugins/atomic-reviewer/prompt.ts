@@ -12,6 +12,7 @@
 // THE SAME GOES FOR THE DECISION RULE (A11-213): the first review, the reprompt and the re-review all carry the ticket's decisions and the rule that they come before a general direction. A reviewer that held
 // "permissions only shrink" against the chairman's written decision to widen one blocked a pull request the ticket asked for, and a re-review that did not see the decision could not correct it.
 import type { ReviewBodyLine, ReviewBrief, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
+import { CI_COST_RULE } from "./ci-rule.ts";
 
 /** What the reviewer is told about a Done-when line the ticket puts under "After merge". */
 export const POST_MERGE_RULE = "A Done-when line under the ticket's \"After merge\" part is not a merge condition: do not block the pull request on it. "
@@ -102,9 +103,9 @@ function contractWords({ doneWhen, step }: Pick<ReviewBrief, "doneWhen" | "step"
   return `${stepWords(step)}\n\n${forLast}`;
 }
 
-/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract. */
+/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract and the CI cost rule (A11-261). */
 const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "decisions" | "planDecisions" | "escalation" | "step">, unrequiredRed: readonly string[] | undefined): string =>
-  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief)].filter((words) => words !== "").join("\n\n");
+  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief), CI_COST_RULE].filter((words) => words !== "").join("\n\n");
 
 /** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), then the post-merge rule. */
 export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, unrequiredRed?: readonly string[]): string {
