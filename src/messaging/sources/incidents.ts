@@ -4,6 +4,7 @@
 //   incident:gate-crash      the work-tick unit failed, or no tick has COMPLETED for 3 intervals (the tick's own completion record, #3040)
 //   incident:fleet-down      a worker has been non-ready past fleet-watch's own threshold, from the state fleet-watch already writes
 //   incident:ci-permission   a workflow's newest run carries a `Resource not accessible` annotation
+//   incident:fleet-drift     a fleet box differs from the pins manifest (A11-205), from the hourly record control's `fleet:drift` writes
 //
 // **AN INCIDENT REACHES THE CHAIRMAN ONLY IF IT IS STILL THERE 30 MINUTES LATER**, and that is the CORE's rule (`holdDownMs` for kind
 // `incident`), not this file's. THIS FILE'S PART IS `firstSeenAt`: the moment the condition BEGAN, derived from what the read holds
@@ -30,6 +31,8 @@ export const DEFAULT_INCIDENT_CONFIG = Object.freeze({
   fleetThresholdMs: 10 * MINUTE_MS,
   /** A fleet-watch file older than this is not a reading of the fleet. */
   fleetStateMaxAgeMs: 30 * MINUTE_MS,
+  /** The hourly drift check runs every hour: a record (or a mirror of it) older than two of them is not a reading of the fleet. */
+  fleetDriftMaxAgeMs: 2 * 60 * MINUTE_MS,
 });
 
 /**
@@ -136,6 +139,69 @@ export function fleetDownEvents(reading: { state: Record<string, number | string
     text: `The fleet is down: ${overdue.length} worker${overdue.length === 1 ? "" : "s"} not ready for over ${span(config.fleetThresholdMs)} (${names}${more}).` }];
 }
 
+/** One difference as control's `fleet:drift` records it, cut to what an announcement names: the box, the field, never an address. `carried` is a box that did not answer this hour. */
+export type FleetDriftDifference = { box: string; field: string; has: string | null; wants: string; carried: boolean };
+/**
+ * `fleet-watch`'s mirror of control's hourly record (`runs/fleet-drift-mirror.json`), read: when the mirror was last written, and the record's own time, its
+ * run of differences' start (`null` when there is none) and the facts an announcement needs. `unreadable` is true when the manifest could not be read, which
+ * fails the check as a difference does. `reachable` of `total` boxes answered.
+ */
+export type FleetDriftReading = {
+  readAt: number | string; checkedAt: number | string; firstSeenAt: number | string | null; unreadable: boolean; reachable: number; total: number;
+  differences: FleetDriftDifference[];
+};
+
+/** Box to the fields it differs on, in the order the record lists them; a field of a box that did not answer says it is the last read. */
+function fieldsByBox(differences: FleetDriftDifference[]): Map<string, string[]> {
+  const byBox = new Map<string, string[]>();
+  for (const { box, field, carried } of differences) byBox.set(box, [...(byBox.get(box) ?? []), carried ? `${field}, last read` : field]);
+  return byBox;
+}
+
+/** A mirror or record this far ahead of the clock is a clock fault or a wrong file, not a fresh reading. */
+const CLOCK_SKEW_MS = 10 * MINUTE_MS;
+
+function assertFresh(label: string, at: number | string, now: number, config: typeof DEFAULT_INCIDENT_CONFIG): void {
+  const age = now - instant(at, label);
+  if (age > config.fleetDriftMaxAgeMs) throw new RangeError(`the fleet drift ${label} is ${span(age)} old`);
+  if (-age > CLOCK_SKEW_MS) throw new RangeError(`the fleet drift ${label} is dated ${span(-age)} in the future`);
+}
+
+const MANIFEST_UNREADABLE = "the pins manifest could not be read, so no box was compared";
+
+/** What is wrong, in a sentence: the boxes off the manifest (the first five), then any other fault of the check itself. */
+function driftSentence(byBox: Map<string, string[]>, otherFault: string): string {
+  const boxes = [...byBox.entries()].slice(0, MAX_NAMED).map(([box, fields]) => `${box} (${fields.join(", ")})`).join(", ");
+  const more = byBox.size > MAX_NAMED ? ` and ${byBox.size - MAX_NAMED} more` : "";
+  const named = byBox.size === 0 ? "" : `${byBox.size} box${byBox.size === 1 ? "" : "es"} off the pins manifest: ${boxes}${more}`;
+  return `The fleet is not on its pins manifest: ${[named, otherFault].filter(Boolean).join("; ")}.`;
+}
+
+/** What a clear claims is what was read: the boxes that answered, and how many did not. */
+function clearSentence({ reachable, total }: FleetDriftReading): string {
+  const notRead = total - reachable;
+  return `Every fleet box that answered (${reachable} of ${total}) reads as the pins manifest again${notRead > 0 ? `; ${notRead} not read (no answer)` : ""}.`;
+}
+
+/**
+ * A box off the pins manifest, as control's hourly drift check recorded it (A11-205). Open while the record lists a difference or says the manifest could not be
+ * read; resolved when it lists none. **`firstSeenAt` is the record's own start of the run** (it carries across hours while the run lasts), never the time of this
+ * look. A mirror, or a record, older than two hours throws: a check that stopped leaves a clean-looking file, which is the false all-clear this module refuses.
+ * Nothing answered and nothing differed is no event at all: it neither opens nor clears, because nothing was compared.
+ */
+export function fleetDriftEvents(reading: FleetDriftReading, now: number, config: typeof DEFAULT_INCIDENT_CONFIG): Record<string, unknown>[] {
+  if (reading === null || typeof reading !== "object" || !Array.isArray(reading.differences)) throw new TypeError("the fleet drift reading needs a list of differences");
+  assertFresh("mirror", reading.readAt, now, config);
+  assertFresh("record", reading.checkedAt, now, config);
+  const base = { key: "incident:fleet-drift", kind: "incident", severity: "warning", links: [] };
+  const byBox = fieldsByBox(reading.differences);
+  if (byBox.size === 0 && !reading.unreadable) {
+    return reading.reachable === 0 ? [] : [{ ...base, firstSeenAt: now, text: clearSentence(reading), resolved: true }];
+  }
+  if (reading.firstSeenAt === null) throw new TypeError("the fleet drift record lists a failure and no time it began");
+  return [{ ...base, firstSeenAt: instant(reading.firstSeenAt, "firstSeenAt"), resolved: false, text: driftSentence(byBox, reading.unreadable ? MANIFEST_UNREADABLE : "") }];
+}
+
 const hasPermissionAnnotation = (run: Record<string, any>): boolean =>
   Array.isArray(run.annotations) && run.annotations.some((note) => PERMISSION_ANNOTATION.test(String(note?.message ?? "")));
 
@@ -161,11 +227,11 @@ export function ciPermissionEvents(runs: Record<string, any>[], now: number): Re
     text: `CI is refused a permission (\`Resource not accessible\`) in ${broken.map(({ name }) => name).join(", ")}, since ${span(now - since)} ago.` }];
 }
 
-/** The four incident kinds, each independently able to fail to ask. */
+/** The five incident kinds, each independently able to fail to ask. */
 export async function observeIncidents({ now, config: overrides = {}, log = console.error, readers }: {
         now: () => number; config?: Partial<typeof DEFAULT_INCIDENT_CONFIG>; log?: (line: string) => void;
         readers: {
-            readTrunkRuns?: Function; readGateUnit?: Function; readFleetState?: Function; readCiRuns?: Function;
+            readTrunkRuns?: Function; readGateUnit?: Function; readFleetState?: Function; readCiRuns?: Function; readFleetDrift?: Function;
             readFixRow?: FixRowReader;
             readEpisodeStart?: (key: string) => Promise<number | null> | number | null;
         };
@@ -176,6 +242,7 @@ export async function observeIncidents({ now, config: overrides = {}, log = cons
     observe("incident:gate-crash", async () => withMeaning(gateCrashEvents(await requireReader(readers, "readGateUnit")(), now(), config), readers, log, now()), log),
     observe("incident:fleet-down", async () => withMeaning(fleetDownEvents(await requireReader(readers, "readFleetState")(), now(), config), readers, log, now()), log),
     observe("incident:ci-permission", async () => withMeaning(ciPermissionEvents(await requireReader(readers, "readCiRuns")(), now()), readers, log, now()), log),
+    observe("incident:fleet-drift", async () => withMeaning(fleetDriftEvents(await requireReader(readers, "readFleetDrift")(), now(), config), readers, log, now()), log),
   ]);
   return { events: parts.flatMap((part) => part.events), cannotAsk: parts.flatMap((part) => part.cannotAsk) };
 }
