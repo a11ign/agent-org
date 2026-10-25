@@ -94,7 +94,8 @@ function Loaded({ answer, unknown, view, viewWords, changes, editing, onRetry, o
 /**
  * The page once the connections are read. It reads the plugins once (the shell's shared read, which the badge uses too) and the settings once, and holds the changes: an agent-org plugin's action, a
  * Claude plugin's key of the host file, and a concern's own settings edited through the Settings flow. A failed first read is the shared error banner with Retry; an instance that cannot be reached
- * after an answer is the Unknown board: every status unknown over the last answer.
+ * after an answer is the Unknown board: every status unknown over the last answer. While the plugins drawn are the tab's kept copy (A11-270), a plugin's action waits for the instance's own
+ * answer, since it is sent the bases the instance last answered; while the settings are, so do Review, Save and Restore of the host file.
  */
 function Content() {
   const { client, connection, queue, checkNow } = useShell();
@@ -107,7 +108,9 @@ function Content() {
     plugins.refresh();
   };
   const flow = useHostFile({ client, read: readAgain, rows, drafts: state.drafts, discard: state.discard });
-  const changes = useChanges({ client, read: readAgain, held: { answer: plugins.data, state: plugins.state }, started: flow.clearOutcome });
+  const changing = useChanges({ client, read: readAgain, held: { answer: plugins.data, state: plugins.state }, started: flow.clearOutcome });
+  const changes = plugins.cached ? { ...changing, busy: true } : changing;
+  const busy = flow.busy || settings.cached;
   const [tab, setTab] = useState<Tab>("integrations");
   const [open, setOpen] = useState<string | null>("tracker");
   const local = isLocal(connection);
@@ -128,12 +131,12 @@ function Content() {
           {(answer) => (
             <Loaded answer={answer} unknown={unknown} view={settings.data} viewWords={viewWords} changes={changes} onRetry={retry} onReadAgain={() => { changes.clear(); readAgain(); }} tab={tab} setTab={setTab} open={open} setOpen={setOpen}
               editing={{ drafts: state.drafts, staged: flow.staging.staged, problems: flow.staging.problems, type: state.type }}
-              flowBanner={<OutcomeBanner outcome={flow.outcome} actions={{ busy: flow.busy, onRestore: () => { changes.clear(); if (flow.outcome?.kind === "saved") flow.restore(flow.outcome.file); }, onReadAgain: () => { changes.clear(); flow.readAgain(); } }} />} />
+              flowBanner={<OutcomeBanner outcome={flow.outcome} actions={{ busy, onRestore: () => { changes.clear(); if (flow.outcome?.kind === "saved") flow.restore(flow.outcome.file); }, onReadAgain: () => { changes.clear(); flow.readAgain(); } }} />} />
           )}
         </Lifecycle>
       </div>
-      <UnsavedBars files={bars} busy={flow.busy || changes.busy} onDiscard={discard} onReview={(file) => { changes.clear(); flow.openReview(file); }} />
-      {flow.review === null ? null : <ReviewDialog review={flow.review} busy={flow.busy} onBack={flow.closeReview} onSave={flow.save} />}
+      <UnsavedBars files={bars} busy={busy || changes.busy} onDiscard={discard} onReview={(file) => { changes.clear(); flow.openReview(file); }} />
+      {flow.review === null ? null : <ReviewDialog review={flow.review} busy={busy} onBack={flow.closeReview} onSave={flow.save} />}
       {changes.pending === null ? null : <ConfirmDialog pending={changes.pending} onCancel={changes.cancel} onConfirm={changes.confirm} />}
     </>
   );

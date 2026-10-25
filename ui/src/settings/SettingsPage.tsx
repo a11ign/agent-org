@@ -27,25 +27,26 @@ function Header({ section }: Readonly<{ section: Section }>) {
   );
 }
 
-/** The sections of the page once the settings are read: the banners that say how the last action went, the page's own controls, and the host file's keys. */
-function Sections({ section, view, flow, editing, local, onRestore }: Readonly<{ section: Section; view: SettingsView; flow: HostFile; editing: Editing; local: boolean; onRestore: () => void }>) {
+/** The sections of the page once the settings are read: the banners that say how the last action went, the page's own controls, and the host file's keys. `busy` holds the buttons that write. */
+function Sections({ section, view, flow, busy, editing, local, onRestore }: Readonly<{ section: Section; view: SettingsView; flow: HostFile; busy: boolean; editing: Editing; local: boolean; onRestore: () => void }>) {
   return (
     <>
       <ReadRefusals refusals={view.refusals} />
       <Notes notes={view.notes} />
-      <OutcomeBanner outcome={flow.outcome} actions={{ busy: flow.busy, onRestore, onReadAgain: flow.readAgain }} />
+      <OutcomeBanner outcome={flow.outcome} actions={{ busy, onRestore, onReadAgain: flow.readAgain }} />
       {section === "models" ? <Models /> : null}
       {section === "workers" ? <Workers /> : null}
       <HostFileSection view={view} page={section} editing={editing} />
       {section === "machine" ? <ConventionsNotes view={view} /> : null}
-      {section === "machine" && local ? <RestoreBackups view={view} busy={flow.busy} onRestore={flow.restore} /> : null}
+      {section === "machine" && local ? <RestoreBackups view={view} busy={busy} onRestore={flow.restore} /> : null}
     </>
   );
 }
 
 /**
  * The page once the connections are read. It holds what the settings read gives and what is typed over it: the staged changes, and the review, save and restore of the host files. A
- * failed read is above the last one read, if any; with none the page is its skeleton, while it loads and while the instance restarts.
+ * failed read is above the last one read, if any; with none the page is its skeleton, while it loads and while the instance restarts. While the settings drawn are the tab's kept copy
+ * (A11-270), Review, Save and Restore wait for the instance's own answer.
  */
 function Content({ section }: Readonly<{ section: Section }>) {
   const { client, connection } = useShell();
@@ -57,6 +58,7 @@ function Content({ section }: Readonly<{ section: Section }>) {
   const rows = useMemo(() => (view === null ? [] : editableRows(view)), [view]);
   const flow = useHostFile({ client, read: read.refresh, rows, drafts: state.drafts, discard: state.discard });
   const { staging, outcome } = flow;
+  const busy = flow.busy || read.cached;
   const editing: Editing = {
     drafts: state.drafts, staged: staging.staged, problems: staging.problems, type: state.type,
     remote: local || connection === null ? null : remoteNote(connectionLabel(connection)),
@@ -68,10 +70,10 @@ function Content({ section }: Readonly<{ section: Section }>) {
       <div className="settings">
         <Header section={section} />
         <ReadFailure read={read} name={connection?.name ?? ""} hasSettings={view !== null} />
-        {view === null ? (read.state === "loading" || read.state === "reconnecting" ? <SettingsSkeleton /> : null) : <Sections section={section} view={view} flow={flow} editing={editing} local={local} onRestore={() => outcome?.kind === "saved" && flow.restore(outcome.file)} />}
+        {view === null ? (read.state === "loading" || read.state === "reconnecting" ? <SettingsSkeleton /> : null) : <Sections section={section} view={view} flow={flow} busy={busy} editing={editing} local={local} onRestore={() => outcome?.kind === "saved" && flow.restore(outcome.file)} />}
       </div>
-      <UnsavedBars files={bars} busy={flow.busy} onDiscard={discard} onReview={flow.openReview} />
-      {flow.review === null ? null : <ReviewDialog review={flow.review} busy={flow.busy} onBack={flow.closeReview} onSave={flow.save} />}
+      <UnsavedBars files={bars} busy={busy} onDiscard={discard} onReview={flow.openReview} />
+      {flow.review === null ? null : <ReviewDialog review={flow.review} busy={busy} onBack={flow.closeReview} onSave={flow.save} />}
     </>
   );
 }

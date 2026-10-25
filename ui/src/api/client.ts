@@ -18,8 +18,8 @@ export type SettingsSave = Readonly<{ file: EditFile; changes: readonly Change[]
 /** A plugin action; `confirmed` is for an uninstall, or an install that replaces another plugin. */
 export type PluginRequest = Omit<PluginActionRequest, "confirmed"> & Readonly<{ confirmed?: boolean }>;
 
-/** A read: the signal of the poll that asked, so a connection change drops the answer. */
-export type Read<T> = (signal?: AbortSignal) => Promise<Answer<T>>;
+/** A read: the signal of the poll that asked, so a connection change drops the answer. It names its path, under which the tab keeps its answer (`session-cache.ts`). */
+export type Read<T> = ((signal?: AbortSignal) => Promise<Answer<T>>) & Readonly<{ path: string }>;
 
 /**
  * One typed method per route the board calls on an instance: what `remote-proxy.ts` passes on, and `ticket:ui`'s own `/api/connections`. `connection` is the
@@ -27,14 +27,14 @@ export type Read<T> = (signal?: AbortSignal) => Promise<Answer<T>>;
  */
 export function createClient(connection: ViewConnection | null, { fetch: fetchWith = (...args) => globalThis.fetch(...args) }: Readonly<{ fetch?: Fetch }> = {}) {
   const target: Target = { connection, fetch: fetchWith };
-  const read = <T>(path: string): Read<T> => (signal) => send<T>(target, { method: "GET", path, signal });
+  const read = <T>(path: string, at: Target = target): Read<T> => Object.assign((signal?: AbortSignal) => send<T>(at, { method: "GET", path, signal }), { path });
   const post = <T>(path: string, body?: unknown) => mutate<T>(target, path, body);
   const keyed = (key: string) => `/api/queue/${encodeURIComponent(key)}`;
   // An After-merge check's id is `<KEY>#<n>`, which its routes name as `<KEY>/<n>` (A11-277).
   const checked = (id: string) => `/api/after-merge/${id.split("#").map(encodeURIComponent).join("/")}`;
   return {
     /** `ticket:ui`'s own answer: the connections the page offers, always at the root. */
-    connections: (signal?: AbortSignal) => send<ConnectionsView>({ ...target, atRoot: true }, { method: "GET", path: "/api/connections", signal }),
+    connections: read<ConnectionsView>("/api/connections", { ...target, atRoot: true }),
     config: read<ConfigView>("/api/config"),
     tickets: read<TicketView[]>("/api/tickets"),
     /** One page of the scope the Assignee row chose, from the page `after` names or from the first. */

@@ -20,13 +20,13 @@ const WRITER: Group = {
 };
 
 /** One select that saves as it changes, with its quiet state beside it. The writer's first option clears the choice, so it names the host file's value that then applies. */
-function ChoiceSelect({ id, kind, part, options, hostDefault, choices }: Readonly<{ id: string; kind: Kind; part: ChoicePart; options: readonly string[]; hostDefault: string | null; choices: Choices }>) {
+function ChoiceSelect({ id, kind, part, options, hostDefault, choices, disabled }: Readonly<{ id: string; kind: Kind; part: ChoicePart; options: readonly string[]; hostDefault: string | null; choices: Choices; disabled: boolean }>) {
   return (
     <div className="settings-card-row">
       <label htmlFor={id} className="settings-label">{kind === "model" ? "Model" : "Effort"}</label>
       <span className="settings-control">
         <SaveStateText state={choices.state(part)} />
-        <select id={id} className="settings-select" value={choices.value(part)} onChange={(event) => choices.change(part, event.target.value)}>
+        <select id={id} className="settings-select" value={choices.value(part)} disabled={disabled} onChange={(event) => choices.change(part, event.target.value)}>
           {hostDefault === null ? null : <option value="">Host default: {hostDefault}</option>}
           {options.map((option) => <option key={option} value={option}>{option}</option>)}
         </select>
@@ -35,7 +35,7 @@ function ChoiceSelect({ id, kind, part, options, hostDefault, choices }: Readonl
   );
 }
 
-function ChoiceGroup({ group, config, choices, writer }: Readonly<{ group: Group; config: ConfigView; choices: Choices; writer: boolean }>) {
+function ChoiceGroup({ group, config, choices, writer, disabled }: Readonly<{ group: Group; config: ConfigView; choices: Choices; writer: boolean; disabled: boolean }>) {
   const hostDefault = (kind: Kind): string | null => (writer ? (config.writerDefault?.[kind] ?? "") : null);
   return (
     <section aria-labelledby={`h-${group.id}`} className="settings-section">
@@ -44,8 +44,8 @@ function ChoiceGroup({ group, config, choices, writer }: Readonly<{ group: Group
         <p className="settings-section-words">{group.words}</p>
       </div>
       <div className="settings-card">
-        <ChoiceSelect id={`${group.id}-model`} kind="model" part={group.model} options={config.models} hostDefault={hostDefault("model")} choices={choices} />
-        <ChoiceSelect id={`${group.id}-effort`} kind="effort" part={group.effort} options={config.efforts} hostDefault={hostDefault("effort")} choices={choices} />
+        <ChoiceSelect id={`${group.id}-model`} kind="model" part={group.model} options={config.models} hostDefault={hostDefault("model")} choices={choices} disabled={disabled} />
+        <ChoiceSelect id={`${group.id}-effort`} kind="effort" part={group.effort} options={config.efforts} hostDefault={hostDefault("effort")} choices={choices} disabled={disabled} />
       </div>
     </section>
   );
@@ -53,18 +53,18 @@ function ChoiceGroup({ group, config, choices, writer }: Readonly<{ group: Group
 
 /**
  * "Defaults for new work": the model and effort of new runs, of planning (where a planner is configured) and of the ticket writer (where a writer is). They save as they change, through
- * `/api/choice`, and never go through the review of the host file.
+ * `/api/choice`, and never go through the review of the host file. `disabled` holds them while the config is not the instance's own answer yet.
  */
-export function ChoiceSection({ config, choices }: Readonly<{ config: ConfigView; choices: Choices }>) {
+export function ChoiceSection({ config, choices, disabled = false }: Readonly<{ config: ConfigView; choices: Choices; disabled?: boolean }>) {
   return (
     <>
       <div className="settings-divider">
         <h2 className="settings-heading">Defaults for new work</h2>
         <p className="settings-section-words">These save as you change them. A run already on the queue keeps its own.</p>
       </div>
-      <ChoiceGroup group={NEW_RUNS} config={config} choices={choices} writer={false} />
-      {config.planner ? <ChoiceGroup group={PLANNING} config={config} choices={choices} writer={false} /> : null}
-      {config.writer ? <ChoiceGroup group={WRITER} config={config} choices={choices} writer /> : null}
+      <ChoiceGroup group={NEW_RUNS} config={config} choices={choices} writer={false} disabled={disabled} />
+      {config.planner ? <ChoiceGroup group={PLANNING} config={config} choices={choices} writer={false} disabled={disabled} /> : null}
+      {config.writer ? <ChoiceGroup group={WRITER} config={config} choices={choices} writer disabled={disabled} /> : null}
     </>
   );
 }

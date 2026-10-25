@@ -11,7 +11,7 @@ const textOf = (element: HTMLElement): string => element.textContent ?? "";
 
 function viewOf<T>(state: PollView<T>["state"], data: T | null = null, refusal: string | null = null): LifecycleView<T> & Readonly<{ refreshed: () => number }> {
   let refreshes = 0;
-  return { state, data, refusal, refresh: () => { refreshes += 1; }, refreshed: () => refreshes };
+  return { state, data, refusal, cached: false, refresh: () => { refreshes += 1; }, refreshed: () => refreshes };
 }
 
 const page = (data: readonly string[]) => <ul>{data.map((item) => <li key={item}>{item}</li>)}</ul>;

@@ -1,5 +1,6 @@
 ---
 import "../styles.css";
+import { cacheKey } from "../api/session-cache.ts";
 
 interface Props {
   /** The document title the board gives the page, such as "Atomaut: Tickets". */
@@ -7,6 +8,8 @@ interface Props {
 }
 
 const { title } = Astro.props;
+// Where the tab keeps the connections list (A11-270): with it, the island draws the page from the tab's kept answers as it hydrates.
+const keptList = cacheKey(null, "/api/connections");
 ---
 
 <!doctype html>
@@ -15,6 +18,14 @@ const { title } = Astro.props;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
+    <!-- A tab that has drawn a page before holds back the island's static HTML, which is its skeleton, until the shell has drawn what the tab kept (`ShellProvider.tsx`, A11-270). -->
+    <script is:inline define:vars={{ keptList }}>
+      try {
+        if (sessionStorage.getItem(keptList) !== null) document.documentElement.dataset.kept = "";
+      } catch {
+        // Refused storage keeps nothing, so the skeleton is what the page draws first.
+      }
+    </script>
   </head>
   <body>
     <slot />

@@ -23,7 +23,7 @@ export function NewTicket({ config, paused, open, onClose }: Readonly<{ config: 
   return (
     <>
       {writers.failure === null ? null : <ErrorState refusal={writers.failure} onRetry={writers.retry} onDismiss={writers.dismissFailure} />}
-      {writers.runs.map((run) => <RunCard key={run.id} run={run} readAt={writers.readAt} busy={paused !== null || writers.acting.has(run.id)} onStop={writers.stop} onDismiss={writers.dismiss} />)}
+      {writers.runs.map((run) => <RunCard key={run.id} run={run} readAt={writers.readAt} busy={paused !== null || writers.cached || writers.acting.has(run.id)} onStop={writers.stop} onDismiss={writers.dismiss} />)}
       {open ? <NewTicketDialog request={request} config={config} paused={paused} options={manualOptionsOf(config, allTickets)} onClose={onClose} /> : null}
     </>
   );

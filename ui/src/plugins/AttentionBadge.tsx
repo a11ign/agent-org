@@ -6,7 +6,7 @@ import { usePluginsRead, useProvidedPluginsRead, type PluginsReadValue } from ".
 export const attentionWords = (count: number): string => `${count} ${count === 1 ? "needs" : "need"} attention`;
 
 /**
- * The count to show, or null to show none: only an answered read counts, and only above zero. A failed read and a read still loading have no count to show, since the last answer may no
+ * The count to show, or null to show none: only an answered read counts (this page's, or the one the tab kept from an earlier page, A11-270), and only above zero. A failed read and a read still loading have no count to show, since the last answer may no
  * longer be true, and nor has an answer from before the instance's first checks finished (A11-270), which has no failing check yet.
  */
 export function attentionShown(read: Pick<PluginsReadValue, "state" | "data">): number | null {
