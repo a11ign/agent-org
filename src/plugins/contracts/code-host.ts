@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.17 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.18 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.18 (A11-240): `pullsNaming`, OPTIONAL: the pull requests of some repositories whose title or body names a ticket's key, with their state, which a run that is queued again is told of and which Respond finds a pull request to answer by when the board never recorded one. A plugin of 1.17 is read as one that cannot be asked, and everything is then as it was: the board's own record is all there is.
 // 1.17 (A11-245): `readCiRun`, OPTIONAL: what a workflow run is (whether it has finished, how it concluded, how many of its jobs have), which the board reads for a worker that declared it waits on one. A plugin of 1.16 is read as one that has no CI-run read, and a wait on a run is then shown as unreadable.
 // 1.16 (A11-238): `stackMergeFactsOf` and `requestStackMerge`, both OPTIONAL: what the board reads of a pull request that may be in a stack (is it, where its base is, whether the stack merge is settled or was refused and why), and the hand-back of an approved, green stacked pull request to the arm bot, which alone merges it. A plugin of 1.15 is read as one with neither,
 // and the board then asks the arm bot for nothing, as before.
@@ -49,7 +50,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.17";
+export const CODE_HOST_CONTRACT_VERSION = "1.18";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -183,6 +184,9 @@ export type StackMergeFacts = Readonly<{
  */
 export type CiRun = Readonly<{ status: "queued" | "in_progress" | "completed"; conclusion: string | null; url: string; name: string; jobs: Readonly<{ done: number; total: number }> | null }>;
 
+/** A pull request that names a ticket's key (contract 1.18): where it is, its repository (`owner/name`), its state as the host says it, and its body, which is where a `Closes`, `Refs` or `Partial:` line says what it does for the ticket. */
+export type NamingPull = Readonly<{ url: string; repo: string; state: "open" | "merged" | "closed"; body: string }>;
+
 /** The pull request to hand to the arm bot (contract 1.16): its repository, `owner/name`, and its number. */
 export type StackMergeRequest = Readonly<{ repo: string; number: number }>;
 
@@ -298,6 +302,12 @@ export interface CodeHost extends CodeHostPort {
    * about a run (contract 1.17).
    */
   readCiRun?(repository: string, runId: number): CiRun | null;
+  /**
+   * Every pull request of `repositories` (`owner/name`) whose title or body names `key`, in any state, or null for "could not ask": a repository the host cannot read, an answer it cannot read, and a list cut short at the host's limit are all null.
+   * Null is never "none names it". The host answers what it finds and judges nothing: a pull request that only mentions the key in passing is listed too, and the caller decides which of them are the ticket's. A host without it is read as one that
+   * cannot be asked (contract 1.18).
+   */
+  pullsNaming?(key: string, repositories: readonly string[]): readonly NamingPull[] | null;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
   /**

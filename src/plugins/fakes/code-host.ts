@@ -33,7 +33,7 @@ type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
 function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<string, DefaultBranchRed>, login: string | null, calls: string[]):
-  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "readChange"> {
+  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "readChange"> {
   return {
     readOwnLogin() {
       calls.push("readOwnLogin");
@@ -79,6 +79,13 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       const inRepository = [...pulls.entries()].filter(([, pull]) => pull.repository === repository);
       // A repository the fake was given neither a pull request nor a `seedRepository` of is one it cannot ask about: null, never "none are open".
       return inRepository.length === 0 && !repositories.has(repository) ? null : inRepository.filter(([, pull]) => pull.state === "open").map(([url]) => url);
+    },
+    pullsNaming(key, repos) {
+      calls.push(`pullsNaming ${key} ${repos.join(",")}`);
+      // A repository the fake was given neither a pull request nor a `seedRepository` of is one it cannot ask about, as in `openPullUrlsOf`.
+      if (repos.some((repo) => ![...pulls.values()].some((pull) => pull.repository === repo) && !repositories.has(repo))) return null;
+      const names = new RegExp(`(?<![A-Za-z0-9])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "i");
+      return [...pulls.entries()].filter(([, pull]) => repos.includes(pull.repository) && names.test(pull.body ?? "")).map(([url, pull]) => ({ url, repo: pull.repository, state: pull.state, body: pull.body ?? "" }));
     },
     readChange(ref) {
       const pull = pulls.get(ref.id);

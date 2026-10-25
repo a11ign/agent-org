@@ -23,7 +23,7 @@ import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
-import { diffText, type Finding, findingsText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
+import { diffText, type Finding, findingsText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
@@ -610,11 +610,11 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], numberedSteps = false }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], numberedSteps = false, opened = [] }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
-  read?: TicketRead; findings?: readonly Finding[]; numberedSteps?: boolean;
+  read?: TicketRead; findings?: readonly Finding[]; numberedSteps?: boolean; opened?: readonly OpenedPull[];
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -633,7 +633,7 @@ ${readLine(read)}${ticket.description.trim() || "(no description)"}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)), findings)}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}${stepsText(steps)}
+${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)), findings)}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}${stepsText(steps)}${openedText(opened)}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:

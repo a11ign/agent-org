@@ -19,6 +19,7 @@ import { hostFactsOf } from "./plugin-contract.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { type DenyRule } from "./settings.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { openedPullsOf } from "./opened-pulls.ts";
 import { pluginCopiesOf } from "./pool-pin.ts";
 import { recordPluginCopy } from "./queue/queue-pins.ts";
 import { type FindingsGiven } from "./blocker-findings-check.ts";
@@ -123,7 +124,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, findings, numberedSteps: startedSteps(store.get().entries, entry) }));
+      read, findings, numberedSteps: startedSteps(store.get().entries, entry), opened: openedPullsOf(ctx, entry) }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
   writeRunFiles(ctx, entry, folder, dir);

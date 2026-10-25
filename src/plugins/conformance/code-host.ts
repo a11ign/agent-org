@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
+// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`; A11-240 adds `pullsNaming`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
 //
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
@@ -28,6 +28,8 @@ export type CodeHostProbe = Readonly<{
   stackRequestRefused?: StackMergeRequest;
   /** A workflow run the host holds, by its repository (`owner/name`) and id (contract 1.17). A host without `readCiRun` is not asked. */
   ciRun?: Readonly<{ repository: string; runId: number }>;
+  /** A pull request the host holds whose body names `key`, with its repository and state (contract 1.18). A host without `pullsNaming` is not asked. */
+  named?: Readonly<{ key: string; repository: string; url: string; state: "open" | "merged" | "closed" }>;
   /** Remote URLs of one repository the host holds, in the forms a checkout's `origin` takes, and the repository each names (contract 1.14). A host without a `repositories` group is not asked. */
   remote?: Readonly<{ urls: readonly string[]; repository: HostRepository }>;
 }>;
@@ -35,6 +37,8 @@ export type CodeHostProbe = Readonly<{
 /** The statuses a workflow run may be in (contract 1.17), and a run id no host holds. */
 const CI_STATUSES: readonly unknown[] = ["queued", "in_progress", "completed"];
 const MISSING_RUN_ID = 2_000_000_000;
+/** A repository no host holds (contract 1.18). */
+const MISSING_REPOSITORY = "no-such-owner/no-such-repository";
 
 /** The operations of the optional `rows` group (contract 1.11), as a function each; the other members are values. */
 const BASE_ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
@@ -520,6 +524,23 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(isObject(run) && CI_STATUSES.includes(run.status) && isString(run.url) && isString(run.name), `readCiRun(${repository}, ${runId}) must read { status: queued | in_progress | completed, conclusion, url, name, jobs }`);
       expect((run.status === "completed") === (isString(run.conclusion) && run.conclusion !== ""), "a run has a conclusion once it has completed, and has none before");
       expect(run.jobs === null || (isObject(run.jobs) && Number.isInteger(run.jobs.done) && Number.isInteger(run.jobs.total) && run.jobs.done >= 0 && run.jobs.done <= run.jobs.total && run.jobs.total >= 1), "jobs must be null (none listed) or { done, total } with done no more than total, and at least one job");
+    },
+  },
+  "pullsNaming answers null for a repository it cannot read": {
+    applies: ({ host }) => typeof host.pullsNaming === "function",
+    reason: "the code host has no pullsNaming, which is optional (contract 1.18)",
+    run: ({ host, probe }) => expect(host.pullsNaming!("ZZZ-1", [probe.repository, MISSING_REPOSITORY]) === null, "pullsNaming must answer null when any repository cannot be read: null is never 'none names it'"),
+  },
+  "pullsNaming lists the pull requests that name a key, with their state": {
+    applies: ({ host, probe }) => typeof host.pullsNaming === "function" && probe.named !== undefined,
+    reason: "the code host has no pullsNaming (optional, contract 1.18) or the probe names no pull request that names a key",
+    run: ({ host, probe }) => {
+      const { key, repository, url, state } = probe.named!;
+      const found = host.pullsNaming!(key, [repository]);
+      expect(Array.isArray(found), `pullsNaming(${key}, [${repository}]) must read a list`);
+      const pull = found!.find((candidate) => candidate.url === url);
+      expect(isObject(pull) && pull.repo === repository && pull.state === state && isString(pull.body), `pullsNaming(${key}, [${repository}]) must list ${url} as { url, repo: ${repository}, state: ${state}, body }`);
+      expect(found!.every((candidate) => ["open", "merged", "closed"].includes(candidate.state) && candidate.repo === repository), "every pull request listed is of a repository asked about, in a state of open, merged or closed");
     },
   },
   "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {
