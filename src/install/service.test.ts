@@ -454,6 +454,7 @@ test("stop ui removes its own entry and no other: the agents host's Funnel on :4
   assert.deepEqual(t.tailscale(), [
     "tailscale status --json",
     "tailscale serve status --json",
+    "tailscale serve status --json",
     "tailscale serve --https=9443 off",
   ]);
   assert.ok(!t.calls.some((call) => /funnel|reset/.test(call)), "no funnel and no reset");

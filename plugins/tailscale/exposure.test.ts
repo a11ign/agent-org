@@ -29,8 +29,32 @@ test("the board's own serve names one HTTPS port and no funnel, and its removal 
   const state = freshState();
   const exposure = exposureOf(state);
   assert.equal(exposure.serve(9443, 4748).status, 0);
-  assert.equal(exposure.unserve(9443).status, 0);
-  assert.deepEqual(state.calls, [["serve", "--bg", "--https=9443", "http://127.0.0.1:4748"], ["serve", "--https=9443", "off"]]);
+  assert.equal(exposure.unserve(9443, { local: 4748 }).status, 0);
+  assert.deepEqual(state.calls.filter(([command, next]) => command === "serve" && next !== "status"), [["serve", "--bg", "--https=9443", "http://127.0.0.1:4748"], ["serve", "--https=9443", "off"]]);
+});
+
+test("A11-279: unserve removes only the caller's own entry: one that proxies to another loopback port, or a call that names none, is left and refused by name", () => {
+  const state = freshState();
+  const exposure = exposureOf(state);
+  exposure.serve(9443, 4748);
+  const removals = () => state.calls.filter((args) => args.includes("off"));
+  const other = exposure.unserve(9443, { local: 4999 });
+  assert.equal(other.status, 1);
+  assert.equal(other.refusal, "port 9443 was not removed: it proxies to http://127.0.0.1:4748, not to 127.0.0.1:4999");
+  const unnamed = exposure.unserve(9443);
+  assert.equal(unnamed.status, 1);
+  assert.equal(unnamed.refusal, "port 9443 was not removed: unserve names no loopback port, so the entry cannot be proven the caller's");
+  assert.equal(exposure.unserve(9444, { local: 7318 }).refusal, "port 9444 was not removed: it serves nothing, not to 127.0.0.1:7318");
+  assert.deepEqual(removals(), [], "no `off` was sent");
+  assert.equal(exposure.portState(9443, 4748).kind, "ours", "the host's entry is still served");
+});
+
+test("A11-279: unserve removes nothing when Tailscale cannot say what the port serves", () => {
+  const state = freshState({ backend: "Stopped" });
+  const result = exposureOf(state).unserve(9443, { local: 4748 });
+  assert.equal(result.status, 1);
+  assert.match(result.refusal ?? "", /^port 9443 was not removed: /);
+  assert.ok(!state.calls.some((args) => args.includes("off")), "no `off` was sent");
 });
 
 test("a path open to the internet is served and removed with funnel commands for that one path (the event receiver's)", () => {
@@ -41,7 +65,8 @@ test("a path open to the internet is served and removed with funnel commands for
   assert.deepEqual(exposure.portState(443, 8787, { path: "/webhook" }), { kind: "ours", proxy: "http://127.0.0.1:8787", funnel: true });
   assert.equal(exposure.portState(443, 9999, { path: "/webhook" }).kind, "foreign", "the same path proxying to another loopback port is not the receiver");
   assert.equal(exposure.portState(443, 8787, { path: "/other" }).kind, "free");
-  assert.equal(exposure.unserve(443, { path: "/webhook", funnel: true }).status, 0);
+  assert.equal(exposure.unserve(443, { path: "/webhook", funnel: true, local: 9999 }).status, 1, "another receiver's loopback port does not remove the path");
+  assert.equal(exposure.unserve(443, { path: "/webhook", funnel: true, local: 8787 }).status, 0);
   assert.deepEqual(state.calls.filter((args) => args.includes("off")), [["funnel", "--yes", "--https=443", "--set-path=/webhook", "off"]]);
   assert.equal(exposure.portState(443, 8787, { path: "/webhook" }).kind, "free");
 });
