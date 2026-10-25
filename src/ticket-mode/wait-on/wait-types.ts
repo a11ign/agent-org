@@ -14,6 +14,9 @@ export type TicketWait = Readonly<{ kind: "ticket"; key: string; until: "done" }
 /** One event a worker declared it waits on. */
 export type Wait = FleetJobWait | CiRunWait | PullRequestWait | TicketWait;
 
+/** Why the board woke a worker: what it waited on finished, one of it failed, or the wait passed its deadline (`on` says what was still pending then, when the wait was declared). */
+export type Woke = Readonly<{ at: number; why: "finished" | "failed" | "late"; on?: string }>;
+
 /** How much of a job's or a run's work is done: pages of a fleet job, jobs of a CI run. */
 export type Progress = Readonly<{ done: number; total: number }>;
 

@@ -303,6 +303,8 @@ export function workingNote(entry: ViewEntry, now?: number): Readonly<{ text: st
     return { text: `Stalled: ${note.stallReason ?? "idle with no newer outcome"} since it said: ${note.reason}`, stalled: true, waiting: false };
   }
   if (note.waiting !== true) return { text: note.reason, stalled: false, waiting: false };
+  // A wait the worker declared (A11-245) reads as the board last read it, which the poll stored on the note: `Waiting on fleet job 123 (4 of 6 pages, about 20 min)`.
+  if (note.waitText !== undefined) return { text: note.waitText, stalled: false, waiting: true };
   const lasted = now === undefined || note.at === undefined ? "" : ` for ${waitedFor(now - note.at)}`;
   return { text: `Waiting on background work${lasted}: ${note.waitingOn ?? note.reason}`, stalled: false, waiting: true };
 }

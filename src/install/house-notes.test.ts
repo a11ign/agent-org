@@ -45,3 +45,13 @@ test("A11-173: the opening-a-pull-request line says a partial is a plan step and
   assert.ok(line.includes("`Refs <ticket key>` with a `Partial: <what remains>` line when it does not (a plan step, `step <N> of <M>`, never an After-merge line of the Done-when: a pull request that leaves only those names the ticket `Closes`;"));
   assert.ok(line.includes("pull requests that finish the ticket together each say `Refs`, with the others named in their `Partial:` line and no `partial` in the outcome)"));
 });
+
+test("A11-245: the shipped working lines say to declare a wait the board reads and end the turn, to write no wait loop, and keep the line for a worker's own background work", () => {
+  const lines = WORKER_NOTES.split("\n");
+  const declared = lines.find((line) => line.startsWith("- Waiting on events the board reads for you")) ?? "";
+  assert.ok(declared.includes("\"waitingOn\": [ { \"<event>\": \"<id>\" } ], \"until\": \"<ISO time>\" }"), "the declared shape, with its deadline");
+  assert.ok(declared.includes("then END YOUR TURN") && declared.includes("the board prompts you when all of them have finished or any has failed"), "end the turn: the board wakes the worker");
+  assert.ok(declared.includes("Never write a wait loop, a `sleep` or a `pgrep -f`"), "no wait loops");
+  const own = lines.find((line) => line.startsWith("- Still running your own background work")) ?? "";
+  assert.ok(own.includes("\"waitingOn\": \"<what>\", \"until\": \"<ISO time>\""), "the string form stays, for a worker's own shell or Monitor");
+});

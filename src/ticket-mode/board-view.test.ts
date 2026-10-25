@@ -993,6 +993,23 @@ test("A11-236: a waiting run reads Waiting on background work, with how long whe
   assert.equal(reasonOf(waiting, 1000 + 54 * 60_000).line, "Waiting on background work for 54 min: the fleet captures on three boxes", "the card's reason line carries it");
 });
 
+test("A11-245: a run that declared a wait reads exactly what the board last read of it, not Stalled, whatever the time; a stalled one names what it waited on", () => {
+  const run = (working: NonNullable<ViewEntry["working"]>): ViewEntry => ({ ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", working });
+  const text = "Waiting on fleet job fj-1 (4 of 6 pages, about 20 min)";
+  const waiting = run({ reason: "the capture runs on the fleet", at: 1000, waiting: true, waitText: text });
+  assert.deepEqual(workingNote(waiting), { text, stalled: false, waiting: true });
+  assert.deepEqual(workingNote(waiting, 1000 + 5 * 60 * 60_000), { text, stalled: false, waiting: true }, "the stored text is the card's: no duration is added from a clock");
+  assert.equal(reasonOf(waiting, 1000 + 54 * 60_000).line, text, "the card's reason line carries it");
+  assert.equal(runStatus(waiting), "working", "the run stays In progress");
+  const several = "Waiting on fleet job fj-1 (done); CI run a11ign/x#9 (running, 3 of 5 jobs)";
+  assert.equal(workingNote(run({ reason: "r", at: 1000, waiting: true, waitText: several }))?.text, several, "several items are one line");
+  const unreadable = "Waiting on fleet job fj-1 (could not read it: ssh: connection refused)";
+  assert.equal(workingNote(run({ reason: "r", at: 1000, waiting: true, waitText: unreadable }))?.text, unreadable, "an unreadable item says so");
+  const stalled = run({ reason: "the capture runs", at: 1000, stalled: true, waitText: text, stallReason: "waited past 2026-10-25T12:00:00.000Z on fleet job fj-1" });
+  assert.deepEqual(workingNote(stalled), { text: "Stalled: waited past 2026-10-25T12:00:00.000Z on fleet job fj-1 since it said: the capture runs", stalled: true, waiting: false });
+  assert.deepEqual(workingNote(run({ reason: "woken, nothing newer yet", at: 1000, waitText: text })), { text: "woken, nothing newer yet", stalled: false, waiting: false }, "a note that is not waiting reads as its reason, whatever text it holds");
+});
+
 // A11-82: a queued run waits on a path another run holds in its repository.
 const pulled = (url: string, repo = "agent-org") => ({ url, repo });
 const holderOf = (key: string, patch: Partial<ViewEntry>): ViewEntry => ({ ticket: { key }, phase: "running", ...patch } as ViewEntry);

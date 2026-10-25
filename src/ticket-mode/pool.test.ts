@@ -3620,25 +3620,35 @@ test("A11-236: a run whose pane shows 2 shells is waiting on background work pas
   await pool.tick();
 });
 
-test("A11-236: past the three-hour bound the shells no longer excuse an idle run: it is stalled once, and the log says it waited past the bound", async () => {
-  const { entry, pass } = await idleWithWork(PANE("2 shells"), { wait: { waitingOn: "the fleet captures on three boxes" } });
+test("A11-236: past the three-hour bound the shells no longer excuse an idle run: the worker is prompted once, and after tickets.stallMinutes more it is stalled once, and the log says it waited past the bound", async () => {
+  const { entry, pass, h } = await idleWithWork(PANE("2 shells"), { wait: { waitingOn: "the fleet captures on three boxes" } });
   await pass(3 * 60 * 60_000 - 200_000);
   assert.equal(entry("NBF-1").working?.stalled, undefined, "inside the bound");
-  const logged = await captureStderr(async () => { await pass(200_000); await pass(60_000); });
+  assert.equal(resumes(h), 0, "not prompted inside the bound");
+  const promptedLogs = await captureStderr(async () => { await pass(200_000); await pass(60_000); });
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled], ["running", undefined], "at the bound the run is not stalled yet");
+  assert.equal(resumes(h), 1, "prompted once at the bound, however many ticks pass");
+  assert.match(h.calls.filter((args) => args.includes("prompt")).at(-1)?.at(-1) ?? "", /^your wait has passed its bound \(\d{4}-\d\d-\d\dT[\d:.]+Z\); check it and carry on$/);
+  assert.equal(promptedLogs.filter((line) => line.includes("NBF-1 was prompted once because its wait passed its deadline")).length, 1, "said once");
+  const logged = await captureStderr(async () => { await pass(30 * 60_000); await pass(60_000); });
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled], ["running", true]);
   assert.match(entry("NBF-1").working?.stallReason ?? "", /^waited past \d{4}-\d\d-\d\dT[\d:.]+Z on the fleet captures on three boxes$/);
   const lines = logged.filter((line) => line.includes("NBF-1 was waiting on background work"));
   assert.equal(lines.length, 1, "said once");
   assert.ok(lines[0].includes("on the fleet captures on three boxes"), "naming the job");
+  assert.equal(resumes(h), 1, "and still prompted only once");
 });
 
-test("A11-236: an until in the outcome file is the bound: a run with a named job and no shells is waiting until then, and stalled naming the job after it", async () => {
+test("A11-236: an until in the outcome file is the bound: a run with a named job and no shells is waiting until then, prompted once at it, and stalled naming the job after the grace", async () => {
   const until = new Date(100 + 2 * 60 * 60_000).toISOString();
-  const { entry, pass } = await idleWithWork(PANE(), { wait: { waitingOn: "the Linux runs", until } });
+  const { entry, pass, h } = await idleWithWork(PANE(), { wait: { waitingOn: "the Linux runs", until } });
   await pass(90 * 60_000);
   assert.deepEqual([entry("NBF-1").working?.waiting, entry("NBF-1").working?.stalled], [true, undefined], "inside until, with no shells on the pane");
   await pass(31 * 60_000);
+  assert.deepEqual([entry("NBF-1").working?.stalled, entry("NBF-1").working?.woke?.why], [undefined, "late"], "at until: woken, not stalled");
+  await pass(30 * 60_000);
   assert.deepEqual([entry("NBF-1").working?.stalled, entry("NBF-1").working?.stallReason], [true, `waited past ${until} on the Linux runs`]);
+  assert.equal(h.calls.filter((args) => args.includes("prompt") && String(args.at(-1)).startsWith("your wait has passed its bound")).length, 1, "one late prompt");
 });
 
 test("A11-85: a pane that cannot be read leaves the thirty-minute rule to decide alone: no background stall, no prompt", async () => {

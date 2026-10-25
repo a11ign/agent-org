@@ -96,12 +96,39 @@ test("A11-236: a working outcome keeps the job it waits on and the time it expec
   assert.deepEqual(exact("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":\" the fleet captures \",\"until\":\"2026-10-24T23:00:00Z\"}"), { kind: "working", reason: "r", waitingOn: "the fleet captures", until: Date.parse("2026-10-24T23:00:00Z") });
   assert.deepEqual(exact("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":\"job\"}"), { kind: "working", reason: "r", waitingOn: "job" }, "a job alone");
   assert.deepEqual(exact("{\"kind\":\"working\",\"reason\":\"r\"}"), { kind: "working", reason: "r" }, "a plain working");
-  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":\" \"}"), "working waitingOn needs a string naming the background job, you wrote an empty string");
-  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":3}"), "working waitingOn needs a string naming the background job, you wrote a number");
-  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"soon\"}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote \"soon\"");
-  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"5\"}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote \"5\"", "a bare number in text is not a time");
-  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":1761346800000}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote a number");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":\" \"}"), "working waitingOn needs a string naming the background job or a list of the events to wait on, you wrote an empty string");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"waitingOn\":3}"), "working waitingOn needs a string naming the background job or a list of the events to wait on, you wrote a number");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"soon\"}"), "working until needs an ISO time such as 2026-10-25T12:00:00Z, you wrote \"soon\"");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"5\"}"), "working until needs an ISO time such as 2026-10-25T12:00:00Z, you wrote \"5\"", "a bare number in text is not a time");
+  assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":1761346800000}"), "working until needs an ISO time such as 2026-10-25T12:00:00Z, you wrote a number");
   assert.ok(outcomeExamples(["working"]).includes("\"waitingOn\": ") && !outcomeExamples(["working"]).includes("\"until\""), "the brief's example names the job and carries no fixed until: a copy of a date that has passed would end the wait at once");
+  assert.match(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"2026-10-25\"}"), /^working until needs an ISO time/, "a date alone is not a time the board can hold a wait to");
+});
+
+const declared = (waitingOn: unknown, over: Record<string, unknown> = {}) => JSON.stringify({ kind: "working", reason: "r", waitingOn, ...over });
+
+test("A11-245: a working outcome may declare the events it waits on, each kind in the shape the ticket gives, with the deadline beside it", () => {
+  const until = "2026-10-25T12:00:00Z";
+  const written = [{ fleetJob: "fj-1" }, { ciRun: "a11ign/agent-org#42" }, { pullRequest: "https://github.com/a11ign/agent-org/pull/7", until: "reviewed" }, { ticket: "A11-9", until: "done" }];
+  assert.deepEqual(exact(declared(written, { until })), {
+    kind: "working", reason: "r", until: Date.parse(until),
+    waits: [{ kind: "fleetJob", id: "fj-1" }, { kind: "ciRun", repository: "a11ign/agent-org", runId: 42 }, { kind: "pullRequest", url: "https://github.com/a11ign/agent-org/pull/7", until: "reviewed" }, { kind: "ticket", key: "A11-9", until: "done" }],
+  });
+  const kept = exact(declared([{ fleetJob: "fj-1" }]));
+  assert.equal("waitingOn" in kept, false, "a list is the declared form, so no string waitingOn is kept beside it");
+  assert.deepEqual(exact(declared("one shell")), { kind: "working", reason: "r", waitingOn: "one shell" }, "a string is still an undeclared wait");
+});
+
+test("A11-245: a declared wait is refused by name when an item is not one of the four kinds, and the example in the brief is held to the check", () => {
+  assert.equal(refusal(declared([])), "working waitingOn needs at least one event, you wrote an empty list");
+  assert.match(refusal(declared([{ fleetJob: "fj-1", until: "done" }])), /^working waitingOn\[0\] \(fleetJob\) has until, which it does not take; until goes only with pullRequest and ticket$/);
+  assert.match(refusal(declared([{ pullRequest: "https://github.com/a11ign/agent-org/pull/7" }])), /^working waitingOn\[0\] pullRequest needs until: one of merged or reviewed, you wrote nothing$/);
+  assert.match(refusal(declared([{ fleetJob: "fj-1" }, { ciRun: "not-a-run" }])), /^working waitingOn\[1\] ciRun needs <owner>\/<repo>#<run id>/);
+  assert.match(refusal(declared([{ jira: "X-1" }])), /^working waitingOn\[0\] needs exactly one of fleetJob, ciRun, pullRequest, ticket, you wrote jira$/);
+  assert.match(refusal(declared([{ fleetJob: "fj-1" }], { until: "2026-02-31T10:00:00Z" })), /^working until needs an ISO time/, "a day that does not exist is not rolled into March");
+  const example = OUTCOME_EXAMPLES.working;
+  assert.ok(Array.isArray(example.waitingOn), "the brief's working example is the declared form");
+  assert.equal(checkOutcome(JSON.stringify(example)).ok, true);
 });
 
 test("A11-118: a proposed edit is read where the kind may carry one, and its title or description must fit", () => {

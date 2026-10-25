@@ -1,7 +1,7 @@
 // no-token: none -- the card text is pure
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { roundedEta, undeclaredWaitText, waitText } from "./wait-text.ts";
+import { pendingText, roundedEta, waitText } from "./wait-text.ts";
 import type { Reading } from "./wait-types.ts";
 
 const MIN = 60_000;
@@ -46,6 +46,6 @@ test("A11-245: an item that could not be read says so and why", () => {
   assert.equal(waitText([{ wait: { kind: "fleetJob", id: "fj-2" }, status: "unreadable", why: "fleet job status fj-2 did not answer in 30 s" }], NOW), "Waiting on fleet job fj-2 (could not read it: fleet job status fj-2 did not answer in 30 s)");
 });
 
-test("A11-236: a run waiting on its own background work, inside its deadline, reads with the times in UTC", () => {
-  assert.equal(undeclaredWaitText({ since: Date.UTC(2026, 9, 24, 20, 46), until: Date.UTC(2026, 9, 24, 23, 46), what: "two capture shells" }), "Waiting on background work since 20:46Z, until 23:46Z: two capture shells");
+test("A11-245: a run that has declared a wait and not been read yet names what it waits on", () => {
+  assert.equal(pendingText([{ kind: "fleetJob", id: "fj-1" }, { kind: "ciRun", repository: "a11ign/x", runId: 9 }]), "Waiting on fleet job fj-1; CI run a11ign/x#9");
 });

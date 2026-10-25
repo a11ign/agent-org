@@ -431,7 +431,7 @@ test("A11-80: a worker may end a turn on working only while its own background w
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes(outcomeExamples(["working"])), "working is one of the outcomes, with an example");
   for (const pattern of [
-    /Write `working` only while your own background work \(a background shell or a Monitor\) is genuinely still running and will wake you when it finishes/,
+    /Otherwise, write `working` only while your own background work \(a background shell or a Monitor\) is genuinely still running and will wake you when it finishes/,
     /Never write `working` to park a question or to wait on a person: that is `needs-human`/,
     /write the outcome file again with how the run ended, or with `working` again if more of it is still running/,
   ]) assert.match(brief, pattern);
@@ -440,13 +440,20 @@ test("A11-80: a worker may end a turn on working only while its own background w
 test("A11-236: the brief tells a worker to write the job and the time before a long wait, and says what the board does with them", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes("Before a long wait, write `{ \"kind\": \"working\", \"reason\": \"...\", \"waitingOn\": \"<what>\", \"until\": \"<ISO time>\" }`"), "the shape, as the ticket words it");
-  assert.match(brief, /the board shows the run as waiting on background work until `until`, which is a time still ahead when you write it \(3 hours after you wrote the file when there is no `until`\), and marks it stalled after that if no newer outcome came, naming what it waited on/);
+  assert.match(brief, /the board shows the run as waiting on background work until `until`, which is a time still ahead when you write it \(3 hours after you wrote the file when there is no `until`\), and prompts you once when `until` passes, then marks it stalled if you stay idle and write nothing newer, naming what it waited on/);
+});
+
+test("A11-245: the brief tells a worker to declare a wait on a fleet job, a CI run, a pull request or a ticket, end its turn, and write no wait loop", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.ok(brief.includes("\"waitingOn\": [ { \"fleetJob\": \"<id>\" } | { \"ciRun\": \"<owner/repo>#<runId>\" } | { \"pullRequest\": \"<url>\", \"until\": \"merged|reviewed\" } | { \"ticket\": \"<KEY>\", \"until\": \"done\" } ], \"until\": \"<ISO time>\" }` and END YOUR TURN"), "the shape, then end the turn");
+  assert.match(brief, /The board reads each event itself and prompts you once, when all of them have finished or any has failed, saying what happened \(a job's state and results path, a run's conclusion\), and once more if `until` passes with some still pending/);
+  assert.match(brief, /Never write a loop, a `sleep`, an `until` or `while` poll or a `pgrep -f` to wait for any of these/);
 });
 
 test("A11-85: the brief says how to wait on a process started detached: a Monitor on its PID or its log, never a bare claim of working", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.match(brief, /A process you started detached is not background work of yours until a Monitor holds it: it wakes nothing when it ends, so arm a Monitor on its PID or its log \(`until ! kill -0 <pid>; do sleep 5; done`\) before you write `working`/);
-  assert.match(brief, /A `working` with no shell or Monitor running is refused: nothing will wake you\./);
+  assert.match(brief, /A `working` with no declared events and no shell or Monitor running is refused: nothing will wake you\./);
 });
 
 // A11-82: a pull request that conflicts with its base is merged first, and a planner says where its work lands and what paths it touches.

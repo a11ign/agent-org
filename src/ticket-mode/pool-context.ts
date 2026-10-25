@@ -20,6 +20,8 @@ import { type DrainStore } from "./pool-drain.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
 import { type StackMergeAsk } from "./stack-merge.ts";
 import { type RestackDone } from "./stack-restack.ts";
+import type { WaitPolls } from "./wait-on/wait-watch.ts";
+import type { WaitSeams } from "./wait-on/wait-read.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -76,6 +78,8 @@ export type PoolDeps = Readonly<{
   drain?: DrainStore;
   /** Starts the auto-update service now, once a drain's runs have been stopped (A11-169). */
   startUpdate?: () => void;
+  /** How the board reads a fleet job a worker declared it waits on (A11-245): `fleet job status <id> --json` by default, and how long the tracker may take to answer. A test injects both. */
+  waitSeams?: Partial<Pick<WaitSeams, "fleetJobStatus" | "readTimeoutMs">>;
 }>;
 
 /** The pool holds the queue through these two, so the server stays its one writer. */
@@ -151,6 +155,8 @@ export type PoolContext = Readonly<{
   restackSaid: Set<string>;
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
   ownLogin: { value: string | null };
+  /** What the board last read of each run's declared wait, by herdr name (A11-245). Kept in memory: a restart reads afresh, and the note's own `woke` says the worker was already told. */
+  waitPolls: WaitPolls;
 }>;
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
@@ -225,6 +231,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, attachRetries, telling: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(),
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(),
   };
 }

@@ -60,6 +60,7 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
 import { findingsMiss, parseFindingsGiven, retryAsk } from "./blocker-findings-check.ts";
 import { type Order, parseOrder } from "./batch-order.ts";
+import type { Wait } from "./wait-on/wait-types.ts";
 import { checkOutcome, isStale } from "./outcome.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMisses, parseClaimsGiven, planClaimPaths, siblingClaims } from "./path-claims.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
@@ -540,21 +541,24 @@ type StopSubject = Readonly<{ outcome: string; stamp: string; transcriptPath: st
 type Judgment = Readonly<{ verdict: HookResult } | { ask: string; stuck: string }>;
 
 /**
- * A `working` outcome: allowed once its stamp is written, while live background work will wake the worker; refused otherwise (A11-80, A11-85).
+ * A `working` outcome: allowed once its stamp is written, while live background work will wake the worker (A11-80, A11-85), or while the outcome declares the events it waits on, which the board polls and prompts the
+ * worker for (A11-245): such a worker has no shell of its own running, and ends its turn to be woken. Refused otherwise. A second stop on the same file is refused either way, once the work or the board has woken the worker.
  */
-function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, mtime: number, io: StopIo): Judgment {
+function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, mtime: number, io: StopIo, waits?: readonly Wait[]): Judgment {
+  const declared = waits !== undefined;
   const working = String(mtime);
   const stuck = `on the same working outcome in ${outcome}, so this one is allowed and the board keeps the run in progress`;
   if (io.exists(stamp) && io.read(stamp).trim() === working) {
-    return { ask: `${outcome} still says working from before your background work woke you: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of your own work is still running.`, stuck };
+    const woken = declared ? "the board woke you for the wait it declares" : "your background work woke you";
+    return { ask: `${outcome} still says working from before ${woken}: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of it is still running.`, stuck };
   }
-  const work = liveWork(transcriptPath, io.read);
-  if (work.unreadable === undefined && work.live === 0) {
-    return { ask: `${NOTHING_WAKES}. ${outcome} says working, but none of your background work is running: wait for the work in the foreground, or write the outcome the run ended on.`, stuck };
+  const work = declared ? null : liveWork(transcriptPath, io.read);
+  if (work !== null && work.unreadable === undefined && work.live === 0) {
+    return { ask: `${NOTHING_WAKES}. ${outcome} says working, but none of your background work is running: wait for the work in the foreground, declare what you wait on in waitingOn (a fleet job, a CI run, a pull request or a ticket), or write the outcome the run ended on.`, stuck };
   }
   // Let through, with its time stamped, so a stop on this same file is refused once its work has woken the worker.
   io.write(stamp, working);
-  return { verdict: work.unreadable === undefined ? ALLOW : { code: 0, say: [`ticket:hook: could not read the transcript (${work.unreadable}), so working is ALLOWED.`] } };
+  return { verdict: work === null || work.unreadable === undefined ? ALLOW : { code: 0, say: [`ticket:hook: could not read the transcript (${work.unreadable}), so working is ALLOWED.`] } };
 }
 
 /** The judgment of the outcome file as it stands: refused when the contract refuses it, allowed unless it says `working`, and `working` judged on its own. */
@@ -567,7 +571,7 @@ function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: St
       : `on the same invalid outcome in ${subject.outcome}, so this one is allowed and the board hands the run back for a person`;
     return { ask: `${checked.problem}. Write ${subject.outcome} again as the last thing you do, in the shape your brief shows.`, stuck };
   }
-  return checked.outcome.kind === "working" ? judgeWorking(subject, mtime, io) : { verdict: ALLOW };
+  return checked.outcome.kind === "working" ? judgeWorking(subject, mtime, io, checked.outcome.waits) : { verdict: ALLOW };
 }
 
 /**

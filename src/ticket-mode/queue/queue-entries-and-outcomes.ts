@@ -1,3 +1,4 @@
+import type { Wait, Woke } from "../wait-on/wait-types.ts";
 import { CONCLUDED, openPulls, RESULT_KINDS, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "../board-view/plan-steps.ts";
@@ -74,8 +75,11 @@ export type Outcome =
  *
  * A11-236: `waitingOn` names the background job it waits for, and `until` (ms, from an ISO time in the file) is when it expects the wait to be over: the
  * board reads it as the bound of the wait. Both are optional; a `working` with a reason alone waits for `BACKGROUND_WAIT_MS` (three hours).
+ *
+ * A11-245: `waitingOn` may instead be a list of events the board reads for the worker (a fleet job, a CI run, a pull request, a ticket): `waits` holds them, and `waitingOn` is then absent. That is a DECLARED
+ * wait, which the board wakes the worker from; a `waitingOn` string is an undeclared one, held by the worker's own shell.
  */
-export type WorkingOutcome = Readonly<{ kind: "working"; reason: string; waitingOn?: string; until?: number }>;
+export type WorkingOutcome = Readonly<{ kind: "working"; reason: string; waitingOn?: string; waits?: readonly Wait[]; until?: number }>;
 
 /** Anything a worker can leave in its outcome file: how its run ended, or that it is still working in the background. */
 export type WrittenOutcome = Outcome | WorkingOutcome;
@@ -94,11 +98,17 @@ export type WrittenOutcome = Outcome | WorkingOutcome;
  * A11-236: a note that names a job (`waitingOn`, with `until` the end of its wait), or whose pane shows live background work, is `waiting` while the agent
  * is idle and the time is before `waitDeadline`: the board says it waits on background work, and the idle clock does not stall it. Past the
  * deadline with no newer outcome it is `stalled` as before, and `stallReason` names the job.
+ *
+ * A11-245: a note whose outcome declared `waits` is a wait the board watches. `waitText` is what the card says of it, built at each poll. `woke` says the board prompted the worker once (written BEFORE the
+ * prompt is sent, so a restart or a repeated tick never sends it twice), `wakeTries` counts the prompts herdr refused and `wakeRefusal` says why. `ended` is the items a finished or failed wake told the worker
+ * had ended, and `repeat` marks a new note that declared only those again: the board wakes nothing for it and marks the run stalled.
  */
 export type WorkingNote = Readonly<{
   reason: string; at: number; idleSince?: number; stalled?: boolean; stallReason?: string; noBackgroundSince?: number; resumed?: boolean;
   waitingOn?: string; until?: number; waiting?: true;
+  waits?: readonly Wait[]; waitText?: string; woke?: Woke; wakeTries?: number; wakeRefusal?: string; ended?: readonly Wait[]; repeat?: true;
 }>;
+
 
 /** The stall reason of a run idle with no background work for {@link BACKGROUND_GONE_MS}: nothing will wake it, so the board prompts it once. */
 export const BACKGROUND_GONE = "background work gone";

@@ -1,14 +1,11 @@
 // A leaf of ticket mode, run by no command: the words the card shows for a run that waits, and the rounding of the time left (A11-245, folding in A11-236). PURE. The board builds the text at each poll and stores it on the note, so the view needs no
 // clock: `Waiting on fleet job 123 (4 of 6 pages, about 20 min)`, never Stalled.
-import { type Progress, type Reading, subjectOf } from "./wait-types.ts";
+import { type Progress, type Reading, type Wait, subjectOf } from "./wait-types.ts";
 
 const MINUTE_MS = 60_000;
 /** The time left is rounded to this many minutes, and to whole hours from {@link MINUTES_PER_HOUR} on. */
 const ROUND_TO_MINUTES = 5;
 const MINUTES_PER_HOUR = 60;
-/** `HH:MM` of an ISO time, by position. */
-const CLOCK_FROM = 11;
-const CLOCK_TO = 16;
 
 /** The time left, rounded so the text changes rarely: to 5 minutes, at least 5, and to whole hours from an hour on. `null` when nothing is left. PURE. */
 export function roundedEta(remainingMs: number): string | null {
@@ -54,10 +51,5 @@ export function waitText(readings: readonly Reading[], now: number): string {
   return `Waiting on ${readings.map((reading) => itemOf(reading, now)).join("; ")}`;
 }
 
-/** A time as `HH:MMZ`, in UTC. */
-const clock = (at: number): string => `${new Date(at).toISOString().slice(CLOCK_FROM, CLOCK_TO)}Z`;
-
-/** The card's line for a run waiting on background work it holds itself, inside its deadline, from the note alone: `Waiting on background work since 20:46Z, until 23:46Z: two capture shells`. PURE. */
-export function undeclaredWaitText(wait: Readonly<{ since: number; until: number; what: string }>): string {
-  return `Waiting on background work since ${clock(wait.since)}, until ${clock(wait.until)}: ${wait.what}`;
-}
+/** The card's line for a run that has declared a wait and has not been read yet, from the declaration alone: `Waiting on fleet job fj-1; CI run a11ign/x#9`. PURE. */
+export const pendingText = (waits: readonly Wait[]): string => `Waiting on ${waits.map(subjectOf).join("; ")}`;

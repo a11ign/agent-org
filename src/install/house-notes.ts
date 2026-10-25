@@ -28,7 +28,8 @@ Every line of a ticket's Acceptance and Done-when is proven by a named test or a
 The board reads outcome.json strictly. A wrong field name reads as "could not be read" and shows the ticket as Needs you, although nothing was asked. Use exactly these:
 
 - Pull request ready: { "kind": "ready-pr", "prs": [ { "repo": "owner/repo", "url": "https://github.com/owner/repo/pull/1" } ], "reason": "one line" }  -- \`prs\` is an ARRAY of {repo, url}; never \`pr\`.
-- Still running something: { "kind": "working", "reason": "what is still running", "waitingOn": "<what>", "until": "<ISO time>" }  -- before a long wait; \`waitingOn\` and \`until\` are optional, and the board reads \`until\` as the end of the wait.
+- Waiting on events the board reads for you (your brief lists them): { "kind": "working", "reason": "what you wait for", "waitingOn": [ { "<event>": "<id>" } ], "until": "<ISO time>" }  -- then END YOUR TURN: the board prompts you when all of them have finished or any has failed, and once if \`until\` passes. Never write a wait loop, a \`sleep\` or a \`pgrep -f\` to wait for them.
+- Still running your own background work (a shell or a Monitor): { "kind": "working", "reason": "what is still running", "waitingOn": "<what>", "until": "<ISO time>" }  -- before a long wait; \`waitingOn\` and \`until\` are optional, and the board reads \`until\` as the end of the wait.
 - Nothing to build, done-when holds: { "kind": "checked", "reason": "what you read" }
 - A person must act: { "kind": "needs-human", "reason": "the one thing only they can do" }
 - Wrong repository: { "kind": "wrong-repo", "where": "owner/repo" }

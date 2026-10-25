@@ -14,7 +14,13 @@ import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
-import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
+import { sendWake, wakePrompt } from "./wait-on/wait-prompt.ts";
+import { fleetJobStatusVia, type WaitSeams } from "./wait-on/wait-read.ts";
+import { judgedWait, pollWhenDue } from "./wait-on/wait-watch.ts";
+import type { Judged } from "./wait-on/wait-verdict.ts";
+import type { Woke } from "./wait-on/wait-types.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
@@ -131,6 +137,8 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     if (seen === "working") watchStall(ctx, latest(), seen);
     else if (!justTold && stoppedWithNoOutcome(ctx, latest(), seen)) end(ctx, latest(), { kind: "no-outcome" });
   }
+  // What was read of a wait belongs to a run that is still running: a run that ended or was stopped leaves nothing behind.
+  for (const name of ctx.waitPolls.keys()) if (!watched.has(name)) ctx.waitPolls.delete(name);
 }
 
 /**
@@ -245,27 +253,58 @@ function markLive(ctx: PoolContext, entry: Entry): void {
   updateEach(ctx, runMembers(ctx, entry), markResumed);
 }
 
-/** The log line of a run first marked stalled on its `working` note: which of the three reasons stalled it (A11-85, A11-236). PURE. */
+/** The log line of a run first marked stalled on its `working` note: which of the reasons stalled it (A11-85, A11-236, A11-245). PURE. */
 function stallLine(who: string, note: WorkingNote, stallMinutes: number): string {
   if (note.stallReason === BACKGROUND_GONE) return `${who} wrote working with no background work running for ${BACKGROUND_GONE_MS / 60_000} minutes, so nothing will wake it: marked stalled, and told once to check its background work: ${note.reason}`;
-  // The only other reason a note carries is the one that names the job it waited on past the end of its wait.
+  if (note.waits !== undefined && note.stallReason !== undefined) return `${who} is stalled on its declared wait (${note.stallReason}): ${note.reason}`;
+  // The only other reason a note carries is the one that names what it waited on past the end of its wait.
   if (note.stallReason !== undefined) return `${who} was waiting on background work and has been idle past the end of its wait, with no newer outcome (${note.stallReason}): ${note.reason}`;
   return `${who} has been idle for ${stallMinutes} minutes or more since it wrote working, with no newer outcome: ${note.reason}`;
 }
 
-/** Move a working run's idle clock on `seen`, and log once when the run is first marked stalled. Nothing is ended and no key is sent. */
+/** The log line of a worker the board prompted for its wait, once (A11-245). PURE. */
+const wakeLine = (who: string, woke: Woke): string =>
+  `${who} was prompted once ${woke.why === "late" ? "because its wait passed its deadline" : `because what it waited on ${woke.why === "failed" ? "failed" : "finished"}`}`;
+
+/**
+ * Move a working run's idle clock on `seen`, and log once when the run is first marked stalled. A run that declared the events it waits on has them read, off the tick, while it is idle (A11-245); when the board first
+ * judges the wait over, or past its deadline, the note's `woke` says so, and the worker is prompted once. Nothing is ended and no key is sent.
+ */
 function watchStall(ctx: PoolContext, entry: Entry, seen: string): void {
-  const { now, settings, stallMs, store } = ctx;
-  const before = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
+  const { now, settings, stallMs, store, waitPolls } = ctx;
+  const { name } = runPlace(ctx, entry);
+  const find = () => store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
+  const before = find();
   const wasResumed = before?.resumed === true;
   const background = seen === "working" ? null : paneBackground(ctx, entry);
-  updateEach(ctx, runMembers(ctx, entry), (queue, member) => watchWorking(queue, member, seen, now(), stallMs, background));
-  const note = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
-  if (before?.stalled !== true && note?.stalled === true) {
-    const who = entry.batch ?? entry.ticket.key;
-    log(stallLine(who, note, settings.stallMinutes));
-  }
+  if (before !== undefined && (seen === "idle" || seen === "done")) pollWhenDue(waitPolls, name, before, now, waitSeamsOf(ctx));
+  const judged = before === undefined ? null : judgedWait(waitPolls, name, before);
+  // One time for every ticket of a batch, so a wake they share carries the same `at` on each.
+  const at = now();
+  updateEach(ctx, runMembers(ctx, entry), (queue, member) => watchWorking(queue, member, seen, at, stallMs, background, judged));
+  const note = find();
+  if (before?.stalled !== true && note?.stalled === true) log(stallLine(entry.batch ?? entry.ticket.key, note, settings.stallMinutes));
   if (!wasResumed && note?.resumed === true) promptBackgroundGone(ctx, entry);
+  if (before?.woke === undefined && note?.woke !== undefined) wakeWorker(ctx, entry, note, note.woke, judged);
+}
+
+/** What the board reads a declared wait with: the code host, the tracker and the `fleet` program, or the seams a test gave. */
+function waitSeamsOf({ codeHost, source, deps }: PoolContext): WaitSeams {
+  return { codeHost, source, fleetJobStatus: deps.waitSeams?.fleetJobStatus ?? fleetJobStatusVia(), ...(deps.waitSeams?.readTimeoutMs === undefined ? {} : { readTimeoutMs: deps.waitSeams.readTimeoutMs }) };
+}
+
+/**
+ * Prompt a run's worker, once, for the wait the note's `woke` says ended or passed its deadline (A11-245). `woke` was written to the note before this is called, so a restart or a repeated tick never sends it twice. A prompt herdr
+ * refuses is counted and the wake is offered again on the next pass, up to {@link MAX_WAKE_TRIES}, after which the run is marked stalled with the refusal.
+ */
+function wakeWorker(ctx: PoolContext, entry: Entry, note: WorkingNote, woke: Woke, judged: Judged | null): void {
+  const { herdr, settings } = ctx;
+  const who = entry.batch ?? entry.ticket.key;
+  const text = wakePrompt(woke, note.waits === undefined ? null : judged?.verdict ?? null, deadlineOf(note));
+  const refusal = sendWake(herdr, settings.herdrSession, runPlace(ctx, entry).name, text);
+  if (refusal === null) return log(wakeLine(who, woke));
+  updateEach(ctx, runMembers(ctx, entry), (queue, member) => replace(queue, member, (held) => (held.working === undefined ? held : { ...held, working: wakeRefused(held.working, refusal, woke) })));
+  log(`${who} could not be prompted for its wait: ${refusal}`);
 }
 
 /**
