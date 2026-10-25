@@ -1,14 +1,16 @@
-Refs A11-249
+Closes A11-249
 
-Partial: step 1 of 2. When a pull request the board holds is closed without merging, the board lists the work it still held against its base (the commits not on the base, and the files they change, from the code host's compare), keeps the branch, and posts the list on the ticket as "Closed pull request #N: work not on <base>" with the branch and every commit's full SHA. A pull request whose commits are all on its base is recorded as "no unique work". The code host contract is 1.20 with one optional read, `readClosedWork(url)`. Step 2 (the next run is briefed with the list, the plan check refuses a plan with no account, and the reviewer checks it) is not in this pull request.
+Step 2 of 2: the ticket's next run is briefed with the work a closed pull request held, its plan must say for each commit and file **carried over** (where) or **dropped** (why), and the reviewer checks that account. Step 1 (the board lists the work, keeps the branch and posts the list on the ticket) is on main. A record of a pull request that held nothing asks for no account. The reviewer contract is 1.9 with one optional field, `ReviewBrief.closedWork`.
 
 Acceptance:
 ```bash
-# Closing an unmerged pull request with unique commits records the list, posts it with the branch and both SHAs, and keeps the branch; one with nothing unique records "no unique work"; a read that cannot be made writes nothing; a refused comment is posted again with no second record.
+# The next plan without an account is refused; one that accounts for every commit and file (through a directory bullet too) is attached; a record of kind none asks for none; the planner's and the worker's briefs name the record's list file.
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/closed-work-account.test.ts
+# The reviewer is handed the list (briefOf) and its first-review prompt carries it with the rule that a missing item is a finding.
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-reviewers.test.ts plugins/atomic-reviewer/prompt.test.ts plugins/atomic-reviewer/index.test.ts
+# Step 1's tests still pass: closing an unmerged pull request with unique commits records the list and keeps the branch; one with nothing unique records no unique work.
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-closed-work.test.ts
-# The code host read: GitHub's compare against the head SHA (paged, file cap said), and the fake and GitHub both pass the contract suite.
-npx rstest run --config scripts/rstest/rstest.config.ts plugins/github/closed-work.test.ts plugins/github/conformance.test.ts src/plugins/fakes/code-host.test.ts
 ```
 Run with `AGENT_ORG_HOST` naming a host declaration, as CI's `suite` job does (the fixture project copied to a temporary directory).
 
-After merge, the chairman session checks the next pull request closed unmerged has its work listed on its ticket by the board: a comment titled "Closed pull request #N: work not on <base>" and the files under `<stateDir>/tickets/<key>/closed-pulls/`.
+After merge, the chairman session checks that the next pull request closed unmerged has its work listed on its ticket by the board, and that the follow-up's plan and pull request body account for it under `## Work from closed pull requests`.
