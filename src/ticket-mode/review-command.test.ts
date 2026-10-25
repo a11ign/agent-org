@@ -59,7 +59,7 @@ test("A11-235: a start is recorded with its look: the time of the start and the 
   assert.deepEqual(looks, [{ at: 1234, body: "Closes A11-1\n" }]);
   const bare: unknown[] = [];
   reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), now: () => 5, record: (_label, _key, _head, _unclaimed, look) => { bare.push(look); } });
-  assert.deepEqual(bare, [{ at: 5, body: "" }], "a host that gives no body has an empty one");
+  assert.deepEqual(bare, [{ at: 5, body: "" }], "a host that gives no body has an empty one; a start with no brief has no decisions on its look, so none are compared (A11-250)");
 });
 
 test("a --head given is the head reviewed, and its posted review is what is checked at that head", () => {

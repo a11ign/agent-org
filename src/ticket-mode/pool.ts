@@ -99,6 +99,7 @@
 
 import { ensureSession, talkTo } from "./pool-start.ts";
 import { applyEdit, discardEdit, dismiss, remove, respond, stop, stopWriterRun } from "./pool-actions.ts";
+import { answer, type Answer } from "./pool-answer.ts";
 import { close } from "./pool-settle.ts";
 import { tick, watchFeedback } from "./pool-watch.ts";
 import { reconcile } from "./pool-readopt.ts";
@@ -108,6 +109,7 @@ import { newPoolContext, type PoolContext, type PoolDeps, type QueueStore } from
 import { log } from "./pool-state.ts";
 
 export { MAX_REPOST_ATTEMPTS } from "./pool-reviewers.ts";
+export { AnswerNotDelivered, type Answered } from "./pool-answer.ts";
 export { herdrName, herdrServerCommand, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
 export { batchDir, batchFolder, publishDir, publishFolder, worktreesIn } from "./pool-paths.ts";
 export { isStartDialog } from "./pool-start.ts";
@@ -140,6 +142,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     dismiss: (key: string) => dismiss(ctx, key),
     talk: (key: string) => talkTo(ctx, key),
     respond: (key: string) => respond(ctx, key),
+    /** A person's answer to the run waiting on them: written into the ticket's Decisions, then sent to the run (A11-250). */
+    answer: (key: string, given: Answer) => answer(ctx, key, given),
     remove: (key: string) => remove(ctx, key),
     reconcile: () => reconcile(ctx),
     ensureSession: () => ensureSession(ctx),

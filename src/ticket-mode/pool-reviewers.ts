@@ -30,12 +30,12 @@ import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import { herdrStartRefusalReason } from "../herdr-agents.ts";
 import { doneWhenOf } from "./done-when.ts";
-import { decisionsOf } from "./ticket-decisions.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { partialStepOf } from "./board-view/plan-steps.ts";
+import { decisionsOf, hasDecisionsSection, unsupportedClaims } from "./ticket-decisions.ts";
 import { planStepSection } from "./pool-ticket-text.ts";
 import type { Reply, Review } from "../plugins/contracts/code-host.ts";
-import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef } from "../plugins/contracts/reviewer.ts";
+import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef, ReviewerReply } from "../plugins/contracts/reviewer.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -193,7 +193,9 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const recordedBefore = kind.recorded.has(key);
   const earlierLook = looks.get(key);
   kind.recorded.add(key);
-  looks.set(key, { at: ctx.now(), body: kind.body });
+  // The decisions a start was briefed with are known only when a run holds the pull request: with none, the brief carries no ticket, and a later change cannot be told from the first sight of them.
+  const decisions = heldBy(ctx, url) === undefined ? {} : { decisions: kind.brief.decisions ?? "" };
+  looks.set(key, { at: ctx.now(), body: kind.body, ...decisions });
   reviewerDropped.delete(dropped);
   rememberReviewers(ctx);
   const adopted = kind.adopts && reviewer.live({ pr: url, head });
@@ -285,8 +287,20 @@ function repliesAfter(ctx: PoolContext, url: string, key: string, since: number)
  * change of spacing is no answer. Empty when the head has no look (the body it was started with is not known), or the body reads as it did.
  */
 function bodyChangeSince(look: Look | undefined, state: ReviewState): ReviewBodyLine[] {
-  if (look === undefined) return [];
-  return diffLines(look.body.trim(), bodyOf(state).trim()).flatMap(({ kind, text }): ReviewBodyLine[] => (kind === "same" || text.trim() === "" ? [] : [{ kind, text }]));
+  return look === undefined ? [] : changedLines(look.body, bodyOf(state));
+}
+
+/** The lines that differ between the text `before` and the text `after`, trimmed, with the blank lines left out. */
+const changedLines = (before: string, after: string): ReviewBodyLine[] =>
+  diffLines(before.trim(), after.trim()).flatMap(({ kind, text }): ReviewBodyLine[] => (kind === "same" || text.trim() === "" ? [] : [{ kind, text }]));
+
+/**
+ * The lines of the ticket's decisions that changed since `look` (A11-250): for a pull request a run holds, the decisions its ticket states now, against the decisions the head's last start was briefed with. Empty when no run holds the pull request
+ * (no ticket is known), or the look is older than decisions were kept and so does not know them: such a head is re-reviewed by a reply or the body only.
+ */
+function decisionsChangeSince(look: Look | undefined, held: Entry | undefined): ReviewBodyLine[] {
+  if (look?.decisions === undefined || held === undefined) return [];
+  return changedLines(look.decisions, decisionsOf(held.ticket.description) ?? "");
 }
 
 /** Whether a run that holds the pull request may be asked for a re-review now: its round has ended, and it has not been handed back for want of a round (A11-235). */
@@ -298,6 +312,10 @@ const awaitsRereview = (held: Entry): boolean => held.phase === "finished" && (h
  */
 const bodyChangedAfterRound = (held: Entry | undefined, block: Review, changed: ReviewBodyLine[]): ReviewBodyLine[] =>
   (held === undefined || (held.finishedAt ?? 0) > block.at ? changed : []);
+
+/** What answered a block, in the words a hand-back and a round's log use: the description edited, the ticket's Decisions changed, or neither (a reply). */
+const answeredHow = ({ edited, decided }: { edited: boolean; decided: boolean }): string =>
+  [...(edited ? ["by editing the description"] : []), ...(decided ? ["by a change to the ticket's Decisions"] : [])].join(" and ") || "in a reply";
 
 /** How the run's hand-back names the block it did not re-review: which head, and how it was answered (`how` is "by editing the description" or "in a reply"). */
 const answeredWords = (url: string, head: string, how: string): string => `${REVIEWER_LOGIN}'s block on ${url} at ${head.slice(0, 8)} was answered ${how}, and the board does not review it again`;
@@ -318,10 +336,25 @@ function handBackUnreviewed(ctx: PoolContext, held: Entry, answered: string): vo
   update(ctx, (queue) => handBackRereview(queue, held.ticket.key, answered, ctx.now()));
 }
 
+/** What answered a block, as a re-review's brief carries it: the replies quoted, and the lines of the description and of the ticket's Decisions that changed. */
+type Answers = Readonly<{ replies: readonly ReviewerReply[]; changed: readonly ReviewBodyLine[]; decided: readonly ReviewBodyLine[] }>;
+
+/**
+ * The brief of a re-review (A11-156, A11-235, A11-250): the ticket's brief, and what answered the block. A reply or a new description line that claims a person decided something is `unsupported` unless it links the
+ * ticket, and a ticket that states no decisions supports none (`ticketUrl` null).
+ */
+function rereviewBrief(brief: ReviewBrief, held: Entry | undefined, { replies, changed, decided }: Answers): ReviewBrief {
+  const ticketUrl = held !== undefined && hasDecisionsSection(held.ticket.description) ? held.ticket.url : null;
+  const claimed = [...replies.map(({ text }) => text), ...changed.filter(({ kind }) => kind === "added").map(({ text }) => text)];
+  const unsupported = unsupportedClaims(claimed, ticketUrl);
+  return { ...brief, rereview: { replies, ...(changed.length === 0 ? {} : { body: changed }), ...(decided.length === 0 ? {} : { decisions: decided }), ...(unsupported.length === 0 ? {} : { unsupported }) } };
+}
+
 /**
  * A RE-REVIEW OF A HEAD THAT STAYS BLOCKED, WHEN SOMETHING NEW ANSWERS THE BLOCK (A11-156, A11-235): when the reviewer's newest review at the head is its `not convinced`, no reviewer is live for the head, and the checks are green,
  * the reviewer is started once more for the same head if the pull request body now differs from the body of the head's last look, or a reply to the block has been posted since the block AND the last look by the board's own account or a person
- * the org declares. The brief carries the changed lines and the replies, so the reviewer checks the answer, and it still reads the whole diff. A head with no look (started before looks were kept) is re-reviewed by a reply only, and
+ * the org declares, or the ticket's Decisions differ from the ones the head's last look was briefed with (A11-250; a person's decision answers a block as a reply does). The brief carries the changed lines and the replies, and any reply or new description
+ * line that claims a person decided something and does not link the ticket (`unsupported`), so the reviewer checks the answer, and it still reads the whole diff. A head with no look (started before looks were kept) is re-reviewed by a reply only, and
  * never again if it was re-reviewed then. Every start records a look, so a re-review needs something new each time: a reply the reviewer still rejects cannot summon it again without new work.
  *
  * For a pull request a run holds, the re-review waits for the end of the run's round (phase `finished`), so the reviewer never reads a body the worker is still editing, and counts as one of the run's rounds
@@ -335,17 +368,18 @@ function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, stat
   const held = heldBy(ctx, url);
   if (held !== undefined && !awaitsRereview(held)) return null;
   const changed = bodyChangedAfterRound(held, block, bodyChangeSince(look, state));
+  const decided = decisionsChangeSince(look, held);
   const replies = repliesAfter(ctx, url, `${url}@${head}`, Math.max(block.at, look?.at ?? 0));
   if (replies === null) return null;
-  if (replies.length === 0 && changed.length === 0) return null;
+  if (replies.length === 0 && changed.length === 0 && decided.length === 0) return null;
   if (ctx.codeHost.readPullState(url) !== "OPEN") return null;
-  const how = changed.length > 0 ? "by editing the description" : "in a reply";
+  const how = answeredHow({ edited: changed.length > 0, decided: decided.length > 0 });
   if (held !== undefined && !roundsLeft(held)) {
     handBackUnreviewed(ctx, held, answeredWords(url, head, how));
     return null;
   }
   const quoted = replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text }));
-  const brief: ReviewBrief = { ...briefOf(ctx, url, state), rereview: { replies: quoted, ...(changed.length === 0 ? {} : { body: changed }) } };
+  const brief = rereviewBrief(briefOf(ctx, url, state), held, { replies: quoted, changed, decided });
   const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state) });
   if (held !== undefined && started.refusal === null) update(ctx, (queue) => countRereview(queue, held.ticket.key, ctx.now(), `the block was answered ${how}`));
   return started;

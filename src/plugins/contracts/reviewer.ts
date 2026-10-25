@@ -1,5 +1,9 @@
 // @ts-check
-// module: the reviewer contract, version 1.6 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 1.7 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+//
+// 1.7 (A11-250): `ReviewBrief.rereview.decisions` and `ReviewBrief.rereview.unsupported`, both OPTIONAL. `decisions` is the lines of the ticket's Decisions that changed since the reviewer's last look at the head, for a re-review of a block
+// that a person's decision answers (the replies and the description may then be none). `unsupported` is each reply or new description line that claims a person decided something and does not link the ticket's decisions: the
+// reviewer treats it as no answer. A reviewer of 1.6 ignores both and re-reviews by the replies and the description.
 //
 // 1.6 (A11-221): `ReviewerPort.unblock`, OPTIONAL: looks at the pane of a reviewer herdr shows blocked, answers the one dialog it may answer (Codex's "Trust this folder?" for a repository the host file names) and reports any
 // other as stuck, so the pool can tell a person; a look that cannot be made is `unread`, and keeps the last look's finding. A reviewer of 1.5 has no such method and is read as one that never reports a dialog.
@@ -22,7 +26,7 @@
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.6";
+export const REVIEWER_CONTRACT_VERSION = "1.7";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
@@ -41,8 +45,10 @@ export type ReviewBodyLine = Readonly<{ kind: "removed" | "added"; text: string 
  * `step` is present when the pull request's body says `Partial: step N of M` (A11-175): the pull request is one step of the ticket's plan, `section` is that step's text of the plan, or null when the pool
  * could not find it. The reviewer holds the pull request to that step, and the ticket's Done-when is for the last step.
  * `decisions` is present when the ticket states explicit decisions (A11-213), as the ticket words them, and absent when the pool holds no ticket or it states none: they override a general direction the reviewer holds.
+ * `rereview.decisions` (contract 1.7, A11-250) is the lines of those decisions that changed since the reviewer's last look at the head, absent when they did not change; `rereview.unsupported` (contract 1.7) is each reply or new
+ * description line that claims a person decided something and does not link the ticket's decisions, absent when none does.
  */
-export type ReviewBrief = Readonly<{ doneWhen: string | null; decisions?: string; step?: ReviewStep; rereview?: Readonly<{ replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[] }> }>;
+export type ReviewBrief = Readonly<{ doneWhen: string | null; decisions?: string; step?: ReviewStep; rereview?: Readonly<{ replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decisions?: readonly ReviewBodyLine[]; unsupported?: readonly string[] }> }>;
 
 /** The plan step a pull request finishes: step `step` of `of`, and the plan's text for it, or null when the pool found none. */
 export type ReviewStep = Readonly<{ step: number; of: number; section: string | null }>;

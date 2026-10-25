@@ -9,13 +9,14 @@
 const DECISION_HEADING = /^(#{2,4})\s+(?:decisions|behaviou?r)\b/i;
 const ANY_HEADING = /^(#{1,6})\s/;
 const FENCE = /^\s*(```|~~~)/;
+const DECISIONS_HEADING = /^#{2,4}\s+decisions\s*(?:\(.*\))?\s*$/i;
 const CHAIRMAN_DECISION = /chairman['’]s decision|the chairman decided|decided by the chairman/i;
 
 /** One line of a description, and whether a code fence holds it (a fence's own opening and closing lines are held). */
-type Line = Readonly<{ text: string; fenced: boolean }>;
+export type Line = Readonly<{ text: string; fenced: boolean }>;
 
 /** The lines of `description`, each marked with whether a code fence holds it. PURE. */
-function linesOf(description: string): Line[] {
+export function linesOf(description: string): Line[] {
   let inFence = false;
   return description.split("\n").map((text) => {
     const edge = FENCE.test(text);
@@ -26,7 +27,7 @@ function linesOf(description: string): Line[] {
 }
 
 /** The index past the last line of the section whose heading is at `from`: the next heading of its own level or a higher one, outside a fence. PURE. */
-function sectionEnd(lines: readonly Line[], from: number, level: number): number {
+export function sectionEnd(lines: readonly Line[], from: number, level: number): number {
   const next = lines.findIndex(({ text, fenced }, at) => at > from && !fenced && (ANY_HEADING.exec(text)?.[1].length ?? Infinity) <= level);
   return next === -1 ? lines.length : next;
 }
@@ -54,4 +55,24 @@ export function decisionsOf(description: string | null | undefined): string | nu
   }
   const once = [...new Set(quoted)];
   return once.length === 0 ? null : once.join("\n\n");
+}
+
+/** Whether the description has a section headed `Decisions`, outside a code fence: the heading form {@link decisionsOf} reads, without `Behaviour` and the chairman's one-line decisions (A11-250). PURE. */
+export const hasDecisionsSection = (description: string | null | undefined): boolean =>
+  !!description && linesOf(description).some(({ text, fenced }) => !fenced && DECISIONS_HEADING.test(text));
+
+/** The phrases that claim a person decided something, in any case: the chairman's own marker, and the ways a reply words it ("the chairman said", "per the chairman", "decided by the chairman"). */
+const DECISION_CLAIM = /chairman['’]s decision|\bthe chairman (?:decided|said|answered|confirmed|chose|ruled)|\bper the chairman|\bdecided by (?:the )?chairman/i;
+
+/** "decided by" and a person's name, which is capitalised: "decided by ADR-12" and "decided by design" name no person. */
+const DECIDED_BY_NAME = /\b[Dd]ecided by [A-Z][a-z]+\b/;
+
+/**
+ * Which of `texts` (the replies a re-review quotes, and the lines the pull request body gained) claim that a person decided something without linking the ticket (A11-250): each is returned as written. A claim is
+ * supported only by a link to the ticket's decisions, so `ticketUrl` is the ticket's address, or null (or empty) when the ticket records no decision at all and nothing can support a claim. The link is the ticket's `/issue/<KEY>`
+ * path, so the address with or without the tracker's slug counts. PURE.
+ */
+export function unsupportedClaims(texts: readonly string[], ticketUrl: string | null): string[] {
+  const linked = ticketUrl ? ticketUrl.replace(/^(.*\/issue\/[^/\s]+).*$/, "$1").toLowerCase() : null;
+  return texts.filter((text) => (DECISION_CLAIM.test(text) || DECIDED_BY_NAME.test(text)) && (linked === null || !text.toLowerCase().includes(linked)));
 }

@@ -11,6 +11,8 @@
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { ticketTextRead } from "./queue/queue-held-text.ts";
+import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type Learned, markTicketChanged, type PlannedAgainst, recordBlockerDeclared, recordLearned, recordTicketChange, replan, type TicketChange } from "./queue/queue-ticket-text.ts";
 import { declaredByBlockerPull } from "./queue/queue-declarations.ts";
 import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
@@ -253,12 +255,20 @@ const changeOf = (ctx: PoolContext, from: string, to: string): TicketChange => (
 /** Whether this machine can write a stale plan again: it has a planner, and the tracker detaches a plan. */
 const canReplan = (ctx: PoolContext): boolean => ctx.settings.planner !== null && ctx.source.detachPlan !== undefined;
 
-/** The runs whose tickets are asked about: queued work runs with a stamped plan, and live runs whose text is known and whose agent is not planning (A11-167). */
+/** Whether a finished run holds an open pull request whose head the reviewer has blocked (A11-250): a change to its ticket's Decisions may answer that block, so the run's copy of the text is kept current. */
+const holdsBlockedPull = (ctx: PoolContext, entry: Entry): boolean =>
+  entry.phase === "finished" && openPulls(entry).some(({ url }) => ctx.pullReads.get(url)?.verdict === "changes requested");
+
+/**
+ * The runs whose tickets are asked about: queued work runs with a stamped plan, live runs whose text is known and whose agent is not planning (A11-167), and finished runs that hold a blocked pull request, whose
+ * Decisions the reviewer re-reads (A11-250).
+ */
 function watchedKeys(ctx: PoolContext): string[] {
   const { store } = ctx;
   const watched = store.get().entries.filter((entry) => {
     if (entry.review !== undefined && entry.phase === "queued") return false;
     if (entry.talk === true) return false;
+    if (holdsBlockedPull(ctx, entry)) return true;
     if (entry.phase === "queued") return entry.plan === undefined && entry.plannedAgainst !== undefined && entry.stoppedForUpdate === undefined && canReplan(ctx);
     return entry.phase === "running" && entry.briefedAgainst !== undefined && !isPlanning(ctx, entry);
   });
@@ -281,8 +291,14 @@ export async function followTicketTexts(ctx: PoolContext): Promise<void> {
     if (text === undefined) continue;
     const read = ticketReadOf({ description: text.description, updatedAt: text.updatedAt }, ctx.now());
     if (entry.phase === "queued") markStale(ctx, entry, read);
+    else if (entry.phase === "finished") readHeldText(ctx, entry, read);
     else tellLiveRun(ctx, entry, read);
   }
+}
+
+/** Move a finished run's copy of its ticket's description on to what the ticket says now (A11-250), for the reviewer's next brief. Nothing is written when the text is the one it holds. */
+function readHeldText(ctx: PoolContext, entry: Entry, read: TicketRead): void {
+  if (entry.ticket.description !== read.description) update(ctx, (queue) => ticketTextRead(queue, entry.ticket.key, read.description));
 }
 
 /** Mark a queued run's plan stale when the ticket no longer has the description it was stamped with, and clear the mark when it has it again. */

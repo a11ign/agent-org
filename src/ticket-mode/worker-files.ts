@@ -23,6 +23,7 @@ import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
+import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
 import { diffText, type Finding, findingsText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
@@ -415,6 +416,8 @@ ${PARENT_ONLY_PLAN}
 
 ${PLANNER_DECISIONS}
 
+${PLANNER_TICKET_DECISIONS}
+
 ${MISSING_SKILL}
 
 ${STALLING_COMMANDS}
@@ -493,6 +496,8 @@ ${plannerInstruction(run, keys, planDir)}
 ${PARENT_ONLY_PLAN}
 
 ${PLANNER_DECISIONS}
+
+${PLANNER_TICKET_DECISIONS}
 
 ${MISSING_SKILL}
 
@@ -624,6 +629,10 @@ You are an unattended worker. Nobody will answer you in this run. Settle no prod
 
 ${PRODUCT_DECISIONS}
 
+${TICKET_DECISIONS}
+
+${RELAY_DECISION}
+
 ## The ticket
 
 ${ticket.url}
@@ -722,6 +731,10 @@ ${list}
 ## What to do
 
 ${round.steps}
+
+${TICKET_DECISIONS}
+
+${RELAY_DECISION}
 
 ${FOREGROUND_WAIT}
 
@@ -932,7 +945,7 @@ export function writerPrompt(dir: string, mode: WriterMode = "quick"): string {
  * waits, and hands the ticket back as `needs-human` meanwhile, which keeps its terminal open (the stop hook refuses a stop with no outcome).
  */
 export function talkPrompt(ticketDir: string): string {
-  return `A person has opened this session to talk to you. You are no longer unattended: answer them, and ask them any question you need. Say in one or two sentences where you stand, then wait for what they write, and do no work until they do. Your stop is refused until an outcome file exists, so while you wait write a \`needs-human\` outcome in ${ticketDir}/${OUTCOME_FILE} whose reason is "waiting for the person in the terminal". Once the work they ask for is done, write the real outcome, as your brief says.`;
+  return `A person has opened this session to talk to you. You are no longer unattended: answer them, and ask them any question you need. Say in one or two sentences where you stand, then wait for what they write, and do no work until they do. Your stop is refused until an outcome file exists, so while you wait write a \`needs-human\` outcome in ${ticketDir}/${OUTCOME_FILE} whose reason is "waiting for the person in the terminal". Once the work they ask for is done, write the real outcome, as your brief says. ${TICKET_DECISIONS} ${RELAY_DECISION}`;
 }
 
 /** The first prompt: a pointer to the brief, short enough that no quoting or argument limit can cut it. */
