@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+A Dependabot major update, or a grouped update whose `gate` stays red after one rerun, becomes a ticket by the writer path (A11-255). The board's feedback sweeps gain one more: it lists the open pull requests the dependency bot opened in the repositories it serves, asks the ticket writer for one ticket for each major (keyed by repository, package and major, so a later pull request for the same major is not a second ticket), reruns a red group's failed jobs once for its head and asks for one ticket naming the failing jobs and their error lines when the same head is red again, and queues the ticket the writer made. The request is built from parsed fields only, so a pull request's body never steers the writer. What it asked is kept in `dependency-tickets.json` beside the queue. The code host contract is 1.19: `openDependencyPulls(repository)` is a new OPTIONAL operation that lists the open pull requests the dependency bot opened, filtered by author, and the GitHub plugin answers it with `gh pr list --author app/dependabot`. A plugin of 1.18 is read as one that cannot be asked.

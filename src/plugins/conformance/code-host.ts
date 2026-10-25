@@ -1,10 +1,10 @@
 // @ts-check
-// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`; A11-240 adds `pullsNaming`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
+// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`; A11-240 adds `pullsNaming`; A11-255 adds `openDependencyPulls`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
 //
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
 // (`repository`), a pull request address it holds nothing for (`missing`), and the login the host acts as (`self`). A code host is synchronous, as every reader of it is.
-import type { ChangeRef, CodeHost, HostRepository, StackMergeRequest, WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_BOT_LOGIN, type ChangeRef, type CodeHost, type HostRepository, type StackMergeRequest, type WrapperInputs } from "../contracts/code-host.ts";
 import type { CodeHostRows } from "../contracts/code-host-rows.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 import { refused, throws, withRows, withRunRows, type Subject } from "./rows-support.ts";
@@ -30,6 +30,8 @@ export type CodeHostProbe = Readonly<{
   ciRun?: Readonly<{ repository: string; runId: number }>;
   /** A pull request the host holds whose body names `key`, with its repository and state (contract 1.18). A host without `pullsNaming` is not asked. */
   named?: Readonly<{ key: string; repository: string; url: string; state: "open" | "merged" | "closed" }>;
+  /** A pull request the dependency bot opened (`url`) and one in the same repository that someone else opened with a bot-like title (`foreign`), which must not be listed (contract 1.19). A host without `openDependencyPulls` is not asked. */
+  dependency?: Readonly<{ repository: string; url: string; foreign: string }>;
   /** Remote URLs of one repository the host holds, in the forms a checkout's `origin` takes, and the repository each names (contract 1.14). A host without a `repositories` group is not asked. */
   remote?: Readonly<{ urls: readonly string[]; repository: HostRepository }>;
 }>;
@@ -541,6 +543,24 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const pull = found!.find((candidate) => candidate.url === url);
       expect(isObject(pull) && pull.repo === repository && pull.state === state && isString(pull.body), `pullsNaming(${key}, [${repository}]) must list ${url} as { url, repo: ${repository}, state: ${state}, body }`);
       expect(found!.every((candidate) => ["open", "merged", "closed"].includes(candidate.state) && candidate.repo === repository), "every pull request listed is of a repository asked about, in a state of open, merged or closed");
+    },
+  },
+  "openDependencyPulls answers null for a repository it cannot read": {
+    applies: ({ host }) => typeof host.openDependencyPulls === "function",
+    reason: "the code host has no openDependencyPulls, which is optional (contract 1.19)",
+    run: ({ host }) => expect(host.openDependencyPulls!(MISSING_REPOSITORY) === null, "openDependencyPulls must answer null for a repository it cannot read: null is never 'the bot opened none'"),
+  },
+  "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's": {
+    applies: ({ host, probe }) => typeof host.openDependencyPulls === "function" && probe.dependency !== undefined,
+    reason: "the code host has no openDependencyPulls (optional, contract 1.19) or the probe names no pull request the dependency bot opened",
+    run: ({ host, probe }) => {
+      const { repository, url, foreign } = probe.dependency!;
+      const found = host.openDependencyPulls!(repository);
+      expect(Array.isArray(found), `openDependencyPulls(${repository}) must read a list`);
+      const pull = found!.find((candidate) => candidate.url === url);
+      expect(isObject(pull) && isString(pull.title) && isString(pull.headRefName) && isString(pull.headSha) && pull.headSha !== "" && isString(pull.body) && Number.isInteger(pull.number) && pull.author === DEPENDENCY_BOT_LOGIN,
+        `openDependencyPulls(${repository}) must list ${url} as { url, number, title, headRefName, headSha, author: ${DEPENDENCY_BOT_LOGIN}, body }`);
+      expect(found!.every((candidate) => candidate.author === DEPENDENCY_BOT_LOGIN) && !found!.some((candidate) => candidate.url === foreign), `openDependencyPulls(${repository}) must list no pull request the bot did not open, ${foreign} among them`);
     },
   },
   "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {
