@@ -18,6 +18,8 @@ import { type Move, plannedMoves, withMoves } from "./after-merge-move.ts";
 import { afterMergeChecksRefusal } from "./after-merge/plan-section.ts";
 import { dateOf } from "./pool-answer.ts";
 import { recordAnswer } from "./queue/queue-answer.ts";
+import { blockersOfPlan, writePlanBlockers } from "./pool-plan-blockers.ts";
+import { recordPlanBlockers } from "./queue/queue-plan-blockers.ts";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, recordPullStates, unpark } from "./queue/queue-transitions.ts";
 import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { writtenStep } from "./outcome.ts";
@@ -405,9 +407,13 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
     if (note !== null) log(note);
     // Stopped, or stopped and started again, while its plan was attached: the person's last word stands, and a newer run is not touched.
     if (!sameRun(ctx, entry)) return;
+    // The tickets the plan's work waits on are the tracker's blockers before the ticket is queued again, so no run of it starts before they are there to be read (A11-272).
+    const named = blockersOfPlan(found.files, key);
+    const blockers = named.length === 0 ? named : await writePlanBlockers(ctx, key, named);
+    if (!sameRun(ctx, entry)) return;
     if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
     forgetRun(ctx, name);
-    update(ctx, (queue) => planDone(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, key, { now: ctx.now() }));
+    update(ctx, (queue) => recordPlanBlockers(planDone(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, key, { now: ctx.now() }), key, blockers));
   } catch (err) {
     attachFailed(ctx, entry, { err, failed: "the plan could not be attached", files: `its files are in ${planDir}` });
   } finally {

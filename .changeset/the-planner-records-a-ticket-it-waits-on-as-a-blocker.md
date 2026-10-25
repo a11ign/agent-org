@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The planner records a dependency on another ticket up front (A11-272, step 3 of 3). A plan whose step needs another ticket's work now names it in a `## Blocked by` section, one `Blocked-by: <KEY>` line for each ticket (`plan-blockers.ts`; the single planner's brief says so, and a `Blocked-by:` line anywhere else in a plan is not read). When the board attaches the plan it records each such ticket as a blocker of the ticket in the tracker, drops the ticket's read blockers so they are read again with the relation, and holds it until that ticket's work has merged (`waitMerged`), so the queue orders A11-231 and A11-229 before any run starts and no run has to wait on the other while holding files. A tracker that refuses the blocker, or takes none, is logged and the plan is attached all the same. A plan that names no blocker is attached as before. The worker brief also says that a `ticket` wait ends the turn and that the board queues the run behind that ticket and resumes its session.
