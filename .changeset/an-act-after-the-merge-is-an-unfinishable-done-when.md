@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`row-file` now refuses a fourth kind of unfinishable Done-when item, `post-merge-act`: an act that needs the merged result to be true, with no time, seat or row named (a run or `--apply` on the host against the live store, a comment to another row "that the fix is in force", "with the merge commit", an act "after the release" or "once installed"). It names the item and the split (file the build row; the verify row follows it, behind `--blocked-by` on it). An item already `future-time`, `seat-act` or `row-outcome` keeps that kind, an item that says the act is a verify row's or another row's is not flagged, and a row that already follows something (a blocked-by edge, a `Waiting-for:`, `Waits-on-done-when:` or `Verifies:` line) is not refused. A live reading (`live-check`) is still not a refusal and `verify-row` reads the same items it did. agent-org#475 and #560 read `[]` before this and each held a worker after its pull request merged. a11ign/agent-org#751.
