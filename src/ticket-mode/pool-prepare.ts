@@ -27,6 +27,7 @@ import { resumesStoppedSession } from "./queue/queue-blocker-wait.ts";
 import { lostBeforeThisStart } from "./queue/queue-readopt.ts";
 import { type FindingsGiven } from "./blocker-findings-check.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, type HeldClaim } from "./path-claims.ts";
+import { SENT_BACK_FILE } from "./pool-plan-send-back.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
@@ -156,8 +157,8 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   // refusal for it. An earlier run's pre-PR review log would say the skill ran on commits this run has not made (A11-86).
   // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
   // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207). So do the paths it listed
-  // other tickets as holding, and the retry made for a folder claim (A11-212).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
+  // other tickets as holding, and the retry made for a folder claim (A11-212). So does the count of After-merge refusals sent back to its planner (A11-288).
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, SENT_BACK_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
 }

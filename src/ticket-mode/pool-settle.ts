@@ -16,6 +16,7 @@ import { type PlanStamp, stampedPlan, urlsNamedIn } from "./plan-stamp.ts";
 import { descriptionHash, ticketReadOf, type TicketRead } from "./ticket-read.ts";
 import { type Move, plannedMoves, withMoves } from "./after-merge-move.ts";
 import { afterMergeChecksRefusal } from "./after-merge/plan-section.ts";
+import { type FormatRefusal, formatRefusalOf, sendBack } from "./pool-plan-send-back.ts";
 import { dateOf } from "./pool-answer.ts";
 import { recordAnswer } from "./queue/queue-answer.ts";
 import { blockersOfPlan, writePlanBlockers } from "./pool-plan-blockers.ts";
@@ -205,9 +206,9 @@ type PlanChecks = Readonly<{ given?: readonly string[]; retried?: readonly strin
  * The files a planning run left in `planDir` to attach, and the Before-merge lines the plan moves to After merge (A11-275), or why they cannot be. Only plain markdown files are taken: a planning run is
  * unattended, so a link in its folder could point the board at a secret it would then upload. A plan that claims a folder another queued or running ticket writes into is refused, naming the narrower paths (A11-212),
  * and so is a move the board cannot write: a line the ticket does not hold under `### Before merge`, a reason that is not one of the three, or a missing or over-long `who`. So is a plan that leaves an After-merge line
- * naming nobody out of its `## After-merge checks` section, or names a runner there the board cannot record (A11-277).
+ * naming nobody out of its `## After-merge checks` section, or names a runner there the board cannot record (A11-277). That last refusal carries `afterMerge`: it is sent back to the planner (A11-288), not ended on.
  */
-function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false, description, screen, closed = [] }: PlanChecks = {}): { files: string[]; moves: Move[] } | { refusal: string } {
+function planFiles(planDir: string, { given = [], retried = [], claims = [], claimsProblem, claimsRetried = false, description, screen, closed = [] }: PlanChecks = {}): { files: string[]; moves: Move[] } | { refusal: string; afterMerge?: Readonly<{ moves: readonly Move[] }> } {
   const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
   if (names.length === 0) return { refusal: `the planning run wrote no plan in ${planDir}` };
   const odd = names.find((name) => {
@@ -233,7 +234,8 @@ function planFiles(planDir: string, { given = [], retried = [], claims = [], cla
   if ("refusal" in moved) return moved;
   // Each After-merge line that names nobody to run it is given a runner by the plan, and every runner the plan names is one the board can send a check to (A11-277).
   const checks = planned === undefined ? null : afterMergeChecksRefusal(texts, planned, moved.moves);
-  if (checks !== null) return { refusal: checks };
+  // That refusal alone goes back to the planner (A11-288): the rest of them end the run, as they did.
+  if (checks !== null) return { refusal: checks, afterMerge: { moves: moved.moves } };
   // A claims file that is there and cannot be read is no list of nothing: the plan is not attached unchecked.
   if (claimsProblem !== undefined) return { refusal: claimsProblem };
   const folders = folderClaimMisses(texts.flatMap(planClaimPaths), claims);
@@ -397,7 +399,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
     const found = planFiles(planDir, checksFor(runPlace(ctx, entry).dir, key, entry.findingsGiven, entry.briefedAgainst, entry.ticket, closedWorkOf(ticketDir(settings, key))));
-    if ("refusal" in found) return end(ctx, entry, { kind: "needs-human", reason: found.refusal });
+    if ("refusal" in found) return found.afterMerge === undefined || !canSendBack(entry) ? end(ctx, entry, { kind: "needs-human", reason: found.refusal }) : sendBack(ctx, entry, [formatRefusalOf(entry, found.refusal, found.afterMerge.moves)]);
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
     const moving = { key, moves: found.moves, briefed: entry.briefedAgainst };
     // A plan that moves nothing awaits nothing before its attach, so the slot it frees is filled in this same pass.
@@ -455,6 +457,9 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   const members = runMembers(ctx, entry);
   const planDir = join(dir, PLAN_DIR);
   try {
+    // A member whose section the board refuses sends the whole run back before any member is attached, so the planner's next `planned` does not attach a plan twice (A11-288).
+    const refused = canSendBack(entry) ? members.flatMap((member) => formatRefusalIn(ctx, member, join(planDir, member.ticket.key)) ?? []) : [];
+    if (refused.length > 0) return sendBack(ctx, entry, refused);
     const handedBack = new Map<string, Outcome>();
     for (const { ticket: { key } } of members) {
       const outcome = await planOneOfBatch(ctx, key, join(planDir, key));
@@ -485,6 +490,23 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   } finally {
     attaching.delete(name);
   }
+}
+
+/** Whether a refused plan can go back to its planner: the run is still running. A finished run whose unreadable outcome was corrected to `planned` (`rereadUnreadable`) has no planner to prompt, so its refusal ends it as before. */
+const canSendBack = (entry: Entry): boolean => entry.phase === "running";
+
+/** Whether a batch member's folder `dir` holds plan files and no question: what {@link planOneOfBatch} hands to {@link attachFiles}. */
+const holdsPlan = (dir: string): boolean => existsSync(dir) && lstatSync(dir).isDirectory() && !existsSync(join(dir, QUESTION_FILE)) && readdirSync(dir).length > 0;
+
+/**
+ * The refusal of batch member `member`'s `## After-merge checks` section in its plan folder `dir` (A11-288), or null when the folder holds a question, nothing, or a plan the section does not refuse. Only a folder
+ * {@link planOneOfBatch} would hand to {@link attachFiles} is read.
+ */
+function formatRefusalIn(ctx: PoolContext, member: Entry, dir: string): FormatRefusal | null {
+  if (!holdsPlan(dir)) return null;
+  const { key } = member.ticket;
+  const found = planFiles(dir, checksFor(runPlace(ctx, member).dir, key, member.findingsGiven, member.briefedAgainst, member.ticket, closedWorkOf(ticketDir(ctx.settings, key))));
+  return "refusal" in found && found.afterMerge !== undefined ? formatRefusalOf(member, found.refusal, found.afterMerge.moves) : null;
 }
 
 /**
