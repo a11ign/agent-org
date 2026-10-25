@@ -66,7 +66,7 @@ export const HANG_SETTINGS = Object.freeze([
 /** THE FILE'S EXACT TEXT, printed by `--hang-conf`. */
 export const HANG_CONF = [
   "# Written by `node src/host-kernel.ts --hang-conf`: agent-org's src/host-kernel.ts owns this text. Change it there, never here.",
-  "# Why this file exists: a11ign/a11ign#3846. On 2026-10-06 the host hung for 2 h 15 min in a soft lockup and nothing noticed. A panic and a reboot beats a hang.",
+  "# Why this file exists: the product repository's issue #3846. On 2026-10-06 the host hung for 2 h 15 min in a soft lockup and nothing noticed. A panic and a reboot beats a hang.",
   "# Why softlockup_panic is 0: A11-279. On 2026-10-25 a 26 s soft lockup in ext4_dx_readdir would have cleared by itself; the panic rebooted the host and killed every run.",
   ...HANG_SETTINGS.flatMap(({ key, value, reason }) => [`# ${reason}`, `kernel.${key} = ${value}`]),
   "",
