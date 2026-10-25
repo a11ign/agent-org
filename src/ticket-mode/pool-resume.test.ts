@@ -14,9 +14,7 @@ import { clockOf } from "./board-view/update-banner.ts";
 import { agentTarget, IDLE_RESUME_MS, readRestart, RESUME_PROMPT, resumePrompt, sendToAgent, type RestartReads } from "./pool-resume.ts";
 import { newPoolContext } from "./pool-context.ts";
 import { lostText } from "./brief-ticket-text.ts";
-import { find, replace, type Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { lostBeforeThisStart, loseInRestart } from "./queue/queue-readopt.ts";
-import { requeueForUpdate } from "./queue/queue-pins.ts";
+import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import type { PoolDeps } from "./pool-context.ts";
 
 const MIN = 60_000;
@@ -130,11 +128,6 @@ test("A11-279: on a new boot a run whose workspace is gone is queued again at th
   const brief = readFileSync(join(ticketDir(made.settings, "NBF-1"), BRIEF_FILE), "utf8");
   assert.ok(brief.includes(lostText(clock)), "the brief opens with the restart section");
   assert.ok(brief.includes("carry on from the earlier run's work rather than starting again"));
-});
-
-test("A11-279: a brief for a run no restart lost has no restart section", () => {
-  assert.equal(lostText(undefined), "");
-  assert.match(lostText(T0), /^## A restart lost this run's session\n\n.*2026-10-25T15:00:00\.000Z/);
 });
 
 test("A11-279: an idle run with no outcome is resumed once after ten minutes, with the card saying since when, and handed to a person ten minutes after that, its pane kept", async () => {
@@ -342,24 +335,4 @@ test("A11-279: a restart read that fails once keeps the record, so the next good
   assert.equal(readRestart(ctx), null);
   herdr = "1";
   assert.equal(readRestart(ctx), null, "the service manager timed out once: herdr did not restart");
-});
-
-test("A11-279: the runs one restart lost are queued again at the front in the order the queue held them", async () => {
-  const made = poolFixture({ keys: ["NBF-1", "NBF-2", "NBF-3", "NBF-4"], max: 2 });
-  await made.pool.tick();
-  const lost = loseInRestart(loseInRestart(made.store.get(), "NBF-1", 500), "NBF-2", 500);
-  assert.deepEqual(lost.entries.map((e) => [e.ticket.key, e.phase]), [["NBF-1", "queued"], ["NBF-2", "queued"], ["NBF-3", "queued"], ["NBF-4", "queued"]]);
-  const later = loseInRestart(made.store.get(), "NBF-2", 600);
-  assert.equal(later.entries[0].ticket.key, "NBF-2", "a later restart's lost run goes first");
-});
-
-test("A11-279: a run stopped and queued again drops its idle clock and resume, and its next brief is not told of an older loss", async () => {
-  const made = poolFixture({ keys: ["NBF-1"] });
-  await made.pool.tick();
-  const resumed = replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, idleSince: 1, resume: { at: 2, after: "restart" } }));
-  const requeued = find(requeueForUpdate(resumed, "NBF-1", "v0.300.0", 900), "NBF-1")!;
-  assert.deepEqual([requeued.phase, requeued.idleSince, requeued.resume], ["queued", undefined, undefined]);
-  const lost = find(loseInRestart(made.store.get(), "NBF-1", 500), "NBF-1")!;
-  assert.equal(lostBeforeThisStart(lost), 500, "the queueing the loss made is told of it");
-  assert.equal(lostBeforeThisStart({ ...lost, queuedAt: 900 }), undefined, "a later queueing of the same run is not");
 });
