@@ -79,6 +79,7 @@ test("A11-169: after `current` moves, a new round names the new folder and recor
   const runningSettings = settingsOf(made.root, made.settings, "NBF-2");
   point("v0.280.0");
   const next = binNow();
+  made.status.set("t-nbf-2", "working");
   const after = made.restart({ hook: hookOf(next) });
   after.reconcile();
   await after.tick();

@@ -348,7 +348,14 @@ export type Entry = Readonly<{
   pluginCopy?: readonly PluginCopy[];
   /** Set when a breaking update stopped this run and queued it again; its round resumes the same session on the new version. */
   stoppedForUpdate?: StoppedForUpdate;
+  /** Set when the board took this run's live pane back after a restart, or after it had marked the run crashed (A11-240): the card says so. A retry or a review round, which build the entry afresh, drop it. */
+  readopted?: Readopted;
+  /** Set on a run a restart lost, when it was queued again (A11-240): the run is queued again once, so a second loss in the same chain ends it. A retry or a review round, which build the entry afresh, drop it. */
+  lostInRestart?: Readonly<{ at: number }>;
 }>;
+
+/** How the board took a live pane back (A11-240): a run caught `starting` by a restart, or one it had marked crashed whose worker was found working, and why it had been crashed. */
+type Readopted = Readonly<{ at: number; from: "starting" }> | Readonly<{ at: number; from: "crashed"; reason: string }>;
 
 /**
  * The board's PUBLISH RUN: a short run that posts the pull requests of the runs a person ticked, all in one go, with the host file's

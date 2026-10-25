@@ -343,7 +343,7 @@ import {
   NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, sharedRunNote, terminalTab, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   POLL_MS, nextDelay, looksLikeRestart,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
-  reviewLinesOf, unlistedPulls, afterMergeChecks, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, promptNote, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  readoptNote, reviewLinesOf, unlistedPulls, afterMergeChecks, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, promptNote, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -886,6 +886,7 @@ function row(e) {
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
       publishingOffLine(status, state.publisher) ? el("div", { className: "meta" }, publishingOffLine(status, state.publisher)) : null,
       e.sessionNote ? el("div", { className: "meta" }, e.sessionNote) : null,
+      readoptNote(e) ? el("div", { className: "meta" }, readoptNote(e)) : null,
       startedAnyway ? el("div", { className: "meta" }, startedAnyway) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
       reason ? el("div", { className: "meta" }, reason, ...(changed && reason === changed.line ? [" · ", changeLink(e.ticket.key, changed.change)] : [])) : null,

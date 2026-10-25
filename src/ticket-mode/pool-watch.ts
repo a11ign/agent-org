@@ -6,7 +6,7 @@ import { herdrRefusal } from "./pool-herdr.ts";
 import { log, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
 import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, recordWrittenStep, settle } from "./pool-settle.ts";
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
-import { checkRound, conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
+import { checkRound, conflictRound, feedbackRound, markResumed, observe, observePublish, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
 import { declineSafetyPrompt, readPrompt, retellDeclined, untoldDecline } from "./pool-decline.ts";
 import { join } from "node:path";
@@ -14,20 +14,21 @@ import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
-import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, SETTLED, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, SETTLED, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { paneBackgroundWork } from "./background-work.ts";
-import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.ts";
+import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
 import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
 import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
 import { isReviewerDialogNote, reviewerDialogNote } from "./board-view/reviewer-dialog-note.ts";
 import { recordReviewerDialog } from "./queue/queue-reviewer-dialog.ts";
-import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
+import { observeWriter, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
+import { readoptCrashed } from "./pool-readopt.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
 import { foreignRedsOf } from "./pool-foreign-checks.ts";
 
@@ -75,6 +76,7 @@ function watch(ctx: PoolContext): void {
   if (agents === null) return;
   const status = new Map(agents.map((agent) => [agent.label, agent.status]));
   for (const [workspace, id] of readSessionIds(ctx)) claudeSessions.set(workspace, id);
+  readoptCrashed(ctx, agents);
   watchRunning(ctx, status);
   watchParked(ctx, status);
   rereadUnreadable(ctx);
@@ -385,39 +387,6 @@ function watchPublish(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
   const outcomePath = join(place.dir, OUTCOME_FILE);
   if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) endPublish(ctx, publish, readPublishResult(ctx, readFileSync(outcomePath, "utf8"), place.dir));
   else if (seen === "done" || (seen === "idle" && store.get().publish?.seenWorking === true)) endPublish(ctx, publish, { failure: "it stopped without writing an outcome" });
-}
-
-/**
- * After a restart: a run the file says is live but herdr does not list is recorded as crashed; one still listed carries on. A run caught
- * between `starting` and `running` has no workspace on record, so it is crashed too: its worktree is kept and it can be retried. A parked run
- * herdr no longer lists is unparked, keeping its outcome. It reads herdr's listing and the queue file and nothing else: a run herdr lists is
- * adopted as it is, its pane sent no key, no prompt and no second start (A11-78).
- */
-export function reconcile(ctx: PoolContext): void {
-  const { herdr, now, session, store } = ctx;
-  const agents = readAgents((args) => herdr(args), session);
-  if (agents === null) return;
-  const listed = new Set(agents.map((agent) => agent.label));
-  for (const entry of store.get().entries.filter(isLive)) {
-    if (entry.phase === "starting" || !listed.has(runPlace(ctx, entry).name)) {
-      update(ctx, (queue) => finish(queue, entry.ticket.key, { kind: "crashed", reason: "the pool restarted while it was running" }, now()));
-    }
-  }
-  for (const entry of store.get().entries.filter(isParked)) {
-    if (!listed.has(runPlace(ctx, entry).name)) update(ctx, (queue) => unpark(queue, entry.ticket.key));
-  }
-  const publish = store.get().publish;
-  const isUnlistedPublish = publish !== undefined && (publish.phase === "starting" || (publish.phase === "running" && !listed.has(publishPlace(ctx, publish).name)));
-  if (isUnlistedPublish) {
-    update(ctx, (queue) => publishFailed(queue, "the pool restarted while it was running", now()));
-  }
-  for (const run of store.get().writers ?? []) {
-    const lost = run.phase === "starting" || (run.phase === "running" && !listed.has(writerPlace(ctx, run).name));
-    if (lost) {
-      const filed = filedOf(ctx, run);
-      update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filed.tickets, failure: joined("the pool restarted while it was running", filed.problem) }, now()));
-    }
-  }
 }
 
 /** One pass: watch the live runs, then fill free slots. Passes never overlap; a call during a pass runs one more pass after it. */

@@ -151,6 +151,11 @@ describe("a row's note", () => {
     expect(noteOf(entry, context)).toBe(lines.join(" · "));
   });
 
+  it("says when the board took a live pane back after a restart (A11-240)", () => {
+    const entry = entryOf({ ...working({ key: "A11-6", title: "t", startedAgo: MINUTE }), readopted: { at: new Date(2026, 9, 24, 22, 31).getTime(), from: "starting" } });
+    expect(noteLines(entry, context)).toContain("re-adopted after a restart at 22:31: its worker carried on");
+  });
+
   it("holds a done run's evidence lines, one each, and the pool's review line of an open pull request", () => {
     const done = entryOf({ ...working({ key: "A11-2", title: "t", startedAgo: MINUTE }), phase: "finished", outcome: { kind: "done", reason: "r", evidence: ["ran the test: 3 passed", "read the doc"] } });
     expect(noteLines(done, context)).toEqual(expect.arrayContaining(["ran the test: 3 passed", "read the doc"]));

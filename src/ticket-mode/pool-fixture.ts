@@ -37,7 +37,7 @@ export function fakeHerdr(status: Map<string, string>) {
       const own = [...status].map(([label, s]) => ({ name: null, workspace_id: `w${label.replace(/\D/g, "")}`, agent_session: { value: `session-${label}` }, agent_status: s }));
       return JSON.stringify({ result: { agents: own } });
     }
-    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s })) } });
+    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s, workspace_id: `w${label.replace(/\D/g, "")}` })) } });
     return JSON.stringify({ type: "ok" });
   };
   return { run, calls, closing };
@@ -61,17 +61,19 @@ export type FixtureOptions = Readonly<{
   pluginRecord?: string;
   drain?: DrainStore;
   startUpdate?: () => void;
+  /** The tracker the pool reads and writes; the in-memory fake's when absent. */
+  source?: TicketSource;
 }>;
 
 /** A pool of `keys` queued and started, over fakes. `restart` is a pool over the same queue and state folder with another `hook`, as an instance restarted onto another version is. */
-export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate }: FixtureOptions = {}) {
+export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node", bin: "/tool/versions/v0.273.0/src/bin.ts" }, now = () => 100, tickets = {}, pluginRecord, drain, startUpdate, source: tracker = source }: FixtureOptions = {}) {
   const root = tmpDir("ticket-pin-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state"), tickets });
   let queue: Queue = resumeQueue(enqueue(emptyQueue(max), keys.map(ticket), { model: "sonnet", effort: "high" }, 0));
   const store: QueueStore = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
-  const deps = (over: Partial<PoolDeps>): PoolDeps => ({ settings, source, hook, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }),
+  const deps = (over: Partial<PoolDeps>): PoolDeps => ({ settings, source: tracker, hook, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(),
     ...(drain === undefined ? {} : { drain }), ...(startUpdate === undefined ? {} : { startUpdate }), ...over });
   const pool = createPool(store, deps({}));
