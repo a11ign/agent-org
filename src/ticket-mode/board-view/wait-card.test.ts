@@ -24,6 +24,7 @@ const reading = (wait: Wait): Reading => {
     case "ciRun": return { wait, status: "pending", run: { status: "in_progress", conclusion: null, jobs: { done: 3, total: 5 } } as never };
     case "pullRequest": return { wait, status: "pending", pull: { state: "OPEN", review: null } };
     case "ticket": return { wait, status: "pending", stateType: "In Progress" };
+    default: throw new Error(`no reading for ${wait.kind}`);
   }
 };
 

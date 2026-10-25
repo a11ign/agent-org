@@ -8,6 +8,8 @@ import { poolFixture } from "./pool-fixture.ts";
 import { herdrName } from "./pool.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { workingNote } from "./board-view/pull-status-and-notes.ts";
+import { clockOf } from "./board-view/update-banner.ts";
+import { deadlineOf } from "./board-view/wait-deadline.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute, type SessionAsksView } from "./session-asks.ts";
 
@@ -49,7 +51,7 @@ test("A11-275: a worker that declares an ask for the person's session is waiting
   await run.passes(3);
   assert.equal(run.working()?.waiting, true);
   assert.equal(run.working()?.stalled, undefined);
-  assert.equal(run.note()?.text, `Waiting on the person's session: ${ASK} (asked, no answer yet)`);
+  assert.equal(run.note()?.text, `Waiting on the person's session: ${ASK} (asked, no answer yet), until ${clockOf(deadlineOf(run.working()!))}`);
   assert.equal(run.note()?.waiting, true);
   assert.equal(run.entry("NBF-1").outcome, undefined, "the run has no outcome: it is not finished, so it cannot be Needs you");
   assert.deepEqual(run.asks(), [{ kind: "waiting-run", key: "NBF-1", url: "https://linear.app/x/NBF-1", pullRequests: [], ask: ASK, sentAt: T0, answer: "/api/session-asks/NBF-1/answer" }]);
