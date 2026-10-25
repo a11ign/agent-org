@@ -6,7 +6,7 @@
 // git-env scrubber and `claim-labels.ts` only, so `work-gate.ts` -- which runs before any `pnpm install` -- and
 // `wake.ts` can both import it without one importing the other). `wake.ts` is not importable from a leaf: it
 // already imports `claim-stall.ts` (line 76 there), and a leaf that imported its own importer would be a cycle.
-// So this file is the shared home instead: `node:*` only, importable from both.
+// So this file is the shared home instead: `node:*` and the pure `derived-name.ts` (itself `node:*` only) only, importable from both.
 //
 // THE CALLS THAT OPEN A WORKSPACE, START AN AGENT IN IT AND CLOSE IT LIVE HERE TOO (`openPane`, `agentStartArgs`, `closedNote`, with the
 // `herdrReason` they quote a failure through), moved out of `wake.ts` unchanged so that ticket mode (`src/ticket-mode/`) runs the same
@@ -18,7 +18,7 @@
 // in lib/" -- a directory listing it reads literally. This file is native to `agent-org` (code moved within the
 // package, not copied in from outside it), so it sits beside `claim-labels.ts` and `project-vocabulary.ts` instead.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { HERDR_AGENT_RULE, derivedName } from "./derived-name.ts";
 
 /** The herdr session the org runs in, and the default of every call in this file. */
 export const ORG_SESSION = "org";
@@ -235,28 +235,16 @@ export function herdrReason(err: unknown, max: number = REFUSAL_EXCERPT) {
 /** herdr 0.9.3's rule for an agent's name (measured 2026-10-25, `invalid_agent_name ... (1-32 characters)`): a lowercase letter, then up to 31 lowercase letters, digits, `-` or `_`. */
 export const HERDR_AGENT_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 
-const AGENT_NAME_MAX = 32;
-const NAME_HASH_LENGTH = 8;
-/** The longest trailing `-<digits>` kept readable in a shortened name; a longer one is left to the hash. */
-const NAME_TAIL_MAX = 12;
-
 /**
  * THE ONE FUNCTION THAT MAKES A HERDR AGENT NAME (A11-241). A workspace's LABEL is not limited by herdr and stays the full, human name (`reviewer-announcement-emulator-11`); an agent's NAME is limited to
  * {@link HERDR_AGENT_NAME}, and every `herdr agent <verb> <name>` call addresses the agent by it, so every one of them passes the label through here. PURE and deterministic.
  *
  * A name herdr already accepts comes back unchanged, so no running agent changes name. Anything else is lowercased and its other characters made `-` (and prefixed `x-` if it does not start with a letter). If that is
  * still over 32 characters it becomes `<head><tail>-<hash>`: the head of the name (so the `reviewer-` / `worker-` / `t-` prefix a reader sorts by survives), a trailing `-<number>` when it is short enough to keep,
- * and 8 hex characters (32 bits) of SHA-256 of the ORIGINAL name, so two long names that share a prefix and a number still get two agents.
+ * and 8 hex characters (32 bits) of SHA-256 of the ORIGINAL name, so two long names that share a prefix and a number still get two agents. The cleaning is `derivedName`'s (A11-259), shared with the reviewer key.
  */
 export function herdrAgentName(full: string): string {
-  let name = full.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-  if (!/^[a-z]/.test(name)) name = `x-${name}`;
-  if (name.length <= AGENT_NAME_MAX) return name;
-  const hash = createHash("sha256").update(full).digest("hex").slice(0, NAME_HASH_LENGTH);
-  const number = /-\d+$/.exec(name)?.[0] ?? "";
-  const tail = number.length > NAME_TAIL_MAX ? "" : number;
-  const head = name.slice(0, AGENT_NAME_MAX - tail.length - 1 - NAME_HASH_LENGTH).replace(/[-_]+$/, "");
-  return `${head}${tail}-${hash}`;
+  return derivedName(full, HERDR_AGENT_RULE);
 }
 
 /**
