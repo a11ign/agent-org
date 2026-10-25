@@ -13,4 +13,5 @@ npm run lint
 ```
 Run with `AGENT_ORG_HOST` naming a host declaration, as CI's `suite` job does (the fixture project copied to a temporary directory).
 
-After merge: the next stack whose bottom member merges and leaves a member with nothing of its own has it closed with the comment `Closed by agent-org: everything #N held merged with #M…`. Read it with `gh pr view <url> --json state,comments`.
+After merge (run by the chairman session; no person acts on the stack, and the check changes nothing, so it needs no cleanup): the next stack whose bottom member merges has the rest restacked with no person. When that stack's blocker pull request merges, the session reads the run's notes with
+`jq '.entries[] | select(.ticket.key=="<KEY>") | .retargets' ~/.local/state/agent-org/tickets/queue.json`. A pass is `#P restacked on main after #N merged` (or the conflict note, with a conflict round whose brief names the stack and the merged member), and `gh pr view <url> --json commits --jq '.commits[-1].messageHeadline'` reads "Merge branch 'main' into …". For a member left with nothing of its own, a pass is the note `#P closed: everything it held merged with #N` after a second sweep, and `gh pr view <url> --json state,comments` showing it CLOSED with the comment `Closed by agent-org: everything #P held merged with #N…`.
