@@ -5,7 +5,15 @@
 // remote instance's port, key and terminal address, then `ssh -N` forwarding a Unix socket here to that instance's port, and a free port on this machine's
 // 127.0.0.1 to its terminal service when it serves one. Both run with BatchMode and no TTY, so a prompt for a password fails rather than
 // hangs, and with no connection sharing, agent or X11 forwarding, so the person's ssh config cannot keep a forward alive past `stop`. A tunnel
-// that drops is opened again, slower each time it fails, until the service closes. `remote-proxy.ts` passes the page's calls through it.
+// that drops is opened again, slower each time it fails, up to every 5 seconds, until the service closes. `remote-proxy.ts` passes the page's
+// calls through it.
+//
+// A DEAD TUNNEL IS NOTICED BY THE FIRST REQUEST THAT FAILS ON IT (A11-270). ssh's keepalive takes up to 45 seconds to end a tunnel whose link
+// is gone, and every request in that time would fail. `restart` opens it again at once. Each open after the first reuses the info the last
+// good one read, so it is one ssh handshake, not a node start on the remote: the info is read again after `forget` (the remote refused the
+// key), when an open with the kept info fails, and on a second restart with no answer between. A third gets no restart until a request is
+// `answered` again. A request that finds the tunnel down waits up to 3 seconds for a retry due within them, rather than be answered the old
+// reason during a reconnect that takes under one.
 //
 // THE INSTANCE'S FORWARD IS A SOCKET IN A DIRECTORY ONLY THIS USER CAN ENTER, NOT A PORT. A port picked free and then bound by ssh seconds later
 // can be taken first by another process, which would then be sent the key. The terminal's forward is a port, because the browser opens it.
@@ -55,8 +63,15 @@ const INFO_MS = 30_000;
 const INFO_BYTES = 64 * 1024;
 const UP_MS = 15_000;
 const PROBE_MS = 200;
-const FIRST_RETRY_MS = 2_000;
-const LAST_RETRY_MS = 60_000;
+const FIRST_RETRY_MS = 500;
+const LAST_RETRY_MS = 5_000;
+/** A request that finds the tunnel down starts a retry due within this long, and waits for it this long at most. */
+const REACH_WAIT_MS = 3_000;
+/**
+ * How many restarts a tunnel gets before a request is answered through it again: the first reuses the kept info, the second reads it again (the
+ * remote's port may have changed). After that a request that fails is answered without one, so a stopped instance is not restarted on every poll.
+ */
+const MOST_RESTARTS = 2;
 const REASON_CHARS = 300;
 const SOCKET_PATH_BYTES = 100;
 const KEY_SHAPE = /^[0-9a-f]{48}$/;
@@ -131,6 +146,8 @@ type Options = Readonly<{
   log?: (line: string) => void;
   /** Run `fn` after `ms`, and return what cancels it. */
   schedule?: (fn: () => void, ms: number) => () => void;
+  /** The time now, in ms, against which a scheduled retry is due. */
+  now?: () => number;
   upMs?: number;
 }>;
 
@@ -140,13 +157,23 @@ type State =
   | { kind: "idle" }
   | { kind: "connecting"; pending: Promise<Link> }
   | { kind: "up"; link: Link; tunnel: Tunnel }
-  | { kind: "down"; reason: string; cancel: () => void };
+  | { kind: "down"; reason: string; due: number; cancel: () => void };
 
-/** Read `connection`'s info, then open its tunnel and wait for the socket to listen. `live` holds every tunnel still running, and `closing` tells whether `close` has run. */
-async function open(connection: SshConnection, { runner, upMs, live, closing }: Readonly<{ runner: Runner; upMs: number; live: Set<Tunnel>; closing: () => boolean }>): Promise<{ link: Link; tunnel: Tunnel }> {
+/** Read `connection`'s port, key and terminal over ssh. THROWS `Unreachable` with why it cannot. */
+async function readInfo(connection: SshConnection, runner: Runner): Promise<RemoteInfo> {
   const read = await runner.run(infoArgv(connection), INFO_MS);
   if (read.code !== 0) throw new Unreachable(infoFailure(read));
-  const info = parseRemoteInfo(read.stdout);
+  return parseRemoteInfo(read.stdout);
+}
+
+type OpenOptions = Readonly<{ runner: Runner; upMs: number; live: Set<Tunnel>; closing: () => boolean; kept: RemoteInfo | undefined }>;
+
+/**
+ * Read `connection`'s info, or use `kept`, the info of its last good tunnel, then open its tunnel and wait for the socket to listen. `live` holds
+ * every tunnel still running, and `closing` tells whether `close` has run.
+ */
+async function open(connection: SshConnection, { runner, upMs, live, closing, kept }: OpenOptions): Promise<{ link: Link; tunnel: Tunnel }> {
+  const info = kept ?? await readInfo(connection, runner);
   const remoteTerminal = terminalPort(info.terminal);
   const terminalLocal = remoteTerminal === null ? null : await runner.freePort();
   const socket = runner.privateSocket();
@@ -171,79 +198,173 @@ async function open(connection: SshConnection, { runner, upMs, live, closing }: 
   }
 }
 
-/** The tunnels to `connections`, each opened the first time it is reached and held open until `close`. */
-export function createRemotes(connections: readonly SshConnection[], options: Options = {}) {
-  const runner = options.runner ?? processRunner();
-  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
-  const schedule = options.schedule ?? ((fn: () => void, ms: number) => { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); });
-  const upMs = options.upMs ?? UP_MS;
-  const byName = new Map(connections.map((connection) => [connection.name, connection]));
-  const states = new Map<string, State>(connections.map((connection) => [connection.name, { kind: "idle" }]));
-  const failures = new Map<string, number>();
+/** What every remote's tunnel shares: how processes are run and time is kept, the log, the tunnels still running, and whether `close` has run (the service is closing). */
+type Shared = Readonly<{
+  runner: Runner;
+  log: (line: string) => void;
+  schedule: (fn: () => void, ms: number) => () => void;
+  now: () => number;
+  upMs: number;
   /** Every tunnel started and not yet ended, opening or open, so `close` stops one still opening too. */
-  const live = new Set<Tunnel>();
-  let closed = false;
+  live: Set<Tunnel>;
+  closing: () => boolean;
+}>;
 
-  /** Mark `connection` down for `reason`, and try again later, later each time it fails in a row. The log says so once per run of failures. */
-  function down(connection: SshConnection, reason: string): void {
-    const count = (failures.get(connection.name) ?? 0) + 1;
-    failures.set(connection.name, count);
-    const delay = Math.min(LAST_RETRY_MS, FIRST_RETRY_MS * 2 ** (count - 1));
-    if (count === 1) log(`ticket:ui: cannot reach ${connection.name} over SSH: ${reason}. Trying again, up to once a minute`);
-    const cancel = schedule(() => { if (!closed && states.get(connection.name)?.kind === "down") void connect(connection).catch(() => {}); }, delay);
-    states.set(connection.name, { kind: "down", reason, cancel });
+/** End what `state` holds: stop its tunnel when it is up, and cancel its retry when it is down. */
+function halt(state: State): void {
+  if (state.kind === "up") state.tunnel.stop();
+  if (state.kind === "down") state.cancel();
+}
+
+/** Stop `tunnel`, opened as the service closed, and the reason to give for it. */
+function stopAsClosing(tunnel: Tunnel): Unreachable {
+  tunnel.stop();
+  return new Unreachable("the service is closing");
+}
+
+/** `pending`, or the old `reason` once `REACH_WAIT_MS` has passed without it: a request waits for a reconnect that is close, not for a slow one. */
+function within(schedule: Shared["schedule"], pending: Promise<Link>, reason: string): Promise<Link> {
+  return new Promise((done, fail) => {
+    const cancel = schedule(() => fail(new Unreachable(reason)), REACH_WAIT_MS);
+    pending.then((link) => { cancel(); done(link); }, (err: unknown) => { cancel(); fail(err); });
+  });
+}
+
+/** The tunnel to `connection`: opened the first time it is reached, opened again when it drops or a request finds it dead, until `close`. */
+function createRemote(connection: SshConnection, shared: Shared) {
+  const { runner, log, schedule, now, upMs, live, closing } = shared;
+  const { name } = connection;
+  let state: State = { kind: "idle" };
+  /** How many opens in a row have failed. */
+  let failures = 0;
+  /** The info as the last good tunnel read it, so the next open needs no `ticket:remote-info`. */
+  let kept: RemoteInfo | undefined;
+  /** How many restarts since a request was last answered through the tunnel. */
+  let unanswered = 0;
+
+  /** Mark the remote down for `reason`, and try again later, later each time it fails in a row. The log says so once per run of failures. */
+  function down(reason: string): void {
+    failures += 1;
+    const delay = Math.min(LAST_RETRY_MS, FIRST_RETRY_MS * 2 ** (failures - 1));
+    if (failures === 1) log(`ticket:ui: cannot reach ${name} over SSH: ${reason}. Trying again, up to every ${LAST_RETRY_MS / 1000} seconds`);
+    const retry = () => { if (!closing() && state.kind === "down") void connect().catch(() => {}); };
+    state = { kind: "down", reason, due: now() + delay, cancel: schedule(retry, delay) };
   }
 
-  function connect(connection: SshConnection): Promise<Link> {
-    const pending = open(connection, { runner, upMs, live, closing: () => closed }).then(({ link, tunnel }) => {
-      if (closed) {
-        tunnel.stop();
-        throw new Unreachable("the service is closing");
-      }
-      failures.delete(connection.name);
-      states.set(connection.name, { kind: "up", link, tunnel });
-      log(`ticket:ui: ${connection.name} is reached over SSH`);
-      void tunnel.exited.then((exit) => {
-        const now = states.get(connection.name);
-        if (closed || now?.kind !== "up" || now.link !== link) return;
-        down(connection, `the tunnel dropped: ${redact(exit.stderr) || `ssh exited ${exit.code}`}`);
-      });
-      return link;
-    }, (err: unknown) => {
+  /** Hold `tunnel` as the one up, and mark the remote down when it drops while it still is. */
+  function opened(link: Link, tunnel: Tunnel): Link {
+    if (closing()) throw stopAsClosing(tunnel);
+    failures = 0;
+    kept = { port: link.port, key: link.key, terminal: link.terminal };
+    state = { kind: "up", link, tunnel };
+    log(`ticket:ui: ${name} is reached over SSH`);
+    void tunnel.exited.then((exit) => {
+      if (closing() || state.kind !== "up" || state.link !== link) return;
+      down(`the tunnel dropped: ${redact(exit.stderr) || `ssh exited ${exit.code}`}`);
+    });
+    return link;
+  }
+
+  function connect(): Promise<Link> {
+    const pending = open(connection, { runner, upMs, live, closing, kept }).then(({ link, tunnel }) => opened(link, tunnel), (err: unknown) => {
       const reason = err instanceof Unreachable ? err.message : redact(String((err as Error)?.message ?? err));
-      if (!closed) down(connection, reason);
+      // The remote's port or key may have changed since the info was kept, so the next open reads it again.
+      kept = undefined;
+      if (!closing()) down(reason);
       throw new Unreachable(reason);
     });
-    states.set(connection.name, { kind: "connecting", pending });
+    state = { kind: "connecting", pending };
     return pending;
   }
+
+  /** The open tunnel, opened now when there is none, or when the retry it waits for is due within `REACH_WAIT_MS`. */
+  function reach(): Promise<Link> {
+    if (state.kind === "up") return Promise.resolve(state.link);
+    if (state.kind === "connecting") return state.pending;
+    if (state.kind === "down") {
+      if (state.due - now() > REACH_WAIT_MS) return Promise.reject(new Unreachable(state.reason));
+      const { reason } = state;
+      state.cancel();
+      return within(schedule, connect(), reason);
+    }
+    return connect();
+  }
+
+  return {
+    reach,
+    /** Open the tunnel again now, unless the one at `socket`, which a request found dead, has been replaced already, or restarting has not helped. */
+    restart(socket: string): Promise<Link> {
+      const was = state;
+      if (was.kind === "connecting") return was.pending;
+      if (was.kind === "up" && was.link.socket !== socket) return Promise.resolve(was.link);
+      if (unanswered >= MOST_RESTARTS) return reach();
+      unanswered += 1;
+      // A restart that did not help: the remote's port or key may have changed, so this one reads them again.
+      if (unanswered > 1) kept = undefined;
+      log(`ticket:ui: a request to ${name} over SSH failed on its tunnel: opening it again`);
+      // Connecting first, so the stopped tunnel's exit finds it no longer the one up and does not mark the remote down.
+      const reopened = connect();
+      halt(was);
+      return reopened;
+    },
+    /** A request through the tunnel at `socket` was answered, so it works, and a request that fails on it later may restart it again. */
+    answered: (socket: string): void => { if (state.kind === "up" && state.link.socket === socket) unanswered = 0; },
+    /** Close the tunnel and drop the kept info, so the next request reads the key again. */
+    forget(): void {
+      kept = undefined;
+      halt(state);
+      if (state.kind !== "connecting") state = { kind: "idle" };
+    },
+    /** Stop the tunnel, or cancel the retry that is waiting. */
+    halt: (): void => halt(state),
+  };
+}
+
+/** The tunnels to `connections`, each opened the first time it is reached and held open until `close`. */
+export function createRemotes(connections: readonly SshConnection[], options: Options = {}) {
+  const live = new Set<Tunnel>();
+  let closed = false;
+  const shared: Shared = {
+    runner: options.runner ?? processRunner(),
+    log: options.log ?? ((line: string) => process.stderr.write(`${line}\n`)),
+    schedule: options.schedule ?? ((fn: () => void, ms: number) => { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); }),
+    now: options.now ?? Date.now,
+    upMs: options.upMs ?? UP_MS,
+    live,
+    closing: () => closed,
+  };
+  const byName = new Map(connections.map((connection) => [connection.name, createRemote(connection, shared)]));
+  /** `name`'s remote. THROWS `Unreachable` for a name that is no ssh connection, and once the service is closing. */
+  const remote = (name: string) => {
+    const found = byName.get(name);
+    if (found === undefined) throw new Unreachable(`no ssh connection ${name}`);
+    if (closed) throw new Unreachable("the service is closing");
+    return found;
+  };
 
   return {
     /** Whether `name` is a remote connection. */
     has: (name: string): boolean => byName.has(name),
     /** The open tunnel to `name`, opened now when it has none. THROWS `Unreachable` with the reason when it cannot be reached. */
-    async reach(name: string): Promise<Link> {
-      const connection = byName.get(name);
-      if (connection === undefined) throw new Unreachable(`no ssh connection ${name}`);
-      if (closed) throw new Unreachable("the service is closing");
-      const state = states.get(name)!;
-      if (state.kind === "up") return state.link;
-      if (state.kind === "connecting") return state.pending;
-      if (state.kind === "down") throw new Unreachable(state.reason);
-      return connect(connection);
+    reach: async (name: string): Promise<Link> => remote(name).reach(),
+    /**
+     * Open `name`'s tunnel again now, with no wait: a request through the tunnel at `socket` failed, so it is dead although ssh has not ended
+     * yet. A tunnel opened since that request is the one answered, and one opening is waited for. THROWS `Unreachable` when it cannot be opened.
+     */
+    restart: async (name: string, socket: string): Promise<Link> => remote(name).restart(socket),
+    /** A request through `name`'s tunnel at `socket` was answered: the tunnel works, so it may be restarted again when it is found dead. */
+    answered(name: string, socket: string): void {
+      byName.get(name)?.answered(socket);
     },
     /** Close `name`'s tunnel, so the next request reads its key again: the remote refused the one held. */
     forget(name: string): void {
-      const state = states.get(name);
-      if (state?.kind === "up") state.tunnel.stop();
-      if (state?.kind === "down") state.cancel();
-      if (state !== undefined && state.kind !== "connecting") states.set(name, { kind: "idle" });
+      byName.get(name)?.forget();
     },
     /** Close every tunnel, opening or open, and open none again. */
     close(): void {
       closed = true;
       for (const tunnel of live) tunnel.stop();
-      for (const state of states.values()) if (state.kind === "down") state.cancel();
+      for (const each of byName.values()) each.halt();
     },
   };
 }
