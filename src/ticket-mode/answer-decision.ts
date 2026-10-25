@@ -28,7 +28,7 @@ export const decisionHeading = ({ who, date }: Pick<AnsweredDecision, "who" | "d
 const bulletsOf = ({ question, answer }: Pick<AnsweredDecision, "question" | "answer">): string => `${bulletOf("Question", question)}\n${bulletOf("Answer", answer)}`;
 
 /** The text of the last heading outside a code fence, or null when the description has none. PURE. */
-function lastHeading(description: string): string | null {
+export function lastHeading(description: string): string | null {
   let inFence = false;
   let last: string | null = null;
   for (const line of description.split("\n")) {

@@ -34,7 +34,7 @@ export type Answered = Readonly<{ written: true; delivered: boolean; why?: strin
 export class AnswerNotDelivered extends Error {}
 
 /** The board's local date, `YYYY-MM-DD`. */
-function dateOf(at: number): string {
+export function dateOf(at: number): string {
   const day = new Date(at);
   return [day.getFullYear(), day.getMonth() + 1, day.getDate()].map((part, at) => String(part).padStart(at === 0 ? 4 : 2, "0")).join("-");
 }

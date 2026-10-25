@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ESCALATION_RULE } from "./escalation.ts";
+import { MOVE_RULE } from "./after-merge-move.ts";
 import { outcomeExamples } from "./outcome.ts";
 import type { WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
@@ -146,6 +147,18 @@ test("both briefs tell a worker to stop for a person when a skill they name is m
   for (const brief of [work, plan, batch]) {
     assert.match(brief, /If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files\./);
   }
+});
+
+test("A11-275: both planner briefs tell the planner to move a Before-merge line that needs a release, a person's machine or anything unreachable to After merge, and the worker's brief does not", () => {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.ok(brief.includes(MOVE_RULE), "the rule, whole");
+    assert.match(brief, /needs a published release, a person's own machine, or anything else a worker cannot reach cannot be met before merge/);
+    assert.match(brief, /`## Moved to After merge`, one bullet per line/);
+  }
+  assert.ok(!work.includes(MOVE_RULE), "a worker is briefed with the ticket the board already rewrote");
 });
 
 test("A11-174, A11-209: every unattended brief says to guard variable paths with ${VAR:?}, and that its subagents inherit the rule", () => {
