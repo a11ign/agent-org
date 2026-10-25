@@ -213,6 +213,9 @@
 .tone-danger {
   color: var(--color-danger-dot);
 }
+.tone-published {
+  color: var(--color-published);
+}
 .tone-quiet {
   color: var(--color-text-nav);
 }
@@ -391,4 +394,90 @@ a.pr-pill:hover {
   flex: 0 0 auto;
   width: var(--skeleton-runs-pill-width);
   height: var(--skeleton-runs-pill-height);
+}
+
+/* Publishing (A11-218): the tick column of a machine with a publisher, the tinted row of a ticked run, and the bar that posts the ticked runs. */
+.run-tick {
+  position: relative;
+  flex: 0 0 var(--hit-target);
+  width: var(--hit-target);
+  height: var(--icon-20);
+  margin: calc(var(--space-12) * -1) calc(var(--space-4) * -1) calc(var(--space-12) * -1) calc(var(--space-12) * -1);
+  align-self: flex-start;
+}
+.tick {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-target);
+  height: var(--hit-target);
+  border-radius: var(--radius-8);
+  cursor: pointer;
+}
+.tick:hover {
+  background: var(--color-hover);
+}
+.tick:focus-within {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: calc(var(--focus-ring-width) * -1);
+}
+.tick input {
+  width: var(--tick-box);
+  height: var(--tick-box);
+  margin: 0;
+  accent-color: var(--color-accent-light);
+  cursor: pointer;
+}
+.tick input:disabled {
+  cursor: default;
+}
+.run-row-picked {
+  background: var(--color-picked-row);
+}
+.publish-bar {
+  position: sticky;
+  bottom: var(--bar-offset);
+  align-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-16);
+  margin-top: var(--space-16);
+  padding: var(--space-10) var(--space-14);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-10);
+  background: var(--color-hover);
+  box-shadow: var(--shadow-bar);
+}
+.publish-bar-count {
+  font-weight: var(--font-weight-semibold);
+}
+.publish-bar-note {
+  color: var(--color-text-muted);
+}
+.publish-bar-spacer {
+  flex: 1 1 0;
+}
+.ghost.publish-bar-clear {
+  min-width: var(--hit-target);
+  min-height: var(--hit-target);
+  padding: var(--space-5) var(--space-14);
+  color: var(--color-text-nav);
+}
+.publish-bar-publish {
+  min-height: var(--hit-target);
+  padding: var(--space-6) var(--space-18);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+}
+.publish-bar-publish:disabled {
+  opacity: var(--opacity-publish-off);
+  cursor: not-allowed;
 }

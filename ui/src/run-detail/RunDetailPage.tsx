@@ -2,7 +2,9 @@ import type { QueueView } from "../api/types.ts";
 import { DetailSkeleton } from "../lifecycle/Skeleton.tsx";
 import { Lifecycle } from "../lifecycle/Lifecycle.tsx";
 import { FailureBanner } from "../runs/FailureBanner.tsx";
+import { failedPublishSentence, NOT_PUBLISHED, publishState, showsPublish } from "../runs/publish-model.ts";
 import type { RunEntry } from "../runs/runs-model.ts";
+import { useDismissable, usePublish } from "../runs/use-publish.ts";
 import { useRunActions } from "../runs/use-run-actions.ts";
 import { runsHref } from "../shell/routes.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
@@ -11,7 +13,7 @@ import { Properties } from "./Properties.tsx";
 import { PullRequests } from "./PullRequests.tsx";
 import { RunDisclosures } from "./RunDisclosures.tsx";
 import { Breadcrumb, RunHeader, type HeaderControls } from "./RunHeader.tsx";
-import { boardOf, calloutOf, disclosuresOf, headerActionsOf, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
+import { boardOf, calloutOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
 import { Steps } from "./Steps.tsx";
 import { useFollowTerminal, useQueueReadAt } from "./use-stale-terminal.ts";
 import { useTalk } from "./use-talk.ts";
@@ -36,19 +38,29 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   const inputs = { client, connection, config, refresh: read.refresh };
   const actions = useRunActions(inputs);
   const talk = useTalk(inputs);
+  const publisher = usePublish(inputs);
   const followTerminal = useFollowTerminal(inputs, entry, useQueueReadAt(read, queue));
   const board = boardOf(entry, queue);
   const headerActions = headerActionsOf(entry, queue);
+  const publishes = showsPublish(config);
+  const failedRun = useDismissable(publishes ? failedPublishSentence(queue, entry.ticket.key) : null);
   const clear = () => {
     actions.clearRefusal();
     talk.clear();
+    publisher.clearRefusal();
+    failedRun.dismiss();
   };
+  const publishing = publishes ? publishState(entry, queue) : null;
+  // The press's own refusal, then Talk to it's problem, are the page's; a refused Publish and a publish run that failed with this run among its keys are "Not published."
+  const pressed = actions.refusal ?? talk.problem;
+  const notPublished = pressed === null ? (publisher.refusal ?? failedRun.shown) : null;
   const controls: HeaderControls = {
     actions: headerActions,
     terminalHref: terminalHrefOf(entry, headerActions, config?.terminal ?? null, connection),
     followTerminal,
-    busy: actions.busy.has(entry.ticket.key) || talk.busy,
+    busy: actions.busy.has(entry.ticket.key) || talk.busy || publisher.busy,
     disabled: unreachable !== null,
+    publish: publishing === null ? null : { state: publishing, onPress: () => { clear(); void publisher.publish([entry.ticket.key]); } },
     onPress: (verb) => {
       // A press starts again: what the last one said is not what this one says.
       clear();
@@ -58,12 +70,12 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   };
   return (
     <>
-      <FailureBanner sentence={actions.refusal ?? talk.problem} onRetry={() => { clear(); inputs.refresh(); }} onDismiss={clear} />
+      <FailureBanner sentence={pressed ?? notPublished} title={pressed === null && notPublished !== null ? NOT_PUBLISHED : undefined} onRetry={() => { clear(); inputs.refresh(); }} onDismiss={clear} />
       <Breadcrumb runKey={entry.ticket.key} />
       <RunHeader entry={entry} queue={queue} board={board} now={Date.now()} controls={controls} />
       <div className="run-columns">
         <div className="detail-main">
-          <Callout board={board} callout={calloutOf(entry, queue, board)} open={readyPullOf(entry)} />
+          <Callout board={board} callout={calloutOf(entry, queue, board)} merge={mergeRowOf(entry, queue, { publishes, terminal: config?.terminal ?? null, connection })} />
           <RunDisclosures disclosures={disclosuresOf(entry, { queue, publisher: config?.publisher })} />
           <Steps steps={stepsOf(entry)} />
           <PullRequests rows={pullRowsOf(entry)} board={board} />

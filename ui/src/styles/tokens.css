@@ -283,6 +283,15 @@
   --line-height-update-title: 26px;
   --step-ring-width: 1.5px;
   --spinner-duration-update: 0.9s;
+
+  /* Publishing (A11-218): the values the five Publish boards use that the tokens above do not hold. Published is the indigo of the boards' check, chip and callout. */
+  --color-published: #9aa1f5;
+  --color-published-border: #2f3470;
+  --color-published-bg: #101228;
+  --color-picked-row: rgba(91, 99, 217, 0.08);
+  --hit-target: 44px;
+  --tick-box: 18px;
+  --opacity-publish-off: 0.55;
 }
 
 /* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */

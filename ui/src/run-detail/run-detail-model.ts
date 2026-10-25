@@ -4,27 +4,28 @@
 // file only arranges what they return. The twelve boards are one template switched by `state`, so `boardOf` picks the state a run is drawn as, and the sections read the run.
 import { reviewLinesOf, safeHref, terminalOpenHref } from "../../../src/ticket-mode/board-view.ts";
 import { promptNote, reasonOf } from "../../../src/ticket-mode/board-view/run-reason.ts";
-import { repoLabel, shownStatus, terminalLink, waitNote, workingNote } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
+import { publishTerminalLink, repoLabel, shownStatus, terminalLink, waitNote, workingNote } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import { openPulls, pullsOf, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
-import { versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
+import { clockOf, versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
 import { diffLines, learnsFrom, ticketChangeOf, type DiffLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
 import type { PlannedStep, QueueView, RunAction, ViewConnection } from "../api/types.ts";
+import { PUBLISH_MERGE_NOTE, PUBLISHED_MERGE_NOTE, PUBLISHING_MERGE_NOTE } from "../runs/publish-model.ts";
 import { actionsOf, type RowAction } from "../runs/run-actions.ts";
 import { labelOf, noteLines, since, timingOf, tokensOf, type NoteContext, type RunEntry } from "../runs/runs-model.ts";
 
 // ---- Which board a run is drawn as ----
 
-/** The ten states of the boards that draw a run; loading and run gone are the page's own. */
-export type RunBoard = "running" | "needs" | "handback" | "ready" | "done" | "failed" | "cancelled" | "queued" | "blocked" | "awaiting";
+/** The twelve states of the boards that draw a run; loading and run gone are the page's own. */
+export type RunBoard = "running" | "needs" | "handback" | "ready" | "publishing" | "published" | "done" | "failed" | "cancelled" | "queued" | "blocked" | "awaiting";
 
 /**
- * The board of each status. A status with no board of its own takes the closest one: Talking, Planning and Reviewing the running board, Publishing and Published the Ready board, Checked the Done board.
- * Needs you is two boards, told apart by `boardOf`.
+ * The board of each status. A status with no board of its own takes the closest one: Talking, Planning and Reviewing the running board, Checked the Done board. Publishing and Published have the boards
+ * the Publish tickets drew (A11-218). Needs you is two boards, told apart by `boardOf`.
  */
 const BOARD_OF_STATUS: Readonly<Record<RunStatus, RunBoard | "needs-you">> = {
   "needs-you": "needs-you", talking: "running", working: "running", planning: "running", reviewing: "running", blocked: "blocked", queued: "queued",
-  "awaiting-review": "awaiting", "ready-to-merge": "ready", publishing: "ready", published: "ready", checked: "done", completed: "done", failed: "failed", cancelled: "cancelled",
+  "awaiting-review": "awaiting", "ready-to-merge": "ready", publishing: "publishing", published: "published", checked: "done", completed: "done", failed: "failed", cancelled: "cancelled",
 };
 
 /** The board a status is drawn as, and for Needs you the Needs board while the run is live and Handed back once it has finished. PURE. */
@@ -41,7 +42,7 @@ export const boardOf = (entry: RunEntry, queue: Pick<QueueView, "publish" | "ent
 
 /** The title of each board's callout, and the words the Needs and Handed back boards add beneath it. */
 const CALLOUT_TITLE: Readonly<Record<RunBoard, string>> = {
-  running: "Working", needs: "Needs you", handback: "Needs you", ready: "Approved. Waiting for you to merge.", done: "Completed", failed: "Failed", cancelled: "Cancelled",
+  running: "Working", needs: "Needs you", handback: "Needs you", ready: "Approved. Waiting for you to merge.", publishing: "Publishing", published: "Published", done: "Completed", failed: "Failed", cancelled: "Cancelled",
   queued: "Queued", blocked: "Blocked", awaiting: "Draft pull request. Waiting for you to approve.",
 };
 
@@ -50,7 +51,7 @@ const HELP: Readonly<Partial<Record<RunBoard, string>>> = {
   handback: "Talk to it opens this run's own session in herdr, with everything it knew.",
 };
 
-/** The sentence beside the Ready board's button. */
+/** The sentence beside the Ready board's button on a machine with no publisher. */
 export const MERGE_NOTE = "A person merges. Nothing is published from here.";
 
 /** What the callout of a run says: the board's title, the backend's strings as paragraphs, and the board's help line where it has one. */
@@ -64,6 +65,18 @@ const reviewText = (entry: RunEntry, queue: QueueView): string | null => {
   return lines.length === 0 ? null : lines.join("; ");
 };
 
+/** The run's pull requests as the boards name them, `a11ign/lab #150`, its open ones else all of them, joined with ", "; empty when it has none. */
+const pullNames = (entry: RunEntry): string => (openPulls(entry).length > 0 ? openPulls(entry) : pullsOf(entry)).map(({ url }) => pullLabel(url)).join(", ");
+
+/** What the Publishing board says: the publish run is posting these pull requests, and merges none. */
+const publishingBody = (entry: RunEntry): string => `A publish run is posting ${pullNames(entry) || "this run's pull requests"}. Nothing is merged: a person still merges.`;
+
+/** What the Published board says: what was posted and, when the backend recorded it, when. The channel is not named: the backend holds none. */
+function publishedBody(entry: RunEntry): string {
+  const at = entry.published?.at;
+  return `Posted ${pullNames(entry) || "this run's pull requests"}${at === undefined ? "" : ` at ${clockOf(at)}`}. Nothing was merged: a person still merges.`;
+}
+
 /** The first paragraph of the callout, which is the backend's string for the board: null draws none. */
 function bodyOf(entry: RunEntry, queue: QueueView, board: RunBoard): string | null {
   const { line } = reasonOf(entry);
@@ -73,6 +86,8 @@ function bodyOf(entry: RunEntry, queue: QueueView, board: RunBoard): string | nu
     case "queued":
     case "blocked": return waitNote(entry, queue.entries) ?? line;
     case "ready": return line ?? reviewText(entry, queue);
+    case "publishing": return publishingBody(entry);
+    case "published": return publishedBody(entry);
     default: return line;
   }
 }
@@ -92,6 +107,32 @@ export function readyPullOf(entry: RunEntry): Readonly<{ href: string; label: st
   return { href: first.url, label: `Open #${first.url.split("/").pop() ?? ""} on GitHub` };
 }
 
+/** The row beneath the callout's words on the Ready, Publishing and Published boards: the publish run's terminal while it posts, the pull request a person merges, the posted message, and what the board says of merging. */
+export type MergeRow = Readonly<{ terminalHref: string | null; open: Readonly<{ href: string; label: string }> | null; messageHref: string | null; note: string }>;
+
+/** What the page knows of the machine that decides the merge row: whether it has a publisher, the terminal it names and the instance the links open on. */
+export type MergeMachine = Readonly<{ publishes: boolean; terminal: string | null; connection: ViewConnection | null }>;
+
+/** The address of the publish run's session, opened through the instance's connection, or null: the run is not being published, the publish run has no pane yet, the machine names no terminal, or the address is not safe to link. */
+function publishTerminalHref(entry: RunEntry, queue: QueueView, { terminal, connection }: MergeMachine): string | null {
+  const link = publishTerminalLink(terminal, entry, queue.publish);
+  return link === null || connection === null || safeHref(link) === "" ? null : terminalOpenHref(connection, link);
+}
+
+/**
+ * The merge row of a board, or null for a board that has none. On the Ready board a machine with a publisher says what Publish does, and any other says nothing is published from here; the Publishing and Published
+ * boards follow the run's status, so they say the same on every machine. PURE.
+ */
+export function mergeRowOf(entry: RunEntry, queue: QueueView, machine: MergeMachine): MergeRow | null {
+  const open = readyPullOf(entry);
+  switch (boardOf(entry, queue)) {
+    case "ready": return { terminalHref: null, open, messageHref: null, note: machine.publishes ? PUBLISH_MERGE_NOTE : MERGE_NOTE };
+    case "publishing": return { terminalHref: publishTerminalHref(entry, queue, machine), open, messageHref: null, note: PUBLISHING_MERGE_NOTE };
+    case "published": return { terminalHref: null, open, messageHref: safeHref(entry.published?.link ?? "") || null, note: PUBLISHED_MERGE_NOTE };
+    default: return null;
+  }
+}
+
 // ---- The header ----
 
 /** The two timing words after the status: "Running 52m" and "Started 52 min ago", or "Not started" and "Queued 2 min ago" for a run still on the queue. PURE. */
@@ -103,7 +144,7 @@ export function timesOf(entry: RunEntry, now: number): Readonly<{ timing: string
 
 /** The colour class of the status word in the header: the boards'. Ready to merge and Completed take the lighter green their callout titles do. */
 export const STATUS_WORD_TONE: Readonly<Record<RunBoard, string>> = {
-  running: "tone-warn", needs: "tone-warn", handback: "tone-warn", ready: "tone-done", done: "tone-done", failed: "tone-danger", cancelled: "tone-muted", queued: "tone-quiet", blocked: "tone-quiet", awaiting: "tone-planning",
+  running: "tone-warn", needs: "tone-warn", handback: "tone-warn", ready: "tone-done", publishing: "tone-warn", published: "tone-published", done: "tone-done", failed: "tone-danger", cancelled: "tone-muted", queued: "tone-quiet", blocked: "tone-quiet", awaiting: "tone-planning",
 };
 
 /** The status word of the header: the words of the run's shown status. */

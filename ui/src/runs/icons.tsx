@@ -4,7 +4,7 @@ import type { RunStatus } from "../../../src/ticket-mode/board-view/view-types-a
 import { labelOf } from "./runs-model.ts";
 
 // The Runs page's icons, as inline SVG (the page's policy allows no image file). The Runs board draws In progress, Planning, Ready to merge and Completed, and the icons of Talk to it, Stop and Dismiss;
-// every other status and action takes the icon `ui.html` gives it.
+// every other status and action takes the icon `ui.html` gives it. The Publish boards add Publishing's ring (already the spinner) and Published's indigo check.
 
 const STATUS_SIZE = 18;
 const ACTION_SIZE = 14;
@@ -12,7 +12,7 @@ const ACTION_SIZE = 14;
 /** The colour class of each status's icon and label: the boards' (In progress, Planning, Ready to merge, Completed, and the Run detail boards' Queued, Awaiting review, Cancelled and Failed) or `ui.html`'s mapped to them. */
 export const STATUS_TONE: Readonly<Record<RunStatus, string>> = {
   "needs-you": "tone-warn", talking: "tone-planning", working: "tone-warn", planning: "tone-planning", reviewing: "tone-warn", blocked: "tone-quiet", queued: "tone-quiet",
-  "awaiting-review": "tone-planning", "ready-to-merge": "tone-success", publishing: "tone-warn", published: "tone-success", checked: "tone-success", completed: "tone-success", failed: "tone-danger", cancelled: "tone-muted",
+  "awaiting-review": "tone-planning", "ready-to-merge": "tone-success", publishing: "tone-warn", published: "tone-published", checked: "tone-success", completed: "tone-success", failed: "tone-danger", cancelled: "tone-muted",
 };
 
 /** The board's spinner: a ring in the status colour with its track, turning (`.spin` stops for reduced motion). */
@@ -50,12 +50,6 @@ const OWN_SHAPES: Partial<Record<RunStatus, ReactNode>> = {
       <path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </>
   ),
-  published: (
-    <>
-      <path d="M2 7.5L14 2l-3.5 12-3-4.5z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-      <path d="M7.5 9.5L14 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </>
-  ),
   checked: (
     <>
       <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" />
@@ -79,7 +73,7 @@ const OWN_SHAPES: Partial<Record<RunStatus, ReactNode>> = {
 /** The statuses in which a worker is at work, whose icon turns. */
 const SPINNING: ReadonlySet<RunStatus> = new Set(["working", "planning", "reviewing", "publishing"]);
 
-/** The icon of a status, with its words for a screen reader: a spinner for the statuses in which a worker is at work, the board's branch and tick for Ready to merge and Completed. */
+/** The icon of a status, with its words for a screen reader: a spinner for the statuses in which a worker is at work, the board's branch for Ready to merge and its filled check for Completed and Published (in the Published indigo). */
 export function StatusIcon({ status }: Readonly<{ status: RunStatus }>) {
   const tone = STATUS_TONE[status];
   const common = { className: `status-icon ${tone}`, width: STATUS_SIZE, height: STATUS_SIZE, role: "img", "aria-label": labelOf(status) } as const;
@@ -100,7 +94,7 @@ export function StatusIcon({ status }: Readonly<{ status: RunStatus }>) {
       </svg>
     );
   }
-  if (status === "completed") {
+  if (status === "completed" || status === "published") {
     return (
       <svg {...common} viewBox="0 0 18 18" fill="none">
         <circle cx="9" cy="9" r="8" fill="currentColor" />
@@ -123,6 +117,15 @@ export function PullIcon() {
       <circle cx="4" cy="12.5" r="1.6" stroke="currentColor" strokeWidth="1.4" />
       <circle cx="12" cy="12.5" r="1.6" stroke="currentColor" strokeWidth="1.4" />
       <path d="M4 5.1v5.8M12 10.9V8a2 2 0 0 0-2-2H8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** The speech bubble of the link to a published run's Slack message. */
+export function MessageIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M3 3.5h10v7H8l-3 2.5v-2.5H3z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   );
 }

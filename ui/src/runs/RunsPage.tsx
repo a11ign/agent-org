@@ -12,12 +12,15 @@ import { AfterMergeList } from "./AfterMergeList.tsx";
 import { FailureBanner } from "./FailureBanner.tsx";
 import { PoolBar } from "./PoolBar.tsx";
 import { PullRequestsList } from "./PullRequestsList.tsx";
+import { PublishBar } from "./PublishBar.tsx";
 import { RunsList } from "./RunsList.tsx";
 import { RunsNotices } from "./RunsNotices.tsx";
 import { RunsSkeleton } from "./RunsSkeleton.tsx";
 import { countText, filteredRuns, groupsOf, PAGE_SIZE, paged } from "./runs-model.ts";
+import { failedPublishSentence, showsPublish } from "./publish-model.ts";
 import type { RowContext } from "./RunRow.tsx";
 import { useFailure } from "./use-failure.ts";
+import { usePicked, usePublish } from "./use-publish.ts";
 import { useRunActions } from "./use-run-actions.ts";
 
 /** The header: the h1 and the count line, which is the board's skeleton while the queue is read and nothing when it could not be read. */
@@ -69,15 +72,25 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
   const { queue, client, config, connection, unreachable } = useShell();
   const pool = usePool(client, queue);
   const actions = useRunActions({ client, connection, config, refresh: queue.refresh });
-  const failure = useFailure(queue, actions, pool);
+  const publisher = usePublish({ client, refresh: queue.refresh });
+  const publishes = showsPublish(config);
+  const picked = usePicked(publishes ? queue.data : null);
+  const failedRun = publishes && queue.data !== null ? failedPublishSentence(queue.data) : null;
+  const failure = useFailure({ queue, actions, publisher, failedRun, pool });
   const paging = useLimit(filter);
   const disabled = unreachable !== null;
   const count = queue.data === null ? null : countText(queue.data.entries.length, runningCount(queue.data));
-  const context = (data: QueueView): RowContext => ({ queue: data, publisher: config?.publisher, now: Date.now(), busy: actions.busy, disabled, press: actions.press });
+  const ticks = publishes ? { picked: picked.keys, toggle: picked.toggle } : null;
+  const context = (data: QueueView): RowContext => ({ queue: data, publisher: config?.publisher, now: Date.now(), busy: actions.busy, disabled, press: actions.press, ticks });
+  // A refusal keeps the ticks, so the person can read the sentence and try again; a post the server took drops the runs it posted, and a run ticked while it was out stays ticked.
+  const post = () => {
+    const keys = picked.keys;
+    void publisher.publish(keys).then((accepted) => accepted && picked.remove(keys));
+  };
   return (
     <>
       <Header count={count} loading={queue.state === "loading"} />
-      <FailureBanner sentence={failure.sentence} onRetry={failure.retry} onDismiss={failure.dismiss} />
+      <FailureBanner sentence={failure.sentence} title={failure.title} onRetry={failure.retry} onDismiss={failure.dismiss} />
       <Lifecycle view={lifecycleOf(queue)} skeleton={<RunsSkeleton />} empty={queue.data === null ? null : <NoRuns queue={queue.data} pool={pool} disabled={disabled} reviewer={config?.reviewer} />} connection={connection?.name ?? ""}>
         {(data) =>
           data.entries.length === 0 ? <NoRuns queue={data} pool={pool} disabled={disabled} reviewer={config?.reviewer} /> : (
@@ -86,6 +99,7 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
               <PoolBar queue={data} pool={pool} disabled={disabled} />
               <RunsList page={paged(groupsOf(data, filteredRuns(data, filter)), paging.limit)} context={context(data)} onMore={paging.more} />
               <Lists queue={data} />
+              {publishes && picked.keys.length > 0 ? <PublishBar count={picked.keys.length} busy={publisher.busy} disabled={disabled} onClear={picked.clear} onPublish={post} /> : null}
             </>
           )}
       </Lifecycle>

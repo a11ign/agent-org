@@ -73,6 +73,17 @@
   border-color: var(--color-border-hover);
   font-weight: var(--font-weight-medium);
 }
+.ghost.run-button-publish {
+  min-width: var(--hit-target);
+  min-height: var(--hit-target);
+  color: var(--color-accent-lighter);
+}
+.ghost.run-button-publish:disabled {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-disabled);
+  opacity: var(--opacity-publish-off);
+  cursor: not-allowed;
+}
 .ghost.run-button-danger {
   border-color: var(--color-danger-border);
   color: var(--color-danger-text);
@@ -119,11 +130,20 @@
 .callout-help {
   color: var(--color-text-muted);
 }
-.callout-running {
+.callout-running,
+.callout-publishing {
   border-color: var(--color-spinner-track-warn);
   background: var(--color-callout-working-bg);
 }
+.callout-published {
+  border-color: var(--color-published-border);
+  background: var(--color-published-bg);
+}
+.callout-published .callout-title {
+  color: var(--color-published);
+}
 .callout-running .callout-title,
+.callout-publishing .callout-title,
 .callout-needs .callout-title,
 .callout-handback .callout-title {
   color: var(--color-warn-text);
@@ -174,6 +194,18 @@
   flex-wrap: wrap;
   gap: var(--space-8);
   align-items: center;
+}
+.callout-merge-tall .callout-open {
+  min-height: var(--hit-target);
+  padding: 0 var(--space-16);
+}
+.ghost.callout-terminal,
+.ghost.callout-message {
+  min-width: var(--hit-target);
+  min-height: var(--hit-target);
+  justify-content: center;
+  padding: var(--space-5) var(--space-14);
+  font-weight: var(--font-weight-medium);
 }
 .callout-open {
   display: flex;
