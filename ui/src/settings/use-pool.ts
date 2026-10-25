@@ -12,6 +12,8 @@ export type Pool = Readonly<{
   paused: boolean | null;
   maxState: SaveState;
   pauseState: SaveState;
+  /** True while the queue shown is the tab's kept copy (A11-270): the controls wait for the instance's own answer, so Pause never acts on a state that has changed since. */
+  waiting: boolean;
   setMax: (text: string) => void;
   togglePause: () => void;
 }>;
@@ -43,7 +45,7 @@ export function usePool(client: Client, queue: LifecycleView<QueueView>): Pool {
   return {
     max: current?.max ?? null,
     paused: current === null ? null : current.paused !== false,
-    maxState, pauseState,
+    maxState, pauseState, waiting: queue.cached && answered === null,
     setMax: (text) => void answer(client.setMax(Number(text)), setMaxState),
     togglePause: () => void answer(current?.paused === false ? client.pause() : client.resume(), setPauseState),
   };

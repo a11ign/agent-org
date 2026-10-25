@@ -15,6 +15,18 @@
   box-sizing: border-box;
 }
 
+/* The island of a page whose tab kept the board's answers (A11-270) is held back until the shell has drawn it from them, so its static skeleton is never drawn; after a second it is shown whatever happens. */
+html[data-kept] astro-island {
+  visibility: hidden;
+  animation: kept-shown 0s 1s forwards;
+}
+
+@keyframes kept-shown {
+  to {
+    visibility: visible;
+  }
+}
+
 body {
   margin: 0;
   min-height: 100vh;

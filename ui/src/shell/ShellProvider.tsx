@@ -1,13 +1,14 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { People } from "../api/types.ts";
 import { chosenConnection } from "../../../src/ticket-mode/board-view.ts";
 import { chosenProject, inProject, projectCounts } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { queueIsEmpty } from "../api/emptiness.ts";
 import { createClient, type Client } from "../api/client.ts";
 import type { Fetch } from "../api/request.ts";
-import type { ConfigView, QueueView, TicketView, ViewConnection } from "../api/types.ts";
+import { readCached, writeCached } from "../api/session-cache.ts";
+import type { ConfigView, ConnectionsView, QueueView, TicketView, ViewConnection } from "../api/types.ts";
 import { POLL_MS } from "../api/poll-schedule.ts";
-import { usePoll } from "../api/use-poll.ts";
+import { usePoll, type PollView } from "../api/use-poll.ts";
 import type { LifecycleView } from "../lifecycle/Lifecycle.tsx";
 import { ALL_GOALS_ID, contextParentsOf, goalEntries, goalShown, mergedTickets, runningCount, scopeOf, ticketsView, isLive, unreachableOf, type GoalEntry } from "./shell-model.ts";
 import { useReachability } from "./use-reachability.ts";
@@ -18,7 +19,7 @@ import { browserStorage, CONNECTION_MEMORY, PROJECT_MEMORY, recalled, remembered
 
 /** Everything the sidebar reads, once, so a page reuses it and never reads it again. */
 export type ShellValue = Readonly<{
-  /** False until `/api/connections` has answered. */
+  /** False until the connections are known: `/api/connections` has answered, or the tab kept its last answer (A11-270). */
   connectionsReady: boolean;
   connections: readonly ViewConnection[];
   /** The reads of the instance shown: what a page calls to change something (queue a ticket, start a Grill) and to read what the shell does not. */
@@ -71,7 +72,7 @@ export type ShellValue = Readonly<{
 }>;
 
 const noop = () => undefined;
-const LOADING_VIEW = { state: "loading", data: null, refusal: null, refresh: noop } as const;
+const LOADING_VIEW = { state: "loading", data: null, refusal: null, cached: false, refresh: noop } as const;
 
 /** The shell as it is before anything is read: nothing chosen, everything loading. */
 const LOADING_SHELL: ShellValue = {
@@ -89,21 +90,36 @@ type Listing = Readonly<{ connections: readonly ViewConnection[]; refusal: strin
 
 const NO_CONNECTIONS: Listing = { connections: [], refusal: null };
 
+const listingOf = (view: ConnectionsView): Listing => ({ connections: view.connections, refusal: view.refusal });
+
 /**
- * `/api/connections`, read once (and again on `retry`). A first read that fails leaves an empty list, as `ui.html` does: this is the only case under `pnpm ui:dev`. A retry that fails keeps
- * what the page already had, so the sentence the person is trying to fix is not cleared by the failure.
+ * `/api/connections`, read once (and again on `retry`). It starts from the list the tab kept (A11-270), so a page after the first has its connection at once and its reads need not wait for
+ * this one. A first read that fails leaves an empty list, as `ui.html` does: this is the only case under `pnpm ui:dev`. A read that fails after a list is held keeps that list, so the
+ * sentence the person is trying to fix is not cleared by the failure.
+ * THE KEPT LIST IS TAKEN UP AFTER HYDRATION, before the browser paints: the island's first render must be the page's static HTML, which was built with nothing kept, or React throws that
+ * HTML away (error #418). Everything that reads a kept answer of its own sits beneath the list, so it is mounted afresh then, not hydrated.
  */
 function useListing(fetchWith: Fetch | undefined): Readonly<{ listing: Listing | null; retry: () => void }> {
+  const client = useMemo(() => createClient(null, fetchWith === undefined ? {} : { fetch: fetchWith }), [fetchWith]);
   const [listing, setListing] = useState<Listing | null>(null);
+  useLayoutEffect(() => {
+    const kept = readCached<ConnectionsView>(null, client.connections.path);
+    if (kept !== null) setListing((before) => before ?? listingOf(kept.data));
+  }, [client]);
+  // Drawn from a list: the static HTML `Shell.astro` held back for a tab that kept one can be shown, before the browser paints this.
+  useLayoutEffect(() => {
+    if (listing !== null) delete document.documentElement.dataset.kept;
+  }, [listing]);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const reading = new AbortController();
-    void createClient(null, fetchWith === undefined ? {} : { fetch: fetchWith }).connections(reading.signal).then((answer) => {
+    void client.connections(reading.signal).then((answer) => {
       if (reading.signal.aborted) return;
-      setListing((before) => (answer.ok ? { connections: answer.data.connections, refusal: answer.data.refusal } : (before ?? NO_CONNECTIONS)));
+      if (answer.ok) writeCached(null, client.connections.path, answer.data);
+      setListing((before) => (answer.ok ? listingOf(answer.data) : (before ?? NO_CONNECTIONS)));
     });
     return () => reading.abort();
-  }, [fetchWith, attempt]);
+  }, [client, attempt]);
   return { listing, retry: () => setAttempt((count) => count + 1) };
 }
 
@@ -128,7 +144,8 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   // While the Updating screen shows, the queue is tried every POLL_MS and not on the backoff up to 60 s, so the page is back within one poll of the instance (A11-217).
   const updating = useRef(false);
   const queue = usePoll<QueueView>(client.queue, { connection, isEmpty: queueIsEmpty, maxWaitMs: () => (updating.current ? POLL_MS : Infinity) });
-  const update = useUpdate(queue, reload);
+  // A queue the tab kept is not this page's read: the Updating screen starts from what the instance itself answers here, as before the tab kept anything (A11-270).
+  const update = useUpdate(queue.cached ? { state: queue.state, data: null } : queue, reload);
   useEffect(() => {
     updating.current = update.kind === "updating";
   }, [update.kind]);
@@ -138,7 +155,9 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   const [goalChoice, setGoalChoice] = useState(ALL_GOALS_ID);
 
   // What is read beside the tickets waits for a read that answered: the last known data an unreachable connection shows is not a reason to ask for more of it, and the reads would not be made again on recovery.
-  const reads = useScopeReads(client, { listed: isLive(ticketsRead.state), onDemand: isLive(config.state) && config.data?.scopes === true });
+  // Nor are the tickets and the config the tab kept (A11-270): the instance works the parents out from the tickets it last listed, so they are asked once it has listed them again.
+  const fresh = (read: PollView<unknown>): boolean => isLive(read.state) && !read.cached;
+  const reads = useScopeReads(client, { listed: fresh(ticketsRead), onDemand: fresh(config) && config.data?.scopes === true });
   const [scopeChoice, setScopeChoice] = useState<string | null>(null);
   const scope = scopeOf(config.data, scopeChoice);
 
@@ -181,13 +200,15 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
 
 /**
  * The shell's data. It reads the connections once; the instance shown is `?connection=`, else the one remembered, else this machine's (`chosenConnection`), and a switch
- * remembers the choice and gives every read a new client for that instance, which starts them again from `loading`. `fetchWith` and `reload` are for a test; the page uses the browser's.
+ * remembers the choice and gives every read a new client for that instance, which starts them again from what the tab kept of that instance, else from `loading`. `fetchWith` and `reload` are for a test; the page uses the browser's.
  */
 export function ShellProvider({ fetchWith, reload, children }: Readonly<{ fetchWith?: Fetch; reload?: () => void; children: ReactNode }>) {
   const { listing, retry } = useListing(fetchWith);
   const storage = browserStorage();
   const [name, setName] = useState<string | null>(() => nameToOpenOn(storage));
-  const connection = useMemo(() => (listing === null ? null : chosenConnection(listing.connections, name)), [listing, name]);
+  const chosen = listing === null ? null : chosenConnection(listing.connections, name);
+  // One object per instance: the fresh list that follows the kept one names the same connection, and a new object would give every read a new client and start them again.
+  const connection = useMemo(() => chosen, [chosen?.kind, chosen?.name]);
   // A link names the instance for one page, and every page is a page load now: what it names is remembered, so the next page (a click on Runs, say) opens on it too, as the old one-page board stayed on it.
   useEffect(() => {
     const linked = new URLSearchParams(globalThis.location?.search ?? "").get("connection");

@@ -45,19 +45,21 @@ function grillReasonOf(shell: ShellValue): string | null {
 /** The sections, and the queue bar while tickets are selected. */
 function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
   const { list, folding, selection, actions, batch, options } = page;
+  // While the tickets or the queue drawn are the tab's kept copy (A11-270), Queue, Queue children and Grill wait for the instance's own answer.
+  const held = shell.tickets.cached || shell.queue.cached;
   const context = {
     open: folding.open, toggleSection: folding.toggleSection, queue: page.queue,
     row: {
       queue: page.queue, selected: selection.selected, openParents: folding.openParents, showsOwner: list.showsOwner, grillReason: grillReasonOf(shell),
       plan: planPatternOf(shell.config), planUniverse: [...shell.allTickets, ...shell.contextParents],
-      pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill, paused: shell.unreachable !== null,
+      pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill, paused: shell.unreachable !== null, held,
     },
   };
   return (
     <>
       <Sections sections={list.sections} context={context} />
       {selection.selected.size > 0 && shell.config !== null ? (
-        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy} paused={shell.unreachable !== null} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
+        <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy || held} paused={shell.unreachable !== null} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
       ) : null}
     </>
   );

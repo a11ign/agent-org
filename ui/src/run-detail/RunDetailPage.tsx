@@ -34,7 +34,10 @@ function RunGone() {
   );
 }
 
-/** One run, drawn as the board its status maps to. A press of a verb posts it and has the shell read the queue again; Talk to it is its own press, which says in the banner why herdr did not open. */
+/**
+ * One run, drawn as the board its status maps to. A press of a verb posts it and has the shell read the queue again; Talk to it is its own press, which says in the banner why herdr did not open.
+ * The verbs wait while the instance cannot be reached, and while the queue drawn is the tab's kept copy (A11-270).
+ */
 function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueView }>) {
   const { client, config, connection, unreachable, queue: read } = useShell();
   const inputs = { client, connection, config, refresh: read.refresh };
@@ -61,7 +64,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
     terminalHref: terminalHrefOf(entry, headerActions, config?.terminal ?? null, connection),
     followTerminal,
     busy: actions.busy.has(entry.ticket.key) || talk.busy || publisher.busy,
-    disabled: unreachable !== null,
+    disabled: unreachable !== null || read.cached,
     publish: publishing === null ? null : { state: publishing, onPress: () => { clear(); void publisher.publish([entry.ticket.key]); } },
     onPress: (verb) => {
       // A press starts again: what the last one said is not what this one says.
@@ -89,14 +92,19 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
   );
 }
 
-/** The page once the connections are read: the run the queue holds under this key, or the board's "run gone" when the queue answered without it. */
+/**
+ * The page once the connections are read: the run the queue holds under this key, or the board's "run gone" when the queue answered without it. A queue the tab kept (A11-270) that does not
+ * hold the run is no proof it is gone, since it may have started since: the page is its skeleton until the instance answers.
+ */
 function Content({ runKey }: Readonly<{ runKey: string }>) {
   const { queue, connection } = useShell();
+  const skeleton = <DetailSkeleton label={LOADING} />;
+  const gone = queue.cached ? skeleton : <RunGone />;
   return (
-    <Lifecycle view={queue} skeleton={<DetailSkeleton label={LOADING} />} empty={<RunGone />} connection={connection?.name ?? ""}>
+    <Lifecycle view={queue} skeleton={skeleton} empty={gone} connection={connection?.name ?? ""}>
       {(data) => {
         const entry = data.entries.find((candidate) => candidate.ticket.key === runKey);
-        return entry === undefined ? <RunGone /> : <RunDetail entry={entry} queue={data} />;
+        return entry === undefined ? gone : <RunDetail entry={entry} queue={data} />;
       }}
     </Lifecycle>
   );

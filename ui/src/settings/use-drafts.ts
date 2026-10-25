@@ -1,14 +1,8 @@
 import { useEffect, useState } from "react";
+import { clearCached, tabStorage } from "../api/session-cache.ts";
 import type { Drafts } from "./settings-model.ts";
 
-/** The browser's `sessionStorage`, or null where it is refused (a private window, a blocked site): the drafts are then kept for this page alone. */
-function tabStorage(): Storage | null {
-  try {
-    return globalThis.sessionStorage;
-  } catch {
-    return null;
-  }
-}
+// Where `tabStorage` is refused (a private window, a blocked site), the drafts are kept for this page alone.
 
 /** What a tab remembers of the changes staged for one instance, so moving between Models, Workers and Machine (a page load each) does not lose them. */
 export const draftsKey = (connection: string): string => `ticket-mode.settings-drafts.${connection}`;
@@ -22,12 +16,22 @@ function recalled(key: string): Drafts {
   }
 }
 
+function store(key: string, drafts: Drafts): void {
+  if (Object.keys(drafts).length === 0) tabStorage()?.removeItem(key);
+  else tabStorage()?.setItem(key, JSON.stringify(drafts));
+}
+
+/** What is typed comes before the answers the tab kept (A11-270): when the storage is full, those are dropped to make room, and a page reads them again. */
 function remembered(key: string, drafts: Drafts): void {
   try {
-    if (Object.keys(drafts).length === 0) tabStorage()?.removeItem(key);
-    else tabStorage()?.setItem(key, JSON.stringify(drafts));
+    store(key, drafts);
   } catch {
-    // The drafts are still held by the page; only moving to another page forgets them.
+    try {
+      clearCached();
+      store(key, drafts);
+    } catch {
+      // The drafts are still held by the page; only moving to another page forgets them.
+    }
   }
 }
 
