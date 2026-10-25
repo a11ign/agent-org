@@ -10,56 +10,60 @@
 // browser pairs with, for this machine or for another one it reaches over SSH or https. A browser's cookie opens nothing here. A `Host` that
 // is not this server's is refused, which stops a DNS-rebinding page from reaching it, and a write from another origin is refused. The Linear
 // key never leaves this process.
-import { existsSync, readFileSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { realpathSync, renameSync, writeFileSync, mkdirSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { constants, homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { readOrNull } from "../install/paths.ts";
 import { effectiveTerminal, localTerminalPort } from "../install/terminal.ts";
-import { mintTerminalCode, type TerminalMint, type TerminalRun, terminalRunOf } from "./terminal-pair.ts";
+import { mintTerminalCode, type TerminalMint } from "./terminal-pair.ts";
 import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
-import { pickEmptyText, pickLabel } from "./pick-scope.ts";
-import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { AnswerNotDelivered, createPool, startsReviewers, type PoolDeps } from "./pool.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { gateReviewJudge, loadReviewerGate } from "./reviewer-port.ts";
-import { publisherStateOf, reviewerStateOf } from "./concern-states.ts";
 import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
-import { claimantOf } from "./settings.ts";
 import { defaultHerdr } from "./pool-herdr.ts";
 import { defaultDrainStore, updateNoteOf } from "./pool-drain.ts";
 import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
-import type { UpdateNote } from "./board-view/update-banner.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
-import { ciViewOf } from "./ci-spend/view.ts";
-import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
+import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
-import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
-import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
+import { claimantOf, hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
+import { EFFORTS, MODELS } from "./settings-read.ts";
 import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from "./settings-edit.ts";
 import { type PluginsApi, pluginsApi, type PluginsSeam } from "./plugins-api.ts";
 import { PluginCommandRefusal } from "../plugins/manage.ts";
 import { isObject } from "./json-value.ts";
-import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
+import type { Json } from "./local-http.ts";
+import type { Ticket, TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
+import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
-import { startHealth, type HealthView } from "./health-route.ts";
+import { startHealth } from "./health-route.ts";
+import { answerKeyed, holdsRun, plansOf, queueView, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf, type QueueView } from "./read-routes.ts";
+import { startBoardThread } from "./board-thread.ts";
+import { REQUEST_THREAD } from "./thread-messages.ts";
+import { toolVersionOf } from "../plugins/health-read.ts";
+import { agentOrgVersionDefault } from "./plugin-contract.ts";
+
+// The reads moved to `read-routes.ts` (A11-282); the UI's client and the tests name them here.
+export { holdsKey, type ConfigView, type PickView, type QueueView, type SavedChoice, type TicketsPageView, type TicketView, type WritersView } from "./read-routes.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -70,8 +74,6 @@ const TRACKER_MS = 120_000;
 export const FEEDBACK_MS = 180_000;
 /** How long herdr web ui may take to mint a terminal pairing code before the link goes out plain (A11-93). */
 const TERMINAL_PAIR_MS = 5_000;
-/** How long a reading of who holds the open tickets stands. */
-const PEOPLE_FRESH_MS = 300_000;
 
 export type BoardDeps = Readonly<{
   settings: TicketSettings;
@@ -103,26 +105,16 @@ export type BoardDeps = Readonly<{
   plugins?: PluginsSeam;
   /** Whether the plugins' checks start when the board is made, so the first page read finds them (A11-270): `serve` sets it; a test's board starts none. */
   warmPlugins?: boolean;
-  /** What `/api/health` answers (A11-282): the loop's delay and the spawns that held it. Absent, the route is not served, as on an instance from before it. */
-  health?: () => HealthView;
+  /** What `/api/health` answers (A11-282): the loop's delay and the spawns that held it, or the request thread's view of both threads. Absent, the route is not served, as on an instance from before it. */
+  health?: () => unknown;
+  /** Told the queue after every change to it: the board thread posts the request thread a snapshot (A11-282). */
+  queueChanged?: (queue: Queue) => void;
 }>;
 
 /** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
 async function servedName(exposure: Exposure | undefined): Promise<string | null> {
   return exposure === undefined || exposure.ports() === null ? null : exposure.machineName();
 }
-
-/** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
-export function holdsKey(request: Pick<IncomingMessage, "headers">, key: string): boolean {
-  const header = request.headers["x-ticket-token"];
-  return header !== undefined && sameSecret(String(header), key);
-}
-
-/**
- * The settings' choices: the model and effort a ticket queued from now on runs with, those a ticket planned first is planned with, and those a
- * new-ticket request is written with. The writer's are absent until one is chosen, and the host file's are in force then.
- */
-export type SavedChoice = RunChoice & Readonly<{ planModel: string; planEffort: string; writerModel?: string; writerEffort?: string }>;
 
 /** A rule that also accepts "", which clears the part: the host file's value is in force again. */
 const clearable = (check: (value: string) => void) => (value: string) => { if (value !== "") check(value); };
@@ -133,33 +125,17 @@ const CHOICE_PARTS: Readonly<Record<keyof SavedChoice, (value: string) => void>>
   writerModel: clearable(checkModel), writerEffort: clearable(checkEffort),
 };
 
-/** The saved choice. A saved value the board no longer offers falls back, so queueing with the settings is never refused. */
-function readChoice(path: string): SavedChoice {
-  // Planning is the harder job, so it starts on the most capable model; the person changes either in Settings.
-  const fallback: SavedChoice = { model: "opus", effort: "high", planModel: "opus", planEffort: "high" };
-  if (!existsSync(path)) return fallback;
-  try {
-    const saved = JSON.parse(readFileSync(path, "utf8")) as Partial<SavedChoice>;
-    const valid = (part: Exclude<keyof SavedChoice, "writerModel" | "writerEffort">, allowed: readonly string[]) => (allowed.includes(String(saved[part])) ? String(saved[part]) : fallback[part]);
-    // A writer part is kept only while the board offers it, and is left out when nothing is chosen, so the choice names no value of its own.
-    const writerModel = String(saved.writerModel);
-    const writerEffort = String(saved.writerEffort);
-    return { model: valid("model", MODELS), effort: valid("effort", EFFORTS), planModel: valid("planModel", MODELS), planEffort: valid("planEffort", EFFORTS),
-      ...(MODELS.includes(writerModel) ? { writerModel } : {}), ...(EFFORTS.includes(writerEffort) ? { writerEffort } : {}) };
-  } catch {
-    return fallback;
-  }
-}
-
 /** The choice with `change` made to it. A writer part changed to "" is cleared, so the file names no value for it again. */
 function applyChange(choice: SavedChoice, change: Partial<SavedChoice>): SavedChoice {
   const { writerModel, writerEffort, ...kept } = { ...choice, ...change };
   return { ...kept, ...(writerModel ? { writerModel } : {}), ...(writerEffort ? { writerEffort } : {}) };
 }
 
+/** Written beside the file and renamed over it, so the request thread, which reads it for `/api/config`, never reads half of it (A11-282). */
 function writeChoice(path: string, choice: SavedChoice): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(choice)}\n`);
+  writeFileSync(`${path}.next`, `${JSON.stringify(choice)}\n`);
+  renameSync(`${path}.next`, path);
 }
 
 function checkModel(model: string): void {
@@ -223,81 +199,22 @@ function writerPlacement(body: Json, form: WriterRun["form"]): Placement {
   return body.placement;
 }
 
-/** What the routes act on: the settings and seams, the queue's store, the pool, the tickets the page last read, and the functions that make a queue change. */
-type Board = Readonly<{
+/** What the routes act on: the reads' board (`read-routes.ts`), with the seams, the queue's store and pool as the writes take them, and the functions that make a queue change. */
+type Board = ReadBoard & Readonly<{
   deps: BoardDeps;
-  settings: TicketSettings;
-  source: TicketSource;
   store: { get: () => Queue; set: (next: Queue) => void };
   pool: NonNullable<BoardDeps["pool"]>;
   now: () => number;
-  /** The tickets the page last listed, and the latest claim each in-work one without a run here carries, as the tracker last said (A11-168). */
-  known: { tickets: Map<string, Ticket>; claims: Map<string, string> };
-  /** This instance's name as a claim names it (`claimantOf`), read once. */
-  claimant: () => string;
-  plans: boolean;
-  /** The version this instance runs, the breaking update that drains, if one does (A11-169), and the version an update is moving to while it moves (A11-217). */
-  update: () => Readonly<{ version: string | null; note: UpdateNote | null; next: string | null }>;
   wake: () => void;
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
-  whoAmI: () => Promise<Assignee | null>;
-  terminalAddress: () => Promise<string | null>;
-  scopesOnDemand: () => boolean;
-  whoHolds: () => Promise<People>;
   plugins: PluginsApi;
 }>;
-
-/** Whether this instance's queue holds a run for the ticket, in any phase. */
-const holdsRun = ({ store }: Pick<Board, "store">, key: string): boolean => store.get().entries.some((entry) => entry.ticket.key === key);
-
-/**
- * A ticket as the page is sent it, with `taken` where another instance holds it (A11-144, A11-168): the tracker shows it in a taken state and its latest claim, as the board
- * last read it, names another instance. A ticket this instance holds a run for is never taken. Pick shows the state and does not let the ticket be queued here.
- */
-function withTaken<T extends Ticket>(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: T): T & Readonly<{ taken?: string }> {
-  const held = holdsRun(board, ticket.key);
-  const state = held ? null : takenState(ticket, board.settings.takenStates, board.known.claims.get(ticket.key), board.claimant());
-  return state === null ? ticket : { ...ticket, taken: state };
-}
-
-/** A ticket as `/api/tickets` answers it: with `taken` where it holds. The UI's client names this type, so a field renamed here fails its `tsc`. */
-export type TicketView = ReturnType<typeof ticketView> & Readonly<{
-  /** Never sent now (A11-257): nothing holds a ticket for an open decision. The page's and the built UI's dead branches still read it, and A11-202, A11-241 and A11-245 hold those files; a follow-up removes both. */
-  needsDecision?: Readonly<{ kind: string; reason: string }>;
-}>;
-
-function ticketView(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: Ticket) {
-  return withTaken(board, ticket);
-}
-
-/** One page of a scope's tickets as `/api/tickets?assignee=` answers it: each ticket as `/api/tickets` shows it, and the cursor of the next page or null. */
-export type TicketsPageView = Readonly<{ tickets: readonly TicketView[]; next: string | null }>;
 
 /** What `/api/choice` answers: the choice as saved. */
 export type ChoiceView = Readonly<{ choice: SavedChoice }>;
 
-/** What `/api/pick` answers: the words an empty Pick list says. */
-export type PickView = Readonly<{ empty: ReturnType<typeof pickEmptyText> }>;
-
 /** What `/api/queue-children` answers: the queue after, the keys it queued, and a note on any it left out or ordered by identifier, or null. */
 export type QueueChildrenView = Readonly<{ queue: QueueView; keys: readonly string[]; note: string | null }>;
-
-/**
- * Read the claim of each of `tickets` a claim could matter for: in a taken state, with no run here. The answer replaces what the board kept for them. A source with no
- * `claims` answers none, so none is taken; one that cannot be asked leaves none of these taken either, since a claim the board could not read is not another instance's.
- * The queue route reads again before it refuses anything.
- */
-async function readClaims(board: Pick<Board, "settings" | "source" | "store" | "known">, tickets: readonly Ticket[]): Promise<void> {
-  const { known, settings, source } = board;
-  const keys = tickets.filter((ticket) => !holdsRun(board, ticket.key) && inWork(ticket, settings.takenStates)).map((ticket) => ticket.key);
-  for (const key of keys) known.claims.delete(key);
-  if (keys.length === 0 || source.claims === undefined) return;
-  try {
-    for (const [key, claimant] of await source.claims(keys)) known.claims.set(key, claimant);
-  } catch (err) {
-    process.stderr.write(`ticket:serve: the tracker could not say who claimed the in-work tickets, so none is shown as taken: ${String((err as Error)?.message ?? err)}\n`);
-  }
-}
 
 /** A queue route's answer when it refuses: the status and the sentence. */
 type Refusal = Readonly<{ status: number; error: string }>;
@@ -368,131 +285,6 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
   const fresh = await source.read(key);
   if (fresh === null) throw new Error(of === undefined ? `no ticket ${key}` : `no ticket ${key}, a sub-issue of ${of}`);
   return fresh;
-}
-
-/** What `/api/queue` answers, and every route that changes the queue. The UI's client names this type, so a field renamed here fails its `tsc`. */
-export type QueueView = ReturnType<typeof queueView>;
-
-/** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
-function queueView(board: Pick<Board, "store" | "pool" | "update" | "settings">) {
-  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
-  // is sent it, without a Grill run's ticket text (A11-134).
-  // `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261).
-  const { ciSpend: _ciSpend, ...queue } = board.store.get();
-  const entries = board.store.get().entries.map((entry) => {
-    const ci = ciViewOf(board.store.get(), entry, board.settings.ciBudgetMinutes);
-    return { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) };
-  });
-  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
-    afterMergeChecks: afterMergeView(board.settings.stateDir) };
-}
-
-/**
- * A run as the page is sent it, without the copies of its ticket's text the board keeps to tell a change by (`briefedAgainst`, `plannedAgainst`; A11-167): the page draws a change from `ticketChange` and
- * `ticketChanges`, which hold the two texts of a change, and each run already carries its ticket.
- */
-function shownEntry(entry: Entry): Entry {
-  const { briefedAgainst: _briefed, plannedAgainst: _planned, ticketChanges, talkFrom, ...shown } = entry;
-  // Only the latest change is drawn; and a talk session's copy of the run it replaced is shown as that run is.
-  return { ...shown, ...(ticketChanges ? { ticketChanges: ticketChanges.slice(-1) } : {}), ...(talkFrom ? { talkFrom: shownEntry(talkFrom as Entry) } : {}) };
-}
-
-/** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
-function writerViewOf(run: WriterRun) {
-  return { ...shownWriter(run), status: writerStatus(run) };
-}
-
-/** A new-ticket run without its Grill's ticket text: the board keeps that text to compare, and the page is not sent it (A11-134). */
-function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
-  const { startedFrom: _startedFrom, ...shown } = run;
-  return shown;
-}
-
-/** What `/api/writer` answers, and every route that changes a new-ticket request. */
-export type WritersView = ReturnType<typeof writersViewOf>;
-
-/** The new-ticket requests, each with its status, as the page shows them. */
-function writersViewOf(queue: Queue) {
-  return { runs: (queue.writers ?? []).map(writerViewOf) };
-}
-
-/** What `/api/config` answers: the board's choices and capabilities. The UI's client names this type, so a field renamed here fails its `tsc`. */
-export type ConfigView = Awaited<ReturnType<typeof configView>>;
-
-async function configView(board: Board) {
-  const { deps, settings, store, plans } = board;
-  const update = board.update();
-  // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
-  // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
-  return { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
-    publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
-    pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
-    writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
-    writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: update.version, updateNote: update.note };
-}
-
-/** The GET routes: the board's config, the Pick lists, the queue and the new-ticket requests. `undefined` when no route here names the request. */
-async function readRoute(board: Board, method: string, path: string, query: URLSearchParams): Promise<[number, unknown] | undefined> {
-  const { deps, settings, source, store, known } = board;
-  if (method === "GET" && path === "/api/config") return [200, await configView(board)];
-  if (method === "GET" && path === "/api/settings") {
-    // The read-only Settings page: each file read fresh, so a refusal names its field, and the instance's own queue and choice (A11-131).
-    return [200, await readSettingsView({ hostPath: deps.hostPath ?? hostFilePath(), settings, queuePath: deps.queuePath, queueMax: store.get().max,
-      choicePath: deps.choicePath, ...(deps.poolDeps?.pluginRecord === undefined ? {} : { pluginRecord: deps.poolDeps.pluginRecord }) })];
-  }
-  if (method === "GET" && path === "/api/plugins") {
-    // The Plugins section is its own call (A11-163): a plugin's checks run programs, and the rest of the page must not wait on them or fail with them. `?check` asks for fresh checks (A11-270).
-    return [200, await board.plugins.read({ check: query.has("check") })];
-  }
-  if (method === "GET" && path === "/api/pick") {
-    // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
-    // say whose key it is, or cannot be asked, leaves the text saying "you": the empty list still names its setting.
-    const user = settings.pick === "assigned" && source.viewer ? await source.viewer().catch(() => null) : null;
-    const view: PickView = { empty: pickEmptyText(settings.pick, user) };
-    return [200, view];
-  }
-  if (method === "GET" && path === "/api/people") {
-    if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so it counts nobody separately" }];
-    return [200, await board.whoHolds()];
-  }
-  if (method === "GET" && path === "/api/tickets" && query.has("assignee")) {
-    // One page of the scope the Assignee row chose, with the cursor of the next: Anyone and Unassigned can hold thousands of tickets, past what one answer carries.
-    if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so a scope is not read on its own" }];
-    const page = await source.scoped!(query.get("assignee") ?? "", query.get("after"));
-    for (const ticket of page.tickets) known.tickets.set(ticket.key, ticket);
-    await readClaims(board, page.tickets);
-    const view: TicketsPageView = { ...page, tickets: page.tickets.map((ticket) => ticketView(board, ticket)) };
-    return [200, view];
-  }
-  if (method === "GET" && path === "/api/tickets") {
-    const tickets = await source.assigned();
-    known.tickets = new Map(tickets.map((ticket) => [ticket.key, ticket]));
-    known.claims = new Map();
-    await readClaims(board, tickets);
-    return [200, tickets.map((ticket) => ticketView(board, ticket))];
-  }
-  if (method === "GET" && path === "/api/parents") {
-    // The parents of the listed tickets that are not listed themselves, so the Pick list can nest under them whatever scope it shows. One the
-    // tracker cannot read is left out, and its children stand on their own.
-    const missing = [...new Set([...known.tickets.values()].flatMap((t) => (t.parent && !known.tickets.has(t.parent) ? [t.parent] : [])))];
-    const read = await Promise.allSettled(missing.map((key) => source.read(key)));
-    return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];
-  }
-  if (method === "GET" && path === "/api/queue") return [200, queueView(board)];
-  if (method === "GET" && path === "/api/writer") return [200, writersViewOf(store.get())];
-  if (method === "GET" && path === "/api/health" && deps.health !== undefined) return [200, deps.health()];
-  return undefined;
-}
-
-/**
- * Whether the run that holds the terminal a worker link names has ended, as the board holds it (A11-129). The page's service asks this before it sends
- * a paired browser on, and a board with no terminal names none.
- */
-async function terminalRunFor(board: Board, body: Json): Promise<TerminalRun> {
-  const template = await board.terminalAddress();
-  const link = typeof body.link === "string" ? body.link : "";
-  return template === null ? { state: "unknown" } : terminalRunOf(board.store.get(), template, link);
 }
 
 /** The POST routes that queue tickets, save the choice and settings, change the queue's pause and cap, and mint the terminal's pairing code. */
@@ -760,34 +552,12 @@ export function createBoard(deps: BoardDeps) {
   const { settings, source, codeHost, key } = deps;
   const now = deps.now ?? Date.now;
   let queue: Queue = loadQueue(deps.queuePath, settings.max);
-  const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); } };
+  const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); deps.queueChanged?.(next); } };
   const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, codeHost, hook: { node: process.execPath, bin: BIN } });
   const known = { tickets: new Map<string, Ticket>(), claims: new Map<string, string>() };
   let claimantName: string | undefined;
   const claimant = (): string => (claimantName ??= claimantOf(settings));
   let warnedNoName = false;
-  let viewer: Assignee | null = null;
-
-  /**
-   * The person whose key this is, read once and kept for the life of the instance. A failure is null and is asked again on the next config read,
-   * so a tracker that is down at start-up does not hide the Assignee filter for ever. A source without `me` has no one to name.
-   */
-  async function whoAmI(): Promise<Assignee | null> {
-    if (viewer === null && source.me !== undefined) viewer = await source.me().catch(() => null);
-    return viewer;
-  }
-
-  /** Whether the Assignee row can reach tickets beyond the key's own, one scope at a time: the default list is the key's own, and the source can read the rest. */
-  const scopesOnDemand = (): boolean => settings.pick === "assigned" && source.people !== undefined && source.scoped !== undefined;
-
-  /** Who holds the open tickets, read once in a while: it takes about 12 s on a workspace of 7,000 tickets. Asked again after PEOPLE_FRESH_MS, and never twice at once. */
-  let people: { at: number; value: People } | null = null;
-  let peopleReading: Promise<People> | null = null;
-  async function whoHolds(): Promise<People> {
-    if (people !== null && Date.now() - people.at < PEOPLE_FRESH_MS) return people.value;
-    peopleReading ??= source.people!().then((value) => { people = { at: Date.now(), value }; return value; }).finally(() => { peopleReading = null; });
-    return peopleReading;
-  }
 
   /**
    * The terminal address the page is handed. Served under a name by the exposure, it is the exposure's address unless the stored one names another machine. When the exposure serves
@@ -810,8 +580,7 @@ export function createBoard(deps: BoardDeps) {
     store.set(enqueue(queue, tickets, choice, now(), plan ? planFirst(tickets) : null));
     wake();
   }
-  /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
-  const plans = settings.planner !== null && settings.plan !== null && source.attachPlan !== undefined;
+  const plans = plansOf(settings, source);
 
   /**
    * Which of `tickets` to plan before they are worked, and on what: each without a plan of its own, when this board plans at all. They are
@@ -827,29 +596,19 @@ export function createBoard(deps: BoardDeps) {
 
   const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins, warm: deps.warmPlugins });
   const update = updateReader(deps, store);
-  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, update, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
+  const paths = { hostPath: deps.hostPath, queuePath: deps.queuePath, choicePath: deps.choicePath, pluginRecord: deps.poolDeps?.pluginRecord };
+  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, paths, update, wake, queueTickets, terminalAddress, plugins, health: deps.health, ...trackerReads(source, settings) };
 
   async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
     return routeApi(board, method, path, body, query);
   }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const refused = refusal(request, settings.port);
-    if (refused !== null) return sendJson(response, 403, { error: refused });
-    if (!holdsKey(request, key)) {
-      return sendJson(response, 401, { error: "this is an agent-org instance, which serves no page and answers only to its key: open the board with agent-org ticket:ui" });
-    }
-    const url = new URL(request.url ?? "/", `http://127.0.0.1:${settings.port}`);
-    try {
-      const body = request.method === "POST" ? await readJson(request, API_BODY_BYTES) : {};
-      const [status, value] = await api(request.method ?? "GET", url.pathname, body, url.searchParams);
-      sendJson(response, status, value);
-    } catch (err) {
-      sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
-    }
+    return answerKeyed(request, response, { port: settings.port, key, api });
   }
 
-  return { handle, api, pool, store, queueTickets, wake, plugins };
+  // `known`, `terminalAddress` and `update` are what the board thread's snapshot reads, and where a forwarded write's copies of the page's tickets are kept (`board-thread.ts`).
+  return { handle, api, pool, store, queueTickets, wake, plugins, known, terminalAddress, update };
 }
 
 /**
@@ -953,24 +712,26 @@ async function serve(): Promise<void> {
   if (reviewer !== undefined && startsReviewers(settings)) await reviewer.load();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(), warmPlugins: true, health,
+  const paths = { queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") };
+  // The request thread is told of every queue change once it runs; a change before it starts is in its first snapshot.
+  let thread: ReturnType<typeof startBoardThread> | null = null;
+  const boardDeps: BoardDeps = { settings, source, codeHost, key, ...paths, exposure: active.exposure(), queueChanged: () => thread?.queueChanged(),
     poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } };
   const board = createBoard(boardDeps);
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
+  // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => { void (thread?.stop() ?? Promise.resolve()).finally(() => process.exit(128 + constants.signals[signal])); });
+  }
   await board.pool.ensureSession();
   board.pool.reconcile();
-  // One request's failure ends that request, never the instance.
-  const server = createServer((request, response) => {
-    board.handle(request, response).catch((err) => {
-      process.stderr.write(`ticket:serve: ${request.method} ${request.url?.split("?")[0]}: ${String((err as Error)?.message ?? err)}\n`);
-      if (response.headersSent) response.destroy();
-      else sendJson(response, 500, { error: "the instance failed to answer" });
-    });
-  });
-  server.listen(settings.port, "127.0.0.1", () => {
-    process.stdout.write(`ticket mode instance: 127.0.0.1:${settings.port}, which serves no page\n  open the board: agent-org ticket:ui\n`
-      + `  watch the workers: herdr session attach ${settings.herdrSession}\n  worktrees under ${settings.worktreeRoot}\n`);
-  });
+  // The HTTP server runs on the request thread (A11-282), so the pool's synchronous calls below hold no request. This thread stays the queue's one writer.
+  thread = startBoardThread({ board, health, terminal: settings.terminal,
+    data: { role: REQUEST_THREAD, settings, key, claimant: claimantOf(settings), paths, toolVersion: toolVersionOf(), agentOrgVersion: agentOrgVersionDefault() },
+    start: (workerData) => new Worker(new URL("./request-thread.ts", import.meta.url), { workerData }),
+    listening: (port) => {
+      process.stdout.write(`ticket mode instance: 127.0.0.1:${port}, which serves no page\n  open the board: agent-org ticket:ui\n`
+        + `  watch the workers: herdr session attach ${settings.herdrSession}\n  worktrees under ${settings.worktreeRoot}\n`);
+    } });
   setInterval(() => { void board.pool.tick(); }, intervalMs(process.env, "TICK_MS", TICK_MS));
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, intervalMs(process.env, "TRACKER_MS", TRACKER_MS));

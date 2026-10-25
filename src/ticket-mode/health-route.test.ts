@@ -1,12 +1,13 @@
-// no-token: gh -- the board is a real `createBoard` with the tracker, the code host and the pool injected; the monitor and the ledger are fakes; nothing is spawned
+// no-token: gh -- the board is a real `createBoard` with the tracker, the code host and the pool injected; the monitor and the ledger are fakes, but for the request thread's, under which this Node runs `sh -c true` twice
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import type { BlockingSite } from "./blocking-ledger.ts";
-import { HEALTH_SITES, healthView, type HealthView } from "./health-route.ts";
+import { HEALTH_SITES, healthView, type HealthView, requestHealthView, startRequestHealth } from "./health-route.ts";
 import type { LoopReading } from "./loop-delay.ts";
 import { createBoard, intervalMs } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
@@ -47,4 +48,24 @@ test("an interval override is a whole number of ms above 0 in AGENT_ORG_<name>, 
   assert.equal(intervalMs({ AGENT_ORG_TICK_MS: "1500" }, "TICK_MS", 30_000), 1_500);
   for (const bad of [undefined, "", "0", "-5", "1.5", "soon"]) assert.equal(intervalMs({ AGENT_ORG_TICK_MS: bad }, "TICK_MS", 30_000), 30_000, String(bad));
   assert.equal(intervalMs({ AGENT_ORG_TRACKER_MS: "900" }, "TICK_MS", 30_000), 30_000, "each override names its own interval");
+});
+
+test("the request thread's health is both loops, how old the board thread's snapshot is, the board thread's spawns, and the request thread's own count", () => {
+  const requests = { ...READING, p99Ms: 4 };
+  const latest = { snapshot: { loop: READING, blocking: SITES.slice(0, 2) }, receivedAt: 1_000 };
+  assert.deepEqual(requestHealthView(requests, latest, 3_500, 0), { loop: { requests, board: READING }, boardSnapshotAgeMs: 2_500, blocking: SITES.slice(0, 2), requestThreadSyncCalls: 0 });
+  assert.equal(requestHealthView(requests, latest, 900, 0).boardSnapshotAgeMs, 0, "a clock that steps back never reads a negative age");
+});
+
+test("the request thread counts and says each synchronous spawn after it listens, and none before", () => {
+  const said: string[] = [];
+  const health = startRequestHealth({ latest: () => ({ snapshot: { loop: READING, blocking: [] }, receivedAt: 0 }), now: () => 0, err: (line) => said.push(line) });
+  // Through the module object, as the wrappers are put on it: a named import of this test file's bundle keeps the original.
+  childProcess.spawnSync("sh", ["-c", "true"]);
+  assert.equal(health.view().requestThreadSyncCalls, 0, "a spawn before it listens is its start's");
+  assert.deepEqual(said, []);
+  health.listening();
+  childProcess.spawnSync("sh", ["-c", "true"]);
+  assert.equal(health.view().requestThreadSyncCalls, 1);
+  assert.match(said.join(""), /^ERROR request thread: synchronous sh at \S+\n$/);
 });

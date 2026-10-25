@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChoicePart } from "./config-schema.ts";
 import { defaultSchema } from "../plugins/schema.ts";
-import { pluginProblems } from "./plugins.ts";
+import { pluginProblems, type ProblemOptions } from "./plugins.ts";
 import { hostFactsOf } from "./plugin-contract.ts";
 import { ticketFolder } from "./ticket-paths.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
@@ -37,6 +37,8 @@ export type SettingsReadOptions = Readonly<{
   choicePath: string;
   /** Claude Code's install record, when it is not the default one. */
   pluginRecord?: string;
+  /** What the plugins' contract rows read the release and the path through, when not the machine's programs: the instance's request thread spawns nothing on a read (A11-282). */
+  problems?: Pick<ProblemOptions, "agentOrgVersion" | "onPath">;
   /** Loads `project-config.ts`: the default is the import. A test passes one that fails, to see the failure is shown and not hidden. */
   loadProject?: () => Promise<ProjectConfig>;
 }>;
@@ -147,7 +149,7 @@ export async function readSettingsView(options: SettingsReadOptions): Promise<Vi
 /** The view over what was read: the sections, the choice saved, the number of workers and its source, and the plugins the board runs with and their contracts. */
 function viewOver(options: SettingsReadOptions, sections: Sections): View {
   const pluginRecord = options.pluginRecord === undefined ? {} : { record: options.pluginRecord };
-  const plugins = pluginProblems({ wanted: options.settings.plugins, folder: ticketFolder(options.settings, "<ticket>"), host: hostFactsOf(options.settings) }, pluginRecord);
+  const plugins = pluginProblems({ wanted: options.settings.plugins, folder: ticketFolder(options.settings, "<ticket>"), host: hostFactsOf(options.settings) }, { ...options.problems, ...pluginRecord });
   return settingsView({
     entries: defaultSchema(),
     host: sections.host,
