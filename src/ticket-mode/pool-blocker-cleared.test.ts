@@ -124,10 +124,20 @@ test("A11-258: a needs-human about something unrelated to its pull requests is l
 
 test("A11-258: a needs-human whose ticket the tracker cancelled is not said to have its blocker cleared", async () => {
   const made = world();
-  parkedNeedsHuman(made, { body: "Closes NBF-1" });
   made.tracker.seed(fakeTicket("NBF-1", { status: "Canceled", statusType: "canceled" }));
+  parkedNeedsHuman(made, { body: "Closes NBF-1" });
   await made.pool.refreshTracker();
-  assert.deepEqual([runStatus(run(made)), run(made).workspace], ["cancelled", "w1"]);
+  assert.deepEqual([runStatus(run(made)), run(made).workspace, run(made).pullStates], ["cancelled", "w1", { [PR]: "merged" }], "its bodies are never read for a cancelled ticket, so it stays parked");
+  assert.equal(reasonOf(run(made)).line, QUESTION);
+});
+
+test("A11-258: a cancelled ticket's parked needs-human run, whose merged bodies were read, has its workspace closed, and its card still reads Cancelled with the question", async () => {
+  const made = world();
+  made.tracker.seed(fakeTicket("NBF-1", { status: "Canceled", statusType: "canceled" }));
+  parkedNeedsHuman(made, { body: "Closes NBF-1" });
+  made.store.set({ ...made.store.get(), entries: [{ ...run(made), declared: { kind: "closes", urls: [PR] } }] });
+  await made.pool.refreshTracker();
+  assert.deepEqual([closed(made).map((args) => args.at(-1)), run(made).workspace, runStatus(run(made)), made.tracker.ticketOf("NBF-1")?.statusType], [["w1"], undefined, "cancelled", "canceled"]);
   assert.equal(reasonOf(run(made)).line, QUESTION);
 });
 

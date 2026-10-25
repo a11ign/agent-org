@@ -56,7 +56,7 @@ const CANCELLED: ReadonlySet<string> = new Set(["canceled", "duplicate"]);
 
 /** Whether a finished run ended `needs-human` and every pull request it is about has merged or closed with one merged. PURE. */
 export const isMergedBlocker = (entry: ViewEntry): boolean =>
-  entry.phase === "finished" && entry.outcome?.kind === "needs-human" && settledByPulls(entry) === "completed" && !CANCELLED.has(entry.trackerState ?? "");
+  entry.phase === "finished" && entry.outcome?.kind === "needs-human" && settledByPulls(entry) === "completed";
 
 /**
  * Whether the board lets a run's parked workspace go (A11-258): it is parked (and no talk session, a person at its terminal), ended `needs-human`, its pull requests merged, and their bodies are read, so the
@@ -73,5 +73,5 @@ export const blockerClearedHead = (names: string): string => `the blocker cleare
 
 /** The head of the card line of a run whose `needs-human` blocker merged ({@link blockerClearedHead}), or null for a run that is not one. PURE. */
 export function blockerClearedLine(entry: ViewEntry): string | null {
-  return isMergedBlocker(entry) ? blockerClearedHead(mergedNames(entry)) : null;
+  return isMergedBlocker(entry) && !CANCELLED.has(entry.trackerState ?? "") ? blockerClearedHead(mergedNames(entry)) : null;
 }

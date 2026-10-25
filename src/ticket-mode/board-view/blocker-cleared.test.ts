@@ -48,6 +48,8 @@ test("A11-258: a parked needs-human run is released once every pull request it h
   assert.equal(isReleasable({ ...merged, pullStates: { [PR]: "open" } }), false);
   assert.equal(isReleasable({ ...merged, review: [{ repo: "agent-org", url: PR }, { repo: "lab", url: OTHER }], pullStates: { [PR]: "merged", [OTHER]: "open" } }), false, "every pull request it holds");
   assert.equal(isReleasable({ ...merged, pullStates: { [PR]: "closed" } }), false, "closed unmerged is cancelled, not cleared");
+  assert.equal(isReleasable({ ...merged, trackerState: "canceled" }), true, "a cancelled ticket's parked workspace is let go too");
+  assert.equal(isReleasable({ ...merged, trackerState: "duplicate" }), true);
   assert.equal(isReleasable({ ...merged, outcome: { kind: "crashed", reason: "x" } }), false);
 });
 
