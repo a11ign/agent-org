@@ -236,6 +236,14 @@ test("A11-106: the stack section says pull request, not draft pull request, and 
   assert.ok(text.includes("That is expected, not a failure: do not retarget, rebase, push or merge to fix it."), "and that a stale base is not a failure");
 });
 
+test("A11-248: a stacked worker is told agent-org merges the default branch into its pull request after the one below merged, and what a conflict round asks of it", () => {
+  const draft = "https://github.com/o/nbl-ui-netbox/pull/12";
+  const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } }];
+  const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
+    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }] });
+  assert.ok(text.includes("It then merges the default branch into yours. If that conflicts, you get a conflict round that names the pull request that merged: merge the default branch in, keep both changes, re-run the checks and push."));
+});
+
 test("A11-238: a stacked worker is told a stacked step needs no person to merge, that the arm bot merges it up to its own pull request, and never to unstack", () => {
   const draft = "https://github.com/o/nbl-ui-netbox/pull/12";
   const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } }];
