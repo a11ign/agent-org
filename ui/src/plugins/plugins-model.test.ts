@@ -1,7 +1,7 @@
 import { skillRefs } from "../../../src/ticket-mode/plugin-contract.ts";
 import { a11ign, A11IGN_CONTRACT, answerOf, claudePlugin, failing } from "../../test/plugins/plugins-stand.ts";
 import { chosenSkill, claudeStatusOf, healthLinesOf, isPluginEntry, needsOf, SKILL_JOBS, skillChange, skillsNamedIn } from "./claude-model.ts";
-import { checkRowsOf, pickOf, shownPlugin, statusOf } from "./plugins-model.ts";
+import { checkedWords, checkRowsOf, NOT_CHECKED_YET, notChecked, pickOf, shownPlugin, statusOf } from "./plugins-model.ts";
 
 const WRITER = SKILL_JOBS[0];
 const REVIEW = SKILL_JOBS[1];
@@ -32,8 +32,14 @@ describe("a card's status, in words", () => {
 
   it("is Unknown for every concern while the instance cannot be reached, and each check is not checked", () => {
     const concern = concernOf(answerOf(), "tracker");
-    expect(statusOf(concern, "personal")).toEqual({ tone: "unknown", text: "Unknown" });
-    expect(checkRowsOf(concern, "personal")).toEqual([{ name: "tracker (linear)", detail: "Not checked: personal can't be reached.", tone: "unknown", fixes: [] }]);
+    expect(statusOf(concern, notChecked("personal"))).toEqual({ tone: "unknown", text: "Unknown" });
+    expect(checkRowsOf(concern, notChecked("personal"))).toEqual([{ name: "tracker (linear)", detail: "Not checked: personal can't be reached.", tone: "unknown", fixes: [] }]);
+  });
+
+  it("is Unknown before the instance's first checks have finished, and each check says it is not checked yet (A11-270)", () => {
+    const concern = concernOf(answerOf({ checkedAt: null }), "tracker");
+    expect(statusOf(concern, NOT_CHECKED_YET)).toEqual({ tone: "unknown", text: "Unknown" });
+    expect(checkRowsOf(concern, NOT_CHECKED_YET)).toEqual([{ name: "tracker (linear)", detail: "Not checked yet: the checks are running.", tone: "unknown", fixes: [] }]);
   });
 
   it("shows the plugin that runs the concern, else the one a block names", () => {
@@ -102,5 +108,21 @@ describe("a plugin to add", () => {
   it("is a name and a marketplace with an @ between", () => {
     expect([isPluginEntry("a11ign@applied-ai"), isPluginEntry("a11ign"), isPluginEntry("a b@c"), isPluginEntry("@c")]).toEqual([true, false, false, false]);
     expect(A11IGN_CONTRACT.contract).toBe("1.0");
+  });
+});
+
+describe("how old the checks are, under the header (A11-270)", () => {
+  const at = Date.parse("2026-10-25T14:00:00Z");
+  it("says Checking the plugins… before the first checks have finished", () => {
+    expect(checkedWords({ checkedAt: null, checking: true }, at)).toBe("Checking the plugins…");
+  });
+  it("says how long ago they finished, as the board says an age, and that they are running again", () => {
+    expect(checkedWords({ checkedAt: "2026-10-25T14:00:00.000Z", checking: false }, at + 30_000)).toBe("Checked just now");
+    expect(checkedWords({ checkedAt: "2026-10-25T14:00:00.000Z", checking: false }, at + 120_000)).toBe("Checked 2 min ago");
+    expect(checkedWords({ checkedAt: "2026-10-25T14:00:00.000Z", checking: true }, at + 120_000)).toBe("Checked 2 min ago · checking again…");
+  });
+  it("says nothing of an instance from before A11-270, which answers no age", () => {
+    const older = JSON.parse(JSON.stringify({ checkedAt: undefined, checking: undefined })) as Parameters<typeof checkedWords>[0];
+    expect(checkedWords(older, at)).toBeNull();
   });
 });

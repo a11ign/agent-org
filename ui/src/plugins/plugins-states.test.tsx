@@ -29,7 +29,8 @@ describe("the page while the plugins are read", () => {
     plugins.fails = undefined;
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await screen.findByRole("tablist", { name: "Plugin kind" });
-    expect(fetchWith.paths.filter((path) => path.endsWith("/api/plugins"))).toHaveLength(2);
+    expect(fetchWith.paths.filter((path) => /\/api\/plugins(\?check)?$/.test(path))).toHaveLength(2);
+    expect(fetchWith.paths.at(-1)?.endsWith("/api/plugins?check") ?? false, "Retry asks the instance to run the checks again (A11-270)").toBe(true);
   });
 });
 
@@ -131,7 +132,8 @@ describe("health unknown", () => {
     const { fetchWith } = await pageOn({ stand: sshDown(), plugins: pluginsOf() });
     await screen.findByText("Plugin health is unknown.");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(fetchWith.paths.filter((path) => path.endsWith("/api/plugins"))).toHaveLength(2));
+    await waitFor(() => expect(fetchWith.paths.filter((path) => path.endsWith("/api/plugins?check"))).toHaveLength(1));
+    expect(fetchWith.paths.filter((path) => path.endsWith("/api/plugins"))).toHaveLength(1);
   });
 
   it("says a Claude plugin's health is unknown too", async () => {

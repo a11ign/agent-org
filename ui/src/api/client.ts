@@ -47,6 +47,8 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     writer: read<WritersView>("/api/writer"),
     settings: read<SettingsView>("/api/settings"),
     plugins: read<PluginsAnswer>("/api/plugins"),
+    /** The plugins, with the instance asked to run their checks again (A11-270): what a person's Retry and "Read the plugins again" send. */
+    pluginsCheckedAgain: read<PluginsAnswer>("/api/plugins?check"),
 
     enqueue: (keys: readonly string[], choice: QueueRequest) => post<QueueView>("/api/queue", { keys, ...choice }),
     enqueueChildren: (key: string, choice: QueueRequest) => post<QueueChildrenView>("/api/queue-children", { key, ...choice }),
