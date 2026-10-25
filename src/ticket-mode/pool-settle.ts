@@ -23,7 +23,7 @@ import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./
 import { writtenStep } from "./outcome.ts";
 import { escalationItem, escalationReason, questionEscalation, questionText } from "./escalation.ts";
 import { recordCurrentStep } from "./queue/queue-run-detail.ts";
-import { recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
+import { recordOutcomeBlocks, recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { clearPartial } from "./queue/queue-next-step.ts";
 import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
@@ -587,8 +587,13 @@ export function pullHeadsOf(open: readonly { url: string; read: PullFeedback }[]
     if (read.head === null) return [];
     const review = reviewAtHead(read);
     return [[url, { head: read.head, approved: read.approvedAtHead, ...(review === undefined ? {} : { review }), red: read.failing,
-      ...(read.pendingRequired === undefined ? {} : { pending: read.pendingRequired }) }]];
+      ...(read.pendingRequired === undefined ? {} : { pending: read.pendingRequired }), mergeable: read.mergeable }]];
   }));
+}
+
+/** The open pull requests that read `changes-requested` at their head, by URL with that head, from the reads of them (A11-258): what a `needs-human` run ended on, for {@link pullHeadsOf}'s `review`. */
+export function blockedPullsOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, string>> {
+  return Object.fromEntries(Object.entries(pullHeadsOf(open)).filter(([, { review }]) => review === "changes-requested").map(([url, { head }]) => [url, head]));
 }
 
 /** The commit each open pull request is at, by URL, from the reads of them (A11-153): {@link pullHeadsOf} without the approval. */
@@ -601,7 +606,7 @@ export function headCommitsOf(open: readonly { url: string; read: PullFeedback }
  * recorded, so a queued run that shares one with it waits from now, not from the next watch. The read and the record are one synchronous block, so no
  * start pass can fall between the run ending and its files being recorded. When a read fails, nothing is recorded: the run holds its repository until
  * a watch records the files (`overlapWait`). The same read records the head each open pull request is at as the run ends (`outcomeHeads`), which is what a
- * later push answers (A11-153). That is for a draft or ready pull request, and for a run that ends `needs-human`, which has no result: its pull requests are the
+ * later push answers (A11-153), and, for a run that ends `needs-human`, which of them were changes requested (`outcomeBlocks`, A11-258). That is for a draft or ready pull request, and for a run that ends `needs-human`, which has no result: its pull requests are the
  * round's it continued. Only a draft or ready pull request's files are recorded, as before.
  */
 function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
@@ -621,7 +626,8 @@ function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): voi
     return;
   }
   const open = readable.filter(({ read }) => read.state === "open");
-  update(ctx, (queue) => recordOutcomeHeads(isDraftOrReady ? recordPullFiles(queue, key, pullFilesOf(open)) : queue, key, headCommitsOf(open)));
+  const blocked = outcome.kind === "needs-human" ? blockedPullsOf(open) : {};
+  update(ctx, (queue) => recordOutcomeBlocks(recordOutcomeHeads(isDraftOrReady ? recordPullFiles(queue, key, pullFilesOf(open)) : queue, key, headCommitsOf(open)), key, blocked));
 }
 
 /**

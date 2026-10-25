@@ -6,6 +6,7 @@
 // any finished run. A run is about the pull requests it holds (`pullsOf`: a round's `review`), or, when it holds none, the ones its own reason names. This file is in `board-view/` because the card words the
 // line from it, and the page runs only what that folder holds.
 import { pullLabel } from "./pull-label.ts";
+import { liftedBlocks } from "./pull-answer.ts";
 import { settledByPulls } from "./pull-settled.ts";
 import { pullsOf, type ViewEntry } from "./view-types-and-filters.ts";
 
@@ -74,4 +75,10 @@ export const blockerClearedHead = (names: string): string => `the blocker cleare
 /** The head of the card line of a run whose `needs-human` blocker merged ({@link blockerClearedHead}), or null for a run that is not one. PURE. */
 export function blockerClearedLine(entry: ViewEntry): string | null {
   return isMergedBlocker(entry) && !CANCELLED.has(entry.trackerState ?? "") ? blockerClearedHead(mergedNames(entry)) : null;
+}
+
+/** `the blocker cleared: the requested changes on <the pull requests> were lifted`, the card line of a `needs-human` run whose open pull requests stopped it on changes requested and are lifted and mergeable now (A11-258), or null. PURE. */
+export function liftedBlockLine(entry: ViewEntry): string | null {
+  const lifted = liftedBlocks(entry);
+  return lifted.length === 0 ? null : `the blocker cleared: the requested changes on ${lifted.map(pullLabel).join(", ")} were lifted`;
 }

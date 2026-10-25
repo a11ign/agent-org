@@ -190,6 +190,7 @@ const GIT_IS_INJECTED_SEAM: Record<string, string> = {
  * the entry names where the value comes from. The verdict stays with the file: an exempted file must not spawn anything that can be git.
  */
 const COMMAND_IS_NOT_GIT: Record<string, string> = {
+  "src/install/shell-command.ts": "the commands are the person's login shell (`$SHELL`, run as `-lic 'type agent-org'` or `-n <file>`), which is a shell and never git",
   "src/agent-tool-update.ts": "`run(program)` is called only with \"codex\", a file under the home's .local/bin, \"claude\", \"curl\" or \"herdr\" (hostSeams, and the tests that inject runProgram); none is git",
   "src/host-kernel.ts": "the privileged command is REBOOT_ARGV (sudo systemctl reboot), compared by value before the spawn; the other argv literals are systemctl",
   "src/host-pnpm.ts": "the command is a PATH entry joined with \"pnpm\", so its basename is always pnpm",

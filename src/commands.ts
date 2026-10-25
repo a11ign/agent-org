@@ -22,6 +22,7 @@ export const COMMANDS = {
   "branches:inventory": "branch-inventory-report.ts",
   "branches:stranded": "stranded-branches.ts",
   "chairman:reply": "messaging/reply-cli.ts",
+  "command:check": "install/shell-command-cli.ts",
   "doctor": "install/doctor.ts",
   "dora": "dora.ts",
   "fleet:batch-now": "fleet-gated-nightly.ts",

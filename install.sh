@@ -15,6 +15,10 @@
 # the version folder as `ui-build/` before `current` moves. A release without the marker installs as it always did, with no download. The releases are fetched
 # from https://github.com/<owner>/<repo>/releases/download (the repository AGENT_ORG_REPO names), or from AGENT_ORG_RELEASES_URL when that is set.
 #
+# It ends by checking that the `agent-org` the person's shell runs is the one it just installed (A11-285): an alias, a function or a file on PATH that runs another copy is shown with its
+# file and line and, after asking on the terminal (or without asking, when there is none), replaced by the installed command, keeping a backup of the file. It does not report success while
+# the person's `agent-org` would run another copy.
+#
 # It checks what it needs (git, tar, gzip, curl, Node, a way to run pnpm) before it writes anything, lists every problem at once with the command that fixes it, and prints
 # a short report for a person: a header, one line per step, the outcome on its own line, then the next commands. --verbose adds where the mirror, the version
 # folder and `current` are (A11-185).
@@ -55,6 +59,7 @@ NOTES=""         # what a person should read between the steps and the outcome
 CHANGED="Nothing was changed."
 TEMPORARY=""     # the launcher being written, removed if the script ends before it is moved into place
 INSTALLED_TAG=""
+FAILED_HEADLINE="agent-org was not installed."  # the failure's headline on a terminal; the command check changes it, since by then agent-org is installed
 LAUNCHER=""
 RUNNER_VIA=""    # how the pinned pnpm runs: "corepack beside node", "corepack on PATH" or "npm exec"
 RUNNER_NOTE=""   # the dependency line's note: empty for the usual corepack beside node
@@ -167,7 +172,7 @@ report_failure() {
     STEPS_SHOWN=1
   fi
   if [ "$STEPS_SHOWN" -eq 1 ]; then printf '\n'; fi
-  if [ "$TTY" -eq 1 ]; then printf '%s\n\n' "${BOLD}${RED}agent-org was not installed.${RESET}"; fi
+  if [ "$TTY" -eq 1 ]; then printf '%s\n\n' "${BOLD}${RED}${FAILED_HEADLINE}${RESET}"; fi
   printf '%s\n  %s\n' "$PROBLEM_LINES" "$CHANGED"
   if [ "$TTY" -eq 0 ]; then printf '\nagent-org install FAILED: %s %s\n' "$reason" "$CHANGED"; fi
 }
@@ -610,6 +615,41 @@ add_command_step() {
   step_done "Added the agent-org command" "$(tilde "$LAUNCHER")"
 }
 
+# The agent-org the person's shell runs must be the one just installed (A11-285). The release's own `command:check --fix --ask` reads what the login shell runs for `agent-org`, and when that is an
+# alias, a function or a file that runs another copy, shows its file and line, asks on the terminal (with none, it replaces without asking) and replaces it with the installed command, keeping a
+# backup of the file. A check that is still not ok ends the script as a failure: the install does not report success while the person's `agent-org` would run another copy. A release that
+# has no such command (an older --version) is not checked.
+check_command_step() {
+  step_begin "Check the agent-org command"
+  if [ ! -f "$CURRENT/src/install/shell-command-cli.ts" ]; then
+    detail "$TAG has no command check, so the agent-org your shell runs is not compared with it"
+    step_done_quietly "Skipped the agent-org command check ($TAG has none)"
+    return 0
+  fi
+  local output="" status=0 line="" problem_line="" fix_line="" refused_line=""
+  output="$(AGENT_ORG_HOME="$AGENT_ORG_HOME" AGENT_ORG_BIN_DIR="$BIN_DIR" node "$CURRENT/src/bin.ts" command:check --fix --ask)" || status=$?
+  while IFS= read -r line; do
+    detail "${line#  }"
+    case "$line" in
+      "  fixed: "*) NOTES="$NOTES""agent-org: ${line#  fixed: }"$'\n' ;;
+      "  no terminal to ask on"*) NOTES="$NOTES""agent-org: ${line#  }"$'\n' ;;
+      "✗ "*) problem_line="${line#✗ }" ;;
+      "    fix: "*) fix_line="${line#    fix: }" ;;
+      "  refused: "*) refused_line="${line#  refused: }" ;;
+    esac
+  done <<<"$output"
+  if [ "$status" -ne 0 ]; then
+    CHANGED="agent-org $TAG is installed in $(tilde "$TOOL") and its command is in $(tilde "$LAUNCHER"), but the agent-org your shell runs is another copy."
+    FAILED_HEADLINE="agent-org $TAG is installed, but your shell runs another agent-org."
+    if [ -z "$problem_line" ]; then
+      fail "The check of the agent-org your shell runs could not run (it exited $status)" "To see why, run" "node '$CURRENT/src/bin.ts' command:check"
+    fi
+    if [ -n "$refused_line" ]; then problem_line="${problem_line%.}. It was not replaced: $refused_line"; fi
+    fail "${problem_line%.}" "To fix it, do this" "${fix_line:-run node '$CURRENT/src/bin.ts' command:check --fix}"
+  fi
+  step_done "Checked the agent-org command"
+}
+
 # What a person should read between the steps and the outcome.
 collect_notes() {
   if [ -d "$LEGACY_CHECKOUT/.git" ]; then
@@ -637,6 +677,7 @@ main() {
   preflight_step
   download_step
   add_command_step
+  check_command_step
   collect_notes
 }
 

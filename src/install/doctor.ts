@@ -56,6 +56,7 @@ import { handInstallCommand, TOOL_HERDR_VERSION } from "./herdr-install.ts";
 import { guardsPresent } from "./interim-guards.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { drainPath, readDrain, type Drain } from "./update-drain.ts";
+import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
 import { runningToolVersion, toolDir, versionNameOf } from "./tool-versions.ts";
 import { buildCandidates, findBuild, UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
 import { declaresUiBuild } from "./ui-asset.ts";
@@ -116,6 +117,8 @@ export type DoctorDeps = Readonly<{
   updateStatus: () => StatusFile;
   /** `herdr integration status` run now (A11-184): its exit status and text. */
   herdrIntegrations: () => RunResult;
+  /** What the person's login shell runs for `agent-org`: an alias, a function or a file, and the copy of the tool that ends in (A11-285). A test injects one, so no shell is started. */
+  shellCommand: () => ShellReading;
   /** The CPU (`process.arch`): which herdr build the hand command downloads (A11-223). */
   arch: string;
   /** The text of `herdr --version` (`herdr 0.9.3`), or null when herdr cannot run. */
@@ -498,6 +501,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     launcher === null
       ? failed("launcher", "`agent-org` is not on PATH", `add its directory to PATH: export PATH="$HOME/.local/bin:$PATH" in your shell's rc file`)
       : ok("launcher", launcher),
+    judgeShellCommand(deps.shellCommand(), shellContext(deps.env, deps.home, hostText(deps))),
     host,
     ...aliasChecks(settings),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", `run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, or by hand: \`${handInstallCommand(deps.platform, deps.arch, deps.env)}\``) : ok("herdr", herdr),
@@ -906,6 +910,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     guards: () => guardsPresent(process.env, homedir(), pathExists),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
     herdrIntegrations: () => runHerdr(["integration", "status"]),
+    shellCommand: () => readShellCommand(realShellDeps(process.env, homedir(), toolDir(process.env, homedir()))),
     herdrVersion: () => {
       const result = runHerdr(["--version"]);
       return result.status === 0 ? result.stdout.trim() : null;

@@ -2,7 +2,7 @@
 // notes are written into a temporary HOME, which is the fake home each test checks
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { CONNECTORS as LINEAR_CONNECTORS } from "../../plugins/linear/connectors.ts";
@@ -17,6 +17,9 @@ import { createTailscale, freshState } from "../../plugins/tailscale/stub.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
 import type { ProgramRunner, Program } from "./gh-account.ts";
 import { type Check, diagnose, type DoctorDeps } from "./doctor.ts";
+import { shimTextFor } from "./launcher.ts";
+import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
+import type { CopyComparison } from "./tool-copy.ts";
 import type { ProfileRepo } from "./onboard-profile.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
 import type { Replacements } from "./interim-guards.ts";
@@ -165,7 +168,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     which: () => "/usr/local/bin/tool",
     ghAs: () => listedGh(),
     replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }),
-    diagnose: async () => [],
+    diagnose: async () => [], shell: { env: {}, home, type: () => null, read: () => null, readlink: () => null, which: () => null, compare: () => ({ kind: "no-install" }), hasInstall: () => false },
     chromium: () => BROWSERS_READY, isRoot: () => false,
     startServices: async (names) => { started.push(...names); return names.map((name) => ({ name, ok: true, line: `started the ${name} service`, address: name === "ui" ? "http://127.0.0.1:4748/" : null })); },
     fetch: linearKnowsTheKey, color: false,
@@ -576,7 +579,14 @@ function greenDoctor(home: string): DoctorDeps {
     drain: () => ({ kind: "none" }), runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
+    shellCommand: () => installedShell(home),
   };
+}
+
+/** The `agent-org` command a green fake home finds: a file on PATH whose copy is the installed tool (A11-285). */
+function installedShell(home: string): ShellReading {
+  const command = join(home, "bin", "agent-org");
+  return { kind: "file", said: command, launcher: command, copyRoot: join(home, ".agent-org", "tool", "current"), defined: { file: command, line: null }, comparison: { kind: "installed" }, noInstall: false };
 }
 
 /** Every file under `dir`, with its text: what a second run must leave exactly as it was. */
@@ -1253,4 +1263,87 @@ test("A11-223: an install that fails to write is a refusal with the hand command
   const w = noHerdr({}, async () => { throw new HerdrInstallRefusal("/h/.local/bin/herdr could not be written: EACCES"); });
   await assert.rejects(onboard(options({ repos: [w.repo] }), w.deps), OnboardRefusal);
   assert.ok(w.printed.includes("  ✗ herdr was not installed: /h/.local/bin/herdr could not be written: EACCES"));
+});
+
+// A11-285: onboard installs the `agent-org` command as the shim and runs the same check install.sh ends with, before its closing doctor pass.
+/** An installed tool at v0.304.1 in the fake home, and a shell that answers `type agent-org` from what the home holds: the alias in `.zshrc` while it is live, else the file in `~/.local/bin`. */
+function commandWorld(host: Record<string, unknown> = {}, over: Partial<OnboardDeps> = {}) {
+  const base = deps({ platform: "linux", ...over });
+  const tool = join(base.home, ".agent-org", "tool");
+  mkdirSync(join(tool, "versions", "v0.304.1", "src"), { recursive: true });
+  writeFileSync(join(tool, "versions", "v0.304.1", "src", "bin.ts"), "");
+  symlinkSync("versions/v0.304.1", join(tool, "current"));
+  if (Object.keys(host).length > 0) writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify(host));
+  const shim = join(base.home, ".local", "bin", "agent-org");
+  const zshrc = join(base.home, ".zshrc");
+  const type = (): string | null => {
+    const rc = existsSync(zshrc) ? readFileSync(zshrc, "utf8") : "";
+    const alias = /^alias agent-org='(.*)'$/m.exec(rc);
+    if (alias !== null) return `agent-org is an alias for ${alias[1]}\n`;
+    return existsSync(shim) ? `agent-org is ${shim}\n` : "agent-org not found\n";
+  };
+  const shell = { ...realShellDeps({ SHELL: "/bin/zsh" }, base.home, tool), type, compare: (root: string): CopyComparison => (root === join(tool, "current") ? { kind: "installed" } : { kind: "older", copy: "v0.276.0", installed: "v0.304.1" }) };
+  const context = shellContext({}, base.home, null);
+  const doctorRow = async () => [judgeShellCommand(readShellCommand(shell), context)];
+  base.stored.set("keychain:agent-org-linear", KEY);
+  const run = (over: Partial<OnboardDeps>) => onboard(options({ repos: [`netbox=${base.repo}`], keychain: "agent-org-linear", start: false }), { ...base.deps, shell, ...over });
+  return { ...base, tool, shim, zshrc, shell, doctorRow, run };
+}
+
+const ALIAS = "alias agent-org='node ~/old/agent-org/src/bin.ts'\n";
+
+test("A11-285: on a host that declares no project, onboard writes the shim and runs the check before the doctor pass", async () => {
+  const world = commandWorld();
+  const seen: string[] = [];
+  const diagnoseSeen = async () => { seen.push(existsSync(world.shim) ? "shim there" : "no shim"); return world.doctorRow(); };
+  await world.run({ diagnose: diagnoseSeen });
+  assert.deepEqual(seen, ["shim there"], "the shim is written before doctor reads");
+  assert.equal(readFileSync(world.shim, "utf8"), shimTextFor(world.tool));
+  assert.equal(statSync(world.shim).mode & 0o777, 0o755);
+  assert.ok(world.printed.some((line) => line.includes("The agent-org command installed")), world.printed.join("\n"));
+  assert.ok(world.printed.includes("agent-org is set up on this machine."));
+});
+
+test("A11-285: unattended, onboard replaces an alias to an old checkout without asking, says so, and keeps the file", async () => {
+  const world = commandWorld();
+  writeFileSync(world.zshrc, `export A=1\n${ALIAS}`);
+  await world.run({ interactive: false, diagnose: world.doctorRow });
+  assert.equal(readFileSync(world.zshrc, "utf8").includes("\n# alias agent-org='node ~/old/agent-org/src/bin.ts'\n"), true);
+  assert.equal(readdirSync(world.home).filter((name) => name.startsWith(".zshrc.before-agent-org-")).length, 1);
+  assert.ok(world.printed.some((line) => line.includes("agent-org command: commented out ~/.zshrc:2")), world.printed.join("\n"));
+  assert.ok(world.printed.includes("agent-org is set up on this machine."), world.printed.join("\n"));
+});
+
+test("A11-285: at a terminal onboard asks first; a no leaves the alias, and onboard ends not fully set up", async () => {
+  const asked: string[] = [];
+  const prompts: Prompts = { ...NO_PROMPTS, confirm: async ({ message }) => { asked.push(message); return false; } };
+  const world = commandWorld({}, { interactive: true, prompts });
+  writeFileSync(world.zshrc, ALIAS);
+  await world.run({ diagnose: world.doctorRow });
+  assert.deepEqual(asked, ["Replace it with the installed command? A backup is kept."]);
+  assert.equal(readFileSync(world.zshrc, "utf8"), ALIAS);
+  assert.ok(world.printed.includes("agent-org is not fully set up: 1 step above needs fixing."), world.printed.join("\n"));
+});
+
+test("A11-285: an alias onboard cannot fix ends it not fully set up, with one ✗ for the command and its doctor row pointing at it", async () => {
+  const world = commandWorld();
+  // The alias is in no start-up file the shell reads, so there is no line to comment out.
+  writeFileSync(join(world.home, "elsewhere"), ALIAS);
+  const shell = { ...world.shell, type: () => "agent-org is an alias for node ~/old/agent-org/src/bin.ts\n" };
+  const printed = world.printed;
+  await world.run({ shell, diagnose: async () => [judgeShellCommand(readShellCommand(shell), shellContext({}, world.home, null))] });
+  assert.equal(printed.filter((line) => line.startsWith("  ✗ agent-org command:")).length, 2, "the ✗ and the doctor row's pointer to it");
+  assert.ok(printed.some((line) => line.includes("I could not find where `agent-org` is defined")), printed.join("\n"));
+  assert.ok(printed.includes("agent-org is not fully set up: 1 step above needs fixing."), printed.join("\n"));
+  assert.ok(!printed.includes("agent-org is set up on this machine."));
+});
+
+test("A11-285: on an org host, whose launcher host:install owns, onboard writes none; and with no installed tool it writes none either", async () => {
+  const org = commandWorld({ primary: "p", projects: [] });
+  await org.run({ diagnose: async () => [] });
+  assert.equal(existsSync(org.shim), false, "an org host's launcher is host:install's");
+  const bare = deps({ platform: "linux" });
+  bare.stored.set("keychain:agent-org-linear", KEY);
+  await onboard(options({ repos: [`netbox=${bare.repo}`], keychain: "agent-org-linear", start: false }), { ...bare.deps, diagnose: async () => [] });
+  assert.equal(existsSync(join(bare.home, ".local", "bin", "agent-org")), false, "no current link, so a shim would run nothing");
 });
