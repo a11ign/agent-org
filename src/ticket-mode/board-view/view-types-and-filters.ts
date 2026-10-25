@@ -20,7 +20,7 @@ export type ViewTicket = Readonly<{
 export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T; children: readonly TicketNode<T>[]; context?: boolean }>;
 
 /** An event a worker declared it waits on (A11-245), as the board reads it: a ticket by its key and a pull request by its address name a ticket's run; a fleet job and a CI run name none. */
-type ViewWait = Readonly<{ kind: "ticket"; key: string }> | Readonly<{ kind: "pullRequest"; url: string }> | Readonly<{ kind: "fleetJob" | "ciRun" }>;
+type ViewWait = Readonly<{ kind: "ticket"; key: string }> | Readonly<{ kind: "pullRequest"; url: string }> | Readonly<{ kind: "fleetJob" | "ciRun" | "session" }>;
 
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{

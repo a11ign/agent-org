@@ -55,7 +55,9 @@ import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
+import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth, type HealthView } from "./health-route.ts";
 
@@ -728,7 +730,8 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
     ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
-    ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, query)
+    ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, query)
+    ?? sessionAnswerRoute({ stateDir: board.settings.stateDir, now: board.now, queue: board.store.get }, method, path, body)
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 

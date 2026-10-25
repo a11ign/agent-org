@@ -35,7 +35,7 @@ test("A11-245: a list of 1 to 20 items is accepted, and nothing else is", () => 
 });
 
 test("A11-245: an item with no subject, two subjects or a stranger's key is refused by name", () => {
-  assert.match(parseWaits([{}]) as string, /waitingOn\[0\] needs exactly one of fleetJob, ciRun, pullRequest, ticket, you wrote no keys/);
+  assert.match(parseWaits([{}]) as string, /waitingOn\[0\] needs exactly one of fleetJob, ciRun, pullRequest, ticket, session, you wrote no keys/);
   assert.match(parseWaits([{ fleetJob: "a", ciRun: "o/r#1" }]) as string, /you wrote fleetJob and ciRun/);
   assert.match(parseWaits([{ job: "a" }]) as string, /you wrote job/);
   assert.match(parseWaits([{ fleetJob: "ok" }, "fj-1"]) as string, /waitingOn\[1\] needs an object.*you wrote "fj-1"/);
@@ -76,4 +76,16 @@ test("A11-245: until that is not a time the board can read is refused by name", 
   for (const value of ["tomorrow", "2026-10-25", "in 3 hours", "", 1_800_000_000, null, undefined, "2026-13-45T25:61:00Z", "2026-02-31T10:00:00Z", "2026-04-31T10:00:00", ["2026-10-25T12:00:00Z"]]) {
     assert.match(parseUntil(value) as string, /^until needs an ISO time such as 2026-10-25T12:00:00Z, you wrote /, String(value));
   }
+});
+
+test("A11-275: a session item is read as the ask it names, trimmed, and an empty, overlong, non-string or until-bearing one is refused by name", () => {
+  const ask = "On the person's Mac run `agent-org update`; a pass prints the new version";
+  assert.deepEqual(parseWaits([{ session: `  ${ask}\n` }]), [{ kind: "session", ask }]);
+  assert.deepEqual(parseWaits([{ session: ask }, { session: ask }]), [{ kind: "session", ask }], "the same ask twice is one item");
+  assert.deepEqual(parseWaits([{ session: "x".repeat(1000) }]), [{ kind: "session", ask: "x".repeat(1000) }], "1,000 characters is the longest");
+  assert.equal(parseWaits([{ session: "" }]), "waitingOn[0] session needs the exact ask for the person's session, you wrote an empty string");
+  assert.equal(parseWaits([{ session: "  \n " }]), "waitingOn[0] session needs the exact ask for the person's session, you wrote an empty string");
+  assert.equal(parseWaits([{ session: "x".repeat(1001) }]), "waitingOn[0] session takes an ask of up to 1000 characters, you wrote 1001");
+  assert.equal(parseWaits([{ session: 7 }]), "waitingOn[0] session needs a string, you wrote a number");
+  assert.match(parseWaits([{ session: ask, until: "done" }]) as string, /^waitingOn\[0\] \(session\) has until, which it does not take; until goes only with pullRequest and ticket$/);
 });

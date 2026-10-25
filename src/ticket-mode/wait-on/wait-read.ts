@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import type { CodeHost, ReviewState } from "../../plugins/contracts/code-host.ts";
 import type { TicketSource } from "../../plugins/contracts/tracker.ts";
-import type { CiRunWait, FleetJobWait, JobFacts, Progress, PullFacts, PullRequestWait, Reading, TicketWait, Wait } from "./wait-types.ts";
+import type { CiRunWait, FleetJobWait, JobFacts, Progress, PullFacts, PullRequestWait, Reading, SessionWait, TicketWait, Wait } from "./wait-types.ts";
 import { isFleetJobId } from "./wait-parse.ts";
 import { waitKey } from "./wait-types.ts";
 
@@ -18,6 +18,8 @@ export type WaitSeams = Readonly<{
   codeHost: Pick<CodeHost, "readPullState" | "readReviewState" | "readCiRun">;
   source: Pick<TicketSource, "stateTypes">;
   fleetJobStatus: (id: string) => Promise<string>;
+  /** What the person's session answered to an ask (A11-275), or null while it has not. It THROWS when the board's record of answers cannot be read. Absent where the board keeps no answers. */
+  sessionResult?: (ask: string) => string | null;
   /** How long the tracker may take to answer, in milliseconds. {@link READ_TIMEOUT_MS} when absent. */
   readTimeoutMs?: number;
 }>;
@@ -160,6 +162,17 @@ async function readTicket(wait: TicketWait, seams: WaitSeams): Promise<Reading> 
   }
 }
 
+/** An ask for the person's session: finished once the board holds the session's result, pending until then. It is never failed (nobody can fail an ask) and never late on its own: the worker's `until` bounds it. */
+function readSession(wait: SessionWait, seams: WaitSeams): Reading {
+  if (seams.sessionResult === undefined) return unreadable(wait, "the board keeps no answers from the person's session here");
+  try {
+    const result = seams.sessionResult(wait.ask);
+    return { wait, status: result === null ? "pending" : "finished", result };
+  } catch (error) {
+    return unreadable(wait, whyOf(error));
+  }
+}
+
 /** One item, read once. Never throws: a host that answers in a shape the contract does not allow is an item that could not be read. */
 export async function readWait(wait: Wait, seams: WaitSeams): Promise<Reading> {
   try {
@@ -168,6 +181,7 @@ export async function readWait(wait: Wait, seams: WaitSeams): Promise<Reading> {
       case "ciRun": return readCiRun(wait, seams);
       case "pullRequest": return readPullRequest(wait, seams);
       case "ticket": return await readTicket(wait, seams);
+      case "session": return readSession(wait, seams);
     }
   } catch (error) {
     return unreadable(wait, whyOf(error));
