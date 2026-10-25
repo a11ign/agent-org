@@ -2,5 +2,5 @@ Every herdr agent name is made by one function, `herdrAgentName` (`src/herdr-age
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/herdr-agent-name.test.ts plugins/atomic-reviewer/long-seat-name.test.ts plugins/atomic-reviewer/port.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/herdr-agent-name.test.ts src/herdr-agent-call-sites.test.ts plugins/atomic-reviewer/long-seat-name.test.ts plugins/atomic-reviewer/port.test.ts
 ```

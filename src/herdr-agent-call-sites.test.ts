@@ -21,6 +21,7 @@ import { tidyRoster } from "./work-tick.ts";
 import { clearContext, promptTarget, readAgent } from "./wake/fyi-queue.ts";
 import { assistantTimestamps, performRelease } from "./wake/ci-class-and-spares.ts";
 import { substituteCodeHost } from "./plugins/active.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { REPO as TRACKER } from "./project-identity.ts";
