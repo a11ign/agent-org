@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakeCodeHost, fakePullUrl } from "../plugins/fakes/code-host.ts";
+import { unlistedPulls } from "./board-view.ts";
 import { boardPullsOf, keptPullsOf, unwatchedPullsOf } from "./kept-pulls.ts";
 import { pullReviewsOf } from "./pool-reviewers.ts";
 import type { PoolContext } from "./pool-context.ts";
@@ -88,4 +89,13 @@ test("A11-286: the pulls map lists the kept pull requests in all three reviewer 
   assert.deepEqual(mapOf("on"), { [STEP_ONE]: "not read yet" }, "the reviewer has not read it, and the map still lists it");
   const read = { head: "h", verdict: "approved" } as unknown as PullRead;
   assert.notEqual(mapOf("on", new Map([[STEP_ONE, read]]))[STEP_ONE], "not read yet", "a pull request the reviewer has read reads as its review does");
+});
+
+test("A11-286: a ticket the tracker settled lists no pull request in the map, and one the board opened for a ticket is not a person's", () => {
+  const queue = queueNextStep(stepOneFinished(), "A11-1", { step: 1, of: 2, prs: [STEP_ONE] }, NOW + 1);
+  const settled = { ...queue, entries: queue.entries.map((entry): Entry => ({ ...entry, trackerState: "completed" })) };
+  assert.deepEqual(urls(boardPullsOf(settled, NONE)), []);
+  const reviews = { [STEP_ONE]: "not read yet", [OTHER]: "awaiting your review" };
+  assert.deepEqual(unlistedPulls(queue.entries, reviews).map(({ url }) => url), [STEP_ONE, OTHER].sort(), "without the log, the pull request of the queued next step looks like no run's");
+  assert.deepEqual(unlistedPulls(queue.entries, reviews, queue.runLog).map(({ url }) => url), [OTHER], "with it, only the one nobody opened for a ticket");
 });

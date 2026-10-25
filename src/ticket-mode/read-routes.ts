@@ -210,10 +210,10 @@ export function queueView(board: Pick<ReadBoard, "store" | "pool" | "update" | "
 
 /**
  * A run as the page is sent it, without the copies of its ticket's text the board keeps to tell a change by (`briefedAgainst`, `plannedAgainst`; A11-167): the page draws a change from `ticketChange` and
- * `ticketChanges`, which hold the two texts of a change, and each run already carries its ticket.
+ * `ticketChanges`, which hold the two texts of a change, and each run already carries its ticket. The step a conflict round holds back (`afterRound`, A11-286) is a whole entry of its own, and is not sent.
  */
 function shownEntry(entry: Entry): Entry {
-  const { briefedAgainst: _briefed, plannedAgainst: _planned, ticketChanges, talkFrom, ...shown } = entry;
+  const { briefedAgainst: _briefed, plannedAgainst: _planned, afterRound: _held, ticketChanges, talkFrom, ...shown } = entry;
   // Only the latest change is drawn; and a talk session's copy of the run it replaced is shown as that run is.
   return { ...shown, ...(ticketChanges ? { ticketChanges: ticketChanges.slice(-1) } : {}), ...(talkFrom ? { talkFrom: shownEntry(talkFrom as Entry) } : {}) };
 }

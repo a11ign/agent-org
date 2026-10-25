@@ -10,6 +10,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost, fakePullUrl, type FakePull } from "../plugins/fakes/code-host.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import { finishedWith, nextStepQueued } from "./kept-pulls-fixture.ts";
+import type { Git } from "./worktree.ts";
 import { find, replace, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { finish, markRunning, markStarting } from "./queue/queue-transitions.ts";
 import { logOf } from "./queue/run-log.ts";
@@ -61,13 +62,14 @@ const nextStepQueue = (more: Partial<Entry> = {}): Queue => nextStepQueued(KEY, 
 const finishedOnPull = (): Queue => finishedWith(KEY, { kind: "ready-pr", prs: [{ repo: "agent-org", url: URL }] }, NOW - 10);
 
 /** The pool over a world with pull request #7 (`pull` is what the host says of it), the queue `queue`, and the real repository when `listable`; sweeps wait for the kept pull requests' sweep. */
-function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable = true }: { queue?: Queue; pull?: FakePull["feedback"]; listable?: boolean } = {}) {
+function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable = true, git: listing, listingMs }: { queue?: Queue | ((head: string) => Queue); pull?: FakePull["feedback"]; listable?: boolean; git?: Git; listingMs?: number } = {}) {
   const repository = conflictingRepository();
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(REPOSITORY, 7, { head: repository.head, feedback: pull });
-  const fixture = poolFixture({ keys: [KEY], now: () => NOW, ...(listable ? { clones: { "agent-org": repository.clone } } : {}) });
-  fixture.store.set(queue);
-  const pool = fixture.restart({ codeHost: host });
+  const clock = { at: NOW };
+  const fixture = poolFixture({ keys: [KEY], now: () => clock.at, ...(listable ? { clones: { "agent-org": repository.clone } } : {}) });
+  fixture.store.set(typeof queue === "function" ? queue(repository.head) : queue);
+  const pool = fixture.restart({ codeHost: host, ...(listing === undefined ? {} : { git: listing }), ...(listingMs === undefined ? {} : { listingMs }) });
   const sweep = async () => {
     pool.watchFeedback();
     await pool.keptWatchDone();
@@ -75,7 +77,7 @@ function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable
   const entry = (): Entry => find(fixture.store.get(), KEY)!;
   const events = () => logOf(fixture.store.get(), KEY).filter((event) => event.kind === "base-merge").map((event) => (event.kind === "base-merge" ? event.step : ""));
   const asked = () => host.branchUpdates.asked.length;
-  return { host, fixture, pool, sweep, entry, events, asked, head: repository.head };
+  return { host, fixture, pool, sweep, entry, events, asked, clock, head: repository.head };
 }
 
 /** The wait for something the board does after an await (the files of a conflict being listed), bounded. */
@@ -257,4 +259,80 @@ test("A11-286: a finished run's conflicting pull request that merges up to date 
   host.pullAt(URL)!.feedback = {};
   pool.watchFeedback();
   assert.equal(entry().outcomeHeads?.[URL], "the-merge-commit", "the run's outcome head follows the board's own push");
+});
+
+test("A11-286: a merge the host accepted that never moved the head is taken as a real conflict after ten minutes, and the round starts", async () => {
+  const { host, sweep, entry, events, asked, clock } = world();
+  await sweep();
+  assert.deepEqual([asked(), events(), entry().review], [1, ["merging"], undefined], "the host said updated, and the pull request is read at the same head");
+  clock.at += 9 * 60_000;
+  await sweep();
+  assert.deepEqual([asked(), events()], [1, ["merging"]], "inside the grace it waits");
+  clock.at += 2 * 60_000;
+  host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  await sweep();
+  assert.deepEqual([asked(), events(), entry().rounds], [1, ["merging", "round"], 1], "past it the conflict is real, with no second ask of the host");
+  assert.match(entry().feedback ?? "", /conflicted in a\.txt/);
+});
+
+test("A11-286: a refusal that lasts ten minutes on a conflicting pull request starts the round too", async () => {
+  const { host, sweep, entry, asked, clock } = world();
+  host.branchUpdates.answers.set(URL, { kind: "refused", reason: "Resource not accessible by integration" });
+  await sweep();
+  clock.at += 11 * 60_000;
+  await sweep();
+  assert.deepEqual([asked(), entry().phase, entry().rounds], [1, "queued", 1], "asked until the grace ran out, and then a round");
+  assert.deepEqual(entry().review, [{ repo: "agent-org", url: URL }]);
+});
+
+test("A11-286: files that cannot be listed in a minute do not hold the round back", async () => {
+  const hung: Git = () => new Promise(() => {});
+  const { host, sweep, entry } = world({ git: hung, listingMs: 20 });
+  host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  await sweep();
+  assert.match(entry().feedback ?? "", /could not list the files/);
+  assert.equal(entry().phase, "queued");
+});
+
+test("A11-286: a failure of the watch that runs again once the files are listed is said, and is no unhandled rejection", async () => {
+  const queue = finishedOnPull();
+  const { host, fixture, entry, head } = world({ queue });
+  host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  let reads = 0;
+  const failing = fixture.restart({ codeHost: { ...host, readPullFeedback: (...args: Parameters<typeof host.readPullFeedback>) => { reads += 1; if (reads > 1) throw new Error("gh exploded\nsecond line"); return host.readPullFeedback(...args); } } });
+  const said = await logged(async () => {
+    failing.watchFeedback();
+    await until(() => reads > 1, "the second watch ran");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  assert.match(said, /could not be answered once its conflict was listed: gh exploded\n/);
+  assert.ok(head.length > 0 && entry().phase === "finished");
+});
+
+test("A11-286: a finished run that starts a round for new review feedback is not pushed to first, and its worker is told of the conflict", async () => {
+  const { host, pool, entry, asked } = world({ queue: finishedOnPull(), pull: { conflicting: true, feedbackAt: NOW, authors: ["carol"] } });
+  host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  pool.watchFeedback();
+  assert.equal(asked(), 0, "the board did not merge the base under the round it starts");
+  assert.equal(entry().feedback, [`${URL} conflicts with its base branch main.`, `New review feedback on ${URL}, the newest from carol.`].join("\n"));
+});
+
+test("A11-286: a behind pull request held red on main is not updated, and a parked run's own pull request waits for its wake, not for a worker", async () => {
+  const held = world({ queue: (head) => replace(finishedOnPull(), KEY, (e) => ({ ...e, checkHeads: { [URL]: { head, step: "not-ours" } } })), pull: { behind: true } });
+  await held.sweep();
+  assert.deepEqual([held.asked(), held.events()], [0, []], "A11-215 updates it once main is green");
+  const parked = world({ queue: replace(finishedOnPull(), KEY, (e) => ({ ...e, workspace: "w1" })) });
+  await parked.sweep();
+  assert.deepEqual([parked.asked(), parked.events()], [0, []], "no push, and no row that says it waits for a worker");
+});
+
+test("A11-286: a ticket the tracker settled while its round ran does not get its next step back", async () => {
+  const { host, fixture, sweep, entry } = world();
+  host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  await sweep();
+  const pushed = finish(markRunning(markStarting(fixture.store.get(), KEY, NOW + 1), KEY, "w2", "w2:p1"), KEY, { kind: "ready-pr", prs: [{ repo: "agent-org", url: URL }] }, NOW + 2);
+  fixture.store.set(replace(pushed, KEY, (e) => ({ ...e, trackerState: "completed" })));
+  host.pullAt(URL)!.feedback = {};
+  await sweep();
+  assert.deepEqual([entry().phase, entry().afterRound !== undefined], ["finished", true]);
 });

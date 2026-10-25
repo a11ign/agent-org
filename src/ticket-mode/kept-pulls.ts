@@ -6,7 +6,7 @@
 // the board opened (`pr-opened`) and each merge it saw (`merged`), so a ticket's pull requests are what its log opened, less what is known to have settled.
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { parsePull } from "./board-view/pull-url.ts";
-import type { Entry, PullRequest, Queue } from "./queue/queue-entries-and-outcomes.ts";
+import { SETTLED, type Entry, type PullRequest, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { logOf } from "./queue/run-log.ts";
 
 /**
@@ -37,8 +37,8 @@ export function unwatchedPullsOf(queue: Queue, entry: Entry, settled: ReadonlySe
   return keptPullsOf(queue, entry.ticket.key, settled).filter(({ url }) => !watched.has(url));
 }
 
-/** Every kept pull request of every ticket on the queue, each once: what the board's `pulls` map lists whatever phase the run is in. PURE. */
+/** Every kept pull request of every ticket on the queue that the tracker has not settled, each once: what the board's `pulls` map lists whatever phase the run is in. PURE. */
 export function boardPullsOf(queue: Queue, settled: ReadonlySet<string>): readonly PullRequest[] {
   const seen = new Set<string>();
-  return queue.entries.flatMap((entry) => keptPullsOf(queue, entry.ticket.key, settled)).filter(({ url }) => !seen.has(url) && seen.add(url));
+  return queue.entries.filter((entry) => !SETTLED.has(entry.trackerState ?? "")).flatMap((entry) => keptPullsOf(queue, entry.ticket.key, settled)).filter(({ url }) => !seen.has(url) && seen.add(url));
 }

@@ -3,8 +3,8 @@ import type { ViewEntry } from "../../../src/ticket-mode/board-view/view-types-a
 import { ExtraGroup } from "./ExtraGroup.tsx";
 
 /** The open pull requests the pool has read that no run lists, as `ui.html`'s "Pull requests" list: a person's pull request, or one no run has. Not drawn when there are none. */
-export function PullRequestsList({ entries, reviews }: Readonly<{ entries: readonly ViewEntry[]; reviews: Readonly<Record<string, string>> }>) {
-  const pulls = unlistedPulls(entries, reviews);
+export function PullRequestsList({ entries, reviews, runLog }: Readonly<{ entries: readonly ViewEntry[]; reviews: Readonly<Record<string, string>>; runLog?: Parameters<typeof unlistedPulls>[2] }>) {
+  const pulls = unlistedPulls(entries, reviews, runLog);
   if (pulls.length === 0) return null;
   return (
     <ExtraGroup label="Pull requests" count={pulls.length}>
