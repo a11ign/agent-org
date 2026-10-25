@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { ESCALATION_RULE } from "./escalation.ts";
 import { MOVE_RULE } from "./after-merge-move.ts";
 import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
+import { BLOCKED_BY_RULE } from "./plan-blockers.ts";
 import { outcomeExamples } from "./outcome.ts";
 import type { WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
@@ -171,6 +172,28 @@ test("A11-277: both planner briefs tell the planner to name each After-merge lin
     assert.match(brief, /list them in a plan section `## After-merge checks`, one bullet per line/);
   }
   assert.ok(!work.includes(AFTER_MERGE_CHECKS_RULE), "a worker is briefed with the plan the rule shaped");
+});
+
+/** The worker's brief, the single planner's and the batch planner's, built over the same minimal ticket. */
+function rulesBriefs() {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  return { work, plan, batch };
+}
+
+test("A11-272: the single planner's brief tells it to write a `## Blocked by` section with a `Blocked-by: <KEY>` line for each ticket a step needs; the batch planner's, which orders in order.json, and the worker's do not", () => {
+  const { work, plan, batch } = rulesBriefs();
+  assert.ok(plan.includes(BLOCKED_BY_RULE), "the rule, whole");
+  assert.match(plan, /the plan has a section `## Blocked by`, placed before `## Paths`, with one line `Blocked-by: <KEY>` for each such ticket, the key alone on the line/);
+  assert.match(plan, /a `Blocked-by:` line anywhere else in the plan is not read/);
+  assert.ok(!batch.includes(BLOCKED_BY_RULE), "the board records a batch's order from order.json and reads no such section, so the batch planner is not told it will");
+  assert.ok(!work.includes(BLOCKED_BY_RULE), "a worker is briefed with the plan the rule shaped");
+});
+
+test("A11-272: the worker's brief says a ticket wait ends its turn, that the board records the blocker and queues it behind, and that it never keeps its files while it waits", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.match(brief, /A `ticket` wait ends your turn like the others: the board records that ticket as a blocker of yours, closes your run and queues the ticket behind it, and resumes your own session once that ticket is done, so you never hold the wait in your pane and never keep your files while you wait/);
 });
 
 test("A11-174, A11-209: every unattended brief says to guard variable paths with ${VAR:?}, and that its subagents inherit the rule", () => {
