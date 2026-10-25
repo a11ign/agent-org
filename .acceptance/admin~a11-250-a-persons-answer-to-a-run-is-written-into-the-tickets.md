@@ -1,6 +1,6 @@
-Closes A11-250
+Refs A11-250
 
-Step 2 of 2 (agent-org): the reviewer honours the ticket's Decisions. A blocked head whose ticket's `## Decisions` changed since the reviewer's last look is re-reviewed once (a round, handed back at the cap), and the reviewer is told which Decisions lines changed (`rereview.decisions`, reviewer contract 1.7). A reply or new description line that says a person decided something and does not link the ticket's Decisions reaches the reviewer as `rereview.unsupported`, and the prompt says it does not answer the finding. A finished run holding a blocked pull request has its ticket's text read again from the tracker, so a person's edit of the Decisions in the tracker is seen too.
+Step 1 of 2 (agent-org): `POST /api/queue/<KEY>/answer` takes a person's answer to the run waiting on them and writes it, with the run's question, into the ticket's description under `## Decisions (<who>, <date>)` through the tracker plugin, then sends it to the run. Only that route writes a Decisions entry; `ticket:hook` refuses a run any command that names the board's key or a queue action route, and any file tool on the key. Every worker brief, a review round and a talk session say to read the ticket's Decisions first and to relay a decision to a pull request only with a link to its entry. A planner's plan for a ticket with Decisions carries a `## Ticket decisions` section, and a plan that states a `Conflicts:` or has no such section is not attached. Partial: step 1 of 2; step 2 makes the reviewer honour Decisions, re-review once when they change, and refuse a "decided" claim with no ticket entry.
 
 Acceptance:
 
@@ -12,9 +12,10 @@ sed -i "s|@@PROJECT@@|$work/project|" "$work/project/.agent-org/host.json"
 git -C "$work/project" init -q
 git -C "$work/project" add -A
 git -C "$work/project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m fixture
-# pool-rereview-decisions.test.ts: an answered entry reaches the reviewer's brief (the review after it is briefed with the decision), a Decisions change re-reviews the same head once and tells the changed lines, a look with no decisions is left alone, the cap hands the run back, a tracker edit reaches a blocked run, and a "decided" reply with no ticket link is passed as unsupported
-# ticket-decisions.test.ts covers unsupportedClaims; prompt.test.ts the reviewer's words for a Decisions change and an unsupported claim
-AGENT_ORG_HOST="$work/project/.agent-org/host.json" node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-rereview-decisions.test.ts src/ticket-mode/ticket-decisions.test.ts plugins/atomic-reviewer/prompt.test.ts src/ticket-mode/pool-rereview.test.ts src/ticket-mode/pool-reviewers.test.ts src/ticket-mode/review-command.test.ts src/plugins/built-in.test.ts src/plugins/cli.test.ts plugins/atomic-reviewer/index.test.ts
+# server-answer.test.ts drives the route over HTTP on a board with a fake tracker and a fake herdr: the answer lands in the ticket's Decisions before the run is told, and a request without the key or from another origin writes nothing
+# pool-answer.test.ts and answer-decision.test.ts cover the entry, the refusals and the retry; hook-answer.test.ts the key and the routes a run may not name
+# worker-files-decisions.test.ts and plan-ticket-decisions.test.ts cover the briefs and the plan check, which refuses a plan with a Conflicts bullet or no Ticket decisions section
+AGENT_ORG_HOST="$work/project/.agent-org/host.json" node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/server-answer.test.ts src/ticket-mode/pool-answer.test.ts src/ticket-mode/answer-decision.test.ts src/ticket-mode/hook-answer.test.ts src/ticket-mode/worker-files-decisions.test.ts src/ticket-mode/plan-ticket-decisions.test.ts src/ticket-mode/hook.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/server.test.ts src/ticket-mode/pool.test.ts
 rm -rf "${work:?}"
 npm run typecheck
 ```
