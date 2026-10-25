@@ -72,9 +72,13 @@ async function reseatRun(ctx: PoolContext, entry: Entry, note: ResumeNote): Prom
 
 /**
  * Start again every run the watch queued because its pane lost the environment the board set at start ({@link resumeOrReseat}), one after the other: the starts are slow, and each is a herdr workspace of its own.
- * A run that has since ended or been stopped is not started.
+ * A run that has since ended or been stopped is not started. Null when no run is queued, so a pass with nothing to restart gives up no turn of the event loop (a caller awaits only a promise).
  */
-export async function reseatRuns(ctx: PoolContext): Promise<void> {
+export function reseatRuns(ctx: PoolContext): Promise<void> | null {
+  return ctx.reseating.size === 0 ? null : startAgainOneByOne(ctx);
+}
+
+async function startAgainOneByOne(ctx: PoolContext): Promise<void> {
   for (const [name, { key, note }] of [...ctx.reseating]) {
     ctx.reseating.delete(name);
     const entry = ctx.store.get().entries.find((e) => e.ticket.key === key);

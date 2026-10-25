@@ -44,12 +44,19 @@ function say(state: ExposureState, checks: readonly ServeCheck[]): void {
   }
 }
 
-/** Check the serves if none was checked in the last {@link EXPOSURE_EVERY_MS}, and keep the result. A check that throws is said, and tried again at the next. */
-export async function reconcileExposure(ctx: PoolContext): Promise<void> {
-  const check = ctx.deps.serveCheck;
+/**
+ * Check the serves if none was checked in the last {@link EXPOSURE_EVERY_MS}, and keep the result. A check that throws is said, and tried again at the next. Null when no check is due (or the pool has none), so a pass
+ * that has nothing to check gives up no turn of the event loop: a caller awaits only a promise.
+ */
+export function reconcileExposure(ctx: PoolContext): Promise<void> | null {
   const { exposure } = ctx;
   const every = exposure.checks.some(({ state }) => state === "refused") ? EXPOSURE_EVERY_MS * REFUSED_BACKOFF : EXPOSURE_EVERY_MS;
-  if (check === undefined || (exposure.at !== null && ctx.now() - exposure.at < every)) return;
+  const due = exposure.at === null || ctx.now() - exposure.at >= every;
+  return ctx.deps.serveCheck === undefined || !due ? null : checkServes(ctx, ctx.deps.serveCheck);
+}
+
+async function checkServes(ctx: PoolContext, check: () => Promise<readonly ServeCheck[]>): Promise<void> {
+  const { exposure } = ctx;
   exposure.at = ctx.now();
   try {
     exposure.checks = await check();
