@@ -12,6 +12,7 @@
 import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import { followUpText, roleOf, type CheckRecord, type ChecksFile } from "./after-merge/checks.ts";
+import { personItemOf, runnerSentTo } from "./after-merge/dispatch.ts";
 
 /**
  * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a
@@ -140,9 +141,11 @@ export function unlistedPulls(entries: readonly ViewEntry[], reviews: Readonly<R
 
 /**
  * A row of the board's "After-merge checks" list (A11-173, A11-277): an open check, or a failed one whose follow-up is undecided, with its ticket (and the ticket's address when it has one), the line, who runs it
- * ("owner not named" when the line names no one), the runner the board sends it to, the role a session runs it for, when it was listed, and a failed check's pre-filled follow-up request.
+ * ("owner not named" when the line names no one), the runner the board sends it to, the role a session runs it for, when it was listed, a failed check's pre-filled follow-up request, the label of the escalation item
+ * a check waiting on the person under Needs you is on (null for any other), and whether it is overdue.
  */
-export type AfterMergeCheck = Pick<CheckRecord, "id" | "key" | "url" | "line" | "runner" | "listedAt" | "state" | "result"> & Readonly<{ owner: string; role: string | null; followUpText: string | null }>;
+export type AfterMergeCheck = Pick<CheckRecord, "id" | "key" | "url" | "line" | "runner" | "listedAt" | "state" | "result">
+  & Readonly<{ owner: string; role: string | null; followUpText: string | null; needsYou: string | null; overdue: boolean }>;
 
 /** The words a check says when its line names no one. */
 export const OWNER_NOT_NAMED = "owner not named";
@@ -154,7 +157,8 @@ export const OWNER_NOT_NAMED = "owner not named";
 export function afterMergeChecks(file: ChecksFile): AfterMergeCheck[] {
   const listed = Object.values(file.checks).filter((check) => check.state === "open" || (check.state === "failed" && check.followUp === undefined));
   return listed.sort((a, b) => a.listedAt - b.listedAt).map((check) => ({
-    id: check.id, key: check.key, url: check.url, line: check.line, runner: check.runner, listedAt: check.listedAt, state: check.state, ...(check.result === undefined ? {} : { result: check.result }),
+    id: check.id, key: check.key, url: check.url, line: check.line, runner: runnerSentTo(check), listedAt: check.listedAt, state: check.state, ...(check.result === undefined ? {} : { result: check.result }),
     owner: check.owner ?? OWNER_NOT_NAMED, role: roleOf(check.owner), followUpText: check.state === "failed" ? followUpText(check) : null,
+    needsYou: personItemOf(check)?.label ?? null, overdue: check.overdueAt !== undefined,
   }));
 }

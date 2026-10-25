@@ -53,10 +53,10 @@ import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
+import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth, type HealthView } from "./health-route.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -728,6 +728,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
     ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
+    ?? sessionAsksRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, query)
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 
