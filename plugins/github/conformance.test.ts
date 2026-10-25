@@ -74,9 +74,9 @@ function github(calls: string[][] = []) {
       if (args[2] !== "7" && args[2] !== PULL) return REFUSED;
       return ok(JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, baseRefName: "main" }));
     }
-    if (args[0] === "pr" && args[1] === "list" && args.includes("--author")) {
+    if (args.slice(0, 2).join(" ") === "pr list" && /headRefOid/.test(args.join(" "))) {
       if (!args.includes(REPOSITORY)) return REFUSED;
-      // Both are listed whatever `--author` says, so the suite holds the plugin to the author check of its own.
+      // A person's pull request is listed beside the bot's, as a plain list does: the suite holds the plugin to the author check of its own.
       return ok(JSON.stringify([
         { number: 11, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", headRefOid: HEAD, url: DEPENDENCY_PULLS.bot, body: "Release notes", author: { login: "app/dependabot", is_bot: true } },
         { number: 12, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", headRefOid: HEAD, url: DEPENDENCY_PULLS.foreign, body: "", author: { login: "someone", is_bot: false } },

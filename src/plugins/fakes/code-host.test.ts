@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCodeHostConformance } from "../conformance/code-host.ts";
 import { ContractError } from "../conformance/suite.ts";
-import { DEPENDENCY_BOT_LOGIN, type CodeHost, type WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type CodeHost, type WrapperInputs } from "../contracts/code-host.ts";
 import { createFakeCodeHost, fakePullUrl } from "./code-host.ts";
 
 /** The inputs a wrapper is asked about: a place outside any temporary directory, and the workers' role an App. */
@@ -32,7 +32,7 @@ function seeded() {
   const named = host.seedPull("owner/repo", 10, { state: "merged", body: "Refs A11-240\n\nPartial: step 1 of 2: the first half" });
   host.seedPull("owner/repo", 11, { body: "Refs A11-2401" });
   // A pull request the dependency bot opened, and one a person opened with the same title (contract 1.19).
-  const bot = host.seedPull("owner/repo", 12, { body: "Release notes", dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", author: DEPENDENCY_BOT_LOGIN } });
+  const bot = host.seedPull("owner/repo", 12, { body: "Release notes", dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
   const foreign = host.seedPull("owner/repo", 13, { dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", author: "someone" } });
   const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
   return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
@@ -370,7 +370,7 @@ test("a code host that reads a repository it cannot read as one the bot opened n
 
 test("the fake lists a bot's open pull request only: not a merged one, not another author's, and not a repository it was never given", () => {
   const { host } = seeded();
-  host.seedPull("owner/repo", 14, { state: "merged", dependency: { title: "deps: bump a from 1.0.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/a-2.0.0", author: DEPENDENCY_BOT_LOGIN } });
+  host.seedPull("owner/repo", 14, { state: "merged", dependency: { title: "deps: bump a from 1.0.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/a-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
   assert.deepEqual(host.openDependencyPulls!("owner/repo")?.map(({ number }) => number), [12]);
   assert.equal(host.openDependencyPulls!("owner/never-given"), null);
 });

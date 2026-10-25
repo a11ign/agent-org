@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.18 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.19 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,7 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
-// 1.19 (A11-255): `openDependencyPulls`, OPTIONAL: the open pull requests of a repository that the host's dependency bot (`DEPENDENCY_BOT_LOGIN`) opened, with their title, branch, head, author and body, which the board reads to turn a major update, or a grouped update that stays red, into a ticket. The host filters by author, so a pull request anyone else opens with a bot-like title is never returned. A plugin of 1.18 is read as one that cannot be asked, and the board then files no dependency ticket.
+// 1.19 (A11-255): `openDependencyPulls`, OPTIONAL: the open pull requests of a repository that the host's dependency bot (`DEPENDENCY_PULL_AUTHOR`) opened, with their title, branch, head, author and body, which the board reads to turn a major update, or a grouped update that stays red, into a ticket. The host filters by author, so a pull request anyone else opens with a bot-like title is never returned. A plugin of 1.18 is read as one that cannot be asked, and the board then files no dependency ticket.
 // 1.18 (A11-240): `pullsNaming`, OPTIONAL: the pull requests of some repositories whose title or body names a ticket's key, with their state, which a run that is queued again is told of and which Respond finds a pull request to answer by when the board never recorded one. A plugin of 1.17 is read as one that cannot be asked, and everything is then as it was: the board's own record is all there is.
 // 1.17 (A11-245): `readCiRun`, OPTIONAL: what a workflow run is (whether it has finished, how it concluded, how many of its jobs have), which the board reads for a worker that declared it waits on one. A plugin of 1.16 is read as one that has no CI-run read, and a wait on a run is then shown as unreadable.
 // 1.16 (A11-238): `stackMergeFactsOf` and `requestStackMerge`, both OPTIONAL: what the board reads of a pull request that may be in a stack (is it, where its base is, whether the stack merge is settled or was refused and why), and the hand-back of an approved, green stacked pull request to the arm bot, which alone merges it. A plugin of 1.15 is read as one with neither,
@@ -54,10 +54,10 @@ export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHost
 export const CODE_HOST_CONTRACT_VERSION = "1.19";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
-export const DEPENDENCY_BOT_LOGIN = "dependabot[bot]";
+export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
 
 /** An open pull request the dependency bot opened (contract 1.19). `body` is OUTSIDE INPUT: the bot copies a package's release notes into it. */
-export type DependencyPull = Readonly<{ url: string; number: number; title: string; headRefName: string; headSha: string; author: typeof DEPENDENCY_BOT_LOGIN; body: string }>;
+export type DependencyPull = Readonly<{ url: string; number: number; title: string; headRefName: string; headSha: string; author: typeof DEPENDENCY_PULL_AUTHOR; body: string }>;
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -316,8 +316,8 @@ export interface CodeHost extends CodeHostPort {
    */
   pullsNaming?(key: string, repositories: readonly string[]): readonly NamingPull[] | null;
   /**
-   * The open pull requests of `repository` (`owner/name`) that the dependency bot ({@link DEPENDENCY_BOT_LOGIN}) opened, or null for "could not ask": a repository the host cannot read, an answer it cannot read and a list cut short at the host's limit are
-   * all null. Null is never "there are none". The host filters by AUTHOR, never by title: this is the trust boundary of the board's dependency tickets. A host without it is read as one that cannot be asked (contract 1.19).
+   * The open pull requests of `repository` (`owner/name`) that the dependency bot ({@link DEPENDENCY_PULL_AUTHOR}) opened, or null for "could not ask": a repository the host cannot read, an answer it cannot read and a list cut short at the host's limit are
+   * all null. Null is never "there are none". The host filters by AUTHOR, never by title (and without a search-backed flag such as `gh pr list --author`, whose allowance is small): this is the trust boundary of the board's dependency tickets. A host without it is read as one that cannot be asked (contract 1.19).
    */
   openDependencyPulls?(repository: string): readonly DependencyPull[] | null;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */

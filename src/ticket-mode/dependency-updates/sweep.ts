@@ -39,19 +39,37 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
     const state = loadState(deps.statePath);
     ctx = { deps, state, commit: () => saveState(deps.statePath, state), memory };
   } catch (err) {
-    return sayOnce({ deps, memory }, `dependency updates: ${deps.statePath} cannot be read (${firstLine(err)}), so no ticket is asked for: fix or delete it`);
+    sayOnce({ deps, memory }, `dependency updates: ${deps.statePath} cannot be read (${firstLine(err)}), so no ticket is asked for: fix or delete it`);
+    return;
   }
   await settleRequests(ctx);
-  if (deps.codeHost.openDependencyPulls === undefined) return sayOnce(ctx, "dependency updates: the code host cannot list the dependency bot's pull requests, so none becomes a ticket");
+  if (deps.codeHost.openDependencyPulls === undefined) {
+    sayOnce(ctx, "dependency updates: the code host cannot list the dependency bot's pull requests, so none becomes a ticket");
+    return;
+  }
   let full = false;
   const ask = (request: TicketRequest): void => {
-    if (!full && !requestTicket(ctx, request)) full = true;
+    if (full) return;
+    // A writer run waits for no Pause (a person just asked for it), but the sweep's has no person: while the board is paused it asks for nothing.
+    if (deps.store.get().paused) sayOnce(ctx, "dependency updates: the queue is paused, so no dependency ticket is asked for until it is resumed");
+    full = deps.store.get().paused || !requestTicket(ctx, request);
   };
   const self = deps.codeHost.readOwnLogin() ?? "";
-  for (const repository of deps.repositories()) {
+  const repositories = repositoriesOf(ctx);
+  for (const repository of repositories) {
     const pulls = deps.codeHost.openDependencyPulls(repository);
-    if (pulls === null) deps.log(`dependency updates: ${repository}'s pull requests could not be listed, so the next sweep asks again`);
+    if (pulls === null) sayOnce(ctx, `dependency updates: ${repository}'s pull requests could not be listed, so the next sweep asks again`);
     else sweepRepository(ctx, ask, { repository, pulls, self });
+  }
+}
+
+/** The repositories to watch. A host that cannot name them (the reviewer gate is not loaded) is said once, and watches none. */
+function repositoriesOf(ctx: SweepContext): readonly string[] {
+  try {
+    return ctx.deps.repositories();
+  } catch (err) {
+    sayOnce(ctx, `dependency updates: the repositories to watch cannot be named (${firstLine(err)}), so no dependency ticket is asked for`);
+    return [];
   }
 }
 

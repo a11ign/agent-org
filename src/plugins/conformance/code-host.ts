@@ -4,7 +4,7 @@
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
 // (`repository`), a pull request address it holds nothing for (`missing`), and the login the host acts as (`self`). A code host is synchronous, as every reader of it is.
-import { DEPENDENCY_BOT_LOGIN, type ChangeRef, type CodeHost, type HostRepository, type StackMergeRequest, type WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type ChangeRef, type CodeHost, type HostRepository, type StackMergeRequest, type WrapperInputs } from "../contracts/code-host.ts";
 import type { CodeHostRows } from "../contracts/code-host-rows.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 import { refused, throws, withRows, withRunRows, type Subject } from "./rows-support.ts";
@@ -558,9 +558,9 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const found = host.openDependencyPulls!(repository);
       expect(Array.isArray(found), `openDependencyPulls(${repository}) must read a list`);
       const pull = found!.find((candidate) => candidate.url === url);
-      expect(isObject(pull) && isString(pull.title) && isString(pull.headRefName) && isString(pull.headSha) && pull.headSha !== "" && isString(pull.body) && Number.isInteger(pull.number) && pull.author === DEPENDENCY_BOT_LOGIN,
-        `openDependencyPulls(${repository}) must list ${url} as { url, number, title, headRefName, headSha, author: ${DEPENDENCY_BOT_LOGIN}, body }`);
-      expect(found!.every((candidate) => candidate.author === DEPENDENCY_BOT_LOGIN) && !found!.some((candidate) => candidate.url === foreign), `openDependencyPulls(${repository}) must list no pull request the bot did not open, ${foreign} among them`);
+      expect(isObject(pull) && isString(pull.title) && isString(pull.headRefName) && isString(pull.headSha) && pull.headSha !== "" && isString(pull.body) && Number.isInteger(pull.number) && pull.author === DEPENDENCY_PULL_AUTHOR,
+        `openDependencyPulls(${repository}) must list ${url} as { url, number, title, headRefName, headSha, author: ${DEPENDENCY_PULL_AUTHOR}, body }`);
+      expect(found!.every((candidate) => candidate.author === DEPENDENCY_PULL_AUTHOR) && !found!.some((candidate) => candidate.url === foreign), `openDependencyPulls(${repository}) must list no pull request the bot did not open, ${foreign} among them`);
     },
   },
   "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about": withRepositories("the repositories a person can pick are not asked", ({ repositories }) => {

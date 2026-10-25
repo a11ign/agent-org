@@ -17,8 +17,11 @@ export const MAX_JOBS = 4;
 export const MAX_LINES = 5;
 export const MAX_LINE_CHARS = 200;
 
-/** A changelog address on github.com: a releases page or a CHANGELOG file, in the first such link of the body. */
-const CHANGELOG_LINK = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:releases|blob\/[^\s)"'<>\]]*CHANGELOG)[^\s)"'<>\]]*/i;
+/**
+ * A changelog address on github.com: a releases page or a CHANGELOG file, in the first such link of the body. It is matched whole, from characters a URL path holds and at most 160 of them after the page: a link with a
+ * backtick, a `$(`, or a length no release page has is no match, and the package's own page is named instead. The body is outside input, and this is the one piece of it that reaches the writer.
+ */
+const CHANGELOG_LINK = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:releases|blob\/[A-Za-z0-9._~%/+-]{0,100}CHANGELOG)[A-Za-z0-9._~%/#?&=+:@-]{0,160}(?![A-Za-z0-9._~%/#?&=+:@`$(-])/i;
 /** A branch the bot made: `dependabot/` and the characters of a ref, nothing a shell or a sentence could use. */
 const BOT_BRANCH = /^dependabot\/[A-Za-z0-9_./-]{1,200}$/;
 
@@ -102,7 +105,7 @@ export function redGroupRequest(facts: RedGroupFacts): string {
 - **Group:** \`${group}\`
 - **Repository:** ${repository}
 - **Pull request:** ${url}${branch}, at head \`${head.slice(0, 12)}\`
-- **What happened:** the group's \`gate\` was red, the board reran the failed jobs once, and the same head was red again.
+- **What happened:** the group's \`gate\` was red, the board tried to rerun the failed jobs once, and the same head was red again.
 
 ## The failing jobs
 

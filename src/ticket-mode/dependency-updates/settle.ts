@@ -5,7 +5,7 @@
 import { writerOf } from "../queue.ts";
 import type { WriterRun } from "../queue/queue-entries-and-outcomes.ts";
 import type { Ticket } from "../source.ts";
-import { firstLine, type SweepContext } from "./context.ts";
+import { firstLine, sayOnce, type SweepContext } from "./context.ts";
 import type { Requested } from "./filed.ts";
 
 /** Read the state of every request: the ones the writer has finished are filed or failed, and a filed ticket not yet queued is queued. */
@@ -48,14 +48,19 @@ function recordEnd({ deps, state }: SweepContext, key: string, entry: Requested,
 }
 
 /** Put the ticket the writer made on the queue, as a person's add would. A ticket the tracker cannot be read for yet is tried again next sweep; one the queue refuses is left for a person. */
-async function queueFiled({ deps, state, commit }: SweepContext, key: string, ticket: string): Promise<void> {
+async function queueFiled(ctx: SweepContext, key: string, ticket: string): Promise<void> {
+  const { deps, state, commit } = ctx;
   let read: Ticket | null;
   try {
     read = await deps.source.read(ticket);
   } catch (err) {
-    return deps.log(`dependency updates: ${ticket} could not be read from the tracker (${firstLine(err)}), so the next sweep queues it`);
+    sayOnce(ctx, `dependency updates: ${ticket} could not be read from the tracker (${firstLine(err)}), so the next sweep queues it`);
+    return;
   }
-  if (read === null) return deps.log(`dependency updates: ${ticket} is not in the tracker yet, so the next sweep queues it`);
+  if (read === null) {
+    sayOnce(ctx, `dependency updates: ${ticket} is not in the tracker yet, so the next sweep queues it`);
+    return;
+  }
   try {
     deps.queueTickets([read], deps.runChoice(), { plan: false });
     state.tickets[key] = { state: "filed", ticket, queue: true, queued: true };

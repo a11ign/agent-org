@@ -13,7 +13,7 @@ import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-ent
 import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
-import { DEPENDENCY_BOT_LOGIN } from "../plugins/contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
@@ -1422,9 +1422,10 @@ test("A11-255: the dependency sweep is scheduled on the feedback cadence beside 
 
 test("A11-255: the board's dependency sweep asks the writer for a major, records it beside the queue, and queues the ticket the run made with the saved choice", async () => {
   const host = createFakeCodeHost();
-  host.seedPull("o/r", 9, { body: "https://github.com/x/y/releases/tag/v2.0.0", dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", author: DEPENDENCY_BOT_LOGIN } });
+  host.seedPull("o/r", 9, { body: "https://github.com/x/y/releases/tag/v2.0.0", dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
   const deps = { codeHost: host, repositories: () => ["o/r"] };
   const b = board(4747, WRITER, deps, creating());
+  b.store.set({ ...b.store.get(), paused: false });
   const sweep = dependencyUpdatesOf(b, { settings: b.settings, source: creating(), key: KEY, queuePath: join(b.dir, "queue.json"), choicePath: join(b.dir, "choice.json"), now: () => 7, ...deps });
   await sweep();
   await sweep();

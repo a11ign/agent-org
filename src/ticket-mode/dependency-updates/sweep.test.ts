@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../../lib/tmp-fixture.ts";
-import { DEPENDENCY_BOT_LOGIN } from "../../plugins/contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR } from "../../plugins/contracts/code-host.ts";
 import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
 import { emptyQueue, queueWriter, writerEnded } from "../queue.ts";
 import type { Queue, RunChoice } from "../queue/queue-entries-and-outcomes.ts";
@@ -14,7 +14,7 @@ import { dependencyUpdateSweep, MAX_ATTEMPTS, RETRY_MS } from "./sweep.ts";
 import type { DependencyState } from "./filed.ts";
 
 const REPO = "o/r";
-const BOT = { author: DEPENDENCY_BOT_LOGIN } as const;
+const BOT = { author: DEPENDENCY_PULL_AUTHOR } as const;
 const MAJOR_TITLE = "deps: bump @x/y from 1.4.0 to 2.0.0";
 const MAJOR_BRANCH = "dependabot/npm_and_yarn/x/y-2.0.0";
 const GROUP_TITLE = "deps: bump the minor-and-patch group with 3 updates";
@@ -22,13 +22,13 @@ const GROUP_BRANCH = "dependabot/npm_and_yarn/minor-and-patch-0123456789abcdef";
 const JOB_URL = "https://github.com/o/r/actions/runs/5/job/6";
 const CHANGELOG = "https://github.com/x/y/releases/tag/v2.0.0";
 
-type Overrides = Partial<{ writer: { model: string; effort: string } | null; clones: Record<string, string>; queueRefuses: boolean; sourceHas: boolean }>;
+type Overrides = Partial<{ repositories: () => readonly string[]; writer: { model: string; effort: string } | null; clones: Record<string, string>; queueRefuses: boolean; sourceHas: boolean }>;
 
 /** The sweep over a fake code host, an in-memory queue, a stub tracker and a state file in a temporary directory. `again` is a restart: a new sweep over the same file and queue. */
 function board(over: Overrides = {}) {
   const host = createFakeCodeHost("fake-worker");
   host.seedRepository(REPO);
-  let queue: Queue = emptyQueue(2);
+  let queue: Queue = { ...emptyQueue(2), paused: false };
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const statePath = join(tmpDir("dependency-updates-"), "dependency-tickets.json");
   const queued: { keys: string[]; choice: RunChoice; plan: boolean }[] = [];
@@ -36,7 +36,7 @@ function board(over: Overrides = {}) {
   const clock = { at: 1_700_000_000_000 };
   const read = (key: string): Promise<Ticket | null> => Promise.resolve(over.sourceHas === false ? null : ({ key, title: key } as Ticket));
   const make = () => dependencyUpdateSweep({
-    codeHost: host, source: { read }, store, statePath, repositories: () => [REPO], clones: over.clones ?? {},
+    codeHost: host, source: { read }, store, statePath, repositories: over.repositories ?? (() => [REPO]), clones: over.clones ?? {},
     writer: () => (over.writer === undefined ? { model: "opus", effort: "high" } : over.writer), runChoice: () => ({ model: "sonnet", effort: "medium" }),
     queueTickets: (tickets, choice, options) => {
       if (over.queueRefuses === true) throw new Error("A11-300 is a parent");
@@ -266,24 +266,24 @@ test("A11-255: a writer that is off, or full, records no request, so a later swe
   assert.ok(off.logs.some((line) => /names no tickets\.writer/.test(line)));
 
   const full = board();
-  for (let at = 0; at < 3; at += 1) full.store.set(queueWriter(full.store.get(), { id: `busy${at}`, request: "x", mode: "quick", placement: "auto", form: {}, model: "opus", effort: "high" }, 1));
+  for (let at = 0; at < 2; at += 1) full.store.set(queueWriter(full.store.get(), { id: `busy${at}`, request: "x", mode: "quick", placement: "auto", form: {}, model: "opus", effort: "high" }, 1));
   full.major();
   await full.sweep();
-  assert.deepEqual(full.state().tickets, {}, "no request recorded");
-  assert.ok(full.logs.some((line) => /3 new-ticket requests are unfinished already/.test(line)));
+  assert.equal(existsSync(full.statePath), false, "no request recorded");
+  assert.ok(full.logs.some((line) => /2 new-ticket requests are unfinished, so the sweep leaves the last place for a person/.test(line)));
   full.store.set({ ...full.store.get(), writers: full.store.get().writers!.slice(1) });
   await full.sweep();
-  assert.equal(full.writers().length, 3, "a place is free: the next sweep asks");
+  assert.equal(full.writers().length, 2, "a place is free: the next sweep asks");
   assert.ok(Object.hasOwn(full.state().tickets, "o/r:@x/y@2"));
 });
 
-test("A11-255: the writer queue is asked in turn: with three places, a fourth major waits for the next sweep, and several majors in one sweep get distinct runs", async () => {
+test("A11-255: the writer queue is asked in turn: the sweep leaves a place for a person, so a third major waits, and majors in one sweep get distinct runs", async () => {
   const b = board();
   for (let at = 1; at <= 4; at += 1) b.major(at, `deps: bump pkg${at} from 1.0.0 to 2.0.0`, "", `dependabot/npm_and_yarn/pkg${at}-2.0.0`);
   await b.sweep();
-  assert.equal(b.writers().length, 3);
-  assert.equal(new Set(b.writers().map(({ id }) => id)).size, 3, "distinct ids even within a millisecond");
-  assert.equal(Object.keys(b.state().tickets).length, 3, "the fourth is recorded nowhere");
+  assert.equal(b.writers().length, 2, "two of the three places; the last is a person's");
+  assert.equal(new Set(b.writers().map(({ id }) => id)).size, 2, "distinct ids even within a millisecond");
+  assert.equal(Object.keys(b.state().tickets).length, 2, "the rest are recorded nowhere");
 });
 
 test("A11-255: a run that made no ticket is asked again after an hour, up to three runs, and then left for a person", async () => {
@@ -342,4 +342,44 @@ test("A11-255: a sweep that is still running is not started again, and a request
   assert.equal(b.writers().length, 1);
   assert.deepEqual(b.writers()[0]!.form, { repo: "r" });
   assert.equal(b.writers()[0]!.placement, "manual");
+});
+
+test("A11-255: a paused queue asks for nothing, so no agent session starts for a sweep nobody asked for, and the sweep asks once it is resumed", async () => {
+  const b = board();
+  b.store.set({ ...b.store.get(), paused: true });
+  b.major();
+  await b.sweep();
+  assert.equal(b.writers().length, 0);
+  assert.ok(b.logs.some((line) => /the queue is paused/.test(line)));
+  b.store.set({ ...b.store.get(), paused: false });
+  await b.sweep();
+  assert.equal(b.writers().length, 1);
+});
+
+test("A11-255: a host that cannot name its repositories is said once, never thrown on every sweep, and files nothing", async () => {
+  const b = board({ repositories: () => { throw new Error("the reviewer gate is not loaded"); } });
+  b.major();
+  await b.sweep();
+  await b.sweep();
+  assert.equal(b.writers().length, 0);
+  assert.deepEqual(b.logs.filter((line) => /cannot be named \(the reviewer gate is not loaded\)/.test(line)).length, 1);
+});
+
+test("A11-255: a red group whose failed checks name no job cannot be rerun, says so, and is then read as red twice", async () => {
+  const b = board();
+  const { url } = b.group();
+  b.host.pullAt(url)!.feedback = { failing: ["gate"], failures: [{ name: "gate", detailsUrl: null }] };
+  await b.sweep();
+  assert.equal(b.host.checksAndClaims.reruns.length, 0, "nothing to rerun is asked of the host");
+  assert.ok(b.logs.some((line) => /no failed check names a job to rerun/.test(line)));
+  await b.sweep();
+  assert.equal(b.writers().length, 1);
+  assert.match(b.writers()[0]!.request, /`gate`: no error lines could be read/);
+});
+
+test("A11-255: a ticket the tracker does not have yet is said once, however many sweeps wait for it", async () => {
+  const b = board({ sourceHas: false });
+  await b.filed(["A11-300"]);
+  await b.sweep();
+  assert.equal(b.logs.filter((line) => /A11-300 is not in the tracker yet/.test(line)).length, 1);
 });

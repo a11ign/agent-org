@@ -7,7 +7,7 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import { DEPENDENCY_BOT_LOGIN, type ChangeFacts, type ChangeRef, type CiRun, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -87,8 +87,8 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       const inRepository = [...pulls.entries()].filter(([, pull]) => pull.repository === repository);
       if (inRepository.length === 0 && !repositories.has(repository)) return null;
       // The trust boundary: only a pull request the dependency bot authored, whatever its title says.
-      return inRepository.flatMap(([url, pull]) => (pull.state === "open" && pull.dependency?.author === DEPENDENCY_BOT_LOGIN
-        ? [{ url, number: pull.number, title: pull.dependency.title, headRefName: pull.dependency.headRefName, headSha: pull.head, author: DEPENDENCY_BOT_LOGIN, body: pull.body ?? "" }] : []));
+      return inRepository.flatMap(([url, pull]) => (pull.state === "open" && pull.dependency?.author === DEPENDENCY_PULL_AUTHOR
+        ? [{ url, number: pull.number, title: pull.dependency.title, headRefName: pull.dependency.headRefName, headSha: pull.head, author: DEPENDENCY_PULL_AUTHOR, body: pull.body ?? "" }] : []));
     },
     pullsNaming(key, repos) {
       calls.push(`pullsNaming ${key} ${repos.join(",")}`);

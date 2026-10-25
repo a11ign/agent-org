@@ -3,7 +3,7 @@
 import { errorLinesOfLog } from "../../ci-log-lines.ts";
 import type { DependencyPull } from "../../plugins/contracts/code-host.ts";
 import { redGroupKey } from "./classify.ts";
-import { due, type SweepContext } from "./context.ts";
+import { due, sayOnce, type SweepContext } from "./context.ts";
 import type { TicketRequest } from "./request.ts";
 import { MAX_JOBS, redGroupRequest, type FailingJob } from "./ticket-request.ts";
 
@@ -25,7 +25,10 @@ function failingJobsOf({ deps }: SweepContext, failures: readonly Readonly<{ nam
 export function watchGroup(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pull, group, self }: GroupPull): void {
   const { deps, state, commit } = ctx;
   const read = deps.codeHost.readPullFeedback(pull.url, self);
-  if (read === null) return deps.log(`dependency updates: ${pull.url}'s checks could not be read, so the next sweep asks again`);
+  if (read === null) {
+    sayOnce(ctx, `dependency updates: ${pull.url}'s checks could not be read, so the next sweep asks again`);
+    return;
+  }
   const pending = (read.pendingRequired ?? []).length > 0;
   const recorded = `${repository}#${pull.number}`;
   if (read.failing.length === 0) {
@@ -42,7 +45,8 @@ export function watchGroup(ctx: SweepContext, ask: (request: TicketRequest) => v
 
 /** Rerun the failed checks of a head and record the head. A rerun the host refuses is no reason to wait for ever: the head is recorded as rerun, so the next sweep asks for the ticket, and the refusal is said. */
 function rerunOnce({ deps, state, commit }: SweepContext, { recorded, head, url, failures }: Readonly<{ recorded: string; head: string; url: string; failures: readonly Readonly<{ detailsUrl: string | null }>[] }>): void {
-  const refused = deps.codeHost.rerunFailedChecks(failures.flatMap(({ detailsUrl }) => (detailsUrl === null ? [] : [detailsUrl])));
+  const jobs = failures.flatMap(({ detailsUrl }) => (detailsUrl === null ? [] : [detailsUrl]));
+  const refused = jobs.length === 0 ? "no failed check names a job to rerun" : deps.codeHost.rerunFailedChecks(jobs);
   if (refused !== null) deps.log(`dependency updates: the failed checks of ${url} could not be rerun (${refused}), so a second red is read as the first`);
   state.reruns[recorded] = head;
   commit();

@@ -22,16 +22,14 @@ export const emptyState = (): DependencyState => ({ tickets: {}, reruns: {} });
 /** The state on disk, or an empty one when there is no file. A file that cannot be read THROWS: reading it as empty would ask for every ticket again. */
 export function loadState(path: string): DependencyState {
   if (!existsSync(path)) return emptyState();
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-  if (!isRecordOf(parsed, "tickets")) throw new Error(`${path} is not a dependency ticket record`);
-  return { tickets: parsed.tickets, reruns: isRecordOf(parsed, "reruns") ? parsed.reruns : {} };
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as { tickets?: DependencyState["tickets"]; reruns?: DependencyState["reruns"] } | null;
+  const { tickets, reruns } = parsed ?? {};
+  if (!isObject(tickets)) throw new Error(`${path} is not a dependency ticket record`);
+  return { tickets, reruns: isObject(reruns) ? reruns : {} };
 }
 
-/** Whether `value` is an object whose `field` is an object. */
-function isRecordOf<Field extends string>(value: unknown, field: Field): value is Record<Field, Record<string, never>> {
-  const held = (value as Record<string, unknown> | null)?.[field];
-  return typeof held === "object" && held !== null;
-}
+/** Whether `value` is an object, which is all the file's two maps are checked for: their entries are the board's own writes. */
+const isObject = <Held extends object>(value: Held | undefined): value is Held => typeof value === "object" && value !== null;
 
 /** Replace the file whole: write beside it, then rename over it. */
 export function saveState(path: string, state: DependencyState): void {

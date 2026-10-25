@@ -2,7 +2,7 @@
 // A11-255: the open pull requests the dependency bot opened, as the code host reads them
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEPENDENCY_BOT_AUTHOR, DEPENDENCY_PULLS_FIELDS, DEPENDENCY_PULLS_LIMIT, openDependencyPulls } from "./dependency-pulls.ts";
+import { DEPENDENCY_PULLS_FIELDS, DEPENDENCY_PULLS_LIMIT, openDependencyPulls } from "./dependency-pulls.ts";
 import type { Gh } from "./gh.ts";
 
 const HEAD = "a".repeat(40);
@@ -10,11 +10,11 @@ const HEAD = "a".repeat(40);
 const listed = (number: number, over: Record<string, unknown> = {}) => ({ number, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", headRefOid: HEAD, url: `https://github.com/o/r/pull/${number}`, body: "notes", author: { login: "app/dependabot", is_bot: true }, ...over });
 const answering = (answer: unknown): Gh => () => JSON.stringify(answer);
 
-test("A11-255: the open pull requests are listed by the dependency bot's author, with the fields the board reads", () => {
+test("A11-255: the open pull requests are listed with the fields the board reads, and with no --author, which gh sends as a search", () => {
   const calls: string[][] = [];
   openDependencyPulls("o/r", (args) => { calls.push(args); return "[]"; });
-  assert.deepEqual(calls, [["pr", "list", "--repo", "o/r", "--state", "open", "--author", "app/dependabot", "--limit", String(DEPENDENCY_PULLS_LIMIT), "--json", DEPENDENCY_PULLS_FIELDS]]);
-  assert.equal(DEPENDENCY_BOT_AUTHOR, "app/dependabot", "the author is pinned: the trust boundary is GitHub's filter");
+  assert.deepEqual(calls, [["pr", "list", "--repo", "o/r", "--state", "open", "--limit", String(DEPENDENCY_PULLS_LIMIT), "--json", DEPENDENCY_PULLS_FIELDS]]);
+  assert.ok(!calls[0]!.some((arg) => ["--author", "-A", "--search", "-S", "--label", "-l", "--assignee", "-a"].includes(arg)), "no flag gh turns into a search");
   assert.equal(DEPENDENCY_PULLS_FIELDS, "number,title,headRefName,headRefOid,author,body,url");
 });
 
@@ -25,7 +25,7 @@ test("A11-255: each pull request is read with its address, number, title, branch
   ]);
 });
 
-test("A11-255: a pull request of any other author is left out even when gh lists it, whatever its title says", () => {
+test("A11-255: a pull request of any other author is left out, whatever its title says: the author check is this plugin's own", () => {
   const found = [listed(11), listed(12, { author: { login: "someone", is_bot: false } }), listed(13, { author: { login: "dependabot", is_bot: false } }), listed(14, { author: null }), listed(15, { author: { login: "renovate[bot]", is_bot: true } })];
   assert.deepEqual(openDependencyPulls("o/r", answering(found))?.map(({ number }) => number), [11]);
 });
