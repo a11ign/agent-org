@@ -29,7 +29,7 @@ import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
 import { closedWorkText, type KeptClosedWork } from "./closed-work-account.ts";
-import { diffText, type Finding, findingsText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
+import { diffText, type Finding, findingsText, lostText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
@@ -634,17 +634,19 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], closed = [], numberedSteps = false, opened = [], held }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], closed = [], numberedSteps = false, opened = [], held, lost }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
   read?: TicketRead; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
+  /** When the board found the run lost in a restart and queued it again (A11-279), for the section that says its worktree holds the earlier run's work. */
+  lost?: number;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
 
-${heldText(held)}You are an unattended worker. Nobody will answer you in this run. Decide anything that is not on the escalation list yourself, in line with the plan and the ticket's Decisions, and list each such choice under "Decisions made without a person" in the pull request body. End with \`needs-human\` only for an item on the list, naming its id.
+${heldText(held)}${lostText(lost)}You are an unattended worker. Nobody will answer you in this run. Decide anything that is not on the escalation list yourself, in line with the plan and the ticket's Decisions, and list each such choice under "Decisions made without a person" in the pull request body. End with \`needs-human\` only for an item on the list, naming its id.
 
 ${WORKER_DECISIONS}
 
@@ -1092,16 +1094,35 @@ Write \`decided\` once \`${DECISIONS_FILE}\` holds each section listed under "Wh
 }
 
 /**
+ * The Team line of a new-ticket brief (A11-267): ONE ordered rule, in the same words for every run, so two runs of the same request cannot decide differently. The teams it names are the only part that varies, and they come from the
+ * request and the host, never from the run: the request's own team (the board's, set on a request it makes itself), else the team the parent the form names is in, then the configured tracker team (`tickets.pick`), then the workspace's only
+ * team, which the run reads with the tracker's read-only tools (the create-ticket skill's own unattended rule), and needs-human only when none is left. PURE.
+ */
+function teamRule({ team, pickTeam, writing }: Readonly<{ team: string | null; pickTeam: string | null; writing: TrackerWriting }>): string {
+  const requested = team === null
+    ? "the request sets no team of its own, so the team of the parent ticket the form names, if it names one. A parent you choose yourself under Auto placement takes its team in the same way"
+    : `\`${team}\`, the team the board set on this request. File the ticket in it`;
+  const configured = pickTeam === null ? "no team is set on this machine" : `\`${pickTeam}\`, the team the Pick view lists`;
+  return `the first of these four that gives a team. The skill's Step 6 takes the team from this brief, and asks nobody.
+  1. **The request's own team:** ${requested}.
+  2. **The configured tracker team:** ${configured}.
+  3. **The workspace's only team:** list the teams with the read-only ${writing.label} tools, leave out each team that is retired or archived, and use the one team left when exactly one is.
+  4. **Otherwise** end needs-human, since no team is known. Never choose among several teams.`;
+}
+
+/**
  * A new-ticket run's brief (A11-94, A11-124, A11-135): the instruction the machine configures, with the person's request, the folder and the board's mode
  * filled in, the choices the form made and where each lands, the team, the repositories it may read, and the outcome it writes last. The run runs the
  * create-ticket skill in full, in the mode the board chose, and files its own ticket and plan through the tracker's tools (`writerTools`).
  * Its one prohibition is an update to a ticket it did not create. PURE.
  */
-export function writerBriefText({ run, request, mode, placement, form, clones, dir, pickTeam, ticket, writing }: {
+export function writerBriefText({ run, request, mode, placement, form, clones, dir, team = null, pickTeam, ticket, writing }: {
   run: string; request: string; mode: WriterMode; placement: Placement; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
   /** What the tracker plugin files a ticket with: its tools, its priority numbers and what to call it. */
   writing: TrackerWriting;
-  /** The team `tickets.pick` lists, or null: the team a new ticket goes in when its form names no parent. */
+  /** The team the board set on this request (`WriterRun.team`), or null: the first team the brief's Team rule takes (A11-267). */
+  team?: string | null;
+  /** The team `tickets.pick` lists, or null: the configured tracker team, the second the Team rule takes. */
   pickTeam: string | null;
   /** The ticket a Grill run grills, read as it is now. A Grill run's brief is the grill of that ticket, and files nothing (A11-134). */
   ticket?: Ticket;
@@ -1146,7 +1167,7 @@ ${STALLING_COMMANDS}
 
 ## The ticket
 
-- **Team:** the team of the parent ticket the form names, else ${pickTeam === null ? "none: when the form names no parent and no team is set here, end needs-human, since no team is known" : `\`${pickTeam}\`, the team the Pick view lists`}. A parent you choose yourself under Auto placement takes its team in the same way. The skill's Step 6 takes the team from this brief, and asks nobody.
+- **Team:** ${teamRule({ team, pickTeam, writing })}
 - **Title, description, labels, project and goal:** the skill's Steps 5, 7 and 8, as written. The description ends with \`**Repository:** <repo>\`: the form's repository or, when it names none, the one of the repositories below that holds the work, if one clearly does.
 - **Priority:** the number of the form's priority when it names one, else the priority the request warrants, as one of these numbers: ${priorityChoices(writing.priorities)}.
 - **Relations:** \`parentId\`, \`blockedBy\` and \`relatedTo\` are set on the ticket you create. Never set \`blocks\`: it writes a relation on another ticket.

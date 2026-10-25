@@ -1,7 +1,6 @@
-// A leaf of ticket mode, run by no command: the one prompt the board sends a worker's pane when a wait it declared ends or passes its deadline, and the sending of it (A11-245). The text is one line, as the board's other prompts are: a new
-// line typed into a pane would submit it early. It says what happened per item, with the reason first on a failure, and tells the worker to act on it and not to declare the same wait again. The prompt goes through herdr's `agent prompt`,
-// as A11-85's does, from a helper of this folder.
-import { herdrReason } from "../../herdr-agents.ts";
+// A leaf of ticket mode, run by no command: the one prompt the board sends a worker's pane when a wait it declared ends or passes its deadline (A11-245). The text is one line, as the board's other prompts are: a new
+// line typed into a pane would submit it early. It says what happened per item, with the reason first on a failure, and tells the worker to act on it and not to declare the same wait again. The prompt goes through herdr's `agent prompt`
+// to the run's pane, as every prompt of the board does (`sendToAgent`, A11-279).
 import type { Verdict } from "./wait-verdict.ts";
 import type { Woke } from "./wait-types.ts";
 
@@ -25,13 +24,3 @@ const undeclaredPrompt = (deadline: string): string => `your wait has passed its
  */
 export const wakePrompt = (woke: Woke, verdict: Verdict | null, deadline: number): string =>
   verdict === null ? undeclaredPrompt(new Date(deadline).toISOString()) : declaredPrompt(woke, verdict, new Date(deadline).toISOString());
-
-/** Sends the prompt to the run's agent, by its herdr name: null when herdr took it, or why it refused. */
-export function sendWake(herdr: (args: string[]) => string, session: string, name: string, text: string): string | null {
-  try {
-    herdr(["--session", session, "agent", "prompt", name, text]);
-    return null;
-  } catch (error) {
-    return herdrReason(error);
-  }
-}

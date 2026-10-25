@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A run left at a prompt by a restart is resumed by the board, and an idle run is never shown as only running. herdr 0.9.3 lists Claude agents with no name, so every prompt the board sent a run by its name was refused (`agent_not_found`); on 2026-10-25 runs sat interrupted for up to 1h40m after a reboot while their cards said running. Ticket mode now reaches a run's agent by its pane. After a new boot, a new start of `agent-org-herdr.service`, or the instance's own start, each running run that is idle at a prompt or interrupted, with no outcome but a `working` note, is sent one resume prompt in that pass, and its card says "Resumed after a restart at …". A run idle at a prompt for ten minutes with no outcome is resumed once ("Idle since …, resumed at …"), and handed to a person (Needs you, its pane kept) if it is still idle ten minutes later. A run whose workspace a restart lost is queued again first, and its brief says its worktree holds the earlier run's work. A11-279.

@@ -104,8 +104,7 @@ test("A11-261: the run's figures count from its first start and the ticket's cou
 test("A11-261: past the budget the live worker is told in its pane, once, and the sweep records the warning", async () => {
   const b = await board({ budget: 10, runs: [run(1, [job(["macos-14"], 1), job(["ubuntu-latest"], 3)])] });
   await b.sweep();
-  const name = herdrName(KEY);
-  assert.deepEqual(b.prompts().map((args) => [args.at(-3), args.at(-2), args.at(-1)]), [["prompt", name, warnPrompt(13, 10)]], "one line, naming the total and where the board holds the run");
+  assert.deepEqual(b.prompts().map((args) => [args.at(-3), args.at(-2), args.at(-1)]), [["prompt", b.entry(KEY).pane, warnPrompt(13, 10)]], "one line, naming the total and where the board holds the run, sent to the run's pane (A11-279)");
   assert.equal(b.record()?.warned, 13);
   assert.equal(b.entry(KEY).phase, "running", "a warning stops nothing");
   await b.sweep();

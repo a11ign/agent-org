@@ -16,6 +16,7 @@ import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type Learned, markTicketChanged, type PlannedAgainst, recordBlockerDeclared, recordLearned, recordTicketChange, replan, type TicketChange } from "./queue/queue-ticket-text.ts";
 import { declaredByBlockerPull } from "./queue/queue-declarations.ts";
 import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
+import { agentTarget } from "./pool-resume.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parseStamp, urlsNamedIn } from "./plan-stamp.ts";
@@ -374,7 +375,7 @@ function tellLiveRun(ctx: PoolContext, entry: Entry, read: TicketRead): void {
     const place = runPlace(ctx, entry);
     const path = join(place.dir, `ticket-changed-${(entry.ticketChanges?.length ?? 0) + 1}.md`);
     writeFileSync(path, changeFile(before, read));
-    herdr(["--session", settings.herdrSession, "agent", "prompt", place.name, changeMessage(path)]);
+    herdr(["--session", settings.herdrSession, "agent", "prompt", agentTarget(ctx, place), changeMessage(path)]);
     update(ctx, (queue) => recordTicketChange(queue, entry.ticket.key, changeOf(ctx, before.description, read.description), read));
   } catch (err) {
     log(`${entry.ticket.key} could not be told its ticket changed: ${herdrRefusal(err)}`);

@@ -6,7 +6,6 @@ import { AnswerNotDelivered } from "./pool.ts";
 import { ANSWER_CHARS } from "./pool-answer.ts";
 import { WHO_CHARS } from "./answer-decision.ts";
 import { answerFixture } from "./pool-answer-fixture.ts";
-import { herdrName } from "./pool.ts";
 import { descriptionHash } from "./ticket-read.ts";
 import { logOf } from "./queue/run-log.ts";
 
@@ -29,7 +28,7 @@ test("A11-250: an answered Needs-you question lands in the ticket's Decisions, w
   assert.equal(made.writes.length, 1);
   assert.ok(decisionsOf(made.held.description)?.includes("* **Answer:** Keep the current wording."), "the reviewer's reader (decisionsOf) finds the answer in the ticket");
   const [prompt] = made.prompts();
-  assert.ok(made.prompts().length === 1 && prompt.includes(herdrName("NBF-1")), "one message, to the run's agent");
+  assert.ok(made.prompts().length === 1 && prompt.includes("w1:p1"), "one message, to the run's agent at its pane (A11-279)");
   assert.ok(made.writes[0].herdrCallsBefore <= made.herdr.calls.indexOf(prompt), "the ticket was written before the run was told");
   const message = prompt[prompt.length - 1];
   assert.match(message, /A person answered your question/);
