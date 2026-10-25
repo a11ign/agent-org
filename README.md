@@ -329,8 +329,12 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   of its own is still running and will wake it (a long Ansible run, say) writes `{ "kind": "working", "reason": "..." }`. The run stays In
   progress, holding its slot, with that reason as its note, and the outcome it writes when its work wakes it replaces the note and ends the
   run as usual. The stop hook lets one stop through on a `working` outcome and refuses a later stop on the same file, so a woken worker says
-  how the run stands, or writes `working` again. An agent idle with no newer outcome for `tickets.stallMinutes` is marked Stalled on its row,
-  with the note: the run is not ended and the agent is not prompted. `working` is never for a question: that is `needs-human`.
+  how the run stands, or writes `working` again. Before a long wait a worker writes `{ "kind": "working", "reason": "...", "waitingOn": "<what>",
+  "until": "<ISO time>" }`. A run whose pane shows a running shell or Monitor, or whose note names a `waitingOn`, is not marked Stalled while it
+  waits: its row reads "Waiting on background work for 54 min: <what>" until `until`, or until 3 hours after the outcome was written when there is
+  no `until`, and after that, with no newer outcome, it reads Stalled and names the job. Any other agent idle with no newer outcome for
+  `tickets.stallMinutes` is marked Stalled on its row, with the note: the run is not ended and the agent is not prompted. `working` is never for a
+  question: that is `needs-human`.
 - **Approve, once you have reviewed the drafts.** A run Awaiting review offers Approve. It queues the ticket again
   as a review run, which resumes the worker that wrote the code in its own Claude session: the board saves it when a run ends, and for an
   older run takes the newest session Claude Code kept for the ticket's folder, starting a fresh worker only when there is none. The review run

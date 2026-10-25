@@ -60,6 +60,10 @@
 // line counts (`· 1 shell, 1 monitor`). An idle run whose pane shows none for `BACKGROUND_GONE_MS` is marked stalled, and told once, with
 // `BACKGROUND_GONE_PROMPT`, to check its background work and carry on. A pane that cannot be read leaves the thirty-minute rule to decide alone.
 //
+// A RUN WAITING ON ITS OWN BACKGROUND WORK IS NOT STALLED WHILE IT WAITS (A11-236). A pane that shows a live shell or Monitor, or a `working` note that names a
+// `waitingOn` job, makes the run `waiting`: the board says "Waiting on background work", and the thirty-minute rule does not apply until `waitDeadline`, the note's
+// `until` or `BACKGROUND_WAIT_MS` after the outcome file. Past it, with no newer outcome, the run is stalled, and the reason names the job.
+//
 // A RUN READY TO MERGE IS WATCHED. Every few minutes (`watchFeedback`) the board reads the open pull requests of each finished run (`readPullFeedback`,
 // through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from anyone but the account the workers
 // use, or a check failing on the head commit since then, queues another review round that resumes the same worker to answer it (`feedbackRound`),

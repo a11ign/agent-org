@@ -275,14 +275,22 @@ export function observe(queue: Queue, key: string, status: string, prompt?: stri
 }
 
 /**
- * A running run's worker wrote a `working` outcome at `at`: record its reason as the run's latest note, with its agent idle since `now`, and keep
+ * A running run's worker wrote a `working` outcome at `at`: record its reason, and the job and time it gave in `wait` (A11-236), as the run's latest note, with its agent idle since `now`, and keep
  * the run running. A note no newer than the one recorded changes nothing, so the stall clock is not reset by reading the same file again. A run
  * that is not running is left alone: a `working` outcome never ends, parks or revives one.
  */
-export function noteWorking(queue: Queue, key: string, reason: string, at: number, now: number): Queue {
+export function noteWorking(queue: Queue, key: string, reason: string, at: number, now: number, wait: Readonly<{ waitingOn?: string; until?: number }> = {}): Queue {
   return replace(queue, key, (entry) => {
     if (entry.phase !== "running" || (entry.working !== undefined && at <= entry.working.at)) return entry;
-    return { ...entry, working: { reason, at, idleSince: now, ...(entry.working?.resumed === true ? { resumed: true } : {}) } };
+    const { waitingOn, until } = wait;
+    return {
+      ...entry,
+      working: {
+        reason, at, idleSince: now,
+        ...(waitingOn === undefined ? {} : { waitingOn }), ...(until === undefined ? {} : { until }),
+        ...(entry.working?.resumed === true ? { resumed: true } : {}),
+      },
+    };
   });
 }
 
@@ -300,24 +308,54 @@ function backgroundMark(note: WorkingNote, background: Background, now: number):
   return { ...note, noBackgroundSince: since, stalled: true, stallReason: BACKGROUND_GONE, resumed: true };
 }
 
+/** How long a run waiting on background work may sit idle past its `working` outcome, when the outcome gives no `until`: three hours. */
+const BACKGROUND_WAIT_MS = 3 * 60 * 60_000;
+
+/** The start of the stall reason of a run idle past the end of its wait on background work (A11-236): the deadline and the job follow. */
+const WAITED_PAST = "waited past";
+
+/** The time (ms) a waiting note's wait ends: the `until` its outcome gave, whatever it is, or {@link BACKGROUND_WAIT_MS} after the outcome file was written, so a newer outcome starts it again. PURE. */
+const waitDeadline = ({ at, until }: Pick<WorkingNote, "at" | "until">): number => until ?? at + BACKGROUND_WAIT_MS;
+
+/** The stall reason of a run that stayed idle past the end of its wait on background work, naming the job (A11-236). PURE. */
+const waitedPastReason = (note: WorkingNote): string => {
+  const deadline = new Date(waitDeadline(note)).toISOString();
+  return note.waitingOn === undefined ? `${WAITED_PAST} ${deadline} with its background work still running` : `${WAITED_PAST} ${deadline} on ${note.waitingOn}`;
+};
+
+/**
+ * The note of an idle run that waits on background work, at `now` (A11-236): its pane shows live work, or its outcome names a job. Inside the wait it is
+ * `waiting`, and not stalled, though the background mark may still say its work is gone (the worker is prompted once, as A11-85 does). Past the end of the
+ * wait, with no newer outcome, it is stalled, and the reason names the job. PURE.
+ */
+function waitingMark(marked: WorkingNote, now: number): WorkingNote {
+  const { waiting: _ended, stalled: _marked, stallReason: _why, ...rest } = marked;
+  if (now >= waitDeadline(marked)) return { ...rest, stalled: true, stallReason: waitedPastReason(marked) };
+  return { ...rest, waiting: true };
+}
+
 /**
  * What herdr says a running run with a working note is doing, at `now`. Working clears the idle clock and the stall: its background work woke it.
  * Idle or done starts the clock when it is not running already, and marks the run stalled once it has run for `stallMs`. Any other status, and a
  * run with no note, changes nothing. `background` is what the run's pane shows of its background work, which an idle run with no work to wake it
  * reaches within {@link BACKGROUND_GONE_MS} (see {@link backgroundMark}); the default, null, is a pane that cannot be read.
+ *
+ * A11-236: a run that waits on background work (live on its pane, or a job named in its note) is not on that clock: see {@link waitingMark}.
  */
 export function watchWorking(queue: Queue, key: string, status: string, now: number, stallMs: number, background: Background = null): Queue {
   return replace(queue, key, (entry) => {
     const note = entry.working;
     if (entry.phase !== "running" || note === undefined) return entry;
     if (status === "working") {
-      const { idleSince: _woke, stalled: _cleared, stallReason: _why, noBackgroundSince: _since, ...awake } = note;
+      const { idleSince: _woke, stalled: _cleared, stallReason: _why, noBackgroundSince: _since, waiting: _waited, ...awake } = note;
       return { ...entry, working: awake };
     }
     if (status !== "idle" && status !== "done") return entry;
     const idleSince = note.idleSince ?? now;
     const marked = backgroundMark({ ...note, idleSince }, background, now);
-    return { ...entry, working: { ...marked, ...(now - idleSince >= stallMs ? { stalled: true } : {}) } };
+    if (background === "live" || note.waitingOn !== undefined) return { ...entry, working: waitingMark(marked, now) };
+    const { waiting: _not, ...plain } = marked;
+    return { ...entry, working: { ...plain, ...(now - idleSince >= stallMs ? { stalled: true } : {}) } };
   });
 }
 

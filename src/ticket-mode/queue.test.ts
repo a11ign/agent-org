@@ -672,7 +672,7 @@ test("A11-85: a shell or a Monitor on the pane clears the gone mark, and a pane 
   const gone = watchWorking(started, "A", "idle", 1000 + BACKGROUND_GONE_MS, 30 * 60_000, "none");
   assert.equal(note(gone)?.stalled, true, "POSITIVE: the run is stalled before the live work is seen");
   const live = watchWorking(gone, "A", "idle", 1000 + BACKGROUND_GONE_MS + 1, 30 * 60_000, "live");
-  assert.deepEqual(note(live), { reason: "the roll is still running", at: 50, idleSince: 1000 }, "live work clears the stall, the gone clock and the resume");
+  assert.deepEqual(note(live), { reason: "the roll is still running", at: 50, idleSince: 1000, waiting: true }, "live work clears the stall, the gone clock and the resume, and the run is waiting on it");
   const unread = watchWorking(noted, "A", "idle", 1000 + BACKGROUND_GONE_MS * 5, 30 * 60_000, null);
   assert.deepEqual(note(unread), { reason: "the roll is still running", at: 50, idleSince: 1000 }, "a pane that cannot be read: the idle clock alone");
 });
@@ -687,6 +687,84 @@ test("A11-85: a newer working note keeps the resume, so the worker is not prompt
   assert.deepEqual(note(again), { reason: "second", at: 70, idleSince: 2000, resumed: true }, "the resume outlasts a newer note");
   const woke = watchWorking(gone, "A", "working", 2001, 30 * 60_000, "none");
   assert.deepEqual(note(woke), { reason: "first", at: 50, resumed: true }, "working clears the stall and the gone clock, and keeps the resume");
+});
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+test("A11-236: an idle run whose pane shows live background work is waiting, not stalled, past the idle clock and up to the three-hour bound", () => {
+  const stall = 30 * MINUTE;
+  const noted = noteWorking(runningA(), "A", "two shells are running", 1000, 1000);
+  const note = (q: Queue) => q.entries[0].working;
+  const idle = (now: number) => note(watchWorking(noted, "A", "idle", now, stall, "live"));
+  assert.deepEqual([idle(1000 + 31 * MINUTE)?.waiting, idle(1000 + 31 * MINUTE)?.stalled], [true, undefined], "31 minutes idle with shells: waiting, not stalled");
+  assert.deepEqual([idle(1000 + 3 * HOUR - 1)?.waiting, idle(1000 + 3 * HOUR - 1)?.stalled], [true, undefined], "just inside three hours: still waiting");
+  const control = note(watchWorking(noted, "A", "idle", 1000 + 31 * MINUTE, stall, null));
+  assert.deepEqual([control?.waiting, control?.stalled], [undefined, true], "CONTROL: the same idle time with an unreadable pane stalls, as it always did");
+});
+
+test("A11-236: past three hours with live work and no named job, the run is stalled, and the reason says its background work was still running", () => {
+  const noted = noteWorking(runningA(), "A", "two shells are running", 1000, 1000);
+  const late = watchWorking(noted, "A", "idle", 1000 + 3 * HOUR, 30 * MINUTE, "live").entries[0].working;
+  assert.deepEqual([late?.stalled, late?.waiting], [true, undefined]);
+  assert.equal(late?.stallReason, `waited past ${new Date(1000 + 3 * HOUR).toISOString()} with its background work still running`);
+});
+
+test("A11-236: a note that names a job is waiting inside its bound even with a pane that shows none, and the worker is prompted once, not stalled", () => {
+  const noted = noteWorking(runningA(), "A", "the fleet capture runs", 1000, 1000, { waitingOn: "the fleet capture on three boxes" });
+  const note = (q: Queue) => q.entries[0].working;
+  const first = watchWorking(noted, "A", "idle", 1000, 30 * MINUTE, "none");
+  const gone = watchWorking(first, "A", "idle", 1000 + BACKGROUND_GONE_MS, 30 * MINUTE, "none");
+  assert.deepEqual([note(gone)?.waiting, note(gone)?.stalled, note(gone)?.resumed], [true, undefined, true], "waiting, not stalled, and resumed once");
+  const hour = watchWorking(gone, "A", "idle", 1000 + HOUR, 30 * MINUTE, "none");
+  assert.deepEqual([note(hour)?.waiting, note(hour)?.stalled], [true, undefined], "an hour in: the idle clock does not stall it");
+  const unread = note(watchWorking(noted, "A", "idle", 1000 + HOUR, 30 * MINUTE, null));
+  assert.deepEqual([unread?.waiting, unread?.stalled], [true, undefined], "an unreadable pane: the declared wait still counts");
+});
+
+test("A11-236: past its until, a run that named a job is stalled, and the reason names the job and the deadline", () => {
+  const until = Date.parse("2026-10-24T23:00:00Z");
+  const at = until - 2 * HOUR;
+  const noted = noteWorking(runningA(), "A", "the fleet capture runs", at, at, { waitingOn: "the fleet capture on three boxes", until });
+  const note = (q: Queue, now: number, background: "live" | "none" | null = "live") => watchWorking(q, "A", "idle", now, 30 * MINUTE, background).entries[0].working;
+  assert.equal(note(noted, until - 1)?.waiting, true, "inside until");
+  const expired = note(noted, until);
+  assert.deepEqual([expired?.stalled, expired?.waiting], [true, undefined]);
+  assert.equal(expired?.stallReason, "waited past 2026-10-24T23:00:00.000Z on the fleet capture on three boxes");
+  assert.equal(note(noted, until, null)?.stallReason, expired?.stallReason, "an unreadable pane stalls the same way");
+  assert.equal(note(noted, until, "none")?.stallReason, expired?.stallReason, "so does a pane with no work, past the bound");
+});
+
+test("A11-236: until replaces the three-hour default, longer or shorter, and a newer working note starts the bound again", () => {
+  const stall = 30 * MINUTE;
+  const longer = noteWorking(runningA(), "A", "r", 0, 0, { waitingOn: "job", until: 5 * HOUR });
+  const at = (q: Queue, now: number) => watchWorking(q, "A", "idle", now, stall, "live").entries[0].working;
+  assert.deepEqual([at(longer, 4 * HOUR)?.waiting, at(longer, 4 * HOUR)?.stalled], [true, undefined], "an until five hours out: still waiting at four");
+  const shorter = noteWorking(runningA(), "A", "r", 0, 0, { waitingOn: "job", until: HOUR });
+  assert.equal(at(shorter, HOUR)?.stalled, true, "an until one hour out: stalled at one hour, not three");
+  const stalled = watchWorking(shorter, "A", "idle", HOUR, stall, "live");
+  const renewed = noteWorking(stalled, "A", "still running", 2 * HOUR, 2 * HOUR, { waitingOn: "job" });
+  assert.deepEqual([at(renewed, 4 * HOUR)?.waiting, at(renewed, 4 * HOUR)?.stalled], [true, undefined], "a newer outcome counts the three hours from its own time");
+});
+
+test("A11-236: an until at or before the outcome's own time is the bound as written: the run is stalled at its first idle tick, naming the job and that time", () => {
+  const at = Date.parse("2026-10-25T08:00:00Z");
+  const past = Date.parse("2026-01-01T12:00:00Z");
+  const idle = (until: number, now: number) => watchWorking(noteWorking(runningA(), "A", "r", at, at, { waitingOn: "job", until }), "A", "idle", now, 30 * MINUTE, "live").entries[0].working;
+  assert.equal(idle(past, at + MINUTE)?.stalled, true, "an until before the file: stalled at once");
+  assert.equal(idle(past, at + MINUTE)?.stallReason, "waited past 2026-01-01T12:00:00.000Z on job", "naming the job and the until it gave");
+  assert.deepEqual([idle(at, at - 1)?.waiting, idle(at, at)?.stalled], [true, true], "an until equal to the file's time ends the wait at that time");
+});
+
+test("A11-236: working status clears waiting along with the idle clock and the stall, and a note without a job or live work takes the idle clock as before", () => {
+  const noted = noteWorking(runningA(), "A", "r", 50, 1000, { waitingOn: "job" });
+  const waiting = watchWorking(noted, "A", "idle", 2000, 30 * MINUTE, "live");
+  assert.equal(waiting.entries[0].working?.waiting, true);
+  const woke = watchWorking(waiting, "A", "working", 3000, 30 * MINUTE, "live").entries[0].working;
+  assert.deepEqual(woke, { reason: "r", at: 50, waitingOn: "job" }, "awake: no idle clock, no waiting");
+  const plain = watchWorking(noteWorking(runningA(), "A", "r", 50, 1000), "A", "idle", 1000 + 30 * MINUTE, 30 * MINUTE, "none").entries[0].working;
+  assert.equal(plain?.stalled, true, "no job and no live work: the idle clock stalls it");
+  assert.equal(plain?.waiting, undefined);
 });
 
 // A11-82: runs that share a path in one repository start in turn, and a review round keeps the footprint of the run it continues.

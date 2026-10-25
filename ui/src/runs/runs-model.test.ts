@@ -164,6 +164,15 @@ describe("a row's note", () => {
     expect(() => noteLines(entry, { queue: older, publisher: undefined })).not.toThrow();
   });
 
+  it("says a run waiting on background work waits, for how long when the page holds the time, and a run past its bound is stalled naming the job", () => {
+    const base = working({ key: "A11-236", title: "t", startedAgo: 120 * MINUTE });
+    const waiting = entryOf({ ...base, working: { reason: "the captures run", at: 0, waiting: true, waitingOn: "the fleet captures" } });
+    expect(noteLines(waiting, { ...context, now: 54 * MINUTE })).toContain("Waiting on background work for 54 min: the fleet captures");
+    expect(noteLines(waiting, context)).toContain("Waiting on background work: the fleet captures");
+    const stalled = entryOf({ ...base, working: { reason: "the captures run", at: 0, stalled: true, stallReason: "waited past 2026-10-24T23:00:00.000Z on the fleet captures" } });
+    expect(noteLines(stalled, { ...context, now: 54 * MINUTE })).toContain("Stalled: waited past 2026-10-24T23:00:00.000Z on the fleet captures since it said: the captures run");
+  });
+
   it("is null for a run with nothing to say", () => {
     expect(noteOf(entryOf(working({ key: "A11-3", title: "t", startedAgo: MINUTE })), context)).toBeNull();
   });

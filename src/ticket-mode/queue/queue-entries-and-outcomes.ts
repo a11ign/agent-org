@@ -71,8 +71,11 @@ export type Outcome =
  * What a worker may write that is NOT how its run ended: `working` says its own background work (a shell, a Monitor or a task) is still running
  * and will wake it, so the turn it ends is not the run's end. The pool keeps such a run In progress and records the reason as its
  * {@link WorkingNote}; the next outcome the worker writes replaces it as usual. It is never a {@link Outcome}, so no finished run holds one.
+ *
+ * A11-236: `waitingOn` names the background job it waits for, and `until` (ms, from an ISO time in the file) is when it expects the wait to be over: the
+ * board reads it as the bound of the wait. Both are optional; a `working` with a reason alone waits for `BACKGROUND_WAIT_MS` (three hours).
  */
-export type WorkingOutcome = Readonly<{ kind: "working"; reason: string }>;
+export type WorkingOutcome = Readonly<{ kind: "working"; reason: string; waitingOn?: string; until?: number }>;
 
 /** Anything a worker can leave in its outcome file: how its run ended, or that it is still working in the background. */
 export type WrittenOutcome = Outcome | WorkingOutcome;
@@ -87,8 +90,15 @@ export type WrittenOutcome = Outcome | WorkingOutcome;
  * it has been so for {@link BACKGROUND_GONE_MS}, `stalled` is set with `stallReason` {@link BACKGROUND_GONE}, and `resumed` says the board has
  * prompted the worker once to check its background work and carry on. `resumed` outlasts a newer note, so a worker that writes `working` again with
  * nothing running is refused by the stop hook, not prompted in a loop; live background work seen again clears it.
+ *
+ * A11-236: a note that names a job (`waitingOn`, with `until` the end of its wait), or whose pane shows live background work, is `waiting` while the agent
+ * is idle and the time is before `waitDeadline`: the board says it waits on background work, and the idle clock does not stall it. Past the
+ * deadline with no newer outcome it is `stalled` as before, and `stallReason` names the job.
  */
-export type WorkingNote = Readonly<{ reason: string; at: number; idleSince?: number; stalled?: boolean; stallReason?: string; noBackgroundSince?: number; resumed?: boolean }>;
+export type WorkingNote = Readonly<{
+  reason: string; at: number; idleSince?: number; stalled?: boolean; stallReason?: string; noBackgroundSince?: number; resumed?: boolean;
+  waitingOn?: string; until?: number; waiting?: true;
+}>;
 
 /** The stall reason of a run idle with no background work for {@link BACKGROUND_GONE_MS}: nothing will wake it, so the board prompts it once. */
 export const BACKGROUND_GONE = "background work gone";

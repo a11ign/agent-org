@@ -854,8 +854,8 @@ function row(e) {
   terminal?.addEventListener("click", (event) => resolveStaleTerminal(event, state.queueAt, terminalTab(e), ticketTerminal(e.ticket.key)));
   const pulls = pullsOf(e);
   const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { className: "pr-link", href: safeHref(pr.url), title: `Open ${pr.repo} #${pr.url.split("/").pop()} on GitHub`, target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.pull), `#${pr.url.split("/").pop()}`, el("span", { className: "sr-only" }, ` ${pr.repo}`))])) : null;
-  const note = workingNote(e);
-  const { line: reason, question } = reasonOf(e);
+  const note = workingNote(e, Date.now());
+  const { line: reason, question } = reasonOf(e, Date.now());
   const changed = ticketChangeOf(e);
   const learns = learnsFrom(e);
   // A done run lists what the worker checked, one line per Done-when item, as the ticket's comment does (A11-91).

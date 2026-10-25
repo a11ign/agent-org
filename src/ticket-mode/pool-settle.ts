@@ -1,7 +1,7 @@
 // @ts-check
 // module: ending a run -- how it ended and what that does to its ticket, its plan, its proposed edit, and its ticket's state
 
-import { clearMove, type Entry, type Outcome, type ProposedEdit, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { clearMove, type Entry, type Outcome, type ProposedEdit, type WorkingOutcome, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { type PlannedAgainst, recordStampedPlan } from "./queue/queue-ticket-text.ts";
 import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
@@ -51,16 +51,16 @@ export function recordWrittenStep(ctx: PoolContext, entry: Entry): void {
 }
 
 /**
- * A run's agent wrote `working`: its reason becomes the run's latest note, for every ticket in the run, and the run carries on. The file's own
+ * A run's agent wrote `working`: its reason, and the job and time it waits on, become the run's latest note, for every ticket in the run, and the run carries on. The file's own
  * time says whether it is newer than the note recorded, so reading the same file on every tick changes nothing.
  */
-function noteStillWorking(ctx: PoolContext, entry: Entry, reason: string): void {
+function noteStillWorking(ctx: PoolContext, entry: Entry, { reason, waitingOn, until }: WorkingOutcome): void {
   const { attachRetries, now } = ctx;
   // The agent is working again, so a plan attach waiting to be tried again belongs to an outcome it has replaced: its next `planned` is attached afresh, and the stall watch reads the run as it does any other.
   attachRetries.delete(runPlace(ctx, entry).name);
   const path = join(runPlace(ctx, entry).dir, OUTCOME_FILE);
   const at = existsSync(path) ? statSync(path).mtimeMs : now();
-  updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, reason, at, now()));
+  updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, reason, at, now(), { waitingOn, until }));
 }
 
 /**
@@ -69,7 +69,7 @@ function noteStillWorking(ctx: PoolContext, entry: Entry, reason: string): void 
  */
 export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome): void {
   recordWrittenStep(ctx, entry);
-  if (outcome.kind === "working") return noteStillWorking(ctx, entry, outcome.reason);
+  if (outcome.kind === "working") return noteStillWorking(ctx, entry, outcome);
   if (outcome.kind === "reviewed") {
     if (entry.review === undefined) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a reviewed outcome, but its run was not a review run" });
     return end(ctx, entry, { kind: "reviewed", prs: entry.review });

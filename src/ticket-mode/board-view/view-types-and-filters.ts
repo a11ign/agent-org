@@ -96,8 +96,11 @@ export type ViewEntry = Readonly<{
   worker?: Readonly<{ instance: string }>;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. */
   handedBack?: string;
-  /** Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled, and why (A11-85). */
-  working?: Readonly<{ reason: string; stalled?: boolean; stallReason?: string }>;
+  /**
+   * Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled, and why (A11-85).
+   * `at` is when it said so, `waiting` that the board reads the run as waiting on background work, `waitingOn` the job it named, and `until` when it expects the wait to end (A11-236).
+   */
+  working?: Readonly<{ reason: string; at?: number; stalled?: boolean; stallReason?: string; waiting?: boolean; waitingOn?: string; until?: number }>;
   /** Set while a reviewer's verdict on one of the run's pull requests is not posted, and the reason it is not (A11-83). */
   verdictNotPosted?: string;
   /** Set while a stacked pull request of the run needs its base said: by URL, what is needed (A11-106). */
