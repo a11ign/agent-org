@@ -12,6 +12,7 @@
 // THE SAME GOES FOR THE DECISION RULE (A11-213): the first review, the reprompt and the re-review all carry the ticket's decisions and the rule that they come before a general direction. A reviewer that held
 // "permissions only shrink" against the chairman's written decision to widen one blocked a pull request the ticket asked for, and a re-review that did not see the decision could not correct it.
 import type { ReviewBodyLine, ReviewBrief, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
+import { CI_COST_RULE } from "./ci-rule.ts";
 
 /** What the reviewer is told about a Done-when line the ticket puts under "After merge". */
 export const POST_MERGE_RULE = "A Done-when line under the ticket's \"After merge\" part is not a merge condition: do not block the pull request on it. "
@@ -102,18 +103,18 @@ function contractWords({ doneWhen, step }: Pick<ReviewBrief, "doneWhen" | "step"
   return `${stepWords(step)}\n\n${forLast}`;
 }
 
-/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract. */
+/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract and the CI cost rule (A11-261). */
 const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "decisions" | "planDecisions" | "escalation" | "step">, unrequiredRed: readonly string[] | undefined): string =>
-  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief)].filter((words) => words !== "").join("\n\n");
+  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief), CI_COST_RULE].filter((words) => words !== "").join("\n\n");
 
-/** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), then the post-merge rule. */
+/** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), the CI cost rule (A11-261), then the post-merge rule. */
 export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, unrequiredRed?: readonly string[]): string {
   return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.planDecisions === undefined ? {} : { planDecisions: brief.planDecisions }), ...(brief?.escalation === undefined ? {} : { escalation: brief.escalation }), ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${POST_MERGE_RULE}`;
 }
 
 /**
  * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156, A11-235), in this order: what this is and what changed since the review (the description, the ticket's Decisions, a reply, or any of them) with the
- * instruction to review the whole diff again, the description's changed lines, the lines of the ticket's Decisions that changed (A11-250), the replies since the review, the claims of a person's decision the ticket does not record, the ticket's decisions and the rule that they come first (A11-213), the plan's decisions and the order of authority (A11-257), the ticket's Done-when (or the plan step), the post-merge rule,
+ * instruction to review the whole diff again, the description's changed lines, the lines of the ticket's Decisions that changed (A11-250), the replies since the review, the claims of a person's decision the ticket does not record, the ticket's decisions and the rule that they come first (A11-213), the plan's decisions and the order of authority (A11-257), the ticket's Done-when (or the plan step), the CI cost rule (A11-261), the post-merge rule,
  * and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure.
  */
 export function rereviewWords({ number, head, pr, roleFile, replies, body, decided, unsupported, doneWhen, decisions, planDecisions, escalation, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decided?: readonly ReviewBodyLine[]; unsupported?: readonly string[]; doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {

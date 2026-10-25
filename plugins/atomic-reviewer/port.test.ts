@@ -17,6 +17,7 @@ import { REPO } from "../../src/project-identity.ts";
 import { loadReviewerGate } from "../../src/ticket-mode/reviewer-port.ts";
 import { homeProjectDeclaration } from "../../src/project-config.ts";
 import { HOST_CONFIG_ENV, hostConfigPath } from "../../src/host-config.ts";
+import { CI_COST_RULE } from "./ci-rule.ts";
 import { DECISION_RULE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, unrequiredRedWords } from "./prompt.ts";
 import { REVIEW_CAUSE, atomicReviewerPort as portOver, clonedSeatOf, type Seams, verdictFileIn as verdictFileOver } from "./port.ts";
 
@@ -138,7 +139,7 @@ test("the reviewer is asked the gate's own verdict prompt for the pull request a
   assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   const prompt = herd.calls.find((args) => args.includes("prompt"))!;
   const GATE_WORDS = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
-  assert.equal(prompt[prompt.length - 1], `${GATE_WORDS}\n\n${NO_TICKET_LINE}\n\n${POST_MERGE_RULE}`, "the gate's own words, then (A11-156) what a start with no brief tells the reviewer");
+  assert.equal(prompt[prompt.length - 1], `${GATE_WORDS}\n\n${NO_TICKET_LINE}\n\n${CI_COST_RULE}\n\n${POST_MERGE_RULE}`, "the gate's own words, then (A11-156) what a start with no brief tells the reviewer");
 });
 
 /** A port over a green, ready pull request whose head carries `statuses`, and the herdr it prompts: the reviewer's start, as the re-review tests drive it. */

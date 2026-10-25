@@ -1,6 +1,7 @@
 // no-token: none -- pure text
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { CI_COST_RULE } from "./ci-rule.ts";
 import { DECISION_RULE, decisionWords, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
 
 const GATE = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
@@ -113,7 +114,7 @@ test("A11-175: a step brief with no section says so, and the reviewer goes by th
 
 test("A11-175: with no step in the brief the prompt is the one it was: the whole ticket's Done-when under its own heading", () => {
   const words = reviewWords(GATE, { doneWhen: DONE_WHEN });
-  assert.equal(words, `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`);
+  assert.equal(words, `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${CI_COST_RULE}\n\n${POST_MERGE_RULE}`);
 });
 
 // A11-213: an explicit decision in the ticket overrides a general direction the reviewer holds, and the reviewer is told so wherever it reads the ticket.
@@ -144,7 +145,7 @@ test("A11-213: the decision and its rule are in a re-review too, so the reply to
 
 test("A11-213: a ticket with no decision gets the prompt it always got, and a long decision is cut with the length said", () => {
   assert.equal(decisionWords(undefined), "");
-  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`, "a brief with no decisions reads as one from before them");
+  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${CI_COST_RULE}\n\n${POST_MERGE_RULE}`, "a brief with no decisions reads as one from before them");
   assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN }).includes(DECISION_RULE), "and there is no rule about a decision that is not there");
   assert.match(decisionWords("z".repeat(9000)), /\[cut: 1000 more characters on the pull request\]/);
 });
@@ -209,7 +210,7 @@ test("A11-257: a decision on an escalation-list item, or against a recorded chai
 
 test("A11-257: a brief with no plan decisions gets the prompt it always got, and a long set of decisions is cut with the length said", () => {
   assert.equal(planDecisionWords(undefined, ESCALATION), "");
-  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`);
+  assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }), `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${CI_COST_RULE}\n\n${POST_MERGE_RULE}`);
   assert.ok(!reviewWords(GATE, { doneWhen: DONE_WHEN, decisions: DECISION }).includes(PLAN_DECISION_RULE), "and no rule about decisions of a plan that is not there");
   assert.match(planDecisionWords("z".repeat(9000), undefined), /\[cut: 1000 more characters on the pull request\]/);
   assert.ok(!planDecisionWords("a", undefined).includes("Only these reach a person"), "the list is quoted only when the brief carries it");
