@@ -52,9 +52,11 @@ import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
+import { startHealth, type HealthView } from "./health-route.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -96,6 +98,8 @@ export type BoardDeps = Readonly<{
   next?: () => string | null;
   /** What the Settings page's Plugins section reads and runs through (A11-163): the real catalog, loader and programs unless a test replaces them. */
   plugins?: PluginsSeam;
+  /** What `/api/health` answers (A11-282): the loop's delay and the spawns that held it. Absent, the route is not served, as on an instance from before it. */
+  health?: () => HealthView;
 }>;
 
 /** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
@@ -467,6 +471,7 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
   }
   if (method === "GET" && path === "/api/queue") return [200, queueView(board)];
   if (method === "GET" && path === "/api/writer") return [200, writersViewOf(store.get())];
+  if (method === "GET" && path === "/api/health" && deps.health !== undefined) return [200, deps.health()];
   return undefined;
 }
 
@@ -900,9 +905,20 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
   }
 }
 
+/**
+ * An interval the load script and its tests shorten (A11-282): `AGENT_ORG_<name>`, a whole number of ms, or `fallback` when it is absent or is not one. Not a host setting,
+ * so the Settings page does not name it.
+ */
+export function intervalMs(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const value = Number(env[`AGENT_ORG_${name}`]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 async function serve(): Promise<void> {
   // `--no-open` opened no browser when the instance served the page. It is still taken, so a script that passes it keeps working.
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:serve" });
+  // First, so every synchronous spawn from start-up on is in `/api/health`'s ledger (A11-282).
+  const health = startHealth("ticket:serve");
   const settings = readTicketSettings();
   // The gate's modules load only for an instance that starts reviewers or must say its open pull requests wait on one (reviews required), and before its pool is made, which reads them
   // (`reviewer-port.ts`). A reviewer plugin's own `load()` is asked below, which reads the same gate.
@@ -925,7 +941,7 @@ async function serve(): Promise<void> {
   if (reviewer !== undefined && startsReviewers(settings)) await reviewer.load();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(),
+  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(), health,
     poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } };
   const board = createBoard(boardDeps);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
@@ -943,10 +959,10 @@ async function serve(): Promise<void> {
     process.stdout.write(`ticket mode instance: 127.0.0.1:${settings.port}, which serves no page\n  open the board: agent-org ticket:ui\n`
       + `  watch the workers: herdr session attach ${settings.herdrSession}\n  worktrees under ${settings.worktreeRoot}\n`);
   });
-  setInterval(() => { void board.pool.tick(); }, TICK_MS);
+  setInterval(() => { void board.pool.tick(); }, intervalMs(process.env, "TICK_MS", TICK_MS));
   void board.pool.refreshTracker();
-  setInterval(() => { void board.pool.refreshTracker(); }, TRACKER_MS);
-  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, ms); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps) });
+  setInterval(() => { void board.pool.refreshTracker(); }, intervalMs(process.env, "TRACKER_MS", TRACKER_MS));
+  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps) });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

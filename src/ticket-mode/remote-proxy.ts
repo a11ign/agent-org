@@ -25,9 +25,11 @@ export type Forward = (target: Target, request: ForwardRequest) => Promise<Forwa
 const FORWARD_MS = 30_000;
 /** The most an instance's answer may hold. The largest is a list of tickets. */
 const ANSWER_BYTES = 8 * 1024 * 1024;
-const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings", "/api/plugins"]);
+const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings", "/api/plugins", "/api/health"]);
 const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/terminal-run", "/api/writer", "/api/grill-ticket",
   "/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action"]);
+/** Reads that are passed on but never kept for an SSH connection's last known: the loop's health (A11-282) changes on every read, is polled every 10 s, and is no use once old. */
+const NEVER_KEPT = new Set(["/api/health"]);
 /** The Settings page's edits of a file, and its install, enable, disable and uninstall of a plugin (A11-163): they change a `.agent-org` file, which only the machine that holds it may do (A11-132). */
 const SETTINGS_EDITS = new Set(["/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|talk|stop|close|dismiss|apply-edit|discard-edit)$/;
@@ -91,7 +93,7 @@ export async function proxy(connections: Connections, name: string, request: For
   // A remote instance's files are edited on that machine, so nothing this page forwards changes them there.
   if (SETTINGS_EDITS.has(pathname) && connection.kind !== "local") return [403, { error: `${name}'s settings are not changed from here: its files are edited on that machine, and this connection is ${how}` }];
   // A page of a scope read on demand (`?assignee=&after=`) is a cursor, not a state to come back to: only a read with no query is kept.
-  const remembers = lastKnown !== undefined && connection.kind === "ssh" && request.method === "GET" && !request.path.includes("?");
+  const remembers = lastKnown !== undefined && connection.kind === "ssh" && request.method === "GET" && !request.path.includes("?") && !NEVER_KEPT.has(pathname);
   const identity = connection.kind === "ssh" ? connection.ssh : "";
   /** The 502 for a connection that cannot be reached: its sentence, and the last good answer to this path when one was kept. */
   const cannotReach = (error: string): [number, unknown] => {

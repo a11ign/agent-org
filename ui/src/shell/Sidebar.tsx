@@ -2,8 +2,10 @@ import type { ReactNode } from "react";
 import { connectionLabel } from "../../../src/ticket-mode/board-view.ts";
 import { Mark, RunsIcon, SettingsIcon, TicketsIcon } from "./icons.tsx";
 import { isSettingsPage, runsHref, settingsHref, ticketsHref, type Page } from "./routes.ts";
+import { loopLine } from "./loop-line.ts";
 import { pillOf } from "./shell-model.ts";
 import { useShell } from "./ShellProvider.tsx";
+import { useLoopHealth } from "./use-loop-health.ts";
 
 /** The instance switcher: every connection by the backend's own label (`connectionLabel`), drawn with one connection as well. Choosing one moves the whole UI to it. */
 function InstanceSwitcher() {
@@ -31,6 +33,21 @@ function ConnectionPill() {
       <span className="pill-dot" />
       {label}
     </div>
+  );
+}
+
+/**
+ * The loop line under the pill (A11-282): how long the instance's loop makes a request wait, as its p99, warning from 100 ms, with every reading in its tooltip. A reading with
+ * nothing to click. Not drawn before the first reading, nor for an instance that gives none. The sidebar draws it once the connections are read, so it reads the instance shown.
+ */
+function LoopLine() {
+  const { connection, fetch } = useShell();
+  const line = loopLine(useLoopHealth(connection, fetch));
+  if (line === null) return null;
+  return (
+    <p className={`loop-line${line.warn ? " loop-line-warn" : ""}`} title={line.title}>
+      {line.text}
+    </p>
   );
 }
 
@@ -68,6 +85,7 @@ function MainNav({ page }: Readonly<{ page: Page }>) {
  * bottom. This is the boards' DOM order, which is the keyboard's focus order.
  */
 export function Sidebar({ page, children }: Readonly<{ page: Page; children?: ReactNode }>) {
+  const { connectionsReady } = useShell();
   return (
     <aside aria-label="Atomaut" className="sidebar">
       <div className="sidebar-head">
@@ -77,6 +95,7 @@ export function Sidebar({ page, children }: Readonly<{ page: Page; children?: Re
         </div>
         <InstanceSwitcher />
         <ConnectionPill />
+        {connectionsReady ? <LoopLine /> : null}
       </div>
       <MainNav page={page} />
       {children}

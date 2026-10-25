@@ -177,7 +177,8 @@ describe("the sidebar over a stand-in instance", () => {
     await page.getByRole("heading", { level: 1 }).waitFor();
     await page.waitForFunction(() => (document.querySelector("select") as HTMLSelectElement | null)?.value === "personal");
     // The Runs page asks after the heading is drawn: wait for its first request, as for the other islands above.
-    const afterConnections = () => asked.slice(asked.lastIndexOf("/api/connections") + 1);
+    // The page service's own `/api/health`, which the loop line reads at the root beside the instance's (A11-282), is the service's and no instance's.
+    const afterConnections = () => asked.slice(asked.lastIndexOf("/api/connections") + 1).filter((path) => path !== "/api/health");
     await expect.poll(() => afterConnections().length, { timeout: HYDRATION_MS }).toBeGreaterThan(0);
     const afterNavigation = afterConnections();
     expect(afterNavigation.every((path) => path.startsWith("/c/personal/api/"))).toBe(true);
