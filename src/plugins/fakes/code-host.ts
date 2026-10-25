@@ -7,7 +7,7 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, StackMergeFacts, StackMergeRequest, UpdateBranchResult, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeFacts, ChangeRef, CiRun, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, StackMergeFacts, StackMergeRequest, UpdateBranchResult, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -181,6 +181,23 @@ function stackMergesOf(state: FakeStackMerges, pulls: Pulls, calls: string[]): P
   };
 }
 
+/**
+ * What the fake holds of workflow runs (contract 1.17), and what a test sets: each run by `owner/name#runId`. A run the fake was given none for cannot be asked about, and is null. `asked` lists each run it was asked about, in order.
+ */
+export type FakeCiRuns = { runs: Map<string, CiRun>; asked: string[] };
+
+/** The read of a workflow run over what a test seeded. */
+function ciRunsOf(state: FakeCiRuns, calls: string[]): Pick<CodeHost, "readCiRun"> {
+  return {
+    readCiRun(repository, runId) {
+      const key = `${repository}#${runId}`;
+      calls.push(`readCiRun ${key}`);
+      state.asked.push(key);
+      return state.runs.get(key) ?? null;
+    },
+  };
+}
+
 /** Whether a merged pull request of the repository was the head of `base`: the base the run stacked on has landed. */
 const baseMerged = (pulls: Pulls, pull: FakePull): boolean => [...pulls.values()].some((other) => other.repository === pull.repository && other.head === pull.base && other.state === "merged");
 
@@ -325,8 +342,9 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
   const stackMerges: FakeStackMerges = { facts: new Map(), requestRefusal: null, requests: [] };
+  const ciRuns: FakeCiRuns = { runs: new Map(), asked: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -339,6 +357,8 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     branchUpdates,
     /** What the fake says of each pull request's stack, and the requests it was given to hand to the arm bot, for a test to seed and read (see {@link FakeStackMerges}). */
     stackMerges,
+    /** The workflow runs the fake says it holds, by `owner/name#runId`, and the runs it was asked about, for a test to seed and read (see {@link FakeCiRuns}). */
+    ciRuns,
     /** The owners, repositories and clones the fake's `repositories` group holds, for a test to seed and read (see {@link FakeRepositories}). */
     repositoriesWorld,
     /** Say which owners the fake lists (the account first, as the contract says), or null for a host that cannot be asked. */
