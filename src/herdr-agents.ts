@@ -72,7 +72,7 @@ const panelessSaid = new WeakMap<(line: string) => void, string>();
  *
  * @param {(args: string[]) => string} [run]
  * @param {{session?: string, say?: (line: string) => void}} [options] `say` takes the one line {@link sayPaneless} writes; the default is stderr.
- * @returns {{label: string, status: string, paneless?: boolean}[] | null}
+ * @returns {{label: string, status: string, workspace?: string, paneless?: boolean}[] | null}
  */
 export function readAgents(run: (args: string[]) => string = defaultRun, { session = ORG_SESSION, say = defaultSay }: SessionOption & { say?: (line: string) => void; } = {}): ListedAgent[] | null {
   let raw;
@@ -87,7 +87,7 @@ export function readAgents(run: (args: string[]) => string = defaultRun, { sessi
     const parsed = JSON.parse(raw);
     const workspaces = parsed?.result?.workspaces;
     if (!Array.isArray(workspaces)) return null;
-    agents = workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown") }));
+    agents = workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown"), ...(typeof w?.workspace_id === "string" ? { workspace: w.workspace_id } : {}) }));
     panes = new Map(workspaces.flatMap((w): [string, string][] => (typeof w?.workspace_id === "string" ? [[String(w.label ?? ""), rootPaneOf(w.workspace_id)]] : [])));
   } catch {
     return null;
@@ -97,8 +97,11 @@ export function readAgents(run: (args: string[]) => string = defaultRun, { sessi
   return agents;
 }
 
-/** One listed agent as {@link readAgents} reports it. `paneless` is set only when herdr has shown its pane gone (agent-org#1413). */
-export type ListedAgent = { label: string; status: string; paneless?: boolean; };
+/**
+ * One listed agent as {@link readAgents} reports it. `workspace` is the id herdr gives the workspace, when it gives one (A11-240: a run caught starting by a restart has none on record, and is found by its label).
+ * `paneless` is set only when herdr has shown its pane gone (agent-org#1413).
+ */
+export type ListedAgent = { label: string; status: string; workspace?: string; paneless?: boolean; };
 
 /**
  * agent-org#1413, Change 2: THE ONE LINE SAYING WHAT WAS TREATED AS ENDED. `say` gets `treated N listed agents with no pane as ended: <labels>` when the set of paneless
@@ -118,7 +121,7 @@ function sayPaneless(paneless: ListedAgent[], say: (line: string) => void): void
  * `openPane` takes the root pane from `workspace create`). A pane named this way that herdr does not have is then `pane_not_found` and marks nothing
  * else, so a convention that ever failed would leave an agent unmarked, never ended.
  */
-function rootPaneOf(workspace: string): string {
+export function rootPaneOf(workspace: string): string {
   return `${workspace}:p1`;
 }
 

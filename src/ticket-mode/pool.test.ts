@@ -23,7 +23,7 @@ import {
 import { approve, completableRuns, finish, markResumed, park, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { talk } from "./queue/talk.ts";
 import { recordPullHeads } from "./queue/queue-pull-heads.ts";
-import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, talkRound, writerStatus, type Outcome, type Queue, type WriterForm } from "./queue/queue-entries-and-outcomes.ts";
+import { BACKGROUND_GONE_MS, enqueue, liveRunCount, replace, retry, talkRound, writerStatus, type Outcome, type Queue, type WriterForm } from "./queue/queue-entries-and-outcomes.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
@@ -432,13 +432,13 @@ test("stop closes a live run's workspace and records it", async () => {
   assert.ok(h.calls.some((args) => args.includes("close")));
 });
 
-test("after a restart, a run herdr no longer lists is `crashed`, and one it lists carries on", async () => {
+test("after a restart, a run herdr no longer lists is lost and queued again, and one it lists carries on", async () => {
   const { pool, status, entry } = setup(2, ["NBF-1", "NBF-2"]);
   await pool.tick();
   status.set(herdrName("NBF-1"), "working");
   pool.reconcile();
   assert.equal(entry("NBF-1").phase, "running");
-  assert.equal(entry("NBF-2").outcome?.kind, "crashed");
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").lostInRestart], ["queued", { at: 100 }], "A11-240: a run herdr no longer lists is lost in the restart, and queued again once because it had opened no pull request");
 });
 
 test("an outcome file that cannot be read is `needs-human`, saying so", () => {
@@ -1462,9 +1462,11 @@ test("a run that is stopped puts its ticket back in the state the board moved it
 
 test("a run a restart crashes puts its ticket back at the next tracker refresh, not before", async () => {
   const { tracker, current } = stateTracker();
-  const { pool, status, entry, restart } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  const { pool, status, entry, restart, store } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
   await pool.tick();
   await settled();
+  // A11-240: a run a restart lost once is queued again; lost a second time it ends crashed, and its ticket is put back.
+  store.set(replace(store.get(), "NBF-1", (e) => ({ ...e, lostInRestart: { at: 1 } })));
   status.delete(herdrName("NBF-1"));
   const restarted = restart();
   restarted.reconcile();

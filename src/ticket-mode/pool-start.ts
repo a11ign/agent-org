@@ -508,16 +508,25 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     const round = merge.feedback === null ? queuedRun : withConflict(queuedRun, merge.feedback);
     const { folder, dir, resume } = await prepare(ctx, round);
     if (!(await openRun(ctx, round, folder, dir, resume))) return;
-    if (!isPlanning(ctx, queuedRun)) {
-      // A later step may be queued before the tracker's integration completes the ticket on the merge of the step before it (A11-178): put back first, so the move below finds it started.
-      if (isWork && (queuedRun.steps ?? []).length > 0) await undoEarlyCompletion(ctx, queuedRun);
-      moveTicketToWorkingState(ctx, entry.ticket.key);
-    }
-    if (entry.review === undefined && entry.talk !== true) claimTicket(ctx, entry.ticket.key);
+    await takeTicket(ctx, queuedRun);
     await settleStart(ctx, runPlace(ctx, queuedRun));
   } catch (err) {
     update(ctx, (queue) => finish(queue, entry.ticket.key, crashed(err), now()));
   }
+}
+
+/**
+ * What a run does in the tracker once its agent is open: a work run puts the ticket back first when the tracker's integration completed it between plan steps, then moves it to the working state, and a
+ * work or planning run claims it for this instance. A review round moves nothing it has not moved and claims nothing, and a talk session does neither. Every step is idempotent, so a run adopted after a
+ * restart (A11-240) takes the steps its start was cut short of.
+ */
+export async function takeTicket(ctx: PoolContext, run: Entry): Promise<void> {
+  if (!isPlanning(ctx, run)) {
+    // A later step may be queued before the tracker's integration completes the ticket on the merge of the step before it (A11-178): put back first, so the move below finds it started.
+    if (run.review === undefined && (run.steps ?? []).length > 0) await undoEarlyCompletion(ctx, run);
+    moveTicketToWorkingState(ctx, run.ticket.key);
+  }
+  if (run.review === undefined && run.talk !== true) claimTicket(ctx, run.ticket.key);
 }
 
 /**

@@ -100,7 +100,8 @@
 import { ensureSession, talkTo } from "./pool-start.ts";
 import { applyEdit, discardEdit, dismiss, remove, respond, stop, stopWriterRun } from "./pool-actions.ts";
 import { close } from "./pool-settle.ts";
-import { reconcile, tick, watchFeedback } from "./pool-watch.ts";
+import { tick, watchFeedback } from "./pool-watch.ts";
+import { reconcile } from "./pool-readopt.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
 import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads } from "./pool-reviewers.ts";
 import { newPoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";

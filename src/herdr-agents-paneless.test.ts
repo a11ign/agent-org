@@ -114,7 +114,7 @@ test("(1) only `pane_not_found` marks: a pane that cannot be read for another re
 test("(1) a paneless agent stays LISTED, in its own status: presence still means the seat exists, so a start is not repeated", () => {
   const { run } = herdr([{ name: "worker-5470", status: "unknown", pane: "w4N1:p1" }], ["w4N1:p1"]);
   const agents = readAgents(run)!;
-  assert.deepEqual(agents.find((a) => a.label === "worker-5470"), { label: "worker-5470", status: "unknown", paneless: true });
+  assert.deepEqual(agents.find((a) => a.label === "worker-5470"), { label: "worker-5470", status: "unknown", workspace: "w4N1", paneless: true }, "the listing carries the workspace id herdr gives (A11-240)");
 });
 
 test("(2) an order addressed to a PANELESS worker with an open row is dropped at the bound; the queue no longer holds it", () => {

@@ -134,6 +134,7 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | The rebase, and what a queued run waits for | `rebaseNote`, `waitNote` | The Runs row's note; the Queued and Blocked callouts | A11-198 | AtomautRunDetailBlocked |
 | Publishing off | `publishingOffLine` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
 | The session note, the started-anyway note, the cut list | `sessionNote`, `overrideNote`, `cutListNote` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
+| A restart's note: a run re-adopted after a restart, or lost in one and queued again | `readoptNote` | The Runs row's note, and "Everything this run noted" | A11-240 | pattern: disclosure |
 | The reason, and the question | `reasonOf` | The callout of every state | A11-198 | AtomautRunDetailHandedBack |
 | What changed in the ticket's description | `#ticket-diff-dialog`, `#ticket-diff-title`, `#ticket-diff`, `ticketChangeOf`, `diffLines`, `showTicketChange()` | `/next/runs/<key>`, a "What changed in KEY" disclosure | A11-220 | pattern: disclosure |
 | The pull requests a queued plan learns from | `learnsFrom` | `/next/runs/<key>`, a "learns from" line | A11-220 | pattern: disclosure |
