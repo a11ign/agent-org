@@ -232,6 +232,19 @@ export function repoLabel(entry: ViewEntry): string {
   return entry.phase === "queued" ? "the worker chooses the repo" : "choosing a repo";
 }
 
+/** The statuses of a run that waits on a review or a merge: the ones a board note (a stale block, a reviewer on a dialog, a reviewer herdr will not start) may turn into Needs you without taking the run's work from it. */
+export const WAITS_ON_REVIEW: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
+
+/**
+ * What the board shows of a run's status: {@link workStatus}, except that a run waiting on a review or a merge whose reviewer herdr refused twice to start (`reviewerRefused`, A11-241) reads Needs you, since the board retries on
+ * every sweep and only a person can mend what herdr says. It is a NOTE on the run and not a change of its work: whether the board watches the run, offers Approve or Publish, or resumes its worker is decided by
+ * `workStatus`, so a refused reviewer does not stop the board answering feedback on the pull request.
+ */
+export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
+  const status = workStatus(entry, entries);
+  return entry.phase === "finished" && entry.reviewerRefused !== undefined && WAITS_ON_REVIEW.has(status) ? "needs-you" : status;
+}
+
 /**
  * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}),
  * or while it waits on a path another run holds ({@link overlapWait}), or while its plan cannot be downloaded (`pathsFailure`). The
@@ -240,9 +253,9 @@ export function repoLabel(entry: ViewEntry): string {
  * merged is done even while its ticket is still in progress (A11-153), unless its worker declared them partial: then the ticket is not done, and the run needs a person where
  * the board did not queue the next step (A11-168). A ticket the tracker completed while the run's work was partial needs a person too, ahead of the tracker's word, unless a person completed it
  * ({@link completedEarly}, A11-178). Before either, the outcome decides, except that a `needs-human` run whose pull request
- * was answered or approved is awaiting its review, not asking ({@link pullAnswer}). It never answers Publishing: that is {@link shownStatus}'s.
+ * was answered or approved is awaiting its review, not asking ({@link pullAnswer}). It never answers Publishing: that is {@link shownStatus}'s. Ignores `reviewerRefused`: that is {@link runStatus}'s note.
  */
-export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
+export function workStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
   // A talk session is Talking, never Planning, though it carries its planning run's `plan` (A11-171). One whose agent is blocked on a person still needs them.
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : isTalking(entry) ? "talking" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
@@ -258,8 +271,6 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (isTalking(entry)) return "talking";
   // The board stopped answering a run's red checks or feedback on its own and handed it to a person, whatever the run ended on (A11-154): Respond starts again.
   if (entry.handedBack !== undefined) return "needs-you";
-  // Herdr refused twice, for the same reason, to start the reviewer of one of its pull requests: it is retried on every sweep, and only a person can mend what herdr says (A11-241).
-  if (entry.reviewerRefused !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";
   if (kind === "draft-pr" || kind === "ready-pr") return "awaiting-review";
   // A reviewed outcome says the worker's feedback round ended, not that GitHub would merge: the pull requests have to be approved at their head and green there (A11-179).
@@ -349,7 +360,7 @@ export function rebaseNote(entry: ViewEntry): string | null {
 
 /**
  * The status the board shows for a run: its {@link runStatus}, except that a run Ready to merge is Publishing while the board's `publish` run is
- * posting it. The pool, and what a run offers or is watched for, go by `runStatus`, which still calls that run Ready to merge.
+ * posting it. The pool, and what a run offers or is watched for, go by `workStatus`, which still calls that run Ready to merge.
  */
 export function shownStatus(entry: ViewEntry, publish: ViewPublish | undefined, entries: readonly ViewEntry[] = []): RunStatus {
   const status = runStatus(entry, entries);
@@ -456,7 +467,7 @@ export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: rea
   if (entry.phase !== "finished") return isTalking(entry) ? ["talk", "stop"] : ["stop"];
   const dismiss: RunAction[] = isBeingPublished(entry, publish) ? [] : ["dismiss"];
   const edit: RunAction[] = hasEdit(entry) ? ["apply-edit", "discard-edit"] : [];
-  const status = runStatus(entry);
+  const status = workStatus(entry);
   const kind = entry.outcome?.kind;
   const respond: RunAction[] = respondOffered(entry, status) ? ["respond"] : [];
   if (isParked(entry)) return [...(isTalking(entry) ? ["talk" as const] : []), "close", ...respond, ...edit, ...dismiss];
@@ -473,7 +484,7 @@ export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: rea
  * pull request still open. Merged or closed pull requests are never watched.
  */
 export function isWatched(entry: ViewEntry): boolean {
-  const status = runStatus(entry);
+  const status = workStatus(entry);
   const waitingReady = status === "awaiting-review" && (entry.outcome?.kind === "ready-pr" || entry.outcome?.kind === "reviewed");
   return (status === "ready-to-merge" || status === "published" || waitingReady) && !isParked(entry) && openPulls(entry).length > 0;
 }
@@ -487,7 +498,7 @@ export function isWatched(entry: ViewEntry): boolean {
 export function resumesOnConflict(entry: ViewEntry): boolean {
   if (isWatched(entry)) return true;
   const kind = entry.outcome?.kind ?? "";
-  const status = runStatus(entry);
+  const status = workStatus(entry);
   return entry.phase === "finished" && openPulls(entry).length > 0 && !RESULT_KINDS.has(kind) && !CONCLUDED.has(kind) && kind !== "stopped"
     && status !== "completed" && status !== "cancelled";
 }
@@ -507,7 +518,7 @@ export const isBeingPublished = (entry: ViewEntry, publish: ViewPublish | undefi
  * A published run, a parked one, and one the publish run in progress holds are not.
  */
 export const publishable = (entry: ViewEntry, publish?: ViewPublish): boolean =>
-  runStatus(entry) === "ready-to-merge" && !isParked(entry) && !isBeingPublished(entry, publish);
+  workStatus(entry) === "ready-to-merge" && !isParked(entry) && !isBeingPublished(entry, publish);
 
 /** The Publish button's words for `count` ticked runs. */
 export const publishLabel = (count: number): string => `Publish selected (${count})`;

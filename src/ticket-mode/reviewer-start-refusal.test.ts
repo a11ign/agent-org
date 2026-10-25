@@ -13,9 +13,9 @@ import { createFakeReviewer } from "../plugins/fakes/reviewer.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { logOf } from "./queue/run-log.ts";
-import { loadReviewerGate, noReviewerMemory, readReviewerMemory, reviewedRepositoriesOf, reviewerMemoryPath, writeReviewerMemory } from "./reviewer-port.ts";
+import { loadReviewerGate, noReviewerMemory, REVIEWER_LOGIN, readReviewerMemory, reviewedRepositoriesOf, reviewerMemoryPath, writeReviewerMemory } from "./reviewer-port.ts";
 import { recordReviewerRefusal } from "./queue/queue-reviewer-refusal.ts";
-import { runStatus } from "./board-view/pull-status-and-notes.ts";
+import { isWatched, publishable, runActions, runStatus, workStatus } from "./board-view/pull-status-and-notes.ts";
 import { reasonOf } from "./board-view/run-reason.ts";
 import type { ViewEntry } from "./board-view/view-types-and-filters.ts";
 
@@ -192,4 +192,42 @@ test("A11-241: the note is written only over a run that waits on a review, and a
   const inRound = { ...noted, entries: [{ ...noted.entries[0], phase: "running" as const }] };
   assert.equal(recordReviewerRefusal(inRound, "NBF-1", null).entries[0].reviewerRefused, undefined, "a run in a round when its refusal went away does not read Needs you again when it finishes");
   assert.equal(recordReviewerRefusal({ ...queue, entries: [{ ...queue.entries[0], phase: "running" as const }] }, "NBF-1", "u: refused").entries[0].reviewerRefused, undefined, "and a note is not written over a run that is not finished");
+});
+
+test("A11-241: a refused RE-review of a head the reviewer blocked counts too, and the second refusal asks, although the block's review is posted on the head", async () => {
+  const run = await refusedRun();
+  const ref = { pr: run.url, head: "h1" };
+  run.pool.reviewNewHeads();
+  run.reviewer.wrote(ref, null);
+  run.pull.reviews = [{ author: REVIEWER_LOGIN, state: "CHANGES_REQUESTED", commit: "h1", at: 10 }];
+  run.pool.reviewNewHeads();
+  assert.equal(run.reviewer.closed.length, 1, "the first reviewer posted its block and closed");
+  run.pull.body = "Closes NBF-1\n\nOutside-Region: src/a.ts — moved\n";
+  sweepRefused(run);
+  assert.equal(runStatus(run.view()), "awaiting-review", "once is said on the pull request's line");
+  sweepRefused(run);
+  assert.equal(runStatus(run.view()), "needs-you");
+  assert.equal(run.memory().refusals.get(`${run.url}@h1`)?.count, 2);
+});
+
+test("A11-241: the Needs you is a note on the run, not a change of its work: the board still watches its pull requests and offers what it offered", async () => {
+  const run = await refusedRun();
+  const before = { watched: isWatched(run.view()), actions: runActions(run.view()), publishable: publishable(run.view()) };
+  refusedTwice(run);
+  assert.equal(workStatus(run.view()), "awaiting-review");
+  assert.deepEqual({ watched: isWatched(run.view()), actions: runActions(run.view()), publishable: publishable(run.view()) }, before);
+  assert.equal(before.watched, true, "a ready pull request waiting for its review is watched for feedback");
+});
+
+test("A11-241: a reviewer that runs for the head, however it was started (ticket:review), ends its refusals", async () => {
+  const run = await refusedRun();
+  refusedTwice(run);
+  run.reviewer.refuseWith(null);
+  run.reviewer.start({ pr: run.url, head: "h1" });
+  // `ticket:review` records its start in the memory file too.
+  const path = reviewerMemoryPath(run.fixture.settings.stateDir);
+  const { memory } = readReviewerMemory(path);
+  writeReviewerMemory(path, { ...memory, started: new Set([...memory.started, `${run.url}@h1`]) });
+  run.pool.reviewNewHeads();
+  assert.deepEqual([runStatus(run.view()), run.entry().reviewerRefused, run.memory().refusals.size], ["awaiting-review", undefined, 0]);
 });

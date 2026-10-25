@@ -166,6 +166,12 @@ export type Look = { at: number; body: string };
  */
 export type StartRefusal = { reason: string; count: number };
 
+/** The pull request and the head a `url@head` key of the memory names (A11-241). A pull request's address holds no `@`, so the last one splits them. */
+export function splitHeadKey(key: string): { url: string; head: string } {
+  const at = key.lastIndexOf("@");
+  return { url: key.slice(0, at), head: key.slice(at + 1) };
+}
+
 /**
  * What a pool remembers of its reviewers across a restart: the head each seat's reviewer was started for (`heads`, by seat label), the reviewers
  * started (`started`, `url@head`), the verdicts a worker was asked to answer (`resumed`, `url@head`), the re-posts of a verdict not on its pull request

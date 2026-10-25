@@ -16,7 +16,7 @@
 // look, and the brief carries the changed lines and the replies. That takes something new each time, and for a pull request a run holds, each re-review is one of the run's rounds (`countRereview`), started only once the run's round has ended
 // (`finished`) and while a round is left: a dispute ends at the cap, handed to a person.
 
-import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
+import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, splitHeadKey, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
@@ -199,7 +199,7 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const adopted = kind.adopts && reviewer.live({ pr: url, head });
   const started = adopted ? null : reviewer.start({ pr: url, head }, kind.brief);
   const refusal = started !== null && "refusal" in started ? started.refusal : null;
-  // Counted before the memory is written, and shown after it: a restart keeps the count, and the card follows it (A11-241).
+  // Counted before the memory is written, so a restart keeps the count; the card follows it at the end of the look (A11-241).
   const counted = countStartRefusal(ctx, key, refusal);
   if (started === null) {
     if (counted) rememberReviewers(ctx);
@@ -436,8 +436,9 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const key = `${url}@${head}`;
   const ref = { pr: url, head };
   const posted = reviewPostedAt(state.reviews, head);
-  // A refusal of an earlier head, or of one whose review is posted, is over (A11-241).
-  if (forgetRefusalsExcept(ctx, url, posted ? null : key)) rememberReviewers(ctx);
+  // A refusal of an earlier head is over (A11-241), and so is one of a head whose review is posted, unless the reviewer blocked it: a re-review may yet be asked for, and its refusals count.
+  const needsNoStart = posted && reviewVerdict(state.reviews, head) !== "not-convinced";
+  if (forgetRefusalsExcept(ctx, url, needsNoStart ? null : key)) rememberReviewers(ctx);
   let unposted: string | null = null;
   if (posted) {
     if (reviewerReposts.delete(key)) rememberReviewers(ctx);
@@ -568,9 +569,11 @@ export function reviewNewHeads(ctx: PoolContext): void {
 
 /** Forgets the refusals of pull requests that are no longer open (A11-241), so a merged or closed pull request does not keep a run at Needs you, or `agent-org doctor` failing. */
 function forgetClosedRefusals(ctx: PoolContext, open: ReadonlySet<string>): void {
-  const closed = new Set([...ctx.reviewerMemory.refusals.keys()].map((key) => key.slice(0, key.lastIndexOf("@"))).filter((url) => !open.has(url)));
-  if (closed.size === 0) return;
-  for (const key of [...ctx.reviewerMemory.refusals.keys()]) if (closed.has(key.slice(0, key.lastIndexOf("@")))) ctx.reviewerMemory.refusals.delete(key);
+  const { refusals } = ctx.reviewerMemory;
+  const gone = [...refusals.keys()].filter((key) => !open.has(splitHeadKey(key).url));
+  if (gone.length === 0) return;
+  const closed = new Set(gone.map((key) => splitHeadKey(key).url));
+  for (const key of gone) refusals.delete(key);
   rememberReviewers(ctx);
   for (const url of closed) showStartRefusals(ctx, url);
 }

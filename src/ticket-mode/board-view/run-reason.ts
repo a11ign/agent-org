@@ -31,12 +31,11 @@ export function promptNote(entry: ViewEntry): string | null {
   return `A safety prompt${agent === undefined ? "" : ` from the ${agent} subagent`} was declined automatically: ${command}`;
 }
 
-/** What the worker says of a run: its handed-back reason, the reviewer herdr would not start, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
+/** What the worker says of a run: its handed-back reason, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
 function askedReason(entry: ViewEntry, now?: number): string | null {
   const outcome = entry.outcome;
   const note = workingNote(entry, now);
   if (entry.handedBack) return entry.handedBack;
-  if (entry.reviewerRefused) return entry.reviewerRefused;
   if (note !== null && !note.stalled) return note.text;
   if (outcome === undefined) return null;
   if (outcome.kind === "wrong-repo") return `Belongs in: ${outcome.where}`;
@@ -121,6 +120,8 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   const shown = [rebaseNote(entry), retargetNote(entry), verdictNote(entry), checkNote(entry)];
   const once = (text: string | null): string | null => (text === null || shown.includes(text) ? null : text);
   const asked = once(askedReason(entry, now));
+  // A reviewer herdr would not start twice is what the card says first, and the worker's question, if it asked one, stays one click away (A11-241).
+  if (entry.reviewerRefused !== undefined && runStatus(entry) === "needs-you") return { line: entry.reviewerRefused, question: asked };
   const answer = pullAnswer(entry);
   if (answer !== null) return { line: ANSWER_LINE[answer], question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).

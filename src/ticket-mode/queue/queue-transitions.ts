@@ -1,6 +1,6 @@
 import { CONCLUDED, openPulls, type CheckHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { overlapWait } from "../board-view/overlap-hold.ts";
-import { isParked, isPublishing, isWatched, resumesOnConflict, runActions, runStatus } from "../board-view/pull-status-and-notes.ts";
+import { isParked, isPublishing, isWatched, resumesOnConflict, runActions, runStatus, workStatus } from "../board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "../board-view/pull-settled.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictsIn } from "../worker-files.ts";
@@ -155,7 +155,7 @@ export function queuePublish(queue: Queue, keys: readonly string[], now: number)
   if (ticked.length === 0) throw new Error("tick at least one run Ready to merge");
   const entries = ticked.map((key) => {
     const entry = find(queue, key);
-    const cannotApprove = entry === undefined || entry.phase !== "finished" || runStatus(entry) !== "ready-to-merge" || isParked(entry);
+    const cannotApprove = entry === undefined || entry.phase !== "finished" || workStatus(entry) !== "ready-to-merge" || isParked(entry);
     if (cannotApprove) {
       throw new Error(`${key} is not Ready to merge, so it cannot be published`);
     }

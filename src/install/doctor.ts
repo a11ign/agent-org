@@ -34,7 +34,7 @@ import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
-import { readReviewerMemory, reviewerMemoryPath } from "../ticket-mode/reviewer-port.ts";
+import { readReviewerMemory, reviewerMemoryPath, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
@@ -923,8 +923,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewing: gateHelpers(),
-    reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals]
-      .map(([key, { count, reason }]) => ({ url: key.slice(0, key.lastIndexOf("@")), head: key.slice(key.lastIndexOf("@") + 1), count, reason })),
+    reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
     chromium: () => chromiumReport(),
     agentOrgPlugins: {
       catalog: defaultCatalog,
