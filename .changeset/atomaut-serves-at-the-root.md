@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`ticket:ui` serves Atomaut at `/` (A11-202). Every `GET` that is not an instance call is answered from the built UI, an unpaired browser is shown the pairing page for any page address, and `/next` and `/next/<rest>` are redirected to `/` and `/<rest>` with the query kept. A link to the old board's page (`/?connection=<name>#run-<KEY>`, `#writer-<id>`, `#/settings`) lands on the run's page, Tickets or Settings, with its instance chosen. The old board (`ui.html`), its script routes (`/board-view.js` and four more) and the tests of both are gone; `ticket:capture` opens a path of the board and waits for a page's heading, doctor and install say `/` where they said `/next`, and with no build every page answers the missing-build page while the instance's calls still answer. Run detail draws its Timeline, a plugin's card says where the plugin is, the Tickets and Settings pages show the quiet Reconnecting line while the instance restarts, the Plugins page reads again by itself after one, and a dialog gives the focus back to the button that asked for it.

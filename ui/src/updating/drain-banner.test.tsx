@@ -14,7 +14,7 @@ const standWith = (update: unknown): Stand => ({ connections: [HERE], instances:
 
 /** The shell on `page` over a queue with `update`, resolved once the sidebar has been drawn from it. */
 async function shellOn(page: Page, update: unknown) {
-  history.replaceState(null, "", "/next/tickets");
+  history.replaceState(null, "", "/tickets");
   render(
     <ShellProvider fetchWith={standFetch(standWith(update))}>
       <ShellFrame page={page}>

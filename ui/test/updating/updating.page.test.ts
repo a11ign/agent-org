@@ -4,6 +4,7 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import type { QueueView } from "../../src/api/types.ts";
 import { ticketsBoardStand, type Stand } from "../fixtures.ts";
 import { serveInstance } from "../instance-routes.ts";
+import { withWriter } from "../new-ticket/new-ticket-stand.ts";
 import { runsStand } from "../runs/runs-stand.ts";
 import { overflowProblem, SCREENS } from "../screenshots.ts";
 import { launchBrowser, startSite, UI_ROOT, type Site } from "../site.ts";
@@ -41,7 +42,7 @@ function instance(update: object) {
 type Opened = Readonly<{ page: Page; context: BrowserContext; link: ReturnType<typeof instance>["link"] }>;
 
 /** The Tickets page open on `update`, at `width`, with the clock the test drives, once its sidebar has the instance's counts. */
-async function openOn(update: object, width: number, path = "/next/tickets"): Promise<Opened> {
+async function openOn(update: object, width: number, path = "/tickets"): Promise<Opened> {
   const { link, stand } = instance(update);
   const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 } });
   await serveInstance(context, { stand });
@@ -109,7 +110,7 @@ describe("the four Updating screens, in Chromium", () => {
         expect(await title(opened.page).textContent()).toBe(heading);
         const card = await opened.page.locator(".updating-card").boundingBox();
         expect(card?.width).toBe(Math.min(520, screen.width - 48));
-        expect(overflowProblem({ route: `/next/tickets (${name})`, width: screen.width, ...(await fits(opened.page)) })).toBeNull();
+        expect(overflowProblem({ route: `/tickets (${name})`, width: screen.width, ...(await fits(opened.page)) })).toBeNull();
         await opened.page.evaluate(() => document.fonts.ready.then(() => undefined));
         writeFileSync(join(CAPTURES, `${name}-${screen.width}x${screen.height}.png`), await opened.page.screenshot({ fullPage: true }));
       } finally {
@@ -127,7 +128,7 @@ describe("the four Updating screens, in Chromium", () => {
     expect(await opened.page.locator(".nav-count").first().textContent()).toBe("37");
     await comeBack(opened);
     expect(await opened.page.locator(".pill").textContent()).toBe("Connected");
-    expect(await opened.page.getByRole("link", { name: "Back to Tickets" }).getAttribute("href")).toBe("/next/tickets");
+    expect(await opened.page.getByRole("link", { name: "Back to Tickets" }).getAttribute("href")).toBe("/tickets");
     await opened.context.close();
   });
 
@@ -146,17 +147,19 @@ describe("the four Updating screens, in Chromium", () => {
 
 describe("the drain banner, in Chromium", () => {
   const PAGES = [
-    { name: "tickets-draining", path: "/next/tickets", ready: (page: Page) => page.getByRole("heading", { level: 1, name: "Tickets" }).waitFor() },
-    { name: "runs-draining", path: "/next/runs", ready: (page: Page) => page.locator(".run-row").first().waitFor() },
+    { name: "tickets-draining", path: "/tickets", ready: (page: Page) => page.getByRole("heading", { level: 1, name: "Tickets" }).waitFor() },
+    { name: "runs-draining", path: "/runs", ready: (page: Page) => page.locator(".run-row").first().waitFor() },
   ] as const;
 
   /** The page `path` over a stand whose queue carries the drain note. */
   async function drainingOn(path: string, width: number): Promise<{ page: Page; context: BrowserContext }> {
-    const stand = path === "/next/runs" ? runsStand() : ticketsBoardStand();
+    // The Tickets page reads the writer's requests too, so its stand answers them, and its Backlog is open as the board draws it.
+    const stand = path === "/runs" ? runsStand() : (withWriter({ stand: ticketsBoardStand() }).stand as Stand);
     const connection = Object.keys(stand.instances!)[0];
     const answers = stand.instances![connection];
     const queue = { ...answers.queue, update: BREAKING } as unknown as QueueView;
     const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 } });
+    await context.addInitScript(() => localStorage.setItem("ticket-mode.open", '["Backlog"]'));
     await serveInstance(context, { stand: { ...stand, instances: { [connection]: { ...answers, queue } } } });
     const page = await context.newPage();
     await page.goto(`${site.origin}${path}`);

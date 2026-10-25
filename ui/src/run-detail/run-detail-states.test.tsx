@@ -30,7 +30,7 @@ describe("the twelve states", () => {
     const entry = runs.find((run) => (run.ticket as { key: string }).key === key) as { ticket: { title: string } };
 
     const crumbs = within(screen.getByRole("navigation", { name: "Breadcrumb" }));
-    expect(crumbs.getByRole("link", { name: "Runs" }).getAttribute("href")).toBe("/next/runs");
+    expect(crumbs.getByRole("link", { name: "Runs" }).getAttribute("href")).toBe("/runs");
     expect(textOf(screen.getByRole("navigation", { name: "Breadcrumb" }))).toBe(`Runs/${key}`);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(entry.ticket.title);
     const line = textOf(document.querySelector(".run-head-line"));
@@ -65,7 +65,7 @@ describe("the twelve states", () => {
     await pageFor("missing");
     expect(screen.getByText("This run is no longer on the board")).toBeTruthy();
     expect(screen.getByText("It was dismissed or removed. The ticket, its branch and its pull requests are left as they were.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Back to Runs" }).getAttribute("href")).toBe("/next/runs");
+    expect(screen.getByRole("link", { name: "Back to Runs" }).getAttribute("href")).toBe("/runs");
     expect(screen.queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
   });
 });

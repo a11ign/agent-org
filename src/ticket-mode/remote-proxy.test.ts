@@ -2,9 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingHttpHeaders } from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createTcpServer } from "node:net";
+import type { RunAction } from "./board-view/pull-status-and-notes.ts";
 import type { Connection, Connections, Target } from "./connections.ts";
 import { localTerminal, Unreachable } from "./remote.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -210,12 +211,11 @@ test("A11-132: the Settings edits are passed on to the machine's own instance, a
 });
 
 test("every run action the page can send to an instance is passed on, so no button is refused by the proxy", () => {
-  const page = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
-  const labels = /const ACTION_LABEL = \{([^}]*)\};/.exec(page)?.[1] ?? "";
-  const verbs = [...labels.matchAll(/(?:^|[\s,])(?:"([a-z-]+)"|([a-z]+)):/g)].map((m) => m[1] ?? m[2]);
-  assert.ok(verbs.includes("talk") && verbs.includes("dismiss"), "the page's action labels were read");
+  // The verbs are board-view's `RunAction`, written out as a record so a verb added to the type fails to compile here until it is listed (A11-202: the page that listed them in its own source is gone).
+  const verbs: Record<RunAction, true> = { remove: true, stop: true, retry: true, close: true, approve: true, respond: true, talk: true, dismiss: true, "apply-edit": true, "discard-edit": true, "start-anyway": true };
   // Start anyway is an override of an overlap wait that only the machine's own board offers: the proxy has never passed it on.
-  for (const verb of verbs.filter((v) => v !== "start-anyway")) assert.equal(passedOn("POST", `/api/queue/NBF-1/${verb}`), true, verb);
+  for (const verb of Object.keys(verbs).filter((v) => v !== "start-anyway")) assert.equal(passedOn("POST", `/api/queue/NBF-1/${verb}`), true, verb);
+  assert.equal(passedOn("POST", "/api/queue/NBF-1/start-anyway"), false, "the one override that stays on this machine");
 });
 
 test("A11-163: the Plugins section is read through any connection, and its actions are the machine's own instance's: refused for an ssh or an https connection before anything is sent", async () => {

@@ -9,7 +9,7 @@ import type { SettingsPage } from "../../../src/ticket-mode/settings-view.ts";
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
-  history.replaceState(null, "", "/next/settings/models");
+  history.replaceState(null, "", "/settings/models");
 });
 
 /** The instance's reads: a config that offers models and a planner and a writer, and a queue of workers that are started. */

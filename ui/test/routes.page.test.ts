@@ -22,7 +22,7 @@ describe("ticket:ui's nearest-page fallback (locate) over the build, for every r
     expect(locate(DIST, "/runs/A11-1")?.relative).toBe("runs/index.html");
   });
 
-  it("sends /next/ and /next/settings on to Tickets and to Models", () => {
+  it("sends / and /settings on to Tickets and to Models", () => {
     expect(locate(DIST, "/")?.relative).toBe("index.html");
     expect(locate(DIST, "/settings")?.relative).toBe("settings/index.html");
   });

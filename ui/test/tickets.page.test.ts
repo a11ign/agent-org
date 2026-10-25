@@ -19,7 +19,7 @@ afterAll(async () => {
   await site?.stop();
 });
 
-const TICKETS = "/next/tickets";
+const TICKETS = "/tickets";
 const OPEN_BACKLOG = (context: BrowserContext) => context.addInitScript(() => localStorage.setItem("ticket-mode.open", '["Backlog"]'));
 
 /** The Tickets page in a new context at `width`, its instance calls answered by `serving`, with the Backlog section open as the board draws it. */
@@ -73,7 +73,7 @@ describe("the states, over a stand-in instance in Chromium", () => {
     const { page, context } = await open({ stand: ticketsBoardStand({ paused: true }) });
     const banner = page.getByRole("status").filter({ hasText: "Workers are paused. Tickets you queue wait until you start workers." });
     await banner.waitFor();
-    expect(await banner.getByRole("link", { name: "Start workers on Runs" }).getAttribute("href")).toBe("/next/runs");
+    expect(await banner.getByRole("link", { name: "Start workers on Runs" }).getAttribute("href")).toBe("/runs");
     await context.close();
   });
 
@@ -149,7 +149,7 @@ describe("no horizontal overflow, and the captures of the four boards", () => {
     { name: "paused", serving: { stand: ticketsBoardStand({ paused: true }) }, ready: (page) => page.getByText("Workers are paused.").waitFor() },
   ];
 
-  /** The page in `state` at `screen`: measured for overflow, and written as `next-tickets-<state>-<W>x<H>.png` beside the other screenshots. */
+  /** The page in `state` at `screen`: measured for overflow, and written as `tickets-<state>-<W>x<H>.png` beside the other screenshots. */
   async function captured({ name, serving, ready, ticked = [] }: State, screen: (typeof SCREENS)[number]): Promise<void> {
     const context = await browser.newContext({ viewport: screen, deviceScaleFactor: 1 });
     try {

@@ -6,12 +6,12 @@ import { requireBuild } from "./site.ts";
 
 describe("the overflow check", () => {
   it("passes a document as wide as the screen", () => {
-    expect(overflowProblem({ route: "/next/", width: 390, scrollWidth: 390, clientWidth: 390 })).toBeNull();
+    expect(overflowProblem({ route: "/", width: 390, scrollWidth: 390, clientWidth: 390 })).toBeNull();
   });
 
   it("names the route, the width, scrollWidth and clientWidth of a document wider than the screen", () => {
-    expect(overflowProblem({ route: "/next/", width: 390, scrollWidth: 500, clientWidth: 390 })).toBe(
-      "/next/ overflows horizontally at 390px: scrollWidth 500 is wider than clientWidth 390",
+    expect(overflowProblem({ route: "/", width: 390, scrollWidth: 500, clientWidth: 390 })).toBe(
+      "/ overflows horizontally at 390px: scrollWidth 500 is wider than clientWidth 390",
     );
   });
 });

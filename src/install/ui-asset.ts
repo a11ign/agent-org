@@ -9,7 +9,7 @@
 // `doctor` reads the same marker to know whether a build is missing. The `main` channel has no Release, so it has no asset.
 //
 // THE BUILD IS UNPACKED BESIDE ITS PLACE AND RENAMED INTO IT, so a folder only ever gains a whole `ui-build/`: the download is staged in `<folder>.ui.partial` (a name `pruneVersions` removes if a kill leaves it), and
-// the tarball is unpacked into `<folder>/ui-build.partial` first. A11-190's `/next` looks `ui-build/` up on every request, so a build completed in place is served with no restart.
+// the tarball is unpacked into `<folder>/ui-build.partial` first. A11-190's `/` looks `ui-build/` up on every request, so a build completed in place is served with no restart.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -129,6 +129,6 @@ function fetchUiBuild(source: UiSource, folder: string, tag: string): UiStep {
  */
 export function ensureUiBuild({ folder, name, source }: { folder: string; name: string; source: UiSource }): UiStep {
   if (!declaresUiBuild(folder) || hasUiBuild(folder)) return { state: "ok" };
-  if (!isReleaseTag(name)) return { state: "ok", said: `${name} is not a release, so it has no UI build to fetch; /next shows the missing-build page until a release is installed` };
+  if (!isReleaseTag(name)) return { state: "ok", said: `${name} is not a release, so it has no UI build to fetch; / shows the missing-build page until a release is installed` };
   return fetchUiBuild(source, folder, name);
 }

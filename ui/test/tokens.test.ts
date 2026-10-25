@@ -99,6 +99,6 @@ describe("the tokens are the boards' values", () => {
 
 describe("the routes", () => {
   it("serve under the Astro config's base", () => {
-    expect(BASE).toBe(config.base);
+    expect(BASE || "/").toBe(config.base);
   });
 });

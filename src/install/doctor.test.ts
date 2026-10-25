@@ -1266,16 +1266,16 @@ test("A11-184: a herdr status file that cannot be read fails one row, with the c
 const LOOKED = "/home/me/.agent-org/tool/versions/v0.290.0/ui-build";
 const uiBuildOf = (reading: Partial<ReturnType<DoctorDeps["uiBuild"]>>): DoctorDeps["uiBuild"] => () => ({ found: null, declared: true, looked: LOOKED, version: "v0.290.0", ...reading });
 
-test("A11-191: doctor's ui build row is ok, naming the folder /next is served from, when the build is there", async () => {
+test("A11-191: doctor's ui build row is ok, naming the folder / is served from, when the build is there", async () => {
   const checks = byName(await diagnose(deps({ uiBuild: uiBuildOf({ found: LOOKED }) })));
-  assert.deepEqual(checks["ui build"], { name: "ui build", ok: true, detail: `/next is served from ${LOOKED}`, fix: null });
+  assert.deepEqual(checks["ui build"], { name: "ui build", ok: true, detail: `/ is served from ${LOOKED}`, fix: null });
 });
 
 test("A11-191: a version whose release declares a UI build and has none is a warning that says where it looked, and the fix is `agent-org update`, which fetches it", async () => {
   const checks = byName(await diagnose(deps({ uiBuild: uiBuildOf({}) })));
   assert.deepEqual(checks["ui build"], {
     name: "ui build", ok: true, warning: true, fix: "run `agent-org update`, which fetches it",
-    detail: `v0.290.0 should have a UI build and none is in ${LOOKED}, so /next shows the missing-build page`,
+    detail: `v0.290.0 should have a UI build and none is in ${LOOKED}, so / shows the missing-build page`,
   });
   assert.match(report(Object.values(checks)), /WARN {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org update`, which fetches it/);
 });
@@ -1294,7 +1294,7 @@ test("A11-191: a version whose release declares no UI build is ok, and says so, 
   const undeclared = byName(await diagnose(deps({ uiBuild: uiBuildOf({ declared: false }) })))["ui build"];
   assert.deepEqual(undeclared, { name: "ui build", ok: true, detail: "this version ships no UI build", fix: null });
   const dev = byName(await diagnose(deps({ uiBuild: uiBuildOf({ declared: false, found: "/src/agent-org/ui/dist", version: null }) })))["ui build"];
-  assert.equal(dev.detail, "/next is served from /src/agent-org/ui/dist");
+  assert.equal(dev.detail, "/ is served from /src/agent-org/ui/dist");
   assert.equal(dev.warning, undefined);
 });
 
