@@ -747,12 +747,13 @@ test("A11-236: until replaces the three-hour default, longer or shorter, and a n
   assert.deepEqual([at(renewed, 4 * HOUR)?.waiting, at(renewed, 4 * HOUR)?.stalled], [true, undefined], "a newer outcome counts the three hours from its own time");
 });
 
-test("A11-236: an until at or before the outcome's own time is no bound: the three hours count from the file, so a copied example date does not stall a run at once", () => {
+test("A11-236: an until at or before the outcome's own time is the bound as written: the run is stalled at its first idle tick, naming the job and that time", () => {
   const at = Date.parse("2026-10-25T08:00:00Z");
-  const noted = noteWorking(runningA(), "A", "r", at, at, { waitingOn: "job", until: Date.parse("2026-01-01T12:00:00Z") });
-  const idle = (now: number) => watchWorking(noted, "A", "idle", now, 30 * MINUTE, "live").entries[0].working;
-  assert.deepEqual([idle(at + HOUR)?.waiting, idle(at + HOUR)?.stalled], [true, undefined], "an hour after the file: waiting");
-  assert.equal(idle(at + 3 * HOUR)?.stallReason, `waited past ${new Date(at + 3 * HOUR).toISOString()} on job`, "stalled at three hours, naming the job");
+  const past = Date.parse("2026-01-01T12:00:00Z");
+  const idle = (until: number, now: number) => watchWorking(noteWorking(runningA(), "A", "r", at, at, { waitingOn: "job", until }), "A", "idle", now, 30 * MINUTE, "live").entries[0].working;
+  assert.equal(idle(past, at + MINUTE)?.stalled, true, "an until before the file: stalled at once");
+  assert.equal(idle(past, at + MINUTE)?.stallReason, "waited past 2026-01-01T12:00:00.000Z on job", "naming the job and the until it gave");
+  assert.deepEqual([idle(at, at - 1)?.waiting, idle(at, at)?.stalled], [true, true], "an until equal to the file's time ends the wait at that time");
 });
 
 test("A11-236: working status clears waiting along with the idle clock and the stall, and a note without a job or live work takes the idle clock as before", () => {

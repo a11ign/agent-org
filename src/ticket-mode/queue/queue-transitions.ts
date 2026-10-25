@@ -314,8 +314,8 @@ const BACKGROUND_WAIT_MS = 3 * 60 * 60_000;
 /** The start of the stall reason of a run idle past the end of its wait on background work (A11-236): the deadline and the job follow. */
 const WAITED_PAST = "waited past";
 
-/** The time (ms) a waiting note's wait ends: the `until` its outcome gave, or {@link BACKGROUND_WAIT_MS} after the outcome file was written, so a newer outcome starts it again. An `until` at or before the file's own time is no bound a worker could wait to (a copied example's date, say), so it counts as none. PURE. */
-const waitDeadline = ({ at, until }: Pick<WorkingNote, "at" | "until">): number => (until !== undefined && until > at ? until : at + BACKGROUND_WAIT_MS);
+/** The time (ms) a waiting note's wait ends: the `until` its outcome gave, whatever it is, or {@link BACKGROUND_WAIT_MS} after the outcome file was written, so a newer outcome starts it again. PURE. */
+const waitDeadline = ({ at, until }: Pick<WorkingNote, "at" | "until">): number => until ?? at + BACKGROUND_WAIT_MS;
 
 /** The stall reason of a run that stayed idle past the end of its wait on background work, naming the job (A11-236). PURE. */
 const waitedPastReason = (note: WorkingNote): string => {

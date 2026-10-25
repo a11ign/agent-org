@@ -53,7 +53,7 @@ export const OUTCOME_EXAMPLES: Readonly<Record<OutcomeKind, Readonly<Record<stri
   checked: { kind: "checked", reason: "Read the ticket and the code it names: the change is already on main, so nothing needs to change, and the ticket waits for a person to close it." },
   "wrong-repo": { kind: "wrong-repo", where: "a11ign/screenreader-worker: the scheduler that fails this run lives there, not in this repository." },
   "needs-human": { kind: "needs-human", reason: "The one thing only a person can decide, and why the evidence does not settle it: the ticket asks for both behaviours and names no winner." },
-  working: { kind: "working", reason: "The test run is still going in a background shell; I will read its log when it wakes me.", waitingOn: "the full test run in a background shell", until: "2026-01-01T12:00:00Z" },
+  working: { kind: "working", reason: "The test run is still going in a background shell; I will read its log when it wakes me.", waitingOn: "the full test run in a background shell" },
   planned: { kind: "planned" },
   reviewed: { kind: "reviewed" },
   published: { kind: "published" },

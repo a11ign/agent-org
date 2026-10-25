@@ -101,7 +101,7 @@ test("A11-236: a working outcome keeps the job it waits on and the time it expec
   assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"soon\"}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote \"soon\"");
   assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":\"5\"}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote \"5\"", "a bare number in text is not a time");
   assert.equal(refusal("{\"kind\":\"working\",\"reason\":\"r\",\"until\":1761346800000}"), "working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote a number");
-  assert.ok(outcomeExamples(["working"]).includes("\"waitingOn\": ") && outcomeExamples(["working"]).includes("\"until\": \"2026-01-01T12:00:00Z\""), "the brief's example shows both fields");
+  assert.ok(outcomeExamples(["working"]).includes("\"waitingOn\": ") && !outcomeExamples(["working"]).includes("\"until\""), "the brief's example names the job and carries no fixed until: a copy of a date that has passed would end the wait at once");
 });
 
 test("A11-118: a proposed edit is read where the kind may carry one, and its title or description must fit", () => {
