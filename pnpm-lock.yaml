@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@a11ign/toolchain':
-        specifier: ^0.7.0
-        version: 0.7.1(@rstest/core@0.12.3)(typescript@6.0.3)
+        specifier: ^0.11.0
+        version: 0.11.0(@rstest/core@0.12.3)(typescript@6.0.3)
       '@clack/prompts':
         specifier: 1.8.1
         version: 1.8.1
@@ -54,8 +54,8 @@ importers:
 
 packages:
 
-  '@a11ign/toolchain@0.7.1':
-    resolution: {integrity: sha512-8Yk+Z7wsKQiR793UXwF/qDkUHw6GxVZ2Sum6TBXmggHT9iozBGjQT7qN8OZ/vzzcjP6M/bXMfrcN6fsMSQW2Fw==}
+  '@a11ign/toolchain@0.11.0':
+    resolution: {integrity: sha512-1WbkB2HgusR6o7u4XrCRhq/NxNS3Zsg3anUrFS4cjkv1ZfV/592UblAtCwvL60rltaHZKdInKvYNFka7TBsY2w==}
     engines: {node: '>=22.15.0'}
     hasBin: true
     peerDependencies:
@@ -932,7 +932,7 @@ packages:
 
 snapshots:
 
-  '@a11ign/toolchain@0.7.1(@rstest/core@0.12.3)(typescript@6.0.3)':
+  '@a11ign/toolchain@0.11.0(@rstest/core@0.12.3)(typescript@6.0.3)':
     dependencies:
       '@rstest/core': 0.12.3
     optionalDependencies:
