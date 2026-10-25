@@ -642,7 +642,7 @@ function raiseDialogsNow(roster: NonNullable<ReturnType<typeof readAgents>>, led
  * produces no order, so a quiet gate is the tick on which it most needs doing.
  * @param {NonNullable<ReturnType<typeof readAgents>>} roster @param {string} ledgerPath @param {Run["meter"]} meter
  */
-function tidyRoster(roster: NonNullable<ReturnType<typeof readAgents>>, ledgerPath: string, meter: Run["meter"]) {
+export function tidyRoster(roster: NonNullable<ReturnType<typeof readAgents>>, ledgerPath: string, meter: Run["meter"]) {
   // #460: A BLOCKED WORKER IS TOLD ONCE PER STALL to declare `blocked <row> <reason>` or decide and record why, and then it is no longer a line said every
   // tick (seven lines in fourteen minutes for `worker-4202`, 2026-10-09). What could not be told keeps the report it always had.
   const told = tellBlocked({ roster, path: stateEntryPath(BLOCKED_TOLD_FILE),

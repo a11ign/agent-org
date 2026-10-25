@@ -75,3 +75,24 @@ test("A11-241: herdr's refusal of the start, answered on stdout, reaches the sta
   const started = port.start({ pr: PR_URL, head: "h1" });
   assert.ok("refusal" in started && started.refusal.includes(reason), JSON.stringify(started));
 });
+
+test("A11-241: a blocked reviewer with a long label has its pane read and its trust dialog answered through the short name", async () => {
+  await loadReviewerGate();
+  const root = "/repos/announcement-emulator";
+  const pane = `\n  Trust this folder? Codex can read, edit, and run files here. Trusting will apply to the repository root: ${root}\n\n› 1. Trust and continue\n  2. Don't trust\n\n  Press enter to continue\n`;
+  const calls: string[][] = [];
+  const run = (args: string[]): string => {
+    calls.push(args);
+    if (args.includes("read")) return pane;
+    if (args.includes("workspace") && args.includes("list")) return JSON.stringify({ result: { workspaces: [{ label: LABEL, workspace_id: "w1", agent_status: "blocked" }] } });
+    return JSON.stringify({ type: "ok" });
+  };
+  const codeHost = hostWithPull();
+  const helpers = reviewingHelpers({ session: "tickets", run, codeHost: () => codeHost, clones: { "announcement-emulator": root }, instance: "work", heads: new Map([[LABEL, "h1"]]) });
+  const port = atomicReviewerPort(helpers, { codexTrust: { rootOf: () => root, ensure: (trusted) => ({ kind: "present", root: trusted, file: "config.toml", level: "trusted" }), log: () => {} } });
+  const answer = port.unblock!({ pr: PR_URL, head: "h1" });
+  assert.ok(answer !== null && "answered" in answer, JSON.stringify(answer));
+  const name = herdrAgentName(LABEL);
+  assert.deepEqual(calls.find((args) => args.includes("read")), ["--session", "tickets", "agent", "read", name, "--source", "visible"]);
+  assert.deepEqual(calls.find((args) => args.includes("send-keys")), ["--session", "tickets", "agent", "send-keys", name, "enter"]);
+});
