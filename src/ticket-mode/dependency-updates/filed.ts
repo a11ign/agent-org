@@ -19,17 +19,24 @@ export type DependencyState = { tickets: Record<string, Entry>; reruns: Record<s
 
 export const emptyState = (): DependencyState => ({ tickets: {}, reruns: {} });
 
-/** The state on disk, or an empty one when there is no file. A file that cannot be read THROWS: reading it as empty would ask for every ticket again. */
+/** The state on disk, or an empty one when there is no file. A file that cannot be read THROWS, whatever part of it is wrong: reading it as empty would ask for every ticket, or rerun every head, again. */
 export function loadState(path: string): DependencyState {
   if (!existsSync(path)) return emptyState();
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as { tickets?: DependencyState["tickets"]; reruns?: DependencyState["reruns"] } | null;
-  const { tickets, reruns } = parsed ?? {};
-  if (!isObject(tickets)) throw new Error(`${path} is not a dependency ticket record`);
-  return { tickets, reruns: isObject(reruns) ? reruns : {} };
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!isStateRecord(parsed)) throw new Error(`${path} is not a dependency ticket record`);
+  return parsed;
 }
 
-/** Whether `value` is an object, which is all the file's two maps are checked for: their entries are the board's own writes. */
-const isObject = <Held extends object>(value: Held | undefined): value is Held => typeof value === "object" && value !== null;
+const STATES: readonly unknown[] = ["requested", "filed", "failed"];
+
+/** Whether `value` is a plain object, not a list and not null. */
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Whether `value` is what {@link saveState} writes: `tickets` maps keys to entries of a known state, and `reruns` maps keys to the head (text) rerun. Both maps are required: a part that is missing or malformed is not empty. */
+function isStateRecord(value: unknown): value is DependencyState {
+  if (!isPlainObject(value) || !isPlainObject(value.tickets) || !isPlainObject(value.reruns)) return false;
+  return Object.values(value.tickets).every((entry) => isPlainObject(entry) && STATES.includes(entry.state)) && Object.values(value.reruns).every((head) => typeof head === "string");
+}
 
 /** Replace the file whole: write beside it, then rename over it. */
 export function saveState(path: string, state: DependencyState): void {

@@ -383,3 +383,40 @@ test("A11-255: a ticket the tracker does not have yet is said once, however many
   await b.sweep();
   assert.equal(b.logs.filter((line) => /A11-300 is not in the tracker yet/.test(line)).length, 1);
 });
+
+test("A11-255: a state file whose reruns, tickets or entries are malformed is unreadable, not empty: nothing is rerun and nothing is asked for", async () => {
+  const mutilated: readonly [string, unknown][] = [
+    ["reruns is a string", { tickets: {}, reruns: "head-7" }],
+    ["reruns is null", { tickets: {}, reruns: null }],
+    ["reruns is a list", { tickets: {}, reruns: [] }],
+    ["reruns is missing", { tickets: {} }],
+    ["a rerun head is not text", { tickets: {}, reruns: { "o/r#7": 7 } }],
+    ["tickets is a list", { tickets: [], reruns: {} }],
+    ["an entry has no known state", { tickets: { "o/r:@x/y@2": { state: "done" } }, reruns: {} }],
+    ["an entry is text", { tickets: { "o/r:@x/y@2": "filed" }, reruns: {} }],
+  ];
+  for (const [what, content] of mutilated) {
+    const b = board();
+    b.major();
+    b.red(b.group().url);
+    writeFileSync(b.statePath, JSON.stringify(content));
+    await b.sweep();
+    assert.equal(b.writers().length, 0, `${what}: nothing is asked for`);
+    assert.equal(b.host.checksAndClaims.reruns.length, 0, `${what}: nothing is rerun`);
+    assert.ok(b.logs.some((line) => /cannot be read .*so no ticket is asked for/.test(line)), `${what}: it is said`);
+    assert.equal(readFileSync(b.statePath, "utf8"), JSON.stringify(content), `${what}: the file is left as it was`);
+  }
+});
+
+test("A11-255: a state file the sweep wrote is read back whole: the rerun it recorded is not forgotten and nothing is asked for twice", async () => {
+  const b = board();
+  b.major();
+  b.red(b.group().url);
+  await b.sweep();
+  const written = b.state();
+  assert.deepEqual([Object.keys(written.tickets), Object.keys(written.reruns)], [["o/r:@x/y@2"], ["o/r#7"]]);
+  const restarted = b.again();
+  await restarted();
+  await restarted();
+  assert.deepEqual([b.writers().length, b.host.checksAndClaims.reruns.length], [2, 1], "the major once, the red group once after its one rerun");
+});
