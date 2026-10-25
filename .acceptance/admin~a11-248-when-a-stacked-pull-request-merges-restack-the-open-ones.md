@@ -1,6 +1,6 @@
 Closes A11-248
 
-Step 2 of 2: a member of a stack left with no changes of its own (everything it held merged below it) is closed with a comment instead of being left open. The board reads the member's files on a sweep after it restacked it; when the list is complete and every file is scaffolding (`.acceptance/`, `.changeset/`) or there is none, and the head is one it can trust, it closes the pull request through the code host's new optional `closePull` (contract 1.22, the workers' account) and the card shows "#N closed: everything it held merged with #M". A refused close shows GitHub's reason and is tried again; a host without `closePull` says to close it; a member whose restack conflicted or was refused is never closed.
+Step 2 of 2: a member of a stack left with no changes of its own (everything it held merged below it) is closed with a comment instead of being left open. The board reads the member's files on a sweep after it restacked it; when the list is complete and every file is scaffolding (`.acceptance/`, `.changeset/`) or there is none, and the head is one it can trust, it closes the pull request through the code host's new optional `closePull` (contract 1.23, the workers' account) and the card shows "#N closed: everything it held merged with #M". A refused close shows GitHub's reason and is tried again; a host without `closePull` says to close it; a member whose restack conflicted or was refused is never closed.
 
 Acceptance:
 ```bash

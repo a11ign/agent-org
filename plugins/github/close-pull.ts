@@ -1,4 +1,4 @@
-// module: closing a pull request with a comment (contract 1.22, A11-248) -- what the board does for a member of a stack that holds nothing of its own
+// module: closing a pull request with a comment (contract 1.23, A11-248) -- what the board does for a member of a stack that holds nothing of its own
 //
 // ONE CALL, as the plugin's default `gh` runner makes it: the workers' identity, as `updateBranch` acts, and no worker turn. `gh pr close` posts the comment and closes the pull request, and says it is closed already (exit 0) for one that is.
 // It THROWS, in GitHub's own first line, for a call GitHub refuses and for an address that is no pull request, so a caller never reads a refusal as a close.

@@ -2,7 +2,7 @@
 // module: closing a member of a stack that holds nothing of its own once the member below it merged and the default branch was merged into it (A11-248) -- the sweep's side of `stack-restack.ts`'s `emptyMember`
 //
 // IT RUNS FROM `restackMember` (`pool-tracker.ts`), on a sweep after the one that restacked the member, so the read of its files is never the one made in the same pass as the merge. `retargetStacked` stays the one writer of a finished run's per-URL
-// notes: this returns the note and the caller records it. The close is the code host's optional `closePull` (contract 1.22), as the workers' account; a host without it gets a note that says the member is to be closed.
+// notes: this returns the note and the caller records it. The close is the code host's optional `closePull` (contract 1.23), as the workers' account; a host without it gets a note that says the member is to be closed.
 import type { StackMergeFacts } from "../plugins/contracts/code-host.ts";
 import type { PoolContext } from "./pool-context.ts";
 import { log, messageOf } from "./pool-state.ts";
