@@ -5,7 +5,7 @@ import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entri
 import { type PlannedAgainst, recordPlannedAgainst } from "./queue/queue-ticket-text.ts";
 import { earlyCompletionComment, recordCompletedByPerson, recordReopenFailure, recordReopened } from "./queue/queue-next-step.ts";
 import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";
-import { TICKET_ENV } from "./worktree-command.ts";
+import { runEnvOf } from "./run-env.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
@@ -77,16 +77,17 @@ export function isStartDialog(screen: string, worktree: string): boolean {
   return START_DIALOGS.some(({ heading, ownFolder }) => screen.includes(heading) && (!ownFolder || squash(screen).includes(squash(worktree))));
 }
 
-/** Open the workspace and start Claude in it. Returns the workspace and its pane, or throws with herdr's reason after closing anything it opened. */
-async function start(ctx: PoolContext, entry: Entry, folder: string, dir: string, resume?: string): Promise<{ workspace: string; pane: string }> {
-  const { hostFile } = ctx;
+/**
+ * Open the workspace and start Claude in it. Returns the workspace and its pane, or throws with herdr's reason after closing anything it opened. `first` is the prompt Claude starts with when the run's own first
+ * prompt is not the one: the resume prompt of a run started again where it was (A11-279).
+ */
+export async function start(ctx: PoolContext, entry: Entry, folder: string, dir: string, resume?: string, first?: string): Promise<{ workspace: string; pane: string }> {
   const runId = entry.batch ?? entry.ticket.key;
-  // The worker's shell carries its ticket, its branch and the host file, which `ticket:worktree` reads. A batch's run has no one ticket, and
-  // makes no worktree.
-  const env = { ...(entry.batch === undefined ? { [TICKET_ENV.key]: runId, [TICKET_ENV.branch]: entry.ticket.branch } : {}), ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}) };
+  // The worker's shell carries its ticket, its branch and the host file, which `ticket:worktree` reads. A batch's run has no one ticket, and makes no worktree.
+  const env = runEnvOf(ctx, entry);
   const { model, effort } = runChoice(ctx, entry);
   const cause = entry.asked ? "asked" : entry.feedback !== undefined ? "feedback" : "approved";
-  const prompt = entry.talk ? talkPrompt(dir) : entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause);
+  const prompt = first ?? (entry.talk ? talkPrompt(dir) : entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause));
   return startAgent(ctx, { ...runPlace(ctx, entry), folder }, env, [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })], runId);
 }
 
@@ -122,6 +123,7 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
     }
   }
   startedHere.add(place.name);
+  ctx.envLost.delete(place.name);
   return { workspace: opened.workspace, pane: opened.pane };
 }
 
@@ -150,7 +152,7 @@ export function answerStartDialog(ctx: PoolContext, place: RunPlace): boolean {
  * Just after a start, answer the start dialogs as they appear, rather than one per tick: a few short waits, then the tick takes over. The pane is the one just opened, which herdr lists under the run's label: a pane
  * the entry held before this start is not it.
  */
-async function settleStart(ctx: PoolContext, started: RunPlace): Promise<void> {
+export async function settleStart(ctx: PoolContext, started: RunPlace): Promise<void> {
   const { herdr, session, startedHere, wait } = ctx;
   const { pane: _before, ...place } = started;
   for (let attempt = 0; attempt < 6; attempt += 1) {
