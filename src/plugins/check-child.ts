@@ -74,10 +74,41 @@ async function checksOfRequest(plugin: string, request: CheckRequest): Promise<r
 
 type ChildResult = Readonly<{ status: number | null; stdout: string; stderr: string; stopped: boolean }>;
 
-/** Runs node on `args` in a process group of its own, and kills the whole group, with any program it started, when it runs past `timeoutMs`. */
+/** The process groups of the children still running: they end with this process, since a board that stops leaves no checks behind it. */
+const running = new Set<number>();
+
+/** Kills the process group `pid` leads, and every program in it. */
+function killGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // The group has ended already.
+  }
+}
+
+const killRunning = (): void => { for (const pid of running) killGroup(pid); };
+
+/** Holds `pid`'s group until it ends: this process kills it if it exits first. */
+function track(pid: number): void {
+  if (running.size === 0) process.once("exit", killRunning);
+  running.add(pid);
+}
+
+/** Lets go of `pid`'s group, which has ended. */
+function untrack(pid: number): void {
+  if (running.delete(pid) && running.size === 0) process.removeListener("exit", killRunning);
+}
+
+/**
+ * Runs node on `args` in a process group of its own, and kills the whole group, with any program it started, when it runs past `timeoutMs`, or when this process exits before it
+ * ends.
+ */
 export function runInGroup(args: readonly string[], timeoutMs: number): Promise<ChildResult> {
   return new Promise((done) => {
     const child = spawn(process.execPath, [...args], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    // A child that could not start has no pid, and no group to kill: `-0` would be this process's own.
+    const pid = child.pid;
+    if (pid !== undefined) track(pid);
     let stdout = "";
     let stderr = "";
     let stopped = false;
@@ -85,14 +116,15 @@ export function runInGroup(args: readonly string[], timeoutMs: number): Promise<
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     const timer = setTimeout(() => {
       stopped = true;
-      try {
-        process.kill(-(child.pid ?? 0), "SIGKILL");
-      } catch {
-        // The group has ended already.
-      }
+      if (pid !== undefined) killGroup(pid);
     }, timeoutMs);
-    child.on("error", (error) => { clearTimeout(timer); done({ status: null, stdout, stderr: error.message, stopped }); });
-    child.on("close", (status) => { clearTimeout(timer); done({ status, stdout, stderr, stopped }); });
+    const end = (result: ChildResult): void => {
+      clearTimeout(timer);
+      if (pid !== undefined) untrack(pid);
+      done(result);
+    };
+    child.on("error", (error) => end({ status: null, stdout, stderr: error.message, stopped }));
+    child.on("close", (status) => end({ status, stdout, stderr, stopped }));
   });
 }
 
