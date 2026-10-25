@@ -12,7 +12,7 @@ const run: RunFields = { ...completed({ key: "A11-235", title: "A merged run", s
 
 const check = (fields: Partial<AfterMergeCheck>): AfterMergeCheck => ({
   id: "A11-235#1", key: "A11-235", url: "https://linear.app/a11ign/issue/A11-235", line: LINE, runner: "session", listedAt: Date.now() - 3 * DAY - HOUR, state: "open", owner: "Chairman session", role: null,
-  followUpText: null, ...fields,
+  followUpText: null, needsYou: null, overdue: false, ...fields,
 });
 
 const FAILED = check({ id: "A11-236#1", key: "A11-236", state: "failed", result: "no ticket arrived", listedAt: Date.now() - 5 * HOUR, followUpText: "Follow-up to A11-236: its after-merge check failed." });
@@ -29,6 +29,8 @@ function standWith(checks: readonly AfterMergeCheck[], post: (path: string, body
 }
 
 const list = () => within(screen.getByRole("region", { name: "After-merge checks" }));
+/** The text of each of the list's rows and group headings, top to bottom. */
+const rowTexts = () => [...screen.getByRole("region", { name: "After-merge checks" }).querySelectorAll(".runs-extra-row")].map(textOf);
 
 describe("an After-merge check's row", () => {
   it("shows who runs it, the runner the board sends it to, and its age", async () => {
@@ -70,10 +72,32 @@ describe("an After-merge check's row", () => {
   });
 });
 
+describe("a check waiting on the person or overdue", () => {
+  it("is listed under Needs you, above the failed and the open checks, with its escalation item, and an overdue row says so", async () => {
+    const person = check({ id: "A11-233#1", key: "A11-233", line: "The chairman chooses the licence.", owner: "The chairman", runner: "person", needsYou: "legal or licensing", listedAt: Date.now() - 8 * DAY, overdue: true });
+    await pageOn(standWith([check({ overdue: true }), FAILED, person], () => ({})));
+    expect(rowTexts().map((text) => /^(?:Needs you|Failed: follow-up\?|A11-\d+)/.exec(text)?.[0])).toEqual(["Needs you", "A11-233", "Failed: follow-up?", "A11-236", "A11-235"]);
+    expect(list().getByText("Runs it: The chairman · you · 8 d · legal or licensing · overdue")).toBeTruthy();
+    expect(list().getByText("Runs it: Chairman session · the session · 3 d · overdue")).toBeTruthy();
+  });
+
+  it("reads a row from an instance that sends no needsYou or overdue as waiting on no one, and not overdue", async () => {
+    const { needsYou: _needsYou, overdue: _overdue, ...older } = check({});
+    await pageOn(standWith([older as AfterMergeCheck], () => ({})));
+    expect(list().queryByText("Needs you")).toBeNull();
+    expect(list().getByText("Runs it: Chairman session · the session · 3 d")).toBeTruthy();
+  });
+
+  it("draws no Needs you group when no check waits on the person", async () => {
+    await pageOn(standWith([check({})], () => ({})));
+    expect(list().queryByText("Needs you")).toBeNull();
+  });
+});
+
 describe("a failed check", () => {
   it("is listed under Failed: follow-up?, above the open checks, with what was seen", async () => {
     await pageOn(standWith([check({}), FAILED], () => ({})));
-    const rows = [...screen.getByRole("region", { name: "After-merge checks" }).querySelectorAll(".runs-extra-row")].map(textOf);
+    const rows = rowTexts();
     expect(rows[0]).toBe("Failed: follow-up?");
     expect(rows[1]).toContain("A11-236");
     expect(rows[2]).toContain("A11-235");

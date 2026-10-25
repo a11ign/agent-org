@@ -6,7 +6,7 @@ import { manualOptionsOf } from "../new-ticket/new-ticket-model.ts";
 import { NewTicketDialog } from "../new-ticket/NewTicketDialog.tsx";
 import { useNewTicketRequest } from "../new-ticket/use-new-ticket-request.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
-import { CLOSES, EVIDENCE_CHARS, runnerText, sendable, useAfterMergeActions, type AfterMergeActions } from "./after-merge-actions.ts";
+import { CLOSES, EVIDENCE_CHARS, needsYouOf, openMeta, sendable, useAfterMergeActions, type AfterMergeActions } from "./after-merge-actions.ts";
 import { ExtraGroup } from "./ExtraGroup.tsx";
 
 type RowProps = Readonly<{ check: AfterMergeCheck; now: number; disabled: boolean; actions: AfterMergeActions }>;
@@ -43,14 +43,14 @@ function CloseField({ question, onSend, onCancel }: Readonly<{ question: string;
   );
 }
 
-/** An open check: who runs it, the runner the board sends it to, its age, and Passed, Failed and Superseded, each opening the row's field. */
+/** An open check: who runs it, the runner the board sends it to, its age, the escalation item it needs the person for, whether it is overdue, and Passed, Failed and Superseded, each opening the row's field. */
 function OpenRow({ check, now, disabled, actions }: RowProps) {
   const [closing, setClosing] = useState<CheckResult | null>(null);
   const asked = CLOSES.find(({ result }) => result === closing);
   return (
     <div className="runs-extra-row">
       <Title check={check} />
-      <div className="run-meta">Runs it: {check.owner} · {runnerText(check)} · {ageOf(check.listedAt, now)}</div>
+      <div className="run-meta">{openMeta(check, now)}</div>
       {asked === undefined ? (
         <div className="after-merge-actions">
           {CLOSES.map(({ result, button }) => <button key={result} type="button" className="ghost ghost-small" disabled={disabled} onClick={() => setClosing(result)}>{button}</button>)}
@@ -59,6 +59,9 @@ function OpenRow({ check, now, disabled, actions }: RowProps) {
     </div>
   );
 }
+
+/** A group's heading inside the list. */
+const GroupHeading = ({ label }: Readonly<{ label: string }>) => <div className="runs-extra-row run-meta" role="heading" aria-level={3}>{label}</div>;
 
 /** The New ticket dialog, pre-filled with a failed check's follow-up request; `onQueued` is told the writer request once the board queued it. */
 function FollowUpDialog({ check, config, onQueued, onClose }: Readonly<{ check: AfterMergeCheck; config: ConfigView; onQueued: (run: string) => void; onClose: () => void }>) {
@@ -93,20 +96,24 @@ function FailedRow({ check, now, disabled, actions }: RowProps) {
 }
 
 /**
- * The open After-merge checks, oldest first, as `GET /api/queue` lists them (A11-277): "Failed: follow-up?" over the failed checks whose follow-up is undecided, then every open check, each with who runs it, its
- * runner and its age. A row leaves when its check is closed, not with its run. Not drawn when there are none.
+ * The open After-merge checks, oldest first, as `GET /api/queue` lists them (A11-277): "Needs you" over the checks that wait on the person for an escalation item, then "Failed: follow-up?" over the failed checks
+ * whose follow-up is undecided, then every other open check, each with who runs it, its runner and its age. A group with no rows is not drawn. A row leaves when its check is closed, not with its run. Not drawn when
+ * there are none.
  */
 export function AfterMergeList({ checks, disabled }: Readonly<{ checks: readonly AfterMergeCheck[]; disabled: boolean }>) {
   const actions = useAfterMergeActions();
   if (checks.length === 0) return null;
   const now = Date.now();
+  const needsYou = checks.filter((check) => check.state === "open" && needsYouOf(check) !== null);
   const failed = checks.filter((check) => check.state === "failed");
   const row = { now, disabled, actions };
   return (
     <ExtraGroup label="After-merge checks" count={checks.length}>
-      {failed.length === 0 ? null : <div className="runs-extra-row run-meta" role="heading" aria-level={3}>Failed: follow-up?</div>}
+      {needsYou.length === 0 ? null : <GroupHeading label="Needs you" />}
+      {needsYou.map((check) => <OpenRow key={check.id} check={check} {...row} />)}
+      {failed.length === 0 ? null : <GroupHeading label="Failed: follow-up?" />}
       {failed.map((check) => <FailedRow key={check.id} check={check} {...row} />)}
-      {checks.filter((check) => check.state === "open").map((check) => <OpenRow key={check.id} check={check} {...row} />)}
+      {checks.filter((check) => check.state === "open" && needsYouOf(check) === null).map((check) => <OpenRow key={check.id} check={check} {...row} />)}
     </ExtraGroup>
   );
 }

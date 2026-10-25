@@ -1716,9 +1716,9 @@ test("A11-277: the After-merge checks list is the open checks and the failed one
   ];
   const seeded = seedChecks(emptyChecks(), runs, 9_000);
   assert.deepEqual(afterMergeChecks(seeded), [
-    { id: "A11-150#1", key: "A11-150", url: null, line: "The release manager: a live check", runner: "session", listedAt: 1_000, state: "open", owner: "The release manager", role: "The release manager", followUpText: null },
-    { id: "A11-145#1", key: "A11-145", url, line: "the laptop run shows 3 of 3. The chairman, after merge.", runner: "person", listedAt: 2_000, state: "open", owner: "The chairman", role: null, followUpText: null },
-    { id: "A11-145#2", key: "A11-145", url, line: "a second check", runner: "session", listedAt: 2_000, state: "open", owner: "owner not named", role: null, followUpText: null },
+    { id: "A11-150#1", key: "A11-150", url: null, line: "The release manager: a live check", runner: "session", listedAt: 1_000, state: "open", owner: "The release manager", role: "The release manager", followUpText: null, needsYou: null, overdue: false },
+    { id: "A11-145#1", key: "A11-145", url, line: "the laptop run shows 3 of 3. The chairman, after merge.", runner: "session", listedAt: 2_000, state: "open", owner: "The chairman", role: null, followUpText: null, needsYou: null, overdue: false },
+    { id: "A11-145#2", key: "A11-145", url, line: "a second check", runner: "session", listedAt: 2_000, state: "open", owner: "owner not named", role: null, followUpText: null, needsYou: null, overdue: false },
   ], "oldest first, with 'owner not named' where the line names none; a run with none adds none");
   const close = (file: ChecksFile, id: string, result: "passed" | "failed") => {
     const closed = closeCheck(file, id, { result, evidence: "seen on the board", by: "person" }, 10_000);

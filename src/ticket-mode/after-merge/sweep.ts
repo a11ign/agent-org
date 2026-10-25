@@ -1,5 +1,5 @@
 // @ts-check
-// module: the After-merge checks' sweep (A11-277) -- copy the runs' listed lines into records with what their plans say, prune the old closed ones, pass the ones the board saw, and post each close on its ticket once
+// module: the After-merge checks' sweep (A11-277) -- copy the runs' listed lines into records with what their plans say, prune the old closed ones, pass the ones the board saw, send the overdue ones again, and post each close on its ticket once
 import { dirname, join } from "node:path";
 import { log, messageOf } from "../pool-state.ts";
 import type { PoolContext } from "../pool-context.ts";
@@ -8,14 +8,15 @@ import { DEPENDENCY_TICKETS_FILE } from "../dependency-updates/board.ts";
 import { loadState } from "../dependency-updates/filed.ts";
 import { reviewOnHead } from "../wait-on/wait-read.ts";
 import { claimPost, closeComment, listedIds, markUnpostable, pruneChecks, releasePost, seedChecks, ticketsToSeed, unpostedChecks, type ChecksFile, type PlannedCheck } from "./checks.ts";
+import { markOverdue, markShownToPerson } from "./dispatch.ts";
 import { closeObserved, filedKeys, observedChecks, watchesSweep, withFiledBaselines, type ObserveFacts } from "./observe.ts";
 import { plannedChecks } from "./plan-section.ts";
 import { afterMergeChecksPath, changeChecks, loadChecks, saveChecks } from "./store.ts";
 
 /**
  * One sweep, run at the end of each tracker refresh: every After-merge line a run listed (A11-173) that has no record yet becomes an open check, with what its ticket's plan says of it, so a check outlives its run's
- * dismissal; the closed checks no run lists any more are dropped after 30 days; each check the board watches and saw happen is passed; and each close not posted yet is posted on its ticket. A file that cannot be read
- * changes nothing, and is logged.
+ * dismissal; the closed checks no run lists any more are dropped after 30 days; each check the board watches and saw happen is passed; each Needs-you check is shown to the person; each check that waited 7 days on its
+ * runner is sent again, once, overdue; and each close not posted yet is posted on its ticket. A file that cannot be read changes nothing, and is logged.
  */
 export async function syncAfterMergeChecks(ctx: PoolContext): Promise<void> {
   const { settings, store, now } = ctx;
@@ -24,7 +25,8 @@ export async function syncAfterMergeChecks(ctx: PoolContext): Promise<void> {
     const runs = store.get().entries;
     const planned = plansOf(ctx, ticketsToSeed(loadChecks(path), runs));
     const seeded = changeChecks(path, (before) => pruneChecks(seedChecks(before, runs, now(), planned), now(), listedIds(runs)));
-    const file = closeWhatTheBoardSaw(ctx, path, seeded);
+    closeWhatTheBoardSaw(ctx, path, seeded);
+    const file = changeChecks(path, (before) => markOverdue(markShownToPerson(before, now()), now()));
     await postCloses(ctx, path, unpostedChecks(file).map(({ id }) => id));
   } catch (err) {
     log(`the After-merge checks in ${path} could not be swept: ${messageOf(err)}`);
@@ -33,14 +35,14 @@ export async function syncAfterMergeChecks(ctx: PoolContext): Promise<void> {
 
 /**
  * Pass each check the board watches and saw happen, with its evidence, after recording the dependency sweep's filed tickets on each `sweep-ticket` check that began to watch in this sweep, so only a ticket filed
- * later passes it. Returns the file as it now is.
+ * later passes it.
  */
-function closeWhatTheBoardSaw(ctx: PoolContext, path: string, file: ChecksFile): ChecksFile {
+function closeWhatTheBoardSaw(ctx: PoolContext, path: string, file: ChecksFile): void {
   const facts = observeFacts(ctx, file);
   const { dependencyTickets } = facts;
   const watched = dependencyTickets === null ? file : changeChecks(path, (before) => withFiledBaselines(before, filedKeys(dependencyTickets)));
   const passes = observedChecks(watched, facts);
-  return passes.length === 0 ? watched : changeChecks(path, (before) => closeObserved(before, passes, ctx.now()));
+  if (passes.length > 0) changeChecks(path, (before) => closeObserved(before, passes, ctx.now()));
 }
 
 /**
