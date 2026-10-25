@@ -20,6 +20,7 @@ import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
 import { readReplies } from "./replies.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
+import { requestStackMerge, stackMergeFactsOf } from "./stack-merge.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
 import { updateBranch } from "./update-branch.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
@@ -78,6 +79,8 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     readMergedFindings: (url) => readMergedFindings(url, gh),
     openPullUrlsOf: (repository) => openPullUrlsOf(repository, gh),
     sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh }),
+    stackMergeFactsOf: (url) => stackMergeFactsOf(url, gh),
+    requestStackMerge: (request) => requestStackMerge(request, gh),
     readCheckLog: (detailsUrl) => readCheckLog(detailsUrl, gh, deps.log),
     rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
     updateBranch: (url, expectedHead) => updateBranch(url, expectedHead, gh),

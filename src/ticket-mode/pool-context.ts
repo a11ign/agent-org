@@ -18,6 +18,7 @@ import { defaultGit, type Git } from "./worktree.ts";
 import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type DrainStore } from "./pool-drain.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
+import { type StackMergeAsk } from "./stack-merge.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -141,6 +142,8 @@ export type PoolContext = Readonly<{
   finishing: Set<string>;
   /** The tick's pass: whether one is under way, and whether another was asked for while it was. */
   tickState: { busy: boolean; again: boolean };
+  /** The head the board last asked the arm bot to stack-merge each pull request at, and when, by its url (A11-238). Kept in memory: a restart may ask once more, which is harmless, since the arm bot answers a pull request already queued with a done. */
+  stackMergeAsked: Map<string, StackMergeAsk>;
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
   ownLogin: { value: string | null };
 }>;
@@ -217,6 +220,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, attachRetries, telling: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, stackMergeAsked: new Map<string, StackMergeAsk>(),
   };
 }
