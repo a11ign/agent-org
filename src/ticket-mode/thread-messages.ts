@@ -52,8 +52,11 @@ export type ToBoard = CallMessage | Readonly<{ kind: "listening"; port: number }
 /** The code a request thread exits with when it cannot listen (the port is taken): the instance then stops at once, as it did when it listened itself. */
 export const LISTEN_FAILED = 3;
 
-/** What the board thread tells the request thread: a new snapshot, or the answer to a forwarded request. */
-export type ToRequests = Readonly<{ kind: "snapshot"; snapshot: BoardSnapshot }> | Readonly<{ kind: "answer"; id: number; status: number; value: unknown; known: KnownCopies }>;
+/**
+ * What the board thread tells the request thread: a new snapshot, the answer to a forwarded request, or to stop. On `stop` the request thread ends, and its exit handler kills the checks it
+ * started: a worker's exit handlers do not run when the instance exits, so without it a stopped instance would leave its checks running.
+ */
+export type ToRequests = Readonly<{ kind: "snapshot"; snapshot: BoardSnapshot }> | Readonly<{ kind: "answer"; id: number; status: number; value: unknown; known: KnownCopies }> | Readonly<{ kind: "stop" }>;
 
 /** What a request thread's `workerData` says it is, so the module starts serving only in the worker `serve()` made. */
 export const REQUEST_THREAD = "agent-org request thread";

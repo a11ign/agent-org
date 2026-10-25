@@ -217,3 +217,16 @@ test("a request thread that cannot listen ends the instance at once, as the inst
   assert.equal(threads.length, 1);
   assert.deepEqual(said.exits, [1]);
 });
+
+test("A11-282: stop tells the request thread to stop and answers once it has exited, and it is not started again", async () => {
+  const { thread, threads, said } = startedThread();
+  let stopped = false;
+  const stopping = thread.stop().then(() => { stopped = true; });
+  assert.deepEqual(threads[0].told.at(-1), { kind: "stop" });
+  await settle();
+  assert.equal(stopped, false, "it waits for the thread to end");
+  threads[0].emit("exit", 0);
+  await stopping;
+  assert.equal(threads.length, 1, "the exit it asked for does not start another thread");
+  assert.deepEqual(said.exits, []);
+});

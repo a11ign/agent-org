@@ -91,6 +91,8 @@ function apiOf(board: ReadBoard, port: BoardPort, onSnapshot: (snapshot: BoardSn
   let calls = 0;
   port.on("message", (message) => {
     if (message.kind === "snapshot") return onSnapshot(message.snapshot);
+    // Ending this thread runs its exit handler, which kills the checks it started (`check-child.ts`); the main thread ending the process would not.
+    if (message.kind === "stop") process.exit(0);
     applyCopies(board.known, message.known);
     waiting.get(message.id)?.([message.status, message.value]);
     waiting.delete(message.id);

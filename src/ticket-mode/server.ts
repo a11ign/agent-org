@@ -716,7 +716,10 @@ async function serve(): Promise<void> {
   const boardDeps: BoardDeps = { settings, source, codeHost, key, ...paths, exposure: active.exposure(), queueChanged: () => thread?.queueChanged(),
     poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } };
   const board = createBoard(boardDeps);
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
+  // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => { void (thread?.stop() ?? Promise.resolve()).finally(() => process.exit(128 + constants.signals[signal])); });
+  }
   await board.pool.ensureSession();
   board.pool.reconcile();
   // The HTTP server runs on the request thread (A11-282), so the pool's synchronous calls below hold no request. This thread stays the queue's one writer.

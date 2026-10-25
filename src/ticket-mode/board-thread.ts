@@ -20,6 +20,8 @@ export const SNAPSHOT_MS = 1_000;
 /** How many times the request thread is started again within RESTART_WINDOW_MS before the instance gives up. */
 export const RESTARTS = 3;
 export const RESTART_WINDOW_MS = 60_000;
+/** How long `stop` waits for the request thread to end before the instance ends anyway. */
+export const STOP_WAIT_MS = 2000;
 
 /** What the board thread reads and routes through: the board `createBoard` made. */
 export type ThreadBoard = Pick<ReturnType<typeof createBoard>, "api" | "known" | "store" | "pool" | "update" | "terminalAddress">;
@@ -89,16 +91,19 @@ export type BoardThreadDeps = Readonly<{
 }>;
 
 /** Starts the request thread and serves it: snapshots, forwarded requests and restarts. Answers `queueChanged`, which `createBoard`'s `queueChanged` calls. */
-export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged: () => void }> {
+export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged: () => void; stop: () => Promise<void> }> {
   const { board, health, start, every = setInterval, now = Date.now, listening = () => undefined, err = (line) => process.stderr.write(line), exit = (code) => process.exit(code) } = deps;
   let terminal = deps.terminal;
   let heard = false;
   const mayRestart = restartBudget(now);
+  let current: RequestThread | null = null;
+  let stopping = false;
   const snapshot = () => snapshotOf(board, terminal, health(), now());
 
   /** Starts a request thread, and answers how to tell it something. */
   const run = (): ((message: ToRequests) => void) => {
     const thread = start({ ...deps.data, snapshot: snapshot() });
+    current = thread;
     const post = (message: ToRequests): void => {
       try {
         thread.postMessage(message);
@@ -119,6 +124,7 @@ export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged
     });
     thread.on("error", (error) => err(`ticket:serve: the request thread failed: ${String(error?.stack ?? error)}\n`));
     thread.on("exit", (code) => {
+      if (stopping) return;
       if (code === LISTEN_FAILED) {
         exit(1);
         return;
@@ -135,6 +141,14 @@ export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged
   };
 
   let tell = run();
+  /** Tells the request thread to kill its checks and end, and answers once it has, or after STOP_WAIT_MS. It is not started again. */
+  const stop = (): Promise<void> => new Promise((done) => {
+    stopping = true;
+    const timer = setTimeout(done, STOP_WAIT_MS);
+    timer.unref?.();
+    current?.on("exit", () => { clearTimeout(timer); done(); });
+    tell({ kind: "stop" });
+  });
   const postSnapshot = () => tell({ kind: "snapshot", snapshot: snapshot() });
   /** Works the terminal address out again, once at a time, and posts it. */
   let refreshing: Promise<void> | null = null;
@@ -143,5 +157,5 @@ export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged
   }
   refreshTerminal();
   every(postSnapshot, SNAPSHOT_MS);
-  return { queueChanged: postSnapshot };
+  return { queueChanged: postSnapshot, stop };
 }
