@@ -26,7 +26,7 @@ function nextStepRun(entry: Entry, step: MergedStep, now: number): Entry {
 }
 
 /**
- * The finished runs whose partial pull requests merged and whose next plan step the board queues itself (A11-168): declared partial, with the merged bodies read (A11-181), not parked, whose pull requests have all
+ * The finished runs whose partial pull requests merged and whose next plan step the board queues itself (A11-168): declared partial, with the merged bodies read (A11-181), not parked (a parked `needs-human` run is released first, A11-258), whose pull requests have all
  * merged or closed with one merged, whose ticket the tracker has not finished, and whose step, named or counted by the board (A11-173), is below the plan's last and past every step
  * already merged. Each is paired with the step it finished. PURE.
  */
@@ -38,7 +38,8 @@ export function nextStepRuns(queue: Queue): { entry: Entry; step: MergedStep }[]
     const after = afterPartialMerge(partial, entry.steps ?? [], entry.planSteps);
     if ("stalled" in after) return [];
     const prs = pullsOf(entry).map(({ url }) => url).filter((url) => entry.pullStates?.[url] === "merged");
-    return [{ entry, step: { step: after.next.step - 1, of: after.next.of, prs, ...(after.next.counted ? { counted: true as const } : {}) } }];
+    const cleared = entry.outcome?.kind === "needs-human";
+    return [{ entry, step: { step: after.next.step - 1, of: after.next.of, prs, ...(after.next.counted ? { counted: true as const } : {}), ...(cleared ? { cleared: true as const } : {}) } }];
   });
 }
 

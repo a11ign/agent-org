@@ -24,6 +24,7 @@ import { worktreePath } from "./worktree.ts";
 import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
 import { readPlanSteps } from "./pool-plan-steps.ts";
 import { readPullDeclarations } from "./pool-pull-declarations.ts";
+import { adoptNamedBlockers, releaseMergedBlockers } from "./pool-blocker-cleared.ts";
 import { askUpdate } from "./pool-checks.ts";
 import { isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -55,10 +56,14 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       // the tracker could not be asked: the next refresh asks again
     }
   }
+  // A needs-human run that holds no pull request waits on the ones its reason names (A11-258): they are its own from here, so the reads below take them like any run's.
+  adoptNamedBlockers(ctx);
   // What each merged pull request's body declares decides over the outcome's `partial`, so it is read before anything acts on the merge (A11-181).
   readPullDeclarations(ctx);
   // A ticket the tracker's integration completed on a partial merge is put back first, so the same sweep queues the next step (A11-178).
   for (const entry of earlyCompletions(store.get())) await undoEarlyCompletion(ctx, entry);
+  // A parked needs-human run whose pull requests merged lets go of its workspace, which the next-step and plan-count sweeps below require (A11-258).
+  releaseMergedBlockers(ctx);
   await readPlanSteps(ctx);
   queueNextSteps(ctx);
   await completeMerged(ctx);
