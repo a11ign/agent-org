@@ -25,7 +25,7 @@ import { mintTerminalCode, type TerminalMint, type TerminalRun, terminalRunOf } 
 import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { pickEmptyText, pickLabel } from "./pick-scope.ts";
-import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
+import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, sendJsonFor, type Json } from "./local-http.ts";
 import { AnswerNotDelivered, createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { gateReviewJudge, loadReviewerGate } from "./reviewer-port.ts";
 import { publisherStateOf, reviewerStateOf } from "./concern-states.ts";
@@ -37,8 +37,7 @@ import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
 import type { UpdateNote } from "./board-view/update-banner.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
-import { ciViewOf } from "./ci-spend/view.ts";
-import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
+import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
@@ -54,9 +53,11 @@ import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
+import { queueEntryView, queueView, shownWriter, type QueueView } from "./queue-view.ts";
+export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
+import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth, type HealthView } from "./health-route.ts";
@@ -224,7 +225,7 @@ function writerPlacement(body: Json, form: WriterRun["form"]): Placement {
 }
 
 /** What the routes act on: the settings and seams, the queue's store, the pool, the tickets the page last read, and the functions that make a queue change. */
-type Board = Readonly<{
+export type Board = Readonly<{
   deps: BoardDeps;
   settings: TicketSettings;
   source: TicketSource;
@@ -370,43 +371,9 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
   return fresh;
 }
 
-/** What `/api/queue` answers, and every route that changes the queue. The UI's client names this type, so a field renamed here fails its `tsc`. */
-export type QueueView = ReturnType<typeof queueView>;
-
-/** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
-function queueView(board: Pick<Board, "store" | "pool" | "update" | "settings">) {
-  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
-  // is sent it, without a Grill run's ticket text (A11-134).
-  // `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261).
-  const { ciSpend: _ciSpend, ...queue } = board.store.get();
-  const entries = board.store.get().entries.map((entry) => {
-    const ci = ciViewOf(board.store.get(), entry, board.settings.ciBudgetMinutes);
-    return { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) };
-  });
-  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
-    afterMergeChecks: afterMergeView(board.settings.stateDir) };
-}
-
-/**
- * A run as the page is sent it, without the copies of its ticket's text the board keeps to tell a change by (`briefedAgainst`, `plannedAgainst`; A11-167): the page draws a change from `ticketChange` and
- * `ticketChanges`, which hold the two texts of a change, and each run already carries its ticket.
- */
-function shownEntry(entry: Entry): Entry {
-  const { briefedAgainst: _briefed, plannedAgainst: _planned, ticketChanges, talkFrom, ...shown } = entry;
-  // Only the latest change is drawn; and a talk session's copy of the run it replaced is shown as that run is.
-  return { ...shown, ...(ticketChanges ? { ticketChanges: ticketChanges.slice(-1) } : {}), ...(talkFrom ? { talkFrom: shownEntry(talkFrom as Entry) } : {}) };
-}
-
 /** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
 function writerViewOf(run: WriterRun) {
   return { ...shownWriter(run), status: writerStatus(run) };
-}
-
-/** A new-ticket run without its Grill's ticket text: the board keeps that text to compare, and the page is not sent it (A11-134). */
-function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
-  const { startedFrom: _startedFrom, ...shown } = run;
-  return shown;
 }
 
 /** What `/api/writer` answers, and every route that changes a new-ticket request. */
@@ -480,6 +447,11 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];
   }
   if (method === "GET" && path === "/api/queue") return [200, queueView(board)];
+  const run = method === "GET" ? /^\/api\/queue\/([A-Za-z0-9_-]+)$/.exec(path) : null;
+  if (run !== null) {
+    const view = queueEntryView(board, decodeURIComponent(run[1]));
+    return view === null ? [404, { error: `no run ${run[1]} on the queue` }] : [200, view];
+  }
   if (method === "GET" && path === "/api/writer") return [200, writersViewOf(store.get())];
   if (method === "GET" && path === "/api/health" && deps.health !== undefined) return [200, deps.health()];
   return undefined;
@@ -843,7 +815,7 @@ export function createBoard(deps: BoardDeps) {
     try {
       const body = request.method === "POST" ? await readJson(request, API_BODY_BYTES) : {};
       const [status, value] = await api(request.method ?? "GET", url.pathname, body, url.searchParams);
-      sendJson(response, status, value);
+      sendJsonFor(request, response, { status, value });
     } catch (err) {
       sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
     }

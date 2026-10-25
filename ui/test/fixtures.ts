@@ -64,6 +64,24 @@ const failed = ({ status, error, lastKnown }: Failure): { status: number; body: 
 
 const isFailure = (value: unknown): value is Failure => typeof value === "object" && value !== null && "status" in value && "error" in value;
 
+/** What the instance leaves out of a run in the queue it lists, and sends in the run's own read (`queue-view.ts`, A11-270). */
+const DETAIL_ONLY = ["plannedSteps", "currentStep", "feedback", "session"] as const;
+
+/** `/api/queue` as the instance lists it: each run without what only its own page draws, and no log. */
+function listOf(queue: QueueView): QueueView {
+  const { runLog: _runLog, ...rest } = queue as QueueView & { runLog?: unknown };
+  const entries = queue.entries.map((entry) => Object.fromEntries(Object.entries(entry).filter(([field]) => !(DETAIL_ONLY as readonly string[]).includes(field))));
+  return { ...rest, entries } as unknown as QueueView;
+}
+
+/** `/api/queue/<key>`: the run in full with its log, as the queue holds them, or a 404 for a run it does not hold. */
+function runAnswer(answers: InstanceAnswers, key: string): { status: number; body: string } {
+  if (answers.queueFails !== undefined) return failed(answers.queueFails);
+  const queue = (answers.queue ?? queueOf()) as QueueView & { runLog?: Readonly<Record<string, unknown>> };
+  const entry = queue.entries.find((candidate) => candidate.ticket.key === key);
+  return entry === undefined ? json({ error: `no run ${key} on the queue` }, 404) : json({ entry, runLog: queue.runLog?.[key] ?? [] });
+}
+
 /** The answer to a request that changes something, or to a read the instance has no answer for. */
 function postAnswer(answers: InstanceAnswers, route: string, request: Readonly<{ method: string; body?: unknown }>): { status: number; body: string } | null {
   if (request.method !== "POST" || answers.post === undefined) return null;
@@ -97,7 +115,7 @@ export function answerFor(stand: Stand, path: string, request: Readonly<{ method
     case "/api/tickets":
       return answers.ticketsFail === undefined ? (pageAnswer(answers, new URLSearchParams(path.split("?")[1] ?? "")) ?? json(answers.tickets ?? [])) : failed(answers.ticketsFail);
     case "/api/queue":
-      return answers.queueFails === undefined ? json(answers.queue ?? queueOf()) : failed(answers.queueFails);
+      return answers.queueFails === undefined ? json(listOf(answers.queue ?? queueOf())) : failed(answers.queueFails);
     case "/api/parents":
       return json(answers.parents ?? []);
     case "/api/people":
@@ -106,8 +124,10 @@ export function answerFor(stand: Stand, path: string, request: Readonly<{ method
       return answers.pick === undefined ? null : json(answers.pick);
     case "/api/writer":
       return answers.writer === undefined ? null : json(answers.writer);
-    default:
-      return null;
+    default: {
+      const run = route === undefined ? null : /^\/api\/queue\/([^/]+)$/.exec(route);
+      return run === null ? null : runAnswer(answers, decodeURIComponent(run[1]));
+    }
   }
 }
 

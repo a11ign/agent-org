@@ -4,8 +4,7 @@
 // "Approved at 1f6009d"), so each kind of event is worded here in their voice, from the event's own fields and never from a board's example. A reason is the backend's own first line.
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { runTimeline, type TimelineEvent } from "../../../src/ticket-mode/board-view/run-timeline.ts";
-import type { AnsweredBy, RequeueWhy, RoundCause } from "../../../src/ticket-mode/queue/run-log.ts";
-import type { QueueView } from "../api/types.ts";
+import type { AnsweredBy, RequeueWhy, RoundCause, RunEvent } from "../../../src/ticket-mode/queue/run-log.ts";
 import { length, NOTE_JOIN, since, type RunEntry } from "../runs/runs-model.ts";
 
 /** The colour of a row's dot, as the boards give them: amber for what is under way or waits on a person, green for an approval, violet for a pull request and a publish, red for a failure, grey for the rest. */
@@ -72,11 +71,11 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
 }
 
 /**
- * The Timeline of a run: the events `runTimeline` gives, newest first, each as a row. A run still going has its newest event, when that is "Started", in amber, as the running board draws it; once anything else has happened it is grey. The ticket the tracker canceled ends the run's newest finish in the words of the Cancelled board, and a run that ended asking a person is "Handed back to a person", as the Handed back board says it. A run with no event
+ * The Timeline of a run, from its `log` (the run's full read sends it, A11-270): the events `runTimeline` gives, newest first, each as a row. A run still going has its newest event, when that is "Started", in amber, as the running board draws it; once anything else has happened it is grey. The ticket the tracker canceled ends the run's newest finish in the words of the Cancelled board, and a run that ended asking a person is "Handed back to a person", as the Handed back board says it. A run with no event
  * (a log that was never recorded and times that rebuild nothing) has no Timeline. PURE.
  */
-export function timelineOf(entry: RunEntry, queue: Pick<QueueView, "runLog">, now: number): readonly TimelineRow[] {
-  const events = runTimeline(entry, queue.runLog?.[entry.ticket.key] ?? []);
+export function timelineOf(entry: RunEntry, log: readonly RunEvent[], now: number): readonly TimelineRow[] {
+  const events = runTimeline(entry, log);
   const startedAt = events.find((event) => event.kind === "started")?.at ?? entry.startedAt;
   const canceled = entry.trackerState === "canceled" || entry.trackerState === "duplicate";
   return events.map((event, index) => rowOf(event, { now, startedAt, newest: index === events.length - 1, going: entry.phase !== "finished", canceled, planned: entry.planned === true })).reverse();

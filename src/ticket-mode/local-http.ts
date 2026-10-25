@@ -5,6 +5,7 @@
 // refused. A secret is compared in time that does not depend on where it differs. A body is read up to a limit, and must be a JSON object.
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 
 export type Json = Record<string, unknown>;
 
@@ -34,9 +35,29 @@ export function sameSecret(given: string, expected: string): boolean {
   return timingSafeEqual(digest(given), digest(expected));
 }
 
+/** An answer shorter than this is sent as it is: packing it saves nothing worth the time. */
+const PACK_FROM_BYTES = 4096;
+
+/** Whether the request names gzip among the encodings it takes (`Accept-Encoding`), and not with a quality of 0. */
+export function takesGzip(request: Pick<IncomingMessage, "headers">): boolean {
+  const offered = String(request.headers["accept-encoding"] ?? "").split(",").map((part) => part.trim().toLowerCase().split(";").map((piece) => piece.trim()));
+  return offered.some(([coding, quality]) => coding === "gzip" && !/^q=0(?:\.0{0,3})?$/.test(quality ?? ""));
+}
+
 export function sendJson(response: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}): void {
   response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers });
   response.end(JSON.stringify(value));
+}
+
+/**
+ * Answer the `request` with `answer.value` as JSON, gzipped when the answer is 4 KB or more and the request takes gzip: the board's lists are repeated text, and the instance's answers cross an SSH tunnel to the page's
+ * service (A11-270), where the bytes are the cost.
+ */
+export function sendJsonFor(request: Pick<IncomingMessage, "headers">, response: ServerResponse, answer: Readonly<{ status: number; value: unknown }>): void {
+  const body = JSON.stringify(answer.value);
+  if (body.length < PACK_FROM_BYTES || !takesGzip(request)) return sendJson(response, answer.status, answer.value);
+  response.writeHead(answer.status, { "Content-Type": "application/json", "Cache-Control": "no-store", "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
+  response.end(gzipSync(body, { level: 3 }));
 }
 
 /** A request's JSON object, or `{}` when it has no body. REFUSES a body over `limit` bytes, and one that is not a JSON object. */

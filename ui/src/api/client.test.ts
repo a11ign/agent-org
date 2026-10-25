@@ -34,6 +34,16 @@ describe("the client's requests", () => {
     ]);
   });
 
+  it("reads one run in full from the run's own address, its key encoded, and names that path for the tab's kept answer (A11-270)", async () => {
+    const { fetch, seen } = answering(200, {});
+    const client = createClient(LOCAL, { fetch });
+    const read = client.queueEntry("A11-270");
+    await read();
+    await client.queueEntry("A11 1/x")();
+    expect(seen.map(({ url, init }) => `${init.method} ${url}`)).toEqual(["GET /c/this%20machine/api/queue/A11-270", "GET /c/this%20machine/api/queue/A11%201%2Fx"]);
+    expect(read.path).toBe("/api/queue/A11-270");
+  });
+
   it("sends each change as a POST with its JSON body and the body's type", async () => {
     const { fetch, seen } = answering(200, {});
     const client = createClient(SSH, { fetch });
