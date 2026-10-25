@@ -44,3 +44,6 @@ export function judgeWaits(readings: readonly Reading[]): Verdict {
   if (readings.length > 0 && readings.every((reading) => reading.status === "finished")) return { outcome: "finished", lines: readings.map(lineOf), ended };
   return { outcome: "pending", lines: readings.filter((reading) => reading.status !== "finished").map(lineOf), ended };
 }
+
+/** The latest completed reading of a note's declared wait: what it judged, when the read STARTED (a reading must have started at or after a deadline to say what was pending then), and the card's line for it. */
+export type Judged = Readonly<{ verdict: Verdict; readAt: number; text: string }>;

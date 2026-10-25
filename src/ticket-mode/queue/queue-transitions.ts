@@ -7,6 +7,9 @@ import { conflictsIn } from "../worker-files.ts";
 import type { RunWorker } from "./queue-run-detail.ts";
 import { loggedPersonRound } from "./queue-person-round.ts";
 import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
+import { declaredMark, repeatOf, undeclaredMark } from "../wait-on/wait-note.ts";
+import type { Judged } from "../wait-on/wait-verdict.ts";
+import type { Wait } from "../wait-on/wait-types.ts";
 import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type PullRequest, type Queue, type WorkingNote, writerLive } from "./queue-entries-and-outcomes.ts";
 
 /**
@@ -279,20 +282,21 @@ export function observe(queue: Queue, key: string, status: string, prompt?: stri
 }
 
 /**
- * A running run's worker wrote a `working` outcome at `at`: record its reason, and the job and time it gave in `wait` (A11-236), as the run's latest note, with its agent idle since `now`, and keep
+ * A running run's worker wrote a `working` outcome at `at`: record its reason, and the job or declared events and the time it gave in `wait` (A11-236, A11-245), as the run's latest note, with its agent idle since `now`, and keep
  * the run running. A note no newer than the one recorded changes nothing, so the stall clock is not reset by reading the same file again. A run
- * that is not running is left alone: a `working` outcome never ends, parks or revives one.
+ * that is not running is left alone: a `working` outcome never ends, parks or revives one. A declared wait that only repeats the one the worker was just woken from is marked a repeat (see {@link repeatOf}).
  */
-export function noteWorking(queue: Queue, key: string, reason: string, at: number, now: number, wait: Readonly<{ waitingOn?: string; until?: number }> = {}): Queue {
+export function noteWorking(queue: Queue, key: string, reason: string, at: number, now: number, wait: Readonly<{ waitingOn?: string; waits?: readonly Wait[]; until?: number }> = {}): Queue {
   return replace(queue, key, (entry) => {
     if (entry.phase !== "running" || (entry.working !== undefined && at <= entry.working.at)) return entry;
-    const { waitingOn, until } = wait;
+    const { waitingOn, waits, until } = wait;
     return {
       ...entry,
       working: {
         reason, at, idleSince: now,
-        ...(waitingOn === undefined ? {} : { waitingOn }), ...(until === undefined ? {} : { until }),
+        ...(waitingOn === undefined ? {} : { waitingOn }), ...(waits === undefined ? {} : { waits }), ...(until === undefined ? {} : { until }),
         ...(entry.working?.resumed === true ? { resumed: true } : {}),
+        ...repeatOf(entry.working, waits),
       },
     };
   });
@@ -312,41 +316,16 @@ function backgroundMark(note: WorkingNote, background: Background, now: number):
   return { ...note, noBackgroundSince: since, stalled: true, stallReason: BACKGROUND_GONE, resumed: true };
 }
 
-/** How long a run waiting on background work may sit idle past its `working` outcome, when the outcome gives no `until`: three hours. */
-const BACKGROUND_WAIT_MS = 3 * 60 * 60_000;
-
-/** The start of the stall reason of a run idle past the end of its wait on background work (A11-236): the deadline and the job follow. */
-const WAITED_PAST = "waited past";
-
-/** The time (ms) a waiting note's wait ends: the `until` its outcome gave, whatever it is, or {@link BACKGROUND_WAIT_MS} after the outcome file was written, so a newer outcome starts it again. PURE. */
-const waitDeadline = ({ at, until }: Pick<WorkingNote, "at" | "until">): number => until ?? at + BACKGROUND_WAIT_MS;
-
-/** The stall reason of a run that stayed idle past the end of its wait on background work, naming the job (A11-236). PURE. */
-const waitedPastReason = (note: WorkingNote): string => {
-  const deadline = new Date(waitDeadline(note)).toISOString();
-  return note.waitingOn === undefined ? `${WAITED_PAST} ${deadline} with its background work still running` : `${WAITED_PAST} ${deadline} on ${note.waitingOn}`;
-};
-
-/**
- * The note of an idle run that waits on background work, at `now` (A11-236): its pane shows live work, or its outcome names a job. Inside the wait it is
- * `waiting`, and not stalled, though the background mark may still say its work is gone (the worker is prompted once, as A11-85 does). Past the end of the
- * wait, with no newer outcome, it is stalled, and the reason names the job. PURE.
- */
-function waitingMark(marked: WorkingNote, now: number): WorkingNote {
-  const { waiting: _ended, stalled: _marked, stallReason: _why, ...rest } = marked;
-  if (now >= waitDeadline(marked)) return { ...rest, stalled: true, stallReason: waitedPastReason(marked) };
-  return { ...rest, waiting: true };
-}
-
 /**
  * What herdr says a running run with a working note is doing, at `now`. Working clears the idle clock and the stall: its background work woke it.
  * Idle or done starts the clock when it is not running already, and marks the run stalled once it has run for `stallMs`. Any other status, and a
  * run with no note, changes nothing. `background` is what the run's pane shows of its background work, which an idle run with no work to wake it
  * reaches within {@link BACKGROUND_GONE_MS} (see {@link backgroundMark}); the default, null, is a pane that cannot be read.
  *
- * A11-236: a run that waits on background work (live on its pane, or a job named in its note) is not on that clock: see {@link waitingMark}.
+ * A11-236: a run that waits on background work (live on its pane, or a job named in its note) is not on that clock: see {@link undeclaredMark}.
+ * A11-245: a run whose note declared the events it waits on is judged from `judged`, the latest reading of them, and ignores its pane: see {@link declaredMark}.
  */
-export function watchWorking(queue: Queue, key: string, status: string, now: number, stallMs: number, background: Background = null): Queue {
+export function watchWorking(queue: Queue, key: string, status: string, now: number, stallMs: number, background: Background = null, judged: Judged | null = null): Queue {
   return replace(queue, key, (entry) => {
     const note = entry.working;
     if (entry.phase !== "running" || note === undefined) return entry;
@@ -356,8 +335,9 @@ export function watchWorking(queue: Queue, key: string, status: string, now: num
     }
     if (status !== "idle" && status !== "done") return entry;
     const idleSince = note.idleSince ?? now;
+    if (note.waits !== undefined) return { ...entry, working: declaredMark({ ...note, idleSince }, now, stallMs, judged) };
     const marked = backgroundMark({ ...note, idleSince }, background, now);
-    if (background === "live" || note.waitingOn !== undefined) return { ...entry, working: waitingMark(marked, now) };
+    if (background === "live" || note.waitingOn !== undefined) return { ...entry, working: undeclaredMark(marked, now, stallMs) };
     const { waiting: _not, ...plain } = marked;
     return { ...entry, working: { ...plain, ...(now - idleSince >= stallMs ? { stalled: true } : {}) } };
   });

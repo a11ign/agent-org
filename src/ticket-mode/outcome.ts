@@ -1,6 +1,7 @@
 // @ts-check
 // module: the shape of a worker's outcome file -- what the Stop hook checks before a worker may stop, what the pool reads from it, and the examples the brief shows
 
+import { parseUntil, parseWaits } from "./wait-on/wait-parse.ts";
 import { declaredRemains, type ProposedEdit, type PullRequest, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 
 /** Every kind a worker's outcome file may name: the run kinds' outcomes, and the publish and new-ticket runs' own (A11-118). */
@@ -30,7 +31,7 @@ const PULL_KEYS = ["prs", "reason", "partial", STEP_KEY];
 /** The fields a reason-bearing outcome's contract names: its reason, and the edit a kind may carry. */
 const REASON_KEYS = ["reason", "edit", STEP_KEY];
 
-/** The fields a `working` outcome's contract names beside its reason: the job it waits on and the time it expects to be woken by (A11-236). */
+/** The fields a `working` outcome's contract names beside its reason: what it waits on (a job, or the events the board reads) and the time it expects to be woken by (A11-236, A11-245). */
 const WORKING_KEYS = ["reason", "waitingOn", "until", STEP_KEY];
 
 /** The kinds that may carry a proposed edit (A11-91): the three in which the worker has read its ticket closely. */
@@ -53,7 +54,7 @@ export const OUTCOME_EXAMPLES: Readonly<Record<OutcomeKind, Readonly<Record<stri
   checked: { kind: "checked", reason: "Read the ticket and the code it names: the change is already on main, so nothing needs to change, and the ticket waits for a person to close it." },
   "wrong-repo": { kind: "wrong-repo", where: "a11ign/screenreader-worker: the scheduler that fails this run lives there, not in this repository." },
   "needs-human": { kind: "needs-human", reason: "The one thing only a person can decide, and why the evidence does not settle it: the ticket asks for both behaviours and names no winner." },
-  working: { kind: "working", reason: "The test run is still going in a background shell; I will read its log when it wakes me.", waitingOn: "the full test run in a background shell" },
+  working: { kind: "working", reason: "The capture is running on the fleet; the board prompts me when job fj-2026-1025-a ends.", waitingOn: [{ fleetJob: "fj-2026-1025-a" }] },
   planned: { kind: "planned" },
   reviewed: { kind: "reviewed" },
   published: { kind: "published" },
@@ -202,19 +203,20 @@ function withReason(kind: OutcomeKind, object: Record<string, unknown>, outcome:
   return nonEmpty(reason) ? accept(outcome(reason)) : refuse(`${kind} needs reason: a string, ${wroteInstead(object, "reason", REASON_KEYS)}`);
 }
 
-/** Whether a value is an ISO-8601 time a `working` outcome's `until` may hold: text that starts with a date and that `Date.parse` reads. */
-const isIsoTime = (value: unknown): value is string => typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value) && Number.isFinite(Date.parse(value));
-
 /**
- * A `working`: a non-empty `reason`, and optionally `waitingOn`, the background job the worker waits for, and `until`, the ISO time the board reads as the
- * bound of that wait (A11-236). A plain `working` with a reason alone is still valid. PURE.
+ * A `working`: a non-empty `reason`, and optionally `waitingOn` and `until`, the ISO time the board reads as the bound of the wait (A11-236). `waitingOn` is a string naming background work the worker's own shell or
+ * Monitor holds (an undeclared wait), or a list of the events the board reads for it (A11-245: a declared wait, checked by `parseWaits`). A plain `working` with a reason alone is still valid. PURE.
  */
 function workingOutcome(object: Record<string, unknown>): Checked {
   const { reason, waitingOn, until } = object;
   if (!nonEmpty(reason)) return refuse(`working needs reason: a string, ${wroteInstead(object, "reason", WORKING_KEYS)}`);
-  if (waitingOn !== undefined && !nonEmpty(waitingOn)) return refuse(`working waitingOn needs a string naming the background job, you wrote ${wrote(waitingOn)}`);
-  if (until !== undefined && !isIsoTime(until)) return refuse(`working until needs an ISO time such as 2026-01-01T12:00:00Z, you wrote ${typeof until === "string" ? JSON.stringify(until) : wrote(until)}`);
-  return accept({ kind: "working", reason, ...(waitingOn === undefined ? {} : { waitingOn: waitingOn.trim() }), ...(until === undefined ? {} : { until: Date.parse(until) }) });
+  const waits = Array.isArray(waitingOn) ? parseWaits(waitingOn) : undefined;
+  if (typeof waits === "string") return refuse(`working ${waits}`);
+  if (waitingOn !== undefined && waits === undefined && !nonEmpty(waitingOn)) return refuse(`working waitingOn needs a string naming the background job or a list of the events to wait on, you wrote ${wrote(waitingOn)}`);
+  const deadline = until === undefined ? undefined : parseUntil(until);
+  if (typeof deadline === "string") return refuse(`working ${deadline}`);
+  const named = waits === undefined && typeof waitingOn === "string" ? { waitingOn: waitingOn.trim() } : {};
+  return accept({ kind: "working", reason, ...named, ...(waits === undefined ? {} : { waits }), ...(deadline === undefined ? {} : { until: deadline }) });
 }
 
 /**

@@ -703,11 +703,13 @@ test("A11-236: an idle run whose pane shows live background work is waiting, not
   assert.deepEqual([control?.waiting, control?.stalled], [undefined, true], "CONTROL: the same idle time with an unreadable pane stalls, as it always did");
 });
 
-test("A11-236: past three hours with live work and no named job, the run is stalled, and the reason says its background work was still running", () => {
+test("A11-236: past three hours with live work and no named job, the worker is woken once, and the run is stalled only after tickets.stallMinutes more idle, saying its background work was still running", () => {
   const noted = noteWorking(runningA(), "A", "two shells are running", 1000, 1000);
   const late = watchWorking(noted, "A", "idle", 1000 + 3 * HOUR, 30 * MINUTE, "live").entries[0].working;
-  assert.deepEqual([late?.stalled, late?.waiting], [true, undefined]);
-  assert.equal(late?.stallReason, `waited past ${new Date(1000 + 3 * HOUR).toISOString()} with its background work still running`);
+  assert.deepEqual([late?.stalled, late?.waiting, late?.woke], [undefined, undefined, { at: 1000 + 3 * HOUR, why: "late" }], "at the bound: woken once, not stalled yet");
+  const later = watchWorking(watchWorking(noted, "A", "idle", 1000 + 3 * HOUR, 30 * MINUTE, "live"), "A", "idle", 1000 + 3 * HOUR + 30 * MINUTE, 30 * MINUTE, "live").entries[0].working;
+  assert.deepEqual([later?.stalled, later?.woke], [true, { at: 1000 + 3 * HOUR, why: "late" }], "stalled once the grace has passed, and the wake is not set again");
+  assert.equal(later?.stallReason, `waited past ${new Date(1000 + 3 * HOUR).toISOString()} with its background work still running`);
 });
 
 test("A11-236: a note that names a job is waiting inside its bound even with a pane that shows none, and the worker is prompted once, not stalled", () => {
@@ -722,17 +724,18 @@ test("A11-236: a note that names a job is waiting inside its bound even with a p
   assert.deepEqual([unread?.waiting, unread?.stalled], [true, undefined], "an unreadable pane: the declared wait still counts");
 });
 
-test("A11-236: past its until, a run that named a job is stalled, and the reason names the job and the deadline", () => {
+test("A11-236: past its until, a run that named a job is woken once and then stalled after the grace, and the reason names the job and the deadline", () => {
   const until = Date.parse("2026-10-24T23:00:00Z");
   const at = until - 2 * HOUR;
   const noted = noteWorking(runningA(), "A", "the fleet capture runs", at, at, { waitingOn: "the fleet capture on three boxes", until });
-  const note = (q: Queue, now: number, background: "live" | "none" | null = "live") => watchWorking(q, "A", "idle", now, 30 * MINUTE, background).entries[0].working;
-  assert.equal(note(noted, until - 1)?.waiting, true, "inside until");
+  const note = (q: Queue, now: number, background: "live" | "none" | null = "live") => watchWorking(q, "A", "idle", now, 30 * MINUTE, background);
+  assert.equal(note(noted, until - 1).entries[0].working?.waiting, true, "inside until");
   const expired = note(noted, until);
-  assert.deepEqual([expired?.stalled, expired?.waiting], [true, undefined]);
-  assert.equal(expired?.stallReason, "waited past 2026-10-24T23:00:00.000Z on the fleet capture on three boxes");
-  assert.equal(note(noted, until, null)?.stallReason, expired?.stallReason, "an unreadable pane stalls the same way");
-  assert.equal(note(noted, until, "none")?.stallReason, expired?.stallReason, "so does a pane with no work, past the bound");
+  assert.deepEqual([expired.entries[0].working?.stalled, expired.entries[0].working?.waiting, expired.entries[0].working?.woke], [undefined, undefined, { at: until, why: "late" }], "at until: woken, not stalled");
+  for (const background of ["live", null, "none"] as const) {
+    const stalled = note(note(noted, until, background), until + 30 * MINUTE, background).entries[0].working;
+    assert.equal(stalled?.stallReason, "waited past 2026-10-24T23:00:00.000Z on the fleet capture on three boxes", `stalled after the grace with a pane that reads ${background}`);
+  }
 });
 
 test("A11-236: until replaces the three-hour default, longer or shorter, and a newer working note starts the bound again", () => {
@@ -741,19 +744,20 @@ test("A11-236: until replaces the three-hour default, longer or shorter, and a n
   const at = (q: Queue, now: number) => watchWorking(q, "A", "idle", now, stall, "live").entries[0].working;
   assert.deepEqual([at(longer, 4 * HOUR)?.waiting, at(longer, 4 * HOUR)?.stalled], [true, undefined], "an until five hours out: still waiting at four");
   const shorter = noteWorking(runningA(), "A", "r", 0, 0, { waitingOn: "job", until: HOUR });
-  assert.equal(at(shorter, HOUR)?.stalled, true, "an until one hour out: stalled at one hour, not three");
+  assert.deepEqual([at(shorter, HOUR)?.woke?.why, at(shorter, HOUR)?.waiting], ["late", undefined], "an until one hour out: the bound is passed at one hour, not three");
   const stalled = watchWorking(shorter, "A", "idle", HOUR, stall, "live");
   const renewed = noteWorking(stalled, "A", "still running", 2 * HOUR, 2 * HOUR, { waitingOn: "job" });
   assert.deepEqual([at(renewed, 4 * HOUR)?.waiting, at(renewed, 4 * HOUR)?.stalled], [true, undefined], "a newer outcome counts the three hours from its own time");
 });
 
-test("A11-236: an until at or before the outcome's own time is the bound as written: the run is stalled at its first idle tick, naming the job and that time", () => {
+test("A11-236: an until at or before the outcome's own time is the bound as written: the worker is woken at its first idle tick, and the stall that follows names the job and that time", () => {
   const at = Date.parse("2026-10-25T08:00:00Z");
   const past = Date.parse("2026-01-01T12:00:00Z");
   const idle = (until: number, now: number) => watchWorking(noteWorking(runningA(), "A", "r", at, at, { waitingOn: "job", until }), "A", "idle", now, 30 * MINUTE, "live").entries[0].working;
-  assert.equal(idle(past, at + MINUTE)?.stalled, true, "an until before the file: stalled at once");
-  assert.equal(idle(past, at + MINUTE)?.stallReason, "waited past 2026-01-01T12:00:00.000Z on job", "naming the job and the until it gave");
-  assert.deepEqual([idle(at, at - 1)?.waiting, idle(at, at)?.stalled], [true, true], "an until equal to the file's time ends the wait at that time");
+  assert.equal(idle(past, at + MINUTE)?.woke?.why, "late", "an until before the file: woken at once");
+  const stalled = watchWorking(watchWorking(noteWorking(runningA(), "A", "r", at, at, { waitingOn: "job", until: past }), "A", "idle", at + MINUTE, 30 * MINUTE, "live"), "A", "idle", at + MINUTE + 30 * MINUTE, 30 * MINUTE, "live").entries[0].working;
+  assert.equal(stalled?.stallReason, "waited past 2026-01-01T12:00:00.000Z on job", "naming the job and the until it gave");
+  assert.deepEqual([idle(at, at - 1)?.waiting, idle(at, at)?.woke?.why], [true, "late"], "an until equal to the file's time ends the wait at that time");
 });
 
 test("A11-236: working status clears waiting along with the idle clock and the stall, and a note without a job or live work takes the idle clock as before", () => {

@@ -585,6 +585,28 @@ test("A11-85: `working` with a live background shell or Monitor is accepted and 
   assert.equal(stopVerdict(dir, { transcriptPath: transcriptIn(dir, stopped) }).code, 2, "CONTROL: a Monitor its TaskStop ended wakes nothing, so the stop is refused");
 });
 
+test("A11-245: a `working` that declares what it waits on stops with no background work running, because the board wakes the worker; a second stop on the same file is refused, and an undeclared one still is", () => {
+  const dir = tmpDir("ticket-hook-declared-");
+  const outcome = join(dir, "outcome.json");
+  const transcriptPath = transcriptIn(dir, "");
+  const stop = () => stopVerdict(dir, { transcriptPath });
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the capture runs on the fleet", waitingOn: [{ fleetJob: "fj-1" }] }));
+  utimesSync(outcome, 1000, 1000);
+  assert.deepEqual(stop(), { code: 0, say: [] }, "POSITIVE: a declared wait stops with an empty transcript, silently");
+  assert.equal(readFileSync(join(dir, "working-stop"), "utf8"), "1000000", "and the stamp is written with the file's time");
+  const woken = stop();
+  assert.equal(woken.code, 2, "the board woke the worker and it stopped on the same file");
+  assert.match(woken.say[0], /still says working from before the board woke you for the wait it declares/);
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "r", waitingOn: "the capture shell" }));
+  utimesSync(outcome, 2000, 2000);
+  const undeclared = stop();
+  assert.equal(undeclared.code, 2, "CONTROL: a string waitingOn is the worker's own work, and with none running it is refused as before");
+  assert.match(undeclared.say[0], /nothing is running that will wake you; .*declare what you wait on in waitingOn/);
+  const bad = tmpDir("ticket-hook-declared-bad-");
+  writeFileSync(join(bad, "outcome.json"), JSON.stringify({ kind: "working", reason: "r", waitingOn: [{ fleetJob: "bad id" }] }));
+  assert.match(stopVerdict(bad, { transcriptPath: transcriptIn(bad, LIVE_SHELL) }).say[0], /working waitingOn\[0\] fleetJob needs a job ID/, "a declaration that does not parse is refused by name, whatever runs");
+});
+
 test("A11-85: a transcript that cannot be read lets `working` through, out loud, and the board's stall check is the backstop", () => {
   const dir = tmpDir("ticket-hook-unreadable-");
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "working", reason: "r" }));

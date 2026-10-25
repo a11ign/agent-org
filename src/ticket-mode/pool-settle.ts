@@ -51,16 +51,16 @@ export function recordWrittenStep(ctx: PoolContext, entry: Entry): void {
 }
 
 /**
- * A run's agent wrote `working`: its reason, and the job and time it waits on, become the run's latest note, for every ticket in the run, and the run carries on. The file's own
+ * A run's agent wrote `working`: its reason, and the job or declared events and time it waits on, become the run's latest note, for every ticket in the run, and the run carries on. The file's own
  * time says whether it is newer than the note recorded, so reading the same file on every tick changes nothing.
  */
-function noteStillWorking(ctx: PoolContext, entry: Entry, { reason, waitingOn, until }: WorkingOutcome): void {
+function noteStillWorking(ctx: PoolContext, entry: Entry, { reason, waitingOn, waits, until }: WorkingOutcome): void {
   const { attachRetries, now } = ctx;
   // The agent is working again, so a plan attach waiting to be tried again belongs to an outcome it has replaced: its next `planned` is attached afresh, and the stall watch reads the run as it does any other.
   attachRetries.delete(runPlace(ctx, entry).name);
   const path = join(runPlace(ctx, entry).dir, OUTCOME_FILE);
   const at = existsSync(path) ? statSync(path).mtimeMs : now();
-  updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, reason, at, now(), { waitingOn, until }));
+  updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, reason, at, now(), { waitingOn, waits, until }));
 }
 
 /**

@@ -335,7 +335,10 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   how the run stands, or writes `working` again. Before a long wait a worker writes `{ "kind": "working", "reason": "...", "waitingOn": "<what>",
   "until": "<ISO time>" }`. A run whose pane shows a running shell or Monitor, or whose note names a `waitingOn`, is not marked Stalled while it
   waits: its row reads "Waiting on background work for 54 min: <what>" until `until`, or until 3 hours after the outcome was written when there is
-  no `until`, and after that, with no newer outcome, it reads Stalled and names the job. Any other agent idle with no newer outcome for
+  no `until`; then the worker is prompted once, and with no newer outcome `tickets.stallMinutes` later it reads Stalled and names the job. A worker
+  that waits on a fleet job, a CI run, a pull request or a ticket writes `waitingOn` as a list of those events instead and ends its turn: the board
+  reads them and prompts the worker once when all have finished or any has failed, and the row reads "Waiting on fleet job fj-1 (4 of 6 pages, about
+  20 min)" (see [docs/wake-on-event.md](docs/wake-on-event.md)). Any other agent idle with no newer outcome for
   `tickets.stallMinutes` is marked Stalled on its row, with the note: the run is not ended and the agent is not prompted. `working` is never for a
   question: that is `needs-human`.
 - **Approve, once you have reviewed the drafts.** A run Awaiting review offers Approve. It queues the ticket again
