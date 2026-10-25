@@ -6,7 +6,8 @@ import { ContractError } from "../conformance/suite.ts";
 import type { Exposure } from "../contracts/exposure.ts";
 import { createFakeExposure } from "./exposure.ts";
 
-const SANDBOXED_CHECKS = ["serve takes a port, portState says it is ours, and unserve frees it", "one path of a port is served open to the internet on its own, and unserve removes it",
+const SANDBOXED_CHECKS = ["serve takes a port, portState says it is ours, and unserve frees it", "unserve leaves an entry that is not the caller's (1.2)", 
+  "one path of a port is served open to the internet on its own, and unserve removes it",
   "readiness, claim and served answer for the machine the exposure serves in"];
 
 test("the loopback-only fake passes the exposure contract suite, and refuses to serve a port", async () => {
@@ -19,10 +20,10 @@ test("the loopback-only fake passes the exposure contract suite, and refuses to 
 test("the named fake passes the suite, serves a port and a path, and frees both", async () => {
   const fake = createFakeExposure("board.example.ts.net");
   const { passed } = await runExposureConformance(fake, { sandboxed: true });
-  assert.equal(passed.length, 8);
+  assert.equal(passed.length, 9);
   assert.equal(fake.entries.size, 0, "the suite removed what it served");
   assert.deepEqual(fake.calls.filter((call) => call.startsWith("serve") || call.startsWith("unserve")),
-    ["serve 9443", "unserve 9443", "serve 9443/hook funnel", "unserve 9443/hook", "serve 9443", "unserve 9443"]);
+    ["serve 9443", "unserve 9443", "serve 9443", "unserve 9443", "unserve 9443", "unserve 9443", "serve 9443/hook funnel", "unserve 9443/hook", "serve 9443", "unserve 9443"]);
 });
 
 test("serving is skipped with its reason unless the implementation has a sandbox", async () => {

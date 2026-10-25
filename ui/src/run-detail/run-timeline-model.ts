@@ -18,12 +18,12 @@ const SHORT_HEAD = 7;
 
 /** The cause of a round, in words: why the run was started again on its pull request. */
 const ROUND_WORDS: Readonly<Record<RoundCause, string>> = {
-  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head",
+  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head", "ci-budget": "Held for its CI spend",
 };
 
 const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", answer: "the board's answer", terminal: "the run's own terminal" };
 
-const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket" };
+const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget" };
 
 /** How long ago an event was: "just now" inside the first minute, then "5 min ago". */
 const agoOf = (at: number, now: number): string => (now - at < 60_000 ? "just now" : `${since(at, now)} ago`);

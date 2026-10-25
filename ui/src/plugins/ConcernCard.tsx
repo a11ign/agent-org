@@ -108,9 +108,9 @@ function Actions({ concern, plugin }: Readonly<{ concern: Concern; plugin: Plugi
 }
 
 function Head({ concern, open, onToggle }: Readonly<{ concern: Concern; open: boolean; onToggle: () => void }>) {
-  const { instance } = usePage();
+  const { unchecked } = usePage();
   const shown = shownPlugin(concern);
-  const status = statusOf(concern, instance);
+  const status = statusOf(concern, unchecked);
   return (
     <button type="button" className="plugin-head" aria-expanded={open} onClick={onToggle}>
       <Chevron />
@@ -126,13 +126,13 @@ function Head({ concern, open, onToggle }: Readonly<{ concern: Concern; open: bo
 }
 
 function Body({ concern }: Readonly<{ concern: Concern }>) {
-  const { instance, view } = usePage();
+  const { unchecked, view } = usePage();
   // A concern of one plugin acts on it whatever its state; a concern with a choice acts on the plugin that is chosen, and the choice picks another.
   const target = shownPlugin(concern) ?? (concern.plugins.length === 1 ? concern.plugins[0] : null);
   const groups = concernRows(view, concern);
   return (
     <div className="plugin-body">
-      {checkRowsOf(concern, instance).map((row) => <Check key={`${row.name}|${row.detail}`} row={row} />)}
+      {checkRowsOf(concern, unchecked).map((row) => <Check key={`${row.name}|${row.detail}`} row={row} />)}
       {target === null || hasChoice(concern) ? null : <p className="plugin-note">{placeOf(target)}</p>}
       {target === null ? null : <Secrets plugin={target} />}
       {hasChoice(concern) ? <ActivePlugin concern={concern} /> : null}

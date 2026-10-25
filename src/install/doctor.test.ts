@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { runPlugin } from "../plugins/cli.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
+import { TAILSCALE_OPT_IN_ENV } from "../plugins/real-seams.ts";
 import { defaultDoctorDeps, diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import { noReviewerMemory, reviewerMemoryPath, writeReviewerMemory } from "../ticket-mode/reviewer-port.ts";
 import type { ChromiumReport } from "./chromium.ts";
@@ -982,7 +983,8 @@ test("A11-162 done-when: `agent-org plugin enable local` takes a served board of
     mkdirSync(bin);
     writeFileSync(join(bin, "tailscale"), `#!/bin/sh\nexec "${process.execPath}" "${fileURLToPath(new URL("../../plugins/tailscale/stub.ts", import.meta.url))}" "$@"\n`, { mode: 0o755 });
     const stateFile = join(dir, "tailscale.json");
-    const environment = { PATH: `${bin}:${process.env.PATH ?? ""}`, TAILSCALE_STUB_STATE: stateFile };
+    // The real loader's `exec` refuses `tailscale` under the test runner (A11-279): this test opts in on purpose, for the stand-in first on PATH.
+    const environment = { PATH: `${bin}:${process.env.PATH ?? ""}`, TAILSCALE_STUB_STATE: stateFile, [TAILSCALE_OPT_IN_ENV]: "1" };
     const tailscale = (...args: string[]) => spawnSync("tailscale", args, { env: { ...process.env, ...environment }, encoding: "utf8" });
     const held = () => Object.keys(JSON.parse(readFileSync(stateFile, "utf8")).web as Record<string, unknown>);
     // The host: its exposure block names tailscale, over the ports and terminal the doctor tests use; the board is served as `agent-org start ui` and `start terminal` serve it.
@@ -1003,15 +1005,17 @@ test("A11-162 done-when: `agent-org plugin enable local` takes a served board of
     assert.deepEqual(held().sort(), ["agents.tail1234.ts.net:9443", "agents.tail1234.ts.net:9444"]);
 
     const lines: string[] = [];
-    const saved = { PATH: process.env.PATH, TAILSCALE_STUB_STATE: process.env.TAILSCALE_STUB_STATE };
+    const saved = { PATH: process.env.PATH, TAILSCALE_STUB_STATE: process.env.TAILSCALE_STUB_STATE, [TAILSCALE_OPT_IN_ENV]: process.env[TAILSCALE_OPT_IN_ENV] };
     Object.assign(process.env, environment);
     let status: number;
     try {
       status = await runPlugin(["enable", "local"], { hostPath, catalog: defaultCatalog(), log: (line) => lines.push(line), error: (line) => lines.push(line) });
     } finally {
       process.env.PATH = saved.PATH;
-      if (saved.TAILSCALE_STUB_STATE === undefined) delete process.env.TAILSCALE_STUB_STATE;
-      else process.env.TAILSCALE_STUB_STATE = saved.TAILSCALE_STUB_STATE;
+      for (const name of ["TAILSCALE_STUB_STATE", TAILSCALE_OPT_IN_ENV] as const) {
+        if (saved[name] === undefined) delete process.env[name];
+        else process.env[name] = saved[name];
+      }
     }
     assert.equal(status, 0, lines.join("\n"));
     assert.match(lines.join("\n"), /took this board's tailscale serve entries off the tailnet: ui \(port 9443\), terminal \(port 9444\)/);
@@ -1043,7 +1047,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 1.21, plugins/github)",
+    "code host: github (enabled, contract 1.22, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1078,7 +1082,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.21, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.22, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });

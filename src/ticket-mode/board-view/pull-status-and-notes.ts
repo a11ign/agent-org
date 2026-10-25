@@ -183,6 +183,7 @@ function blockerWait(entry: ViewEntry, blocker: ViewBlocker, entries: readonly V
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
   const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again on every pass`];
   if (entry.sessionWait !== undefined) plan.push(entry.sessionWait);
+  if (entry.ciHold !== undefined && entry.ciHold.released !== true) plan.push(entry.ciHold.reason);
   const waits = waitsOn(entry, entries);
   const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map((blocker) => {
     const held = holdReason(entry, blocker, entries);

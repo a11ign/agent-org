@@ -32,6 +32,7 @@ import { agentOrgHome, hostFilePath, hostGhConfigDir, readOrNull, TOOL_ROOT, typ
 import { findBun } from "./bun.ts";
 import { herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalProgram, terminalTarget } from "./terminal.ts";
 import { loadActive, realPluginDeps } from "../plugins/active.ts";
+import { refuseUnderTests } from "../plugins/real-seams.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import type { PluginDeps } from "../plugins/manifest.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
@@ -109,6 +110,9 @@ const RUN_TIMEOUT_MS = 120_000;
 
 /** `spawnSync` with a time limit (A11-225): a call that does not finish in `timeoutMs` is a failed result whose `stderr` names it, never a wait without an end. */
 export function runWithin(file: string, args: readonly string[], timeoutMs: number): RunResult {
+  // The exposure's `tailscale` goes through here when the service runs it itself, so a test that reaches it is refused as `realExec` refuses it (A11-279).
+  const refused = refuseUnderTests(file, process.env);
+  if (refused !== null) return { status: null, stdout: "", stderr: refused };
   const result = spawnSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs });
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return { status: null, stdout: "", stderr: `\`${[file, ...args].join(" ")}\` did not finish within ${timeoutMs / MS_PER_SECOND}s` };
   if (result.error) return { status: null, stdout: "", stderr: result.error.message };
@@ -557,7 +561,7 @@ function removeServe(served: Served): void {
     throw new ServiceRefusal(`${left}: ${(err as Error).message}`);
   }
   if (state.kind !== "ours") return;
-  const removed = served.exposure.unserve(served.port);
+  const removed = served.exposure.unserve(served.port, { local: served.local });
   if (removed.status !== 0) throw new ServiceRefusal(`${left}: ${removed.refusal ?? removed.stderr}`);
 }
 

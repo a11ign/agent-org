@@ -8,6 +8,8 @@ export type PageValue = Readonly<{
   answer: PluginsAnswer;
   /** The instance's name while it cannot be reached and every status is unknown, else null. */
   instance: string | null;
+  /** Why no plugin's checks are drawn, said on each card in the unknown state: the instance cannot be reached, or its first checks have not finished. Null when they are drawn. */
+  unchecked: string | null;
   /** Whether the page draws controls: not for a remote instance (its files are changed on that machine), and not for a host file the reader refuses. */
   controls: boolean;
   changes: Changes;

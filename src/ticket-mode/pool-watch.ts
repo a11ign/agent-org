@@ -35,6 +35,8 @@ import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
 import { releaseTicketWaits } from "./pool-ticket-wait.ts";
+import { ageHolds } from "./ci-spend/hold.ts";
+import { watchCiSpend } from "./ci-spend/watch.ts";
 import { readoptCrashed } from "./pool-readopt.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
@@ -438,6 +440,13 @@ function watchPublish(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
   else if (seen === "done" || (seen === "idle" && store.get().publish?.seenWorking === true)) endPublish(ctx, publish, { failure: "it stopped without writing an outcome" });
 }
 
+/** One pass of the board has gone by for the runs held for their CI spend (A11-261). Written only when a hold changed. */
+function ageCiHolds(ctx: PoolContext): void {
+  const before = ctx.store.get();
+  const after = ageHolds(before);
+  if (after !== before) ctx.store.set(after);
+}
+
 /** One pass: watch the live runs, then fill free slots. Passes never overlap; a call during a pass runs one more pass after it. */
 export async function tick(ctx: PoolContext): Promise<void> {
   const pass = ctx.tickState;
@@ -455,6 +464,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
       // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).
       const releasing = releaseTicketWaits(ctx);
       if (releasing !== null) await releasing;
+      // A run held for its ticket's CI spend has seen one more pass; after two it is released, and this pass's fill may start it (A11-261).
+      ageCiHolds(ctx);
       await fill(ctx);
     } while (pass.again);
   } finally {
@@ -473,6 +484,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
  */
 export function watchFeedback(ctx: PoolContext): void {
   const { codeHost, feedbackIgnores, now, store } = ctx;
+  // What each ticket's pushes cost in CI is read on the same cadence, whether or not a pull request is finished: a live worker's pushes are the ones that cost (A11-261). It never throws and the watch does not wait for it.
+  void watchCiSpend(ctx);
   clearOverStaleBlocks(ctx);
   const finished = store.get().entries.filter((entry) => entry.phase === "finished" && openPulls(entry).length > 0);
   if (finished.length === 0) return;

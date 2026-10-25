@@ -6,6 +6,9 @@ import type { Change, EditFile, PluginsAnswer, SettingsView } from "../api/types
 import { CONCERNS, controlsOf, isProviderLine, ofAnotherPlugin, type ControlName } from "../../../src/ticket-mode/plugins-section.ts";
 import type { Row } from "../../../src/ticket-mode/settings-view.ts";
 import { isControlRow, visibleGroups, type RowGroup } from "../settings/settings-model.ts";
+import { since } from "../runs/runs-model.ts";
+
+const MS_PER_MINUTE = 60_000;
 
 export type Concern = PluginsAnswer["concerns"][number];
 export type Plugin = Concern["plugins"][number];
@@ -42,6 +45,21 @@ export type CheckRow = Readonly<{ name: string; detail: string; tone: Tone; fixe
 /** What the instance's unreachable state says of a check that could not run, in the Unknown board's words. */
 export const notChecked = (instance: string): string => `Not checked: ${instance} can't be reached.`;
 
+/** What a check says before the instance's first checks have finished (A11-270): it is drawn in the unknown state, as for an instance that cannot be reached. */
+export const NOT_CHECKED_YET = "Not checked yet: the checks are running.";
+
+/**
+ * The line under the page's header that says how old the checks drawn are (A11-270): "Checked 2 min ago", with " · checking again…" while they run again, or "Checking the plugins…" before the
+ * first have finished. None for an instance from before A11-270, which answers no `checkedAt`: it ran its checks on the read. PURE.
+ */
+export function checkedWords(answer: Pick<PluginsAnswer, "checkedAt" | "checking">, now: number): string | null {
+  if (answer.checkedAt === undefined) return null;
+  if (answer.checkedAt === null) return "Checking the plugins…";
+  const at = Date.parse(answer.checkedAt);
+  const age = now - at < MS_PER_MINUTE ? "just now" : `${since(at, now)} ago`;
+  return `Checked ${age}${answer.checking ? " · checking again…" : ""}`;
+}
+
 function rowsOfPlugin(concern: Concern, plugin: Plugin): CheckRow[] {
   const failure: CheckRow[] = plugin.failure === null ? [] : [{ name: checkNameOf(concern, plugin), detail: plugin.failure.why, tone: "danger", fixes: [plugin.failure.fix] }];
   const checks = plugin.checks.map((check): CheckRow => ({ name: check.name, detail: check.detail, tone: check.ok ? "ok" : "warn", fixes: check.ok || check.fix === null ? [] : [check.fix] }));
@@ -50,10 +68,10 @@ function rowsOfPlugin(concern: Concern, plugin: Plugin): CheckRow[] {
   return [{ name: checkNameOf(concern, plugin), detail, tone: plugin.enabled ? "ok" : "unknown", fixes: [] }];
 }
 
-/** The checks a card lists: the plugin's own, or why none runs, or, for an instance that cannot be reached, that nothing was checked. */
-export function checkRowsOf(concern: Concern, instance: string | null): CheckRow[] {
+/** The checks a card lists: the plugin's own, or why none runs, or, while nothing was checked (`unchecked` says why), that. */
+export function checkRowsOf(concern: Concern, unchecked: string | null): CheckRow[] {
   const plugin = shownPlugin(concern);
-  if (instance !== null) return [{ name: plugin === null ? concern.label : checkNameOf(concern, plugin), detail: notChecked(instance), tone: "unknown", fixes: [] }];
+  if (unchecked !== null) return [{ name: plugin === null ? concern.label : checkNameOf(concern, plugin), detail: unchecked, tone: "unknown", fixes: [] }];
   if (plugin === null) {
     return [{ name: concern.label, detail: concern.empty?.text ?? "None", tone: concern.required ? "warn" : "unknown", fixes: concern.empty?.commands ?? [] }];
   }
@@ -62,9 +80,9 @@ export function checkRowsOf(concern: Concern, instance: string | null): CheckRow
 
 const failingCount = (plugin: Plugin): number => plugin.checks.filter((check) => !check.ok).length;
 
-/** The status a card's header says, in words: whether the plugin that runs the concern is whole. */
-export function statusOf(concern: Concern, instance: string | null): Status {
-  if (instance !== null) return { tone: "unknown", text: "Unknown" };
+/** The status a card's header says, in words: whether the plugin that runs the concern is whole, or Unknown while nothing was checked (`unchecked` is then why). */
+export function statusOf(concern: Concern, unchecked: string | null): Status {
+  if (unchecked !== null) return { tone: "unknown", text: "Unknown" };
   const plugin = shownPlugin(concern);
   if (plugin === null) return concern.required ? { tone: "warn", text: "Not running" } : { tone: "unknown", text: "None" };
   if (plugin.state === "failed") return { tone: "danger", text: "Failed" };

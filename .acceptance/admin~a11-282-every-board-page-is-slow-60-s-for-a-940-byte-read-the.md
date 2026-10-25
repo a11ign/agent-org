@@ -18,9 +18,9 @@ P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PR
 PATH="$T:$PATH" AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/loop-delay.test.ts src/ticket-mode/blocking-ledger.test.ts src/ticket-mode/health-route.test.ts src/ticket-mode/ui-server-health.test.ts src/ticket-mode/remote-proxy.test.ts src/ticket-mode/ui-server.test.ts
 pnpm ui:build >/dev/null
 pnpm --dir ui exec rstest run --config rstest.config.ts src/shell/loop-line.test.ts test/shell-loop/ test/shell.page.test.ts
-# The before: every read waits on the sweeps, so the script exits 1 and names the sites that held the loop.
+# The before: every read waits on the sweeps, so the script exits 1, and the ledger names the 2 s stand-in gh's call site among the sites that held the loop.
 node scripts/loop-load.ts --json > "$T/load.json" || test $? -eq 1
-node -e "const r = require(process.argv[1]); if (r.pass || r.health === null || r.health.blocking.length < 5) process.exit(1); console.log(r.health.blocking.slice(0, 5))" "$T/load.json"'
+node -e "const r = require(process.argv[1]); if (r.pass || r.health === null || !r.health.blocking.some((s) => s.program === \"gh\" && s.maxMs >= 1900)) process.exit(1); console.log(r.health.blocking.slice(0, 5))" "$T/load.json"'
 ```
 
 Step 2 (the request thread, which makes `scripts/loop-load.ts` pass) follows in its own pull request.

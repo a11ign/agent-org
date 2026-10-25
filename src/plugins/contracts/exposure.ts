@@ -1,5 +1,5 @@
 // @ts-check
-// module: the exposure contract, version 1.1 -- where the board and a worker's terminal are served (A11-158, A11-162)
+// module: the exposure contract, version 1.2 -- where the board and a worker's terminal are served (A11-158, A11-162)
 //
 // A TYPE FILE: it imports nothing at run time. It is written from what core calls in `local-http.ts`, `service.ts` and the event tunnel: the machine's name for the board, the hosts
 // and origins a request may come from, the terminal's address, serving a port and removing it, and a port's state. A plugin that serves only on loopback answers with no name and
@@ -8,9 +8,13 @@
 // 1.1 (A11-162) ONLY ADDS. It adds what the callers that were Tailscale's own need from a plugin and cannot ask a plugin's name for: the ports the
 // plugin serves the board's page and terminal on (`ports`), why this machine cannot serve now (`readiness`), why a port cannot be taken (`claim`), the addresses served now (`served`),
 // a path and the internet for `serve`, `unserve` and `portState` (the event receiver's Funnel path), and a sentence for a refusal (`ServeResult.refusal`).
+//
+// 1.2 (A11-279) adds `ServeOptions.local`: the loopback port the caller's entry proxies to, so `unserve` removes an entry only when it is the caller's. It is the one minor that NARROWS:
+// an `unserve` that names no `local` may now be refused. Core is the only caller and names it everywhere. A test whose plugin reached the real `tailscale` removed the agents host's live
+// serves because they proxied to the default ports; a second instance, or a test, with another local port now leaves them alone.
 
 /** The exposure contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const EXPOSURE_CONTRACT_VERSION = "1.1";
+export const EXPOSURE_CONTRACT_VERSION = "1.2";
 
 /** The machine's name for the board and the port the board is served on under it. */
 export type Address = Readonly<{ name: string; port: number }>;
@@ -27,8 +31,11 @@ export type ServedPorts = Readonly<{ ui: number; terminal: number }>;
 /** The service a port serves: the board's page, or the worker terminal. */
 export type ServedService = keyof ServedPorts;
 
-/** What `serve`, `unserve` and `portState` may be asked about one path of a port (1.1): `path` is a path under the port (the root when absent), and `funnel` opens the entry to the internet. */
-export type ServeOptions = Readonly<{ path?: string; funnel?: boolean }>;
+/**
+ * What `serve`, `unserve` and `portState` may be asked about one path of a port (1.1): `path` is a path under the port (the root when absent), and `funnel` opens the entry to the internet.
+ * `local` (1.2) is the loopback port the caller's entry proxies to, which `unserve` checks before it removes anything.
+ */
+export type ServeOptions = Readonly<{ path?: string; funnel?: boolean; local?: number }>;
 
 /** An exposure plugin. */
 export interface Exposure {
@@ -42,7 +49,7 @@ export interface Exposure {
   terminal(address: Address): string | null;
   /** Serve `local` (a loopback port) at `port`. A loopback-only plugin refuses it. With a `path` and `funnel` (1.1) it serves that one path, open to the internet. */
   serve(port: number, local: number, options?: ServeOptions): ServeResult;
-  /** Stop serving `port`, or one `path` of it (1.1). */
+  /** Stop serving `port`, or one `path` of it (1.1). A plugin that serves may refuse (1.2) unless the entry proxies to `options.local`, so a caller removes only its own entry. */
   unserve(port: number, options?: ServeOptions): ServeResult;
   /** What holds `port` (or one `path` of it, 1.1) on this machine, for `local`'s proxy to compare with. THROWS, with a sentence, when the machine cannot say. */
   portState(port: number, local: number, options?: Pick<ServeOptions, "path">): PortState;

@@ -4,7 +4,9 @@
 // A CHECK OUTLIVES ITS RUN. A11-173 recorded a merged run's After-merge lines on the run, so a row left only when its run was dismissed, and a pass, a fail and a check nobody ran all left the same way. Each line is
 // now copied once into a record of its own, `<KEY>#<n>` (its 1-based place in the run's list, which is recorded once), and leaves the list only when its runner closes it with one line of evidence.
 import { ownerOf } from "../done-when.ts";
+import { isMovedLine } from "../after-merge-move.ts";
 import type { AfterMergeLine } from "../board-view/view-types-and-filters.ts";
+import type { ObserveSpec } from "./observe.ts";
 
 /** Who the board sends a check to: the person's session, the person (Needs you), or the board itself, which watches for what the check names. */
 export type Runner = "session" | "person" | "board";
@@ -21,6 +23,12 @@ export type CheckRecord = Readonly<{
   /** Who the line names to run it, read by `ownerOf` when the record was made; null when it names no one. */
   owner: string | null;
   runner: Runner;
+  /** The escalation item (A11-257) a person check is on, as the plan's `## After-merge checks` section names it. */
+  escalation?: string;
+  /** What the board watches for to pass the check by itself, as the plan names it: the spec, when the board began to watch, and, for `sweep-ticket`, the dependency sweep's filed keys then. */
+  observe?: Readonly<{ spec: ObserveSpec; from: number; filed?: readonly string[] }>;
+  /** What would close the check, in one line, as the plan says; not the evidence it was closed with, which is `result`. */
+  evidence?: string;
   /** When the check was listed: its run's finish, or the sweep that copied it when the run has none. */
   listedAt: number;
   state: CheckState;
@@ -54,7 +62,7 @@ const PERSON_OWNER = /^(?:the\s+)?(?:chairman|person)$/i;
 
 /**
  * Who runs a check with this owner: a session or a host is the session's, the chairman or the person is the person's, and any other named role, or none, is the session's, which is the one runner the
- * board can reach and passes it on. The board runs a check only when a plan says so (A11-277 step 2). PURE.
+ * board can reach and passes it on. The board runs a check only when a plan says so ({@link PlannedCheck}). PURE.
  */
 export function runnerOf(owner: string | null): Runner {
   return owner !== null && PERSON_OWNER.test(owner) ? "person" : "session";
@@ -71,6 +79,19 @@ export type ListedRun = Readonly<{ ticket: Readonly<{ key: string; url?: string 
 /** Each line a run listed, with the id of the check it is. */
 const listedLines = (run: ListedRun) => (run.afterMerge ?? []).map(({ line }, index) => ({ id: checkIdOf(run.ticket.key, index + 1), line }));
 
+/** One After-merge line as a plan's `## After-merge checks` section names it (`plan-section.ts`): the line quoted, who runs it, the escalation item of a person's, what the board watches for, and what would close it. */
+export type PlannedCheck = Readonly<{ line: string; runner: Runner; escalation?: string; observe?: ObserveSpec; evidence: string }>;
+
+/** Whether a plan's `quoted` line names the After-merge `line`: it is the line, or the Before-merge line the board moved to it (A11-275). PURE. */
+export const namesLine = (quoted: string, line: string): boolean => quoted === line.trim() || isMovedLine(line, quoted);
+
+/** The plan's word on a listed line: the last bullet that names it. Undefined for a line the plan does not name. PURE. */
+const plannedFor = (line: string, planned: readonly PlannedCheck[]): PlannedCheck | undefined => planned.findLast((check) => namesLine(check.line, line));
+
+/** What a planned line gives its record: the plan's runner, its escalation item, what the board watches for from `now`, and what would close it. PURE. */
+const plannedFields = ({ runner, escalation, observe, evidence }: PlannedCheck, now: number): Pick<CheckRecord, "runner" | "escalation" | "observe" | "evidence"> =>
+  ({ runner, ...(escalation === undefined ? {} : { escalation }), ...(observe === undefined ? {} : { observe: { spec: observe, from: now } }), evidence });
+
 /** The ids of every check the runs list. PURE. */
 export const listedIds = (runs: readonly ListedRun[]): Set<string> => new Set(runs.flatMap((run) => listedLines(run).map(({ id }) => id)));
 
@@ -81,19 +102,24 @@ export const listedIds = (runs: readonly ListedRun[]): Set<string> => new Set(ru
 const listsAnew = (existing: CheckRecord, run: ListedRun): boolean =>
   existing.closedAt !== undefined && existing.posted !== undefined && run.finishedAt !== undefined && run.finishedAt > existing.closedAt;
 
+/** The listed lines a seeding copies: those with no record yet, and those of a run that merged again after its check was closed, each with its run. PURE. */
+const linesToSeed = (file: ChecksFile, runs: readonly ListedRun[]) =>
+  runs.flatMap((run) => listedLines(run).filter(({ id }) => file.checks[id] === undefined || listsAnew(file.checks[id], run)).map((listed) => ({ ...listed, run })));
+
+/** The tickets whose runs list a line {@link seedChecks} would copy: the ones whose plans it needs. PURE. */
+export const ticketsToSeed = (file: ChecksFile, runs: readonly ListedRun[]): Set<string> => new Set(linesToSeed(file, runs).map(({ run }) => run.ticket.key));
+
 /**
  * Copy every listed After-merge line that has no record yet into one, open, and every line of a run that merged again after its check was closed. Its owner is read again from the line, since a run recorded before
- * A11-277 holds the owner its old reader gave. Returns `file` itself when nothing is new. PURE.
+ * A11-277 holds the owner its old reader gave. A line its ticket's plan names (`planned`, by ticket) takes the plan's runner, escalation item, watch and evidence; any other line runs as its owner says. Returns
+ * `file` itself when nothing is new. PURE.
  */
-export function seedChecks(file: ChecksFile, runs: readonly ListedRun[], now: number): ChecksFile {
+export function seedChecks(file: ChecksFile, runs: readonly ListedRun[], now: number, planned: ReadonlyMap<string, readonly PlannedCheck[]> = new Map()): ChecksFile {
   const added: Record<string, CheckRecord> = {};
-  for (const run of runs) {
-    for (const { id, line } of listedLines(run)) {
-      const existing = file.checks[id];
-      if (existing !== undefined && !listsAnew(existing, run)) continue;
-      const owner = ownerOf(line);
-      added[id] = { id, key: run.ticket.key, url: run.ticket.url ?? null, line, owner, runner: runnerOf(owner), listedAt: run.finishedAt ?? now, state: "open" };
-    }
+  for (const { id, line, run } of linesToSeed(file, runs)) {
+    const owner = ownerOf(line);
+    const plan = plannedFor(line, planned.get(run.ticket.key) ?? []);
+    added[id] = { id, key: run.ticket.key, url: run.ticket.url ?? null, line, owner, runner: runnerOf(owner), ...(plan === undefined ? {} : plannedFields(plan, now)), listedAt: run.finishedAt ?? now, state: "open" };
   }
   return Object.keys(added).length === 0 ? file : { checks: { ...file.checks, ...added } };
 }

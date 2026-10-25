@@ -1,9 +1,10 @@
 // @ts-check
-// module: the Tailscale exposure -- the exposure contract (1.1) over `tailscale serve` (A11-162)
+// module: the Tailscale exposure -- the exposure contract (1.2) over `tailscale serve` (A11-162)
 //
 // The board's page and the worker terminal are served on the tailnet, over HTTPS, on two ports (`tailnetPorts`, 9443 and 9444 by default). Every `tailscale` call is made through `deps.exec`,
 // so the contract suite and core's tests run it against a stand-in. What this plugin serves for the board never opens a port to the internet; a caller that asks for a path open to the
-// internet (the event receiver's, contract 1.1) names `funnel: true`, and is given a `funnel` command for that one path.
+// internet (the event receiver's, contract 1.1) names `funnel: true`, and is given a `funnel` command for that one path. `unserve` removes an entry only when it proxies to the caller's
+// own loopback port (contract 1.2, A11-279), so a test or a second instance with another port leaves the host's real serves alone.
 //
 // IT IMPORTS CORE'S TYPES ONLY (ADR 0001).
 import type { Address, Exposure, PortState, ServedPorts, ServeOptions, ServeResult } from "../../src/plugins/contracts/exposure.ts";
@@ -52,6 +53,23 @@ function takenBecause(port: number, service: string, state: PortState): string |
   if (state.funnel) return `port ${port} is on Funnel, which makes it public, and the board is never served on Funnel: set \`${setting}\` to a port nothing serves`;
   if (state.kind === "foreign") return `port ${port} already serves ${state.proxy ?? "another entry"} on the tailnet, and the board will not replace it: set \`${setting}\` to a port nothing serves`;
   return null;
+}
+
+/**
+ * Why the entry at `port` (or one `path` of it) must not be removed for this caller, or null when it proxies to the caller's own `local` port (contract 1.2). A call that names no `local`, an entry
+ * that is free or another's, and a serve config that cannot be read are each refused, so nothing is removed that cannot be proven the caller's.
+ */
+function notTheCallersBecause(port: number, { path, local }: ServeOptions, stateOf: (port: number, local: number, path: string | undefined) => PortState): string | null {
+  const where = `port ${port}${path ?? ""} was not removed`;
+  if (local === undefined) return `${where}: unserve names no loopback port, so the entry cannot be proven the caller's`;
+  let state: PortState;
+  try {
+    state = stateOf(port, local, path);
+  } catch (error) {
+    return `${where}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (state.kind === "ours") return null;
+  return `${where}: it ${state.kind === "free" ? "serves nothing" : `proxies to ${state.proxy ?? "another entry"}`}, not to 127.0.0.1:${local}`;
 }
 
 /** The Tailscale exposure: `settings` are the block's, and `deps` give it `exec` and the environment. REFUSES a `tailnetPorts` of the wrong shape, by name. */
@@ -107,6 +125,8 @@ export function createExposure(settings: PluginSettings, deps: Pick<PluginDeps, 
       return resultOf(run(args), args, user);
     },
     unserve(port: number, options: ServeOptions = {}): ServeResult {
+      const why = notTheCallersBecause(port, options, stateOf);
+      if (why !== null) return { status: 1, stdout: "", stderr: why, refusal: why };
       const args = removeArgv(port, options);
       return resultOf(run(args), args, user);
     },

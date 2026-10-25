@@ -3,8 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WORKER_NOTES } from "../../install/house-notes.ts";
 import type { Ticket } from "../source.ts";
-import { briefText } from "../worker-files.ts";
-import { PUSH_ONCE_RULE } from "./rules.ts";
+import { briefText, reviewBriefText } from "../worker-files.ts";
+import { heldText, PUSH_ONCE_RULE } from "./rules.ts";
 
 const ticket = { key: "A11-1", title: "t", description: "d", url: "https://linear.app/x/issue/A11-1", branch: "a11-1-t", status: "Backlog", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null } as Ticket;
 
@@ -32,4 +32,24 @@ test("A11-261: a drafts-off machine's brief still never says draft pull request 
 
 test("A11-261: the shipped worker house notes carry the rule", () => {
   assert.ok(WORKER_NOTES.includes(PUSH_ONCE_RULE));
+});
+
+const REASON = "Held: CI ~640 min, over twice this ticket's budget of 300";
+
+test("A11-261: a run the board held for its CI spend opens its brief with why and the rule, and a run that was not held gets no such section", () => {
+  const held = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { repo: "/work/repo" }, worktreeCommand: "w", prOpenCommand: "p", held: REASON });
+  assert.ok(held.startsWith(`# A11-1: t\n\n## The board held this run\n\n${REASON}.`), held.slice(0, 160));
+  assert.ok(held.indexOf(PUSH_ONCE_RULE) < held.indexOf("## The ticket"), "the rule is read before the ticket, and again in step 3");
+  assert.ok(held.includes("Your worktrees and commits are as you left them"));
+  assert.equal(briefWith().includes("The board held this run"), false);
+  assert.equal(heldText(undefined), "");
+});
+
+test("A11-261: a review round the board held for its CI spend says so before the round's own opening", () => {
+  const prs = [{ repo: "repo", url: "https://github.com/a/repo/pull/1" }];
+  const round = (held?: string) => reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs, resumed: true, feedback: "New review feedback on x", ...(held === undefined ? {} : { held }) });
+  const held = round(REASON);
+  assert.ok(held.includes(`## The board held this run\n\n${REASON}.`));
+  assert.ok(held.indexOf("The board held this run") < held.indexOf("## The ticket"));
+  assert.equal(round().includes("The board held this run"), false);
 });

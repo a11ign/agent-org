@@ -83,7 +83,7 @@ export function release(settings: PluginSettings, deps: PluginDeps): StepResult 
   }
   const removed: Held[] = [];
   for (const entry of held) {
-    const result = exposure.unserve(entry.port);
+    const result = exposure.unserve(entry.port, { local: entry.local });
     if (result.status !== 0) {
       // A second entry that will not go must not leave the first off while the file still names this plugin: the first is put back.
       const back = restoreEntries(exposure, removed);
