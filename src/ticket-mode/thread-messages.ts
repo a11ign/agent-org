@@ -43,8 +43,14 @@ export type Known = { tickets: Map<string, Ticket>; claims: Map<string, string> 
 /** A request the request thread does not answer itself, forwarded whole. `query` is its search string. */
 export type CallMessage = Readonly<{ kind: "call"; id: number; method: string; path: string; body: Json; query: string; known: KnownCopies }>;
 
-/** What the request thread tells the board thread: a forwarded request, or that it listens. */
-export type ToBoard = CallMessage | Readonly<{ kind: "listening"; port: number }>;
+/**
+ * What the request thread tells the board thread: a forwarded request, that it listens, or that a read used the terminal address, which the board thread then works out again
+ * (the exposure is asked when a page reads it, as it always was, and never while a read waits).
+ */
+export type ToBoard = CallMessage | Readonly<{ kind: "listening"; port: number }> | Readonly<{ kind: "terminal" }>;
+
+/** The code a request thread exits with when it cannot listen (the port is taken): the instance then stops at once, as it did when it listened itself. */
+export const LISTEN_FAILED = 3;
 
 /** What the board thread tells the request thread: a new snapshot, or the answer to a forwarded request. */
 export type ToRequests = Readonly<{ kind: "snapshot"; snapshot: BoardSnapshot }> | Readonly<{ kind: "answer"; id: number; status: number; value: unknown; known: KnownCopies }>;
@@ -69,14 +75,15 @@ export type RequestThreadData = Readonly<{
 }>;
 
 /**
- * The tickets a request's body names, whose copies travel with it: its `keys`, its `key`, and the sub-issues of that ticket as the copy names them, since Queue children queues the
- * page's copy of each. PURE.
+ * The tickets a request's body names, whose copies travel with it: its `keys`, its `key`, and that ticket's sub-issues the page holds a copy of, as the parent's copy lists them
+ * or as their own copies name their parent, since Queue children queues the page's copy of each. PURE.
  */
 export function namedKeys(body: Json, known: Pick<Known, "tickets">): string[] {
   const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
   const key = typeof body.key === "string" ? [body.key] : [];
-  const children = key.flatMap((parent) => known.tickets.get(parent)?.children ?? []);
-  return [...new Set([...keys, ...key, ...children])];
+  const listed = key.flatMap((parent) => known.tickets.get(parent)?.children ?? []);
+  const children = [...known.tickets.values()].filter((ticket) => typeof ticket.parent === "string" && key.includes(ticket.parent)).map((ticket) => ticket.key);
+  return [...new Set([...keys, ...key, ...listed, ...children])];
 }
 
 /** The copies `known` holds of `keys`, null for each it has none of. PURE. */

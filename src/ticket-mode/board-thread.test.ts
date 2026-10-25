@@ -12,7 +12,7 @@ import { localRoute, readBoardOf } from "./request-thread.ts";
 import { createBoard } from "./server.ts";
 import { claimantOf, parseTicketSettings } from "./settings.ts";
 import type { Ticket } from "./source.ts";
-import { copiesOf, type Known, namedKeys, REQUEST_THREAD, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
+import { copiesOf, type Known, LISTEN_FAILED, namedKeys, REQUEST_THREAD, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
 
 const KEY = "a".repeat(48);
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -38,7 +38,7 @@ test("the request thread's reads over a snapshot answer what the board's own rou
   await board.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
   await board.api("POST", "/api/writer", { request: "a page that says hello" }).catch(() => undefined);
   const snapshot = structuredClone(snapshotOf(board, await board.terminalAddress(), HEALTH, 7));
-  const reads = readBoardOf(structuredClone({ ...data, snapshot }), { source: tracker, plugins: PLUGINS, latest: () => snapshot, health: () => null });
+  const reads = readBoardOf(structuredClone({ ...data, snapshot }), { source: tracker, plugins: PLUGINS, latest: () => snapshot, health: () => null, terminalRead: () => undefined });
   for (const path of ["/api/queue", "/api/config", "/api/writer", "/api/pick", "/api/parents"]) {
     assert.deepEqual(await localRoute(reads, "GET", path, {}, new URLSearchParams()), await board.api("GET", path, {}), path);
   }
@@ -47,10 +47,21 @@ test("the request thread's reads over a snapshot answer what the board's own rou
   assert.deepEqual([queue.held, queue.pulls, queue.claimWarning], [{ name: "npm run preflight", reason: "red", since: 5 }, { "https://github.com/a11ign/agent-org/pull/1": "Reviewer approved" }, "GitHub refuses the review claims"]);
 });
 
+test("a read that uses the terminal address asks the board thread to work it out again, and is answered from the snapshot without waiting", async () => {
+  const { board, tracker, data } = boardOver();
+  const snapshot = snapshotOf(board, "https://agents.example/w/{name}", HEALTH, 7);
+  let asked = 0;
+  const reads = readBoardOf({ ...data, snapshot }, { source: tracker, plugins: PLUGINS, latest: () => snapshot, health: () => null, terminalRead: () => { asked += 1; } });
+  const [, config] = await localRoute(reads, "GET", "/api/config", {}, new URLSearchParams()) as [number, { terminal: string | null }];
+  assert.equal(config.terminal, "https://agents.example/w/{name}");
+  await localRoute(reads, "GET", "/api/queue", {}, new URLSearchParams());
+  assert.equal(asked, 1, "only the read that used it asked");
+});
+
 test("the request thread answers the terminal's run itself, from the snapshot, and forwards every other write", async () => {
   const { board, tracker, data } = boardOver();
   const snapshot = snapshotOf(board, null, HEALTH, 7);
-  const reads = readBoardOf({ ...data, snapshot }, { source: tracker, plugins: PLUGINS, latest: () => snapshot, health: () => null });
+  const reads = readBoardOf({ ...data, snapshot }, { source: tracker, plugins: PLUGINS, latest: () => snapshot, health: () => null, terminalRead: () => undefined });
   assert.deepEqual(await localRoute(reads, "POST", "/api/terminal-run", { link: "https://agents.example/w/NBF-1" }, new URLSearchParams()), [200, { state: "unknown" }]);
   for (const [method, path] of [["POST", "/api/queue"], ["POST", "/api/paused"], ["GET", "/api/session-asks"], ["POST", "/api/after-merge/NBF-1/1"]]) {
     assert.equal(await localRoute(reads, method, path, {}, new URLSearchParams()), undefined, `${method} ${path} goes to the board thread`);
@@ -73,6 +84,18 @@ test("a page with no copy of a ticket takes the board thread's old one away, so 
   const body = { keys: ["NBF-1"], model: "sonnet", effort: "high" };
   await answerCall(board, { kind: "call", id: 5, method: "POST", path: "/api/queue", body, query: "", known: copiesOf(empty, namedKeys(body, empty)) });
   assert.equal(board.store.get().entries[0]?.ticket.title, "NBF-1");
+});
+
+test("Queue children routes on the page's copies alone: a copy an earlier write left the board thread never stands in for the tracker's", async () => {
+  const tracker = createFakeTracker([{ ...ticket("NBF-9"), children: ["NBF-10"] }, { ...inProgress("NBF-10"), parent: "NBF-9" }]);
+  const { board } = boardOver(tracker);
+  tracker.setClaimant("NBF-10", "desk.99999999");
+  board.known.tickets.set("NBF-10", { ...ticket("NBF-10"), parent: "NBF-9" });
+  const page: Known = { tickets: new Map(), claims: new Map() };
+  const body = { key: "NBF-9", model: "sonnet", effort: "high" };
+  const answer = await answerCall(board, { kind: "call", id: 8, method: "POST", path: "/api/queue-children", body, query: "", known: copiesOf(page, namedKeys(body, page)) });
+  assert.equal(answer.status, 409, "the tracker's copy is In Progress under another instance's claim, so it is refused");
+  assert.deepEqual(board.store.get().entries, []);
 });
 
 test("what a forwarded route learned of a ticket from the tracker comes back with the answer, for the request thread's next list", async () => {
@@ -98,6 +121,8 @@ test("the tickets a body names are its keys, its key and the sub-issues the page
   assert.deepEqual(namedKeys({ keys: ["NBF-1", "NBF-2"] }, known), ["NBF-1", "NBF-2"]);
   assert.deepEqual(namedKeys({ key: "NBF-9" }, known), ["NBF-9", "NBF-10", "NBF-11"]);
   assert.deepEqual(namedKeys({ max: 3 }, known), []);
+  const listedUnderParent = { tickets: new Map([["NBF-12", { ...ticket("NBF-12"), parent: "NBF-7" }]]) };
+  assert.deepEqual(namedKeys({ key: "NBF-7" }, listedUnderParent), ["NBF-7", "NBF-12"], "a sub-issue the page lists under a parent it has no copy of, as /api/parents shows it");
 });
 
 test(`the request thread is started again ${RESTARTS} times within ${RESTART_WINDOW_MS / 1000} s, and not a ${RESTARTS + 1}th`, () => {
@@ -118,23 +143,25 @@ class StandIn extends EventEmitter {
 
 /** The board thread over `boardOver()`'s board with stand-in threads, its interval driven by the test. */
 function startedThread() {
-  const { board, data } = boardOver();
+  const { board: made, data } = boardOver();
+  const exposure = { asked: 0 };
+  const board = { ...made, terminalAddress: async () => { exposure.asked += 1; return "https://agents.example/w/{name}"; } };
   const threads: StandIn[] = [];
   const started: RequestThreadData[] = [];
   const ticks: (() => void)[] = [];
   const said = { listening: [] as number[], err: [] as string[], exits: [] as number[] };
-  const thread = startBoardThread({ board, health: () => HEALTH, data, terminal: "https://agents.example/w/{name}",
+  const thread = startBoardThread({ board, health: () => HEALTH, data, terminal: null,
     start: (workerData) => { started.push(workerData); const standIn = new StandIn(); threads.push(standIn); return standIn as unknown as RequestThread; },
     every: (run, ms) => { assert.equal(ms, SNAPSHOT_MS); ticks.push(run); }, now: () => 7,
     listening: (port) => said.listening.push(port), err: (line) => said.err.push(line), exit: (code) => said.exits.push(code) });
-  return { board, thread, threads, started, ticks, said };
+  return { board, thread, threads, started, ticks, said, exposure };
 }
 
 const settle = () => new Promise((done) => { setImmediate(done); });
 
 test("the request thread starts with the board's snapshot, and is posted another after every queue change and every second", async () => {
   const { board, thread, threads, started, ticks } = startedThread();
-  assert.equal(started[0].snapshot.terminal, "https://agents.example/w/{name}");
+  assert.equal(started[0].snapshot.terminal, null, "the stored address, until the board has worked it out");
   assert.deepEqual(started[0].snapshot.loop, HEALTH.loop.board);
   await board.api("POST", "/api/paused", { paused: true });
   thread.queueChanged();
@@ -144,6 +171,20 @@ test("the request thread starts with the board's snapshot, and is posted another
   ticks[0]();
   await settle();
   assert.equal(threads[0].told.length, before + 1, "a snapshot every second, changed or not");
+});
+
+test("the exposure is asked for the terminal address once at start and again only when a read used it, never on the snapshot's second", async () => {
+  const { threads, ticks, exposure } = startedThread();
+  await settle();
+  assert.equal(exposure.asked, 1, "once at start");
+  const told = threads[0].told.at(-1);
+  assert.equal(told?.kind === "snapshot" && told.snapshot.terminal, "https://agents.example/w/{name}", "posted once worked out");
+  for (let second = 0; second < 5; second += 1) ticks[0]();
+  await settle();
+  assert.equal(exposure.asked, 1, "the snapshot's interval asks nothing");
+  threads[0].say({ kind: "terminal" });
+  await settle();
+  assert.equal(exposure.asked, 2);
 });
 
 test("a forwarded call is answered by the board thread's routes, and the first listen is said once however often the thread starts", async () => {
@@ -168,4 +209,11 @@ test(`a request thread that exits is started again, and its ${RESTARTS + 1}th ex
   assert.equal(threads.length, RESTARTS + 1, "no fifth thread");
   assert.deepEqual(said.exits, [1]);
   assert.match(said.err.at(-1) ?? "", /ERROR ticket:serve: the request thread exited 1/);
+});
+
+test("a request thread that cannot listen ends the instance at once, as the instance's own listen did, and is not started again", () => {
+  const { threads, said } = startedThread();
+  threads[0].emit("exit", LISTEN_FAILED);
+  assert.equal(threads.length, 1);
+  assert.deepEqual(said.exits, [1]);
 });

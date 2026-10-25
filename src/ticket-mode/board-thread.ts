@@ -6,13 +6,14 @@
 // answered by `createBoard(...).api`, the routes the instance always had.
 //
 // A SNAPSHOT IS POSTED AFTER EVERY QUEUE CHANGE AND EVERY SNAPSHOT_MS, changed or not: the request thread reads the snapshot's age as how long this thread has been held, so a quiet board
-// must not look like a held one. The terminal address is worked out here, so the request thread never asks the exposure.
+// must not look like a held one. The terminal address is worked out here, so the request thread never asks the exposure: once at start, and again each time a read used it, as the
+// exposure was asked on every page read before (its name is kept once it has one).
 //
 // A REQUEST THREAD THAT DIES IS STARTED AGAIN, at most RESTARTS times in RESTART_WINDOW_MS. One more death ends the instance with 1, and its service starts it again, as a failed
-// start always has.
+// start always has. One that cannot listen (LISTEN_FAILED: the port is taken) ends it at once, as the instance's own listen did.
 import type { createBoard } from "./server.ts";
 import type { HealthView } from "./health-route.ts";
-import { applyCopies, type BoardSnapshot, type CallMessage, copiesOf, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
+import { applyCopies, type BoardSnapshot, type CallMessage, copiesOf, LISTEN_FAILED, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
 
 /** How often a snapshot is posted when nothing changed, in ms. */
 export const SNAPSHOT_MS = 1_000;
@@ -38,10 +39,13 @@ export function snapshotOf(board: Pick<ThreadBoard, "store" | "pool" | "update">
 }
 
 /**
- * The answer to a forwarded request: its copies of the page's tickets are put on the board, the board's own routes answer it, and what they left for those tickets goes back.
- * A route that throws is a 400 with its sentence, as a request on the board's own socket was.
+ * The answer to a forwarded request: the board routes on the page's copies of the tickets it names and on no others, the board's own routes answer it, and what they left for
+ * those tickets goes back. The board keeps no copy between calls, so an old one never stands in for the page's or the tracker's. A route that throws is a 400 with its sentence,
+ * as a request on the board's own socket was.
  */
 export async function answerCall(board: Pick<ThreadBoard, "api" | "known">, call: CallMessage): Promise<Extract<ToRequests, { kind: "answer" }>> {
+  board.known.tickets.clear();
+  board.known.claims.clear();
   applyCopies(board.known, call.known);
   const keys = call.known.tickets.map(([key]) => key);
   let answer: [number, unknown];
@@ -70,7 +74,7 @@ export type BoardThreadDeps = Readonly<{
   health: () => HealthView;
   /** What the request thread starts with, but its snapshot, which is taken as it starts. */
   data: Omit<RequestThreadData, "snapshot">;
-  /** The terminal address as the board worked it out at start. */
+  /** The terminal address the reads are given until the board has worked it out: the stored one. */
   terminal: string | null;
   /** Starts a request thread with `data`. */
   start: (data: RequestThreadData) => RequestThread;
@@ -110,10 +114,15 @@ export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged
         heard = true;
         return;
       }
+      if (message.kind === "terminal") return refreshTerminal();
       void answerCall(board, message).then(post);
     });
     thread.on("error", (error) => err(`ticket:serve: the request thread failed: ${String(error?.stack ?? error)}\n`));
     thread.on("exit", (code) => {
+      if (code === LISTEN_FAILED) {
+        exit(1);
+        return;
+      }
       if (!mayRestart()) {
         err(`ERROR ticket:serve: the request thread exited ${code}, its ${RESTARTS + 1}th exit within ${RESTART_WINDOW_MS / 1000} s, so the instance stops and its service starts it again\n`);
         exit(1);
@@ -127,8 +136,12 @@ export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged
 
   let tell = run();
   const postSnapshot = () => tell({ kind: "snapshot", snapshot: snapshot() });
-  every(() => {
-    void board.terminalAddress().then((address) => { terminal = address; }, () => undefined).finally(postSnapshot);
-  }, SNAPSHOT_MS);
+  /** Works the terminal address out again, once at a time, and posts it. */
+  let refreshing: Promise<void> | null = null;
+  function refreshTerminal(): void {
+    refreshing ??= board.terminalAddress().then((address) => { terminal = address; postSnapshot(); }, () => undefined).finally(() => { refreshing = null; });
+  }
+  refreshTerminal();
+  every(postSnapshot, SNAPSHOT_MS);
   return { queueChanged: postSnapshot };
 }

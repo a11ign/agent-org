@@ -720,7 +720,7 @@ async function serve(): Promise<void> {
   await board.pool.ensureSession();
   board.pool.reconcile();
   // The HTTP server runs on the request thread (A11-282), so the pool's synchronous calls below hold no request. This thread stays the queue's one writer.
-  thread = startBoardThread({ board, health, terminal: await board.terminalAddress(),
+  thread = startBoardThread({ board, health, terminal: settings.terminal,
     data: { role: REQUEST_THREAD, settings, key, claimant: claimantOf(settings), paths, toolVersion: toolVersionOf(), agentOrgVersion: agentOrgVersionDefault() },
     start: (workerData) => new Worker(new URL("./request-thread.ts", import.meta.url), { workerData }),
     listening: (port) => {

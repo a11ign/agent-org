@@ -5,7 +5,10 @@
 // thread was held while the reads were answered: before the split, every read waited the 2 s with it (`node scripts/loop-load.ts` on the base prints that "before").
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { BOARD_THREAD_ROUTES, type Health, percentile, READ_LIMIT_MS, ROUTES, startThrowawayInstance, timedRead, waitFor } from "../../scripts/loop-load.ts";
 import type { RequestHealthView } from "./health-route.ts";
@@ -15,6 +18,7 @@ const ROUNDS = 20;
 const ROUND_GAP_MS = 250;
 /** The routes the request thread answers itself: every GET route but the ones the board thread answers. */
 const LOCAL_ROUTES = ROUTES.filter((route) => !BOARD_THREAD_ROUTES.includes(route));
+const BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin.ts");
 const ghCallsIn = (log: string): number => readFileSync(log, "utf8").split("\n").filter(Boolean).length;
 
 test("while a 2 s gh holds the board thread, every read the request thread answers has a p99 under 200 ms, a write still lands, and the request thread spawns nothing synchronously", { timeout: 240_000 }, async () => {
@@ -45,6 +49,15 @@ test("while a 2 s gh holds the board thread, every read the request thread answe
     assert.equal(paused.status, 200, "a write is forwarded to the board thread, and answered when it is free");
     const queue = JSON.parse((await timedRead(instance.port, "/api/queue")).body) as { paused?: boolean };
     assert.equal(queue.paused, true, "the next read shows the write: the board thread posts its snapshot before it answers");
+
+    // A second instance on the same host file finds the port taken: it stops with 1 and says why, as an instance that listened itself did, and runs no second pool.
+    const second = spawn(process.execPath, [BIN, "ticket:serve"], { env: instance.env, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    second.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const code = await new Promise<number | null>((done) => { second.on("exit", done); });
+    assert.equal(code, 1, stderr);
+    assert.match(stderr, /the request thread cannot listen on 127\.0\.0\.1:\d+: listen EADDRINUSE/);
+    assert.doesNotMatch(stderr, /started again/, "it is not started again");
   } finally {
     instance.stop();
   }

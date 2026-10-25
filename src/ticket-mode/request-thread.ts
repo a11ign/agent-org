@@ -25,7 +25,7 @@ import type { ProblemOptions } from "./plugins.ts";
 import { type Api, answerKeyed, plansOf, type ReadBoard, readRoute, terminalRunFor, trackerReads } from "./read-routes.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
 import type { TicketSource } from "./source.ts";
-import { applyCopies, type BoardSnapshot, copiesOf, namedKeys, REQUEST_THREAD, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
+import { applyCopies, type BoardSnapshot, copiesOf, LISTEN_FAILED, namedKeys, REQUEST_THREAD, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
 
 /** The board thread as this thread reaches it: `parentPort`, or a test's stand-in. */
 export type BoardPort = Readonly<{ postMessage: (message: ToBoard) => void; on: (event: "message", listener: (message: ToRequests) => void) => unknown }>;
@@ -64,7 +64,9 @@ const problemsOf = (data: RequestThreadData): ProblemOptions => ({ agentOrgVersi
  * The reads' board over the latest snapshot: the queue, the pool's readings, the update and the terminal address are the board thread's as it last posted them, and the tickets, the
  * tracker's other reads, the Plugins section and the health are this thread's own.
  */
-export function readBoardOf(data: RequestThreadData, parts: Readonly<{ source: TicketSource; plugins: ReadBoard["plugins"]; latest: () => BoardSnapshot; health: () => unknown }>): ReadBoard {
+export function readBoardOf(data: RequestThreadData, parts: Readonly<{ source: TicketSource; plugins: ReadBoard["plugins"]; latest: () => BoardSnapshot; health: () => unknown;
+  /** Asks the board thread to work the terminal address out again, as a read used it. */
+  terminalRead: () => void; }>): ReadBoard {
   const { settings } = data;
   const { source, latest } = parts;
   return {
@@ -75,7 +77,10 @@ export function readBoardOf(data: RequestThreadData, parts: Readonly<{ source: T
     claimant: () => data.claimant,
     plans: plansOf(settings, source),
     update: () => latest().update,
-    terminalAddress: async () => latest().terminal,
+    terminalAddress: async () => {
+      parts.terminalRead();
+      return latest().terminal;
+    },
     ...trackerReads(source, settings),
   };
 }
@@ -111,7 +116,7 @@ export async function serveRequests(data: RequestThreadData, port: BoardPort): P
   const health = startRequestHealth({ latest: () => latest });
   // The Plugins section's checks run here, in child processes, as they ran on the instance's one thread: the board thread starts none.
   const plugins = pluginsApi({ hostPath: data.paths.hostPath ?? hostFilePath(), settings: data.settings, seam: { version: data.toolVersion, claude: problemsOf(data) }, warm: true });
-  const board = readBoardOf(data, { source: await trackerOf(data.settings), plugins, latest: () => latest.snapshot, health: health.view });
+  const board = readBoardOf(data, { source: await trackerOf(data.settings), plugins, latest: () => latest.snapshot, health: health.view, terminalRead: () => port.postMessage({ kind: "terminal" }) });
   const api = apiOf(board, port, (snapshot) => { latest = { snapshot, receivedAt: Date.now() }; });
   // One request's failure ends that request, never the thread.
   const server = createServer((request, response) => {
@@ -120,6 +125,11 @@ export async function serveRequests(data: RequestThreadData, port: BoardPort): P
       if (response.headersSent) response.destroy();
       else sendJson(response, 500, { error: "the instance failed to answer" });
     });
+  });
+  // A port another process holds ends the instance, as its own listen did: two instances must never both run a pool.
+  server.once("error", (err: Error) => {
+    process.stderr.write(`ticket:serve: the request thread cannot listen on 127.0.0.1:${data.settings.port}: ${err.message}\n`);
+    process.exit(LISTEN_FAILED);
   });
   server.listen(data.settings.port, "127.0.0.1", () => {
     health.listening();

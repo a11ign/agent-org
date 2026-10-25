@@ -5,8 +5,8 @@
 // every one of them. The request thread (`request-thread.ts`) makes a `ReadBoard` over the latest board snapshot (`board-thread.ts`) and answers these routes itself; the board
 // thread's `createBoard` (`server.ts`) makes one over its live queue and pool, so `createBoard(...).api` answers them exactly as before.
 //
-// SO THIS MODULE IMPORTS NOTHING OF THE POOL AT RUN TIME, and nothing that spawns synchronously on a read: `request-thread-guard.test.ts` walks what it imports. The view types keep
-// their names, and `server.ts` exports them again, because the UI's client names them there.
+// SO THIS MODULE IMPORTS NOTHING OF THE POOL AT RUN TIME, and nothing that spawns synchronously on a read but the exceptions `request-thread-guard.test.ts` lists, as it walks what
+// this imports. The view types keep their names, and `server.ts` exports them again, because the UI's client names them there.
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterMergeView } from "./after-merge/route.ts";

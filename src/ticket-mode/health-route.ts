@@ -1,5 +1,5 @@
 // @ts-check
-// module: what the instance's `GET /api/health` answers (A11-282) -- the board loop's delay, and the synchronous spawns that held it the longest
+// module: what the instance's `GET /api/health` answers (A11-282) -- both threads' loop delays, and the synchronous spawns that held the board thread the longest
 //
 // THE BOARD'S STATUS LINE READS THIS, and so do `scripts/loop-load.ts` and `scripts/loop-watch.ts`. The page's service answers its own loop at its root `/api/health` (`ui-server.ts`).
 //
@@ -22,8 +22,8 @@ export function healthView(monitor: Pick<LoopMonitor, "read">, ledger: Pick<Bloc
 }
 
 /**
- * Starts measuring the instance: the loop monitor, and the ledger installed on `node:child_process`, so every synchronous spawn from here on is timed. Answers the
- * health view's reader. Made once, at the start of `ticket:serve`.
+ * Starts measuring the board thread: the loop monitor, and the ledger installed on its `node:child_process`, so every synchronous spawn from here on is timed. Answers the
+ * health view's reader, which the board thread's snapshot carries. Made once, at the start of `ticket:serve`.
  */
 export function startHealth(name: string): () => HealthView {
   const monitor = startLoopMonitor();
