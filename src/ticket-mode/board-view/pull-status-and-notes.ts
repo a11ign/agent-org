@@ -258,6 +258,8 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (isTalking(entry)) return "talking";
   // The board stopped answering a run's red checks or feedback on its own and handed it to a person, whatever the run ended on (A11-154): Respond starts again.
   if (entry.handedBack !== undefined) return "needs-you";
+  // Herdr refused twice, for the same reason, to start the reviewer of one of its pull requests: it is retried on every sweep, and only a person can mend what herdr says (A11-241).
+  if (entry.reviewerRefused !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";
   if (kind === "draft-pr" || kind === "ready-pr") return "awaiting-review";
   // A reviewed outcome says the worker's feedback round ended, not that GitHub would merge: the pull requests have to be approved at their head and green there (A11-179).

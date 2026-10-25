@@ -346,6 +346,11 @@ export type Entry = Readonly<{
   rounds?: number;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. A person's Approve clears it. */
   handedBack?: string;
+  /**
+   * Set while herdr has refused twice, for the same reason, to start the reviewer of one of the run's pull requests (A11-241): the pull request and herdr's reason. The run reads Needs you for it.
+   * Cleared once no pull request of the run is refused twice. Written by `recordReviewerRefusal`.
+   */
+  reviewerRefused?: string;
   /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none, and when. */
   published?: Readonly<{ link: string | null; at: number }>;
   /** Set while a running run's worker last said its background work is still running: see {@link WorkingNote}. Dropped when the run ends. */

@@ -21,11 +21,14 @@ import { log, messageOf, update } from "./pool-state.ts";
 import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted, roundsLeft } from "./queue/queue-transitions.ts";
+import { recordReviewerRefusal } from "./queue/queue-reviewer-refusal.ts";
 import { countRereview, handBackRereview } from "./queue/queue-rereview.ts";
 import { diffLines } from "./board-view/ticket-change.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { AWAITING_PERSON_LINE, claimWarning, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
+import { pullLabel } from "./board-view/pull-label.ts";
+import { herdrStartRefusalReason } from "../herdr-agents.ts";
 import { doneWhenOf } from "./done-when.ts";
 import { decisionsOf } from "./ticket-decisions.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -128,6 +131,48 @@ export function briefOf(ctx: PoolContext, url: string, state: ReviewState): Revi
   };
 }
 
+/** How many refusals in a row, for the same reason, ask a person (A11-241): the first is said on the pull request's own line, the second is Needs you. */
+const REFUSED_TWICE = 2;
+
+/**
+ * What herdr's refusals say of a run (A11-241): each of its pull requests whose reviewer herdr has refused to start {@link REFUSED_TWICE} times for the same reason, as `<pull request>: <herdr's reason>`, joined; null while none is.
+ * A refusal that is not herdr's (a claim another instance holds, checks not green) is never counted, so it never reaches here.
+ */
+function refusalNoteOf(ctx: PoolContext, entry: Entry): string | null {
+  const lines = pullsOf(entry).flatMap(({ url }) => [...ctx.reviewerMemory.refusals]
+    .filter(([key, { count }]) => key.startsWith(`${url}@`) && count >= REFUSED_TWICE).map(([, { reason }]) => `${pullLabel(url)}: ${reason}`));
+  return lines.length > 0 ? lines.join("; ") : null;
+}
+
+/** Puts what herdr's refusals say of the run that holds `url` on its card, or takes it off once none is refused twice. A pull request no run holds has no card: `agent-org doctor` is where it is read. Writes the queue only when the card changes. */
+function showStartRefusals(ctx: PoolContext, url: string): void {
+  const held = heldBy(ctx, url);
+  if (held === undefined) return;
+  const next = recordReviewerRefusal(ctx.store.get(), held.ticket.key, refusalNoteOf(ctx, held), ctx.now());
+  if (next !== ctx.store.get()) ctx.store.set(next);
+}
+
+/**
+ * Counts a start that came to `refusal` for `key` (`url@head`), or clears the count when it started (`refusal` null) (A11-241). Only herdr's own refusal to start an agent counts (`herdrStartRefusalReason`): any other refusal
+ * is something else in the way, and ends the run of herdr's. The same reason as last time adds one; a different reason starts again at 1. Returns whether the memory changed, for the caller to write.
+ */
+function countStartRefusal(ctx: PoolContext, key: string, refusal: string | null): boolean {
+  const { refusals } = ctx.reviewerMemory;
+  const reason = refusal === null ? null : herdrStartRefusalReason(refusal);
+  if (reason === null) return refusals.delete(key);
+  const before = refusals.get(key);
+  refusals.set(key, { reason, count: before?.reason === reason ? before.count + 1 : 1 });
+  return true;
+}
+
+/** Forgets the refusals of every head of `url` but the one under `kept` (`url@head`): a new head is a new review, and a head whose review is posted keeps none (`kept` null). Returns whether any went. */
+function forgetRefusalsExcept(ctx: PoolContext, url: string, kept: string | null): boolean {
+  const { refusals } = ctx.reviewerMemory;
+  const stale = [...refusals.keys()].filter((key) => key.startsWith(`${url}@`) && key !== kept);
+  for (const key of stale) refusals.delete(key);
+  return stale.length > 0;
+}
+
 /** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, what it is called in a log line, and the pull request body it starts with (its look, A11-235). */
 type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => string; says: string; brief: ReviewBrief; adopts: boolean; body: string }>;
 
@@ -153,7 +198,13 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   rememberReviewers(ctx);
   const adopted = kind.adopts && reviewer.live({ pr: url, head });
   const started = adopted ? null : reviewer.start({ pr: url, head }, kind.brief);
-  if (started === null) return { refusal: null, tookOver: null };
+  const refusal = started !== null && "refusal" in started ? started.refusal : null;
+  // Counted before the memory is written, and shown after it: a restart keeps the count, and the card follows it (A11-241).
+  const counted = countStartRefusal(ctx, key, refusal);
+  if (started === null) {
+    if (counted) rememberReviewers(ctx);
+    return { refusal: null, tookOver: null };
+  }
   if (!("refusal" in started)) {
     // Why this reviewer has no claim is kept with the start, so the board keeps saying so while it runs, across a restart (A11-172).
     if (started.unclaimed === undefined) ctx.reviewerMemory.unclaimed.delete(key);
@@ -385,6 +436,8 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const key = `${url}@${head}`;
   const ref = { pr: url, head };
   const posted = reviewPostedAt(state.reviews, head);
+  // A refusal of an earlier head, or of one whose review is posted, is over (A11-241).
+  if (forgetRefusalsExcept(ctx, url, posted ? null : key)) rememberReviewers(ctx);
   let unposted: string | null = null;
   if (posted) {
     if (reviewerReposts.delete(key)) rememberReviewers(ctx);
@@ -414,6 +467,8 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   };
   pullReads.set(url, read);
   if (unclaimed !== undefined) sayClaimProblem(ctx, unclaimed);
+  // Whatever this look did to the refusals, the card follows it (A11-241). Asked on every look, so a run that was not finished when its refusal came or went is brought into line once it is.
+  showStartRefusals(ctx, url);
   return { state, unposted };
 }
 
@@ -507,7 +562,17 @@ export function reviewNewHeads(ctx: PoolContext): void {
   }
   // A pull request no longer open is no longer shown, unless a repository could not be listed: then what it showed stays until the next sweep reads it.
   if (!unlisted) for (const url of [...pullReads.keys()]) if (!listed.has(url)) pullReads.delete(url);
+  if (!unlisted) forgetClosedRefusals(ctx, listed);
   forgetMendedClaimProblems(ctx);
+}
+
+/** Forgets the refusals of pull requests that are no longer open (A11-241), so a merged or closed pull request does not keep a run at Needs you, or `agent-org doctor` failing. */
+function forgetClosedRefusals(ctx: PoolContext, open: ReadonlySet<string>): void {
+  const closed = new Set([...ctx.reviewerMemory.refusals.keys()].map((key) => key.slice(0, key.lastIndexOf("@"))).filter((url) => !open.has(url)));
+  if (closed.size === 0) return;
+  for (const key of [...ctx.reviewerMemory.refusals.keys()]) if (closed.has(key.slice(0, key.lastIndexOf("@")))) ctx.reviewerMemory.refusals.delete(key);
+  rememberReviewers(ctx);
+  for (const url of closed) showStartRefusals(ctx, url);
 }
 
 /** The one line the board shows while some pull request cannot be claimed for review, or runs without a claim (A11-172), or null: only a machine with a reviewer on has one. */

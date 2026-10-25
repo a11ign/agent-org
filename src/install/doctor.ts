@@ -34,6 +34,8 @@ import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
+import { readReviewerMemory, reviewerMemoryPath } from "../ticket-mode/reviewer-port.ts";
+import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -139,6 +141,8 @@ export type DoctorDeps = Readonly<{
    * loads no gate. A test injects one, so no module is loaded.
    */
   reviewing: ReviewerHelpers;
+  /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
+  reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
   /** The Chromium builds this machine has, read now: each build is a check, and `ticket:capture` needs both (A11-151). */
   chromium: () => ChromiumReport;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
@@ -316,6 +320,23 @@ const WITHOUT_PLUGIN: Readonly<Record<ProviderBlock, string>> = {
   exposure: "serves the board on loopback only",
 };
 
+/** A pull request's reviewer that herdr refused to start for `count` starts in a row, with herdr's reason for the last (A11-241). */
+export type RefusedStart = Readonly<{ url: string; head: string; count: number; reason: string }>;
+
+/**
+ * The `reviewer starts` row (A11-241): green while herdr refuses no start, red naming each pull request, its head, how many starts in a row it refused, and herdr's reason, which is the fix. Null where there is no reviewer to
+ * start: the provider is none or switched off. The board tries again on every sweep, so a refusal that is mended elsewhere (a herdr upgrade, a codex trust entry) clears by itself.
+ */
+function reviewerStartsCheck(settings: TicketSettings, deps: DoctorDeps): Check | null {
+  const { provider, enabled } = settings.providers.blocks.reviewer;
+  if (!enabled || provider === "none") return null;
+  const refused = deps.reviewerRefusals(settings.stateDir);
+  if (refused.length === 0) return ok("reviewer starts", "herdr has refused no reviewer start");
+  const times = (count: number) => (count === 1 ? "once" : `${count} times`);
+  const detail = refused.map(({ url, head, count, reason }) => `${pullLabel(url)} at ${head.slice(0, 8)} refused ${times(count)}: ${reason}`).join("; ");
+  return failed("reviewer starts", detail, `${refused[0].reason}: fix what herdr says, and the board starts the reviewer again on its next sweep`);
+}
+
 /**
  * One check per provider (A11-144), named for it and its plugin and whether the plugin is disabled (A11-158), ok when every check it summarises passes. Its detail says where its settings came
  * from, so a block a machine does not have is said to take the default, and a disabled plugin says what the board does without it.
@@ -438,7 +459,10 @@ function pluginSections(settings: TicketSettings, health: PluginHealth, { termin
     ...concernSections(concernOf(health, "tracker"), summarise("tracker")),
     ...concernSections(concernOf(health, "codeHost"), summarise("codeHost")),
     ...concernSections(concernOf(health, "publisher"), summarise("publish")),
-    ...concernSections(concernOf(health, "reviewer"), summarise("reviewer")),
+    ...concernSections(concernOf(health, "reviewer"), (entry, rows) => {
+      const starts = reviewerStartsCheck(settings, deps);
+      return [...(starts === null ? [] : [starts]), ...summarise("reviewer", starts === null ? [] : [starts])(entry, rows)];
+    }),
     ...concernSections(concernOf(health, "exposure"), summarise("exposure", terminal)),
     ...messagingSections(health),
     ...registrySection(health),
@@ -899,6 +923,8 @@ export function defaultDoctorDeps(): DoctorDeps {
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewing: gateHelpers(),
+    reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals]
+      .map(([key, { count, reason }]) => ({ url: key.slice(0, key.lastIndexOf("@")), head: key.slice(key.lastIndexOf("@") + 1), count, reason })),
     chromium: () => chromiumReport(),
     agentOrgPlugins: {
       catalog: defaultCatalog,

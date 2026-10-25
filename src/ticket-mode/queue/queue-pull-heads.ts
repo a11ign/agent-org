@@ -42,7 +42,7 @@ const lastVerdict = (queue: Queue, key: string, url: string): Extract<RunEvent, 
 const sameVerdict = (last: Extract<RunEvent, { kind: "verdict" }> | undefined, head: string, review: string): boolean => last?.head === head && last.review === review;
 
 /** The statuses a stale-block note may be written over: a run that waits on a review or a merge. Any other has its own reason, or is over (A11-213). */
-const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
+export const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
 
 /**
  * The board's note on a finished run whose pull request has sat changes requested with no new push and no run (A11-213, {@link staleBlockNote}): it becomes the run's `handedBack`, which reads Needs you and which
