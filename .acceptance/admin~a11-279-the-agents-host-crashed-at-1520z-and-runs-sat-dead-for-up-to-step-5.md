@@ -12,7 +12,7 @@ npm run typecheck
 
 The run-isolation tests drive the pool (they import it, which needs git history this job does not have), so CI's `suite` job runs them; locally they need `AGENT_ORG_HOST` naming a fixture copy's host.json.
 
-Mutation: each of these, applied alone, turns `src/ticket-mode/run-isolation.test.ts` red: `runEnvOf` without `TMPDIR`; `start()` not making the directory; a refused make failing the start; `lostKeys` counting `TMPDIR`; the sweep not run on the tick; the sweep removing a parked run's directory; no grace; no budget; the sweep following a symlink.
+Mutation: each of these, applied alone, turns `src/ticket-mode/run-isolation.test.ts` or `run-env.test.ts` red (measured): `runEnvOf` without `TMPDIR` (5 tests); `start()` not making the directory (4); a directory that cannot be made failing the start (1); `lostKeys` counting `TMPDIR` (2); the sweep not run on the tick (1); the sweep removing a parked run's directory (2); no grace (1); no budget (1); the sweep a no-op (4).
 
 After merge, for the chairman's session: start a run (or let the next one start) and read `tr '\0' '\n' < /proc/<claude pid>/environ | grep ^TMPDIR` in its pane: it names `~/.cache/a11ign/tmp/run-t-<KEY>`; once the run is finished and closed, the directory is gone within a few ticks and `ls /tmp | wc -l` has stopped growing from workers' tests.
 
