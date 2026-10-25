@@ -1,11 +1,15 @@
 import { runChoiceLabel, safeHref } from "../../../src/ticket-mode/board-view.ts";
 import { pullsOf, type PullRef } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
-import { repoLabel, shownStatus } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
+import { publishable, repoLabel, shownStatus } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
 import type { QueueView, RunAction } from "../api/types.ts";
 import { runsHref } from "../shell/routes.ts";
 import { actionsOf } from "./run-actions.ts";
-import { ActionIcon, PullIcon, StatusIcon, STATUS_TONE } from "./icons.tsx";
+import { ActionIcon, MessageIcon, PullIcon, StatusIcon, STATUS_TONE } from "./icons.tsx";
+import { MESSAGE_TITLE } from "./publish-model.ts";
 import { labelOf, noteOf, timingOf, tokensOf, type NoteContext, type RunEntry } from "./runs-model.ts";
+
+/** The ticks of a machine with a publisher: the keys ticked for Publish, and the press that ticks or unticks one. */
+export type Ticks = Readonly<{ picked: readonly string[]; toggle: (key: string) => void }>;
 
 /** What a row needs of the page: the queue it is a row of, the machine's publisher, the time, and what the row's buttons do. */
 export type RowContext = Readonly<{
@@ -16,6 +20,8 @@ export type RowContext = Readonly<{
   /** True while the instance cannot be reached: the rows are the last known ones, and nothing on them is pressed. */
   disabled: boolean;
   press: (entry: RunEntry, verb: RunAction) => void;
+  /** The tick column, drawn only on a machine with a publisher: null draws none, as the boards of a machine without one. */
+  ticks: Ticks | null;
 }>;
 
 /** Where Run detail is: `/next/runs/<key>`, the key encoded. */
@@ -54,15 +60,44 @@ function Buttons({ entry, context }: Readonly<{ entry: RunEntry; context: RowCon
   );
 }
 
+/** The link to the Slack message a publish run posted, beside the pull requests; none for a run that has no message, or whose address is not http or https. */
+function MessageLink({ entry }: Readonly<{ entry: RunEntry }>) {
+  const href = safeHref(entry.published?.link ?? "");
+  if (href === "") return null;
+  return (
+    <a className="pr-pill" href={href} target="_blank" rel="noreferrer" title={MESSAGE_TITLE}>
+      <MessageIcon />
+      <span className="visually-hidden">Slack message</span>
+    </a>
+  );
+}
+
 /** The row's second column: the pull requests, and the timing lines. */
 function Timing({ entry, now }: Readonly<{ entry: RunEntry; now: number }>) {
   const pulls = pullsOf(entry);
   const { timing, started } = timingOf(entry, now);
   return (
     <div className="run-side">
-      <div className="run-pulls">{pulls.map((pull) => <PullPill key={pull.url} pull={pull} />)}</div>
+      <div className="run-pulls">
+        {pulls.map((pull) => <PullPill key={pull.url} pull={pull} />)}
+        <MessageLink entry={entry} />
+      </div>
       <span className="run-timing">{timing}</span>
       {started === null ? null : <span className="run-started">{started}</span>}
+    </div>
+  );
+}
+
+/** The reserved first column of a machine with a publisher: a tick box on a run that can be published, and nothing on any other, so the rows stay in line. */
+function Tick({ entry, context, ticks }: Readonly<{ entry: RunEntry; context: RowContext; ticks: Ticks }>) {
+  const { key } = entry.ticket;
+  return (
+    <div className="run-tick">
+      {publishable(entry, context.queue.publish) ? (
+        <label className="tick">
+          <input type="checkbox" checked={ticks.picked.includes(key)} disabled={context.disabled} onChange={() => ticks.toggle(key)} aria-label={`Select ${key} to publish`} />
+        </label>
+      ) : null}
     </div>
   );
 }
@@ -74,8 +109,10 @@ export function RunRow({ entry, context }: Readonly<{ entry: RunEntry; context: 
   const tokens = tokensOf(entry);
   const note = noteOf(entry, { queue, publisher: context.publisher });
   const { key, title } = entry.ticket;
+  const picked = context.ticks?.picked.includes(key) === true;
   return (
-    <div className="run-row" id={`run-${key}`}>
+    <div className={picked ? "run-row run-row-picked" : "run-row"} id={`run-${key}`}>
+      {context.ticks === null ? null : <Tick entry={entry} context={context} ticks={context.ticks} />}
       <div className="run-status"><StatusIcon status={status} /></div>
       <div className="run-main">
         <a className="run-title" href={runHref(key)}>

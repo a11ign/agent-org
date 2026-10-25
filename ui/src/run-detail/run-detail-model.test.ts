@@ -20,7 +20,7 @@ describe("which board a run is drawn as", () => {
   });
 
   it.each<[string, RunBoard]>([
-    ["working", "running"], ["talking", "running"], ["planning", "running"], ["reviewing", "running"], ["publishing", "ready"], ["published", "ready"], ["ready-to-merge", "ready"],
+    ["working", "running"], ["talking", "running"], ["planning", "running"], ["reviewing", "running"], ["publishing", "publishing"], ["published", "published"], ["ready-to-merge", "ready"],
     ["checked", "done"], ["completed", "done"], ["queued", "queued"], ["blocked", "blocked"], ["awaiting-review", "awaiting"], ["failed", "failed"], ["cancelled", "cancelled"],
   ])("draws %s as the %s board", (status, board) => {
     expect(boardOfStatus(status as never, "running")).toBe(board);

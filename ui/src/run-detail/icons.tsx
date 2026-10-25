@@ -9,7 +9,7 @@ const PULL_SIZE = 16;
 
 /** The words of each board's header icon for a screen reader, as the boards name them. */
 const ICON_NAME: Readonly<Record<Exclude<RunBoard, "awaiting">, string>> = {
-  running: "Running", needs: "Needs you", handback: "Needs you", ready: "Ready to merge", done: "Completed", failed: "Failed", cancelled: "Cancelled", queued: "Queued", blocked: "Queued",
+  running: "Running", needs: "Needs you", handback: "Needs you", ready: "Ready to merge", publishing: "Publishing", published: "Published", done: "Completed", failed: "Failed", cancelled: "Cancelled", queued: "Queued", blocked: "Queued",
 };
 
 /** The board's spinner: a ring with its track, turning (`.spin` stops for reduced motion). */
@@ -38,6 +38,14 @@ const NEEDS: Drawn = {
 
 const QUEUED: Drawn = { tone: "tone-muted", shape: <circle cx="9" cy="9" r="7" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.6 2.6" /> };
 
+/** The filled check of Completed and, in the Published indigo, Published. */
+const CHECK = (
+  <>
+    <circle cx="9" cy="9" r="8" fill="currentColor" />
+    <path d="M5.6 9.2l2.4 2.4 4.4-4.8" stroke="var(--color-page)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </>
+);
+
 const SHAPES: Readonly<Partial<Record<RunBoard, Drawn>>> = {
   needs: NEEDS,
   handback: NEEDS,
@@ -54,15 +62,8 @@ const SHAPES: Readonly<Partial<Record<RunBoard, Drawn>>> = {
       </>
     ),
   },
-  done: {
-    tone: "tone-success",
-    shape: (
-      <>
-        <circle cx="9" cy="9" r="8" fill="currentColor" />
-        <path d="M5.6 9.2l2.4 2.4 4.4-4.8" stroke="var(--color-page)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </>
-    ),
-  },
+  done: { tone: "tone-success", shape: CHECK },
+  published: { tone: "tone-published", shape: CHECK },
   failed: {
     tone: "tone-danger",
     shape: (
@@ -83,9 +84,9 @@ const SHAPES: Readonly<Partial<Record<RunBoard, Drawn>>> = {
   },
 };
 
-/** The icon in a run's header: the board's own, or none for the Awaiting board. */
+/** The icon in a run's header: the board's own, or none for the Awaiting board. Running and Publishing turn the amber ring. */
 export function RunIcon({ board }: Readonly<{ board: RunBoard }>) {
-  if (board === "running") return <Spinner size={MARK_SIZE} label={ICON_NAME.running} />;
+  if (board === "running" || board === "publishing") return <Spinner size={MARK_SIZE} label={ICON_NAME[board]} />;
   const drawn = SHAPES[board];
   if (drawn === undefined || board === "awaiting") return null;
   return (

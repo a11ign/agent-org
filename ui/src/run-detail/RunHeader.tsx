@@ -1,6 +1,7 @@
 import type { MouseEvent } from "react";
 import { runsHref } from "../shell/routes.ts";
 import { ActionIcon } from "../runs/icons.tsx";
+import { PUBLISH_TITLE, PUBLISHING_TITLE, type PublishState } from "../runs/publish-model.ts";
 import type { QueueView, RunAction } from "../api/types.ts";
 import type { RunEntry } from "../runs/runs-model.ts";
 import { RunIcon } from "./icons.tsx";
@@ -17,14 +18,30 @@ export function Breadcrumb({ runKey }: Readonly<{ runKey: string }>) {
   );
 }
 
-/** What the header's buttons do: press a verb, wait while a request is out, and nothing while the instance cannot be reached. */
-export type HeaderControls = Readonly<{ actions: readonly HeaderAction[]; terminalHref: string | null; followTerminal: (event: MouseEvent) => void; busy: boolean; disabled: boolean; onPress: (verb: RunAction) => void }>;
+/** The Publish button of a machine with a publisher: which of its two looks the run gets, and its press. Null on a machine with none, and on a run that gets neither. */
+export type PublishControl = Readonly<{ state: PublishState; onPress: () => void }>;
 
-/** The header's buttons: the run's one Talk to it first when it is the terminal link, which carries the board's terminal mark, then each verb `runActions` returns, in its order as text. */
-function Buttons({ actions, terminalHref, followTerminal, busy, disabled, onPress }: HeaderControls) {
+/** What the header's buttons do: press a verb, wait while a request is out, and nothing while the instance cannot be reached. Publish is the page's own button, drawn first; it is not one of the run's verbs. */
+export type HeaderControls = Readonly<{
+  actions: readonly HeaderAction[]; terminalHref: string | null; followTerminal: (event: MouseEvent) => void; busy: boolean; disabled: boolean; onPress: (verb: RunAction) => void; publish: PublishControl | null;
+}>;
+
+/** Publish, which posts this run's pull requests to the channel and merges nothing: enabled while a person can publish the run, disabled while the publish run is already posting it. */
+function PublishButton({ control, held }: Readonly<{ control: PublishControl; held: boolean }>) {
+  const posting = control.state === "publishing";
+  return (
+    <button type="button" className="ghost run-button run-button-publish" title={posting ? PUBLISHING_TITLE : PUBLISH_TITLE} disabled={held || posting} onClick={control.onPress}>
+      Publish
+    </button>
+  );
+}
+
+/** The header's buttons: Publish first on a machine with a publisher, the run's one Talk to it when it is the terminal link, which carries the board's terminal mark, then each verb `runActions` returns, in its order as text. */
+function Buttons({ actions, terminalHref, followTerminal, busy, disabled, onPress, publish }: HeaderControls) {
   const held = busy || disabled;
   return (
     <div className="run-buttons">
+      {publish === null ? null : <PublishButton control={publish} held={held} />}
       {terminalHref === null ? null : (
         <a className="ghost run-button" href={terminalHref} target="_blank" rel="noreferrer" title={TERMINAL_TITLE} onClick={followTerminal}>
           <ActionIcon verb="talk" />
