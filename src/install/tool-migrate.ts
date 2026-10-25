@@ -7,7 +7,7 @@
 // again before the timer was re-armed, rewrites and restarts nothing. The checkout is left untouched: runs that started on it keep calling it.
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { SERVICE_NAMES, ServiceRefusal, unitFor, type ServiceDeps, type Unit } from "./service.ts";
+import { reloadRewrittenLaunchd, SERVICE_NAMES, ServiceRefusal, unitFor, type ServiceDeps, type ServiceName, type Unit } from "./service.ts";
 import { agentOrgHome } from "./paths.ts";
 import { currentLink, versionNameOf } from "./tool-versions.ts";
 import { writeAtomic } from "./write-atomic.ts";
@@ -22,9 +22,12 @@ function wanted(name: (typeof SERVICE_NAMES)[number], services: ServiceDeps): Un
   }
 }
 
-/** Rewrite each registered unit whose text differs from what it would be now. @returns the ids of the units rewritten */
-function rewriteUnits(services: ServiceDeps): Unit[] {
-  const changed: Unit[] = [];
+/** A unit that was rewritten, with the name of the service it runs. */
+type Rewritten = Readonly<{ name: ServiceName; unit: Unit }>;
+
+/** Rewrite each registered unit whose text differs from what it would be now. @returns the units rewritten */
+function rewriteUnits(services: ServiceDeps): Rewritten[] {
+  const changed: Rewritten[] = [];
   for (const name of SERVICE_NAMES) {
     const unit = wanted(name, services);
     // herdr's unit is registered here too (written, not enabled or started): the instance's unit `Want=`s it and `ensureSession` starts it, so a herdr that dies or a machine that reboots never has the
@@ -34,7 +37,7 @@ function rewriteUnits(services: ServiceDeps): Unit[] {
     const stale = files.filter((file) => services.read(file.path) !== file.text);
     if (stale.length === 0) continue;
     for (const file of stale) services.write(file.path, file.text);
-    changed.push(unit);
+    changed.push({ name, unit });
   }
   return changed;
 }
@@ -60,11 +63,34 @@ function pointAt(text: string, oldRoot: string, entry: string): string {
 }
 
 /**
- * Point the units, the launcher and the host file's `tool` at `<tool>/current`. @returns one line per thing rewritten; none when everything already names `current`. A systemd manager is told to reload,
- * and the auto-update timer is restarted to take its new cadence; a launchd job's plist is rewritten, and the manager reads it at the job's next `agent-org start`.
+ * A launchd job holds the plist it was loaded with, so each rewritten job that is loaded is loaded again from the new one (A11-266): left alone, it would keep running the checkout or the folder it was
+ * loaded for, and an auto-update job on old code does the updates. The auto-update job that is running THIS update is not booted out, because that kills the update in flight: it is said on `warn`
+ * instead, and `agent-org start auto-update` loads it. A job launchd refuses to load again is said on `warn` too, and the others go on. @returns the lines to say
  */
-export function migrateInstall({ oldRoot, tool, home, env, services, hostPath, binDir }: {
-  oldRoot: string; tool: string; home: string; env: NodeJS.ProcessEnv; services: ServiceDeps; hostPath: string; binDir: string;
+function reloadLaunchdJobs(changed: readonly Rewritten[], { env, services, warn }: { env: NodeJS.ProcessEnv; services: ServiceDeps; warn: (line: string) => void }): string[] {
+  const lines: string[] = [];
+  for (const { name, unit } of changed) {
+    if (unit.id === env.XPC_SERVICE_NAME) {
+      // The plist on disk is now current, so a later update finds nothing to rewrite and loads nothing: only `agent-org start` loads this job again.
+      warn(`agent-org update: ${unit.id} is the job running this update, so it was not loaded again and still runs the code it was loaded with. Run \`agent-org start ${name}\` to load the plist just written.`);
+      continue;
+    }
+    try {
+      if (reloadRewrittenLaunchd(name, unit, services)) lines.push(`loaded ${unit.id} again from its new plist`);
+    } catch (err) {
+      // A job launchd would not load again must not stop the update half-done: the refusal names the command that fixes it by hand.
+      warn(`agent-org update: ${unit.id} was not loaded again: ${(err as Error).message}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * Point the units, the launcher and the host file's `tool` at `<tool>/current`. @returns one line per thing rewritten; none when everything already names `current`. A systemd manager is told to reload,
+ * and the auto-update timer is restarted to take its new cadence; a launchd job's plist is rewritten and the job, when it is loaded, is loaded again from it (A11-266).
+ */
+export function migrateInstall({ oldRoot, tool, home, env, services, hostPath, binDir, warn = console.error }: {
+  oldRoot: string; tool: string; home: string; env: NodeJS.ProcessEnv; services: ServiceDeps; hostPath: string; binDir: string; warn?: (line: string) => void;
 }): string[] {
   const entry = currentLink(tool);
   const lines: string[] = [];
@@ -72,9 +98,10 @@ export function migrateInstall({ oldRoot, tool, home, env, services, hostPath, b
   if (changed.length > 0) {
     if (services.platform === "linux") {
       services.run("systemctl", ["--user", "daemon-reload"]);
-      if (changed.some((unit) => unit.interval)) services.run("systemctl", ["--user", "try-restart", "agent-org-auto-update.timer"]);
+      if (changed.some(({ unit }) => unit.interval)) services.run("systemctl", ["--user", "try-restart", "agent-org-auto-update.timer"]);
     }
-    lines.push(`rewrote ${changed.map((unit) => unit.id).join(", ")} to run through ${entry}`);
+    lines.push(`rewrote ${changed.map(({ unit }) => unit.id).join(", ")} to run through ${entry}`);
+    if (services.platform === "darwin") lines.push(...reloadLaunchdJobs(changed, { env, services, warn }));
   }
   // The launcher and the host file name the checkout this process runs from, so they are rewritten only when it is one; from a version folder, install.sh wrote the launcher already. A host that declares
   // a project (`primary`) is an org host: its `tool` is the git checkout `update-tool` moves, and stays one.

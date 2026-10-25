@@ -1262,7 +1262,7 @@ test("A11-184: a herdr status file that cannot be read fails one row, with the c
   assert.deepEqual([row.ok, row.detail, row.fix], [false, "the herdr status file cannot be read: it is not valid JSON", "run `agent-org update`, which writes the file again, or check its permissions"]);
 });
 
-// A11-191: the running version should have the UI build its release ships, and doctor warns when it does not.
+// A11-191: the running version should have the UI build its release ships, and doctor FAILS when it does not (A11-266).
 const LOOKED = "/home/me/.agent-org/tool/versions/v0.290.0/ui-build";
 const uiBuildOf = (reading: Partial<ReturnType<DoctorDeps["uiBuild"]>>): DoctorDeps["uiBuild"] => () => ({ found: null, declared: true, looked: LOOKED, version: "v0.290.0", ...reading });
 
@@ -1271,22 +1271,22 @@ test("A11-191: doctor's ui build row is ok, naming the folder / is served from, 
   assert.deepEqual(checks["ui build"], { name: "ui build", ok: true, detail: `/ is served from ${LOOKED}`, fix: null });
 });
 
-test("A11-191: a version whose release declares a UI build and has none is a warning that says where it looked, and the fix is `agent-org update`, which fetches it", async () => {
+test("A11-191: a version whose release declares a UI build and has none fails, says where it looked, and the fix is `agent-org update`, which fetches it", async () => {
   const checks = byName(await diagnose(deps({ uiBuild: uiBuildOf({}) })));
   assert.deepEqual(checks["ui build"], {
-    name: "ui build", ok: true, warning: true, fix: "run `agent-org update`, which fetches it",
+    name: "ui build", ok: false, fix: "run `agent-org update`, which fetches it",
     detail: `v0.290.0 should have a UI build and none is in ${LOOKED}, so / shows the missing-build page`,
   });
-  assert.match(report(Object.values(checks)), /WARN {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org update`, which fetches it/);
+  assert.match(report(Object.values(checks)), /FAIL {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org update`, which fetches it/);
 });
 
 test("A11-191: a checkout's fix is to build it, and the main channel's is to move to a release, which has a build to fetch", async () => {
   const checkout = byName(await diagnose(deps({ uiBuild: uiBuildOf({ version: null, looked: "/src/agent-org/ui-build" }) })))["ui build"];
-  assert.equal(checkout.warning, true);
+  assert.equal(checkout.ok, false);
   assert.equal(checkout.fix, "run `pnpm ui:build`");
   assert.match(checkout.detail, /^this version should have a UI build and none is in \/src\/agent-org\/ui-build/);
   const main = byName(await diagnose(deps({ uiBuild: uiBuildOf({ version: "main-1a2b3c4d" }) })))["ui build"];
-  assert.equal(main.warning, true);
+  assert.equal(main.ok, false);
   assert.equal(main.fix, "main has no release to fetch a UI build from: run `agent-org update --channel release`, which moves to the newest release");
 });
 

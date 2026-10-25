@@ -1,5 +1,5 @@
 // no-token: none -- a static file server on 127.0.0.1 that stands in for github.com/<owner>/<repo>/releases/download; nothing reaches the network
-// module: the stand-in for GitHub's release downloads (A11-191) -- `install.sh` and `agent-org update` fetch a release's UI build, and the tests point `AGENT_ORG_RELEASES_URL` here
+// module: the stand-in for GitHub's release downloads (A11-191) -- `install.sh` and `agent-org update` fetch a release's UI build, and the tests point `AGENT_ORG_RELEASES_URL` here; and the stand-in for macOS's `tar` (A11-266)
 //
 // IT IS A CHILD PROCESS because `install-sh.test.ts` runs `install.sh` with `spawnSync`, which blocks the test's event loop: a server in that process would never answer. Run as a program it serves the
 // directory it is given (`<root>/<tag>/<file>`), answers 404 for anything absent, and appends each request's path to a log file; the test reads that log to say what was and was not asked for.
@@ -55,4 +55,24 @@ export function publishUiAsset(root: string, tag: string, dist: string): { tarba
   const script = fileURLToPath(new URL("../../../scripts/ui-asset.ts", import.meta.url));
   execFileSync(process.execPath, [script, "pack", dist, tag, out], { stdio: "pipe" });
   return { tarball: join(out, `agent-org-ui-${tag}.tar.gz`), checksum: join(out, `agent-org-ui-${tag}.tar.gz.sha256`) };
+}
+
+/** A failed `tar` as `execFileSync` throws it: the message holds the command and its stderr, and `stderr` holds the stderr. */
+export const tarFailure = (stderr: string): Error => Object.assign(new Error(`Command failed: tar\n${stderr}`), { stderr });
+
+/**
+ * An `exec` for a `UiSource` that behaves as macOS does (A11-266): `tar` there is bsdtar, which takes the short options (`-x`, `-z`, `-f`, `-C`) and rejects a GNU long option (`--…`), and CI has only GNU tar.
+ * `curl` runs as it is. A `tar` call that bsdtar would refuse fails with bsdtar's own wording; any other runs on the real `tar`, which unpacks the same `./…` entries. `calls` collects each `tar` argument list.
+ */
+export function bsdtarLikeExec(calls: string[][] = []): (file: string, args: string[], options: object) => unknown {
+  return (file, args, options) => {
+    if (file === "curl") return execFileSync("curl", args, options);
+    if (file !== "tar") throw new Error(`the bsdtar stand-in runs curl and tar, not ${file}`);
+    calls.push(args);
+    const longOption = args.find((arg) => arg.startsWith("--"));
+    if (longOption !== undefined) throw tarFailure(`tar: Option ${longOption} is not supported\nUsage:\n  List: tar -tf <archive-filename>\n`);
+    const unknown = args.filter((arg) => /^-[a-zA-Z]/.test(arg)).flatMap((arg) => [...arg.slice(1)]).find((letter) => !"xzfC".includes(letter));
+    if (unknown !== undefined) throw tarFailure(`tar: Unrecognized option -${unknown}\n`);
+    return execFileSync("tar", args, options);
+  };
 }

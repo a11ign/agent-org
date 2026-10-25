@@ -215,11 +215,13 @@ function moveTool({ version, channel, force = false }: { version: string | undef
     // checkout (install.sh ran over it, or the checkout's own timer ran the first update) is pointed at `current` now.
     deps.drain.clear();
     deps.out.log(`agent-org is at ${target.name}: nothing newer`);
-    completeCurrentUi(deps, target.name);
+    const noBuild = completeCurrentUi(deps, target.name);
     const migrated = deps.migrate();
     sayMigrated(deps, migrated);
     if (migrated.length > 0) restartRunning(deps, running);
     finish(deps, channel, target.name, installed);
+    // After the status file and the restarts: what the update keeps true is kept, and the update still does not report success with the build missing.
+    if (noBuild !== null) throw new UpdateRefusal(`agent-org is at ${target.name}, but it has no UI build, so the board shows "The UI build is missing": ${noBuild}`);
     return false;
   }
   const breaking = breakingTo(deps, target, installed, channel);
@@ -258,7 +260,11 @@ function drain(deps: UpdateDeps, { target, installed, channel, live, lines }: { 
 
 /** Swap `current`, point the units at it (the first update from a checkout rewrites them once), restart what ran, and clean up. */
 function apply(deps: UpdateDeps, { target, installed, running, channel }: { target: Target; installed: string | null; running: readonly ServiceName[]; channel: Channel }): boolean {
-  deps.swap(target.name);
+  try {
+    deps.swap(target.name);
+  } catch (err) {
+    throw new UpdateRefusal(`agent-org stays at ${installed ?? "its current version"}, not moved to ${target.name}, because current could not be moved to it: ${(err as Error).message}. Run \`agent-org doctor\`, then update again.`);
+  }
   const migrated = deps.migrate();
   deps.out.log(`agent-org ${target.name} is current${installed !== null && installed !== target.name ? ` (it was ${installed})` : ""}`);
   sayMigrated(deps, migrated);
@@ -271,12 +277,14 @@ function apply(deps: UpdateDeps, { target, installed, running, channel }: { targ
 
 /**
  * The folder `current` names, given the UI build its release declares when it has none (A11-191). The release that first ships the build is installed by the previous version's update, which does not
- * know of it, so this version's own update completes it. Failing would change nothing, so a failure is said as an error and the update goes on.
+ * know of it, so this version's own update completes it. @returns why the build could not be had, or null when the folder has it (A11-266): the caller finishes the update and then refuses, because
+ * an update that leaves the board without its UI build must not exit as a success.
  */
-function completeCurrentUi(deps: UpdateDeps, name: string): void {
+function completeCurrentUi(deps: UpdateDeps, name: string): string | null {
   const done = deps.completeUi(name);
-  if (done.state === "failed") deps.out.error(`agent-org update: ${name} is current but has no UI build: ${done.reason}`);
-  else if (done.said !== undefined) deps.out.log(`agent-org update: ${done.said}`);
+  if (done.state === "failed") return done.reason;
+  if (done.said !== undefined) deps.out.log(`agent-org update: ${done.said}`);
+  return null;
 }
 
 /** Says what the migration rewrote. */

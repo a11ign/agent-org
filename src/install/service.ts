@@ -456,6 +456,19 @@ function loadLaunchd(agent: LaunchdAgent, previous: string | null): void {
   } else bootstrap(agent);
 }
 
+/**
+ * Load the plist just written for a job that is running (an interval job: loaded), since a loaded job keeps the plist it was loaded with (A11-266): booted out, waited for, and bootstrapped. A job that is not loaded is left as it is,
+ * for `agent-org start`, and herdr is never booted out, because that ends every worker's pane. @returns whether the job was loaded again. REFUSES, as `bootoutAndWait` and `bootstrap` do, when launchctl does
+ */
+export function reloadRewrittenLaunchd(name: ServiceName, unit: Unit, deps: ServiceDeps): boolean {
+  const agent = { name, unit, deps };
+  // `serviceState` counts an interval job as running while it is loaded and a daemon only while it runs: a daemon that exited and was left loaded is not started by this.
+  if (name === "herdr" || serviceState(name, deps) !== "running") return false;
+  bootoutAndWait(agent);
+  bootstrap(agent);
+  return true;
+}
+
 /** Whether `name` is registered, and if so whether it runs. A service this version or this platform cannot run is not registered. */
 export function serviceState(name: ServiceName, deps: ServiceDeps): ServiceState {
   let unit: Unit;
