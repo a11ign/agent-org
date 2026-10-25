@@ -107,6 +107,15 @@
   background: var(--color-warn-text);
 }
 
+.loop-line {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+.loop-line-warn {
+  color: var(--color-warn-text);
+}
+
 .sidebar-section {
   display: flex;
   flex-direction: column;
