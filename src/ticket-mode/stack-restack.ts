@@ -165,12 +165,12 @@ export type EmptyMemberInput = Readonly<{
 
 /**
  * Whether a member left open looks to hold nothing of its own: the list of its files is complete and every file in it is scaffolding (or there is none), at a head the board can trust. A head is trusted when it is known, is not the head at which a read already found a
- * file of the member's own, and, if the restack moved the branch, is not the head the restack was made at (a read right after a merge may still be of the old one). A restack that found the branch already current moved nothing, so its head is fine. PURE.
+ * file of the member's own, and, if the restack moved the branch, is not the head the restack was made at (a read right after a merge may still be of the old one). A restack that found the branch already current moved nothing, so its head is fine. A restack whose head is not known (a restart lost it) cannot be told from a stale read, so no head is trusted. PURE.
  */
 export function looksEmpty({ files, filesComplete, head, done }: EmptyMemberInput): boolean {
   if (!filesComplete || head === null || holdsOwnFile(files)) return false;
   if (done.ownChangesAt === head) return false;
-  return done.upToDate === true || done.head === undefined || done.head !== head;
+  return done.upToDate === true || (done.head !== undefined && done.head !== head);
 }
 
 /**

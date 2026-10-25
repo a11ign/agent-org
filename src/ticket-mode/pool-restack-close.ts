@@ -6,7 +6,9 @@
 import type { StackMergeFacts } from "../plugins/contracts/code-host.ts";
 import type { PoolContext } from "./pool-context.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
-import { log, messageOf } from "./pool-state.ts";
+import { askUpdate } from "./pool-checks.ts";
+import { log, messageOf, update } from "./pool-state.ts";
+import { moveOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { closeComment, closeNote, emptyMember, holdsOwnFile, looksEmpty, isEmptyMemberNote, isRestackedNote, restackNote, type CloseOutcome, type RestackBelow, type RestackDone } from "./stack-restack.ts";
 
@@ -29,8 +31,10 @@ export function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, below, d
     remember(ctx, url, done, feedback.head, "ownChangesAt");
     return wasSaidEmpty(previousNote) ? restackNote({ url, defaultBranch: read.defaultBranch, below, outcome: { kind: "updated" } }) : null;
   }
+  if (!feedback.filesComplete || feedback.head === null || hasMembersAbove(ctx, entry)) return null;
+  if (restackHeadUnknown(done)) return confirmRestack(ctx, entry, { url, done, head: feedback.head });
   const observed = { files: feedback.files, filesComplete: feedback.filesComplete, head: feedback.head, done };
-  if (!looksEmpty(observed) || hasMembersAbove(ctx, entry)) return null;
+  if (!looksEmpty(observed)) return null;
   if (!emptyMember(observed)) {
     remember(ctx, url, done, feedback.head, "emptyAt");
     return null;
@@ -38,6 +42,30 @@ export function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, below, d
   const note = closeNote({ url, below, outcome: closeOutcome(ctx, url, below) });
   if (note !== previousNote) log(`${entry.ticket.key}: ${note}`);
   return note;
+}
+
+/** Whether the head the restack was made at is not known (a restart lost it, and the note that says the member was restacked does not keep it), so no head read can be told from one that came before the restack. */
+const restackHeadUnknown = (done: RestackDone): boolean => done.head === undefined && done.upToDate !== true;
+
+/**
+ * Asks the code host once whether the member's branch already has the default branch, which settles what a read of the head cannot: the answer is the host's own merge state, not a file list that may lag. Branch current (`up-to-date`): the head is
+ * past the restack, and a later sweep reads the member's files. Merged in just now (`updated`): that is the restack, made at this head, and a later head is the one to read. Anything else (a conflict, a refusal) leaves the member as it was, for the watch and the next
+ * sweep. Null: the note stands.
+ */
+function confirmRestack(ctx: PoolContext, entry: Entry, { url, done, head }: { url: string; done: RestackDone; head: string }): null {
+  const result = askUpdate(ctx, url, head);
+  if (result.kind === "up-to-date") ctx.restacked.set(url, { ...done, head, upToDate: true });
+  if (result.kind === "updated") {
+    ctx.restacked.set(url, { ...done, head });
+    followHead(ctx, entry.ticket.key, url, head);
+  }
+  return null;
+}
+
+/** A merge pushed to a finished run's pull request moves its head: the head the run ended at moves with it, so the push is not read as a person's (A11-153). */
+export function followHead(ctx: PoolContext, key: string, url: string, from: string): void {
+  const to = ctx.codeHost.stackMergeFactsOf?.(url)?.head;
+  if (to !== undefined && to !== from) update(ctx, (queue) => moveOutcomeHeads(queue, key, from, to));
 }
 
 /** Whether another run that is not settled is stacked on this run's branch: closing its pull request would strand that run on a base that never merges. */

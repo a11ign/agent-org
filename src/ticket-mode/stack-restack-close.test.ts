@@ -25,7 +25,7 @@ test("A11-248: a list cut short, or a head the code host does not say, is never 
 test("A11-248: after a restack that moved the branch the head it was made at is not trusted, but the same head after an up-to-date restack is", () => {
   assert.equal(looksEmpty(input({ head: RESTACK_HEAD })), false, "a read right after the merge may still be of the old head");
   assert.equal(looksEmpty(input({ head: RESTACK_HEAD, done: { ...MOVED, upToDate: true } })), true, "nothing moved, so the head is the head");
-  assert.equal(looksEmpty(input({ done: { merged: BELOW.url } })), true, "a restack read back off a note has no head to distrust");
+  assert.equal(looksEmpty(input({ done: { merged: BELOW.url } })), false, "a restack read back off a note has no head to tell a stale read by, so no head is trusted");
 });
 
 test("A11-248: a member the board read a file of its own in at this head is not closed", () => {

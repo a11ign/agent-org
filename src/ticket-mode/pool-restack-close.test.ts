@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakeCodeHost, fakePullUrl } from "../plugins/fakes/code-host.ts";
-import type { CodeHost } from "../plugins/contracts/code-host.ts";
+import type { CodeHost, UpdateBranchResult } from "../plugins/contracts/code-host.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { poolFixture } from "./pool-fixture.ts";
 
@@ -19,6 +19,13 @@ const RESTACKED = "#2 restacked on main after #1 merged";
 const CLOSED = "#2 closed: everything it held merged with #1";
 
 const bottomRun = (): Entry => ({ ticket: { key: "A11-1" }, phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: BOTTOM }] }, pullStates: { [BOTTOM]: "merged" } }) as unknown as Entry;
+
+/** The member was not closed: no close was asked, it reads open, and the card still says it was restacked. */
+function assertKeptOpen({ host, next, closes }: Pick<ReturnType<typeof world>, "host" | "next" | "closes">): void {
+  assert.equal(closes(), 0);
+  assert.equal(host.readPullState(NEXT), "OPEN");
+  assert.equal(next().retargets![NEXT], RESTACKED);
+}
 
 /** The run of the next member: finished, stacked on A11-1's branch, its pull request open. */
 const nextRun = (over: Record<string, unknown> = {}): Entry => ({
@@ -57,7 +64,14 @@ function world(over: { codeHost?: (host: ReturnType<typeof createFakeCodeHost>) 
   };
   /** The member restacked, and read empty once. */
   const emptyOnce = () => { restacked(); emptied(); sawEmpty(); };
-  return { host, pool, next, reads, closes, restacked, emptied, sawEmpty, emptyOnce, fixture };
+  /** The board restarted after the member was restacked and read empty by GitHub: the host answers an update of its branch as `answer`. */
+  const restartedAs = (answer: UpdateBranchResult) => {
+    restacked();
+    emptied();
+    host.branchUpdates.answers.set(NEXT, answer);
+    return fixture.restart({ codeHost: host });
+  };
+  return { host, pool, next, reads, closes, restacked, emptied, sawEmpty, emptyOnce, restartedAs, fixture };
 }
 
 test("A11-248: an empty member is closed with a comment, the card says so, and a further sweep closes nothing again", () => {
@@ -140,18 +154,33 @@ test("A11-248: a code host without closePull gets the note that says to close th
   assert.equal(next().retargets![NEXT], RESTACKED, "a member that gained a file of its own is not to be closed any more");
 });
 
-test("A11-248: a board that restarted after it restacked a member closes it once its note says it was restacked and two reads find it empty", () => {
-  const { host, pool, next, closes, restacked, emptied, fixture } = world();
-  restacked();
-  emptied();
-  const restarted = fixture.restart({ codeHost: host });
+test("A11-248: a board that restarted after it restacked a member asks the host once whether the branch has main, then closes it on two reads that find it empty", () => {
+  const { host, pool, next, closes, restartedAs } = world();
+  const restarted = restartedAs({ kind: "up-to-date" });
+  const asked = () => host.branchUpdates.asked.length;
+  const before = asked();
   restarted.retargetStacked();
-  assert.equal(closes(), 0, "the restart lost the first read of it empty");
+  assert.equal(asked() - before, 1, "the restart lost the head the restack was made at, so the host is asked whether the branch has main");
   restarted.retargetStacked();
-  assert.equal(closes(), 1, "but the note stands in for the memory of the restack, so it is read and closed");
+  assert.equal(closes(), 0, "the first read of it empty");
+  restarted.retargetStacked();
+  assert.equal(closes(), 1, "the second closes it");
+  assert.equal(asked() - before, 1, "and the host is not asked again");
   assert.equal(next().retargets![NEXT], CLOSED);
   pool.retargetStacked();
   assert.equal(closes(), 1);
+});
+
+test("A11-248: after a restart a read that still shows the head from before the restack does not close the member, however often it repeats", () => {
+  const { host, next, closes, restartedAs } = world();
+  // The restack was merged in just before the restart, and the host's file list and head are still those from before it: the host answers that the merge is only now made.
+  const restarted = restartedAs({ kind: "updated" });
+  for (let sweep = 0; sweep < 4; sweep += 1) restarted.retargetStacked();
+  assertKeptOpen({ host, next, closes });
+  host.pullAt(NEXT)!.head = "f".repeat(40);
+  restarted.retargetStacked();
+  restarted.retargetStacked();
+  assert.equal(closes(), 1, "it is closed once a head past the restack reads empty twice");
 });
 
 test("A11-248: a member whose restack conflicted is never closed, whatever its files", () => {
@@ -202,14 +231,11 @@ test("A11-248: a first read of an empty list that a second read does not repeat 
 
 test("A11-248: a member another run is stacked on is not closed, so that run keeps a base that can merge", () => {
   const above = { ticket: { key: "A11-3", branch: "a11-3-work" }, phase: "running", blockers: [{ key: "A11-2", state: "started", status: "In Review", branch: NEXT_BRANCH, pulls: {} }] } as unknown as Entry;
-  const { pool, next, closes, restacked, emptied, fixture, host } = world();
+  const { pool, next, closes, emptyOnce, fixture, host } = world();
   fixture.store.set({ ...fixture.store.get(), entries: [...fixture.store.get().entries, above] });
-  restacked();
-  emptied();
+  emptyOnce();
   for (let sweep = 0; sweep < 3; sweep += 1) pool.retargetStacked();
-  assert.equal(closes(), 0);
-  assert.equal(host.readPullState(NEXT), "OPEN");
-  assert.equal(next().retargets![NEXT], RESTACKED);
+  assertKeptOpen({ host, next, closes });
 });
 
 test("A11-248: a member that is closed is not handed to the arm bot, and one the board could not close still is, as before", () => {

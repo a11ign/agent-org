@@ -27,7 +27,7 @@ import { readPullDeclarations } from "./pool-pull-declarations.ts";
 import { adoptNamedBlockers, releaseMergedBlockers } from "./pool-blocker-cleared.ts";
 import { askUpdate } from "./pool-checks.ts";
 import { recordClosedWork } from "./pool-closed-work.ts";
-import { closeEmptyMember } from "./pool-restack-close.ts";
+import { closeEmptyMember, followHead } from "./pool-restack-close.ts";
 import { isClosedMemberNote, isEmptyMemberNote, isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
@@ -463,10 +463,4 @@ function doneFromNote(note: string | undefined, url: string): { merged: string }
 function belowOf(ctx: PoolContext, blockerKey: string, candidates: readonly string[], done: Readonly<{ merged: string }> | undefined): RestackBelow | null {
   const merged = done !== undefined && candidates.includes(done.merged) ? done.merged : candidates.find((url) => ctx.codeHost.readPullState(url) === "MERGED");
   return merged === undefined ? null : { key: blockerKey, url: merged, state: "MERGED" };
-}
-
-/** A merge pushed to a finished run's pull request moves its head: the head the run ended at moves with it, so the push is not read as a person's (A11-153). */
-function followHead(ctx: PoolContext, key: string, url: string, from: string): void {
-  const to = ctx.codeHost.stackMergeFactsOf?.(url)?.head;
-  if (to !== undefined && to !== from) update(ctx, (queue) => moveOutcomeHeads(queue, key, from, to));
 }
