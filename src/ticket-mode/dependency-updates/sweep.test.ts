@@ -11,6 +11,7 @@ import { emptyQueue, queueWriter, writerEnded } from "../queue.ts";
 import type { Queue, RunChoice } from "../queue/queue-entries-and-outcomes.ts";
 import type { Ticket } from "../source.ts";
 import { dependencyUpdateSweep, MAX_ATTEMPTS, RETRY_MS } from "./sweep.ts";
+import { DEPENDENCY_EPIC } from "./ticket-request.ts";
 import type { DependencyState } from "./filed.ts";
 
 const REPO = "o/r";
@@ -22,7 +23,9 @@ const GROUP_BRANCH = "dependabot/npm_and_yarn/minor-and-patch-0123456789abcdef";
 const JOB_URL = "https://github.com/o/r/actions/runs/5/job/6";
 const CHANGELOG = "https://github.com/x/y/releases/tag/v2.0.0";
 
-type Overrides = Partial<{ repositories: () => readonly string[]; writer: { model: string; effort: string } | null; clones: Record<string, string>; queueRefuses: boolean; sourceHas: boolean }>;
+type Overrides = Partial<{ repositories: () => readonly string[]; writer: { model: string; effort: string } | null; clones: Record<string, string>; queueRefuses: boolean; sourceHas: boolean;
+  /** What the tracker answers for the epic the requests' team is read from: its ticket (the default, in team A11), none, or a failed read. */
+  epic: Ticket | null | "throws" }>;
 
 /** The sweep over a fake code host, an in-memory queue, a stub tracker and a state file in a temporary directory. `again` is a restart: a new sweep over the same file and queue. */
 function board(over: Overrides = {}) {
@@ -34,7 +37,11 @@ function board(over: Overrides = {}) {
   const queued: { keys: string[]; choice: RunChoice; plan: boolean }[] = [];
   const logs: string[] = [];
   const clock = { at: 1_700_000_000_000 };
-  const read = (key: string): Promise<Ticket | null> => Promise.resolve(over.sourceHas === false ? null : ({ key, title: key } as Ticket));
+  let epic = over.epic === undefined ? ({ key: DEPENDENCY_EPIC, title: "Dependencies", team: "A11" } as Ticket) : over.epic;
+  const read = (key: string): Promise<Ticket | null> => {
+    if (key !== DEPENDENCY_EPIC) return Promise.resolve(over.sourceHas === false ? null : ({ key, title: key } as Ticket));
+    return epic === "throws" ? Promise.reject(new Error("the tracker is down\nat somewhere")) : Promise.resolve(epic);
+  };
   const make = () => dependencyUpdateSweep({
     codeHost: host, source: { read }, store, statePath, repositories: over.repositories ?? (() => [REPO]), clones: over.clones ?? {},
     writer: () => (over.writer === undefined ? { model: "opus", effort: "high" } : over.writer), runChoice: () => ({ model: "sonnet", effort: "medium" }),
@@ -46,6 +53,8 @@ function board(over: Overrides = {}) {
   });
   return {
     host, store, queued, logs, clock, statePath, sweep: make(), again: make,
+    /** What the tracker answers for the epic from now on. */
+    setEpic(next: Ticket | null | "throws") { epic = next; },
     writers: () => store.get().writers ?? [],
     state: (): DependencyState => JSON.parse(readFileSync(statePath, "utf8")),
     /** The writer run `n` ends, having made `keys` (and failed with `failure`). */
@@ -65,6 +74,13 @@ function board(over: Overrides = {}) {
       const { url } = this.group();
       this.red(url, names);
       return url;
+    },
+    /** A major and a red group, and the two sweeps that ask for both. */
+    async majorAndGroup() {
+      this.major(9);
+      await this.redGroup();
+      await this.sweep();
+      await this.sweep();
     },
     /** A major asked for, its writer run ended having made `keys` (and failed with `failure`), and two sweeps after. */
     async filed(keys: readonly string[], failure?: string) {
@@ -329,7 +345,7 @@ test("A11-255: a state file that cannot be read asks for nothing, and a code hos
   assert.ok(unseen.logs.some((line) => /cannot list the dependency bot's pull requests/.test(line)));
 
   const cut = board();
-  const gone = dependencyUpdateSweep({ codeHost: cut.host, source: { read: () => Promise.resolve(null) }, store: cut.store, statePath: cut.statePath, repositories: () => ["o/never-given"], clones: {}, writer: () => ({ model: "opus", effort: "high" }),
+  const gone = dependencyUpdateSweep({ codeHost: cut.host, source: { read: (key) => Promise.resolve(key === DEPENDENCY_EPIC ? ({ key, title: key, team: "A11" } as Ticket) : null) }, store: cut.store, statePath: cut.statePath, repositories: () => ["o/never-given"], clones: {}, writer: () => ({ model: "opus", effort: "high" }),
     runChoice: () => ({ model: "opus", effort: "high" }), queueTickets: () => {}, wake: () => {}, now: () => 1, log: (line) => cut.logs.push(line) });
   await gone();
   assert.ok(cut.logs.some((line) => /o\/never-given's pull requests could not be listed/.test(line)));
@@ -419,4 +435,47 @@ test("A11-255: a state file the sweep wrote is read back whole: the rerun it rec
   await restarted();
   await restarted();
   assert.deepEqual([b.writers().length, b.host.checksAndClaims.reruns.length], [2, 1], "the major once, the red group once after its one rerun");
+});
+
+test("A11-267: a request carries the team of the epic, on the writer run and in its text, so the writer is never left to infer one", async () => {
+  const b = board({ epic: { key: DEPENDENCY_EPIC, title: "Dependencies", team: "OPS" } as Ticket });
+  await b.majorAndGroup();
+  assert.equal(b.writers().length, 2, "a major and a red group");
+  for (const run of b.writers()) {
+    assert.equal(run.team, "OPS");
+    assert.ok(run.request.includes("- **Team:** `OPS`. The board set it on this request: file the ticket in it."), "the request's own text names the team");
+  }
+});
+
+test("A11-267: the team is read from the epic each sweep, so a team the epic moves to is the next request's", async () => {
+  const b = board();
+  b.major(9);
+  await b.sweep();
+  assert.equal(b.writers()[0]!.team, "A11");
+  b.setEpic({ key: DEPENDENCY_EPIC, title: "Dependencies", team: "OPS" } as Ticket);
+  b.major(10, "deps: bump @z/w from 1.0.0 to 2.0.0", "", "dependabot/npm_and_yarn/z/w-2.0.0");
+  await b.sweep();
+  assert.equal(b.writers()[1]!.team, "OPS");
+});
+
+test("A11-267: an epic the tracker cannot read, does not have, or that names no team asks for nothing, says why once, and the next sweep asks", async () => {
+  for (const [epic, why] of [["throws", /the tracker is down/], [null, /the tracker has no such ticket/], [{ key: DEPENDENCY_EPIC, title: "x", team: "" } as Ticket, /it names no team/]] as const) {
+    const b = board({ epic });
+    await b.majorAndGroup();
+    assert.equal(b.writers().length, 0, `nothing is asked for: ${String(why)}`);
+    assert.equal(existsSync(b.statePath), false, "and nothing is recorded as requested, so the next sweep asks");
+    assert.equal(b.host.checksAndClaims.reruns.length, 0, "a group is not rerun while the sweep cannot ask for its ticket");
+    assert.equal(b.logs.filter((line) => /the team of A11-251 is not known/.test(line) && why.test(line)).length, 1, "said once");
+  }
+});
+
+test("A11-267: once the epic can be read again, the sweep asks for what it had left, in the epic's team", async () => {
+  const b = board({ epic: "throws" });
+  b.major(9);
+  await b.sweep();
+  assert.equal(b.writers().length, 0);
+  b.setEpic({ key: DEPENDENCY_EPIC, title: "Dependencies", team: "A11" } as Ticket);
+  await b.sweep();
+  assert.equal(b.writers().length, 1);
+  assert.equal(b.writers()[0]!.team, "A11");
 });

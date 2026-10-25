@@ -4388,7 +4388,7 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
  */
 
 const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." } };
-const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; form: WriterForm; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", placement: "manual", form: { repo: "nbl-ui-netbox" } };
+const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; form: WriterForm; team?: string; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", placement: "manual", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
 function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source, now?: () => number) {
@@ -4704,6 +4704,22 @@ test("A11-199: an auto request's brief leaves every choice to the writer, and a 
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /Auto placement: choose the project, repository, goal, priority and parent from the request/);
   assert.deepEqual(run().tickets, [{ key: "NBF-1", url: null, inPick: false }], "it has no title, priority or project to show");
   assert.equal(run().failure, "NBF-1 is not in the tracker");
+});
+
+test("A11-267: a request the board filed carries its team into the brief, and the run that files its ticket ends done: the board shows the card Done with the ticket", async () => {
+  const fixture = writing({ id: "d1", placement: "auto", form: {}, team: "OPS" }, WRITER, trackerOf({ "OPS-7": { url: "https://linear.app/x/OPS-7" } }));
+  const { dir, run } = fixture;
+  assert.equal(run().team, "OPS");
+  await filesThenEnds(fixture, recordOf(["OPS-7"]), { kind: "created", created: ["OPS-7"] }, "idle");
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /1\. \*\*The request's own team:\*\* `OPS`, the team the board set on this request\. File the ticket in it\./);
+  assert.deepEqual([run().phase, run().failure, writerStatus(run())], ["finished", undefined, "done"]);
+  assert.deepEqual(run().tickets.map(({ key, url }) => [key, url]), [["OPS-7", "https://linear.app/x/OPS-7"]]);
+});
+
+test("A11-267: a request with no team of its own leaves the first step to the form's parent", async () => {
+  const { pool, dir } = writing({ id: "d2", placement: "auto", form: {} });
+  await pool.tick();
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /1\. \*\*The request's own team:\*\* the request sets no team of its own/);
 });
 
 test("a new-ticket run starts on the model and effort it was queued with, whatever the host file says, and one queued before they were stamped starts on the host file's", async () => {

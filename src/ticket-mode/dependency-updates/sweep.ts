@@ -9,12 +9,12 @@
 // so two ticks never ask twice, and when the run ends with exactly one ticket the sweep queues that ticket as `POST /api/queue` does (`settle.ts`). A tick never overlaps another. The file is `filed.ts`'s.
 import type { DependencyPull } from "../../plugins/contracts/code-host.ts";
 import { classifyDependencyPull, majorKey, type MajorUpdate } from "./classify.ts";
-import { due, firstLine, sayOnce, type DependencySweepDeps, type SweepContext } from "./context.ts";
+import { due, firstLine, sayOnce, type AskingContext, type DependencySweepDeps, type SweepContext } from "./context.ts";
 import { loadState, saveState } from "./filed.ts";
 import { watchGroup } from "./red-group.ts";
 import { requestTicket, type TicketRequest } from "./request.ts";
 import { settleRequests } from "./settle.ts";
-import { majorRequest } from "./ticket-request.ts";
+import { DEPENDENCY_EPIC, majorRequest } from "./ticket-request.ts";
 
 export { MAX_ATTEMPTS, RETRY_MS, type DependencySweepDeps } from "./context.ts";
 
@@ -47,19 +47,40 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
     sayOnce(ctx, "dependency updates: the code host cannot list the dependency bot's pull requests, so none becomes a ticket");
     return;
   }
+  const team = await requestTeamOf(ctx);
+  if (team === null) return;
+  const asking: AskingContext = { ...ctx, team };
   let full = false;
   const ask = (request: TicketRequest): void => {
     if (full) return;
     // A writer run waits for no Pause (a person just asked for it), but the sweep's has no person: while the board is paused it asks for nothing.
     if (deps.store.get().paused) sayOnce(ctx, "dependency updates: the queue is paused, so no dependency ticket is asked for until it is resumed");
-    full = deps.store.get().paused || !requestTicket(ctx, request);
+    full = deps.store.get().paused || !requestTicket(asking, request);
   };
   const self = deps.codeHost.readOwnLogin() ?? "";
   const repositories = repositoriesOf(ctx);
   for (const repository of repositories) {
     const pulls = deps.codeHost.openDependencyPulls(repository);
     if (pulls === null) sayOnce(ctx, `dependency updates: ${repository}'s pull requests could not be listed, so the next sweep asks again`);
-    else sweepRepository(ctx, ask, { repository, pulls, self });
+    else sweepRepository(asking, ask, { repository, pulls, self });
+  }
+}
+
+/**
+ * The key of the team every request of this sweep is filed in: the team of {@link DEPENDENCY_EPIC}, the epic each dependency ticket relates to, read from the tracker once per sweep so a rename or a move follows the epic. The writer is
+ * never left to infer a team (A11-267), so while the epic cannot be read, or has no team, nothing is asked for: the reason is said once, and the next sweep reads it again. Null in that case.
+ */
+async function requestTeamOf(ctx: SweepContext): Promise<string | null> {
+  const unknown = (why: string): null => {
+    sayOnce(ctx, `dependency updates: the team of ${DEPENDENCY_EPIC} is not known (${why}), so no dependency ticket is asked for until it is`);
+    return null;
+  };
+  try {
+    const epic = await ctx.deps.source.read(DEPENDENCY_EPIC);
+    if (epic === null) return unknown(`the tracker has no such ticket`);
+    return epic.team === "" ? unknown("it names no team") : epic.team;
+  } catch (err) {
+    return unknown(firstLine(err));
   }
 }
 
@@ -74,7 +95,7 @@ function repositoriesOf(ctx: SweepContext): readonly string[] {
 }
 
 /** One repository's open pull requests: each is skipped, asked for as a major, or watched as a group. */
-function sweepRepository(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pulls, self }: Readonly<{ repository: string; pulls: readonly DependencyPull[]; self: string }>): void {
+function sweepRepository(ctx: AskingContext, ask: (request: TicketRequest) => void, { repository, pulls, self }: Readonly<{ repository: string; pulls: readonly DependencyPull[]; self: string }>): void {
   forgetClosed(ctx, repository, pulls);
   for (const pull of pulls) {
     const update = classifyDependencyPull(pull);
@@ -85,9 +106,9 @@ function sweepRepository(ctx: SweepContext, ask: (request: TicketRequest) => voi
 }
 
 /** The key of a major that has no entry yet, or whose failed entry is due again, is asked for. */
-function askMajor({ deps, state }: SweepContext, ask: (request: TicketRequest) => void, { repository, pull, update }: Readonly<{ repository: string; pull: DependencyPull; update: MajorUpdate }>): void {
+function askMajor({ deps, state, team }: AskingContext, ask: (request: TicketRequest) => void, { repository, pull, update }: Readonly<{ repository: string; pull: DependencyPull; update: MajorUpdate }>): void {
   const key = majorKey(repository, update);
-  if (due(state.tickets[key], deps.now())) ask({ key, repository, request: majorRequest({ repository, url: pull.url, headRefName: pull.headRefName, body: pull.body, update }) });
+  if (due(state.tickets[key], deps.now())) ask({ key, repository, request: majorRequest({ team, repository, url: pull.url, headRefName: pull.headRefName, body: pull.body, update }) });
 }
 
 /** A pull request that is no longer open forgets the head it was rerun at, so a pull request number never carries a record into another life. */

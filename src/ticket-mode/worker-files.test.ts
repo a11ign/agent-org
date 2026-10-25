@@ -733,13 +733,54 @@ test("A11-199: a manual brief with none of the five set says so, and leaves each
   says(placedBrief("manual", {}), [/Manual placement, and the person set none of the five\. Each of the five not listed here is yours to choose from the request\./]);
 });
 
-test("A11-135: the team is the parent's, else the team the Pick view lists, and with neither the run ends needs-human", () => {
-  assert.match(briefIn("quick", "A11"), /the team of the parent ticket the form names, else `A11`, the team the Pick view lists/);
-  assert.match(briefIn("quick", null), /else none: when the form names no parent and no team is set here, end needs-human/);
+/** The brief of a request filed with the run's `team` on a machine whose Pick view lists `pickTeam`, for the request "x". */
+const teamBrief = (team: string | null, pickTeam: string | null) =>
+  writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode: "quick", placement: "auto", form: {}, dir: "/d", team, pickTeam });
+/** The Team bullet of a brief: the line `- **Team:**` and the four numbered steps under it. */
+const teamRuleOf = (brief: string): string => /- \*\*Team:\*\*[^\n]*\n(?: {2}\d\. [^\n]*\n?)+/.exec(brief)![0];
+
+const STEP_1_NONE = /1\. \*\*The request's own team:\*\* the request sets no team of its own, so the team of the parent ticket the form names, if it names one\. A parent you choose yourself under Auto placement takes its team in the same way\./;
+const STEP_3 = /3\. \*\*The workspace's only team:\*\* list the teams with the read-only Fake tools, leave out each team that is retired or archived, and use the one team left when exactly one is\./;
+const STEP_4 = /4\. \*\*Otherwise\*\* end needs-human, since no team is known\. Never choose among several teams\./;
+
+test("A11-267: the Team rule is one ordered list: the request's own team, the configured tracker team, the workspace's only team, and needs-human when none is left", () => {
+  const brief = teamBrief("OPS", "A11");
+  const rule = teamRuleOf(brief);
+  says(rule, [
+    /the first of these four that gives a team\. The skill's Step 6 takes the team from this brief, and asks nobody\./,
+    /1\. \*\*The request's own team:\*\* `OPS`, the team the board set on this request\. File the ticket in it\./,
+    /2\. \*\*The configured tracker team:\*\* `A11`, the team the Pick view lists\./,
+    STEP_3,
+    STEP_4,
+  ]);
+  assert.ok(rule.indexOf("1. ") < rule.indexOf("2. ") && rule.indexOf("2. ") < rule.indexOf("3. ") && rule.indexOf("3. ") < rule.indexOf("4. "), "in that order");
 });
 
-test("A11-199: the team bullet says a parent the writer chooses under Auto sets the team too", () => {
-  assert.match(briefIn("quick", "A11"), /the team of the parent ticket the form names, else `A11`, the team the Pick view lists\. A parent you choose yourself under Auto placement takes its team in the same way\./);
+test("A11-267: a request that carries a team names it first, over the Pick team; with none, the Pick team is named; with neither, the only-team step and then needs-human are what is left", () => {
+  const requested = teamRuleOf(teamBrief("OPS", "A11"));
+  assert.match(requested, /1\. \*\*The request's own team:\*\* `OPS`/);
+  assert.match(requested, /2\. \*\*The configured tracker team:\*\* `A11`/, "the Pick team is still the second step, and OPS is not the Pick team");
+  const configured = teamRuleOf(teamBrief(null, "A11"));
+  says(configured, [STEP_1_NONE, /2\. \*\*The configured tracker team:\*\* `A11`, the team the Pick view lists\./, STEP_3, STEP_4]);
+  const neither = teamRuleOf(teamBrief(null, null));
+  says(neither, [STEP_1_NONE, /2\. \*\*The configured tracker team:\*\* no team is set on this machine\./, STEP_3, STEP_4]);
+});
+
+test("A11-267: a board-filed request on a host with no Pick team names the team and does not tell the run to end needs-human for want of one", () => {
+  const rule = teamRuleOf(teamBrief("A11", null));
+  says(rule, [/1\. \*\*The request's own team:\*\* `A11`, the team the board set on this request\. File the ticket in it\./, /2\. \*\*The configured tracker team:\*\* no team is set on this machine\./]);
+  assert.doesNotMatch(rule, /1\. [^\n]*needs-human/, "step 1 names a team and ends nothing");
+  assert.doesNotMatch(rule, /none: when the form names no parent and no team is set here, end needs-human/, "the old rule that ended every such run is gone");
+});
+
+test("A11-267: the Team rule is the same words for every run of the same request, whatever else differs between the runs", () => {
+  const first = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode: "quick", placement: "auto", form: {}, dir: "/state/w1", team: "A11", pickTeam: null });
+  const second = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode: "quick", placement: "auto", form: {}, dir: "/state/w2", team: "A11", pickTeam: null });
+  assert.equal(teamRuleOf(first), teamRuleOf(second));
+});
+
+test("A11-199: the team rule says a parent the writer chooses under Auto sets the team too, when the request has no team of its own", () => {
+  assert.match(teamRuleOf(briefIn("quick", "A11")), STEP_1_NONE);
 });
 
 test("A11-135: the brief keeps the duplicate check under Possible duplicates, and reads the tracker with read-only tools", () => {

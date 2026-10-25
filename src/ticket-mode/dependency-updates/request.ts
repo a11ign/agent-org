@@ -3,7 +3,7 @@
 import { queueWriter } from "../queue.ts";
 import { MAX_WRITER_RUNS, type WriterForm } from "../queue/queue-entries-and-outcomes.ts";
 import { placementOf } from "../writer-placement.ts";
-import { firstLine, sayOnce, type SweepContext } from "./context.ts";
+import { firstLine, sayOnce, type AskingContext } from "./context.ts";
 
 /** The new-ticket places a person keeps: the sweep takes no more than the rest, so "New ticket" is never refused for the sweep's requests. */
 export const PLACES_KEPT_FOR_PEOPLE = 1;
@@ -18,11 +18,11 @@ const formOf = (repository: string, clones: Readonly<Record<string, string>>): W
 };
 
 /**
- * Ask the writer for one ticket. The key is recorded `requested` first, then the run is queued, and a run the queue refuses (the writer is off or its three places are taken) takes the record back. Answers false when nothing
+ * Ask the writer for one ticket, filed in the team the sweep read (A11-267). The key is recorded `requested` first, then the run is queued, and a run the queue refuses (the writer is off or its three places are taken) takes the record back. Answers false when nothing
  * more can be asked this sweep.
  */
-export function requestTicket(ctx: SweepContext, { key, repository, request }: TicketRequest): boolean {
-  const { deps, state, commit, memory } = ctx;
+export function requestTicket(ctx: AskingContext, { key, repository, request }: TicketRequest): boolean {
+  const { deps, state, commit, memory, team } = ctx;
   const writer = deps.writer();
   if (writer === null) {
     sayOnce(ctx, "dependency updates: this machine names no tickets.writer, so no dependency ticket is asked for");
@@ -39,7 +39,7 @@ export function requestTicket(ctx: SweepContext, { key, repository, request }: T
   commit();
   const form = formOf(repository, deps.clones);
   try {
-    deps.store.set(queueWriter(deps.store.get(), { id, request, mode: "quick", placement: placementOf(form), form, model: writer.model, effort: writer.effort }, deps.now()));
+    deps.store.set(queueWriter(deps.store.get(), { id, request, mode: "quick", placement: placementOf(form), form, team, model: writer.model, effort: writer.effort }, deps.now()));
   } catch (err) {
     if (before === undefined) delete state.tickets[key];
     else state.tickets[key] = before;

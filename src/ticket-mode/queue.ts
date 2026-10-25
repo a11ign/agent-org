@@ -122,7 +122,7 @@ export function writerAsRead(run: LegacyRun): WriterRun {
  * Add a new-ticket request, queued, with the model and effort it runs on. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused,
  * naming why, so a person clears one first. PURE.
  */
-export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom">>, now: number): Queue {
+export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom" | "team">>, now: number): Queue {
   const open = (queue.writers ?? []).filter((run) => run.phase !== "finished").length;
   if (open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
   const run: WriterRun = { ...request, phase: "queued", queuedAt: now, tickets: [] };

@@ -36,6 +36,9 @@ export type Memory = { readonly said: Set<string>; sequence: number };
 /** One sweep: the dependencies, the state it read, the way to write it back, and what is remembered. */
 export type SweepContext = Readonly<{ deps: DependencySweepDeps; state: DependencyState; commit: () => void; memory: Memory }>;
 
+/** A sweep that is asking: its context and the key of the team every request it makes is filed in (A11-267). */
+export type AskingContext = SweepContext & Readonly<{ team: string }>;
+
 /** Says a line once however many sweeps reach it: a skip or a refusal that stands is one line, not one per sweep. */
 export function sayOnce({ deps, memory }: Pick<SweepContext, "deps" | "memory">, line: string): void {
   if (memory.said.has(line)) return;
