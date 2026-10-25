@@ -84,6 +84,10 @@ import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import { pickRepositories, type PickedRepository } from "./onboard-repos.ts";
 import { clackPrompts, PromptCancelled, type Prompts } from "./prompts.ts";
 import { type OnboardOutput, onboardOutput } from "./onboard-output.ts";
+import { shimTextFor, writeLauncher } from "./launcher.ts";
+import { checkCommand, fixDepsFor } from "./shell-command-cli.ts";
+import { COMMAND_CHECK_NAME, realShellDeps, shellContext, type ShellContext, type ShellDeps } from "./shell-command.ts";
+import { currentLink, toolDir } from "./tool-versions.ts";
 
 export type OnboardOptions = Readonly<{
   repos: readonly string[];
@@ -157,6 +161,8 @@ export type OnboardDeps = Readonly<{
   ghAs: (account: Account) => ProgramRunner;
   /** Which replacements of the interim guards hold, read now (A11-145). */
   replacements: () => Promise<Replacements>;
+  /** What the person's login shell runs for `agent-org`, and the copy it ends in (A11-285). A test injects one, so no shell is started. */
+  shell: ShellDeps;
   /** The checks `agent-org doctor` runs, read now: printed as onboard's last report (A11-145). */
   diagnose: () => Promise<Check[]>;
   /** The Chromium builds this machine has, read now: onboard installs what is missing, and says what it cannot (A11-151). */
@@ -706,9 +712,15 @@ function sayGuards(lines: readonly string[], say: OnboardOutput): void {
   for (const line of lines.filter((each) => KEPT_WORKAROUND.test(each))) say.failed("An old workaround is still in place", line);
 }
 
-/** Says each doctor check that failed (doctor's own rule: a check passes when `ok`), as a ✗ line with its fix. The whole report is for `--verbose`. */
-function sayChecks(checks: readonly Check[], say: OnboardOutput): void {
-  for (const check of checks.filter(({ ok }) => !ok)) say.failed(`${check.name}: ${check.detail}`, check.fix ?? "");
+/**
+ * Says each doctor check that failed (doctor's own rule: a check passes when `ok`), as a ✗ line with its fix. The whole report is for `--verbose`.
+ * @param said the names of checks a step already said, and counted (`setUpCommand` says `agent-org command`): a failing row of one points at that line and is not counted twice
+ */
+function sayChecks(checks: readonly Check[], say: OnboardOutput, said: ReadonlySet<string>): void {
+  for (const check of checks.filter(({ ok }) => !ok)) {
+    if (said.has(check.name)) say.failedAbove(`${check.name}: ${check.detail}`);
+    else say.failed(`${check.name}: ${check.detail}`, check.fix ?? "");
+  }
   // A warning row passes (`ok`) and is worth reading: it is drawn, and does not count against the machine.
   for (const check of checks.filter(({ ok, warning }) => ok && warning === true)) say.warning(`${check.name}: ${check.detail}`, check.fix ?? "");
   say.detail(report(checks));
@@ -723,14 +735,41 @@ function sayNext(board: string | null, say: OnboardOutput): void {
   say.note(row("agent-org doctor", "check everything works"));
 }
 
-/** What onboard does once the host file is written: the guards, the services, doctor's checks, and the ending: whether this machine is set up, and what to run next. */
-async function finishOnboard({ options, terminal }: Readonly<{ options: OnboardOptions; terminal: boolean }>, deps: Session) {
+/** Writes the shim into `binDir` when there is none there, and says so. */
+function installShim({ binDir, tool }: ShellContext, deps: Session): void {
+  const shim = join(binDir, "agent-org");
+  if (deps.exists(shim)) return;
+  writeLauncher(shim, shimTextFor(tool));
+  deps.say.done("The agent-org command installed", inHome(shim, deps.home));
+}
+
+/**
+ * The `agent-org` command (A11-285): on a host that declares no project, the shim that always runs `<tool>/current` is written when there is none; then the same check and fix `install.sh` ends with
+ * runs, and says what it replaced and where the backup is. An org host's launcher belongs to `host:install`, so it is not written here. Nothing is done where there is no installed tool: the shim would
+ * run nothing. A person at a terminal is asked before a definition is replaced; unattended, it is replaced and said.
+ * @returns whether the shell's `agent-org` still runs another copy, said as a ✗ here
+ */
+async function setUpCommand(host: Readonly<Record<string, unknown>>, deps: Session): Promise<boolean> {
+  const context = shellContext(deps.env, deps.home, JSON.stringify(host));
+  if (!deps.exists(join(currentLink(context.tool), "src", "bin.ts"))) return false;
+  if (!Object.hasOwn(host, "primary")) installShim(context, deps);
+  const confirm = () => deps.prompts.confirm({ message: "Replace it with the installed command? A backup is kept.", initial: true });
+  const outcome = await checkCommand({ fix: true, ask: deps.interactive }, { shell: deps.shell, context, fix: fixDepsFor(context, deps.env, deps.now), confirm });
+  for (const line of outcome.fixed) deps.say.done(`agent-org command: ${line}`);
+  if (outcome.after.ok) return false;
+  deps.say.failed(`${outcome.after.name}: ${outcome.after.detail}${outcome.refused === null ? "" : ` (${outcome.refused})`}`, outcome.after.fix ?? "");
+  return true;
+}
+
+/** What onboard does once the host file is written: the guards, the services, the `agent-org` command, doctor's checks, and the ending: whether this machine is set up, and what to run next. */
+async function finishOnboard({ options, terminal, host }: Readonly<{ options: OnboardOptions; terminal: boolean; host: Readonly<Record<string, unknown>> }>, deps: Session) {
   sayGuards(await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements }), deps.say);
   // herdr removed since the first step: the herdr, instance, ui and terminal services all need it, so none is started without it.
   if (options.start && deps.which("herdr") === null) refuseWithoutHerdr("`herdr` is no longer on PATH", "after the host file was written and before any service was started", deps);
   const services = options.start ? await deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })) : [];
   sayServices(services, deps.say);
-  sayChecks(await deps.diagnose(), deps.say);
+  const commandProblem = await setUpCommand(host, deps);
+  sayChecks(await deps.diagnose(), deps.say, new Set(commandProblem ? [COMMAND_CHECK_NAME] : []));
   const problems = deps.say.failures();
   deps.say.note("");
   if (problems === 0) deps.say.succeeded("agent-org is set up on this machine.");
@@ -770,7 +809,7 @@ export async function onboard(options: OnboardOptions, injected: OnboardDeps): P
   // `tickets.capture` is written only where it is absent, and only as true: a machine whose browsers do not start keeps what the host file says, or nothing.
   const next = { ...host, clones, tickets: fill({ ...tickets, providers }, { pick: planned?.pick, ...pluginKeys, prReview, ...(notes?.keys ?? {}), capture: capture || undefined }) };
   writeHostFiles({ hostFile, next, updateChannel: options.updateChannel }, deps);
-  await finishOnboard({ options, terminal }, deps);
+  await finishOnboard({ options, terminal, host: next }, deps);
   return hostFile;
 }
 
@@ -856,6 +895,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       which: (name) => whichOn(name, process.env),
       ghAs: (account) => asAccount(defaultGh, account),
       replacements: () => replacementsNow(process.env, home, services),
+      shell: realShellDeps(process.env, home, toolDir(process.env, home)),
       diagnose: () => diagnose(defaultDoctorDeps()),
       chromium: () => chromiumReport(),
       isRoot: () => process.getuid?.() === 0,

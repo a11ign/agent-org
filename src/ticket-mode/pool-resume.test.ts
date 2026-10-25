@@ -14,6 +14,7 @@ import { clockOf } from "./board-view/update-banner.ts";
 import { agentTarget, IDLE_RESUME_MS, readRestart, RESUME_PROMPT, resumePrompt, sendToAgent, type RestartReads } from "./pool-resume.ts";
 import { newPoolContext } from "./pool-context.ts";
 import { lostText } from "./brief-ticket-text.ts";
+import { runEnvOf } from "./run-env.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import type { PoolDeps } from "./pool-context.ts";
 
@@ -30,7 +31,7 @@ function movableReads() {
 }
 
 /** `keys` started and seen working, each with a `working` note written at T0, on a clock a test moves, by one pool over `deps`. */
-async function liveRuns(keys: readonly string[] = ["NBF-1", "NBF-2"], deps: Partial<PoolDeps> = {}) {
+async function liveRuns(keys: readonly string[] = ["NBF-1", "NBF-2"], deps: Partial<PoolDeps> = {}, beforeStart: (herdr: ReturnType<typeof poolFixture>["herdr"]) => void = () => {}) {
   let clock = T0;
   const { held, reads } = movableReads();
   const made = poolFixture({ keys, max: 3, now: () => clock, restartReads: reads });
@@ -42,6 +43,7 @@ async function liveRuns(keys: readonly string[] = ["NBF-1", "NBF-2"], deps: Part
     return made.herdr.run(args);
   };
   const pool = made.restart({ restartReads: reads, herdr, ...deps });
+  beforeStart(made.herdr);
   await pool.tick();
   for (const key of keys) made.status.set(herdrName(key), "working");
   await pool.tick();
@@ -335,4 +337,171 @@ test("A11-279: a restart read that fails once keeps the record, so the next good
   assert.equal(readRestart(ctx), null);
   herdr = "1";
   assert.equal(readRestart(ctx), null, "the service manager timed out once: herdr did not restart");
+});
+
+/** The calls that opened a workspace, with the `--env` pairs each carried, in order. */
+const createdWith = (calls: readonly string[][]) => calls.filter((args) => args.includes("workspace") && args.includes("create"))
+  .map((args) => Object.fromEntries(args.flatMap((arg, at) => (args[at - 1] === "--env" ? [[arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)]] : []))));
+
+/** The `agent start` calls: the pane each started in and what followed `--` (the first prompt, then the flags). */
+const startsOf = (calls: readonly string[][]) => calls.filter((args) => args[2] === "agent" && args[3] === "start").map((args) => ({ pane: args[args.indexOf("--pane") + 1], tail: args.slice(args.indexOf("--") + 1) }));
+
+test("A11-279: herdr restarts under two live runs and restores both panes without their environment: both are started again with it, resume their sessions with the resume prompt, and carry on, with no person", async () => {
+  const run = await liveRuns();
+  const before = createdWith(run.herdr.calls).length;
+  run.held.herdr = "2";
+  run.herdr.restoreWithoutEnvironment();
+  for (const key of ["NBF-1", "NBF-2"] as const) {
+    run.status.set(herdrName(key), "idle");
+    run.herdr.screens.set(PANES[key], INTERRUPTED);
+  }
+  await run.advance(30_000);
+  const restarted = ["NBF-1", "NBF-2"] as const;
+  for (const key of restarted) {
+    const entry = run.entry(key);
+    assert.notEqual(entry.pane, PANES[key], `${key} is in a new pane`);
+    // The decision's test: AGENT_ORG_TICKET inside the resumed pane is the run's own, with its branch and the host file.
+    assert.deepEqual(run.herdr.envs.get(entry.pane ?? ""), { AGENT_ORG_TICKET: key, AGENT_ORG_TICKET_BRANCH: key.toLowerCase(), AGENT_ORG_TICKET_HOST: "/work/.agent-org/host.json" }, `${key}: the environment inside the resumed pane`);
+    assert.equal(run.herdr.envs.has(PANES[key]), false, `${key}: its old pane is gone`);
+    assert.deepEqual(run.entry(key).resume, { at: T0 + 30_000, after: "restart", environment: "restored" });
+    assert.equal(resumeLine(run.entry(key)), `Resumed after a restart at ${clockOf(T0 + 30_000)}; its environment was restored`);
+    assert.deepEqual(run.resumes(PANES[key]), [], `${key}: nothing is typed into the pane that lost its environment`);
+  }
+  assert.equal(createdWith(run.herdr.calls).length - before, 2, "one new workspace for each run");
+  const resumed = startsOf(run.herdr.calls).slice(-2);
+  assert.deepEqual(resumed.map(({ tail }) => tail.slice(0, 3)), [[RESUME_PROMPT, "--resume", "session-t-nbf-1"], [RESUME_PROMPT, "--resume", "session-t-nbf-2"]], "each resumes its own session, its first prompt the resume prompt");
+  assert.deepEqual(resumed.map(({ pane }) => pane), [run.entry("NBF-1").pane, run.entry("NBF-2").pane]);
+  // They take the prompt and work; the restart is not seen twice; they end on their own outcomes.
+  for (const key of restarted) run.status.set(herdrName(key), "working");
+  await run.advance(30_000);
+  await run.advance(30_000);
+  assert.equal(createdWith(run.herdr.calls).length - before, 2, "not started again");
+  for (const key of restarted) {
+    run.write(key, { kind: "checked", reason: "carried on and checked" });
+    run.status.set(herdrName(key), "idle");
+  }
+  await run.advance(30_000);
+  for (const key of restarted) assert.deepEqual([run.entry(key).phase, run.entry(key).outcome?.kind], ["finished", "checked"], key);
+});
+
+test("A11-279: a pane that kept its environment is resumed where it is and never started again", async () => {
+  const run = await liveRuns(["NBF-1"]);
+  const before = createdWith(run.herdr.calls).length;
+  run.held.herdr = "2";
+  run.status.set(herdrName("NBF-1"), "idle");
+  run.herdr.screens.set("w1:p1", INTERRUPTED);
+  await run.advance(30_000);
+  assert.deepEqual(run.resumes("w1:p1"), [RESUME_PROMPT]);
+  assert.deepEqual([createdWith(run.herdr.calls).length, run.entry("NBF-1").pane, run.entry("NBF-1").resume?.environment], [before, "w1:p1", undefined]);
+});
+
+test("A11-279: an environment that cannot be read leaves the run alone, and a run with no session to resume is prompted where it is with its card saying the environment is missing", async () => {
+  const unread = await liveRuns(["NBF-1"], { paneEnv: () => null });
+  await restartIdle(unread);
+  assert.deepEqual([unread.resumes("w1:p1").length, unread.entry("NBF-1").pane, unread.entry("NBF-1").resume?.environment], [1, "w1:p1", undefined], "resumed in place, not started again");
+
+  // herdr reported no Claude session for the run, and its folder holds no transcript.
+  const made = await liveRuns(["NBF-1"], {}, (herdr) => { herdr.sessionless.on = true; });
+  await restartIdle(made);
+  assert.equal(made.resumes("w1:p1").length, 1, "the prompt is sent where it is: the run is not killed");
+  assert.equal(made.entry("NBF-1").pane, "w1:p1");
+  assert.equal(made.entry("NBF-1").resume?.environment, "missing");
+  assert.ok(resumeLine(made.entry("NBF-1"))?.endsWith("environment missing: the gh wrapper will refuse its pull request until it is restarted"));
+});
+
+/** herdr's service restarts and restores the pane without its environment, with the agent idle at its prompt, and one pass runs. */
+async function restartIdle(run: Awaited<ReturnType<typeof liveRuns>>): Promise<void> {
+  run.held.herdr = "2";
+  run.herdr.restoreWithoutEnvironment();
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+}
+
+/** One live run whose pane herdr restored without its environment after a restart of herdr's service, and the number of workspaces opened so far. */
+async function restoredWithoutEnvironment() {
+  const run = await liveRuns(["NBF-1"]);
+  const before = createdWith(run.herdr.calls).length;
+  run.held.herdr = "2";
+  run.herdr.restoreWithoutEnvironment();
+  return { run, before };
+}
+
+test("A11-279: a workspace herdr will not close is not started a second time: the run is prompted where it is, its environment missing", async () => {
+  const { run, before } = await restoredWithoutEnvironment();
+  run.herdr.closing.refusal = "pane is busy";
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+  assert.deepEqual([createdWith(run.herdr.calls).length, run.resumes("w1:p1").length, run.entry("NBF-1").resume?.environment], [before, 1, "missing"]);
+});
+
+test("A11-279: a run that is working when herdr restores its pane without the environment is left working, and started again with it once its agent first sits at a prompt", async () => {
+  const { run, before } = await restoredWithoutEnvironment();
+  await run.advance(30_000);
+  assert.deepEqual([createdWith(run.herdr.calls).length, run.entry("NBF-1").pane, run.entry("NBF-1").resume], [before, "w1:p1", undefined], "a working agent is not interrupted");
+  await run.advance(30_000);
+  assert.equal(createdWith(run.herdr.calls).length, before, "still working, still not started again");
+  // Its turn ends with its working note and no newer outcome.
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+  assert.deepEqual(run.herdr.envs.get(run.entry("NBF-1").pane ?? "")?.AGENT_ORG_TICKET, "NBF-1");
+  assert.deepEqual([createdWith(run.herdr.calls).length - before, run.entry("NBF-1").resume?.environment], [1, "restored"]);
+});
+
+test("A11-279: the environment start() gives a run's workspace is runEnvOf's, for a ticket's run, and a batch's run carries no ticket", async () => {
+  const run = await liveRuns(["NBF-1"]);
+  const entry = run.entry("NBF-1");
+  const [opened] = createdWith(run.herdr.calls);
+  assert.deepEqual(opened, runEnvOf({ hostFile: "/work/.agent-org/host.json" }, entry));
+  assert.deepEqual(runEnvOf({ hostFile: "/work/.agent-org/host.json" }, { ...entry, batch: "b-1" }), { AGENT_ORG_TICKET_HOST: "/work/.agent-org/host.json" });
+  assert.deepEqual(runEnvOf({ hostFile: undefined }, { ...entry, batch: "b-1" }), {});
+});
+
+test("A11-279: a run noted as lacking its environment while it worked is not started again while its pane shows background work, and is once that is gone", async () => {
+  const { run, before } = await restoredWithoutEnvironment();
+  await run.advance(30_000);
+  run.herdr.screens.set("w1:p1", "> \n  ⏵⏵ bypass permissions on · 1 shell");
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+  assert.equal(createdWith(run.herdr.calls).length, before, "a new Claude would end the shell");
+  run.herdr.screens.set("w1:p1", "> ");
+  await run.advance(30_000);
+  assert.equal(createdWith(run.herdr.calls).length - before, 1);
+});
+
+/** One live run whose pane holds `env` after a restart of herdr's service, one pass run with its agent idle, and the number of workspaces opened before it. */
+async function restartedHolding(env: Record<string, string>) {
+  const run = await liveRuns(["NBF-1"]);
+  run.held.herdr = "2";
+  run.herdr.envs.set("w1:p1", env);
+  const before = createdWith(run.herdr.calls).length;
+  run.status.set(herdrName("NBF-1"), "idle");
+  await run.advance(30_000);
+  return { run, opened: createdWith(run.herdr.calls).length - before };
+}
+
+test("A11-279: a pane that kept its environment under a moved host file is resumed where it is: the host file's path only has to be there", async () => {
+  const { run, opened } = await restartedHolding({ AGENT_ORG_TICKET: "NBF-1", AGENT_ORG_TICKET_BRANCH: "nbf-1", AGENT_ORG_TICKET_HOST: "/old/host.json" });
+  assert.deepEqual([run.resumes("w1:p1").length, opened], [1, 0]);
+});
+
+test("A11-279: a run a person stops while the board starts it again keeps the stop: the workspace just opened is closed", async () => {
+  let stopRun: () => void = () => {};
+  const run = await liveRuns(["NBF-1"], { wait: async () => { stopRun(); } });
+  stopRun = () => run.pool.stop("NBF-1");
+  await restartIdle(run);
+  const closed = run.herdr.calls.filter((args) => args.includes("workspace") && args.includes("close")).map((args) => args[args.indexOf("close") + 1]);
+  assert.ok(closed.includes("w2"), `the new workspace was closed (${closed.join(", ")})`);
+  assert.notEqual(run.entry("NBF-1").phase, "running");
+});
+
+test("A11-279: a card whose prompt herdr refused still says the environment is missing", async () => {
+  const run = await liveRuns(["NBF-1"]);
+  const entry = { ...run.entry("NBF-1"), resume: { at: T0, after: "restart" as const, refused: "agent target w1:p1 is busy", environment: "missing" as const } };
+  assert.equal(resumeLine(entry as never), "could not be prompted: agent target w1:p1 is busy; environment missing: the gh wrapper will refuse its pull request until it is restarted");
+});
+
+test("A11-279: a pane that holds another run's ticket is started again with its own: the environment is checked by value, as the board set it at start", async () => {
+  const { run, opened } = await restartedHolding({ AGENT_ORG_TICKET: "NBF-9", AGENT_ORG_TICKET_BRANCH: "nbf-1", AGENT_ORG_TICKET_HOST: "/work/.agent-org/host.json" });
+  assert.equal(opened, 1);
+  assert.equal(run.herdr.envs.get(run.entry("NBF-1").pane ?? "")?.AGENT_ORG_TICKET, "NBF-1");
 });

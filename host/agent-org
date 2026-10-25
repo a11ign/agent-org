@@ -5,6 +5,7 @@
 # the installed bytes differ, or NOT INSTALLED when it is absent, as it does for `gh`. A copy and not a symlink, for the reason host/gh gives:
 # this is on every agent's PATH, and a link into a checkout that is mid-rebase would break the command for the whole org.
 #
-# It holds NO version of the tool. @@tool@@ is host.json's `tool`, rendered at install time, and that checkout is only ever moved by
-# `update-tool` (a detached checkout at the newest release tag), so this runs whatever the host runs and is never a second version.
+# It holds NO version of the tool. @@tool@@ is rendered at install time: the installed tool's `current` link (<agent-org home>/tool/current) when this machine
+# has one, which is what every unit runs and what an update moves, else host.json's `tool`, a checkout that only `update-tool` moves (a detached checkout at the
+# newest release tag). Either way this runs whatever the host runs and is never a second version (A11-285).
 exec node "@@tool@@/src/bin.ts" "$@"

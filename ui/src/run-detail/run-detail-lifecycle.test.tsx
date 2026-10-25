@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { PERSONAL, queueingConfig, standFetch, type Failure, type InstanceAnswers } from "../../test/fixtures.ts";
 import { addressOf, detailStand, queueOf, RUNS_OF, type RunFields } from "../../test/run-detail/run-detail-stand.ts";
 import { RunsApp } from "../runs/RunsApp.tsx";
@@ -37,5 +37,22 @@ describe("the connection", () => {
   it("is read before the page draws anything but the board's skeleton", async () => {
     await pageFor("loading", { ...detailStand("loading"), holdInstance: true });
     expect(screen.getByRole("status", { name: "Loading run" })).toBeTruthy();
+  });
+});
+
+// A RUN'S PAGE THE TAB HAS DRAWN, OPENED AGAIN WHILE ITS REMOTE CANNOT BE REACHED (A11-270): the run it last read is drawn under the frame, never the refusal in its place.
+describe("a run's page whose SSH remote drops between two visits", () => {
+  const HUNG_UP: Failure = { status: 502, error: "cannot reach personal over SSH: socket hung up" };
+  const drawOn = (instance: InstanceAnswers) => render(<RunsApp fetchWith={standFetch({ connections: [PERSONAL], instances: { personal: instance } })} />);
+
+  it("draws the run it last read under the unreachable frame, with its verbs held", async () => {
+    history.replaceState(null, "", addressOf("running"));
+    drawOn({ config: queueingConfig(), queue: queueOf(RUNS_OF.running.runs) });
+    const heading = textOf(await screen.findByRole("heading", { level: 1 }));
+    cleanup();
+    drawOn({ configFail: HUNG_UP, queueFails: HUNG_UP });
+    expect(textOf(await screen.findByRole("alert"))).toContain("Can't reach personal over SSH.");
+    expect(textOf(screen.getByRole("heading", { level: 1 }))).toBe(heading);
+    expect([...document.querySelectorAll<HTMLButtonElement>(".run-buttons button")].every((button) => button.disabled)).toBe(true);
   });
 });

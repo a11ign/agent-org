@@ -13,7 +13,7 @@ const project = { root, globals: true, testTimeout: 30_000, hookTimeout: 60_000 
 export default {
   ...defineToolchainConfig({ root, include: ["src/**/*.test.{ts,tsx}", "dev/**/*.test.ts", "test/**/*.test.ts"] }),
   projects: [
-    { name: "components", ...project, include: ["src/**/*.test.{ts,tsx}"], testEnvironment: "happy-dom", tools: { swc: { jsc: { transform: { react: { runtime: "automatic" } } } } } },
+    { name: "components", ...project, include: ["src/**/*.test.{ts,tsx}"], setupFiles: ["./test/clear-tab-storage.ts"], testEnvironment: "happy-dom", tools: { swc: { jsc: { transform: { react: { runtime: "automatic" } } } } } },
     { name: "node", ...project, include: ["dev/**/*.test.ts", "test/**/*.test.ts"], exclude: ["test/**/*.page.test.ts"], testEnvironment: "node" },
     { name: "pages", ...project, include: ["test/**/*.page.test.ts"], testEnvironment: "node" },
   ],

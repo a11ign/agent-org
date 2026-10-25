@@ -8,6 +8,9 @@
 // THE UNIT is `host/event-tunnel.service.in` (owned by `host-units.ts`, shipped for `events.tunnel: "tailscale-funnel"`) and runs `up` and `down`; the receiver is `event-receiver.ts`.
 // `up` and `down` touch ONE path on port 443 and never `reset` or an unscoped `off`: the node's other serve mounts (the trace pages, tailnet-only on 8443) are not this file's.
 //
+// `up` WAITS FOR ITS EXPOSURE (A11-279). The unit is a user unit, and a user manager knows no system unit: its `After=tailscaled.service` orders against nothing, so at boot `up` ran before tailscaled had a name and the unit failed for
+// good. `up` now polls the exposure's `readiness` for up to {@link READY_WAIT_MS} (inside the unit's `TimeoutStartSec`), serves once it is ready, and exits 1 when it never is; the unit's `Restart=on-failure` starts it again.
+//
 // THE EXPOSURE PLUGIN DOES THE SERVING (A11-162): this file runs no `tailscale`. It asks the exposure the host file enables to serve the path open to the internet (contract 1.1), and a
 // host on `local` refuses by name: "the events tunnel needs an exposure that serves to the internet".
 //
@@ -26,10 +29,12 @@
 // status here and the receiver's heartbeat, while a `pull_request` is proven by its `deliveryId` in the queue.
 import { createSign, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Exposure } from "./plugins/contracts/exposure.ts";
 import { hostExposure } from "./plugins/host-exposure.ts";
+import { hostFilePath } from "./install/paths.ts";
 
 /** GitHub's API. */
 const GITHUB_API = "https://api.github.com";
@@ -55,6 +60,7 @@ const SECRET_DIR_MODE = 0o700;
 const REQUEST_TIMEOUT_MS = 15_000;
 const DELIVERIES_PER_PAGE = 30;
 const HTTP_OK = 200;
+const MS_PER_SECOND = 1000;
 /** What the App must subscribe to (the row's step 4c): the receiver stores the first eight; `status` and `push` are accepted and ignored (202), so the gate does not read them yet. */
 export const SUBSCRIBED_EVENTS = Object.freeze(["Pull request", "Pull request review", "Check run", "Check suite", "Workflow run", "Status", "Issues", "Issue comment", "Merge group", "Push"]);
 
@@ -160,6 +166,39 @@ export function changeFunnel(command: "up" | "down", mount: Mount, deps: { out: 
   }
 }
 
+/** How long `up` waits for the exposure to be ready, and how often it looks: the unit allows 60 s to start. */
+export const READY_WAIT_MS = 45_000;
+export const READY_POLL_MS = 3_000;
+
+/** Wait until the exposure says it can serve (tailscaled running, with a name), looking every {@link READY_POLL_MS}. Throws, with the exposure's last reason, when it is not ready within {@link READY_WAIT_MS}. */
+export async function waitUntilReady(exposure: Pick<Exposure, "readiness">, deps: { out: (line: string) => unknown, sleep: (ms: number) => Promise<void> }): Promise<void> {
+  for (let waited = 0; ; waited += READY_POLL_MS) {
+    const why = exposure.readiness();
+    if (why === null) return;
+    if (waited >= READY_WAIT_MS) throw new EventTunnelFailure(`the exposure was not ready after ${READY_WAIT_MS / MS_PER_SECOND} s: ${why}`);
+    if (waited === 0) deps.out(`the exposure is not ready (${why}): waiting up to ${READY_WAIT_MS / MS_PER_SECOND} s`);
+    await deps.sleep(READY_POLL_MS);
+  }
+}
+
+/** The refusal of a host whose exposure serves nothing to the internet, naming the host files that were read: this process's, and the instance's when it is another file. */
+function loopbackOnly(env: NodeJS.ProcessEnv, home: string): EventTunnelFailure {
+  const mine = hostFilePath(env, home);
+  const instance = hostFilePath({ ...env, AGENT_ORG_HOST: undefined }, home);
+  const files = mine === instance ? mine : `${mine} and the instance's ${instance}`;
+  return new EventTunnelFailure(`the events tunnel needs an exposure that serves to the internet: ${files} name no exposure but local, which serves on loopback only. Set tickets.providers.exposure.provider to tailscale in the instance's host file`);
+}
+
+/** `up` or `down` as the unit runs it: `up` first refuses an exposure that serves nothing to the internet, naming the host files read, and waits for the exposure to be ready; then {@link changeFunnel}. */
+export async function changeTunnel(command: "up" | "down", mount: Mount, deps: { out: (line: string) => unknown, sleep: (ms: number) => Promise<void>, exposure: Pick<Exposure, "portState" | "serve" | "unserve" | "ports" | "readiness">, env: NodeJS.ProcessEnv, home?: string }): Promise<void> {
+  const { out, sleep, exposure, env, home = homedir() } = deps;
+  if (command === "up") {
+    if (exposure.ports() === null) throw loopbackOnly(env, home);
+    await waitUntilReady(exposure, { out, sleep });
+  }
+  changeFunnel(command, mount, { out, exposure });
+}
+
 type Declared = { app: App, publicUrl: string, secretPath: string };
 
 /** The scheduler App, the public URL and the secret path, from the host's declaration -- or a refusal naming the field that is missing. */
@@ -175,6 +214,8 @@ export function declaredTunnel(host: { github?: { identity?: Record<string, unkn
   return { app: { appId: scheduler.appId, keyPath: scheduler.keyPath }, publicUrl: events.publicUrl, secretPath: events.receiver.secretPath };
 }
 
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+
 const realFetch: Fetch = (url, init) => globalThis.fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
 /** The two facts the funnel needs, or a refusal naming what is missing. Shares `declaredTunnel`'s reading of `events`. */
@@ -186,8 +227,8 @@ export function funnelFacts(host: Parameters<typeof declaredTunnel>[0]): { publi
   return { publicUrl: events.publicUrl, port: events.receiver.port };
 }
 
-export async function main(argv: string[], deps: { out?: (line: string) => unknown, fetch?: Fetch, now?: () => number, exposure?: () => Promise<Exposure> } = {}): Promise<number> {
-  const { out = (line: string) => process.stdout.write(`${line}\n`), fetch = realFetch, now = () => Math.floor(Date.now() / 1000), exposure = hostExposure } = deps;
+export async function main(argv: string[], deps: { out?: (line: string) => unknown, fetch?: Fetch, now?: () => number, exposure?: () => Promise<Exposure>, sleep?: (ms: number) => Promise<void> } = {}): Promise<number> {
+  const { out = (line: string) => process.stdout.write(`${line}\n`), fetch = realFetch, now = () => Math.floor(Date.now() / 1000), exposure = hostExposure, sleep = realSleep } = deps;
   const [command] = argv;
   const isUnknownCommand = command !== "register" && command !== "deliveries" && command !== "up" && command !== "down";
   if (isUnknownCommand) {
@@ -199,7 +240,7 @@ export async function main(argv: string[], deps: { out?: (line: string) => unkno
     const host = homeHostConfig() as Parameters<typeof declaredTunnel>[0];
     if (command === "up" || command === "down") {
       const mount = funnelFacts(host);
-      changeFunnel(command, mount, { out, exposure: await exposure() });
+      await changeTunnel(command, mount, { out, sleep, exposure: await exposure(), env: process.env });
       return 0;
     }
     const { app, publicUrl, secretPath } = declaredTunnel(host);

@@ -10,6 +10,8 @@ export type WriterRuns = Readonly<{
   runs: Runs;
   /** When the runs were last read, or null before they have been: a terminal link older than one poll interval is read again before it is followed. */
   readAt: number | null;
+  /** True while the runs are the tab's kept copy (A11-270): Stop and Dismiss wait for the instance's own answer. */
+  cached: boolean;
   /** The sentence of the last failure, a read that failed or a Stop or Dismiss the server refused, or null. */
   failure: string | null;
   /** The ids of the requests a Stop or Dismiss is out for. */
@@ -87,7 +89,7 @@ export function useWriterRuns(): WriterRuns {
     poll.refresh();
   };
   return {
-    runs, readAt: poll.readAt, failure, acting,
+    runs, readAt: poll.readAt, cached: poll.cached, failure, acting,
     retry: () => { setRefusal(null); setDismissedRead(null); poll.refresh(); },
     dismissFailure: () => { setRefusal(null); setDismissedRead(poll.refusal); },
     stop: (id) => void act(client.stopWriterRun)(id),

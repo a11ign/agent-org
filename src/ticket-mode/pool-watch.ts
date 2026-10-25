@@ -18,6 +18,7 @@ import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, propo
 import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
 import { wakePrompt } from "./wait-on/wait-prompt.ts";
 import { reseatMoved, resumeAfterRestart, sendToAgent, watchIdle } from "./pool-resume.ts";
+import { sessionResultsFrom } from "./session-answers.ts";
 import { fleetJobStatusVia, type WaitSeams } from "./wait-on/wait-read.ts";
 import { judgedWait, pollWhenDue } from "./wait-on/wait-watch.ts";
 import type { Judged } from "./wait-on/wait-verdict.ts";
@@ -38,12 +39,14 @@ import { forceDrain } from "./pool-drain.ts";
 import { releaseTicketWaits } from "./pool-ticket-wait.ts";
 import { ageHolds } from "./ci-spend/hold.ts";
 import { watchCiSpend } from "./ci-spend/watch.ts";
-import { readoptCrashed } from "./pool-readopt.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { readoptCrashed } from "./pool-readopt.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
 import { answerQueue, type QueueAnswer } from "./pool-merge-queue.ts";
 import { recordQueueHeads } from "./queue/queue-merge-queue.ts";
 import { foreignRedsOf } from "./pool-foreign-checks.ts";
+import { reseatRuns } from "./pool-reseat.ts";
+import { reconcileExposure } from "./pool-exposure.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
@@ -291,7 +294,7 @@ function watchStall(ctx: PoolContext, entry: Entry, seen: string): void {
   const before = find();
   const wasResumed = before?.resumed === true;
   const background = seen === "working" ? null : paneBackground(ctx, entry);
-  if (before !== undefined && (seen === "idle" || seen === "done")) pollWhenDue(waitPolls, name, before, now, waitSeamsOf(ctx));
+  if (before !== undefined && (seen === "idle" || seen === "done")) pollWhenDue(waitPolls, name, before, now, waitSeamsOf(ctx, entry, before));
   const judged = before === undefined ? null : judgedWait(waitPolls, name, before);
   // One time for every ticket of a batch, so a wake they share carries the same `at` on each.
   const at = now();
@@ -302,9 +305,17 @@ function watchStall(ctx: PoolContext, entry: Entry, seen: string): void {
   if (before?.woke === undefined && note?.woke !== undefined) wakeWorker(ctx, entry, note, note.woke, judged);
 }
 
-/** What the board reads a declared wait with: the code host, the tracker and the `fleet` program, or the seams a test gave. */
-function waitSeamsOf({ codeHost, source, deps }: PoolContext): WaitSeams {
-  return { codeHost, source, fleetJobStatus: deps.waitSeams?.fleetJobStatus ?? fleetJobStatusVia(), ...(deps.waitSeams?.readTimeoutMs === undefined ? {} : { readTimeoutMs: deps.waitSeams.readTimeoutMs }) };
+/**
+ * What the board reads a run's declared wait with: the code host, the tracker, the `fleet` program and the session's answers, or the seams a test gave. The answers are those given for THIS declaration (the note's `at`) to any
+ * ticket of the run, so an answer given for an earlier declaration never finishes a later one (A11-275).
+ */
+function waitSeamsOf(ctx: PoolContext, entry: Entry, note: WorkingNote): WaitSeams {
+  const { codeHost, source, deps, settings } = ctx;
+  const keys = runMembers(ctx, entry).map((member) => member.ticket.key);
+  return {
+    codeHost, source, fleetJobStatus: deps.waitSeams?.fleetJobStatus ?? fleetJobStatusVia(), sessionResult: sessionResultsFrom(settings.stateDir, keys, note.at),
+    ...(deps.waitSeams?.readTimeoutMs === undefined ? {} : { readTimeoutMs: deps.waitSeams.readTimeoutMs }),
+  };
 }
 
 /**
@@ -462,6 +473,12 @@ export async function tick(ctx: PoolContext): Promise<void> {
     do {
       pass.again = false;
       watch(ctx);
+      // A run whose restored pane lost its environment is started again with it, before it is resumed (A11-279).
+      const reseating = reseatRuns(ctx);
+      if (reseating !== null) await reseating;
+      // The board's and the terminal's serves are checked and put back, at the instance's first pass and as it runs (A11-279).
+      const checking = reconcileExposure(ctx);
+      if (checking !== null) await checking;
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
       forceDrain(ctx);
       // A run whose worker waits on a ticket not done lets go of its slot and its files, and is queued behind it, before the pass fills slots (A11-272).

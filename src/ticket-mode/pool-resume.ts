@@ -9,6 +9,10 @@
 // and in that same pass every live run whose agent is idle at a prompt, or whose pane shows it was interrupted, and that has written no outcome since, is sent {@link RESUME_PROMPT} once, and its card says so.
 // A run whose workspace is gone is not here: `reconcile` (pool-readopt.ts) queues it again, first, with a line in its brief.
 //
+// A PANE THAT LOST THE RUN'S ENVIRONMENT IS STARTED AGAIN BEFORE IT IS PROMPTED (A11-279). herdr restores a pane's directory and session, not the `--env` the board gave `workspace create`, and a prompt cannot give a running Claude its
+// `AGENT_ORG_TICKET`. So a run about to be resumed has its Claude process's environment read ({@link lostEnvironment}); one that lacks a key of {@link runEnvOf} is queued for `reseatRuns` (pool-reseat.ts), which starts it again
+// in the same folder with `--resume` and the resume prompt. A run that is working is only noted, and started again when its agent first sits at a prompt. A read that fails leaves the run alone.
+//
 // AN IDLE RUN IS NEVER SHOWN AS RUNNING. A running run whose agent has sat idle for {@link IDLE_RESUME_MS} with no outcome but a `working` note is resumed once, and its card says since when. Still idle as long
 // again after that, it ends `needs-human` with its pane kept, so the chairman's session can answer it there. A run on a declared wait still inside its `until`, or with background work running, is waiting, not idle; one the board already woke for its wait keeps A11-245's one wake and its stall.
 import { readFileSync, statSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
@@ -29,6 +33,7 @@ import { paneBackgroundWork } from "./background-work.ts";
 import { deadlineOf } from "./wait-on/wait-note.ts";
 import { subjectOf } from "./wait-on/wait-types.ts";
 import { escalationReason } from "./escalation.ts";
+import { lostKeys, runEnvOf } from "./run-env.ts";
 
 /** How long a running run's agent may sit idle at a prompt with no outcome before the board resumes it, and as long again after that before it is handed to a person: the ticket's ten minutes. */
 export const IDLE_RESUME_MS = 10 * 60_000;
@@ -197,6 +202,7 @@ export function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<string,
     if (prompted.has(place.name) || !awaitsOutcome(entry, place.dir) || untoldDecline(ctx, entry)) continue;
     const seen = status.get(place.name);
     const sitting = seen === "idle" || seen === "done";
+    if (seen === "working") noteLostEnvironment(ctx, entry, place);
     // herdr may not read an interrupted session's state: an `unknown` agent is resumed when its pane says it was interrupted. A working one, or one on a dialog, is not.
     if (!sitting && seen !== "unknown") continue;
     const screen = readScreen(ctx, place);
@@ -204,7 +210,7 @@ export function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<string,
     if (!sitting && !interrupted) continue;
     if (restart === "instance" && !interrupted && keptWaiting(ctx, entry, screen)) continue;
     prompted.add(place.name);
-    resumeRun(ctx, entry, place, { at: ctx.now(), after: "restart" });
+    resumeOrReseat(ctx, entry, place, { at: ctx.now(), after: "restart" });
   }
   return prompted;
 }
@@ -228,8 +234,47 @@ const waitsInside = (ctx: PoolContext, entry: Entry): boolean => {
 const notIdle = (ctx: PoolContext, entry: Entry, dir: string, seen: string): boolean =>
   seen === "working" || !awaitsOutcome(entry, dir) || onItsWait(ctx, entry) || untoldDecline(ctx, entry);
 
+/**
+ * The keys of the run's environment that its pane's Claude process lacks or holds with another value, read now. None when the process holds them all, and none when the read fails (no Claude process herdr names, `/proc`
+ * refuses it, no pane): a working agent is never started again on a failed read, and the log says it was not checked.
+ */
+function lostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): readonly string[] {
+  let held: Readonly<Record<string, string>> | null = null;
+  try {
+    held = ctx.paneEnv(agentTarget(ctx, place));
+  } catch {
+    held = null;
+  }
+  if (held === null) log(`${entry.batch ?? entry.ticket.key}: the environment of its Claude process could not be read, so it was not checked`);
+  return held === null ? [] : lostKeys(runEnvOf(ctx, entry), held);
+}
+
+/** Whether a run noted as lacking its environment while it worked now sits at a prompt with nothing to tell it first: it is started again with the environment ({@link watchIdle}), unless its pane shows background work running, which a new Claude would end. */
+const lostEnvironmentAtPrompt = (ctx: PoolContext, entry: Entry, dir: string, seen: string): boolean =>
+  ctx.envLost.has(runPlace(ctx, entry).name) && (seen === "idle" || seen === "done") && awaitsOutcome(entry, dir) && !untoldDecline(ctx, entry);
+
+/** A run that is working after a restart and lacks its environment is noted, and started again when its agent first sits at a prompt ({@link watchIdle}): a working agent is not interrupted. */
+function noteLostEnvironment(ctx: PoolContext, entry: Entry, place: RunPlace): void {
+  const lost = lostEnvironment(ctx, entry, place);
+  if (lost.length === 0) return;
+  ctx.envLost.set(place.name, lost);
+  log(`${entry.batch ?? entry.ticket.key} is working but its pane lost ${lost.join(", ")}; it is started again with them when its agent first sits at a prompt`);
+}
+
+/**
+ * Resume a run at a prompt: send it the resume prompt where it is, or, when its pane lacks the environment the board set at start ({@link lostEnvironment}), queue it for `reseatRuns`, which starts it again with the
+ * environment and the prompt. A run restarted is not prompted twice.
+ */
+function resumeOrReseat(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): void {
+  const lost = lostEnvironment(ctx, entry, place);
+  if (lost.length === 0) return resumeRun(ctx, entry, place, note);
+  ctx.envLost.delete(place.name);
+  ctx.reseating.set(place.name, { key: entry.ticket.key, note });
+  log(`${entry.batch ?? entry.ticket.key}'s pane lost ${lost.join(", ")}, so it is started again with them before it is resumed`);
+}
+
 /** Send a run the resume prompt and record it on its card: the time, why, and herdr's refusal when it would not take it. */
-function resumeRun(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): void {
+export function resumeRun(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): void {
   const who = entry.batch ?? entry.ticket.key;
   const refused = sendToAgent(ctx, place, resumePrompt(entry));
   updateEach(ctx, runMembers(ctx, entry), (queue, key) => recordResume(queue, key, refused === null ? note : { ...note, refused }));
@@ -257,6 +302,10 @@ export function watchIdle(ctx: PoolContext, entry: Entry, seen: string): void {
   if (current === undefined || !resumable(current)) return;
   const place = runPlace(ctx, current);
   const now = ctx.now();
+  if (lostEnvironmentAtPrompt(ctx, current, place.dir, seen) && !backgroundRuns(ctx, place)) {
+    ctx.envLost.delete(place.name);
+    return resumeOrReseat(ctx, current, place, { at: now, after: "restart" });
+  }
   if (resumeOver(current, place.dir, seen, now)) updateEach(ctx, runMembers(ctx, current), dropResume);
   if (notIdle(ctx, current, place.dir, seen)) return updateEach(ctx, runMembers(ctx, current), idleCleared);
   if (seen !== "idle" && seen !== "done") return;
@@ -266,7 +315,7 @@ export function watchIdle(ctx: PoolContext, entry: Entry, seen: string): void {
   const spent = spentResume(resume);
   const from = Math.max(since, spent ? resume.at : 0);
   if (now - from < IDLE_RESUME_MS || refusedJustNow(resume, now) || backgroundRuns(ctx, place)) return;
-  if (!spent) return resumeRun(ctx, current, place, { at: now, after: "idle", idleSince: since });
+  if (!spent) return resumeOrReseat(ctx, current, place, { at: now, after: "idle", idleSince: since });
   end(ctx, current, { kind: "needs-human", reason: escalationReason(undefined, `idle at a prompt since ${utcClock(since)}; the board's resume prompt at ${utcClock(resume.at)} did not start it`) });
 }
 

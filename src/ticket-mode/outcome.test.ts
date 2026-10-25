@@ -119,12 +119,19 @@ test("A11-245: a working outcome may declare the events it waits on, each kind i
   assert.deepEqual(exact(declared("one shell")), { kind: "working", reason: "r", waitingOn: "one shell" }, "a string is still an undeclared wait");
 });
 
+test("A11-275: a working outcome may declare an ask for the person's session, and the ask is held to the shape check", () => {
+  const ask = "On the person's machine, run `agent-org update` and quote its last line; a pass reads 'installed 0.312.0'";
+  assert.deepEqual(exact(declared([{ session: `  ${ask}  ` }], { until: "2026-10-25T12:00:00Z" })), { kind: "working", reason: "r", until: Date.parse("2026-10-25T12:00:00Z"), waits: [{ kind: "session", ask }] }, "the ask is kept trimmed");
+  assert.equal(refusal(declared([{ session: "   " }])), "working waitingOn[0] session needs the exact ask for the person's session, you wrote an empty string");
+  assert.match(refusal(declared([{ session: "x".repeat(1001) }])), /^working waitingOn\[0\] session takes an ask of up to 1000 characters, you wrote 1001$/);
+});
+
 test("A11-245: a declared wait is refused by name when an item is not one of the four kinds, and the example in the brief is held to the check", () => {
   assert.equal(refusal(declared([])), "working waitingOn needs at least one event, you wrote an empty list");
   assert.match(refusal(declared([{ fleetJob: "fj-1", until: "done" }])), /^working waitingOn\[0\] \(fleetJob\) has until, which it does not take; until goes only with pullRequest and ticket$/);
   assert.match(refusal(declared([{ pullRequest: "https://github.com/a11ign/agent-org/pull/7" }])), /^working waitingOn\[0\] pullRequest needs until: one of merged or reviewed, you wrote nothing$/);
   assert.match(refusal(declared([{ fleetJob: "fj-1" }, { ciRun: "not-a-run" }])), /^working waitingOn\[1\] ciRun needs <owner>\/<repo>#<run id>/);
-  assert.match(refusal(declared([{ jira: "X-1" }])), /^working waitingOn\[0\] needs exactly one of fleetJob, ciRun, pullRequest, ticket, you wrote jira$/);
+  assert.match(refusal(declared([{ jira: "X-1" }])), /^working waitingOn\[0\] needs exactly one of fleetJob, ciRun, pullRequest, ticket, session, you wrote jira$/);
   assert.match(refusal(declared([{ fleetJob: "fj-1" }], { until: "2026-02-31T10:00:00Z" })), /^working until needs an ISO time/, "a day that does not exist is not rolled into March");
   const example = OUTCOME_EXAMPLES.working;
   assert.ok(Array.isArray(example.waitingOn), "the brief's working example is the declared form");

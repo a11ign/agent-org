@@ -70,7 +70,10 @@ function NoRuns({ queue, pool, disabled, reviewer }: Readonly<{ queue: QueueView
 /** The queue as the lifecycle draws it: a failed read is the page's banner above the last list, so the lifecycle sees it as ready. */
 const lifecycleOf = (queue: LifecycleView<QueueView>): LifecycleView<QueueView> => (queue.state === "error" ? { ...queue, state: "ready" } : queue);
 
-/** The page once the connections are read. While an SSH instance cannot be reached the rows and the pool's button are the last known ones, and nothing on them is pressed. */
+/**
+ * The page once the connections are read. While an SSH instance cannot be reached the rows and the pool's button are the last known ones, and nothing on them is pressed; nor while the
+ * queue drawn is the tab's kept copy (A11-270), until the instance's own answer arrives.
+ */
 function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
   const { queue, client, config, connection, unreachable } = useShell();
   const pool = usePool(client, queue);
@@ -81,7 +84,7 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
   const failedRun = publishes && queue.data !== null ? failedPublishSentence(queue.data) : null;
   const failure = useFailure({ queue, actions, publisher, failedRun, pool });
   const paging = useLimit(filter);
-  const disabled = unreachable !== null;
+  const disabled = unreachable !== null || queue.cached;
   const count = queue.data === null ? null : countText(queue.data.entries.length, runningCount(queue.data));
   const ticks = publishes ? { picked: picked.keys, toggle: picked.toggle } : null;
   const context = (data: QueueView): RowContext => ({ queue: data, publisher: config?.publisher, now: Date.now(), busy: actions.busy, disabled, press: actions.press, ticks });

@@ -109,3 +109,21 @@ test("the terminal's loopback port is the one tickets.terminal names, else the d
   assert.equal(checks["ui tailnet entry"].ok, true, "uiPort defaults to 4748");
   assert.equal(checks["terminal tailnet entry"].ok, true, "no terminal address: the default 7318");
 });
+
+test("A11-279: doctor fails the row of each configured tailnet port that is not served, the other port's row staying green, and the fix names its service", async () => {
+  const noTerminal = served(freshState());
+  delete noTerminal.web[`${NAME}:9444`];
+  const terminalGone = byName(await tailnetChecks(SETTINGS, depsOf(noTerminal).deps));
+  assert.equal(terminalGone["terminal tailnet entry"].ok, false);
+  assert.equal(terminalGone["terminal tailnet entry"].detail, "nothing serves port 9444 on the tailnet");
+  assert.equal(terminalGone["terminal tailnet entry"].fix, "run `agent-org start terminal`");
+  assert.equal(terminalGone["ui tailnet entry"].ok, true, "the board's entry is still there");
+  const noBoard = served(freshState());
+  delete noBoard.web[`${NAME}:9443`];
+  const boardGone = byName(await tailnetChecks(SETTINGS, depsOf(noBoard).deps));
+  assert.deepEqual([boardGone["ui tailnet entry"].ok, boardGone["terminal tailnet entry"].ok], [false, true]);
+  const ports = { ...SETTINGS, tailnetPorts: { ui: 9500, terminal: 9501 } };
+  const moved = byName(await tailnetChecks(ports, depsOf(served(freshState())).deps));
+  assert.equal(moved["ui tailnet entry"].detail, "nothing serves port 9500 on the tailnet", "a configured port other than the default is the one that is checked");
+  assert.equal(moved["terminal tailnet entry"].detail, "nothing serves port 9501 on the tailnet");
+});
