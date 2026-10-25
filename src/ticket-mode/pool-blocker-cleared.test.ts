@@ -95,12 +95,12 @@ test("A11-258: a needs-human run that holds no pull request but names one in its
   const made = world();
   parkedNeedsHuman(made, { held: false, state: "open", body: null, reason: `${QUESTION} (${PR})` });
   await made.pool.refreshTracker();
-  assert.deepEqual(run(made).review, [{ repo: "agent-org", url: PR }], "adopted while it is open");
+  assert.equal(run(made).review, undefined, "while it is open the run is not changed: nothing watches, retries or holds against it as a round");
   assert.deepEqual([run(made).phase, run(made).workspace, closed(made)], ["finished", "w1", []], "still parked: nothing merged yet");
   seedMerged(made.codeHost, PR, "Refs NBF-1\n\nPartial: step 1 of 2: the board releases it; step 2 remains");
   made.tracker.linkPull("NBF-1", PR, "merged");
   await made.pool.refreshTracker();
-  assert.deepEqual([run(made).phase, run(made).steps?.map(({ step }) => step), closed(made).length], ["queued", [1], 1]);
+  assert.deepEqual([run(made).phase, run(made).steps?.map(({ step }) => step), closed(made).length], ["queued", [1], 1], "adopted as it merged, then the Partial path");
 });
 
 test("A11-258: a pull request the reason names that already stood merged when first read is context, not a blocker, and the run is left alone", async () => {
@@ -120,6 +120,15 @@ test("A11-258: a needs-human about something unrelated to its pull requests is l
   assert.equal(kept(made), before, "still parked, with its question, and nothing queued or completed");
   assert.deepEqual([closed(made), runStatus(run(made)), made.tracker.ticketOf("NBF-1")?.statusType], [[], "needs-you", "started"]);
   assert.equal(reasonOf(run(made)).line, "which of the two colours should the empty state use?");
+});
+
+test("A11-258: a needs-human whose ticket the tracker cancelled is not said to have its blocker cleared", async () => {
+  const made = world();
+  parkedNeedsHuman(made, { body: "Closes NBF-1" });
+  made.tracker.seed(fakeTicket("NBF-1", { status: "Canceled", statusType: "canceled" }));
+  await made.pool.refreshTracker();
+  assert.deepEqual([runStatus(run(made)), run(made).workspace], ["cancelled", "w1"]);
+  assert.equal(reasonOf(run(made)).line, QUESTION);
 });
 
 test("A11-258: a needs-human whose pull request is still open stays parked and asking", async () => {

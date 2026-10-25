@@ -24,14 +24,19 @@ test("A11-258: a reason names a linked pull request by its address, as owner/rep
   assert.deepEqual(namedPulls("blocked on https://github.com/a11ign/agent-org/pull/9", linked), [], "a pull request the tracker does not link to the ticket is nothing the board can read");
 });
 
-test("A11-258: a needs-human that holds no pull request is about the open linked ones its reason names, and no other run is about any", () => {
-  assert.deepEqual(namedBlockers(run()), [PR]);
-  assert.deepEqual(namedBlockers(run({ pullStates: { [PR]: "merged" } })), [], "already merged when first read: context");
-  assert.deepEqual(namedBlockers(run({ pullStates: { [PR]: "closed" } })), [], "already closed when first read: context");
-  assert.deepEqual(namedBlockers(run({ review: [{ repo: "agent-org", url: OTHER }] })), [], "it holds a pull request already");
-  assert.deepEqual(namedBlockers(run({ outcome: { kind: "crashed", reason: PR } })), [], "another hand-back");
-  assert.deepEqual(namedBlockers(run({ phase: "running" })), []);
-  assert.deepEqual(namedBlockers(run({ outcome: { kind: "needs-human", reason: "which colour?" } })), [], "it names none");
+test("A11-258: a needs-human that holds no pull request is about the linked pull requests its reason names that were read open and have merged, and no other run is about any", () => {
+  const merged = { [PR]: "merged" };
+  assert.deepEqual(namedBlockers(run(), merged), [PR]);
+  assert.deepEqual(namedBlockers(run(), { [PR]: "open" }), [], "still open: the run is not changed by it");
+  assert.deepEqual(namedBlockers(run(), { [PR]: "closed" }), [], "closed unmerged is not a merge");
+  assert.deepEqual(namedBlockers(run({ pullStates: undefined }), merged), [], "never read open: context");
+  assert.deepEqual(namedBlockers(run({ pullStates: { [PR]: "merged" } }), merged), [], "already merged when last read: context");
+  assert.deepEqual(namedBlockers(run({ outcome: { kind: "needs-human", reason: `${PR} and ${OTHER}` }, pullStates: { [PR]: "open", [OTHER]: "open" } }), { [PR]: "merged", [OTHER]: "open" }), [], "every pull request it names");
+  assert.deepEqual(namedBlockers(run({ outcome: { kind: "needs-human", reason: `${PR} and ${OTHER}` }, pullStates: { [PR]: "open", [OTHER]: "open" } }), { [PR]: "merged", [OTHER]: "closed" }), [PR, OTHER]);
+  assert.deepEqual(namedBlockers(run({ review: [{ repo: "agent-org", url: OTHER }] }), merged), [], "it holds a pull request already");
+  assert.deepEqual(namedBlockers(run({ outcome: { kind: "crashed", reason: PR } }), merged), [], "another hand-back");
+  assert.deepEqual(namedBlockers(run({ phase: "running" }), merged), []);
+  assert.deepEqual(namedBlockers(run({ outcome: { kind: "needs-human", reason: "which colour?" } }), merged), [], "it names none");
 });
 
 test("A11-258: a parked needs-human run is released once every pull request it holds merged and the merged bodies are read, and not before, nor as a talk session", () => {
@@ -50,6 +55,7 @@ test("A11-258: the card line of a merged needs-human run names the merged pull r
   const merged = run({ review: [{ repo: "agent-org", url: PR }, { repo: "lab", url: OTHER }], pullStates: { [PR]: "merged", [OTHER]: "merged" } });
   assert.equal(blockerClearedLine(merged), "the blocker cleared: a11ign/agent-org #1885, a11ign/lab #150 merged");
   assert.equal(blockerClearedLine({ ...merged, pullStates: { [PR]: "merged", [OTHER]: "open" } }) ?? "none", "none");
+  assert.equal(blockerClearedLine({ ...merged, trackerState: "canceled" }) ?? "none", "none", "a cancelled ticket reads Cancelled, not cleared");
   assert.equal(blockerClearedLine({ ...merged, outcome: { kind: "ready-pr", prs: [{ repo: "agent-org", url: PR }] } }) ?? "none", "none");
 });
 

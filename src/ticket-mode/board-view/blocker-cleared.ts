@@ -12,8 +12,8 @@ import { pullsOf, type ViewEntry } from "./view-types-and-filters.ts";
 /** A pull request address, as a worker writes it in a reason. */
 const PULL_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g;
 
-/** `owner/repo#N` or `repo#N`, not preceded by a word character or a path: a bare `#N` names no repository, so it is not read. */
-const PULL_SHORTHAND = /(?<![\w/.-])(?:([\w.-]+)\/)?([\w.-]+)#(\d+)\b/g;
+/** `owner/repo#N` or `repo#N`, after the start of the text or a character that is no part of a name or path: a bare `#N` names no repository, so it is not read. (No lookbehind: the page runs this folder in the browser.) */
+const PULL_SHORTHAND = /(?:^|[^\w/.-])(?:([\w.-]+)\/)?([\w.-]+)#(\d+)\b/g;
 
 /** The owner, repository and number of a GitHub pull request address, or null for any other. */
 function addressOf(url: string): Readonly<{ owner: string; repo: string; number: string }> | null {
@@ -37,19 +37,26 @@ export function namedPulls(reason: string, linked: readonly string[]): string[] 
 }
 
 /**
- * The pull requests a finished `needs-human` run that holds none is about: the ones its reason names that the tracker links to the ticket and reads open (`pullStates`). Empty for any other run. One that stands merged or closed the
- * first time the board reads it is context the worker cited, not what it waits on, and is never adopted: a merged pull request quoted in an unrelated question must not release it. PURE.
+ * The pull requests a finished `needs-human` run that holds none is about, once they have merged: the ones its reason names that the tracker links to the ticket and the board last read OPEN (`entry.pullStates`), given the
+ * states it reads now (`now`). Empty while any of them is still open, and when none has merged. One that stood merged or closed the first time the board read it is context the worker cited, not what it waits on, and is
+ * never adopted: a merged pull request quoted in an unrelated question must not release it. Adopted only when they have merged, because a run that holds a pull request is watched, retried and held against as a round
+ * (`review`), and a named pull request that is still open must not change what the board does with the run. PURE.
  */
-export function namedBlockers(entry: ViewEntry): string[] {
+export function namedBlockers(entry: ViewEntry, now: Readonly<Record<string, string>>): string[] {
   const reason = entry.outcome?.kind === "needs-human" ? entry.outcome.reason : undefined;
   if (entry.phase !== "finished" || reason === undefined || pullsOf(entry).length > 0) return [];
   const open = Object.entries(entry.pullStates ?? {}).filter(([, state]) => state === "open").map(([url]) => url);
-  return namedPulls(reason, open);
+  const named = namedPulls(reason, open);
+  const settled = named.every((url) => now[url] === "merged" || now[url] === "closed");
+  return named.length > 0 && settled && named.some((url) => now[url] === "merged") ? named : [];
 }
+
+/** The tracker states of a ticket that will not be done: its card reads Cancelled, so it does not say a blocker cleared. */
+const CANCELLED: ReadonlySet<string> = new Set(["canceled", "duplicate"]);
 
 /** Whether a finished run ended `needs-human` and every pull request it is about has merged or closed with one merged. PURE. */
 export const isMergedBlocker = (entry: ViewEntry): boolean =>
-  entry.phase === "finished" && entry.outcome?.kind === "needs-human" && settledByPulls(entry) === "completed";
+  entry.phase === "finished" && entry.outcome?.kind === "needs-human" && settledByPulls(entry) === "completed" && !CANCELLED.has(entry.trackerState ?? "");
 
 /**
  * Whether the board lets a run's parked workspace go (A11-258): it is parked (and no talk session, a person at its terminal), ended `needs-human`, its pull requests merged, and their bodies are read, so the

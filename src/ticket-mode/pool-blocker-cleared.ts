@@ -14,20 +14,21 @@ import { close } from "./pool-settle.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
- * Record the pull requests a finished `needs-human` run that holds none names in its reason, once the tracker says it links them to the ticket and reads them open (`namedBlockers`), as the pull requests it is
- * about: its `review` pull requests, which `settledByPulls`, the declaration read, the next step and the completion all read. A run that holds a pull request, or names none, is left as it is.
+ * Record the pull requests a finished `needs-human` run that holds none names in its reason, as the pull requests it is about (its `review` pull requests, which `settledByPulls`, the declaration read, the next step and the
+ * completion all read), once all of them have merged or closed with one merged (`namedBlockers`). `read` is what the tracker says now, and each run's earlier read is still in its `pullStates`, so this runs between the
+ * tracker's answer and the record of it. A run that holds a pull request, or names none, is left as it is.
  */
-export function adoptNamedBlockers(ctx: PoolContext): void {
+export function adoptNamedBlockers(ctx: PoolContext, read: ReadonlyMap<string, Readonly<Record<string, string>>>): void {
   const { store } = ctx;
   for (const entry of store.get().entries) {
-    const urls = namedBlockers(entry);
+    const urls = namedBlockers(entry, read.get(entry.ticket.key) ?? {});
     if (urls.length === 0) continue;
     const review = urls.flatMap((url) => {
       const pull = parsePull(url);
       return pull === null ? [] : [{ repo: pull.repo, url }];
     });
     update(ctx, (queue) => replace(queue, entry.ticket.key, (found) => ({ ...found, review })));
-    log(`${entry.ticket.key}: its reason names ${urls.map(pullLabel).join(", ")}, which it now waits on`);
+    log(`${entry.ticket.key}: ${urls.map(pullLabel).join(", ")}, named in its reason, ${urls.length === 1 ? "has" : "have"} merged or closed`);
   }
 }
 

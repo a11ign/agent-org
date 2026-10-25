@@ -50,14 +50,14 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       }
       if (source.pullStates !== undefined) {
         const pulls = await source.pullStates(keys);
+        // Before the record: a needs-human run that holds no pull request waits on the ones its reason names, which it is told apart from context by having been read open (A11-258).
+        adoptNamedBlockers(ctx, pulls);
         update(ctx, (queue) => recordPullStates(queue, pulls, ctx.now()));
       }
     } catch {
       // the tracker could not be asked: the next refresh asks again
     }
   }
-  // A needs-human run that holds no pull request waits on the ones its reason names (A11-258): they are its own from here, so the reads below take them like any run's.
-  adoptNamedBlockers(ctx);
   // What each merged pull request's body declares decides over the outcome's `partial`, so it is read before anything acts on the merge (A11-181).
   readPullDeclarations(ctx);
   // A ticket the tracker's integration completed on a partial merge is put back first, so the same sweep queues the next step (A11-178).
