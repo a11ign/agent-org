@@ -498,11 +498,11 @@ describe("readFleetDrift", () => {
   };
 
   test("is the mirrored record cut to names: the box, the field, what it has and what the manifest wants, and nothing else crosses", () => {
-    const path = mirrorFile(mirrorOf([["a11y-worker-5  192.168.1.55:8765", "Windows", "22631.6199", "26300.9711"], ["a11y-worker-2", "Worker code", null, "47dcd71db00697b3"]]));
+    const path = mirrorFile(mirrorOf([["a11y-worker-5  192.0.2.55:8765", "Windows", "22631.6199", "26300.9711"], ["a11y-worker-2", "Worker code", null, "47dcd71db00697b3"]]));
     const reading = readFleetDrift({ path });
     assert.deepEqual(reading, { readAt: NOW - 5 * MINUTE, checkedAt: iso(NOW - 10 * MINUTE), firstSeenAt: iso(NOW - 3 * 60 * MINUTE), unreadable: false, reachable: 14, total: 15, carryLost: [],
       differences: [{ box: "a11y-worker-5", field: "Windows", has: "22631.6199", wants: "26300.9711", carried: false }, { box: "a11y-worker-2", field: "Worker code", has: null, wants: "47dcd71db00697b3", carried: false }] });
-    assert.doesNotMatch(JSON.stringify(reading), /192\.168|8765|a11y-worker-6/);
+    assert.doesNotMatch(JSON.stringify(reading), /192\.0\.2|8765|a11y-worker-6/);
   });
 
   test("a manifest the check could not read is `unreadable`, without the reason (it may hold a path)", () => {
@@ -521,7 +521,7 @@ describe("readFleetDrift", () => {
   });
 
   test("`carryLost` crosses as names: an address is cut, and a missing list is none", () => {
-    const lost = mirrorOf([], { carryLost: ["a11y-worker-9  192.168.1.9:8765", "a11y-worker-4", 7], firstSeenAt: iso(NOW - 60 * MINUTE) });
+    const lost = mirrorOf([], { carryLost: ["a11y-worker-9  192.0.2.9:8765", "a11y-worker-4", 7], firstSeenAt: iso(NOW - 60 * MINUTE) });
     assert.deepEqual(readFleetDrift({ path: mirrorFile(lost) }).carryLost, ["a11y-worker-9", "a11y-worker-4"]);
     assert.deepEqual(readFleetDrift({ path: mirrorFile(mirrorOf([])) }).carryLost, []);
   });
