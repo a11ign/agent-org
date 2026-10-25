@@ -22,6 +22,8 @@ import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
 import { ESCALATION_RULE } from "./escalation.ts";
+import { MOVE_RULE } from "./after-merge-move.ts";
+import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
 import { heldText, PUSH_ONCE_RULE } from "./ci-spend/rules.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
@@ -426,6 +428,10 @@ ${PLANNER_DECISIONS}
 
 ${PLANNER_TICKET_DECISIONS}
 
+${MOVE_RULE}
+
+${AFTER_MERGE_CHECKS_RULE}
+
 ${MISSING_SKILL}
 
 ${STALLING_COMMANDS}
@@ -506,6 +512,10 @@ ${PARENT_ONLY_PLAN}
 ${PLANNER_DECISIONS}
 
 ${PLANNER_TICKET_DECISIONS}
+
+${MOVE_RULE}
+
+${AFTER_MERGE_CHECKS_RULE}
 
 ${MISSING_SKILL}
 

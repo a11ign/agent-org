@@ -15,6 +15,7 @@ import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { diffLines, learnsFrom, learnsLine, REPLANNING_LINE, STALE_PLAN_LINE, ticketChangeOf } from "./board-view/ticket-change.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls, afterMergeChecks } from "./board-view.ts";
+import { closeCheck, decideFollowUp, emptyChecks, seedChecks, type ChecksFile } from "./after-merge/checks.ts";
 import { AWAITING_PERSON_LINE, claimWarning, publishingOffLine, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
@@ -1698,20 +1699,39 @@ test("A11-173: a Completed run's line says completed: a11ign/agent-org #1815, a1
   assert.deepEqual([runStatus(partial), reasonOf(partial).line], ["needs-you", null], "a partial run is not Completed, and does not say it was");
 });
 
-test("A11-173: the After-merge checks list names each line's ticket and owner, and a run with them reads Completed, not Needs you", () => {
+test("A11-173: a run with After-merge lines reads Completed, not Needs you, and says how many it listed", () => {
   const listed = run({ ticket: { key: "A11-145", url: "https://linear.app/a11ign/issue/A11-145" }, outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" },
     afterMerge: [{ line: "the laptop run shows 3 of 3. The chairman, after merge.", owner: "The chairman" }, { line: "a second check", owner: null }] });
   assert.equal(runStatus(listed), "completed");
   assert.equal(reasonOf(listed).line, "completed: a11ign/agent-org #1811 merged; 2 after-merge checks listed");
   assert.equal(reasonOf({ ...listed, afterMerge: [listed.afterMerge![0]] }).line, "completed: a11ign/agent-org #1811 merged; 1 after-merge check listed");
-  const other = run({ ticket: { key: "A11-150" }, afterMerge: [{ line: "a live check", owner: "Someone" }] });
-  assert.deepEqual(afterMergeChecks([listed, run({ ticket: { key: "A11-146" } }), other]), [
-    { key: "A11-145", url: "https://linear.app/a11ign/issue/A11-145", line: "the laptop run shows 3 of 3. The chairman, after merge.", owner: "The chairman" },
-    { key: "A11-145", url: "https://linear.app/a11ign/issue/A11-145", line: "a second check", owner: "owner not named" },
-    { key: "A11-150", url: null, line: "a live check", owner: "Someone" },
-  ], "one row per line, in the order of the runs, with 'owner not named' where the line names none; a run with none adds none");
-  assert.deepEqual(afterMergeChecks([run({})]), [], "nothing is listed for a run that recorded none");
-  assert.deepEqual(afterMergeChecks([]), []);
+});
+
+test("A11-277: the After-merge checks list is the open checks and the failed ones with no follow-up, oldest first, each with its owner, runner and role", () => {
+  const url = "https://linear.app/a11ign/issue/A11-145";
+  const runs = [
+    { ticket: { key: "A11-145", url }, finishedAt: 2_000, afterMerge: [{ line: "the laptop run shows 3 of 3. The chairman, after merge.", owner: "The chairman" }, { line: "a second check", owner: null }] },
+    { ticket: { key: "A11-150" }, finishedAt: 1_000, afterMerge: [{ line: "The release manager: a live check", owner: null }] },
+    { ticket: { key: "A11-146" } },
+  ];
+  const seeded = seedChecks(emptyChecks(), runs, 9_000);
+  assert.deepEqual(afterMergeChecks(seeded), [
+    { id: "A11-150#1", key: "A11-150", url: null, line: "The release manager: a live check", runner: "session", listedAt: 1_000, state: "open", owner: "The release manager", role: "The release manager", followUpText: null },
+    { id: "A11-145#1", key: "A11-145", url, line: "the laptop run shows 3 of 3. The chairman, after merge.", runner: "person", listedAt: 2_000, state: "open", owner: "The chairman", role: null, followUpText: null },
+    { id: "A11-145#2", key: "A11-145", url, line: "a second check", runner: "session", listedAt: 2_000, state: "open", owner: "owner not named", role: null, followUpText: null },
+  ], "oldest first, with 'owner not named' where the line names none; a run with none adds none");
+  const close = (file: ChecksFile, id: string, result: "passed" | "failed") => {
+    const closed = closeCheck(file, id, { result, evidence: "seen on the board", by: "person" }, 10_000);
+    assert.ok(closed.ok);
+    return closed.file;
+  };
+  const failed = close(close(seeded, "A11-150#1", "passed"), "A11-145#2", "failed");
+  assert.deepEqual(afterMergeChecks(failed).map(({ id, state }) => [id, state]), [["A11-145#1", "open"], ["A11-145#2", "failed"]], "a passed check leaves; a failed one stays until its follow-up is decided");
+  assert.match(afterMergeChecks(failed)[1].followUpText ?? "", /^Follow-up to A11-145: its after-merge check failed\./);
+  const decided = decideFollowUp(failed, "A11-145#2", null);
+  assert.ok(decided.ok);
+  assert.deepEqual(afterMergeChecks(decided.file).map(({ id }) => id), ["A11-145#1"], "a decided follow-up takes the failed check off the list");
+  assert.deepEqual(afterMergeChecks(emptyChecks()), []);
 });
 
 // A11-175: a run on one step of a multi-step plan holds that step's paths and its open pull requests' files, not the whole plan's. A11-160 (step 3 of 9) held every path its nine steps name, so A11-173 and

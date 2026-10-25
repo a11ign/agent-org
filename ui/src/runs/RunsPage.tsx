@@ -42,12 +42,15 @@ function useLimit(filter: RunStatus | null): Readonly<{ limit: number; more: () 
   return { limit, more: () => setState({ filter, limit: limit + PAGE_SIZE }) };
 }
 
-/** The lists below the runs: the open pull requests no run lists, and the After-merge checks. A pull request can be a person's while no run exists, so they are drawn under the empty panel too. */
-function Lists({ queue }: Readonly<{ queue: QueueView }>) {
+/**
+ * The lists below the runs: the open pull requests no run lists, and the open After-merge checks. A pull request can be a person's while no run exists, and a check outlives its run, so they are drawn under the
+ * empty panel too. An instance older than A11-277 lists no checks.
+ */
+function Lists({ queue, disabled }: Readonly<{ queue: QueueView; disabled: boolean }>) {
   return (
     <>
       <PullRequestsList entries={queue.entries} reviews={queue.pulls ?? {}} />
-      <AfterMergeList entries={queue.entries} />
+      <AfterMergeList checks={queue.afterMergeChecks ?? []} disabled={disabled} />
     </>
   );
 }
@@ -59,7 +62,7 @@ function NoRuns({ queue, pool, disabled, reviewer }: Readonly<{ queue: QueueView
       <RunsNotices queue={queue} reviewer={reviewer} />
       <PoolBar queue={queue} pool={pool} disabled={disabled} />
       <EmptyState title="No runs yet" text="Queue tickets from the Tickets page and each one shows up here as it runs." actions={<a className="empty-link" href={ticketsHref}>Go to Tickets</a>} />
-      <Lists queue={queue} />
+      <Lists queue={queue} disabled={disabled} />
     </>
   );
 }
@@ -98,7 +101,7 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
               <RunsNotices queue={data} reviewer={config?.reviewer} />
               <PoolBar queue={data} pool={pool} disabled={disabled} />
               <RunsList page={paged(groupsOf(data, filteredRuns(data, filter)), paging.limit)} context={context(data)} onMore={paging.more} />
-              <Lists queue={data} />
+              <Lists queue={data} disabled={disabled} />
               {publishes && picked.keys.length > 0 ? <PublishBar count={picked.keys.length} busy={publisher.busy} disabled={disabled} onClear={picked.clear} onPublish={post} /> : null}
             </>
           )}

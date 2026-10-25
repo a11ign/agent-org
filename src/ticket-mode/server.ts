@@ -55,6 +55,7 @@ import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
+import { afterMergeRoute, afterMergeView } from "./after-merge/route.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -374,8 +375,9 @@ function queueView(board: Pick<Board, "store" | "pool" | "update" | "settings">)
     const ci = ciViewOf(board.store.get(), entry, board.settings.ciBudgetMinutes);
     return { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) };
   });
-  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading.
-  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update() };
+  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
+  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
+    afterMergeChecks: afterMergeView(board.settings.stateDir) };
 }
 
 /**
@@ -718,6 +720,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await settingsEditRoute(board, method, path, body))
     ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
+    ?? afterMergeRoute({ stateDir: board.settings.stateDir, now: board.now }, method, path, body)
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 

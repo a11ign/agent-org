@@ -29,6 +29,7 @@ import { askUpdate } from "./pool-checks.ts";
 import { recordClosedWork } from "./pool-closed-work.ts";
 import { isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
 
 /**
  * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed, except a partial run whose ticket the tracker's integration completed, which is put back (A11-178) once the merged bodies are read, since a merged `Closes` or `Partial:` decides over the outcome's `partial`
@@ -80,9 +81,11 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   await restoreStranded(ctx);
   // A pull request closed without merging holds work no branch has: it is listed, kept and posted on its ticket (A11-249). After the reads above, since each one costs a code host read and a comment.
   await recordClosedWork(ctx);
-  // The heads of the queued runs' stacked blockers come last of all: a git read per branch must not delay the tracker's own reads.
+  // The heads of the queued runs' stacked blockers come after the tracker's own reads: a git read per branch must not delay them.
   const queued = store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key);
   if (headsToRead(ctx, queued)) await readHeads(ctx, queued);
+  // Last: the After-merge lines listed above become checks of their own, which outlive their runs, and each close is posted on its ticket (A11-277). A close waiting to be posted delays none of the reads above.
+  await syncAfterMergeChecks(ctx);
 }
 
 /**

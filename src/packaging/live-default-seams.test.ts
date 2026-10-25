@@ -23,6 +23,13 @@
  *   fires beneath it. A test cannot inject through a carrier.
  * - **Findings:** a test call to a live seam's function that does not inject it, or any test call to a carrier.
  *
+ * **A11-279: the machine.** `gh` is not the only real call a default can make. A test that switched a plugin off reached
+ * `writePlan`'s `deps.outgoing ?? loadOutgoing`; `loadOutgoing` builds `realPluginDeps`, whose `exec` ran the real
+ * `tailscale`, and the agents host's live serves went off. So a function that calls a live root (`realPluginDeps`,
+ * `realExec`, `realExecAsync`), or a module function that does, is a MACHINE default, and two seams are read for it:
+ * every shape above whose default is one, and a nullish default read off a positional parameter
+ * (`deps.outgoing ?? loadOutgoing`). A machine seam is live by what it defaults to; the gh seams stay live by what they spend.
+ *
  * Measured at `27c9621c` (#1401, comment 5656304055), over the whole product tree: 147 defaulted spawn seams, 63 live, 36
  * carriers, 266 test calls to live seams or carriers, 0 findings. Four passes were needed, each finding a population the
  * previous one could not see; the planted fixture below holds every shape they found.
@@ -42,6 +49,9 @@
  * 3. **A call through a renamed local** (`const f = imported; f()`), a dynamic `import()`, or a package-specifier
  *    import. Imports are resolved by relative path only.
  * 4. **An injected value that is itself live**, such as a test passing `{ run: defaultRun }` it imported.
+ * 5. **A nullish default read off anything but a positional parameter**, such as `pluginsApi`'s `seam.deps ?? ...`, where
+ *    `seam` is destructured from its options. The refusal in `realExec` (`src/plugins/real-seams.ts`) is what stops a
+ *    test that reaches `tailscale` that way.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -61,7 +71,9 @@ type Functions = Map<string, { node: FunctionLike; exported: boolean }>;
 type Module = { file: string; sf: ts.SourceFile; fns: Functions };
 type Seam = {
   file: string; fn: string; line: number; key: string; dflt: string;
-  shape: "destructured" | "positional" | "body-destructured" | "alias"; index?: number; live?: boolean;
+  shape: "destructured" | "positional" | "body-destructured" | "alias" | "nullish"; index?: number; live?: boolean;
+  /** What the default reaches: `gh` through a spawn (live when it spends it), or the machine through a live root (always live). */
+  reach: "gh" | "machine";
 };
 type Carrier = { file: string; fn: string; calls: string; key: string };
 type Finding = { test: string; line: number; fn: string; via: string };
@@ -74,6 +86,9 @@ const hasExportModifier = (node: ts.Node) =>
 const isFunctionLike = (n: ts.Node): n is FunctionLike =>
   ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n);
 const identifierText = (n: ts.Node | undefined) => (n !== undefined && ts.isIdentifier(n) ? n.text : null);
+
+/** The calls that reach the machine itself: the real plugin deps, and the real `exec` they carry (A11-279). */
+const LIVE_ROOTS = new Set(["realPluginDeps", "realExec", "realExecAsync"]);
 
 function callsUnder(node: ts.Node): ts.CallExpression[] {
   const out: ts.CallExpression[] = [];
@@ -150,58 +165,104 @@ const passesKeyByName = (arg: ts.Expression, key: string) => ts.isObjectLiteralE
 function injects(call: ts.CallExpression, seam: Seam): boolean {
   if (seam.shape === "alias") return false;
   if (seam.shape === "positional") return call.arguments.length > (seam.index ?? 0);
+  if (seam.shape === "nullish") {
+    const arg = call.arguments[seam.index ?? 0];
+    return arg !== undefined && (ts.isSpreadElement(arg) || /^(deps|options|opts)$/.test(identifierText(arg) ?? "") || passesKeyByName(arg, seam.key));
+  }
   return call.arguments.some((a) => ts.isSpreadElement(a) || /^(deps|options|opts)$/.test(identifierText(a) ?? "")
     || passesKeyByName(a, seam.key));
 }
 
 /** The elements of a destructuring pattern whose default names a spawning function, as seams of the given shape. */
-function destructuredSeams(mod: Module, fn: string, elements: ts.NodeArray<ts.BindingElement>, spawning: (name: string) => boolean,
+function destructuredSeams(mod: Module, fn: string, elements: ts.NodeArray<ts.BindingElement>, reachOf: ReachOf,
   shape: Seam["shape"]): Seam[] {
   const seams: Seam[] = [];
   for (const el of elements) {
     const dflt = identifierText(el.initializer);
     const key = identifierText(el.name);
-    if (dflt === null || key === null || !spawning(dflt)) continue;
-    seams.push({ file: mod.file, fn, line: lineOf(mod.sf, el), key, dflt, shape });
+    const reach = dflt === null ? null : reachOf(dflt);
+    if (dflt === null || key === null || reach === null) continue;
+    seams.push({ file: mod.file, fn, line: lineOf(mod.sf, el), key, dflt, shape, reach });
   }
   return seams;
 }
 
+/** What a default named `name` reaches: the machine through a live root, `gh` (or any program) through a module function that spawns, or nothing (null). */
+type ReachOf = (name: string) => Seam["reach"] | null;
+
 /** Seams declared in a function's parameter list: positional defaults and destructured defaults. */
-function parameterSeams(mod: Module, fn: string, node: FunctionLike, spawning: (name: string) => boolean): Seam[] {
+function parameterSeams(mod: Module, fn: string, node: FunctionLike, reachOf: ReachOf): Seam[] {
   const seams: Seam[] = [];
   node.parameters.forEach((p, index) => {
     const dflt = identifierText(p.initializer);
-    if (ts.isIdentifier(p.name) && dflt !== null && spawning(dflt)) {
-      seams.push({ file: mod.file, fn, line: lineOf(mod.sf, p), key: p.name.text, dflt, shape: "positional", index });
+    const reach = dflt === null ? null : reachOf(dflt);
+    if (ts.isIdentifier(p.name) && dflt !== null && reach !== null) {
+      seams.push({ file: mod.file, fn, line: lineOf(mod.sf, p), key: p.name.text, dflt, shape: "positional", index, reach });
     }
     if (!ts.isObjectBindingPattern(p.name)) return;
-    seams.push(...destructuredSeams(mod, fn, p.name.elements, spawning, "destructured"));
+    seams.push(...destructuredSeams(mod, fn, p.name.elements, reachOf, "destructured"));
   });
   return seams;
 }
 
 /** Seams declared in a function's body: a default destructured from a parameter, and a plain alias. */
-function bodySeams(mod: Module, fn: string, node: FunctionLike, spawning: (name: string) => boolean): Seam[] {
+function bodySeams(mod: Module, fn: string, node: FunctionLike, reachOf: ReachOf): Seam[] {
   const seams: Seam[] = [];
   const params = node.parameters.map((p) => identifierText(p.name)).filter((n): n is string => n !== null);
   eachOwnNode(node, (n) => {
     if (!ts.isVariableDeclaration(n)) return;
     const source = identifierText(n.initializer);
     if (source === null) return;
-    if (ts.isIdentifier(n.name) && spawning(source)) {
-      seams.push({ file: mod.file, fn, line: lineOf(mod.sf, n), key: n.name.text, dflt: source, shape: "alias" });
+    const reach = reachOf(source);
+    if (ts.isIdentifier(n.name) && reach !== null) {
+      seams.push({ file: mod.file, fn, line: lineOf(mod.sf, n), key: n.name.text, dflt: source, shape: "alias", reach });
     }
     if (!ts.isObjectBindingPattern(n.name) || !params.includes(source)) return;
-    seams.push(...destructuredSeams(mod, fn, n.name.elements, spawning, "body-destructured"));
+    seams.push(...destructuredSeams(mod, fn, n.name.elements, reachOf, "body-destructured"));
   });
   return seams;
 }
 
+/** Whether `expression` is, or calls, something that reaches the machine: a live root, or a module function in `machine`. */
+function reachesMachine(expression: ts.Expression, machine: Set<string>): boolean {
+  const name = identifierText(expression);
+  if (name !== null) return LIVE_ROOTS.has(name) || machine.has(name);
+  const calls = ts.isCallExpression(expression) ? [expression, ...callsUnder(expression)] : callsUnder(expression);
+  return calls.some((c) => LIVE_ROOTS.has(c.expression.getText()) || machine.has(c.expression.getText()));
+}
+
+/** A11-279: `<positional parameter>.<key> ?? <machine default>` in a function's own body, the shape `writePlan`'s `deps.outgoing ?? loadOutgoing` is. */
+function nullishSeams(mod: Module, fn: string, node: FunctionLike, machine: Set<string>): Seam[] {
+  const seams: Seam[] = [];
+  const params = node.parameters.map((p) => identifierText(p.name));
+  eachOwnNode(node, (n) => {
+    if (!ts.isBinaryExpression(n) || n.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken || !ts.isPropertyAccessExpression(n.left)) return;
+    const index = params.indexOf(identifierText(n.left.expression));
+    if (index < 0 || !reachesMachine(n.right, machine)) return;
+    seams.push({ file: mod.file, fn, line: lineOf(mod.sf, n), key: n.left.name.text, dflt: n.right.getText(), shape: "nullish", index, reach: "machine" });
+  });
+  return seams;
+}
+
+/** The module's functions that reach the machine: each that calls a live root, or a module function that does, to a fixpoint. */
+function machineFunctions(mod: Module): Set<string> {
+  const machine = new Set<string>();
+  let grew = true;
+  while (grew) {
+    const added = [...mod.fns].filter(([fn, { node }]) => !machine.has(fn)
+      && callsUnder(node).some((c) => LIVE_ROOTS.has(c.expression.getText()) || machine.has(c.expression.getText()))).map(([fn]) => fn);
+    for (const fn of added) machine.add(fn);
+    grew = added.length > 0;
+  }
+  return machine;
+}
+
 function seamsOf(mod: Module): Seam[] {
-  const spawning = (name: string) => mod.fns.has(name) && spawnKind(mod.fns.get(name)!.node) !== null;
+  const machine = machineFunctions(mod);
+  const reachOf: ReachOf = (name) => (LIVE_ROOTS.has(name) || machine.has(name) ? "machine"
+    : mod.fns.has(name) && spawnKind(mod.fns.get(name)!.node) !== null ? "gh" : null);
   return [...mod.fns].flatMap(([fn, { node }]) =>
-    [...parameterSeams(mod, fn, node, spawning), ...bodySeams(mod, fn, node, spawning)]);
+    [...parameterSeams(mod, fn, node, reachOf), ...bodySeams(mod, fn, node, reachOf), ...nullishSeams(mod, fn, node, machine)]);
 }
 
 const spendKey = (file: string, fn: string, name: string) => `${file}::${fn}::${name}`;
@@ -310,7 +371,12 @@ export function liveSeamFindings({ scripts, tests }: { scripts: Source[]; tests:
   const list = [...modules.values()];
   const seams = list.flatMap(seamsOf);
   const spends = propagateSpends(list, directSpends(list));
-  for (const seam of seams) seam.live = spends.has(spendKey(seam.file, seam.fn, seam.key));
+  for (const seam of seams) {
+    // A seam that spends gh is a gh seam, whatever else its default reaches, so the tree's "no live gh seam" assertion still sees it.
+    const spendsGh = spends.has(spendKey(seam.file, seam.fn, seam.key));
+    if (spendsGh) seam.reach = "gh";
+    seam.live = spendsGh || seam.reach === "machine";
+  }
   const live = seams.filter((s) => s.live);
   const carriers = findCarriers(modules, live);
   return { seams, live, carriers, ...findTestCalls(tests, live, carriers) };
@@ -364,17 +430,47 @@ test("#1401 POSITIVE CONTROL: the planted fixture yields exactly its five uninje
   assert.ok(!live.some((s) => s.fn === "localOnly"), "a seam that only spawns git is not live");
 });
 
+// A11-279: a plan writer whose outgoing plugin defaults, through a nullish read of its deps, to one built on the real plugin deps; a writer whose default reaches nothing; and the real exec as a default.
+const MACHINE_SCRIPT = `
+import { realExec, realPluginDeps } from "./active.ts";
+export async function loadOutgoing(plugin) { const deps = realPluginDeps({ env: process.env }); return plugin.release(deps); }
+function quiet() { return null; }
+export async function writePlan(plan, deps, confirmed) { const outgoing = await (deps.outgoing ?? loadOutgoing)(plan.leaves); return [outgoing, confirmed]; }
+export function writeQuiet(plan, deps) { return (deps.outgoing ?? quiet)(plan); }
+export function probe({ exec = realExec } = {}) { return exec("tailscale", ["status"]); }
+`;
+const MACHINE_TEST = `
+import { writePlan, writeQuiet, probe } from "../fixture-machine.ts";
+await writePlan(plan, { hostPath: "/x", log }, []);
+await writePlan(plan, { hostPath: "/x", log, outgoing: async () => stub }, []);
+writeQuiet(plan, { hostPath: "/x" });
+probe();
+probe({ exec: stub });
+`;
+const MACHINE_FIXTURE = {
+  scripts: [{ path: "src/fixture-machine.ts", text: MACHINE_SCRIPT }],
+  tests: [{ path: "src/packaging/fixture-machine.test.ts", text: MACHINE_TEST }],
+};
+
+test("A11-279 POSITIVE CONTROL: a nullish default to a function that builds the real plugin deps, and the real exec as a default, are found where a test reaches them uninjected", () => {
+  const { findings, live } = liveSeamFindings(MACHINE_FIXTURE);
+  assert.deepEqual(findings.map((f) => `${f.line}:${f.fn} ${f.via}`), ["3:writePlan outgoing (nullish)", "6:probe exec (destructured)"],
+    "the uninjected writePlan and probe calls -- while the injected calls (lines 4 and 7) and the nullish default that reaches nothing (line 5) are not findings");
+  assert.deepEqual(live.map((seam) => `${seam.fn} ${seam.key} ${seam.reach}`), ["writePlan outgoing machine", "probe exec machine"]);
+});
+
 test("#1401 THE LIVE ASSERTION: no test in the tree calls a live default seam without injecting it", () => {
   // The positive control that this can return a finding is the planted fixture test above; the controls that it
   // examined the real population are the named members in the next test. An empty list here is only evidence
   // with both of those green.
   // Since step 9 of A11-160 no file outside `plugins/github` spawns `gh` (`gh-call-ratchet.test.ts`), so the real tree holds no live default seam and nothing is examined: an empty population is the end state,
   // not a broken walk. What shows the walk can still find one is the planted fixture above, and what keeps a seam from coming back is the ratchet.
+  // A machine seam (A11-279) may stay in the tree, as `writePlan`'s does: what must not is a test that reaches it uninjected, which the findings below hold to none.
   const { findings, live } = liveSeamFindings(realTree());
-  assert.deepEqual(live.map((seam) => `${seam.file} ${seam.fn}`), [], "a live default seam is back in the tree: a `gh` spawn belongs in plugins/github, behind the code host");
+  assert.deepEqual(live.filter((seam) => seam.reach === "gh").map((seam) => `${seam.file} ${seam.fn}`), [], "a live default seam is back in the tree: a `gh` spawn belongs in plugins/github, behind the code host");
   assert.deepEqual(findings, [],
-    `these test calls reach a live default seam without injecting it -- each performs a real ${GH} call on every `
-    + `local run:\n  ${findings.map((f) => `${f.test}:${f.line} -> ${f.fn} (${f.via})`).join("\n  ")}`);
+    `these test calls reach a live default seam without injecting it -- each performs a real ${GH} call, or reaches `
+    + `this machine through the real plugin deps or exec, on every local run:\n  ${findings.map((f) => `${f.test}:${f.line} -> ${f.fn} (${f.via})`).join("\n  ")}`);
 });
 
 test("#1401 POPULATION CONTROL: named seams from the enumeration are classified as it found them", () => {
@@ -385,4 +481,6 @@ test("#1401 POPULATION CONTROL: named seams from the enumeration are classified 
   for (const [file, fn, why] of expectedLive) assert.ok(isLive(file, fn), `${file} ${fn} should be live: ${why}`);
   assert.ok(seams.some((s) => s.file === "src/prune-worktrees.ts" && s.fn === "pruneWorktrees" && !s.live),
     "and a seam that spawns only git is collected but not live");
+  assert.ok(live.some((s) => s.file === "src/plugins/cli.ts" && s.fn === "writePlan" && s.key === "outgoing" && s.shape === "nullish" && s.reach === "machine"),
+    "A11-279: writePlan's `deps.outgoing ?? loadOutgoing`, the seam a test took the agents host's serves off through, is a live machine seam");
 });
