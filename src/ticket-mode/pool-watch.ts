@@ -30,7 +30,7 @@ import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/st
 import { isReviewerDialogNote, reviewerDialogNote } from "./board-view/reviewer-dialog-note.ts";
 import { recordReviewerDialog } from "./queue/queue-reviewer-dialog.ts";
 import { observeWriter, writerResumed, writerWaiting } from "./queue.ts";
-import { openPulls } from "./board-view/view-types-and-filters.ts";
+import { openPulls, type PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -570,11 +570,20 @@ function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer,
 function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
   const key = entry.ticket.key;
   followUpdatesFromMain(ctx, entry, readable);
-  const heads = stampedBlocks(pullHeadsOf(readable), entry.pullHeads, ctx.now());
+  const heads = stampedBlocks(withMergeableForBlocked(pullHeadsOf(readable), entry), entry.pullHeads, ctx.now());
   if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads, ctx.now()));
   const open = readable.filter(({ read }) => read.state === "open");
   const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
+}
+
+/**
+ * The heads as the watch records them (A11-258): `mergeable` is kept only for a run that ended `needs-human` on a requested change (`outcomeBlocks`), the one run that reads it. GitHub recomputes it for every open pull request
+ * whenever its base moves, so recording it for the rest would rewrite the queue for a field nothing reads. PURE.
+ */
+function withMergeableForBlocked(heads: Readonly<Record<string, PullHead>>, entry: Entry): Readonly<Record<string, PullHead>> {
+  if (entry.outcomeBlocks !== undefined) return heads;
+  return Object.fromEntries(Object.entries(heads).map(([url, { mergeable: _unread, ...rest }]) => [url, rest]));
 }
 
 /** Whether an open pull request is read at a head other than `head`. PURE. */

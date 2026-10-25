@@ -316,6 +316,11 @@ export type Entry = Readonly<{
    * it. Dropped when the run ends again or is resumed, since a round records its own.
    */
   outcomeHeads?: Readonly<Record<string, string>>;
+  /**
+   * The open pull requests a `needs-human` run ended with changes requested at their head, by URL, with the head it was blocked at (A11-258): what it stopped on, read by the same read as {@link Entry.outcomeHeads}. The head is kept apart
+   * because agent-org's own merge of main moves `outcomeHeads`, and a review that reads absent on that new head is no lift. A review lifted at the blocked head, with the pull request mergeable, clears the run's question. Unset when none was blocked or the read failed; dropped where `outcomeHeads` is.
+   */
+  outcomeBlocks?: Readonly<Record<string, string>>;
   /** Each open pull request's head now, and whether it is approved at that head, by URL, as the last watch read them (A11-153). Written only when it changes. */
   pullHeads?: Readonly<Record<string, PullHead>>;
   /**

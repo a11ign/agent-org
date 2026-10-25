@@ -10,6 +10,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
 import { isParked, publishable, rebaseNote, runStatus, terminalLink, waitNote } from "./board-view/pull-status-and-notes.ts";
 import { checkNote, promptNote, reasonOf } from "./board-view/run-reason.ts";
+import { pullLabel } from "./board-view/pull-label.ts";
 import { declineMessage } from "./safety-prompt.ts";
 import { ASK_USER, DANGEROUS_RM } from "./safety-prompt-fixture.ts";
 import { MAIN_RM, SUBAGENT_RM } from "./safety-prompt-fixture.ts";
@@ -5189,6 +5190,37 @@ test("A11-153: a needs-human run whose pull request a reviewer approved at its h
   pulls[1] = feedbackPull({ head: "h2", reviews: [approvalAt("h1")] });
   pool.watchFeedback();
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["awaiting-review", "Answered: awaiting review"], "an approval of an earlier head is no approval of this one");
+});
+
+test("A11-258: a needs-human run records the pull requests it ended with changes requested, and reads cleared once the review is dismissed and the pull request is mergeable, then completes on the merge", async () => {
+  const changesRequested = feedbackPull({ head: "h1", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] });
+  const pulls: Record<number, unknown> = { 1: changesRequested };
+  const { tracker, pull, completed } = movingTracker();
+  const { pool, entry } = await parkedOnQuestion(ghFor(pulls), tracker);
+  assert.deepEqual([entry("NBF-1").outcomeBlocks, entry("NBF-1").outcomeHeads], [{ [approvedPr.url]: "h1" }, { [approvedPr.url]: "h1" }], "the end of the run read the requested changes, and the head they were at");
+  pool.watchFeedback();
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "reserved to the person \u2014 which colour?"], "still blocked: nothing is cleared");
+  pulls[1] = feedbackPull({ head: "h1", mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" });
+  pool.watchFeedback();
+  assert.equal(runStatus(entry("NBF-1")), "needs-you", "dismissed, but GitHub still computes whether it merges");
+  pulls[1] = feedbackPull({ head: "h1" });
+  pool.watchFeedback();
+  assert.deepEqual(reasonOf(entry("NBF-1")), { line: `the blocker cleared: the requested changes on ${pullLabel(approvedPr.url)} were lifted`, question: "reserved to the person \u2014 which colour?" });
+  assert.equal(runStatus(entry("NBF-1")), "awaiting-review");
+  assert.deepEqual([entry("NBF-1").workspace, completed.length], ["w2", 0], "the run stays parked, and lifting a review merges nothing");
+  assert.equal(entry("NBF-1").pullHeads?.[approvedPr.url]?.mergeable, true, "the watch records mergeable for the run that was blocked");
+  pull.state = "merged";
+  await pool.refreshTracker();
+  assert.deepEqual([runStatus(entry("NBF-1")), entry("NBF-1").closedByBoard], ["completed", true], "the merge then releases and completes it");
+});
+
+test("A11-258: a needs-human run whose open pull request was not blocked at its end stays Needs you with no review and mergeable", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
+  const { pool, entry } = await parkedOnQuestion(ghFor(pulls));
+  assert.equal(entry("NBF-1").outcomeBlocks, undefined, "nothing was blocked at its end");
+  pool.watchFeedback();
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "reserved to the person \u2014 which colour?"]);
+  assert.equal(entry("NBF-1").pullHeads?.[approvedPr.url]?.mergeable, undefined, "mergeable is recorded only for a run that was blocked: GitHub recomputes it whenever a base moves, and nothing else reads it");
 });
 
 test("A11-153: a run stored before heads were recorded, or whose end could not read its pull request, takes its first watch as the head it ended at", async () => {
