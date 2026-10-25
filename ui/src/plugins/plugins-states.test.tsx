@@ -33,6 +33,27 @@ describe("the page while the plugins are read", () => {
   });
 });
 
+describe("the plugins read while the instance restarts (A11-211)", () => {
+  it("says Reconnecting…, reads again by itself after 2 seconds, and draws the cards once the instance answers", async () => {
+    const plugins = pluginsOf({ fails: { status: 502, error: "no answer within 30 seconds" } });
+    const { fetchWith } = await pageOn({ plugins, ready: false });
+    await screen.findByText("Reconnecting…");
+    expect(fetchWith.paths.filter((path) => path.endsWith("/api/plugins"))).toHaveLength(1);
+    plugins.fails = undefined;
+    await screen.findByRole("region", { name: "Tracker" }, { timeout: 4_000 });
+    expect(screen.queryByText("Reconnecting…")).toBeNull();
+    expect(fetchWith.paths.filter((path) => path.endsWith("/api/plugins"))).toHaveLength(2);
+  });
+
+  it("does not read again by itself after a refusal, which the page's Retry asks for", async () => {
+    const plugins = pluginsOf({ fails: { status: 500, error: "the doctor checks fell over" } });
+    const { fetchWith } = await pageOn({ plugins, ready: false });
+    await screen.findByText("the doctor checks fell over");
+    await new Promise((done) => setTimeout(done, 2_600));
+    expect(fetchWith.paths.filter((path) => path.endsWith("/api/plugins"))).toHaveLength(1);
+  });
+});
+
 describe("where a plugin is", () => {
   it("is said with what the plugin is, as today's board said it, on a concern of one plugin and on each plugin a concern chooses between", async () => {
     const answer = answerOf();
