@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { runPlugin } from "../plugins/cli.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
-import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
+import { defaultDoctorDeps, diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
+import { noReviewerMemory, reviewerMemoryPath, writeReviewerMemory } from "../ticket-mode/reviewer-port.ts";
 import type { ChromiumReport } from "./chromium.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
 import { loadEnabled } from "../plugins/loader.ts";
@@ -85,7 +86,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
-    chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
+    reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     ...over,
   };
 }
@@ -1295,4 +1296,33 @@ test("A11-191: a version whose release declares no UI build is ok, and says so, 
   const dev = byName(await diagnose(deps({ uiBuild: uiBuildOf({ declared: false, found: "/src/agent-org/ui/dist", version: null }) })))["ui build"];
   assert.equal(dev.detail, "/next is served from /src/agent-org/ui/dist");
   assert.equal(dev.warning, undefined);
+});
+
+// A11-241: herdr refusing to start the reviewer is shown in doctor with herdr's reason, rather than retried in silence.
+const ATOMIC = hostWithProviders({ reviewer: { provider: "atomic" } });
+const REFUSED_START: DoctorDeps["reviewerRefusals"] = () => [{ url: "https://github.com/a11ign/announcement-emulator/pull/11", head: "1a2b3c4d5e6f", count: 3,
+  reason: 'herdr refused to start "reviewer-announcement-emulator-11" (invalid_agent_name: agent name must start with a lowercase letter and contain only lowercase letters, digits, \'-\' or \'_\' (1-32 characters))' }];
+
+test("A11-241: a reviewer start herdr refused fails `reviewer starts`, naming the pull request, its head, how often, and herdr's reason, which is the fix; the reviewer's row says so too", async () => {
+  const checks = byName(await diagnose(deps({ readFile: () => ATOMIC, reviewerRefusals: REFUSED_START })));
+  assertRow(checks, "reviewer starts", { ok: false,
+    detail: /^a11ign\/announcement-emulator #11 at 1a2b3c4d refused 3 times: herdr refused to start "reviewer-announcement-emulator-11" \(invalid_agent_name: agent name must start with a lowercase letter/,
+    fix: /^herdr refused to start "reviewer-announcement-emulator-11" \(invalid_agent_name: .*\): fix what herdr says, and the board starts the reviewer again on its next sweep$/ });
+  assert.equal(checks["reviewer (atomic)"].ok, false, "the provider's row summarises it");
+  assert.match(checks["reviewer (atomic)"].detail, /invalid_agent_name/);
+});
+
+test("A11-241: `reviewer starts` passes while herdr refuses nothing, and a machine with no reviewer has no such row, whatever its memory holds", async () => {
+  assertRow(byName(await diagnose(deps({ readFile: () => ATOMIC }))), "reviewer starts", { ok: true, detail: "herdr has refused no reviewer start" });
+  const none = byName(await diagnose(deps({ reviewerRefusals: REFUSED_START })));
+  assert.equal(none["reviewer starts"], undefined);
+  assert.equal(none["reviewer (none)"].ok, true);
+});
+
+test("A11-241: the refusals doctor reads are the ones the pool wrote to its reviewer memory file, split into pull request and head", () => {
+  const stateDir = tmpDirForFile("doctor-refusals-");
+  const key = "https://github.com/a11ign/announcement-emulator/pull/11@1a2b3c4d5e6f";
+  writeReviewerMemory(reviewerMemoryPath(stateDir), { ...noReviewerMemory(), refusals: new Map([[key, { reason: "herdr refused to start \"r\" (no)", count: 2 }]]) });
+  assert.deepEqual(defaultDoctorDeps().reviewerRefusals(stateDir), [{ url: "https://github.com/a11ign/announcement-emulator/pull/11", head: "1a2b3c4d5e6f", count: 2, reason: "herdr refused to start \"r\" (no)" }]);
+  assert.deepEqual(defaultDoctorDeps().reviewerRefusals(join(stateDir, "absent")), [], "no memory file is nothing refused");
 });

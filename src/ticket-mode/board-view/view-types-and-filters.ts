@@ -103,6 +103,8 @@ export type ViewEntry = Readonly<{
   working?: Readonly<{ reason: string; at?: number; stalled?: boolean; stallReason?: string; waiting?: boolean; waitingOn?: string; until?: number }>;
   /** Set while a reviewer's verdict on one of the run's pull requests is not posted, and the reason it is not (A11-83). */
   verdictNotPosted?: string;
+  /** Set while herdr has refused twice, for the same reason, to start the reviewer of one of the run's pull requests: the pull request and herdr's reason (A11-241). */
+  reviewerRefused?: string;
   /** Set while a stacked pull request of the run needs its base said: by URL, what is needed (A11-106). */
   retargets?: Readonly<Record<string, string>>;
   /** The blocker branch a run was branched from, and what agent-org has done to keep it on that branch (A11-116). */
