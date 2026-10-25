@@ -13,6 +13,7 @@ import { overlapWait } from "./board-view/overlap-hold.ts";
 import { waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
 import { placementOf } from "./writer-placement.ts";
+import { isCiHeld } from "./ci-spend/hold.ts";
 import { runOf, slotsHeld } from "./queue/queue-transitions.ts";
 import type { ToolPin } from "./queue/queue-pins.ts";
 
@@ -41,9 +42,9 @@ export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
   });
 }
 
-/** Whether a queued entry is held back for a reason of its own: its plan could not be downloaded, a session holds it, or a blocker has not let go. PURE. */
+/** Whether a queued entry is held back for a reason of its own: its plan could not be downloaded, a session holds it, a blocker has not let go, or the board holds it for its ticket's CI spend (A11-261). PURE. */
 const isHeldBack = (entry: Entry, entries: readonly Entry[]): boolean =>
-  entry.pathsFailure !== undefined || entry.sessionWait !== undefined || waitsOn(entry, entries).length > 0;
+  entry.pathsFailure !== undefined || entry.sessionWait !== undefined || isCiHeld(entry) || waitsOn(entry, entries).length > 0;
 
 /** The entry as it is once a start is recorded: starting, so it holds what a live run holds. */
 const asStarting = (entry: Entry): Entry => ({ ...entry, phase: "starting" });
@@ -57,7 +58,7 @@ export function loadQueue(path: string, max: number): Queue {
   if (!existsSync(path)) return emptyQueue(max);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Omit<Queue, "writers"> & { writers?: readonly LegacyRun[] };
   return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}),
-    ...(parsed.writers ? { writers: parsed.writers.map(writerAsRead) } : {}), ...(parsed.runLog ? { runLog: parsed.runLog } : {}) };
+    ...(parsed.writers ? { writers: parsed.writers.map(writerAsRead) } : {}), ...(parsed.runLog ? { runLog: parsed.runLog } : {}), ...(parsed.ciSpend ? { ciSpend: parsed.ciSpend } : {}) };
 }
 
 /** Replace the file whole: write beside it, then rename over it. */

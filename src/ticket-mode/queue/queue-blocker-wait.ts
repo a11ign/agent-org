@@ -28,8 +28,8 @@ export function requeueBehindBlocker(queue: Queue, key: string, { session, ...wa
   return requeueStopped(queue, key, now, { why: "blocker", record: { stoppedForBlocker: { at: now, ...wait } }, drops: ["blockers"], ...(session === undefined ? {} : { session }) });
 }
 
-/** Whether a run starts by resuming the Claude session the board stopped it in: a run stopped for an update (A11-169), or for a wait on another ticket (A11-272). */
-export const resumesStoppedSession = (entry: Entry): boolean => entry.stoppedForUpdate !== undefined || entry.stoppedForBlocker !== undefined;
+/** Whether a run starts by resuming the Claude session the board stopped it in: a run stopped for an update (A11-169), for a wait on another ticket (A11-272), or held for its ticket's CI spend (A11-261). */
+export const resumesStoppedSession = (entry: Entry): boolean => entry.stoppedForUpdate !== undefined || entry.stoppedForBlocker !== undefined || entry.ciHold !== undefined;
 
 /**
  * The keys of a queued stopped run whose states the board is due to read at `now`: those the tracker's blockers, once read, do not list, since no blocker read carries their states, and whose wait has not ended as last

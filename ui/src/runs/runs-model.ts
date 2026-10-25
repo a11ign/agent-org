@@ -7,6 +7,7 @@ import { reviewLinesOf } from "../../../src/ticket-mode/board-view.ts";
 import { learnsLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
 import { checkNote, promptNote, queueNote, reasonOf, updateLines } from "../../../src/ticket-mode/board-view/run-reason.ts";
 import { publishingOffLine } from "../../../src/ticket-mode/board-view/pull-review-state.ts";
+import { ciNote } from "../../../src/ticket-mode/board-view/ci-note.ts";
 import { readoptNote } from "../../../src/ticket-mode/board-view/readopt-note.ts";
 import { sharedRunNote } from "../../../src/ticket-mode/board-view/run-terminal.ts";
 import { cutListNote } from "../../../src/ticket-mode/board-view/overlap-hold.ts";
@@ -210,6 +211,7 @@ export function noteLines(entry: RunEntry, { queue, publisher, now }: NoteContex
     retargetNote(entry),
     checkNote(entry),
     queueNote(entry),
+    ciNote(entry.ci),
     stalled?.stalled === true ? stalled.text : null,
     isParked(entry) ? PARKED_LINE : null,
   ];

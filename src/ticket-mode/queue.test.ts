@@ -318,7 +318,7 @@ test("approve queues a run's open pull requests again, at the end, as a review r
   const queue = approve(endedWith({ kind: "draft-pr", prs: [pr] }, { pullStates: { [pr.url]: "open" } }), "A", 9);
   const a = queue.entries.find((e) => e.ticket.key === "A");
   assert.deepEqual(keys(queue), ["B", "A"]);
-  assert.deepEqual(a, { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", review: [pr], phase: "queued", queuedAt: 9 });
+  assert.deepEqual(a, { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", review: [pr], phase: "queued", queuedAt: 9, ciSince: 2 });
   const ready = endedWith({ kind: "reviewed", prs: [pr] });
   assert.deepEqual(approve(ready, "A", 9), ready, "pull requests ready already are not approved again: Respond to review is theirs");
 });
@@ -397,7 +397,7 @@ test("new feedback on a run Ready to merge queues a review round at the end that
   const queue = feedbackRound(readyToMerge({ published }), "A", "New review feedback on x", 9);
   assert.deepEqual(keys(queue), ["B", "A"]);
   assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", published, review: [pr], phase: "queued", queuedAt: 9,
-    feedback: "New review feedback on x", rounds: 1 });
+    feedback: "New review feedback on x", rounds: 1, ciSince: 2 });
 });
 
 test("a run the board does not watch gets no round: awaiting a person's review, parked, merged, or handed back", () => {
@@ -432,7 +432,7 @@ test("A11-89: a parked run whose pull request conflicts is queued as a review ro
   const queue = conflictRound(parkedOn({ kind: "needs-human", reason: "which colour?" }), "A", "a conflict line", 9);
   assert.deepEqual(keys(queue), ["B", "A"]);
   assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", review: [pr], phase: "queued", queuedAt: 9,
-    feedback: "a conflict line", rounds: 1 });
+    feedback: "a conflict line", rounds: 1, ciSince: 2 });
 });
 
 test("A11-89: a parked run that has used its rounds is left parked, with no handedBack, and a run the board watches or does not resume is left as it is", () => {
@@ -476,7 +476,7 @@ test("Respond to review queues a round now on a run Ready to merge or Published,
   const published = { link: "https://slack/1", at: 4 };
   const queue = respond(readyToMerge({ published, rounds: 2 }), "A", 9);
   assert.deepEqual(keys(queue), ["B", "A"]);
-  assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", published, review: [pr], phase: "queued", queuedAt: 9, asked: true });
+  assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", published, review: [pr], phase: "queued", queuedAt: 9, asked: true, ciSince: 2 });
 });
 
 test("A11-154: Respond to review queues a round on a finished run with a pull request open whatever its outcome ended on, resuming the worker", () => {

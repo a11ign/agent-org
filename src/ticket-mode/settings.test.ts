@@ -27,7 +27,14 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2 });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, pick: "assigned", stallMinutes: 30, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
+});
+
+test("A11-261: the CI budget is a whole number of weighted minutes per ticket, 300 by default, and 0 is none", () => {
+  assert.equal(parseTicketSettings({ clones }).ciBudgetMinutes, 300);
+  assert.equal(parseTicketSettings({ clones, tickets: { ciBudgetMinutes: 120 } }).ciBudgetMinutes, 120);
+  assert.equal(parseTicketSettings({ clones, tickets: { ciBudgetMinutes: 0 } }).ciBudgetMinutes, 0, "0 is no budget, not a refusal");
+  for (const refused of [-1, 1.5, "300", null, true]) assert.throws(() => parseTicketSettings({ clones, tickets: { ciBudgetMinutes: refused } }), /tickets\.ciBudgetMinutes.*must be a whole number of 0 or more/, String(refused));
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
