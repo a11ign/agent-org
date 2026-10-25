@@ -457,6 +457,8 @@ export type WriterRun = Readonly<{
   /** Who places the ticket. A run queued before placement existed has the placement its form implies (`placementOf`). */
   placement: Placement;
   form: WriterForm;
+  /** The key of the team the ticket is filed in (such as `A11`), set by a request the board makes itself (A11-267). A person's request has none: its team is the form's parent's, else the host's. */
+  team?: string;
   /** The model and effort the run is stamped with when it is queued (the Settings choice, else the host file's). Absent on a run queued before that. */
   model?: string;
   effort?: string;

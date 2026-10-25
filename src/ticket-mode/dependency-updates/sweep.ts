@@ -14,7 +14,7 @@ import { loadState, saveState } from "./filed.ts";
 import { watchGroup } from "./red-group.ts";
 import { requestTicket, type TicketRequest } from "./request.ts";
 import { settleRequests } from "./settle.ts";
-import { majorRequest } from "./ticket-request.ts";
+import { DEPENDENCY_EPIC, majorRequest } from "./ticket-request.ts";
 
 export { MAX_ATTEMPTS, RETRY_MS, type DependencySweepDeps } from "./context.ts";
 
@@ -47,12 +47,14 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
     sayOnce(ctx, "dependency updates: the code host cannot list the dependency bot's pull requests, so none becomes a ticket");
     return;
   }
+  // Everything but asking goes on while the team is unknown: reruns, the forgetting of closed pull requests and the logs are not the team's.
+  const team = await requestTeamOf(ctx);
   let full = false;
   const ask = (request: TicketRequest): void => {
-    if (full) return;
+    if (full || team === null) return;
     // A writer run waits for no Pause (a person just asked for it), but the sweep's has no person: while the board is paused it asks for nothing.
     if (deps.store.get().paused) sayOnce(ctx, "dependency updates: the queue is paused, so no dependency ticket is asked for until it is resumed");
-    full = deps.store.get().paused || !requestTicket(ctx, request);
+    full = deps.store.get().paused || !requestTicket(ctx, request, team);
   };
   const self = deps.codeHost.readOwnLogin() ?? "";
   const repositories = repositoriesOf(ctx);
@@ -60,6 +62,24 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
     const pulls = deps.codeHost.openDependencyPulls(repository);
     if (pulls === null) sayOnce(ctx, `dependency updates: ${repository}'s pull requests could not be listed, so the next sweep asks again`);
     else sweepRepository(ctx, ask, { repository, pulls, self });
+  }
+}
+
+/**
+ * The key of the team every request of this sweep is filed in: the team of {@link DEPENDENCY_EPIC}, the epic each dependency ticket relates to, read from the tracker once per sweep so a rename or a move follows the epic. The writer is
+ * never left to infer a team (A11-267), so while the epic cannot be read, or has no team, nothing is asked for (the rest of the sweep goes on): the reason is said once, and the next sweep reads it again. Null in that case.
+ */
+async function requestTeamOf(ctx: SweepContext): Promise<string | null> {
+  const noTeam = (why: string): null => {
+    sayOnce(ctx, `dependency updates: the team of ${DEPENDENCY_EPIC} is not known (${why}), so no dependency ticket is asked for until it is`);
+    return null;
+  };
+  try {
+    const epic = await ctx.deps.source.read(DEPENDENCY_EPIC);
+    if (epic === null) return noTeam(`the tracker has no such ticket`);
+    return typeof epic.team === "string" && epic.team !== "" ? epic.team : noTeam("it names no team");
+  } catch (err) {
+    return noTeam(firstLine(err));
   }
 }
 
@@ -87,7 +107,7 @@ function sweepRepository(ctx: SweepContext, ask: (request: TicketRequest) => voi
 /** The key of a major that has no entry yet, or whose failed entry is due again, is asked for. */
 function askMajor({ deps, state }: SweepContext, ask: (request: TicketRequest) => void, { repository, pull, update }: Readonly<{ repository: string; pull: DependencyPull; update: MajorUpdate }>): void {
   const key = majorKey(repository, update);
-  if (due(state.tickets[key], deps.now())) ask({ key, repository, request: majorRequest({ repository, url: pull.url, headRefName: pull.headRefName, body: pull.body, update }) });
+  if (due(state.tickets[key], deps.now())) ask({ key, repository, request: (team) => majorRequest({ team, repository, url: pull.url, headRefName: pull.headRefName, body: pull.body, update }) });
 }
 
 /** A pull request that is no longer open forgets the head it was rerun at, so a pull request number never carries a record into another life. */
