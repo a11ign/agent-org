@@ -303,11 +303,11 @@ test("A11-153: markResumed and a new end drop a run's heads, since the round tha
 
 test("A11-258: the pull requests a needs-human run ended with changes requested are recorded for a finished run only, none records nothing, and a resume or a new end drops them", () => {
   const queue = endedWith({ kind: "needs-human", reason: "q" });
-  assert.deepEqual(recordOutcomeBlocks(queue, "A", [pr.url]).entries[0].outcomeBlocks, [pr.url]);
-  assert.deepEqual(recordOutcomeBlocks(queue, "A", []), queue, "a run that stopped on something else carries no record");
+  assert.deepEqual(recordOutcomeBlocks(queue, "A", { [pr.url]: "h1" }).entries[0].outcomeBlocks, { [pr.url]: "h1" });
+  assert.deepEqual(recordOutcomeBlocks(queue, "A", {}), queue, "a run that stopped on something else carries no record");
   const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("B")], choice, 1), "B", 2), "B", "w1", "w1:p1");
-  assert.deepEqual(recordOutcomeBlocks(running, "B", [pr.url]), running, "only a finished run records them");
-  const blocked = recordOutcomeBlocks(park(markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1"), "A", { kind: "needs-human", reason: "q" }, 5), "A", [pr.url]);
+  assert.deepEqual(recordOutcomeBlocks(running, "B", { [pr.url]: "h1" }), running, "only a finished run records them");
+  const blocked = recordOutcomeBlocks(park(markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1"), "A", { kind: "needs-human", reason: "q" }, 5), "A", { [pr.url]: "h1" });
   assert.deepEqual(markResumed(blocked, "A").entries[0].outcomeBlocks, undefined, "a resumed run records its own at its next end");
   assert.deepEqual(finish(blocked, "A", { kind: "needs-human", reason: "again" }, 9).entries[0].outcomeBlocks, undefined, "and so does a new end");
 });

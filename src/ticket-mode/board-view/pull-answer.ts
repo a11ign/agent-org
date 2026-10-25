@@ -33,16 +33,17 @@ export function pullAnswer(entry: ViewEntry): PullAnswer | null {
 }
 
 /**
- * The open pull requests a finished `needs-human` run stopped on a requested change (`outcomeBlocks`) whose review is lifted now (A11-258): each still reads, at the head the run ended at, a review other than
- * changes requested (dismissed, or approved). Empty unless every one of them is lifted and every open pull request of the run reads mergeable: a pull request not read yet, or one GitHub is still computing
- * (`UNKNOWN` is not mergeable), clears nothing. A run that recorded no requested change is never cleared by this, whatever its pull requests read now: it stopped on something else. PURE.
+ * The open pull requests a finished `needs-human` run stopped on a requested change (`outcomeBlocks`) whose review is lifted now (A11-258): each still reads, at the head it was blocked at, a review other than
+ * changes requested (dismissed, or approved). A head that moved is no lift, however it moved: a review reads absent on a new head. Empty unless every one of them is lifted, no open pull request of the run reads
+ * changes requested, and every open pull request reads mergeable: a pull request not read yet, or one GitHub is still computing (`UNKNOWN` is not mergeable), clears nothing. A run that recorded no requested change is never cleared by this, whatever its pull requests read now: it stopped on something else. PURE.
  */
 export function liftedBlocks(entry: ViewEntry): string[] {
   const open = openPulls(entry);
-  const blocked = open.filter(({ url }) => entry.outcomeBlocks?.includes(url) === true).map(({ url }) => url);
+  const blocked = open.map(({ url }) => url).filter((url) => entry.outcomeBlocks?.[url] !== undefined);
   const lifted = blocked.every((url) => {
     const read = entry.pullHeads?.[url];
-    return read?.review !== undefined && read.review !== "changes-requested" && read.head === entry.outcomeHeads?.[url];
+    return read?.review !== undefined && read.review !== "changes-requested" && read.head === entry.outcomeBlocks?.[url];
   });
-  return lifted && open.every(({ url }) => entry.pullHeads?.[url]?.mergeable === true) ? blocked : [];
+  const unblocked = open.every(({ url }) => entry.pullHeads?.[url]?.review !== "changes-requested" && entry.pullHeads?.[url]?.mergeable === true);
+  return lifted && unblocked ? blocked : [];
 }

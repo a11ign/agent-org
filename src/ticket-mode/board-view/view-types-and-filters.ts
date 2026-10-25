@@ -126,8 +126,8 @@ export type ViewEntry = Readonly<{
   queueHeads?: Readonly<Record<string, QueueHead>>;
   /** The commit each open pull request of the run was at when it ended, by URL: what its question or work was about (A11-153). Unset until read. */
   outcomeHeads?: Readonly<Record<string, string>>;
-  /** The open pull requests a `needs-human` run ended with changes requested at their head, by URL: what it stopped on, so a review lifted since clears it (A11-258). Unset when none was blocked, or the end could not read them. */
-  outcomeBlocks?: readonly string[];
+  /** The open pull requests a `needs-human` run ended with changes requested at their head, by URL, with that head: what it stopped on, so a review lifted at that head clears it (A11-258). Unset when none was blocked, or the end could not read them. */
+  outcomeBlocks?: Readonly<Record<string, string>>;
   /** Each open pull request's head now, and whether the newest verdict on it is an approval, by URL, as the last watch read them (A11-153). */
   pullHeads?: Readonly<Record<string, PullHead>>;
 }>;

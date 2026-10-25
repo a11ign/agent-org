@@ -591,9 +591,9 @@ export function pullHeadsOf(open: readonly { url: string; read: PullFeedback }[]
   }));
 }
 
-/** The open pull requests that read `changes-requested` at their head, from the reads of them (A11-258): what a `needs-human` run ended on, for {@link pullHeadsOf}'s `review`. */
-export function blockedPullsOf(open: readonly { url: string; read: PullFeedback }[]): string[] {
-  return Object.entries(pullHeadsOf(open)).filter(([, { review }]) => review === "changes-requested").map(([url]) => url);
+/** The open pull requests that read `changes-requested` at their head, by URL with that head, from the reads of them (A11-258): what a `needs-human` run ended on, for {@link pullHeadsOf}'s `review`. */
+export function blockedPullsOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, string>> {
+  return Object.fromEntries(Object.entries(pullHeadsOf(open)).filter(([, { review }]) => review === "changes-requested").map(([url, { head }]) => [url, head]));
 }
 
 /** The commit each open pull request is at, by URL, from the reads of them (A11-153): {@link pullHeadsOf} without the approval. */
@@ -626,7 +626,7 @@ function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): voi
     return;
   }
   const open = readable.filter(({ read }) => read.state === "open");
-  const blocked = outcome.kind === "needs-human" ? blockedPullsOf(open) : [];
+  const blocked = outcome.kind === "needs-human" ? blockedPullsOf(open) : {};
   update(ctx, (queue) => recordOutcomeBlocks(recordOutcomeHeads(isDraftOrReady ? recordPullFiles(queue, key, pullFilesOf(open)) : queue, key, headCommitsOf(open)), key, blocked));
 }
 

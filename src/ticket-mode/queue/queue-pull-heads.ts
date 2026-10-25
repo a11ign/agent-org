@@ -13,9 +13,9 @@ export function recordOutcomeHeads(queue: Queue, key: string, heads: Readonly<Re
   return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, outcomeHeads: { ...entry.outcomeHeads, ...heads } } : entry));
 }
 
-/** Record the open pull requests a finished `needs-human` run ended with changes requested at their head (A11-258): none records nothing, so a run that stopped on something else carries no record. */
-export function recordOutcomeBlocks(queue: Queue, key: string, urls: readonly string[]): Queue {
-  return urls.length === 0 ? queue : replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, outcomeBlocks: urls } : entry));
+/** Record the open pull requests a finished `needs-human` run ended with changes requested at their head (A11-258), by URL with that head: none records nothing, so a run that stopped on something else carries no record. */
+export function recordOutcomeBlocks(queue: Queue, key: string, blocks: Readonly<Record<string, string>>): Queue {
+  return Object.keys(blocks).length === 0 ? queue : replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, outcomeBlocks: blocks } : entry));
 }
 
 /**
