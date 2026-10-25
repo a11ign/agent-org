@@ -463,8 +463,8 @@ test("A11-267: an epic the tracker cannot read, does not have, or that names no 
     const b = board({ epic });
     await b.majorAndGroup();
     assert.equal(b.writers().length, 0, `nothing is asked for: ${String(why)}`);
-    assert.equal(existsSync(b.statePath), false, "and nothing is recorded as requested, so the next sweep asks");
-    assert.equal(b.host.checksAndClaims.reruns.length, 0, "a group is not rerun while the sweep cannot ask for its ticket");
+    assert.deepEqual(b.state().tickets, {}, "and nothing is recorded as requested, so the next sweep asks");
+    assert.deepEqual(b.host.checksAndClaims.reruns, [[JOB_URL]], "the rest of the sweep goes on: the red group is rerun once");
     assert.equal(b.logs.filter((line) => /the team of A11-251 is not known/.test(line) && why.test(line)).length, 1, "said once");
   }
 });
@@ -478,4 +478,12 @@ test("A11-267: once the epic can be read again, the sweep asks for what it had l
   await b.sweep();
   assert.equal(b.writers().length, 1);
   assert.equal(b.writers()[0]!.team, "A11");
+});
+
+test("A11-267: a repository the code host cannot list is still said while the epic cannot be read, so an outage of the tracker hides nothing else", async () => {
+  const b = board({ epic: "throws", repositories: () => ["o/never-given", REPO] });
+  b.major(9);
+  await b.sweep();
+  assert.ok(b.logs.some((line) => /o\/never-given's pull requests could not be listed/.test(line)));
+  assert.equal(b.writers().length, 0);
 });

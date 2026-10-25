@@ -3,7 +3,7 @@
 import { errorLinesOfLog } from "../../ci-log-lines.ts";
 import type { DependencyPull } from "../../plugins/contracts/code-host.ts";
 import { redGroupKey } from "./classify.ts";
-import { due, sayOnce, type AskingContext, type SweepContext } from "./context.ts";
+import { due, sayOnce, type SweepContext } from "./context.ts";
 import type { TicketRequest } from "./request.ts";
 import { MAX_JOBS, redGroupRequest, type FailingJob } from "./ticket-request.ts";
 
@@ -22,7 +22,7 @@ function failingJobsOf({ deps }: SweepContext, failures: readonly Readonly<{ nam
  * A group pull request: green clears its record, red for the first time at a head is rerun once, and red again at that head is asked for (`ask`). A read that fails, or a head with a required check still pending, changes
  * nothing: "red" is a failing check with nothing required pending, so a rerun in progress is not a second red.
  */
-export function watchGroup(ctx: AskingContext, ask: (request: TicketRequest) => void, { repository, pull, group, self }: GroupPull): void {
+export function watchGroup(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pull, group, self }: GroupPull): void {
   const { deps, state, commit } = ctx;
   const read = deps.codeHost.readPullFeedback(pull.url, self);
   if (read === null) {
@@ -40,7 +40,7 @@ export function watchGroup(ctx: AskingContext, ask: (request: TicketRequest) => 
   const key = redGroupKey(repository, pull.number, head);
   if (!due(state.tickets[key], deps.now())) return;
   if (state.reruns[recorded] !== head) return rerunOnce(ctx, { recorded, head, url: pull.url, failures: read.failures });
-  ask({ key, repository, request: redGroupRequest({ team: ctx.team, repository, url: pull.url, headRefName: pull.headRefName, group, head, jobs: failingJobsOf(ctx, read.failures) }) });
+  ask({ key, repository, request: (team) => redGroupRequest({ team, repository, url: pull.url, headRefName: pull.headRefName, group, head, jobs: failingJobsOf(ctx, read.failures) }) });
 }
 
 /** Rerun the failed checks of a head and record the head. A rerun the host refuses is no reason to wait for ever: the head is recorded as rerun, so the next sweep asks for the ticket, and the refusal is said. */
