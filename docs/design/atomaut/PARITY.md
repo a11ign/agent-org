@@ -142,7 +142,7 @@ The tickets: A11-194 the shell, A11-195 an unreachable instance, A11-196 Tickets
 | The review state of each open pull request | `reviewLinesOf` | The Ready to merge callout, and Run detail's pull requests | A11-198 | AtomautRunDetailReady |
 | A done run's evidence | `evidence` | "Everything this run noted" | A11-220 | pattern: disclosure |
 | The proposed edit's text, now and proposed | `proposal()` | `/runs/<key>`, a "Proposed edit to the ticket" disclosure; Apply edit and Discard edit are the header's | A11-220 | pattern: disclosure |
-| The verdict, retarget and check notes | `verdictNote`, `retargetNote`, `checkNote` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
+| The verdict, retarget, check and merge queue notes | `verdictNote`, `retargetNote`, `checkNote`, `queueNote` | The Runs row's note, and "Everything this run noted" | A11-220 | pattern: disclosure |
 | A stalled run, and what the worker is doing | `workingNote` | The Working callout | A11-198 | AtomautRunDetail |
 | A parked run | `isParked` | The Runs row's note, and the Handed back callout | A11-198 | AtomautRunDetailHandedBack |
 | Every line of the note, whole | `noteLines()` | `/runs/<key>`, "Everything this run noted" | A11-220 | pattern: disclosure |

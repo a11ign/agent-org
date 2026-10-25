@@ -151,6 +151,19 @@ describe("a row's note", () => {
     expect(noteOf(entry, context)).toBe(lines.join(" · "));
   });
 
+  it("says a pull request the merge queue removed, among the lines, while the pull request is open and the run is finished (A11-264)", () => {
+    const url = "https://github.com/a11ign/announcement-emulator/pull/18";
+    const held = { [url]: { head: "c3f2b457", step: "held", removals: 3, jobs: ["middleware"], held: true, note: "removed from the merge queue 3 times: middleware" } };
+    const entry = entryOf({
+      ...working({ key: "A11-3", title: "t", startedAgo: MINUTE }), phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "announcement-emulator", url }] }, queueHeads: held,
+    });
+    expect(noteLines(entry, context)).toContain("removed from the merge queue 3 times: middleware");
+    expect(noteOf(entry, context)).toContain("removed from the merge queue 3 times: middleware");
+    expect(noteLines({ ...entry, phase: "running" } as RunEntry, context)).not.toContain("removed from the merge queue 3 times: middleware");
+    expect(noteLines({ ...entry, pullStates: { [url]: "merged" } } as RunEntry, context)).not.toContain("removed from the merge queue 3 times: middleware");
+    expect(noteLines({ ...entry, queueHeads: undefined } as RunEntry, context).some((line) => line.includes("merge queue"))).toBe(false);
+  });
+
   it("says when the board took a live pane back after a restart (A11-240)", () => {
     const entry = entryOf({ ...working({ key: "A11-6", title: "t", startedAgo: MINUTE }), readopted: { at: new Date(2026, 9, 24, 22, 31).getTime(), from: "starting" } });
     expect(noteLines(entry, context)).toContain("re-adopted after a restart at 22:31: its worker carried on");

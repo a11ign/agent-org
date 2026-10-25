@@ -2,7 +2,7 @@
 // from anyone but the board's own account, and its failing checks. Read through an injected `run` (the plugin's `gh`), so this file spawns nothing. It moved here from
 // `src/ticket-port/` with the rest of ticket mode's GitHub reads (A11-160). Which checks are red is core's to decide (`red-pr.ts`, #2956, which row mode shares), so this file
 // asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
-import type { FailingCheck, PullFeedback, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
+import type { FailingCheck, PullFeedback, PullQueue, QueueRemoval, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 
 export type { FailingCheck, PullFeedback };
@@ -13,6 +13,9 @@ const LAST = 50;
 /** The most pages of changed files one read takes: a pull request beyond this many files is read in part, and says so. */
 export const MAX_FILE_PAGES = 10;
 
+/** How many of the pull request's newest removals from the merge queue, commits and force-pushes one read takes: the removals since the head last moved are the trailing run of them. */
+const QUEUE_WINDOW = 20;
+
 const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
   state
   body
@@ -21,6 +24,11 @@ const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repositor
   mergeable
   mergeStateStatus
   baseRefName
+  mergeQueueEntry { state }
+  timelineItems(last: ${QUEUE_WINDOW}, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) { nodes {
+    __typename
+    ... on RemovedFromMergeQueueEvent { createdAt reason actor { login } beforeCommit { oid } }
+  } }
   files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
   reviews(last: ${LAST}) { nodes { state submittedAt author { login } commit { oid } } }
   comments(last: ${LAST}) { nodes { createdAt author { login } } }
@@ -183,6 +191,22 @@ function changedFiles(pull: { owner: string; repo: string; number: number }, fir
   }
 }
 
+/**
+ * What the merge queue did to the pull request, from the query's timeline (contract 1.21), or undefined when the answer carries none, which is "the host did not say" and never "no removals". The timeline holds only removals, commits and
+ * force-pushes, oldest first, so the removals since the head last moved are the ones after the last node that is not a removal. A pull request in the queue now has a `mergeQueueEntry`.
+ */
+export function queueOf(pr: Record<string, any>): PullQueue | undefined {
+  const nodes: unknown = pr.timelineItems?.nodes;
+  if (!Array.isArray(nodes)) return undefined;
+  const isRemoval = (node: any): boolean => node?.__typename === "RemovedFromMergeQueueEvent";
+  const lastPush = nodes.findLastIndex((node) => !isRemoval(node));
+  const removals = nodes.slice(lastPush + 1).map((node: any): QueueRemoval => ({
+    at: time(node.createdAt) ?? 0, reason: typeof node.reason === "string" ? node.reason : "unknown", actor: typeof node.actor?.login === "string" ? node.actor.login : null,
+    groupCommit: typeof node.beforeCommit?.oid === "string" ? node.beforeCommit.oid : null,
+  }));
+  return { queued: pr.mergeQueueEntry != null, removals };
+}
+
 type Review = { state: string; submittedAt?: string; author: Login; commit?: { oid?: string } | null };
 
 /** Whether `review` takes a side on commit `head`, and an author `counts` for wrote it. A review on an earlier commit says nothing of this one. */
@@ -196,6 +220,12 @@ function verdictAt(reviews: readonly Review[], head: string, counts: (author: Lo
   const newest = reviews.filter((review) => rulesOn(review, head, counts)).reduce<Review | null>(newer, null);
   return newest === null ? null : newest.state === "APPROVED" ? "approved" : "changes-requested";
 }
+
+/** The queue's part of the feedback: left out when the host did not say. */
+const queueFeedback = (pr: Record<string, any>): { queue?: PullQueue } => {
+  const queue = queueOf(pr);
+  return queue === undefined ? {} : { queue };
+};
 
 /** The feedback in one pull request as the query returns it, its files aside. Throws on an answer of another shape, which the caller reads as no reading. */
 function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly string[], policy: CodeHostPolicy): Omit<PullFeedback, "files" | "filesComplete"> {
@@ -231,5 +261,6 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
     verdictAtHead: head === null ? null : verdictAt(pr.reviews?.nodes ?? [], head, (author) => author?.login !== undefined && author.login !== self),
     pendingRequired: pendingRequired(contexts, policy),
     body: typeof pr.body === "string" ? pr.body : "",
+    ...queueFeedback(pr),
   };
 }

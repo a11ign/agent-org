@@ -24,6 +24,15 @@ export function checkNote(entry: ViewEntry): string | null {
   return notes.length > 0 ? notes.join("; ") : null;
 }
 
+/**
+ * The line the board shows for a finished run whose pull request the merge queue removed and no round answers (A11-264), one per pull request, or null when none: the removal named with its reason ("removed from the merge queue: merge_conflict"
+ * for a reason the board does not answer), or the pull request removed three times for failed checks with no push between ("removed from the merge queue 3 times: middleware"), which the arm bot is held off. The run's status does not change for it. PURE.
+ */
+export function queueNote(entry: ViewEntry): string | null {
+  const notes = entry.phase === "finished" && openPulls(entry).length > 0 ? Object.values(entry.queueHeads ?? {}).flatMap(({ note }) => (note === undefined ? [] : [note])) : [];
+  return notes.length > 0 ? notes.join("; ") : null;
+}
+
 /** What a card says of a run's agent sitting on a dialog (A11-174): the safety prompt the board declined for it (naming the subagent that raised it, A11-209), or the dialog a person must answer, with its first line when one could be read. PURE. */
 export function promptNote(entry: ViewEntry): string | null {
   if (entry.waiting === true) return entry.prompt === undefined ? "Waiting on a person" : `Waiting on a person: ${entry.prompt}`;
@@ -119,7 +128,7 @@ function mergeWait(entry: ViewEntry): string | null {
  * second time, as the line or as the question (A11-153). `now`, when given, lets a run waiting on background work say for how long (A11-236). PURE.
  */
 export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: string | null; question: string | null }> {
-  const shown = [rebaseNote(entry), retargetNote(entry), verdictNote(entry), checkNote(entry)];
+  const shown = [rebaseNote(entry), retargetNote(entry), verdictNote(entry), checkNote(entry), queueNote(entry)];
   const once = (text: string | null): string | null => (text === null || shown.includes(text) ? null : text);
   const asked = once(askedReason(entry, now));
   // A reviewer herdr would not start twice is what the card says first, and the worker's question, if it asked one, stays one click away (A11-241).

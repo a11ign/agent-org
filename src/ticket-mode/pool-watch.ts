@@ -35,7 +35,10 @@ import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
 import { readoptCrashed } from "./pool-readopt.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
+import { answerQueue, type QueueAnswer } from "./pool-merge-queue.ts";
+import { recordQueueHeads } from "./queue/queue-merge-queue.ts";
 import { foreignRedsOf } from "./pool-foreign-checks.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
@@ -495,18 +498,20 @@ export function watchFeedback(ctx: PoolContext): void {
     clearResolvedConflict(ctx, entry, open);
     if (!resumesOnConflict(entry)) continue;
     const checks = answerChecks(ctx, entry, open, foreign);
+    const removals = answerQueue(ctx, entry, open);
     if (isWatched(entry)) {
       // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
-      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), checks.feedback, ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
+      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), checks.feedback, removals.feedback, removals.conflict, ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
         .filter((line): line is string => line !== null);
-      if (lines.length === 0) recordWithoutRound(ctx, entry, checks);
+      if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
       else {
+        recordQueueAnswer(ctx, entry, removals.heads);
         update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads));
         queued = true;
       }
       continue;
     }
-    if (resumeUnwatched(ctx, entry, readable, checks)) queued = true;
+    if (resumeUnwatched(ctx, entry, readable, checks, removals)) queued = true;
   }
   // After every run's round was decided: a run that was handed a round has left `finished`, and a note does not change what the loop above decided for the run.
   for (const key of recorded) {
@@ -516,9 +521,18 @@ export function watchFeedback(ctx: PoolContext): void {
   if (queued) void tick(ctx);
 }
 
-/** Record the reruns and the names the pass over a run's red checks made when it queued no round ({@link CheckAnswer.withoutRound}). Written only when they changed. */
-function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer): void {
+/** Record what the board did about a run's merge queue removals (`heads`, {@link QueueAnswer.heads}) before the round that answers them is queued. Written only when it changed. */
+function recordQueueAnswer(ctx: PoolContext, entry: Entry, heads: QueueAnswer["heads"]): void {
+  if (JSON.stringify(heads) !== JSON.stringify(entry.queueHeads ?? {})) update(ctx, (queue) => recordQueueHeads(queue, entry.ticket.key, heads));
+}
+
+/**
+ * Record the reruns and the names the pass over a run's red checks made when it queued no round ({@link CheckAnswer.withoutRound}), and the removals from the merge queue it named or held ({@link QueueAnswer.withoutRound}). Written only when
+ * they changed.
+ */
+function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer, removals: QueueAnswer): void {
   if (JSON.stringify(checks.withoutRound) !== JSON.stringify(entry.checkHeads ?? {})) update(ctx, (queue) => recordCheckHeads(queue, entry.ticket.key, checks.withoutRound));
+  recordQueueAnswer(ctx, entry, removals.withoutRound);
 }
 
 /**
@@ -611,27 +625,31 @@ function clearResolvedConflict(ctx: PoolContext, entry: Entry, open: readonly { 
  * nothing at the cap; red checks at the cap hand the run to a person, whatever it ended on, and close nothing. Its workspace is closed first, because a second workspace would take
  * the same herdr name (`queue.ts` `retry`). Refused, the run stays parked and the next watch asks again. Returns whether a round was queued.
  */
-function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[], checks: CheckAnswer): boolean {
+function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[], checks: CheckAnswer, removals: QueueAnswer): boolean {
   const { now } = ctx;
   const key = entry.ticket.key;
-  const lines = [conflictLines(readable), checks.feedback].filter((line): line is string => line !== null);
+  const red = [checks.feedback, removals.feedback].filter((line): line is string => line !== null);
+  const lines = [conflictLines(readable), removals.conflict, ...red].filter((line): line is string => line !== null);
   const feedback = lines.join("\n");
   if (lines.length === 0) {
-    recordWithoutRound(ctx, entry, checks);
+    recordWithoutRound(ctx, entry, checks, removals);
     return false;
   }
   if (!roundsLeft(entry)) {
-    if (checks.feedback !== null) update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads));
-    else recordWithoutRound(ctx, entry, checks);
+    if (red.length > 0) {
+      recordQueueAnswer(ctx, entry, removals.heads);
+      update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads));
+    } else recordWithoutRound(ctx, entry, checks, removals);
     return false;
   }
   try {
     close(ctx, key);
   } catch (err) {
-    log(`${key}: its workspace could not be closed, so the ${checks.feedback === null ? "conflict" : "red checks"} round was not started (${err instanceof Error ? err.message : String(err)})`);
-    recordWithoutRound(ctx, entry, checks);
+    log(`${key}: its workspace could not be closed, so the ${red.length === 0 ? "conflict" : "red checks"} round was not started (${err instanceof Error ? err.message : String(err)})`);
+    recordWithoutRound(ctx, entry, checks, removals);
     return false;
   }
+  recordQueueAnswer(ctx, entry, removals.heads);
   update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads));
   return true;
 }
