@@ -120,7 +120,7 @@ test("installed at start, the ledger times a spawn made through a named import a
     "import { execFileSync } from \"node:child_process\";",
     `const { startHealth } = await import(${JSON.stringify(new URL("./health-route.ts", import.meta.url).href)});`,
     "const health = startHealth(\"probe\");",
-    "const answered = execFileSync(\"sh\", [\"-c\", \"sleep 0.3; echo slept\"], { encoding: \"utf8\" });",
+    "const answered = execFileSync('sh', ['-c', 'sleep 0.3; echo slept'], { encoding: 'utf8' });",
     "process.stdout.write(JSON.stringify({ answered, health: health() }));",
     "",
   ].join("\n"));
