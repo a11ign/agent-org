@@ -20,6 +20,7 @@ import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
 import { readReplies } from "./replies.ts";
 import { pullsNaming } from "./ticket-pulls.ts";
+import { openDependencyPulls } from "./dependency-pulls.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
 import { requestStackMerge, stackMergeFactsOf } from "./stack-merge.ts";
@@ -81,6 +82,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     readMergedFindings: (url) => readMergedFindings(url, gh),
     openPullUrlsOf: (repository) => openPullUrlsOf(repository, gh),
     pullsNaming: (key, repositories) => pullsNaming(key, repositories, gh),
+    openDependencyPulls: (repository) => openDependencyPulls(repository, gh),
     sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh }),
     stackMergeFactsOf: (url) => stackMergeFactsOf(url, gh),
     requestStackMerge: (request) => requestStackMerge(request, gh),

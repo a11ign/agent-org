@@ -31,6 +31,8 @@ export const NO_ARM_BOT = { repo: "owner/no-arm-bot", number: 1 };
 /** A merged pull request whose body names a ticket's key (contract 1.18). */
 export const NAMED_KEY = "A11-240";
 export const NAMED = `https://github.com/${REPOSITORY}/pull/10`;
+/** A pull request the dependency bot opened, and one a person opened in the same repository with a bot-like title (contract 1.19). */
+export const DEPENDENCY_PULLS = { bot: `https://github.com/${REPOSITORY}/pull/11`, foreign: `https://github.com/${REPOSITORY}/pull/12` };
 /** A workflow run GitHub holds, halfway through (contract 1.17). */
 export const CI_RUN_ID = 77;
 
@@ -72,6 +74,14 @@ function github(calls: string[][] = []) {
       if (args[2] !== "7" && args[2] !== PULL) return REFUSED;
       return ok(JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, baseRefName: "main" }));
     }
+    if (args.slice(0, 2).join(" ") === "pr list" && /headRefOid/.test(args.join(" "))) {
+      if (!args.includes(REPOSITORY)) return REFUSED;
+      // A person's pull request is listed beside the bot's, as a plain list does: the suite holds the plugin to the author check of its own.
+      return ok(JSON.stringify([
+        { number: 11, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", headRefOid: HEAD, url: DEPENDENCY_PULLS.bot, body: "Release notes", author: { login: "app/dependabot", is_bot: true } },
+        { number: 12, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", headRefOid: HEAD, url: DEPENDENCY_PULLS.foreign, body: "", author: { login: "someone", is_bot: false } },
+      ]));
+    }
     if (args[0] === "pr" && args[1] === "list") return ok(JSON.stringify([{ number: 7, body: "" }]));
     if (text === `api repos/${REPOSITORY}/actions/jobs/32/logs --allow-escape-sequences`) return ok(`2026-10-22T10:00:00Z ${CHECK_LOG}\n`);
     if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/commits/${CLAIM_HEAD}/statuses?per_page=100`)) {
@@ -100,7 +110,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
   const { passed, skipped } = await runCodeHostConformance(host, {
     pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED,
     stackRefusal: { pull: STACKED, head: STACK_REFUSAL_HEAD, reason: STACK_REFUSAL_REASON }, stackRequestRefused: NO_ARM_BOT, ciRun: { repository: REPOSITORY, runId: CI_RUN_ID },
-    named: { key: NAMED_KEY, repository: REPOSITORY, url: NAMED, state: "merged" },
+    named: { key: NAMED_KEY, repository: REPOSITORY, url: NAMED, state: "merged" }, dependency: { repository: REPOSITORY, url: DEPENDENCY_PULLS.bot, foreign: DEPENDENCY_PULLS.foreign },
     remote: { urls: [`https://github.com/${REPOSITORY}.git`, `git@github.com:${REPOSITORY}.git`], repository: { name: "repo", fullName: REPOSITORY } },
     check: { detailsUrl: CHECK_URL, log: CHECK_LOG }, claim: { repository: REPOSITORY, head: CLAIM_HEAD, environment: { GH_CONFIG_DIR: "/opt/reviewer/gh" } },
   });
@@ -124,7 +134,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
     "the rows' rules for arming answer as the callers that arm and guard expect",
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ["readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"],

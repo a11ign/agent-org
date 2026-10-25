@@ -11,8 +11,9 @@ import { markPublishRunning, markPublishStarting, respond as respondQueued } fro
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
 import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
-import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
+import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
@@ -1260,7 +1261,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.18", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.19", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1395,4 +1396,45 @@ test("A11-167: the queue is sent to the page without the copies of the ticket's 
   const [, again] = await b.api("GET", "/api/queue", {}) as [number, { entries: { ticketChanges: unknown[]; talkFrom: Record<string, unknown> }[] }];
   assert.deepEqual(again.entries[0].ticketChanges, [more[1]], "only the latest change is drawn");
   assert.equal(again.entries[0].talkFrom.briefedAgainst, undefined, "and a talk session's copy of the run it replaced is sent as that run is");
+});
+
+test("A11-255: the dependency sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  const pool = { watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {} };
+  const scheduled: { run: () => void; ms: number }[] = [];
+  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
+  assert.equal(scheduled.length, 5, "without the board's sweep there are five, as before");
+  const calls: string[] = [];
+  scheduled.length = 0;
+  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); }, { dependencyUpdates: () => { calls.push("dependencyUpdates"); return Promise.reject(new Error("the code host is down")); } });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS));
+  const stderr = process.stderr.write;
+  const said: string[] = [];
+  process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
+  try {
+    scheduled[5]!.run();
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.stderr.write = stderr;
+  }
+  assert.deepEqual(calls, ["dependencyUpdates"]);
+  assert.deepEqual(said, ["ticket:serve: the dependency updates could not be turned into tickets: the code host is down\n"]);
+});
+
+test("A11-255: the board's dependency sweep asks the writer for a major, records it beside the queue, and queues the ticket the run made with the saved choice", async () => {
+  const host = createFakeCodeHost();
+  host.seedPull("o/r", 9, { body: "https://github.com/x/y/releases/tag/v2.0.0", dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
+  const deps = { codeHost: host, repositories: () => ["o/r"] };
+  const b = board(4747, WRITER, deps, creating());
+  b.store.set({ ...b.store.get(), paused: false });
+  const sweep = dependencyUpdatesOf(b, { settings: b.settings, source: creating(), key: KEY, queuePath: join(b.dir, "queue.json"), choicePath: join(b.dir, "choice.json"), now: () => 7, ...deps });
+  await sweep();
+  await sweep();
+  const [, writing] = await b.api("GET", "/api/writer", {}) as [number, any];
+  assert.equal(writing.runs.length, 1, "one request, however often it is swept");
+  assert.equal(JSON.parse(readFileSync(join(b.dir, "dependency-tickets.json"), "utf8")).tickets["o/r:@x/y@2"].state, "requested");
+  b.store.set({ ...b.store.get(), writers: b.store.get().writers!.map((run) => ({ ...run, phase: "finished" as const, finishedAt: 4, tickets: [{ key: "NBF-101", url: null, inPick: true }] })) });
+  await b.api("POST", "/api/choice", { model: "sonnet", effort: "low" });
+  await sweep();
+  const [, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
+  assert.deepEqual(queue.entries.map((entry: any) => [entry.ticket.key, entry.model, entry.effort]), [["NBF-101", "sonnet", "low"]], "queued like one a person adds, on the saved choice");
 });

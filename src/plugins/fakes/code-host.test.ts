@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCodeHostConformance } from "../conformance/code-host.ts";
 import { ContractError } from "../conformance/suite.ts";
-import type { CodeHost, WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type CodeHost, type WrapperInputs } from "../contracts/code-host.ts";
 import { createFakeCodeHost, fakePullUrl } from "./code-host.ts";
 
 /** The inputs a wrapper is asked about: a place outside any temporary directory, and the workers' role an App. */
@@ -31,8 +31,11 @@ function seeded() {
   // A pull request whose body names a ticket (contract 1.18), and one that does not.
   const named = host.seedPull("owner/repo", 10, { state: "merged", body: "Refs A11-240\n\nPartial: step 1 of 2: the first half" });
   host.seedPull("owner/repo", 11, { body: "Refs A11-2401" });
+  // A pull request the dependency bot opened, and one a person opened with the same title (contract 1.19).
+  const bot = host.seedPull("owner/repo", 12, { body: "Release notes", dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
+  const foreign = host.seedPull("owner/repo", 13, { dependency: { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", author: "someone" } });
   const stackRefusal = { pull: stacked.url, head: "d".repeat(40), reason: "a member below has changes requested" };
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const } } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim, remote: REMOTE, stackRefusal, stackRequestRefused: { repo: "owner/repo", number: 9 }, ciRun: { repository: "owner/repo", runId: 31 }, named: { key: "A11-240", repository: "owner/repo", url: named.url, state: "merged" as const }, dependency: { repository: "owner/repo", url: bot.url, foreign: foreign.url } } };
 }
 
 /**
@@ -67,7 +70,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
-    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "readDefaultBranchRed answers the checks failing on a default branch's head, and null for a repository it cannot read", "updateBranch refuses an address that is no pull request, and never throws", "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked", "stackMergeFactsOf reads the refusal of the stack merge that the arm bot left on a stacked pull request", "requestStackMerge throws when the request is refused, so no caller reads it as made", "readCiRun answers null for a run it cannot read", "readCiRun reads a workflow run's status, conclusion, address, name and jobs", "pullsNaming answers null for a repository it cannot read", "pullsNaming lists the pull requests that name a key, with their state", "openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's", "readOwners lists the account first, and readRepositories answers null for an owner it cannot ask about", "repositoryOfRemote names the repository of its own remote URLs, and of no other host's", "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
@@ -343,4 +346,31 @@ test("A11-240: the fake lists the pull requests of the repositories asked about 
   assert.equal(host.pullsNaming!("A11-240", ["owner/repo", "owner/unknown"]), null);
   host.seedRepository("owner/empty");
   assert.deepEqual(host.pullsNaming!("A11-240", ["owner/empty"]), [], "a repository it can ask about, with none naming the key");
+});
+
+const DEPENDENCY_CHECKS = ["openDependencyPulls answers null for a repository it cannot read", "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's"];
+
+test("a code host of contract 1.18, with no openDependencyPulls, still passes the suite: both of its checks are skipped with the reason", async () => {
+  const { host, probe } = seeded();
+  const older = Object.fromEntries(Object.entries(host).filter(([name]) => name !== "openDependencyPulls")) as CodeHost;
+  assert.equal(typeof host.openDependencyPulls, "function", "POSITIVE CONTROL: the fake has the operation the older host lacks");
+  const ran = await ranChecks(older, probe, DEPENDENCY_CHECKS);
+  assert.deepEqual([ran.skipped.map(({ check }) => check), ran.passed], [DEPENDENCY_CHECKS, []]);
+  assert.equal(ran.skipped.filter(({ reason }) => /the code host has no openDependencyPulls/.test(reason)).length, DEPENDENCY_CHECKS.length, "each says why");
+});
+
+test("a code host that reads a repository it cannot read as one the bot opened nothing in, or lists a pull request the bot did not open, fails each by name (contract 1.19)", async () => {
+  const { host, probe } = seeded();
+  const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
+  const reads = host.openDependencyPulls!;
+  assert.deepEqual(await failures({ ...host, openDependencyPulls: (repository) => reads(repository) ?? [] }), [DEPENDENCY_CHECKS[0]], "none for could not ask");
+  assert.deepEqual(await failures({ ...host, openDependencyPulls: (repository) => reads(repository)?.concat({ url: probe.dependency.foreign, number: 13, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", headSha: "head-13", author: "someone" as never, body: "" }) ?? null }),
+    [DEPENDENCY_CHECKS[1]], "a pull request someone else opened");
+});
+
+test("the fake lists a bot's open pull request only: not a merged one, not another author's, and not a repository it was never given", () => {
+  const { host } = seeded();
+  host.seedPull("owner/repo", 14, { state: "merged", dependency: { title: "deps: bump a from 1.0.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/a-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
+  assert.deepEqual(host.openDependencyPulls!("owner/repo")?.map(({ number }) => number), [12]);
+  assert.equal(host.openDependencyPulls!("owner/never-given"), null);
 });

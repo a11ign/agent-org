@@ -53,6 +53,7 @@ import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { type NeedsDecision, needsDecision } from "./open-decisions.ts";
+import { boardDependencySweep } from "./dependency-updates/board.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -86,6 +87,8 @@ export type BoardDeps = Readonly<{
   exposure?: Exposure;
   /** The worker terminal's pairing code, minted for a paired browser following a worker link (A11-93). Default: herdr web ui's own, on loopback. */
   mintTerminal?: () => Promise<TerminalMint>;
+  /** The repositories (`owner/name`) whose Dependabot pull requests become tickets (A11-255): the ones the reviewer gate names, unless a test names its own. */
+  repositories?: () => readonly string[];
   /** The version this instance runs (A11-169): `TOOL_ROOT`'s own when absent, and null for a test that names none. */
   version?: string | null;
   /** The version an `agent-org update` is moving this instance to, while it is moving (A11-217): the tool folder's own when absent, and null for a test that names none. */
@@ -814,7 +817,16 @@ export function createBoard(deps: BoardDeps) {
     }
   }
 
-  return { handle, api, pool, store };
+  return { handle, api, pool, store, queueTickets, wake };
+}
+
+/**
+ * The sweep that turns a Dependabot major, or a group that stays red, into a ticket by the writer path (A11-255), over a board made by {@link createBoard}. `serve` schedules it with the feedback sweeps
+ * (`startFeedbackSweeps`).
+ */
+export function dependencyUpdatesOf(board: Pick<ReturnType<typeof createBoard>, "store" | "queueTickets" | "wake">, deps: BoardDeps): () => Promise<void> {
+  const { settings, source, codeHost, queuePath, repositories } = deps;
+  return boardDependencySweep({ settings, source, codeHost, queuePath, repositories, store: board.store, queueTickets: board.queueTickets, wake: board.wake, choice: () => readChoice(deps.choicePath), now: deps.now ?? Date.now });
 }
 
 /**
@@ -846,7 +858,7 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
 export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads">,
-  every: (run: () => void, ms: number) => unknown): void {
+  every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void> } = {}): void {
   const sweeps: { sweep: () => void | Promise<void>; failure: string }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
@@ -857,6 +869,8 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
     { sweep: () => pool.rebaseStacked(), failure: "the stacked branches could not be rebased" },
     // A reviewer on each new head of every open pull request, whatever its run is in (A11-119): not the watched runs' only.
     { sweep: () => pool.reviewNewHeads(), failure: "the reviewers of open pull requests could not be started" },
+    // A Dependabot major, or a group whose gate stays red, is asked of the ticket writer once (A11-255). Asynchronous, so a failure is said when it settles.
+    ...(board.dependencyUpdates === undefined ? [] : [{ sweep: board.dependencyUpdates, failure: "the dependency updates could not be turned into tickets" }]),
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
   for (const { sweep, failure } of sweeps) {
@@ -896,8 +910,9 @@ async function serve(): Promise<void> {
   if (reviewer !== undefined && startsReviewers(settings)) await reviewer.load();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const board = createBoard({ settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(),
-    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } });
+  const boardDeps: BoardDeps = { settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(),
+    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } };
+  const board = createBoard(boardDeps);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();
@@ -916,7 +931,7 @@ async function serve(): Promise<void> {
   setInterval(() => { void board.pool.tick(); }, TICK_MS);
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, TRACKER_MS);
-  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, ms); });
+  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, ms); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps) });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

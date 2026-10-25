@@ -7,13 +7,15 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import type { ChangeFacts, ChangeRef, CiRun, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostRepositories, CodeHostWrapper, DefaultBranchRed, HostRepository, MergedFindings, RepositoryOwner, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, StackMergeFacts, StackMergeRequest, UpdateBranchResult, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
   repository: string; number: number; state: "open" | "merged" | "closed"; base: string; head: string; files: string[];
   /** What the pull request found, once it has merged (A11-167). */
   findings?: MergedFindings;
+  /** A pull request a bot opened (contract 1.19): its title, its branch and who authored it. `openDependencyPulls` returns only those the dependency bot authored. */
+  dependency?: { title: string; headRefName: string; author: string };
   feedback: Partial<PullFeedback>; replies: readonly Reply[]; body?: string; reviews: ReviewState["reviews"]; settled: boolean; unrequiredRed?: ReviewState["unrequiredRed"]; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
 };
 
@@ -33,7 +35,7 @@ type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
 function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<string, DefaultBranchRed>, login: string | null, calls: string[]):
-  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "readChange"> {
+  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange"> {
   return {
     readOwnLogin() {
       calls.push("readOwnLogin");
@@ -79,6 +81,14 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       const inRepository = [...pulls.entries()].filter(([, pull]) => pull.repository === repository);
       // A repository the fake was given neither a pull request nor a `seedRepository` of is one it cannot ask about: null, never "none are open".
       return inRepository.length === 0 && !repositories.has(repository) ? null : inRepository.filter(([, pull]) => pull.state === "open").map(([url]) => url);
+    },
+    openDependencyPulls(repository) {
+      calls.push(`openDependencyPulls ${repository}`);
+      const inRepository = [...pulls.entries()].filter(([, pull]) => pull.repository === repository);
+      if (inRepository.length === 0 && !repositories.has(repository)) return null;
+      // The trust boundary: only a pull request the dependency bot authored, whatever its title says.
+      return inRepository.flatMap(([url, pull]) => (pull.state === "open" && pull.dependency?.author === DEPENDENCY_PULL_AUTHOR
+        ? [{ url, number: pull.number, title: pull.dependency.title, headRefName: pull.dependency.headRefName, headSha: pull.head, author: DEPENDENCY_PULL_AUTHOR, body: pull.body ?? "" }] : []));
     },
     pullsNaming(key, repos) {
       calls.push(`pullsNaming ${key} ${repos.join(",")}`);
