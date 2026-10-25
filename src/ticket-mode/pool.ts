@@ -104,7 +104,8 @@ import { tick, watchFeedback } from "./pool-watch.ts";
 import { reconcile } from "./pool-readopt.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
 import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads } from "./pool-reviewers.ts";
-import { newPoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
+import { newPoolContext, type PoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
+import { log } from "./pool-state.ts";
 
 export { MAX_REPOST_ATTEMPTS } from "./pool-reviewers.ts";
 export { herdrName, herdrServerCommand, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
@@ -115,6 +116,20 @@ export { conflictLines, doneComment, feedbackSince, parseOutcome, publishResult 
 export { readEdit } from "./outcome.ts";
 export { startsReviewers, type PoolDeps, type QueueStore } from "./pool-context.ts";
 export { ticketDir, ticketFolder } from "./ticket-paths.ts";
+
+/**
+ * The watch of a finished run's pull requests, after the restack of the stacked ones (A11-248). The member above one that merged conflicts with `main` the moment GitHub recomputes it, and the watch
+ * would start a plain conflict round that names neither the stack nor the merged member, a round the restack then leaves alone. So the restack goes first: a restack that conflicts starts its own round,
+ * which takes the run out of `finished`, and the watch leaves it alone. The restack is idempotent per merged member, so it still runs on its own timer too. A restack that throws is said, and the watch runs.
+ */
+function restackThenWatch(ctx: PoolContext): void {
+  try {
+    retargetStacked(ctx);
+  } catch (err) {
+    log(`the stacked pull requests could not be restacked before the feedback watch: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`);
+  }
+  watchFeedback(ctx);
+}
 
 export function createPool(store: QueueStore, deps: PoolDeps) {
   const ctx = newPoolContext(store, deps);
@@ -129,7 +144,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     reconcile: () => reconcile(ctx),
     ensureSession: () => ensureSession(ctx),
     refreshTracker: () => refreshTracker(ctx),
-    watchFeedback: () => watchFeedback(ctx),
+    watchFeedback: () => restackThenWatch(ctx),
     releaseReviewers: () => releaseReviewers(ctx),
     reviewNewHeads: () => reviewNewHeads(ctx),
     /** The review state of each open pull request the pool has read, by url, as the board words it (A11-119). */
