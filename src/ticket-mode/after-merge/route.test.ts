@@ -111,3 +111,13 @@ test("A11-277: empty, multi-line and too-long evidence is refused, and the check
   assert.deepEqual(await made.listed(), [["A11-233#1", "open"]]);
   assert.deepEqual(await made.api("POST", "/api/after-merge/A11-233/2", { result: "passed", evidence: "x", by: "person" }), [404, { error: "no After-merge check A11-233#2" }]);
 });
+
+test("A11-302: GET /api/after-merge/audit says whether any open check is still on the retired runner or is an org check past three days outside its window", async () => {
+  const fresh = board(1_000 + DAY);
+  assert.deepEqual(await fresh.api("GET", "/api/after-merge/audit", {}), [200, { ok: true, unmigrated: [], stale: [] }]);
+  const old = board(1_000 + 4 * DAY);
+  assert.deepEqual(await old.api("GET", "/api/after-merge/audit", {}), [200, { ok: false, unmigrated: [], stale: ["A11-235#1"] }], "A11-235's agent check is four days old; A11-233 waits on the person");
+  const retired = board();
+  saveChecks(retired.path, { checks: { ...loadChecks(retired.path).checks, "A11-235#1": { ...loadChecks(retired.path).checks["A11-235#1"], runner: "session" } } });
+  assert.deepEqual((await retired.api("GET", "/api/after-merge/audit", {}))[1], { ok: false, unmigrated: ["A11-235#1"], stale: [] });
+});

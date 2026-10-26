@@ -4,13 +4,12 @@
 // THE LIST VIEW IS SMALL BECAUSE THE PAGES POLL IT. `GET /api/queue` answered every field of every run the board ever queued, 1.1 MB on the agents host, and the shell reads it every 5 s on every page, over an SSH tunnel on
 // the chairman's Mac. A run in the list keeps the fields a list page, and the board-view code those pages run, read (`LIST_FIELDS`), with its ticket's key, title and address. `GET /api/queue/<key>` answers the run in
 // full, with its log, for the run's own page. A run that holds no path (it ended, and so did its ticket) drops the files it once held, which nothing reads of it.
-import type { Entry, Queue, WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import { isTicketWriter, type Entry, type Queue, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import type { CiView } from "./board-view/ci-note.ts";
 import { ENDED_TICKETS } from "./board-view/overlap-hold.ts";
 import type { RunEvent } from "./queue/run-log.ts";
 import type { ReadBoard } from "./read-routes.ts";
 import { ciViewOf } from "./ci-spend/view.ts";
-import { isCheckRun } from "./after-merge/verify.ts";
 import { afterMergeOrgView, afterMergeTicketView, afterMergeView } from "./after-merge/route.ts";
 import type { TicketCheck } from "./board-view.ts";
 import type { Ticket } from "./source.ts";
@@ -90,7 +89,7 @@ export function shownEntry(entry: Entry): Entry {
 }
 
 /** A new-ticket run without its Grill's ticket text: the board keeps that text to compare, and the page is not sent it (A11-134). */
-export function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
+export function shownWriter<Run extends WriterRun>(run: Run): Omit<Run, "startedFrom"> {
   const { startedFrom: _startedFrom, ...shown } = run;
   return shown;
 }
@@ -119,7 +118,7 @@ export function queueView(board: ViewBoard) {
   const { ciSpend: _ciSpend, interventions: _interventions, runLog, ...queue } = board.store.get();
   const entries = queue.entries.map((entry) => listEntry(entry, ciOf(board, board.store.get(), entry)));
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).filter(({ mode }) => !isCheckRun(mode)).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
+  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).filter(isTicketWriter).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
     afterMergeChecks: afterMergeView(board.settings.stateDir), afterMergeOrg: afterMergeOrgView(board.settings.stateDir, (board.now ?? Date.now)()) };
 }
 

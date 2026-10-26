@@ -2,12 +2,15 @@
 // module: the After-merge checks' routes (A11-277) -- a runner closes a check with one line of evidence, and decides a failed check's follow-up
 //
 // `POST /api/after-merge/<KEY>/<n>` with `{ result, evidence, by }` closes check `<KEY>#<n>`: the record closes at once, so its row leaves the list, and the pool's next sweep posts the close on the ticket.
-// `POST /api/after-merge/<KEY>/<n>/follow-up` with `{ writer }` records a failed check's follow-up: the writer request it was filed by, or null for none. Both sit behind the instance's key, as every route does.
+// `GET /api/after-merge/audit` answers `{ ok, unmigrated, stale }` (A11-302), the ids of the open checks on the retired runner and of the org's that are past three days outside their window.
+// `POST /api/after-merge/<KEY>/<n>/follow-up` with `{ writer }` records a failed check's follow-up: the writer request it was filed by, or null for none. Each sits behind the instance's key, as every route does.
 import type { Json } from "../local-http.ts";
 import { afterMergeChecks, ticketChecks, type AfterMergeCheck, type TicketCheck } from "../board-view.ts";
-import { checkIdOf, closeCheck, decideFollowUp, followUpText, orgCounts, type CheckRecord, type ChecksFile, type CheckResult, type Runner, type Transition } from "./checks.ts";
+import { auditChecks, checkIdOf, closeCheck, decideFollowUp, followUpText, orgCounts, type CheckRecord, type ChecksFile, type CheckResult, type Runner, type Transition } from "./checks.ts";
 import { afterMergeChecksPath, loadChecks, saveChecks } from "./store.ts";
 
+/** `GET /api/after-merge/audit` (A11-302): whether any open check is still on the retired runner or is an org check past three days outside its window: the runnable form of the ticket's After-merge line. */
+const AUDIT_PATH = "/api/after-merge/audit";
 const ROUTE = /^\/api\/after-merge\/([A-Za-z0-9_-]+)\/([1-9]\d*)(\/follow-up)?$/;
 const RESULTS: readonly unknown[] = ["passed", "failed", "superseded"];
 /** Who may close a check through the route: a verifier run (`agent`) or a person. The board closes its own checks in its sweep, and the person's session is no runner (A11-302). */
@@ -45,6 +48,7 @@ function answerOf(path: string, transition: (file: ChecksFile) => Transition): [
 
 /** The After-merge routes, or undefined when the request names none of them. */
 export function afterMergeRoute(board: CheckRouteBoard, method: string, path: string, body: Json): [number, unknown] | undefined {
+  if (method === "GET" && path === AUDIT_PATH) return [200, auditChecks(loadChecks(afterMergeChecksPath(board.stateDir)), board.now())];
   const named = ROUTE.exec(path);
   if (method !== "POST" || named === null) return undefined;
   const [, key, place, followUp] = named;

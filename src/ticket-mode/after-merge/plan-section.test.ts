@@ -121,7 +121,7 @@ test("A11-302: the planner's rule names the section, its fields, the three runne
     "run-log <event kind> [<text>]", "merge-queue <owner/repo> [<failed job>]", "ci-history <owner/repo> <workflow> [<branch>]", "doctor <host> <check>", "release-assets <owner/repo> <asset> [<count>]"]) {
     assert.ok(AFTER_MERGE_CHECKS_RULE.includes(words), words);
   }
-  assert.match(AFTER_MERGE_CHECKS_RULE, /The org verifies its own work: `session` is not a runner, and the plan is refused if it names it or names the chairman's session in any field/);
+  assert.match(AFTER_MERGE_CHECKS_RULE, /The org verifies its own work: `session` is not a runner, and the board sends the plan back if it names it or names the chairman's session in any field/);
   assert.match(AFTER_MERGE_CHECKS_RULE, /A week-long check \("for a week, no X happens"\) is a `board` check with `Pass: absent` and `Window: 7d`: it passes when the window closes clean, and fails on the first breach, citing the event/);
   assert.match(AFTER_MERGE_CHECKS_RULE, /A check a person would merely run is an `agent` check/);
   assert.ok(!/is written as `session`/.test(AFTER_MERGE_CHECKS_RULE), "the old rule is gone");

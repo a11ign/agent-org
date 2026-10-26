@@ -68,7 +68,7 @@ export const AFTER_MERGE_CHECKS_RULE = "When the ticket's Done-when has `### Aft
   + `\`- Observe: <spec>\`, for a \`board\` runner only, one of ${OBSERVE_FORMS.map((form) => `\`${form}\``).join(", ")}; `
   + "`- Pass: absent | present` and `- Window: <30m | 6h | 7d>`, for the windowed specs (`run-log`, `merge-queue`, `ci-history`, `doctor`, `release-assets`) only; "
   + `and \`- Evidence: <one line of at most ${PLANNED_EVIDENCE_CHARS} characters saying what would close it>\`, always. `
-  + "The org verifies its own work: `session` is not a runner, and the plan is refused if it names it or names the chairman's session in any field. "
+  + "The org verifies its own work: `session` is not a runner, and the board sends the plan back if it names it or names the chairman's session in any field. "
   + "`board` is for a check the board sees by itself, and it never needs a person: it names its source in `Observe:`, a pass condition and a window. A week-long check (\"for a week, no X happens\") is a `board` check with `Pass: absent` and `Window: 7d`: it passes when the window closes clean, and fails on the first breach, citing the event. "
   + "The window begins when the ticket's change is in a release installed on the host. A source the board cannot read, or a window that closes without the event a `present` check waits for, hands the check to an `agent`. "
   + "`agent` is for everything else the org can do: once the change is in an installed release the board starts a short verifier run, which carries the line and your `Evidence:`, does what the line says on the host, and records passed or failed with evidence; write `Evidence:` so that run knows what to do and what to quote. "

@@ -76,8 +76,11 @@ export type Watch = Readonly<{
   reads?: number;
 }>;
 
-/** When a watched check's window closes: its length from when it began, or from when the board began to watch while the change is not installed yet. A spec with no window never closes. PURE. */
-export const windowEnd = ({ spec, began, from }: Watch): number => (isWindowed(spec) ? (began ?? from) + spec.windowMs : Number.POSITIVE_INFINITY);
+/** How long the board watches for an event that has to happen (the first four specs) before it hands the check to an agent: a week from when it began to watch. */
+export const EVENT_WATCH_MS = 7 * DAY_MS;
+
+/** When a watched check's window closes: its length from when it began, or from when the board began to watch while the change is not installed yet; for an event spec, {@link EVENT_WATCH_MS} from when the board began to watch. PURE. */
+export const windowEnd = ({ spec, began, from }: Watch): number => (isWindowed(spec) ? (began ?? from) + spec.windowMs : from + EVENT_WATCH_MS);
 
 /** The specs, as a plan writes them: the kind, then its one argument. */
 export const OBSERVE_FORMS = [

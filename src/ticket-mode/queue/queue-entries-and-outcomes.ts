@@ -529,6 +529,12 @@ export type WriterRun = Readonly<{
   checks?: readonly string[];
 }>;
 
+/** A writer run that files tickets for a person's request, as the Runs page lists it. */
+export type TicketWriterRun = WriterRun & Readonly<{ mode: TicketWriterMode }>;
+
+/** Whether a writer run is a person's request for tickets, and not one of the board's own check runs (A11-302). PURE. */
+export const isTicketWriter = (run: WriterRun): run is TicketWriterRun => run.mode === "quick" || run.mode === "grill";
+
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
 export const MAX_WRITER_RUNS = 3;
 

@@ -204,7 +204,7 @@ test("A11-302: a window begins when the change is installed, not when the check 
   assert.equal(begun.observe?.began, BEGAN + 2 * DAY);
   assert.equal(windowEnd(begun.observe!), BEGAN + 9 * DAY);
   assert.equal(closedBy(watchWindows(fileOf(begun), facts({ installed: () => false }), BEGAN + 3 * DAY)).observe?.began, BEGAN + 2 * DAY, "once begun, it stays begun");
-  assert.equal(windowEnd({ spec: { kind: "wake" }, from: 0 }), Number.POSITIVE_INFINITY, "a spec with no window never closes");
+  assert.equal(windowEnd({ spec: { kind: "wake" }, from: 5 }), 5 + 7 * DAY, "an event the board waits for is watched for a week");
 });
 
 test("A11-302: only an open board check with a windowed spec is watched, and the sources it needs are named so the sweep reads only those", () => {

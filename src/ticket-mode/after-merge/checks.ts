@@ -258,3 +258,13 @@ export const staleOrgChecks = (file: ChecksFile, now: number): CheckRecord[] =>
 /** How many org checks are open, and how many of them the pool bar counts as stale (A11-302). PURE. */
 export const orgCounts = (file: ChecksFile, now: number): Readonly<{ open: number; stale: number }> =>
   ({ open: Object.values(file.checks).filter((check) => check.state === "open" && isOrgCheck(check)).length, stale: staleOrgChecks(file, now).length });
+
+/** What stands against "no open check names the chairman's session or no owner, and every open org check is at most 3 days old or inside its week-long window" (A11-302): the ids of the open checks still on the retired runner, and of those past three days and outside their window. */
+export type CheckAudit = Readonly<{ ok: boolean; unmigrated: readonly string[]; stale: readonly string[] }>;
+
+/** The audit of a file of checks at `now`. It holds when every open check has a runner of the org's (or the person's, on an item of the list) and none of the org's is overdue. PURE. */
+export function auditChecks(file: ChecksFile, now: number): CheckAudit {
+  const unmigrated = Object.values(file.checks).filter(isUnmigrated).map(({ id }) => id);
+  const stale = staleOrgChecks(file, now).map(({ id }) => id);
+  return { ok: unmigrated.length === 0 && stale.length === 0, unmigrated, stale };
+}
