@@ -7,14 +7,22 @@
 import { readFileSync } from "node:fs";
 import { type Herdr } from "./pool-herdr.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { runTmpDir } from "./run-isolation.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 
-/** The variables a run's shell carries: its ticket and branch (a batch's run has no one ticket, and none), and the host file `ticket:worktree` reads. PURE. */
-export function runEnvOf({ hostFile }: Readonly<{ hostFile: string | undefined }>, entry: Pick<Entry, "batch" | "ticket">): Record<string, string> {
+/** The variable that points a process's temporary files at a directory. */
+export const TMPDIR_ENV = "TMPDIR";
+
+/**
+ * The variables a run's shell carries: its ticket and branch (a batch's run has no one ticket, and none), the host file `ticket:worktree` reads, and its private `TMPDIR` under `runTmpBase` (`run-isolation.ts`), when the pool
+ * gives runs one. The directory is named by the run's id alone, so the environment of a re-seated run names the directory it was started with. PURE.
+ */
+export function runEnvOf({ hostFile, runTmpBase }: Readonly<{ hostFile: string | undefined; runTmpBase?: string | undefined }>, entry: Pick<Entry, "batch" | "ticket">): Record<string, string> {
   const runId = entry.batch ?? entry.ticket.key;
   return {
     ...(entry.batch === undefined ? { [TICKET_ENV.key]: runId, [TICKET_ENV.branch]: entry.ticket.branch } : {}),
     ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}),
+    ...(runTmpBase === undefined ? {} : { [TMPDIR_ENV]: runTmpDir(runTmpBase, runId) }),
   };
 }
 
@@ -57,7 +65,8 @@ export function livePaneEnv(herdr: Herdr, herdrSession: string, readEnviron: (pi
 /**
  * The keys of `wanted` that `held` lacks or holds with another value, which is how "as the board set it at start" is checked: a pane herdr restored holds none of them. The host file's path is the one key checked
  * for presence alone: it is the board's current `hostFile`, which may have moved since the run started (a re-onboard), and the worker's `ticket:worktree` is healthy with the path it has. The ticket and its branch come
- * from the run's own entry, so a different value there is a wrong run's environment. PURE.
+ * from the run's own entry, so a different value there is a wrong run's environment. `TMPDIR` is never a lost key: a run started before the pool gave runs a private directory has none, and is healthy (its gh wrapper
+ * needs the ticket's keys, not a temp directory), so it must not be started again for that alone. A pane herdr restored has lost the ticket's keys too, and its new start carries the `TMPDIR`. PURE.
  */
 export const lostKeys = (wanted: Readonly<Record<string, string>>, held: Readonly<Record<string, string>>): string[] =>
-  Object.entries(wanted).filter(([key, value]) => held[key] === undefined || (key !== TICKET_ENV.host && held[key] !== value)).map(([key]) => key);
+  Object.entries(wanted).filter(([key, value]) => key !== TMPDIR_ENV && (held[key] === undefined || (key !== TICKET_ENV.host && held[key] !== value))).map(([key]) => key);

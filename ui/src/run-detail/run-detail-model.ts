@@ -10,7 +10,7 @@ import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { cycleNote } from "../../../src/ticket-mode/board-view/wait-cycles.ts";
 import { clockOf, versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
 import { diffLines, learnsFrom, ticketChangeOf, type DiffLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
-import type { PlannedStep, QueueView, RunAction, ViewConnection } from "../api/types.ts";
+import type { PlannedStep, QueueEntryView, RunEvent, QueueView, RunAction, RunDetailEntry, ViewConnection } from "../api/types.ts";
 import { PUBLISH_MERGE_NOTE, PUBLISHED_MERGE_NOTE, PUBLISHING_MERGE_NOTE } from "../runs/publish-model.ts";
 import { actionsOf, type RowAction } from "../runs/run-actions.ts";
 import { labelOf, noteLines, since, timingOf, tokensOf, type NoteContext, type RunEntry } from "../runs/runs-model.ts";
@@ -200,6 +200,22 @@ export type StepMark = "now" | "next" | "done";
 
 export type StepRow = Readonly<{ n: number; text: string; mark: StepMark }>;
 
+/**
+ * The run the page draws: the queue's entry, which the shell reads every 5 s and which is the newest word on everything it holds, with the steps the run's own read adds (A11-270). Until that read answers, or when it
+ * does not (the run is not on the queue it read, or the instance is unreachable), the entry alone: the steps appear in place when it does. PURE.
+ */
+export const detailOf = (entry: RunEntry, full: QueueEntryView | null): RunDetailEntry =>
+  full === null ? entry : { ...entry, ...(full.entry.plannedSteps === undefined ? {} : { plannedSteps: full.entry.plannedSteps }), ...(full.entry.currentStep === undefined ? {} : { currentStep: full.entry.currentStep }) };
+
+/**
+ * The run's log: the one its own read sent, else, from an instance that does not answer that read (one from before A11-270), the one its queue still carries. Empty until either has come, and then the
+ * Timeline is rebuilt from the run's times. PURE.
+ */
+export function logOf(queue: object, full: QueueEntryView | null, key: string): readonly RunEvent[] {
+  const carried = (queue as Readonly<{ runLog?: Readonly<Record<string, readonly RunEvent[]>> }>).runLog;
+  return full?.runLog ?? carried?.[key] ?? [];
+}
+
 /** How far a run has got: the last step it has passed, and the step it is working on now, if any. */
 type Progress = Readonly<{ passed: number; working: number | undefined }>;
 
@@ -207,7 +223,7 @@ type Progress = Readonly<{ passed: number; working: number | undefined }>;
  * While a run is being worked the step its worker says it is on is the board's spinner and the ones before it are passed. A run that has finished is working on none, so the steps it reached, the one it ended on
  * among them, have the Completed check and the rest the ring. The board has no third mark, so this is the smallest reading and can be overturned without touching anything else.
  */
-function progressOf(entry: Pick<RunEntry, "phase" | "currentStep">): Progress {
+function progressOf(entry: Pick<RunDetailEntry, "phase" | "currentStep">): Progress {
   const current = entry.currentStep;
   if (current === undefined) return { passed: 0, working: undefined };
   return entry.phase === "finished" ? { passed: current, working: undefined } : { passed: current - 1, working: current };
@@ -219,7 +235,7 @@ const markOf = (n: number, { passed, working }: Progress): StepMark => {
 };
 
 /** The rows of "What it will do": each planned step the run kept, finished or not, marked by the step its worker says it is on; none for a run that recorded no steps. PURE. */
-export function stepsOf(entry: RunEntry): StepRow[] {
+export function stepsOf(entry: RunDetailEntry): StepRow[] {
   const steps: readonly PlannedStep[] = entry.plannedSteps ?? [];
   const progress = progressOf(entry);
   return steps.map(({ n, title }) => ({ n, text: title, mark: markOf(n, progress) }));

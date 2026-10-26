@@ -34,6 +34,7 @@ import { defaultDrainStore, updateNoteOf } from "./pool-drain.ts";
 import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
+import { countFix, interventionsView, type InterventionsView } from "./queue/interventions.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
@@ -50,6 +51,7 @@ import type { Ticket, TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { liveServeCheck } from "./pool-exposure.ts";
+import { privateBase } from "../private-tmp.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
@@ -57,14 +59,16 @@ import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth } from "./health-route.ts";
-import { answerKeyed, holdsRun, plansOf, queueView, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf, type QueueView } from "./read-routes.ts";
+import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
+import { queueView, type QueueView } from "./queue-view.ts";
 import { startBoardThread } from "./board-thread.ts";
 import { REQUEST_THREAD } from "./thread-messages.ts";
 import { toolVersionOf } from "../plugins/health-read.ts";
 import { agentOrgVersionDefault } from "./plugin-contract.ts";
 
 // The reads moved to `read-routes.ts` (A11-282); the UI's client and the tests name them here.
-export { holdsKey, type ConfigView, type PickView, type QueueView, type SavedChoice, type TicketsPageView, type TicketView, type WritersView } from "./read-routes.ts";
+export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
+export { holdsKey, type ConfigView, type PickView, type SavedChoice, type TicketsPageView, type TicketView, type WritersView } from "./read-routes.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -288,6 +292,18 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
   return fresh;
 }
 
+/**
+ * A chairman session's fix made by hand, counted with the Needs-you cards in the health number (A11-257). The tally is a count: what was fixed is required, so a fix is never recorded blind, and `key` is the ticket
+ * it was for, when it was for one. The board's log keeps both words, since the tally keeps neither. Answers the view after it.
+ */
+function recordFix({ store, now }: Pick<Board, "store" | "now">, body: Json): InterventionsView {
+  if (typeof body.what !== "string" || body.what.trim() === "") throw new Error("say what was fixed by hand: { \"what\": \"<what>\", \"key\": \"<ticket, optional>\" }");
+  if (body.key !== undefined && typeof body.key !== "string") throw new Error("key must be a ticket key, or left out");
+  store.set(countFix(store.get(), now()));
+  process.stderr.write(`ticket:serve: a fix made by hand is counted${body.key === undefined ? "" : ` for ${body.key}`}: ${body.what.trim()}\n`);
+  return interventionsView(store.get(), now());
+}
+
 /** The POST routes that queue tickets, save the choice and settings, change the queue's pause and cap, and mint the terminal's pairing code. */
 async function postRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { deps, settings, source, store, known, now, wake, queueTickets } = board;
@@ -353,6 +369,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     wake();
     return [200, queueView(board)];
   }
+  if (method === "POST" && path === "/api/interventions") return [200, recordFix(board, body)];
   if (method === "POST" && path === "/api/max") {
     store.set(setMax(store.get(), Number(body.max)));
     wake();
@@ -717,7 +734,7 @@ async function serve(): Promise<void> {
   // The request thread is told of every queue change once it runs; a change before it starts is in its first snapshot.
   let thread: ReturnType<typeof startBoardThread> | null = null;
   const boardDeps: BoardDeps = { settings, source, codeHost, key, ...paths, exposure: active.exposure(), queueChanged: () => thread?.queueChanged(),
-    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck } };
+    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, privateTmpBase: privateBase() } };
   const board = createBoard(boardDeps);
   // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {

@@ -2,7 +2,7 @@ import { runActions } from "../../../src/ticket-mode/board-view/pull-status-and-
 import { RUN_STATUSES } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { queueOf, RUNS_OF, type State } from "../../test/run-detail/run-detail-stand.ts";
 import type { RunEntry } from "../runs/runs-model.ts";
-import { boardOf, boardOfStatus, calloutOf, drawnBoardOf, headerActionsOf, noPullsText, statusWordOf, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf, timesOf, type RunBoard } from "./run-detail-model.ts";
+import { boardOf, boardOfStatus, calloutOf, detailOf, drawnBoardOf, headerActionsOf, logOf, noPullsText, statusWordOf, propertiesOf, pullRowsOf, readyPullOf, stepsOf, terminalHrefOf, timesOf, type RunBoard } from "./run-detail-model.ts";
 
 const queueFor = (state: State) => queueOf(RUNS_OF[state].runs);
 const runFor = (state: State): RunEntry => {
@@ -272,5 +272,32 @@ describe("the properties", () => {
     const run = { ...runFor("running"), worker: { instance: "agents", host: "agents" } } as RunEntry;
     expect(propertiesOf(run, queueFor("running")).worker).toBe("agents");
     expect(propertiesOf({ ...run, worker: undefined } as RunEntry, queueFor("running")).worker).toBeNull();
+  });
+});
+
+describe("the run the page draws from its list entry and its own read (A11-270)", () => {
+  const listed = runFor("running");
+  const listWithout = { ...listed, plannedSteps: undefined, currentStep: undefined } as unknown as RunEntry;
+  const own = { entry: { ...listed, plannedSteps: [{ n: 1, title: "first" }, { n: 2, title: "second" }], currentStep: 2, phase: "finished" }, runLog: [] } as unknown as Parameters<typeof detailOf>[1];
+
+  it("is the list entry alone until the run's own read answers, which has no steps", () => {
+    expect(detailOf(listWithout, null)).toBe(listWithout);
+    expect(stepsOf(detailOf(listWithout, null))).toEqual([]);
+  });
+
+  it("takes the steps and the step it is on from the run's own read, and every other word from the list, which the shell reads more often", () => {
+    const drawn = detailOf(listWithout, own);
+    expect(stepsOf(drawn).map(({ n, mark }) => [n, mark])).toEqual([[1, "done"], [2, "now"]]);
+    expect(drawn.phase).toBe(listWithout.phase);
+  });
+});
+
+describe("the run's log (A11-270)", () => {
+  const event = { at: 1, kind: "started" } as never;
+  it("is the one the run's own read sent, else the one an older instance's queue carries, else none", () => {
+    const own = { entry: {}, runLog: [event] } as never;
+    expect(logOf({ runLog: { "A11-1": [] } }, own, "A11-1")).toEqual([event]);
+    expect(logOf({ runLog: { "A11-1": [event] } }, null, "A11-1")).toEqual([event]);
+    expect(logOf({}, null, "A11-1")).toEqual([]);
   });
 });

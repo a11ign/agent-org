@@ -99,7 +99,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
-    reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
+    declaredRepositories: async () => [], reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
     ...over,
   };
@@ -1429,4 +1429,50 @@ test("A11-285: a development checkout host.json names as devTool passes when it 
   const named = await commandRow(dev, { readFile: () => JSON.stringify({ ...JSON.parse(HOST), devTool: "/home/me/src/agent-org" }) });
   assert.equal(named.ok, true, named.detail);
   assert.equal((await commandRow(dev)).ok, false);
+});
+
+// A11-292: every repository the project declares must have a clone that a reviewer's label resolves to. A key the label cannot carry, or a clone the host lists under neither the key nor the name, is a repository nobody reviews.
+const withClones = (clones: Record<string, string>) => JSON.stringify({ ...JSON.parse(HOST_WITH_PROJECT), clones });
+const DECLARED: DoctorDeps["declaredRepositories"] = async () => [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }, { key: "github", repo: "a11ign/.github" }];
+const cloneRows = (checks: Awaited<ReturnType<typeof diagnose>>) => checks.filter((check) => check.name.startsWith("clone of "));
+
+test("A11-292: doctor passes a declared repository whose clone the host lists under its NAME, and says which label found it; the primary needs none", async () => {
+  const rows = cloneRows(await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org", ".github": "/c/github" }), declaredRepositories: DECLARED })));
+  assert.deepEqual(rows.map((row) => [row.name, row.ok]), [["clone of a11ign/agent-org", true], ["clone of a11ign/.github", true]], "one row per keyed repository, and none for the primary");
+  assert.equal(rows[1].detail, "/c/github, found from the reviewer label `reviewer-github-1`");
+});
+
+test("A11-292: doctor fails a declared repository with no clone under its key or its name, and names both and the entry that fixes it", async () => {
+  const rows = cloneRows(await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org" }), declaredRepositories: DECLARED })));
+  const github = rows.find((row) => row.name === "clone of a11ign/.github")!;
+  assert.equal(github.ok, false);
+  assert.equal(github.detail, "host.json `clones` has no clone for a11ign/.github under `github` or `.github`, so a reviewer of it has no checkout");
+  assert.equal(github.fix, 'add `".github": "<absolute path of the clone>"` to `clones` in the host file');
+  assert.equal(rows.find((row) => row.name === "clone of a11ign/agent-org")!.ok, true, "a repository that has one still passes");
+});
+
+test("A11-292: doctor fails a declared key that does not round-trip through a reviewer's label, even when its clone is listed", async () => {
+  const keys: DoctorDeps["declaredRepositories"] = async () => [{ key: ".github", repo: "a11ign/.github" }, { key: "lab-2", repo: "a11ign/lab" }, { key: "Lab", repo: "a11ign/Lab" }];
+  const rows = cloneRows(await diagnose(deps({ readFile: () => withClones({ ".github": "/c/github", "lab-2": "/c/lab", Lab: "/c/Lab" }), declaredRepositories: keys })));
+  assert.equal(rows.length, 3);
+  for (const row of rows) {
+    assert.equal(row.ok, false, row.name);
+    assert.match(row.detail, /does not survive a reviewer's label: `reviewer-.+-1` reads back as no reviewer, so no pull request of a11ign\/.+ is reviewed$/);
+    assert.match(row.fix ?? "", /^give a11ign\/.+ a key of lower-case letters, digits and hyphens that does not end in `-<digits>`, in `code` of project.json$/);
+  }
+});
+
+test("A11-292: doctor asks the project's repositories only of a host that has a project, and says when the declaration cannot be read", async () => {
+  assert.deepEqual(cloneRows(await diagnose(deps({ readFile: () => HOST, declaredRepositories: DECLARED }))), [], "a ticket-only host declares no repository");
+  const unread = await diagnose(deps({ readFile: () => withClones({ netbox: "/src/netbox" }), declaredRepositories: async () => { throw new Error("ENOENT: project.json\nsecond line"); } }));
+  assertRow(byName(unread), "repository clones", { ok: false, detail: "the project's repositories cannot be read (ENOENT: project.json)" });
+});
+
+test("A11-292: the doctor and onboard import on a machine where no project resolves, so the doctor can still say so", () => {
+  for (const file of ["doctor.ts", "onboard.ts"]) {
+    const url = new URL(`./${file}`, import.meta.url).href;
+    const imported = spawnSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(url)});`],
+      { env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", AGENT_ORG_HOST: "/nonexistent/host.json" }, encoding: "utf8", cwd: "/" });
+    assert.equal(imported.status, 0, `${file}: ${imported.stderr.split("\n").find((line) => /Error|REFUSED/.test(line)) ?? imported.stderr}`);
+  }
 });

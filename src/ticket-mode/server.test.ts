@@ -11,6 +11,7 @@ import { markPublishRunning, markPublishStarting, respond as respondQueued } fro
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
 import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
+import { logEvent } from "./queue/run-log.ts";
 import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
@@ -55,7 +56,7 @@ async function queueFinished(b: ReturnType<typeof board>, outcome: Outcome): Pro
   b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome, pullHeads })) });
 }
 
-test("A11-219: /api/queue sends a run's planned steps, current step and worker, and its event log, which the server's own queueing began", async () => {
+test("A11-219: /api/queue sends a run's worker, and its own read sends its planned steps, current step and event log, which the server's own queueing began", async () => {
   const b = board();
   await b.api("GET", "/api/tickets", {});
   await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
@@ -64,8 +65,11 @@ test("A11-219: /api/queue sends a run's planned steps, current step and worker, 
   b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((entry) => ({ ...entry, plannedSteps, currentStep: 2, worker })) });
   const [status, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
   assert.equal(status, 200);
-  assert.deepEqual([queue.entries[0].plannedSteps, queue.entries[0].currentStep, queue.entries[0].worker], [plannedSteps, 2, worker]);
-  assert.deepEqual(queue.runLog, { "NBF-1": [{ at: 7, kind: "queued", model: "sonnet", effort: "high", planFirst: false }] });
+  assert.deepEqual([queue.entries[0].plannedSteps, queue.entries[0].currentStep, queue.entries[0].worker, queue.runLog], [undefined, undefined, worker, undefined], "the list sends the worker and leaves the rest to the run's own read (A11-270)");
+  const [ownStatus, own] = await b.api("GET", "/api/queue/NBF-1", {}) as [number, any];
+  assert.equal(ownStatus, 200);
+  assert.deepEqual([own.entry.plannedSteps, own.entry.currentStep, own.entry.worker], [plannedSteps, 2, worker]);
+  assert.deepEqual(own.runLog, [{ at: 7, kind: "queued", model: "sonnet", effort: "high", planFirst: false }]);
 });
 
 test("/api/parents reads the parents of the person's tickets that are not the person's own, and leaves out one it cannot read", async () => {
@@ -277,7 +281,9 @@ test("A11-168: a ticket the list read as In Progress under another's claim, move
   tracker.seed({ ...ticket("NBF-1") });
   const [status, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
   assert.equal(status, 200, "the tracker says Todo now, so the page's old copy does not refuse it");
-  assert.deepEqual(queue.entries.map((e: any) => [e.ticket.key, e.ticket.status]), [["NBF-1", "Backlog"]], "and the entry holds the fresh copy");
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["NBF-1"]);
+  const [, own] = await b.api("GET", "/api/queue/NBF-1", {}) as [number, any];
+  assert.equal(own.entry.ticket.status, "Backlog", "and the entry holds the fresh copy");
 });
 
 test("A11-168: a ticket the list read as claimed by another instance, claimed by this one since, is read again and queued", async () => {
@@ -367,6 +373,31 @@ test("the board's queue starts paused, and Start and Pause go through the API", 
   await assert.rejects(b.api("POST", "/api/paused", { paused: "no" }), /true or false/);
   await b.api("POST", "/api/paused", { paused: true });
   assert.equal(b.store.get().paused, true);
+});
+
+test("A11-257: /api/interventions answers the last 7 days and today's total, from the Needs-you cards and the fixes recorded", async () => {
+  const noon = Date.UTC(2026, 9, 26, 12);
+  const b = board(4747, {}, { now: () => noon });
+  const [status, empty] = await b.api("GET", "/api/interventions", {}) as [number, any];
+  assert.equal(status, 200);
+  assert.equal(empty.today, 0);
+  assert.deepEqual(empty.days.map((day: { date: string }) => day.date), ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26"]);
+  assert.deepEqual(empty.days.map((day: { total: number }) => day.total), [0, 0, 0, 0, 0, 0, 0]);
+  b.store.set(logEvent(b.store.get(), "NBF-1", noon - 86_400_000, { kind: "needs-you", reason: "outward-facing: post the note?" }));
+  const [fixed, after] = await b.api("POST", "/api/interventions", { what: "restarted the stuck pool by hand", key: "NBF-1" }) as [number, any];
+  assert.equal(fixed, 200);
+  assert.equal(after.today, 1, "the answer to a record is the view after it");
+  const [, read] = await b.api("GET", "/api/interventions", {}) as [number, any];
+  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1 }]);
+  assert.equal("interventions" in ((await b.api("GET", "/api/queue", {}))[1] as object), false, "the queue's own answer does not carry the tally");
+});
+
+test("A11-257: /api/interventions refuses a fix with no `what`, and counts nothing", async () => {
+  const b = board();
+  await assert.rejects(b.api("POST", "/api/interventions", {}), /say what was fixed by hand/);
+  await assert.rejects(b.api("POST", "/api/interventions", { what: "   " }), /say what was fixed by hand/);
+  await assert.rejects(b.api("POST", "/api/interventions", { what: "x", key: 7 }), /key must be a ticket key/);
+  assert.equal(b.store.get().interventions, undefined);
 });
 
 test("approve queues a finished run's draft pull requests again as a review run", async () => {
@@ -560,6 +591,16 @@ test("the instance is paired by its key in the header alone, compared whole", ()
   assert.equal(holdsKey({ headers: { "x-ticket-token": "wrong" } }, KEY), false);
   assert.equal(holdsKey({ headers: { "x-ticket-token": `${"a".repeat(47)}\u00e9` } }, KEY), false, "a header of the key's length but more bytes is refused, not thrown");
   assert.equal(holdsKey({ headers: {} }, KEY), false);
+});
+
+test("A11-257: over HTTP, recording a fix needs the board's key as every other POST does", async () => {
+  await overHttp(async (base) => {
+    const unkeyed = await fetch(`${base}/api/interventions`, { method: "POST", body: JSON.stringify({ what: "x" }) });
+    assert.equal(unkeyed.status, 401);
+    const recorded = await fetch(`${base}/api/interventions`, { method: "POST", headers: keyed, body: JSON.stringify({ what: "x" }) });
+    assert.equal(recorded.status, 200);
+    assert.equal(((await (await fetch(`${base}/api/interventions`, { headers: keyed })).json()) as { today: number }).today, 1);
+  });
 });
 
 test("over HTTP: a body that is not JSON is a 400, and the instance keeps answering", async () => {

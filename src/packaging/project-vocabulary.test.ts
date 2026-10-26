@@ -185,6 +185,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("ticket-mode/queue/run-log.ts", ['"started"'], "the kind of a run's `started` event in its log, not a board label"),
   ...nonVocabulary("ticket-mode/queue/queue-transitions.ts", ['"started"'], "logs a run's `started` event, not a board label"),
   ...nonVocabulary("ticket-mode/board-view/run-timeline.ts", ['"started"'], "rebuilds a run's `started` event, not a board label"),
+  // A11-270: the host-shaped queue of the budget tests holds a ticket's state type `started` (as Linear names it) and a run's `started` log event, neither a board label.
+  ...nonVocabulary("ticket-mode/queue-view-fixture.ts", ['"started"'], "a test queue's ticket state type for work begun and its `started` log event, not a board label"),
   // A11-158: the in-memory tracker (`plugins/fakes/tracker.ts`) answers the same state type a tracker names for a ticket a worker has begun.
   ...nonVocabulary("plugins/fakes/tracker.ts", ['"started"'], "the fake tracker's state type for work begun, as Linear names it, not a board label"),
   // #910: `TicketState` values of the ticket port, which the class compares an item's state against and sets; they are states of the port's own union, not labels.
