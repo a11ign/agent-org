@@ -8,7 +8,7 @@
 // A FILE THAT EXISTS IS NEVER OVERWRITTEN, and its difference from the shipped text is not an error: a person edits these. The key is set only when the
 // file and the key are both absent, so a host that already has its own notes keeps them.
 import { join } from "node:path";
-import { PUSH_ONCE_RULE } from "../ticket-mode/ci-spend/rules.ts";
+import { CHECK_CHANGED_RULE, PUSH_ONCE_RULE } from "../ticket-mode/ci-spend/rules.ts";
 import { escalationList } from "../ticket-mode/escalation.ts";
 import { END_AT_PUSH } from "../ticket-mode/ci-wait.ts";
 import { agentOrgHome, type Env } from "./paths.ts";
@@ -17,6 +17,7 @@ export const WORKER_NOTES = `# Worker house rules
 
 - **Identity.** Every \`gh\` call goes out as the GitHub login this machine's \`gh\` uses. Never set \`GH_TOKEN\` by hand.
 - **Toolchain and pushes.** ${PUSH_ONCE_RULE}
+- **Checks while you work.** ${CHECK_CHANGED_RULE}
 - **After a push.** ${END_AT_PUSH}
 - **Releases.** A change to a published package carries a changeset. A change with no release says \`no-release: <reason>\` in the pull request body.
 - **Acceptance.** A pull request carries \`.acceptance/<branch>.md\`. It says what the change does and gives an \`Acceptance:\` bash block that proves it. The reviewer runs that block.

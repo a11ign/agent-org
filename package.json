@@ -52,8 +52,9 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint --no-error-on-unmatched-pattern src scripts plugins ui",
+    "typecheck": "tsc --noEmit -p tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo",
+    "check:changed": "node scripts/check-changed.ts",
+    "lint": "node scripts/lint.ts",
     "test": "node scripts/test-entry.ts",
     "changeset": "pnpm dlx @changesets/cli@3.0.3",
     "ui:dev": "pnpm --dir ui dev",

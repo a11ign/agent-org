@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { LINT_TARGETS } from "../scripts/lint-cache.ts";
 
 interface Step { name?: string; uses?: string; run?: string; if?: string; with?: Record<string, unknown> }
 interface Job { if?: string; needs?: string[] | string; env?: Record<string, string>; steps?: Step[] }
@@ -61,7 +62,7 @@ function gateProblems(ci: Workflow): string[] {
 function scriptProblems(pins: Pins): string[] {
   const wanted = { "ui:dev": "pnpm --dir ui dev", "ui:build": "pnpm --dir ui build", "ui:test": "pnpm --dir ui test", "ui:typecheck": "pnpm --dir ui typecheck" };
   const problems = Object.entries(wanted).flatMap(([name, command]) => (pins.scripts?.[name] === command ? [] : [`the ${name} script is ${JSON.stringify(pins.scripts?.[name])}, not \`${command}\``]));
-  if (!/\bui$/.test(pins.scripts?.lint ?? "")) problems.push("the lint script does not lint ui/");
+  if (pins.scripts?.lint !== "node scripts/lint.ts" || !LINT_TARGETS.includes("ui")) problems.push("the lint script does not lint ui/");
   return problems;
 }
 
