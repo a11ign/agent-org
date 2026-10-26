@@ -29,7 +29,7 @@ export const TMP_WRITERS_WINDOW_MS = 60 * 60_000;
 export const TMP_WRITERS_NAMED = 5;
 
 /** The most entries of `/tmp` whose age is read for the alert, in batches of {@link TMP_WRITERS_BATCH}: the count is of the whole directory, the writers are named from this many. */
-export const TMP_WRITERS_EXAMINED = 30_000;
+export const TMP_WRITERS_EXAMINED = 10_000;
 const TMP_WRITERS_BATCH = 64;
 
 /** The longest `journalctl` is given: the read runs inside the tick, which waits for it. */

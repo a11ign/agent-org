@@ -3,6 +3,7 @@
 // A11-303: THE BOARD CLEARS THE LEGACY ENTRIES OF THE SHARED /tmp ITSELF. An entry the agent owns, not modified for a day and open by no process is taken; a bounded number a pass; never by listing or removing a huge directory in one go.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -30,6 +31,8 @@ function fakeProc(held: readonly (readonly [number, string, string])[] = []): st
 }
 
 const age = (path: string, ms: number): void => { const at = new Date(NOW - ms); utimesSync(path, at, at); };
+/** `path` and its direct children, all last modified `ms` before NOW: a directory is idle when what is in it is. */
+const ageTree = (path: string, ms: number): void => { for (const child of readdirSync(path)) age(join(path, child), ms); age(path, ms); };
 const names = (root: string): string[] => readdirSync(root).toSorted();
 const budgetOf = (left = MAX_REMOVALS_PER_PASS): Budget => ({ left });
 const DAY = LEGACY_MIN_AGE_MS;
@@ -44,7 +47,7 @@ test("A11-303: an entry the agent owns is taken once it is a day old and not bef
   age(join(root, "ae-old"), DAY + 1000);
   age(join(root, "ae-edge"), DAY);
   age(join(root, "ae-young"), DAY - 1000);
-  age(join(root, "tmp.OldDir"), 3 * DAY);
+  ageTree(join(root, "tmp.OldDir"), 3 * DAY);
   sweepLegacyTmp(ctxOver({ root, procRoot: fakeProc() }), budgetOf());
   assert.deepEqual(names(root), ["ae-young"], "a file of a day and a bit, a file of exactly a day, and a directory with what it holds are gone; the young one stays");
 });
@@ -63,7 +66,7 @@ test("A11-303: an entry another user owns is left, however old", () => {
 
 test("A11-303: an entry a process has open or stands in is left, whatever it is called; one it cannot see is not guessed at", () => {
   const root = tmpDir("legacy-tmp-");
-  for (const name of ["held-file", "held-cwd", "held-nested", "free"]) { mkdirSync(join(root, name)); writeFileSync(join(root, name, "inner"), ""); age(join(root, name), 4 * DAY); }
+  for (const name of ["held-file", "held-cwd", "held-nested", "free"]) { mkdirSync(join(root, name)); writeFileSync(join(root, name, "inner"), ""); ageTree(join(root, name), 4 * DAY); }
   mkdirSync(join(root, "held-nested", "deep"));
   const proc = fakeProc([[101, "3", join(root, "held-file", "inner")], [102, "cwd", join(root, "held-cwd")], [103, "7", join(root, "held-nested", "deep", "x.log (deleted)")]]);
   assert.deepEqual([...openEntriesOf(root, proc)!].toSorted(), ["held-cwd", "held-file", "held-nested"], "the first path segment under the directory, from an fd, a cwd and a deleted file");
@@ -110,7 +113,7 @@ test("A11-303: a directory the budget stopped in is finished by the next pass, t
   const root = tmpDir("legacy-tmp-");
   mkdirSync(join(root, "tmp.Big"));
   for (let at = 0; at < 30; at++) writeFileSync(join(root, "tmp.Big", `f${at}`), "");
-  age(join(root, "tmp.Big"), 2 * DAY);
+  ageTree(join(root, "tmp.Big"), 2 * DAY);
   const ctx = ctxOver({ root, procRoot: fakeProc() });
   sweepLegacyTmp(ctx, budgetOf(10));
   assert.deepEqual(names(root), [`${DOOMED_PREFIX}tmp.Big`], "it was renamed whole and 10 of its entries removed, so the name it had no longer stands");
@@ -134,11 +137,12 @@ test("A11-303: a link is removed as itself, its target left; a name a session ke
   assert.deepEqual(names(root).filter((name) => name === "link"), [], "the link, made just now, is three days old on the clock the pool is given, and is removed");
   assert.deepEqual(readdirSync(target), ["keep.txt"], "and its target is left");
   assert.deepEqual(names(root), [".X11-unix", "claude-1000", "snap-private-tmp", "ssh-AbCd", "systemd-private-1234-x", "tmux-1000"]);
-  const info = (over: Partial<{ uid: number; mtimeMs: number; file: boolean; dir: boolean; link: boolean }>) => ({ uid: OWN, mtimeMs: NOW - 2 * DAY, ...over, isFile: () => over.file ?? true, isDirectory: () => over.dir ?? false, isSymbolicLink: () => over.link ?? false });
-  assert.equal(isLegacy("ae-x", info({}), { uid: OWN, now: NOW }), true);
-  assert.equal(isLegacy("ae-sock", info({ file: false }), { uid: OWN, now: NOW }), false, "a socket, pipe or device is no file, directory or link: its path is how its clients find it");
-  assert.equal(isLegacy(`${DOOMED_PREFIX}x`, info({ mtimeMs: NOW }), { uid: OWN, now: NOW }), true, "a half-removed tree of the sweep's own is taken at any age");
-  assert.equal(isLegacy(".hidden", info({}), { uid: OWN, now: NOW }), false);
+  const info = (over: Partial<{ uid: number; dev: number; mtimeMs: number; file: boolean; dir: boolean; link: boolean }>) => ({ uid: OWN, dev: 1, mtimeMs: NOW - 2 * DAY, ...over, isFile: () => over.file ?? true, isDirectory: () => over.dir ?? false, isSymbolicLink: () => over.link ?? false });
+  assert.equal(isLegacy("ae-x", info({}), { uid: OWN, dev: 1, now: NOW }), true);
+  assert.equal(isLegacy("ae-sock", info({ file: false }), { uid: OWN, dev: 1, now: NOW }), false, "a socket, pipe or device is no file, directory or link: its path is how its clients find it");
+  assert.equal(isLegacy(`${DOOMED_PREFIX}x`, info({ mtimeMs: NOW }), { uid: OWN, dev: 1, now: NOW }), true, "a half-removed tree of the sweep's own is taken at any age");
+  assert.equal(isLegacy(".hidden", info({}), { uid: OWN, dev: 1, now: NOW }), false);
+  assert.equal(isLegacy("a-mount", info({ dev: 2 }), { uid: OWN, dev: 1, now: NOW }), false, "an entry on another filesystem is a mount point, not litter");
 });
 
 test("A11-303: the board's own sweep clears /tmp as well as the run directories, and does nothing in /tmp when the pool names no directory", async () => {
@@ -179,4 +183,31 @@ test("A11-303: a half-removed tree that a process holds is left, and is still th
   (ctx.deps as { legacyTmp: LegacyTmp }).legacyTmp = { root, procRoot: fakeProc() };
   sweepLegacyTmp(ctx, budgetOf());
   assert.deepEqual(names(root), [], "let go: finished");
+});
+
+test("A11-303: a directory is not idle because its own mtime is old: a child modified inside the day, a pipe or socket in it, or a unix socket a process listens on keeps it", () => {
+  const root = tmpDir("legacy-tmp-");
+  for (const name of ["rewritten", "has-pipe", "listening", "idle"]) { mkdirSync(join(root, name)); writeFileSync(join(root, name, "state"), ""); }
+  execFileSync("mkfifo", [join(root, "has-pipe", "ipc")]);
+  age(join(root, "rewritten", "state"), DAY - 60_000);
+  age(join(root, "idle", "state"), 3 * DAY);
+  age(join(root, "listening", "state"), 3 * DAY);
+  for (const name of ["rewritten", "has-pipe", "listening", "idle"]) age(join(root, name), 4 * DAY);
+  const proc = fakeProc();
+  mkdirSync(join(proc, "net"));
+  writeFileSync(join(proc, "net", "unix"), `Num RefCount Protocol Flags Type St Inode Path\n0000: 00000002 00000000 00010000 0001 01 1234 ${join(root, "listening", "s.sock")}\n0001: 00000002 00000000 00000000 0001 03 99\n`);
+  sweepLegacyTmp(ctxOver({ root, procRoot: proc }), budgetOf());
+  assert.deepEqual(names(root), ["has-pipe", "listening", "rewritten"], "only the directory whose every child is old, with no pipe and no listener, goes");
+});
+
+test("A11-303: the entry that holds the pool's private base is left, whatever its age", () => {
+  const root = tmpDir("legacy-tmp-");
+  mkdirSync(join(root, "boards", "run-t-NBF-1"), { recursive: true });
+  mkdirSync(join(root, "other"));
+  age(join(root, "boards", "run-t-NBF-1"), 4 * DAY);
+  age(join(root, "boards"), 4 * DAY);
+  age(join(root, "other"), 4 * DAY);
+  const ctx = { ...ctxOver({ root, procRoot: fakeProc() }), runTmpBase: join(root, "boards") } as unknown as PoolContext;
+  sweepLegacyTmp(ctx, budgetOf());
+  assert.deepEqual(names(root), ["boards"], "the base is the run sweep's to clear, not this one's");
 });

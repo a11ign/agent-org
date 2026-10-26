@@ -127,10 +127,10 @@ function sweepRunDirs(ctx: PoolContext, base: string, budget: Budget): void {
   const queued = queuedNames(ctx);
   const sessions = once(() => liveSessionNames(ctx));
   for (const name of names.filter((each) => !held.has(each))) {
-    if (budget.left === 0) return;
     const fate = fateOf(name, queued, sessions);
     if (fate === "listed") keepHeld(ctx, base, name);
     if (fate !== "ended") continue;
+    if (budget.left === 0) return;
     try {
       removeEnded(ctx, base, name, budget);
     } catch (err) {
