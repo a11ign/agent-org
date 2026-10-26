@@ -44,6 +44,12 @@ export type BaseMergeStep = "merging" | "behind" | "round" | "waiting" | "capped
 /** What answered a run that needed a person: a person's Respond, approval or talk, their answer through the board's answer route (A11-250), or the run's own terminal. */
 export type AnsweredBy = "respond" | "approve" | "talk" | "answer" | "terminal";
 
+/**
+ * What came of a write of the run's result to the tracker that failed (A11-304): the board will try `retrying` again, the tracker `refused` it (a request that cannot succeed), or it kept failing for more than an hour and the board `gave-up`.
+ * The worker's own outcome is not touched by any of them.
+ */
+export type TrackerWriteStep = "retrying" | "refused" | "gave-up";
+
 /** What happened, without its time. */
 type EventBody =
   | Readonly<{ kind: "queued"; model: string; effort: string; planFirst: boolean }>
@@ -69,6 +75,8 @@ type EventBody =
   | Readonly<{ kind: "base-merge"; url: string; base: string | null; step: BaseMergeStep }>
   /** `outcome` is the kind of outcome the run ended on, and `reason` the one it gave, where it has one. */
   | Readonly<{ kind: "finished"; outcome: string; reason?: string }>
+  /** A failed write of the run's result to the tracker (A11-304): the `failures`th, and the first line of the error the tracker or the network gave. */
+  | Readonly<{ kind: "tracker-write"; step: TrackerWriteStep; failures: number; error: string }>
   | Readonly<{ kind: "dismissed" }>
   | Readonly<{ kind: "removed" }>
   | Readonly<{ kind: "requeued"; why: RequeueWhy }>;

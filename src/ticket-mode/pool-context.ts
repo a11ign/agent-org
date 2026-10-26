@@ -29,6 +29,7 @@ import type { ServeCheck } from "../install/service.ts";
 import type { ExposureState } from "./pool-exposure.ts";
 import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 import type { BaseMerge } from "./pool-outcome.ts";
+import type { WriteRetry } from "./result-write-retry.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
@@ -139,6 +140,8 @@ export type PoolContext = Readonly<{
   attaching: Set<string>;
   /** The planning runs whose plan attach failed in a way worth trying again (A11-216), by herdr name: how many tries failed and the time the next one may start. Kept in memory: a restart tries again from the first. */
   attachRetries: Map<string, AttachRetry>;
+  /** The runs whose result write to the tracker failed in a way worth trying again (A11-304), by herdr name: how many tries failed, when the first did, and the time the next may start. Kept in memory: a restart tries again from the first. */
+  writeRetries: Map<string, WriteRetry>;
   /** The live runs whose ticket's change is being sent to their worker now, by ticket key, so a second refresh does not send it twice (A11-167). */
   telling: Set<string>;
   /** The tickets whose answer is being written into their description now, so two answers do not read the same text and lose one (A11-250). */
@@ -239,6 +242,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The planning runs whose plans are being attached, by herdr name, so a tick that sees the same outcome file meanwhile does not attach them again. */
   const attaching = new Set<string>();
   const attachRetries = new Map<string, AttachRetry>();
+  const writeRetries = new Map<string, WriteRetry>();
   /** The moves to the working state still on their way to the tracker, by ticket key: a restore of the ticket waits for its move. */
   const pendingMoves = new Map<string, Promise<void>>();
   /** The queued runs Remove is putting the ticket back for, by ticket key: no tick starts one of them while it is taken off the queue. */
@@ -285,7 +289,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const finishing = new Set<string>();
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
-    startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
+    startedHere, attaching, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase),

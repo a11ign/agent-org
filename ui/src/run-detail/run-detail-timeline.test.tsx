@@ -108,6 +108,21 @@ describe("the Timeline's base-merge rows", () => {
   });
 });
 
+describe("the Timeline's tracker-write rows", () => {
+  it("word each failed write of the run's result to the tracker, with the error it gave (A11-304)", () => {
+    const rows = rowsOf([
+      { at: NOW - 3 * MINUTE, kind: "tracker-write", step: "retrying", failures: 1, error: "fetch failed" },
+      { at: NOW - 2 * MINUTE, kind: "tracker-write", step: "refused", failures: 2, error: "Linear answered 400: Argument Validation Error" },
+      { at: NOW - 1 * MINUTE, kind: "tracker-write", step: "gave-up", failures: 9, error: "fetch failed" },
+    ], { phase: "running" });
+    expect(rows.map(({ text, when, tone }) => [text, when, tone])).toEqual([
+      ["Recording the result in the tracker kept failing", "1 min ago · fetch failed", "red"],
+      ["The tracker refused the result", "2 min ago · Linear answered 400: Argument Validation Error", "red"],
+      ["Recording the result in the tracker failed, trying again", "3 min ago · fetch failed", "amber"],
+    ]);
+  });
+});
+
 describe("the Timeline on Run detail", () => {
   it.each(STATES.filter((state): state is Exclude<State, "loading" | "missing"> => state !== "loading" && state !== "missing"))("%s draws a Timeline of what the board recorded, after the pull requests", async (state) => {
     await pageFor(state);
