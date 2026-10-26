@@ -57,13 +57,18 @@ export function readImportsOf(root: string, file: SourceText): string[] {
   return [...new Set([...imported, ...named].map((target) => toRepoPath(root, target)))];
 }
 
-/** Read every file in `paths` (repo-relative) with its comments blanked; a path that cannot be read is skipped. */
+/**
+ * Read every file in `paths` (repo-relative) with its comments blanked. A path with no file is skipped: `git ls-files` lists a tracked file deleted in the working tree, and its importers are
+ * reached through the specifier they keep. Any other failure (permission, a directory, an I/O error) THROWS, naming the path: a file the graph could not read looks like a file with no imports,
+ * and the tests that import the changed file through it would be left out without a word.
+ */
 export function loadSources(root: string, paths: readonly string[]): SourceText[] {
   return paths.flatMap((path) => {
     try {
       return [{ path, text: stripComments(readFileSync(join(root, path), "utf8")) }];
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw new Error(`check:changed cannot read ${path}, so the import graph would silently omit its imports: ${(error as Error).message}`, { cause: error });
     }
   });
 }

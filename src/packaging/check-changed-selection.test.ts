@@ -301,3 +301,9 @@ test("the suite runs without the variables npm run adds, keeps the rest, and nam
   const env = { PATH: "/bin", HOME: "/home/x", npm_lifecycle_event: "check:changed", npm_config_local_prefix: "/r", INIT_CWD: "/r", KEPT: "kept", AGENT_ORG_HOST: "/home/x/.agent-org/host.json" };
   assert.deepEqual(suiteEnvironment(env, "/p/host.json"), { PATH: "/bin", HOME: "/home/x", KEPT: "kept", AGENT_ORG_HOST: "/p/host.json" });
 });
+
+test("a source the graph cannot read is an error that names it, and a source with no file is skipped", () => {
+  const root = writeTree({ "src/ok.ts": "export const ok = 1;\n", "src/unreadable.ts/inner.txt": "a directory where a file is expected\n" });
+  assert.deepEqual(loadSources(root, ["src/ok.ts", "src/deleted.ts"]).map((source) => source.path), ["src/ok.ts"]);
+  assert.throws(() => loadSources(root, ["src/ok.ts", "src/unreadable.ts"]), /cannot read src\/unreadable\.ts, so the import graph would silently omit its imports: EISDIR/);
+});
