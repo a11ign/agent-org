@@ -614,3 +614,15 @@ export function homeProjectDeclaration(): Readonly<ProjectDeclaration> {
   homeProject ??= readProjectDeclaration(HOME_CHECKOUT);
   return homeProject;
 }
+
+/**
+ * The code repositories the project declares, or none when its declaration cannot be read: a reader that only adds a second way to find a clone (A11-292) is then left with the first, the key, as it
+ * was before. @returns {readonly CodeRepository[]}
+ */
+export function declaredCodeOrNone(): readonly CodeRepository[] {
+  try {
+    return homeProjectDeclaration().code;
+  } catch {
+    return [];
+  }
+}
