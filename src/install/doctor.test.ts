@@ -12,6 +12,7 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { TAILSCALE_OPT_IN_ENV } from "../plugins/real-seams.ts";
 import { defaultDoctorDeps, diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import { noReviewerMemory, reviewerMemoryPath, writeReviewerMemory } from "../ticket-mode/reviewer-port.ts";
+import { type Flake, flakesPath, recordFlakes } from "../ticket-mode/flakes.ts";
 import type { ChromiumReport } from "./chromium.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
 import { loadEnabled } from "../plugins/loader.ts";
@@ -90,7 +91,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
-    declaredRepositories: async () => [], reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
+    declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
     ...over,
   };
@@ -204,7 +205,7 @@ test("doctor passes every check on a working install, and never prints the key",
     ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
-    ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
+    ["auto-update service", true], ["update lag", true], ["flaky tests", true], ["chromium", true], ["chromium headless shell", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
   assert.match(report(checks), /ok {4}ui answering: http:\/\/127\.0\.0\.1:4801 answers/);
@@ -1368,6 +1369,28 @@ test("A11-241: the refusals doctor reads are the ones the pool wrote to its revi
   writeReviewerMemory(reviewerMemoryPath(stateDir), { ...noReviewerMemory(), refusals: new Map([[key, { reason: "herdr refused to start \"r\" (no)", count: 2 }]]) });
   assert.deepEqual(defaultDoctorDeps().reviewerRefusals(stateDir), [{ url: "https://github.com/a11ign/announcement-emulator/pull/11", head: "1a2b3c4d5e6f", count: 2, reason: "herdr refused to start \"r\" (no)" }]);
   assert.deepEqual(defaultDoctorDeps().reviewerRefusals(join(stateDir, "absent")), [], "no memory file is nothing refused");
+});
+
+// A11-300: a test that flakes three times in seven days is listed by doctor as needing a fix.
+const FLAKY: DoctorDeps["flakes"] = () => ({ limit: 3, days: 7, tests: [{ test: "src/packaging/region-paths-checkout.test.ts > a checkout leaves nothing behind", check: "suite (2)", count: 3, last: NOW, runs: ["https://github.com/a11ign/agent-org/actions/runs/40382975143/job/2"] }] });
+
+test("A11-300: `flaky tests` passes while no test has flaked three times in seven days, and warns, naming each test and how often it flaked, when one has", async () => {
+  assertRow(byName(await diagnose(deps())), "flaky tests", { ok: true, detail: "no test has flaked 3 times in 7 days" });
+  const flaky = byName(await diagnose(deps({ flakes: FLAKY })));
+  assertRow(flaky, "flaky tests", { ok: true, detail: "src/packaging/region-paths-checkout.test.ts > a checkout leaves nothing behind (suite (2)) flaked 3 times", fix: /needs a fix: the chairman's session files a ticket for each one listed/ });
+  assert.equal(flaky["flaky tests"].warning, true, "a warning, not a failure: the install works, so the exit code is unchanged");
+  assert.match(report(Object.values(flaky)), /WARN/);
+});
+
+test("A11-300: the flakes doctor reads are the ones the pool wrote to flakes.json in the board's state, three in seven days", () => {
+  const stateDir = tmpDirForFile("doctor-flakes-");
+  const at = Date.now();
+  const flake = (days: number): Flake => ({ test: "a.test.ts > one", check: "suite (2)", run: `https://github.com/a11ign/agent-org/actions/runs/${days}/job/1`, head: "fc707690".padEnd(40, "0"), pull: "https://github.com/a11ign/agent-org/pull/1946", at: at - days * 86_400_000 });
+  recordFlakes(flakesPath(stateDir), [flake(1), flake(2)], at);
+  assert.deepEqual(defaultDoctorDeps().flakes(stateDir).tests, [], "two flakes are not enough");
+  recordFlakes(flakesPath(stateDir), [flake(3)], at);
+  assert.deepEqual(defaultDoctorDeps().flakes(stateDir).tests.map(({ test, count }) => [test, count]), [["a.test.ts > one", 3]]);
+  assert.deepEqual(defaultDoctorDeps().flakes(join(stateDir, "absent")).tests, [], "no log is nothing flaky");
 });
 
 // A11-285: the `agent-org` the person's shell runs is the installed tool. Every reading is injected; the row's logic is in shell-command.test.ts.

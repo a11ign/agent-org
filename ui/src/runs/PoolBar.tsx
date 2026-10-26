@@ -1,14 +1,22 @@
-import type { InterventionsView, QueueView } from "../api/types.ts";
+import type { FlakesView, InterventionsView, QueueView } from "../api/types.ts";
 import { settingsSectionHref } from "../shell/routes.ts";
 import type { Pool } from "../settings/use-pool.ts";
 import { PauseIcon } from "./icons.tsx";
 import { poolOf, poolWords } from "./runs-model.ts";
+import { useFlakes } from "./use-flakes.ts";
 import { useHealth } from "./use-health.ts";
 
 /** The health number (A11-257): today's person-interventions, with the last 7 days, each as its date and count, in the title. Nothing while the number is unread or its read failed. */
 function HealthNumber({ health }: Readonly<{ health: InterventionsView | null }>) {
   if (health === null) return null;
   return <span className="pool-note pool-health" title={health.days.map(({ date, total }) => `${date}: ${total}`).join("\n")}>Person interventions today: {health.today}</span>;
+}
+
+/** The tests that need a fix (A11-300): how many flaked three times in seven days, each named with its count in the title. Nothing while the list is unread, and nothing while no test needs a fix. */
+function FlakyTests({ flakes }: Readonly<{ flakes: FlakesView | null }>) {
+  if (flakes === null || flakes.tests.length === 0) return null;
+  const { tests, limit, days } = flakes;
+  return <span className="pool-note pool-flakes" title={tests.map(({ test, count, check }) => `${test} (${check}): flaked ${count} times in ${days} days`).join("\n")}>Flaky tests needing a fix: {tests.length} (flaked {limit}+ times in {days} days)</span>;
 }
 
 /**
@@ -19,6 +27,7 @@ export function PoolBar({ queue, pool, disabled }: Readonly<{ queue: QueueView; 
   const words = poolWords(pool.paused === true ? "paused" : "started");
   const { slots, text } = poolOf(queue);
   const health = useHealth();
+  const flakes = useFlakes();
   return (
     <div className="pool-bar">
       <div className="pool-title">
@@ -33,6 +42,7 @@ export function PoolBar({ queue, pool, disabled }: Readonly<{ queue: QueueView; 
         </div>
         <span className="pool-busy">{text}</span>
         <HealthNumber health={health} />
+        <FlakyTests flakes={flakes} />
       </div>
       <span className="pool-note">{words.note}</span>
       <div className="pool-spacer" />

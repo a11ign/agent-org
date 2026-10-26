@@ -36,6 +36,7 @@ import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
 import { readReviewerMemory, reviewerMemoryPath, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
+import { type FlakesView, flakesPath, flakesView, readFlakes } from "../ticket-mode/flakes.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
@@ -151,6 +152,8 @@ export type DoctorDeps = Readonly<{
   declaredRepositories: () => Promise<readonly DeclaredRepository[]>;
   /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
   reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
+  /** The tests the flake log in `stateDir` lists as needing a fix (A11-300): flaked three times in seven days. A test injects them, so no file is read. */
+  flakes: (stateDir: string) => FlakesView;
   /** The Chromium builds this machine has, read now: each build is a check, and `ticket:capture` needs both (A11-151). */
   chromium: () => ChromiumReport;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
@@ -343,6 +346,18 @@ function reviewerStartsCheck(settings: TicketSettings, deps: DoctorDeps): Check 
   const times = (count: number) => (count === 1 ? "once" : `${count} times`);
   const detail = refused.map(({ url, head, count, reason }) => `${pullLabel(url)} at ${head.slice(0, 8)} refused ${times(count)}: ${reason}`).join("; ");
   return failed("reviewer starts", detail, `${refused[0].reason}: fix what herdr says, and the board starts the reviewer again on its next sweep`);
+}
+
+/**
+ * The `flaky tests` row (A11-300): green while no test has flaked three times in seven days, and otherwise a WARNING (not a failure: the install works) that names each test with how many times it flaked and the fix. The chairman's
+ * session files a ticket for each from this list; a worker never does. Null where there is no host file to name the board's state.
+ */
+function flakyTestsCheck(settings: TicketSettings | null, deps: DoctorDeps): Check | null {
+  if (settings === null) return null;
+  const { limit, days, tests } = deps.flakes(settings.stateDir);
+  if (tests.length === 0) return ok("flaky tests", `no test has flaked ${limit} times in ${days} days`);
+  const detail = tests.map(({ test, count, check }) => `${test} (${check}) flaked ${count} times`).join("; ");
+  return warned("flaky tests", detail, `a test that flakes ${limit} times in ${days} days needs a fix: the chairman's session files a ticket for each one listed (${flakesPath(settings.stateDir)} holds the runs)`);
 }
 
 /**
@@ -560,6 +575,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
     ...drainChecks(deps),
     ...runVersionChecks(settings, deps),
+    ...[flakyTestsCheck(settings, deps)].filter((check): check is Check => check !== null),
     ...chromiumChecks(deps),
   ];
 }
@@ -989,6 +1005,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     reviewing: gateHelpers(),
     declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code,
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
+    flakes: (stateDir) => flakesView(readFlakes(flakesPath(stateDir)), Date.now()),
     chromium: () => chromiumReport(),
     agentOrgPlugins: {
       catalog: defaultCatalog,

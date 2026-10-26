@@ -1,4 +1,5 @@
 import type { MergedStep } from "./plan-steps.ts";
+import type { RerunRecord } from "./check-rerun-record.ts";
 import type { QueueHead } from "./queue-head.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "./pull-declared.ts";
 import type { CiView } from "./ci-note.ts";
@@ -153,9 +154,9 @@ export type PullHead = Readonly<{ head: string; approved: boolean; review?: "app
  * card shows for the last two. `not-ours` (A11-179) is a head whose red checks are all ones the run cannot mend, because they fail on the default branch or on pull requests that touch none of the
  * run's files: no round is started and nothing is rerun, `notOurs` names them, each with the ticket that owns it or null, and the record is made again on every watch, so it lasts only as long as the checks are red elsewhere.
  * `waitingOnMain` (A11-215) is which of `notOurs` were red on the default branch when the record was made: the checks the pull request waits on main to mend. When main reports them all passing the board brings the pull request up to date with main
- * and records `updated`, a head it did that from, whose `note` the card keeps showing until the new head's checks have run.
+ * and records `updated`, a head it did that from, whose `note` the card keeps showing until the new head's checks have run. `rerun` (A11-300) is on a `rerun` record of checks the code failed: see {@link RerunRecord}.
  */
-export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named" | "not-ours" | "updated"; note?: string; notOurs?: Readonly<Record<string, string | null>>; waitingOnMain?: readonly string[] }>;
+export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named" | "not-ours" | "updated"; note?: string; notOurs?: Readonly<Record<string, string | null>>; waitingOnMain?: readonly string[]; rerun?: RerunRecord }>;
 
 /**
  * The branch a run was branched from: the blocker's key, the repository and branch, the commit it has the blocker's branch merged in up to (`sha`), and what
