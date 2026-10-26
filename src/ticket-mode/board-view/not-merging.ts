@@ -7,7 +7,7 @@
 // (`PullHead.notMerging`), which is what makes the run read "Approved, not merging". After `NOT_MERGING_NEEDS_YOU_MINUTES` the run's `mergeNote` is a note under the escalation list's access item, which `runStatus` reads as Needs you: A NOTE ON THE RUN,
 // NOT A CHANGE OF ITS WORK, as the reviewer's refusal is (A11-241), so the board still watches the pull request, answers its feedback and offers Approve and Publish. A pull request that ADDS the repository's first merge flow is the one no bot can
 // merge, so it needs a person the day it is approved (`PullHead.firstFlow`), not a day later.
-import { ARM_WORKFLOW_PATH, type MergeFlow, type PullFeedback } from "../../plugins/contracts/code-host.ts";
+import { ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH, type MergeFlow, type PullFeedback } from "../../plugins/contracts/code-host.ts";
 import { escalationReason } from "../escalation.ts";
 import { pullLabel } from "./pull-label.ts";
 import { notMergingPulls, speaksOfMerge } from "./pull-readiness.ts";
@@ -41,10 +41,14 @@ export function isApprovedUnqueued(head: PullHead, read: PullFeedback): boolean 
 export const isApprovedUnmerged = (head: PullHead, read: PullFeedback): boolean => isApprovedUnqueued(head, read) && read.mergeable;
 
 /**
- * Why an approved, green pull request is not merging, as far as it can be read: the repository has no merge flow (auto-merge not allowed, no arm workflow), else auto-merge is not on for the pull request, else it is armed but out of the queue, else
+ * Why an approved, green pull request is not merging, as far as it can be read: the repository has no merge flow (auto-merge not allowed, no arm workflow; or, for a private repository, no merge bot, and with one, that the bot has not merged it), else auto-merge is not on for the pull request, else it is armed but out of the queue, else
  * only that it is not in the queue. `flow` is null or absent when the host could not say. PURE.
  */
 export function whyNotMerging(repository: string, read: PullFeedback, flow: MergeFlow | null | undefined): string {
+  if (flow?.private === true && !(flow.autoMerge && flow.armWorkflow)) {
+    // A private repository on GitHub Free has no merge queue: its flow is the merge bot (A11-291).
+    return flow.mergeBot ? `the merge bot (${MERGE_BOT_WORKFLOW_PATH}) has not merged it` : `${repository} has no merge flow: no ${MERGE_BOT_WORKFLOW_PATH} (a private repository's flow is the merge bot)`;
+  }
   const missing = [...(flow?.autoMerge === false ? ["auto-merge is not allowed"] : []), ...(flow?.armWorkflow === false ? [`no ${ARM_WORKFLOW_PATH}`] : [])];
   if (missing.length > 0) return `${repository} has no merge flow: ${missing.join(", ")}`;
   if (read.armed === false) return "auto-merge is not on for it, and it is not in the merge queue";
@@ -57,8 +61,11 @@ export type FlowOf = (repository: string) => MergeFlow | null | undefined;
 /** `owner/name` of a GitHub pull request's address, or null for any other. PURE. */
 const repositoryOf = (url: string): string | null => /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+\/?$/.exec(url)?.[1] ?? null;
 
-/** Whether the pull request changes the arm workflow's file, and so may install the repository's merge flow. PURE. */
-const touchesArmWorkflow = (read: PullFeedback): boolean => read.files.includes(ARM_WORKFLOW_PATH);
+/** Whether the pull request changes the arm workflow's file or the merge bot's, and so may install the repository's merge flow. PURE. */
+const touchesFlowFile = (read: PullFeedback): boolean => read.files.includes(ARM_WORKFLOW_PATH) || read.files.includes(MERGE_BOT_WORKFLOW_PATH);
+
+/** Whether the repository has neither the arm workflow nor the merge bot on its default branch: a pull request that adds one gives it its FIRST merge flow. PURE. */
+const hasNoFlowFile = (flow: MergeFlow | null | undefined): boolean => flow?.armWorkflow === false && flow.mergeBot === false;
 
 /**
  * Whether a pull request that has been unmerged long enough is one the merge queue would take: it merges into the repository's default branch. A pull request stacked on another's branch waits on its base and is not stuck. Where the flow could
@@ -73,7 +80,7 @@ const sinceOf = (head: PullHead, read: PullFeedback, earlier: PullHead | undefin
 /** The marks one head earns from this read (A11-291), and the stamp it keeps from the last watch. */
 function marksOf(url: string, head: PullHead, read: PullFeedback, earlier: PullHead | undefined, now: number, flowOf: FlowOf): Pick<PullHead, "unmergedSince" | "notMerging" | "firstFlow"> {
   const repository = repositoryOf(url);
-  const firstFlow = repository !== null && read.state === "open" && head.review === "approved" && touchesArmWorkflow(read) && flowOf(repository)?.armWorkflow === false;
+  const firstFlow = repository !== null && read.state === "open" && head.review === "approved" && touchesFlowFile(read) && hasNoFlowFile(flowOf(repository));
   const first = firstFlow ? { firstFlow: true as const } : {};
   const since = isApprovedUnqueued(head, read) ? sinceOf(head, read, earlier, now) : undefined;
   if (since === undefined) return first;
@@ -111,7 +118,7 @@ export function notMergingLine(entry: ViewEntry): string | null {
 export function firstFlowNote(entry: ViewEntry): string | null {
   if (!speaksOfMerge(entry) || isParked(entry)) return null;
   const installs = openPulls(entry).flatMap(({ url }) => (entry.pullHeads?.[url]?.firstFlow === true ? [url] : []));
-  return installs.length === 0 ? null : escalationReason("access", installs.map((url) => `${pullLabel(url)} adds ${repositoryOf(url) ?? "this repository"}'s first merge flow (${ARM_WORKFLOW_PATH}), so nothing can arm it: a person merges it`).join("; "));
+  return installs.length === 0 ? null : escalationReason("access", installs.map((url) => `${pullLabel(url)} adds ${repositoryOf(url) ?? "this repository"}'s first merge flow (${ARM_WORKFLOW_PATH} or ${MERGE_BOT_WORKFLOW_PATH}), so no bot exists to merge it: a person merges it`).join("; "));
 }
 
 /**
