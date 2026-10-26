@@ -4,8 +4,12 @@
 // HERDR, NOT THE QUEUE FILE, SAYS WHETHER A RUN SURVIVED A RESTART. A run caught `starting` has no workspace on record yet, but its herdr name is fixed before it opens anything, so the pool finds it by that name and
 // these record what it found. A run whose pane is gone is lost in the restart, and is queued again ONCE when the board has no pull request on record for it: the mark `lostInRestart` rides the entry through a start and a second end, which
 // all spread it, and is dropped only by a rebuild (a person's Retry, a review round), so a second loss in the same chain is the run's end.
+//
+// A RUN THAT HAD NOT OPENED ITS AGENT YET LOST NOTHING (A11-294). One caught `starting`, or `running` with no workspace on record, that herdr does not list has no work to lose: it is put back on the queue as it was, round
+// and all (`requeueStarting`), and is neither ended `crashed` nor marked `lostInRestart`.
 import { openPulls } from "../board-view/view-types-and-filters.ts";
 import { find, replace, retry, type Entry, type Outcome, type Queue } from "./queue-entries-and-outcomes.ts";
+import { requeueStopped } from "./queue-pins.ts";
 import { finish, markRunning } from "./queue-transitions.ts";
 
 /** How a run is ended when its herdr workspace is gone after a restart. */
@@ -35,6 +39,25 @@ export function adoptCrashed(queue: Queue, key: string, workspace: string, pane:
     const { outcome, finishedAt: _ended, lastTerminal: _closed, trackerState: _tracked, pullStates: _pulls, outcomeHeads: _outcomeHeads, outcomeBlocks: _outcomeBlocks, pullHeads: _heads, handedBack: _handed, ...rest } = entry;
     return { ...rest, phase: "running", workspace, pane, seenWorking: true, readopted: { at: now, from: "crashed", reason: outcome.reason } };
   });
+}
+
+/** What a start records before its agent is open, and which a new start records again. A talk session keeps its pin of the version folder: its resumed session's hooks name that folder (A11-169). */
+const startRecords = (entry: Entry): readonly (keyof Entry)[] =>
+  [...(entry.talk === true ? [] : ["worker", "toolRoot", "toolVersion", "pluginCopy"] as const), "readopted", "plannedSteps", "currentStep"];
+
+/** Whether a restart that finds no agent of the run in herdr has nothing to lose: the run was starting, or running with no workspace on record, so its agent was never open. PURE. */
+export const agentNotOpened = (entry: Entry): boolean => entry.phase === "starting" || (entry.phase === "running" && entry.workspace === undefined);
+
+/**
+ * A run caught `starting` by a restart, or `running` with no workspace yet, whose agent herdr does not list: it had opened nothing, so it goes back on the queue as it was (A11-294) -- the same ticket, plan and round (`review`, `feedback`,
+ * `asked`), without what its start recorded -- and the log says a restart queued it again. Any other run is left alone. PURE.
+ */
+export function requeueStarting(queue: Queue, key: string, now: number): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || !agentNotOpened(entry)) return queue;
+  // A run lost in a restart before keeps its mark at this queueing, so its brief still says its worktree holds the earlier run's work (`lostBeforeThisStart`, A11-279).
+  const record = entry.lostInRestart === undefined ? {} : { lostInRestart: { at: now } };
+  return requeueStopped(queue, key, now, { why: "restart", record, drops: startRecords(entry) });
 }
 
 /**
@@ -67,3 +90,12 @@ function toFront(queue: Queue, key: string, now: number): Queue {
  * another reason is not told of the old loss in its next brief (A11-279). PURE.
  */
 export const lostBeforeThisStart = ({ lostInRestart, queuedAt }: Entry): number | undefined => (lostInRestart?.at === queuedAt ? lostInRestart?.at : undefined);
+
+/**
+ * How many runs are still `starting` (A11-294): their agent is not open yet, so a restart of the board in this moment finds nothing of them in herdr. A batch's tickets are one run, and the publish run and the new-ticket runs
+ * count while they start. `update` reads it to hold a restart back for a moment. PURE.
+ */
+export function startingRunCount(queue: Queue): number {
+  const runs = new Set(queue.entries.filter((entry) => entry.phase === "starting").map((entry) => entry.batch === undefined ? `ticket:${entry.ticket.key}` : `batch:${entry.batch}`));
+  return runs.size + (queue.publish?.phase === "starting" ? 1 : 0) + (queue.writers ?? []).filter((run) => run.phase === "starting").length;
+}

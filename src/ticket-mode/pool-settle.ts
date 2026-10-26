@@ -665,7 +665,7 @@ function reviewAtHead(read: PullFeedback): PullHead["review"] {
 
 /**
  * The head of each open pull request that has one, with whether a reviewer approved it there, by URL, from the reads of them (A11-153), and what the read said of its readiness to merge at that head
- * (A11-179: its review, its red required checks and its required checks still running, each left out when the code host did not say). One that GitHub gave no head for is left out: nothing can be
+ * (A11-179: its review, its red required checks and its required checks still running, each left out when the code host did not say), and the branch it conflicts with while it conflicts (A11-293). One that GitHub gave no head for is left out: nothing can be
  * compared with it.
  */
 export function pullHeadsOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, PullHead>> {
@@ -673,7 +673,7 @@ export function pullHeadsOf(open: readonly { url: string; read: PullFeedback }[]
     if (read.head === null) return [];
     const review = reviewAtHead(read);
     return [[url, { head: read.head, approved: read.approvedAtHead, ...(review === undefined ? {} : { review }), red: read.failing,
-      ...(read.pendingRequired === undefined ? {} : { pending: read.pendingRequired }), mergeable: read.mergeable }]];
+      ...(read.pendingRequired === undefined ? {} : { pending: read.pendingRequired }), mergeable: read.mergeable, ...(read.state === "open" && read.conflicting ? { conflict: { base: read.base } } : {}) }]];
   }));
 }
 

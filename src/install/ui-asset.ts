@@ -8,9 +8,13 @@
 // WHICH RELEASES HAVE ONE: exactly those whose `package.json` says `"agentOrg": { "shipsUiBuild": true }`. Every release before the marker installs as it always did, with no network call, and
 // `doctor` reads the same marker to know whether a build is missing. The `main` channel has no Release, so it has no asset.
 //
-// THE BUILD IS UNPACKED BESIDE ITS PLACE AND RENAMED INTO IT, so a folder only ever gains a whole `ui-build/`: the download is staged in `<folder>.ui.partial` (a name `pruneVersions` removes if a kill leaves it), and
-// the tarball is unpacked into `<folder>/ui-build.partial` first. A11-190's `/` looks `ui-build/` up on every request, so a build completed in place is served with no restart.
-import { createHash } from "node:crypto";
+// THE BUILD IS UNPACKED BESIDE ITS PLACE AND RENAMED INTO IT, so a folder only ever gains a whole `ui-build/`: the download is staged in `<folder>.ui.<id>.partial` (a name `pruneVersions` removes if a kill
+// leaves it), and the tarball is unpacked into `<folder>/ui-build.<id>.partial` first. A11-190's `/` looks `ui-build/` up on every request, so a build completed in place is served with no restart.
+//
+// TWO FETCHES NEVER SHARE A PATH, AND A WHOLE BUILD IS NEVER DELETED FOR ONE THAT IS NOT READY (2026-10-26). Each fetch stages under its own `<id>`, so one fetch's cleanup cannot remove another's half-
+// unpacked build; and a build that is already whole when a fetch comes to place its own is kept, so two fetches racing (the timer's update and the board's own) leave a build, not none. Before this, both
+// used one fixed path, and the chairman's Mac was seen with a release made `current` (which checks for the build) and its `ui-build/` gone afterwards.
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { isReleaseTag } from "../lib/release-tag.ts";
@@ -137,15 +141,23 @@ function unpack(source: UiSource, { tarball, unpacked }: { tarball: string; unpa
   return existsSync(join(unpacked, "index.html")) ? null : "the tarball holds no index.html, so it is not a build of the board UI";
 }
 
-/** Rename `unpacked` into `folder/ui-build`, replacing what is there, and the reason when the filesystem refuses. */
-function place(folder: string, unpacked: string): string | null {
+/**
+ * Rename `unpacked` into `folder/ui-build`, and the reason when the filesystem refuses. A whole build already there (another fetch placed it meanwhile) is kept and `unpacked` is left for the caller's
+ * cleanup; a broken one is moved aside first and removed only once the new one is in place, so `folder` is never left without a build that it had.
+ */
+function place(folder: string, unpacked: string, id: string): string | null {
+  const target = join(folder, UI_BUILD_DIR);
+  if (hasUiBuild(folder)) return null;
+  const aside = join(folder, `${UI_BUILD_DIR}.${id}.old`);
   try {
-    rmSync(join(folder, UI_BUILD_DIR), { recursive: true, force: true });
-    renameSync(unpacked, join(folder, UI_BUILD_DIR));
-    return null;
+    if (existsSync(target)) renameSync(target, aside);
+    renameSync(unpacked, target);
   } catch (err) {
-    return `it could not be moved into ${join(folder, UI_BUILD_DIR)} (${lastLine(String((err as Error).message))})`;
+    if (!existsSync(target) && existsSync(aside)) renameSync(aside, target);
+    return `it could not be moved into ${target} (${lastLine(String((err as Error).message))})`;
   }
+  rmSync(aside, { recursive: true, force: true });
+  return null;
 }
 
 /**
@@ -155,9 +167,11 @@ function place(folder: string, unpacked: string): string | null {
 function fetchUiBuild(source: UiSource, folder: string, tag: string): UiStep {
   const releases = source.releases();
   if (releases === null) return failedAt("download", `this install's repository is not a GitHub URL, so the build of ${tag} cannot be fetched: set AGENT_ORG_RELEASES_URL to where its releases are downloaded from`);
-  const staging = `${folder}.ui.partial`;
-  const unpacked = join(folder, `${UI_BUILD_DIR}.partial`);
-  // Best effort: a cleanup that fails must not hide the step that failed, and the next fetch clears the same two places before it starts.
+  // Each fetch has its own two places, so a fetch running beside it (the timer's update and the board's own) never clears or overwrites them.
+  const id = `${process.pid}-${randomBytes(4).toString("hex")}`;
+  const staging = `${folder}.ui.${id}.partial`;
+  const unpacked = join(folder, `${UI_BUILD_DIR}.${id}.partial`);
+  // Best effort: a cleanup that fails must not hide the step that failed, and `pruneVersions` removes a `.partial` folder a kill leaves.
   const clear = (): void => {
     for (const leftover of [staging, unpacked]) {
       try {
@@ -177,7 +191,7 @@ function fetchUiBuild(source: UiSource, folder: string, tag: string): UiStep {
     const unusable = unpack(source, { tarball, unpacked });
     if (unusable !== null) return failedAt("unpack", unusable);
     const files = countFiles(unpacked);
-    const unplaced = place(folder, unpacked);
+    const unplaced = place(folder, unpacked, id);
     if (unplaced !== null) return failedAt("rename", unplaced);
     return { state: "ok", said: `✓ UI build for ${tag} installed (${files} files)` };
   } catch (err) {
@@ -192,7 +206,9 @@ function fetchUiBuild(source: UiSource, folder: string, tag: string): UiStep {
  * with no network call. The main channel's folder has no Release to fetch from, so it says so and succeeds: `doctor` fails on it until a release is installed.
  */
 export function ensureUiBuild({ folder, name, source }: { folder: string; name: string; source: UiSource }): UiStep {
-  if (!declaresUiBuild(folder) || hasUiBuild(folder)) return { state: "ok" };
+  if (!declaresUiBuild(folder)) return { state: "ok" };
+  // Said, not silent (2026-10-26): an update log with no UI line could not tell a build in place from a step that never ran.
+  if (hasUiBuild(folder)) return { state: "ok", said: `the UI build of ${name} is in place` };
   if (!isReleaseTag(name)) return { state: "ok", said: `${name} is not a release, so it has no UI build to fetch; / shows the missing-build page until a release is installed` };
   return fetchUiBuild(source, folder, name);
 }

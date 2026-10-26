@@ -120,6 +120,8 @@ export type ViewEntry = Readonly<{
   verdictNotPosted?: string;
   /** Set while herdr has refused twice, for the same reason, to start the reviewer of one of the run's pull requests: the pull request and herdr's reason (A11-241). */
   reviewerRefused?: string;
+  /** Set while an open pull request of the run is approved and green and nothing has merged it for an hour, or adds the repository's first merge flow (A11-291): the note, under the escalation list's access item. The run reads Needs you for it, and is still watched. Written by `recordMergeNote`. */
+  mergeNote?: string;
   /** Set while a stacked pull request of the run needs its base said: by URL, what is needed (A11-106). */
   retargets?: Readonly<Record<string, string>>;
   /** The blocker branch a run was branched from, and what agent-org has done to keep it on that branch (A11-116). */
@@ -143,10 +145,16 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  * A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit, as the last watch read them (A11-153). The rest is what the same read said
  * of the pull request's readiness to merge at that head (A11-179), each field absent until a watch has read it, and when the code host does not say it: `review` is `approved` only when the
  * newest verdict on the head approves and GitHub's own review decision does not still ask for a review or for changes, `changes-requested` when either says changes, and `none` otherwise;
- * `red` is the required checks failing, and `pending` the required checks still running, and `mergeable` that GitHub says it merges cleanly (A11-258; `UNKNOWN`, still being computed, is not mergeable). `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
+ * `red` is the required checks failing, and `pending` the required checks still running, and `mergeable` that GitHub says it merges cleanly (A11-258; `UNKNOWN`, still being computed, is not mergeable). `conflict` is present only while the host reads the pull request `CONFLICTING`, with the branch it merges into (null when the host did not say): the card
+ * says it for any run (A11-293). `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
  * stay (A11-213): the stale-block flag counts from it.
+ * `unmergedSince` (A11-291) is when the board first read the pull request approved at this head with its required checks green, mergeable and not in the merge queue, kept while the head and that reading stay: the "approved, not merging" card counts from it.
+ * `notMerging` is the reason the watch gave once it had been so for `NOT_MERGING_MINUTES`, which is what makes the card say so; it stays while the reading does. `firstFlow` marks an approved head whose pull request adds the repository's first merge flow, which nothing can merge but a person.
  */
-export type PullHead = Readonly<{ head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; blockedSince?: number }>;
+export type PullHead = Readonly<{
+  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; conflict?: Readonly<{ base: string | null }>; blockedSince?: number;
+  unmergedSince?: number; notMerging?: string; firstFlow?: true;
+}>;
 
 /**
  * What the board did about the red checks on one pull request at one head (A11-154): a fix round was started for them (`round`), the checks that failed for an
@@ -414,7 +422,7 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
 export type RunStatus =
-  "needs-you" | "talking" | "working" | "waiting" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "checked"
+  "needs-you" | "talking" | "working" | "waiting" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "not-merging" | "ready-to-merge" | "publishing" | "published" | "checked"
   | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
@@ -428,6 +436,7 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
   { status: "blocked", label: "Blocked" },
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
+  { status: "not-merging", label: "Approved, not merging" },
   { status: "ready-to-merge", label: "Ready to merge" },
   { status: "publishing", label: "Publishing" },
   { status: "published", label: "Published" },

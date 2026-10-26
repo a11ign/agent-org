@@ -13,7 +13,7 @@
 import { askUpdate } from "./pool-checks.ts";
 import { baseMergeLines, type BaseMerge } from "./pool-outcome.ts";
 import { baseMergeWords } from "./board-view/base-merge-words.ts";
-import { isParked } from "./board-view/pull-status-and-notes.ts";
+import { isParked, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { parsePull } from "./board-view/pull-url.ts";
 import { CONCLUDED, openPulls } from "./board-view/view-types-and-filters.ts";
 import { unwatchedPullsOf } from "./kept-pulls.ts";
@@ -32,7 +32,7 @@ type OpenPull = Readonly<{ url: string; read: PullFeedback }>;
 type HeadedPull = Readonly<{ url: string; read: PullFeedback & { head: string } }>;
 
 /** The steps that are events of the run's log: the others are the sweep's own bookkeeping. */
-const LOGGED: ReadonlySet<BaseMerge["step"]> = new Set<BaseMerge["step"]>(["merging", "behind", "round", "waiting", "capped"]);
+const LOGGED: ReadonlySet<BaseMerge["step"]> = new Set<BaseMerge["step"]>(["merging", "behind", "round", "waiting", "capped", "held"]);
 
 /** How long the host's merge of a base may leave a pull request at the head it was read at, before the board takes the conflict as real: GitHub answers 202 when it starts the merge, and a merge it then fails leaves the head where it was. */
 const MERGE_GRACE_MS = 10 * 60_000;
@@ -40,10 +40,12 @@ const MERGE_GRACE_MS = 10 * 60_000;
 /** The outcomes of a finished run that are a pull request the round pushed to: the next step is queued again after them. */
 const PUSHED: ReadonlySet<string> = new Set(["ready-pr", "reviewed"]);
 
-/** Whether the board has done what it does for `head` already: a try that made a decision (an update, a real conflict), a wait for a worker that still holds the branch is not one, nor is a refusal, and the cap is while no round is left. */
+/** Whether the board has done what it does for `head` already: a try that made a decision (an update, a real conflict), a wait for a worker that still holds the branch is not one, nor is a refusal, the cap is while no round is left, and a conflict held for a person is while the run stays one no worker is woken for. */
 function triedAt(known: BaseMerge | undefined, head: string, entry: Entry): boolean {
   if (known === undefined || known.head !== head) return false;
   if (known.step === "waiting" || known.step === "refused") return false;
+  // A conflict held for a person is decided again once the run is one the board answers (a Respond, an approval): the round then names the files and the merge command.
+  if (known.step === "held") return !resumesOnConflict(entry);
   return known.step === "capped" ? !roundsLeft(entry) : true;
 }
 
@@ -93,10 +95,19 @@ function listedWithin(ms: number, listing: Promise<readonly string[] | null>): P
   return Promise.race([listing, late]).finally(() => clearTimeout(timer));
 }
 
-/** A real conflict's decision, once its files are known (or known to be unlistable): a round when the run has one left, and the cap otherwise. */
+/**
+ * A real conflict's decision, once its files are known (or known to be unlistable): a round when the run has one left, and the cap otherwise. A finished run's own pull request that the board starts no round for, since the run is a person's (a run handed
+ * back is not woken for a conflict, {@link resumesOnConflict}), is `held`: its card says the conflict, and its Respond carries it (A11-293).
+ */
 function decideRound(ctx: PoolContext, entry: Entry, { url, read }: HeadedPull, files: readonly string[] | null): void {
   const latest = find(ctx.store.get(), entry.ticket.key) ?? entry;
-  remember(ctx, latest, url, read.base, { head: read.head, step: roundsLeft(latest) ? "round" : "capped", files });
+  remember(ctx, latest, url, read.base, { head: read.head, step: conflictStep(latest, url), files });
+}
+
+/** The step a real conflict on `url` is decided as: `held` for a finished run's own pull request that no worker is woken for, else `round` while the run has one left and `capped` once it has not. PURE. */
+function conflictStep(entry: Entry, url: string): "held" | "round" | "capped" {
+  if (ownsPull(entry, url) && !resumesOnConflict(entry)) return "held";
+  return roundsLeft(entry) ? "round" : "capped";
 }
 
 /**

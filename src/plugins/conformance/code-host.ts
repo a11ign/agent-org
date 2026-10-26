@@ -543,7 +543,7 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   },
   "commentOnPull throws for an address that is no pull request, so no caller reads a refusal as a post": {
     applies: ({ host }) => typeof host.commentOnPull === "function",
-    reason: "the code host has no commentOnPull, which is optional (contract 1.25)",
+    reason: "the code host has no commentOnPull, which is optional (contract 1.26)",
     run: ({ host }) => {
       expect(throws(() => host.commentOnPull!("not a pull request", "posted by the conformance suite")), "commentOnPull must throw for what is no pull request of the host, not answer as if it had posted");
     },

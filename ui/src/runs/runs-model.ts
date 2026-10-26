@@ -5,6 +5,7 @@
 // `ui.html` cannot be imported and is retired by A11-202.
 import { reviewLinesOf } from "../../../src/ticket-mode/board-view.ts";
 import { learnsLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
+import { conflictNote } from "../../../src/ticket-mode/board-view/pull-conflict.ts";
 import { checkNote, promptNote, queueNote, reasonOf, updateLines } from "../../../src/ticket-mode/board-view/run-reason.ts";
 import { publishingOffLine } from "../../../src/ticket-mode/board-view/pull-review-state.ts";
 import { ciNote } from "../../../src/ticket-mode/board-view/ci-note.ts";
@@ -38,7 +39,7 @@ const MILLION = 1_000_000;
 export const RAIL_HEADS: readonly Readonly<{ label: string; statuses: readonly RunStatus[] }>[] = [
   { label: "Attention", statuses: ["needs-you", "talking"] },
   { label: "Active", statuses: ["working", "waiting", "planning", "reviewing", "blocked", "queued"] },
-  { label: "Delivery", statuses: ["awaiting-review", "ready-to-merge", "publishing", "published", "checked"] },
+  { label: "Delivery", statuses: ["awaiting-review", "not-merging", "ready-to-merge", "publishing", "published", "checked"] },
   { label: "Finished", statuses: ["completed", "failed", "cancelled"] },
 ];
 
@@ -227,6 +228,7 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
     retargetNote(entry),
     checkNote(entry),
     queueNote(entry),
+    conflictNote(entry),
     ci,
     stalled?.stalled === true ? stalled.text : null,
     isParked(entry) ? PARKED_LINE : null,

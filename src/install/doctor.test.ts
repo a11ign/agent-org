@@ -44,8 +44,17 @@ const SHIM = "/home/me/.local/bin/agent-org";
 const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
 type Answer = { status: number | null; stdout: string; stderr: string };
 /** The GitHub CLI as the doctor tests see it: the extension is `listing`, and a repository's stacks answer `stacks` (a function of the repository). */
-const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => ({ status: 0, stdout: "[]", stderr: "" })) =>
-  (args: readonly string[]): Answer => (args[0] === "extension" ? { status: 0, stdout: listing, stderr: "" } : stacks(args[1].split("/").slice(1, 3).join("/")));
+const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => ({ status: 0, stdout: "[]", stderr: "" }), mergeFlow: (repo: string) => { autoMerge: boolean; workflow: boolean } | null = () => ({ autoMerge: true, workflow: true })) =>
+  (args: readonly string[]): Answer => {
+    if (args[0] === "extension") return { status: 0, stdout: listing, stderr: "" };
+    // A11-291: the merge flow's one read, for every repository at once: the setting, the default branch and the arm workflow's file.
+    if (args[1] === "graphql") {
+      const asked = [...(args.find((arg) => arg.startsWith("query=")) ?? "").matchAll(/repository\(owner: "([^"]+)", name: "([^"]+)"\)/g)].map(([, owner, name]) => `${owner}/${name}`);
+      const data = Object.fromEntries(asked.map((repo, n) => [`r${n}`, mergeFlow(repo) === null ? null : { autoMergeAllowed: mergeFlow(repo)!.autoMerge, defaultBranchRef: { name: "main" }, object: mergeFlow(repo)!.workflow ? { __typename: "Blob" } : null }]));
+      return { status: 0, stdout: JSON.stringify({ data }), stderr: "" };
+    }
+    return stacks(args[1].split("/").slice(1, 3).join("/"));
+  };
 
 /**
  * The programs the Linear plugin's checks run, as the doctor tests see them (A11-159): `security` prints `key` (or fails, for null), and `claude mcp list` prints `mcp` (or cannot run,
@@ -728,8 +737,26 @@ test("A11-160: the plugin's rows come from the host's clones and the workers' ac
     return execOf({ origin: GITHUB_ORIGIN })(file, args, options);
   };
   await diagnose(deps({ readFile: () => WORKERS_HOST, exec }));
-  assert.deepEqual(asked.map(({ args }) => args.join(" ")), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks"]);
+  const said = asked.map(({ args }) => args.join(" "));
+  assert.deepEqual(said.slice(0, 2), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks"]);
+  // A11-291: and whether the repository has a merge flow, in one query for all the host's repositories.
+  assert.equal(said.length, 3);
+  assert.match(said[2], /^api graphql -f query=query \{ r0: repository\(owner: "a11ign", name: "nbl-ui-netbox"\) \{ autoMergeAllowed defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
   assert.ok(asked.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: "/home/agent/workers/gh" })), "every call acts as the workers' account");
+});
+
+test("A11-291: doctor finds a repository with no merge flow: the merge flow row names it, says what to add, and fails the code host's row; with the flow it passes", async () => {
+  const passing = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN }) })));
+  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox allow auto-merge and hold .github/workflows/auto-arm.yml"]);
+  const noFlow = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN, gh: ghFake(GH_LISTING, undefined, () => ({ autoMerge: false, workflow: false })) }) })));
+  const row = noFlow["merge flow"];
+  assert.deepEqual([row.ok, row.detail], [false, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch"]);
+  assert.match(row.fix ?? "", /^a11ign\/nbl-ui-netbox: add \.github\/workflows\/auto-arm\.yml with its `gate` check/);
+  assert.match(row.fix ?? "", /turn on "Allow auto-merge"/);
+  assert.equal(noFlow["code host (github)"].ok, false, "a failing plugin row fails the code host's row");
+  assert.equal(noFlow["code host (github)"].fix, row.fix);
+  const noClone = byName(await diagnose(deps({ readFile: () => WORKERS_HOST })));
+  assert.equal("merge flow" in noClone, false, "a host whose clones name no GitHub repository adds no row");
 });
 
 // `tickets.preflight`: each command is run, as the pool runs it before a start, and a failure says what the command printed.
@@ -1051,7 +1078,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 1.25, plugins/github)",
+    "code host: github (enabled, contract 1.26, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1086,7 +1113,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.25, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.26, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });
@@ -1314,13 +1341,13 @@ test("A11-191: doctor's ui build row is ok, naming the folder / is served from, 
   assert.deepEqual(checks["ui build"], { name: "ui build", ok: true, detail: `/ is served from ${LOOKED}`, fix: null });
 });
 
-test("A11-191: a version whose release declares a UI build and has none fails, says where it looked, and the fix is `agent-org update`, which fetches it", async () => {
+test("A11-191: a version whose release declares a UI build and has none fails, says where it looked, and the fix is `agent-org doctor --fix`, which fetches it now", async () => {
   const checks = byName(await diagnose(deps({ uiBuild: uiBuildOf({}) })));
   assert.deepEqual(checks["ui build"], {
-    name: "ui build", ok: false, fix: "run `agent-org update`, which fetches it",
+    name: "ui build", ok: false, fix: "run `agent-org doctor --fix`, which fetches it now (or `agent-org update`)",
     detail: `v0.290.0 should have a UI build and none is in ${LOOKED}, so / shows the missing-build page`,
   });
-  assert.match(report(Object.values(checks)), /FAIL {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org update`, which fetches it/);
+  assert.match(report(Object.values(checks)), /FAIL {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org doctor --fix`, which fetches it now \(or `agent-org update`\)/);
 });
 
 test("A11-191: a checkout's fix is to build it, and the main channel's is to move to a release, which has a build to fetch", async () => {

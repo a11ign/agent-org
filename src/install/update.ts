@@ -31,7 +31,7 @@ import { defaultServiceDeps, reloadService, restartService, serviceState, TOOL_S
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { hostSettings, readLiveRuns, readQueue } from "./instance-queue.ts";
+import { hostSettings, readLiveRuns, readQueue, readStartingRuns } from "./instance-queue.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { toolRootsInUse } from "../ticket-mode/queue/queue-pins.ts";
 import type { TicketSettings } from "../ticket-mode/settings.ts";
@@ -79,6 +79,10 @@ export type UpdateDeps = Readonly<{
   restart: (name: ServiceName) => void;
   /** How many runs the instance has live, or null when its queue cannot be read (no host file, or no ticket settings in it). */
   liveRuns: () => number | null;
+  /** How many runs the instance has that are still `starting` (A11-294), or null when its queue cannot be read. */
+  startingRuns: () => number | null;
+  /** Waits `ms` milliseconds, synchronously (as `update` is): the wait for the runs that are starting. A test passes a stand-in that moves its clock. */
+  pause: (ms: number) => void;
   /** The version folders the queue still names (a run with a workspace, live or parked), or null when the queue cannot be read, in which case nothing is pruned. */
   inUse: () => readonly string[] | null;
   /** Remove the version folders nothing uses; returns the names removed. */
@@ -273,7 +277,10 @@ function moveTool({ version, channel, force = false }: { version: string | undef
     const noBuild = completeCurrentUi(deps, target.name);
     const migrated = deps.migrate();
     sayMigrated(deps, migrated);
-    if (migrated.length > 0) restartRunning(deps, running);
+    if (migrated.length > 0) {
+      waitForStarts(deps, running);
+      restartRunning(deps, running);
+    }
     finish(deps, channel, { latest, installed });
     // After the status file and the restarts: what the update keeps true is kept, and the update still does not report success with the build missing.
     if (noBuild !== null) throw new UpdateRefusal(`agent-org is at ${target.name}, but it has no UI build, so the board shows "The UI build is missing": ${noBuild}`);
@@ -290,7 +297,7 @@ function moveTool({ version, channel, force = false }: { version: string | undef
   // Read after the build, which can take minutes: a run that started meanwhile is live, and one that finished is not waited for.
   const live = running.includes("instance") ? deps.liveRuns() : null;
   if (mustDrain({ breaking: breaking.length > 0, force, live })) return drain(deps, { target, latest, installed, channel, live: live ?? 0, lines: breaking.map((line) => `${line.release}: ${line.summary}`) });
-  return apply(deps, { target, latest, installed, running, channel });
+  return apply(deps, { target, latest, installed, running, channel, holdForStarts: !force });
 }
 
 /** Whether a breaking release waits on live runs: it is breaking, `--force` is not given, and the instance has a live run (a queue that cannot be read has none to wait for). */
@@ -314,7 +321,7 @@ function drain(deps: UpdateDeps, { target, latest, installed, channel, live, lin
 }
 
 /** Swap `current`, point the units at it (the first update from a checkout rewrites them once), restart what ran, and clean up. */
-function apply(deps: UpdateDeps, { target, latest, installed, running, channel }: { target: Target; latest: string; installed: string | null; running: readonly ServiceName[]; channel: Channel }): boolean {
+function apply(deps: UpdateDeps, { target, latest, installed, running, channel, holdForStarts }: { target: Target; latest: string; installed: string | null; running: readonly ServiceName[]; channel: Channel; holdForStarts: boolean }): boolean {
   try {
     deps.swap(target.name);
   } catch (err) {
@@ -324,6 +331,7 @@ function apply(deps: UpdateDeps, { target, latest, installed, running, channel }
   deps.out.log(`agent-org ${target.name} is current${installed !== null && installed !== target.name ? ` (it was ${installed})` : ""}`);
   sayMigrated(deps, migrated);
   // Restarts come before the status file: a status that cannot be written must not leave a moved install's services on the old modules.
+  if (holdForStarts) waitForStarts(deps, running);
   restartRunning(deps, running);
   deps.drain.clear();
   finish(deps, channel, { latest, installed: target.name });
@@ -347,7 +355,31 @@ function sayMigrated(deps: UpdateDeps, migrated: readonly string[]): void {
   for (const line of migrated) deps.out.log(`agent-org update: ${line}`);
 }
 
-/** Restart the services that ran, so they run the version `current` names. */
+/** How often the runs that are starting are counted again while the restart waits for them (A11-294). */
+export const STARTING_POLL_MS = 5_000;
+/** The longest the restart of the instance waits for the runs that are starting (A11-294): two minutes, after which it restarts and the board puts those runs back on its queue. */
+export const STARTING_WAIT_MS = 120_000;
+const MS_PER_SECOND = 1000;
+
+/**
+ * Hold the restart of the instance until no run is `starting`, for at most {@link STARTING_WAIT_MS} (A11-294). A run still starting has no agent open, and the board that restarts puts it back on its queue, so this only
+ * saves it the start. A queue that cannot be read waits for nothing, and the wait is said in a line.
+ */
+function waitForStarts(deps: UpdateDeps, running: readonly ServiceName[]): void {
+  if (!running.includes("instance")) return;
+  const startingNow = (): number => deps.startingRuns() ?? 0;
+  const runs = (count: number): string => `${count} ${count === 1 ? "run is" : "runs are"}`;
+  let starting = startingNow();
+  if (starting === 0) return;
+  deps.out.log(`agent-org update: ${runs(starting)} starting, so the restart of the instance waits for ${starting === 1 ? "it" : "them"}, for at most ${STARTING_WAIT_MS / MS_PER_SECOND} seconds`);
+  for (let waited = 0; starting > 0 && waited < STARTING_WAIT_MS; waited += STARTING_POLL_MS) {
+    deps.pause(STARTING_POLL_MS);
+    starting = startingNow();
+  }
+  if (starting > 0) deps.out.log(`agent-org update: ${runs(starting)} still starting after ${STARTING_WAIT_MS / MS_PER_SECOND} seconds, so the instance restarts and the board queues ${starting === 1 ? "it" : "them"} again`);
+}
+
+/** Restart the services that ran, so they run the version `current` names.  */
 function restartRunning(deps: UpdateDeps, running: readonly ServiceName[]): void {
   for (const name of running) {
     deps.restart(name);
@@ -426,6 +458,8 @@ function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"], newestHerdr: HerdrNewes
     state: (name) => serviceState(name, services),
     restart: (name) => restartService(name, services),
     liveRuns: () => readLiveRuns(),
+    startingRuns: () => readStartingRuns(),
+    pause: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); },
     inUse: () => {
       const queue = readQueue();
       return queue === null ? null : toolRootsInUse(queue);

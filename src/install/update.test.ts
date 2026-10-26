@@ -6,8 +6,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { herdrWiring, runUpdate, update, UpdateRefusal } from "./update.ts";
-import { readLiveRuns } from "./instance-queue.ts";
+import { herdrWiring, runUpdate, STARTING_POLL_MS, STARTING_WAIT_MS, update, UpdateRefusal } from "./update.ts";
+import { readLiveRuns, readStartingRuns } from "./instance-queue.ts";
 import { currentVersionName } from "./tool-install.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
 import { fakePluginDeps } from "../plugins/fakes/deps.ts";
@@ -97,13 +97,87 @@ test("update restarts the services that run the tool, not herdr, the web termina
   assert.deepEqual(f.restarted, ["instance", "ui"]);
 });
 
-test("the live runs are read from the queue file in the state directory the host file names, and none is null without a host file", () => {
-  const root = tmpDir("update-live-");
+/** A host file naming a state directory with a `tickets` folder for the queue file, and a maker of queue entries: what the readers of the queue file are tested against. */
+function queueDirectory(prefix: string) {
+  const root = tmpDir(prefix);
   const host = join(root, "host.json");
   const stateDir = join(root, "state");
   writeFileSync(host, JSON.stringify({ clones: { a: "/r/a" }, stateDir }));
   mkdirSync(join(stateDir, "tickets"), { recursive: true });
   const entry = (key: string, phase: string, batch?: string) => ({ ticket: { key }, repos: [], model: "opus", effort: "high", phase, queuedAt: 0, ...(batch ? { batch } : {}) });
+  return { root, host, stateDir, entry };
+}
+
+// A11-294: a restart that finds a run `starting` has nothing of it in herdr, so the update holds the restart back for a moment.
+/** An install with `starting` runs that the poll `startingAfter` says have cleared, and the pauses seen when each service was restarted. */
+function restartedWhileStarting(starting: number | null, startingAfter?: (pauses: number) => number | null) {
+  const f = installed({ states: { instance: "running", ui: "running" } });
+  f.restarted.length = 0;
+  f.state.starting = starting;
+  f.state.startingAfter = startingAfter;
+  const pausesAtRestart: number[] = [];
+  const deps = f.deps({ restart: (name) => { f.restarted.push(name); pausesAtRestart.push(f.state.pauses.length); } });
+  assert.equal(update({ version: undefined, channel: "release" }, deps), true);
+  return { f, pausesAtRestart };
+}
+
+test("A11-294: the update restarts the instance only once no run is starting: it polls until the count is zero", () => {
+  const { f, pausesAtRestart } = restartedWhileStarting(2, (pauses) => (pauses >= 3 ? 0 : 2));
+  assert.deepEqual(f.state.pauses, [STARTING_POLL_MS, STARTING_POLL_MS, STARTING_POLL_MS], "polled three times, each a pause of the poll interval");
+  assert.deepEqual(f.restarted, ["instance", "ui"]);
+  assert.deepEqual(pausesAtRestart, [3, 3], "both restarts came after the third poll found no run starting");
+  assert.ok(f.said.some((line) => /2 runs are starting, so the restart of the instance waits/.test(line)));
+});
+
+test("A11-294: the wait is capped at two minutes: a run still starting then does not hold the restart, and the update says so", () => {
+  const { f, pausesAtRestart } = restartedWhileStarting(1);
+  assert.equal(STARTING_WAIT_MS, 120_000);
+  assert.equal(f.state.pauses.length, STARTING_WAIT_MS / STARTING_POLL_MS, "polled until two minutes had passed");
+  assert.equal(f.state.pauses.reduce((total, ms) => total + ms, 0), 120_000);
+  assert.deepEqual(f.restarted, ["instance", "ui"], "and then restarted");
+  assert.deepEqual(pausesAtRestart, [24, 24]);
+  assert.ok(f.said.some((line) => /1 run is still starting after 120 seconds, so the instance restarts and the board queues it again/.test(line)));
+});
+
+test("A11-294: with no run starting, or a queue that cannot be read, the update restarts at once and waits for nothing", () => {
+  for (const starting of [0, null]) {
+    const { f, pausesAtRestart } = restartedWhileStarting(starting);
+    assert.deepEqual(f.state.pauses, [], `starting ${starting}`);
+    assert.deepEqual(pausesAtRestart, [0, 0]);
+  }
+});
+
+test("A11-294: `--force` applies at once: it waits for no start before it restarts", () => {
+  const f = installed({ states: { instance: "running", ui: "running" } });
+  f.state.starting = 1;
+  f.release("0.11.0", "Breaking: the queue file moves");
+  f.restarted.length = 0;
+  assert.equal(update({ version: undefined, channel: "release", force: true }, f.deps()), true);
+  assert.deepEqual([f.state.pauses, f.restarted], [[], ["instance", "ui"]]);
+});
+
+test("A11-294: a service list without the instance (the ui alone ran) waits for no start", () => {
+  const f = installed({ states: { ui: "running" } });
+  f.state.starting = 1;
+  f.restarted.length = 0;
+  update({ version: undefined, channel: "release" }, f.deps());
+  assert.deepEqual([f.state.pauses, f.restarted], [[], ["ui"]]);
+});
+
+test("A11-294: the starting runs are read from the queue file: a batch is one run, and the publish run and a new-ticket run count while they start", () => {
+  const { root, host, stateDir, entry } = queueDirectory("update-starting-");
+  const queue = { max: 3, paused: false, entries: [entry("A-1", "running"), entry("A-2", "starting"), entry("A-3", "queued"), entry("A-4", "starting", "b1"), entry("A-5", "starting", "b1")] };
+  const write = (extra: object) => writeFileSync(join(stateDir, "tickets", "queue.json"), JSON.stringify({ ...queue, ...extra }));
+  const env = { AGENT_ORG_HOST: host, HOME: root };
+  write({});
+  assert.equal(readStartingRuns(env), 2, "one run and one batch's run; running and queued are not starting");
+  write({ publish: { id: "p1", keys: [], prs: [], phase: "starting", queuedAt: 0 } });
+  assert.equal(readStartingRuns(env), 3, "the publish run counts");
+  assert.equal(readStartingRuns({ AGENT_ORG_HOST: join(root, "none.json"), HOME: root }), null);
+});
+
+test("the live runs are read from the queue file in the state directory the host file names, and none is null without a host file", () => {
+  const { root, host, stateDir, entry } = queueDirectory("update-live-");
   writeFileSync(join(stateDir, "tickets", "queue.json"), JSON.stringify({ max: 3, paused: false,
     entries: [entry("A-1", "running"), entry("A-2", "starting"), entry("A-3", "queued"), entry("A-4", "finished"), entry("A-5", "running", "b1"), entry("A-6", "running", "b1")] }));
   assert.equal(readLiveRuns({ AGENT_ORG_HOST: host, HOME: root }), 3, "two runs and one batch's run; queued and finished are not live");
@@ -476,7 +550,7 @@ test("A11-191: the update that finds nothing newer completes the current folder'
   const asked = server.requests().length;
   f.said.length = 0;
   update({ version: undefined, channel: "release" }, f.deps());
-  assert.deepEqual(f.said, ["agent-org is at v0.2.0: nothing newer"], "once it has its build, an update asks for nothing");
+  assert.deepEqual(f.said, ["agent-org is at v0.2.0: nothing newer", "agent-org update: the UI build of v0.2.0 is in place"], "once it has its build, an update asks for nothing, and says the build is in place");
   assert.equal(server.requests().length, asked);
 });
 

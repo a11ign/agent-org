@@ -22,7 +22,13 @@ describe("the rail", () => {
     const counts = Object.fromEntries(rail.heads.flatMap(({ items }) => items.map(({ label, count }) => [label, count])));
     expect(rail.all).toBe(90);
     expect(counts).toMatchObject({ "Needs you": 0, "In progress": 2, Planning: 1, "Ready to merge": 1, Checked: 1, Completed: 85, Failed: 0 });
-    expect(rail.heads.flatMap(({ items }) => items)).toHaveLength(16);
+    expect(rail.heads.flatMap(({ items }) => items)).toHaveLength(17);
+  });
+
+  it("lists Approved, not merging in the Delivery head, right after Awaiting review (A11-291)", () => {
+    const delivery = railOf(queueOf(boardRuns())).heads.find(({ label }) => label === "Delivery");
+    expect(delivery?.items.map(({ label }) => label).slice(0, 3)).toEqual(["Awaiting review", "Approved, not merging", "Ready to merge"]);
+    expect(filterFrom("not-merging")).toBe("not-merging");
   });
 
   it("takes a remembered status, and All runs for anything else", () => {
@@ -241,5 +247,27 @@ describe("a row's note", () => {
     const blocker = { key: "A11-9", status: "In Progress", type: "started" };
     const entry = entryOf({ ...queuedRun("A11-4", "t"), blockers: [blocker] });
     expect(noteOf(entry, { queue: queueOf([entry as unknown as RunFields]), publisher: undefined })).toContain("Waits on A11-9 (In Progress)");
+  });
+});
+
+describe("a row's conflict note", () => {
+  const context = { queue: queueOf([]), publisher: undefined } as const;
+
+  it("says a pull request that conflicts with its base, among the lines, on a run in any status (A11-293)", () => {
+    const url = "https://github.com/a11ign/agent-org/pull/1933";
+    const conflicting = { [url]: { head: "c3f2b457", approved: false, conflict: { base: "main" } } };
+    const handed = entryOf({
+      ...working({ key: "A11-270", title: "t", startedAgo: MINUTE }), phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url }] }, handedBack: "A person decides", pullHeads: conflicting,
+    });
+    const waiting = { ...handed, handedBack: undefined } as RunEntry;
+    // A needs-human outcome names no pull request: the run's review round does.
+    const needsHuman = { ...handed, outcome: { kind: "needs-human", reason: "which side wins?" }, review: [{ repo: "agent-org", url }] } as RunEntry;
+    for (const entry of [handed, waiting, needsHuman]) {
+      expect(noteLines(entry, context)).toContain("a11ign/agent-org #1933 conflicts with main");
+      expect(noteOf(entry, context)).toContain("a11ign/agent-org #1933 conflicts with main");
+    }
+    expect(noteLines({ ...handed, pullHeads: { [url]: { head: "c3f2b457", approved: false } } } as RunEntry, context).some((line) => line.includes("conflicts"))).toBe(false);
+    expect(noteLines({ ...handed, pullStates: { [url]: "merged" } } as RunEntry, context).some((line) => line.includes("conflicts"))).toBe(false);
+    expect(noteLines({ ...handed, phase: "running" } as RunEntry, context).some((line) => line.includes("conflicts"))).toBe(false);
   });
 });
