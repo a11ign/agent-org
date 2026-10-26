@@ -12,6 +12,7 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { TAILSCALE_OPT_IN_ENV } from "../plugins/real-seams.ts";
 import { defaultDoctorDeps, diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import { noReviewerMemory, reviewerMemoryPath, writeReviewerMemory } from "../ticket-mode/reviewer-port.ts";
+import { type Flake, flakesPath, recordFlakes } from "../ticket-mode/flakes.ts";
 import type { ChromiumReport } from "./chromium.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
 import { loadEnabled } from "../plugins/loader.ts";
@@ -50,7 +51,7 @@ const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => (
     // A11-291: the merge flow's one read, for every repository at once: the setting, the default branch and the arm workflow's file.
     if (args[1] === "graphql") {
       const asked = [...(args.find((arg) => arg.startsWith("query=")) ?? "").matchAll(/repository\(owner: "([^"]+)", name: "([^"]+)"\)/g)].map(([, owner, name]) => `${owner}/${name}`);
-      const data = Object.fromEntries(asked.map((repo, n) => [`r${n}`, mergeFlow(repo) === null ? null : { autoMergeAllowed: mergeFlow(repo)!.autoMerge, defaultBranchRef: { name: "main" }, object: mergeFlow(repo)!.workflow ? { __typename: "Blob" } : null }]));
+      const data = Object.fromEntries(asked.map((repo, n) => [`r${n}`, mergeFlow(repo) === null ? null : { autoMergeAllowed: mergeFlow(repo)!.autoMerge, isPrivate: false, defaultBranchRef: { name: "main" }, object: mergeFlow(repo)!.workflow ? { __typename: "Blob" } : null, bot: null }]));
       return { status: 0, stdout: JSON.stringify({ data }), stderr: "" };
     }
     return stacks(args[1].split("/").slice(1, 3).join("/"));
@@ -97,9 +98,9 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     platform: "linux", arch: "x64", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
-    runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
+    runs: () => [], longWaits: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
-    declaredRepositories: async () => [], reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
+    declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
     ...over,
   };
@@ -213,7 +214,7 @@ test("doctor passes every check on a working install, and never prints the key",
     ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
-    ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
+    ["auto-update service", true], ["update lag", true], ["flaky tests", true], ["chromium", true], ["chromium headless shell", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
   assert.match(report(checks), /ok {4}ui answering: http:\/\/127\.0\.0\.1:4801 answers/);
@@ -741,13 +742,13 @@ test("A11-160: the plugin's rows come from the host's clones and the workers' ac
   assert.deepEqual(said.slice(0, 2), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks"]);
   // A11-291: and whether the repository has a merge flow, in one query for all the host's repositories.
   assert.equal(said.length, 3);
-  assert.match(said[2], /^api graphql -f query=query \{ r0: repository\(owner: "a11ign", name: "nbl-ui-netbox"\) \{ autoMergeAllowed defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
+  assert.match(said[2], /^api graphql -f query=query \{ r0: repository\(owner: "a11ign", name: "nbl-ui-netbox"\) \{ autoMergeAllowed isPrivate defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
   assert.ok(asked.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: "/home/agent/workers/gh" })), "every call acts as the workers' account");
 });
 
 test("A11-291: doctor finds a repository with no merge flow: the merge flow row names it, says what to add, and fails the code host's row; with the flow it passes", async () => {
   const passing = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN }) })));
-  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox allow auto-merge and hold .github/workflows/auto-arm.yml"]);
+  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox have a merge flow (auto-merge and .github/workflows/auto-arm.yml, or, for a private repository, .github/workflows/merge-bot.yml)"]);
   const noFlow = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN, gh: ghFake(GH_LISTING, undefined, () => ({ autoMerge: false, workflow: false })) }) })));
   const row = noFlow["merge flow"];
   assert.deepEqual([row.ok, row.detail], [false, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch"]);
@@ -1078,7 +1079,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 1.26, plugins/github)",
+    "code host: github (enabled, contract 1.27, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1113,7 +1114,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.26, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.27, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });
@@ -1397,6 +1398,38 @@ test("A11-241: the refusals doctor reads are the ones the pool wrote to its revi
   assert.deepEqual(defaultDoctorDeps().reviewerRefusals(join(stateDir, "absent")), [], "no memory file is nothing refused");
 });
 
+// A11-300: a test that flakes three times in seven days is listed by doctor as needing a fix.
+const FLAKY: DoctorDeps["flakes"] = () => ({ limit: 3, days: 7, tests: [{ test: "src/packaging/region-paths-checkout.test.ts > a checkout leaves nothing behind", check: "suite (2)", count: 3, last: NOW, runs: ["https://github.com/a11ign/agent-org/actions/runs/40382975143/job/2"] }] });
+
+test("A11-300: `flaky tests` passes while no test has flaked three times in seven days, and warns, naming each test and how often it flaked, when one has", async () => {
+  assertRow(byName(await diagnose(deps())), "flaky tests", { ok: true, detail: "no test has flaked 3 times in 7 days" });
+  const flaky = byName(await diagnose(deps({ flakes: FLAKY })));
+  assertRow(flaky, "flaky tests", { ok: true, detail: "src/packaging/region-paths-checkout.test.ts > a checkout leaves nothing behind (suite (2)) flaked 3 times", fix: /needs a fix: the chairman's session files a ticket for each one listed/ });
+  assert.equal(flaky["flaky tests"].warning, true, "a warning, not a failure: the install works, so the exit code is unchanged");
+  assert.match(report(Object.values(flaky)), /WARN/);
+});
+
+test("A11-300: an unreadable flake log FAILS the `flaky tests` row, saying why and what to do, rather than reading as no flaky test", async () => {
+  const unreadable: DoctorDeps["flakes"] = (stateDir) => ({ limit: 3, days: 7, tests: [], unreadable: `${flakesPath(stateDir)} is not JSON (Unexpected token)` });
+  const checks = byName(await diagnose(deps({ flakes: unreadable })));
+  assertRow(checks, "flaky tests", { ok: false, detail: /flakes\.json is not JSON/, fix: /mend or move .*flakes\.json: the board records no flake while it cannot be read/ });
+  const stateDir = tmpDirForFile("doctor-flakes-bad-");
+  mkdirSync(join(stateDir, "tickets"), { recursive: true });
+  writeFileSync(flakesPath(stateDir), "{ not a list");
+  assert.match(defaultDoctorDeps().flakes(stateDir).unreadable ?? "", /is not JSON/, "the real reading says it too");
+});
+
+test("A11-300: the flakes doctor reads are the ones the pool wrote to flakes.json in the board's state, three in seven days", () => {
+  const stateDir = tmpDirForFile("doctor-flakes-");
+  const at = Date.now();
+  const flake = (days: number): Flake => ({ test: "a.test.ts > one", check: "suite (2)", run: `https://github.com/a11ign/agent-org/actions/runs/${days}/job/1`, head: "fc707690".padEnd(40, "0"), pull: "https://github.com/a11ign/agent-org/pull/1946", at: at - days * 86_400_000 });
+  recordFlakes(flakesPath(stateDir), [flake(1), flake(2)], at);
+  assert.deepEqual(defaultDoctorDeps().flakes(stateDir).tests, [], "two flakes are not enough");
+  recordFlakes(flakesPath(stateDir), [flake(3)], at);
+  assert.deepEqual(defaultDoctorDeps().flakes(stateDir).tests.map(({ test, count }) => [test, count]), [["a.test.ts > one", 3]]);
+  assert.deepEqual(defaultDoctorDeps().flakes(join(stateDir, "absent")).tests, [], "no log is nothing flaky");
+});
+
 // A11-285: the `agent-org` the person's shell runs is the installed tool. Every reading is injected; the row's logic is in shell-command.test.ts.
 const OLD_ALIAS = { kind: "alias", said: "node ~/old/agent-org/src/bin.ts", launcher: null, copyRoot: "/home/me/old/agent-org", defined: { file: "/home/me/.zshrc", line: 42 }, comparison: { kind: "older", copy: "v0.276.0", installed: "v0.304.1" }, noInstall: false } as const satisfies ShellReading;
 
@@ -1475,4 +1508,25 @@ test("A11-292: the doctor and onboard import on a machine where no project resol
       { env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", AGENT_ORG_HOST: "/nonexistent/host.json" }, encoding: "utf8", cwd: "/" });
     assert.equal(imported.status, 0, `${file}: ${imported.stderr.split("\n").find((line) => /Error|REFUSED/.test(line)) ?? imported.stderr}`);
   }
+});
+
+// A11-298: a queued run that has waited more than two hours on the same ticket is listed, with what it waits on and whether that ticket can move.
+const longWait = (key: string, on: string, moves: boolean, kind: "blocker" | "files" = "files") => ({ key, on, kind, since: Date.UTC(2026, 9, 25, 13, 0, 0), holder: { moves, words: `${on} is ${moves ? "In progress" : "Blocked"}, so it ${moves ? "can" : "cannot"} move by itself` } });
+
+test("A11-298: doctor lists each wait of more than two hours as a warning, with what it waits on and whether that ticket can move", async () => {
+  const at = Date.UTC(2026, 9, 25, 13, 0, 0) + 31 * HOUR;
+  const checks = byName(await diagnose(deps({ now: () => at, longWaits: () => [longWait("A11-229", "A11-232", false), longWait("A11-254", "A11-300", true, "blocker")] })));
+  const [files, blocker] = [checks["long wait A11-229"], checks["long wait A11-254"]];
+  assert.deepEqual([files.ok, files.warning, blocker.ok, blocker.warning], [true, true, true, true], "a wait is not a failure");
+  assert.deepEqual([files.detail, blocker.detail], [
+    "A11-229 has waited 31 h 0 min on A11-232's files: A11-232 is Blocked, so it cannot move by itself.",
+    "A11-254 has waited 31 h 0 min on A11-300, which blocks it: A11-300 is In progress, so it can move by itself.",
+  ]);
+  assert.match(files.fix ?? "", /^A11-232 cannot move by itself: finish it, or remove the run holding the files$/);
+  assert.match(blocker.fix ?? "", /^it ends when A11-300 is done; if it should not block, remove the blocker relation in the tracker$/);
+});
+
+test("A11-298: doctor says nothing of waits when none is long, or the queue cannot be read", async () => {
+  const longWaitRows = async (over: Parameters<typeof deps>[0]) => Object.keys(byName(await diagnose(deps(over)))).filter((name) => name.startsWith("long wait"));
+  assert.deepEqual([await longWaitRows(undefined), await longWaitRows({ longWaits: () => null })], [[], []]);
 });

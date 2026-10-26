@@ -15,6 +15,7 @@ import type { Reviewer } from "../plugins/contracts/reviewer.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { newHostAlertState, type HostAlertReads, type HostAlertState } from "./host-alerts.ts";
+import { newLegacySweepState, type LegacySweepState, type LegacyTmp } from "./legacy-tmp.ts";
 import { defaultGit, type Git } from "./worktree.ts";
 import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type DrainStore } from "./pool-drain.ts";
@@ -29,6 +30,8 @@ import type { ServeCheck } from "../install/service.ts";
 import type { ExposureState } from "./pool-exposure.ts";
 import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 import type { BaseMerge } from "./pool-outcome.ts";
+import type { WriteRetry } from "./result-write-retry.ts";
+import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -99,6 +102,8 @@ export type PoolDeps = Readonly<{
   hostReadMs?: number;
   /** The directory each run's private `TMPDIR` is made under (A11-279, `run-isolation.ts`); the instance passes `privateBase()`. Absent: runs get no `TMPDIR` and nothing is swept, as in every test that does not give one. */
   privateTmpBase?: string;
+  /** The shared temporary directory whose legacy entries the sweep clears (A11-303, `legacy-tmp.ts`); the instance passes `/tmp`. Absent: nothing in it is touched, as in every test that does not give one. */
+  legacyTmp?: LegacyTmp;
   /** The longest the files of a conflict are given to be listed before its round starts without them (A11-286); a minute when absent. A test gives a short one. */
   listingMs?: number;
 }>;
@@ -138,6 +143,8 @@ export type PoolContext = Readonly<{
   attaching: Set<string>;
   /** The planning runs whose plan attach failed in a way worth trying again (A11-216), by herdr name: how many tries failed and the time the next one may start. Kept in memory: a restart tries again from the first. */
   attachRetries: Map<string, AttachRetry>;
+  /** The runs whose result write to the tracker failed in a way worth trying again (A11-304), by herdr name: how many tries failed, when the first did, and the time the next may start. Kept in memory: a restart tries again from the first. */
+  writeRetries: Map<string, WriteRetry>;
   /** The live runs whose ticket's change is being sent to their worker now, by ticket key, so a second refresh does not send it twice (A11-167). */
   telling: Set<string>;
   /** The tickets whose answer is being written into their description now, so two answers do not read the same text and lose one (A11-250). */
@@ -191,6 +198,10 @@ export type PoolContext = Readonly<{
   keptSweep: { busy: boolean; done: Promise<void> };
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
   ownLogin: { value: string | null };
+  /** The flake log (A11-300): the checks that passed when the board reran them, recorded in the board's state, and the tests that flake often enough to need a fix. */
+  flakes: FlakeLog;
+  /** The `url@head` keys of a round whose worker's reply was read for "not my change's" (A11-300), so a watch reads each round's replies once. Kept in memory: a restart reads them once more, which reruns nothing the record has already rerun. */
+  repliesRead: Set<string>;
   /** What the board last read of each run's declared wait, by herdr name (A11-245). Kept in memory: a restart reads afresh, and the note's own `woke` says the worker was already told. */
   waitPolls: WaitPolls;
   /** Whether this instance's first watch pass has read the restart record (A11-279): that first pass is itself a restart, and only it. */
@@ -207,6 +218,8 @@ export type PoolContext = Readonly<{
   hostAlerts: HostAlertState;
   /** The directory each run's private `TMPDIR` is made under, or undefined when runs get none (A11-279). */
   runTmpBase: string | undefined;
+  /** How far the sweep of the shared `/tmp` has got, and the trees it left half removed (A11-303). */
+  legacySweep: LegacySweepState;
 }>;
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
@@ -234,6 +247,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The planning runs whose plans are being attached, by herdr name, so a tick that sees the same outcome file meanwhile does not attach them again. */
   const attaching = new Set<string>();
   const attachRetries = new Map<string, AttachRetry>();
+  const writeRetries = new Map<string, WriteRetry>();
   /** The moves to the working state still on their way to the tracker, by ticket key: a restore of the ticket waits for its move. */
   const pendingMoves = new Map<string, Promise<void>>();
   /** The queued runs Remove is putting the ticket back for, by ticket key: no tick starts one of them while it is taken off the queue. */
@@ -280,9 +294,15 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const finishing = new Set<string>();
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
-    startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    startedHere, attaching, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
-    exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase),
+    exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
   };
+}
+
+/** The flake log in `stateDir` (A11-300), read and written as the clock `now` says. */
+function flakeLog(stateDir: string, now: () => number): FlakeLog {
+  const path = flakesPath(stateDir);
+  return { record: (found) => recordFlakes(path, found, now()), view: () => flakesViewOf(path, now()) };
 }

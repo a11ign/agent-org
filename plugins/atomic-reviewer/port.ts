@@ -440,7 +440,7 @@ function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | 
   // A reviewer started without a claim wrote none, so it has none to give up.
   const giveUpClaim = () => { if (claimed.unclaimed === undefined) releaseClaim(context, seat, { pr, head, tree: tree.path }); };
   const started = spawnOf(context)({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
-    agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(context), cwd: tree.path, env: reviewerEnvOf(context, seat) });
+    agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(context), cwd: tree.path, env: reviewerEnvOf(context, seat), ...(boardOf(context).tmpBase === undefined ? {} : { tmpBase: boardOf(context).tmpBase }) });
   if ("refusal" in started) {
     giveUpClaim();
     return started;

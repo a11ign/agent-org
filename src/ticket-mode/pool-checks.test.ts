@@ -7,6 +7,7 @@ import { foreignRedsOf, type ForeignReds } from "./pool-foreign-checks.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { type Flake, flakesView } from "./flakes.ts";
 import type { PoolContext } from "./pool-context.ts";
 
 const stamped = (lines: string[]) => lines.map((line) => `2026-10-20T10:00:00.1234567Z ${line}`).join("\n");
@@ -56,18 +57,37 @@ const own = (key = "A11-177", paths: readonly string[] = ["agent-org:src/ticket-
 /** What a pass reads of the checks red where the run cannot mend them (A11-215): `names` fail on the default branch, and `mainPassing` are the ones it reports passing (null: a host of 1.14, which cannot say); `mainPending` are the ones whose newest run there has not concluded (null: the host does not say, so a check in neither list is taken to be running). */
 const redOn = (names: readonly string[], mainPassing: readonly string[] | null = null, mainPending: readonly string[] | null = null): ForeignReds => () => ({ names: new Set(names), onMain: new Set(names), mainPassing: mainPassing === null ? null : new Set(mainPassing), mainPending: mainPending === null ? null : new Set(mainPending), mainBranch: "main" });
 
+const NOW = Date.parse("2026-10-26T12:00:00Z");
+const WORKERS = "a11ign-workers";
+
+/** The flake log in memory: what the pool records to `flakes.json`, kept in a list a test reads. */
+function memoryFlakes() {
+  const recorded: Flake[] = [];
+  return { recorded, log: { record: (found: readonly Flake[]) => void recorded.push(...found), view: () => flakesView(recorded, NOW) } };
+}
+
 function world(logs: Record<string, string> = {}) {
   const host = createFakeCodeHost();
   for (const [url, text] of Object.entries(logs)) host.checksAndClaims.logs.set(url, text);
-  return { host, ctx: { codeHost: host } as unknown as PoolContext };
+  const flakes = memoryFlakes();
+  const clock = { at: NOW };
+  const ctx = { codeHost: host, now: () => clock.at, flakes: flakes.log, repliesRead: new Set<string>(), ownLogin: { value: WORKERS } } as unknown as PoolContext;
+  return { host, ctx, flakes: flakes.recorded, clock };
 }
+/** The answer a watch gives once the board's rerun of the code's own red checks (A11-300) has come out red again: the watch that reran them, then the one that reads the same head red. Any other first answer is the answer. */
+function answerAfterRerun(ctx: PoolContext, entry: Entry, open: Parameters<typeof answerChecks>[2], reds?: ForeignReds): ReturnType<typeof answerChecks> {
+  const first = answerChecks(ctx, entry, open, reds);
+  return open.some(({ url }) => first.heads[url]?.step === "rerun") ? answerChecks(ctx, { ...entry, checkHeads: first.withoutRound } as Entry, open, reds) : first;
+}
+/** An entry whose red checks at `HEAD` were rerun already, as a worker is asked for them only then (A11-300). */
+const rerunAlready = (entry: Entry, url = URL_1): Entry => ({ ...entry, checkHeads: { [url]: { head: HEAD, step: "rerun" as const, note: "reran" } } }) as Entry;
 const REFUSAL = stamped(["refusalOwners: REFUSED -- A11-127 retires this check", "##[error]Process completed with exit code 1."]);
 const TEST_FAILED = stamped(["not ok 3 - git spawn classification", "AssertionError: expected 1 to equal 2"]);
 
 test("A11-179: a check that fails on the default branch too starts no round and is named red on main / not this run's, and a check main does not fail is still the run's", () => {
   const { ctx, host } = world({ [job(1)]: REFUSAL, [job(2)]: TEST_FAILED });
   const onMain = () => redOn(["refusalOwners"]);
-  const mixed = answerChecks(ctx, own(), [{ url: URL_1, read: feedback(["refusalOwners", "suite"]) }], onMain());
+  const mixed = answerAfterRerun(ctx, own(), [{ url: URL_1, read: feedback(["refusalOwners", "suite"]) }], onMain());
   assert.match(mixed.feedback ?? "", /^suite failed on the head commit of /m, "the run's own check gets its round");
   assert.match(mixed.feedback ?? "", /refusalOwners also failed on the head commit of .* fails on the default branch or on pull requests that touch none of your files: that is not a fault in your change, so leave it\.$/, "and the brief says the other is not its");
   assert.deepEqual(mixed.heads, { [URL_1]: { head: HEAD, step: "round" } });
@@ -75,7 +95,7 @@ test("A11-179: a check that fails on the default branch too starts no round and 
   assert.equal(only.feedback, null, "nothing is red that the run can mend: no round");
   assert.deepEqual(only.heads, { [URL_1]: { head: HEAD, step: "not-ours", note: "refusalOwners is red on main / not this run's; owned by A11-127", notOurs: { refusalOwners: "A11-127" }, waitingOnMain: ["refusalOwners"] } });
   assert.deepEqual(only.withoutRound, only.heads, "and the record is kept without a round, so the card names it");
-  assert.deepEqual(host.checksAndClaims.reruns, [], "it is not rerun");
+  assert.deepEqual(host.checksAndClaims.reruns, [[job(2)]], "the run's own check is rerun once before its round, and the one that is red elsewhere is never rerun");
 });
 
 test("A11-179: a check red on another run's pull request in the same repository that changes none of this run's plan paths is not this run's, and one that touches them is", () => {
@@ -83,12 +103,12 @@ test("A11-179: a check red on another run's pull request in the same repository 
   const mine = own();
   const other = (files: readonly string[], over: Partial<PullFeedback> = {}) => ({ entry: own("A11-150", ["agent-org:src/other/"], URL_2), open: [{ url: URL_2, read: feedback(["suite"], files, over) }] });
   const answer = (outside: ReturnType<typeof other>) =>
-    answerChecks(ctx, mine, [{ url: URL_1, read: feedback(["suite"]) }], foreignRedsOf(ctx, [{ entry: mine, open: [{ url: URL_1, read: feedback(["suite"]) }] }, outside]));
+    answerAfterRerun(ctx, mine, [{ url: URL_1, read: feedback(["suite"]) }], foreignRedsOf(ctx, [{ entry: mine, open: [{ url: URL_1, read: feedback(["suite"]) }] }, outside]));
   assert.deepEqual(answer(other(["src/other/thing.ts"])).heads[URL_1]?.step, "not-ours", "the same check is red where this run's files are not");
   assert.deepEqual(answer(other(["src/ticket-mode/pool-checks.ts"])).heads[URL_1]?.step, "round", "a pull request that touches the run's region says nothing of it");
   assert.deepEqual(answer(other(["src/other/thing.ts"], { filesComplete: false })).heads[URL_1]?.step, "round", "a list of files cut short may touch it");
   const noPaths = own("A11-177", []);
-  const free = answerChecks(ctx, noPaths, [{ url: URL_1, read: feedback(["suite"]) }], foreignRedsOf(ctx, [{ entry: noPaths, open: [{ url: URL_1, read: feedback(["suite"]) }] }, other(["src/other/thing.ts"])]));
+  const free = answerAfterRerun(ctx, noPaths, [{ url: URL_1, read: feedback(["suite"]) }], foreignRedsOf(ctx, [{ entry: noPaths, open: [{ url: URL_1, read: feedback(["suite"]) }] }, other(["src/other/thing.ts"])]));
   assert.equal(free.heads[URL_1]?.step, "round", "a run whose plan declares no paths has no region to compare with");
   const elsewhere = { entry: own("A11-150", ["agent-org:src/other/"], "https://github.com/a11ign/control/pull/9"), open: [{ url: "https://github.com/a11ign/control/pull/9", read: feedback(["suite"], ["src/other/thing.ts"]) }] };
   assert.equal(answer(elsewhere).heads[URL_1]?.step, "round", "a pull request of another repository says nothing of it");
@@ -117,7 +137,7 @@ test("A11-179: a check red elsewhere is looked at again on every watch: the log 
   assert.equal(reads(), 1);
   const again = answerChecks(ctx, { ...entry, checkHeads: first.heads } as Entry, [{ url: URL_1, read: feedback(["refusalOwners"]) }], redOn(["refusalOwners"]));
   assert.deepEqual([again.heads, reads()], [first.heads, 1], "the same answer, with no second read of the log");
-  const ours = answerChecks(ctx, { ...entry, checkHeads: first.heads } as Entry, [{ url: URL_1, read: feedback(["refusalOwners"]) }], redOn([]));
+  const ours = answerAfterRerun(ctx, { ...entry, checkHeads: first.heads } as Entry, [{ url: URL_1, read: feedback(["refusalOwners"]) }], redOn([]));
   assert.deepEqual([ours.heads[URL_1]?.step, ours.feedback !== null], ["round", true], "main is green: the check is the run's, and gets its round");
   const green = answerChecks(ctx, { ...entry, checkHeads: first.heads } as Entry, [{ url: URL_1, read: feedback([]) }], redOn([]));
   assert.deepEqual([green.heads, green.feedback], [{}, null], "nothing is red: the record is dropped");
@@ -130,7 +150,7 @@ test("A11-179: a run sequenced with another on purpose, as its blocker or its de
   const { ctx } = world({ [job(1)]: TEST_FAILED });
   const mine = { ...own(), blockers: [{ key: "A11-150" }] } as unknown as Entry;
   const stacked = { entry: own("A11-150", ["agent-org:src/other/"], URL_2), open: [{ url: URL_2, read: feedback(["suite"], ["src/other/thing.ts"]) }] };
-  const answer = (self: Entry, other: typeof stacked) => answerChecks(ctx, self, [{ url: URL_1, read: feedback(["suite"]) }], foreignRedsOf(ctx, [{ entry: self, open: [{ url: URL_1, read: feedback(["suite"]) }] }, other]));
+  const answer = (self: Entry, other: typeof stacked) => answerAfterRerun(ctx, self, [{ url: URL_1, read: feedback(["suite"]) }], foreignRedsOf(ctx, [{ entry: self, open: [{ url: URL_1, read: feedback(["suite"]) }] }, other]));
   assert.equal(answer(own(), stacked).heads[URL_1]?.step, "not-ours", "an independent run's failure of the same check is read as not this run's");
   assert.equal(answer(mine, stacked).heads[URL_1]?.step, "round", "a run stacked on the other runs its checks over its code: the other's failure is its own");
   const dependent = { ...stacked, entry: { ...stacked.entry, blockers: [{ key: "A11-177" }] } as unknown as Entry };
@@ -154,7 +174,7 @@ function heldWorld() {
   made.host.seedPull("a11ign/agent-org", 1801, { head: HEAD });
   return made;
 }
-const answerHeld = (made: ReturnType<typeof heldWorld>, read: PullFeedback, reds: ForeignReds, entry: Entry = heldEntry()) => answerChecks(made.ctx, entry, [{ url: URL_1, read }], reds);
+const answerHeld = (made: ReturnType<typeof heldWorld>, read: PullFeedback, reds: ForeignReds, entry: Entry = heldEntry()) => answerAfterRerun(made.ctx, entry, [{ url: URL_1, read }], reds);
 const updatesAsked = (made: ReturnType<typeof heldWorld>) => made.host.branchUpdates.asked.map(({ url, expectedHead }) => [url, expectedHead]);
 
 test("A11-215: a check red on main is recorded as waited on main; one red only on another run's pull request is not", () => {
@@ -249,7 +269,7 @@ test("A11-215: a pull request that conflicts is not sent to update-branch, a hos
   assert.deepEqual([conflicting.heads, conflicting.feedback, updatesAsked(made)], [HELD_UI, null, []], "the conflict round that the watch starts for it is the answer");
   const without = heldWorld();
   const bare = { ...without.ctx, codeHost: { ...without.host, updateBranch: undefined } } as unknown as PoolContext;
-  const round = answerChecks(bare, heldEntry(), [{ url: URL_1, read: feedback(["ui"]) }], redOn([], ["ui"]));
+  const round = answerAfterRerun(bare, heldEntry(), [{ url: URL_1, read: feedback(["ui"]) }], redOn([], ["ui"]));
   assert.deepEqual([round.heads[URL_1]?.step, updatesAsked(without)], ["round", []]);
   const old = { ...own(), checkHeads: { [URL_1]: { head: HEAD, step: "not-ours" as const, note: "ui is red on main / not this run's", notOurs: { ui: null } } } } as Entry;
   const unrecorded = answerHeld(made, feedback(["ui"]), redOn([], ["ui"]), old);

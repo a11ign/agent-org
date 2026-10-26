@@ -45,6 +45,30 @@ describe("wait cycles (A11-272)", () => {
   });
 });
 
+describe("long waits (A11-298)", () => {
+  const FILES = ["lab:middleware/runtime/main.py"];
+  const HOURS = 60 * MINUTE;
+
+  it("draws one banner for a queued run that has waited more than two hours on the same ticket, naming what it waits on and whether that ticket can move", async () => {
+    await pageOn(runsStand({ runs: [
+      working({ key: "A11-232", title: "holds", startedAgo: 5 * HOURS, paths: FILES }),
+      queuedRun("A11-229", "waits", 5 * HOURS, { paths: FILES, waitSince: { on: "A11-232", since: Date.now() - 31 * HOURS - 20 * MINUTE } }),
+    ] }));
+    await screen.findByText("waits");
+    const banners = [...document.querySelectorAll(".status-banner")].map(textOf);
+    expect(banners).toEqual(["A11-229 has waited 31 h 20 min on A11-232's files: A11-232 is In progress, so it can move by itself."]);
+  });
+
+  it("draws none for a wait of under two hours", async () => {
+    await pageOn(runsStand({ runs: [
+      working({ key: "A11-232", title: "holds", startedAgo: HOURS, paths: FILES }),
+      queuedRun("A11-229", "waits", HOURS, { paths: FILES, waitSince: { on: "A11-232", since: Date.now() - HOURS } }),
+    ] }));
+    await screen.findByText("waits");
+    expect(document.querySelector(".status-banner")).toBeNull();
+  });
+});
+
 describe("the empty state", () => {
   it("is No runs yet with Go to Tickets, 0 total, 0 of N busy, and no rail", async () => {
     await pageOn(runsStand({ runs: [], max: 6 }));

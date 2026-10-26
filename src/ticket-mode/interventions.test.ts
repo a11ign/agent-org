@@ -87,6 +87,11 @@ test("A11-257: the page's proxy passes on the read of the health number, and not
   assert.equal(passedOn("POST", "/api/interventions"), false);
 });
 
+test("A11-300: the page's proxy passes on the read of the flaky tests, and not a write", () => {
+  assert.equal(passedOn("GET", "/api/flakes"), true);
+  assert.equal(passedOn("POST", "/api/flakes"), false);
+});
+
 test("A11-257: an event with no valid time counts nothing and logging it does not throw", () => {
   const queue = logEvent(emptyQueue(1), "A", Number.NaN, { kind: "needs-you", reason: "post it?" });
   assert.equal(queue.interventions, undefined);

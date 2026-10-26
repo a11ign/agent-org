@@ -10,6 +10,7 @@ import { herdrName } from "./pool.ts";
 import { runEnvOf } from "./run-env.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { MAX_REMOVALS_PER_PASS, makeRunTmp, runTmpDir, runTmpName, SWEEP_GRACE_MS, sweepRunTmp } from "./run-isolation.ts";
+import { newLegacySweepState } from "./legacy-tmp.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import type { PoolContext } from "./pool-context.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
@@ -133,9 +134,15 @@ test("A11-279: a finished run's directory is removed on the tick that sees its w
   assert.deepEqual(readdirSync(base).toSorted(), ["run-t-NBF-2", "run-t-NBF-3"], "only the concluded run's directory, scratch file and all, is gone");
 });
 
-/** A pool context that holds only what the sweep reads: the base, the clock and the queue's entries. */
-const sweepCtx = (base: string | undefined, entries: readonly Partial<Entry>[], now: number): PoolContext =>
-  ({ runTmpBase: base, now: () => now, store: { get: () => ({ entries }) } }) as unknown as PoolContext;
+/** The `workspace list` answer of a herdr that lists `labels`, or one that cannot be asked when `labels` is null. */
+const herdrListing = (labels: readonly string[] | null) => (args: string[]): string => {
+  if (labels === null) throw new Error("herdr exited 1");
+  return args.includes("list") ? JSON.stringify({ result: { workspaces: labels.map((label) => ({ label, workspace_id: `w-${label}`, agent_status: "idle" })) } }) : "{}";
+};
+
+/** A pool context that holds only what the sweep reads: the base, the clock, the queue's entries and the workspaces herdr lists in the board's session (none unless a test names them). */
+const sweepCtx = (base: string | undefined, entries: readonly Partial<Entry>[], now: number, listed: readonly string[] | null = []): PoolContext =>
+  ({ runTmpBase: base, now: () => now, store: { get: () => ({ entries }) }, herdr: herdrListing(listed), settings: { herdrSession: "tickets" }, deps: {}, legacySweep: newLegacySweepState() }) as unknown as PoolContext;
 const ended = (key: string): Partial<Entry> => ({ ticket: { key } as Entry["ticket"], phase: "finished" });
 
 test("A11-279: the sweep leaves a directory modified inside the grace, a name that is not run-t-, a symlink's target, and everything when the pool has no base", () => {
@@ -215,4 +222,35 @@ test("A11-279: a run's directory that is a symlink is removed as itself and its 
   symlinkSync(elsewhere, join(base, "run-t-LINK"));
   sweepRunTmp(sweepCtx(base, [], Date.now()));
   assert.deepEqual([readdirSync(base), readdirSync(elsewhere)], [[], ["keep.txt"]]);
+});
+
+/** A base holding a directory for each of `labels`, each last modified three graces before `t`. */
+function baseWithOld(labels: readonly string[], t: number): string {
+  const base = tmpDir("run-isolation-");
+  const old = new Date(t - 3 * SWEEP_GRACE_MS);
+  for (const label of labels) { mkdirSync(runTmpDir(base, label)); utimesSync(runTmpDir(base, label), old, old); }
+  return base;
+}
+
+test("A11-303: the sweep keeps the directory of a session herdr lists though no queue entry owns it (a reviewer, a new-ticket run), touches it, and takes it once herdr no longer lists it", () => {
+  const t = Date.now();
+  const base = baseWithOld(["reviewer-nbl-ui-7", "reviewer-nbl-ui-8"], t);
+  writeFileSync(join(runTmpDir(base, "reviewer-nbl-ui-8"), "ae-pw-leftover"), "from an acceptance run");
+  utimesSync(runTmpDir(base, "reviewer-nbl-ui-8"), new Date(t - 3 * SWEEP_GRACE_MS), new Date(t - 3 * SWEEP_GRACE_MS));
+  sweepRunTmp(sweepCtx(base, [], t, ["reviewer-nbl-ui-7"]));
+  assert.deepEqual(readdirSync(base), ["run-t-reviewer-nbl-ui-7"], "the listed reviewer's directory stays, the unlisted one's is gone");
+  assert.equal(statSync(runTmpDir(base, "reviewer-nbl-ui-7")).mtimeMs, t, "and is touched, so the tmpfiles rule and another instance's sweep find it young");
+  sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS - 1, []));
+  assert.deepEqual(readdirSync(base), ["run-t-reviewer-nbl-ui-7"], "the pass that no longer lists it is inside the grace of the last touch");
+  sweepRunTmp(sweepCtx(base, [], t + SWEEP_GRACE_MS, []));
+  assert.deepEqual(readdirSync(base), [], "and once the grace has passed with the workspace gone, so is it");
+});
+
+test("A11-303: herdr that cannot be listed takes no directory a queue entry does not own, and a directory of an ended queue run is taken without asking herdr", () => {
+  const t = Date.now();
+  const base = baseWithOld(["reviewer-nbl-ui-7", "A11-1"], t);
+  sweepRunTmp(sweepCtx(base, [ended("A11-1")], t, null));
+  assert.deepEqual(readdirSync(base), ["run-t-reviewer-nbl-ui-7"], "no listing says nothing of the reviewer, so its directory is left; the ended run's is its queue entry's to say");
+  sweepRunTmp(sweepCtx(base, [], t, []));
+  assert.deepEqual(readdirSync(base), [], "listed, and not there, it goes");
 });

@@ -36,7 +36,9 @@ import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
 import { readReviewerMemory, reviewerMemoryPath, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
+import { type FlakesView, flakesPath, flakesViewOf } from "../ticket-mode/flakes.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
+import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -134,6 +136,8 @@ export type DoctorDeps = Readonly<{
   drain: () => Drain;
   /** Each live or parked run with the version of agent-org it started on, or null when the queue cannot be read (A11-169). */
   runs: () => readonly RunVersion[] | null;
+  /** The queued runs that have waited more than two hours on the same ticket, read from the queue now, or null when the queue cannot be read (A11-298). */
+  longWaits: () => readonly LongWait[] | null;
   /** The board UI's build, read now (A11-191). */
   uiBuild: () => UiBuildReading;
   /** The version this instance runs: its version folder's name, else its package's. */
@@ -151,6 +155,8 @@ export type DoctorDeps = Readonly<{
   declaredRepositories: () => Promise<readonly DeclaredRepository[]>;
   /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
   reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
+  /** The tests the flake log in `stateDir` lists as needing a fix (A11-300): flaked three times in seven days. A test injects them, so no file is read. */
+  flakes: (stateDir: string) => FlakesView;
   /** The Chromium builds this machine has, read now: each build is a check, and `ticket:capture` needs both (A11-151). */
   chromium: () => ChromiumReport;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
@@ -343,6 +349,20 @@ function reviewerStartsCheck(settings: TicketSettings, deps: DoctorDeps): Check 
   const times = (count: number) => (count === 1 ? "once" : `${count} times`);
   const detail = refused.map(({ url, head, count, reason }) => `${pullLabel(url)} at ${head.slice(0, 8)} refused ${times(count)}: ${reason}`).join("; ");
   return failed("reviewer starts", detail, `${refused[0].reason}: fix what herdr says, and the board starts the reviewer again on its next sweep`);
+}
+
+/**
+ * The `flaky tests` row (A11-300): green while no test has flaked three times in seven days, and otherwise a WARNING (not a failure: the install works) that names each test with how many times it flaked and the fix. The chairman's
+ * session files a ticket for each from this list; a worker never does. An unreadable flake log FAILS the row: it is not "nothing flaked". Null where there is no host file to name the board's state.
+ */
+function flakyTestsCheck(settings: TicketSettings | null, deps: DoctorDeps): Check | null {
+  if (settings === null) return null;
+  const { limit, days, tests, unreadable } = deps.flakes(settings.stateDir);
+  // An unreadable log is not an empty one: no flake is recorded over it, so it is mended by hand (A11-300).
+  if (unreadable !== undefined) return failed("flaky tests", unreadable, `mend or move ${flakesPath(settings.stateDir)}: the board records no flake while it cannot be read, and the list of flaky tests is unknown`);
+  if (tests.length === 0) return ok("flaky tests", `no test has flaked ${limit} times in ${days} days`);
+  const detail = tests.map(({ test, count, check }) => `${test} (${check}) flaked ${count} times`).join("; ");
+  return warned("flaky tests", detail, `a test that flakes ${limit} times in ${days} days needs a fix: the chairman's session files a ticket for each one listed (${flakesPath(settings.stateDir)} holds the runs)`);
 }
 
 /**
@@ -559,7 +579,9 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     registeredCheck("auto-update", deps, "it runs `agent-org update` every ten minutes"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
     ...drainChecks(deps),
+    ...longWaitChecks(deps),
     ...runVersionChecks(settings, deps),
+    ...[flakyTestsCheck(settings, deps)].filter((check): check is Check => check !== null),
     ...chromiumChecks(deps),
   ];
 }
@@ -658,6 +680,22 @@ function herdrScopeChecks(settings: TicketSettings | null, instanceState: Servic
  */
 function readCacheGuardChecks(deps: DoctorDeps): Check[] {
   return deps.guards().readCacheDropIn ? [failed("gh-read-cache-off.conf", "the instance unit still turns the gh read cache off, which the review claim no longer needs", "run `agent-org onboard`, which retires it")] : [];
+}
+
+/**
+ * A queued run that has waited more than two hours on the same ticket (A11-298): one warning row each, saying what it waits on and whether that ticket can move by itself. A wait is not a failure, so the row is `ok`, and
+ * the fix is what ends the wait. Nothing when no run has waited that long, or the queue cannot be read.
+ */
+function longWaitChecks(deps: DoctorDeps): Check[] {
+  const now = deps.now();
+  return (deps.longWaits() ?? []).map((wait) => warned(`long wait ${wait.key}`, longWaitSentence(wait, now), longWaitFix(wait)));
+}
+
+/** What ends a long wait: the ticket it waits on moving, or, when that ticket cannot move by itself, a person finishing or removing it, or the relation or run that holds the wait. */
+function longWaitFix({ kind, on, holder }: LongWait): string {
+  const ends = kind === "files" ? `remove the run holding the files` : `remove the blocker relation in the tracker`;
+  if (!holder.moves) return `${on} cannot move by itself: finish it, or ${ends}`;
+  return kind === "files" ? `it ends when ${on} lets go of the files; press Start anyway on the run's card to run it beside ${on}` : `it ends when ${on} is done; if it should not block, ${ends}`;
 }
 
 /** The versions of agent-org the live and parked runs started on, beside the instance's (A11-169): one row each, or one line when they all agree. Nothing when no run holds a workspace. */
@@ -981,6 +1019,10 @@ export function defaultDoctorDeps(): DoctorDeps {
       const queue = readQueue();
       return queue === null ? null : runVersions(queue);
     },
+    longWaits: () => {
+      const queue = readQueue();
+      return queue === null ? null : longWaits(queue.entries, Date.now());
+    },
     uiBuild: () => ({ found: findBuild(buildCandidates()), declared: declaresUiBuild(TOOL_ROOT), looked: join(TOOL_ROOT, UI_BUILD_DIR), version: versionNameOf(TOOL_ROOT) }),
     instanceVersion: () => runningToolVersion(),
     pluginCopies: (wanted) => pluginCopiesOf(wanted, homedir()),
@@ -989,6 +1031,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     reviewing: gateHelpers(),
     declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code,
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
+    flakes: (stateDir) => flakesViewOf(flakesPath(stateDir), Date.now()),
     chromium: () => chromiumReport(),
     agentOrgPlugins: {
       catalog: defaultCatalog,

@@ -1,12 +1,15 @@
 // @ts-check
-// module: the pool's red checks -- which failing checks of a finished run's pull requests the board answers, once for each head: it reruns a check that failed for an infrastructure reason, and briefs a round on the rest
+// module: the pool's red checks -- which failing checks of a finished run's pull requests the board answers, once for each head: it reruns a red check once before it asks a worker (A11-300), records a pass on rerun as a flake, and briefs a round only on a check that is red again
 
 import { CI_CLASS, errorLinesOfLog, LOG_TIMESTAMP, rateLimitOrLostRunner, READS_OUTSIDE, withoutColour } from "../ci-log-lines.ts";
 import { rerunOn5xx } from "../ci-rerun-on-5xx.ts";
 import { isRollUpCheck } from "../newest-check-run.ts";
 import type { FailingCheck, PullFeedback, UpdateBranchResult } from "../plugins/contracts/code-host.ts";
+import type { Flake } from "./flakes.ts";
+import { failedTestOf, saysUnrelated } from "./failure-words.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
+import type { FlakeCandidate, RerunRecord } from "./board-view/check-rerun-record.ts";
 import { NO_FOREIGN_REDS, type ForeignReds, type ForeignRedsRead } from "./pool-foreign-checks.ts";
 import { log, messageOf } from "./pool-state.ts";
 import { ownerOfRed } from "./ticket-references.ts";
@@ -22,6 +25,12 @@ const CAUSE_WINDOW = 5;
 
 /** The characters of a head the card names, as GitHub's own short form does. */
 const HEAD_CHARS = 8;
+
+/** The longest a red check that has others still running waits for its run to finish before the board reruns it anyway: GitHub reruns the failed jobs of a run only once the whole run has finished (A11-300). */
+const RERUN_WAIT_MS = 45 * 60_000;
+
+/** How long after a rerun a failure that finished before it is read as the failure that was rerun, still on the check's page, and not as the rerun failing again: GitHub's read can lag the rerun by a few seconds. */
+const RERUN_SETTLE_MS = 5 * 60_000;
 
 /**
  * A failing check with what its job's log says of it: the lines to quote, and why it is the infrastructure's and not the code's, when it is. `refusals` are the log's lines that say the check refused
@@ -190,6 +199,106 @@ function answerInfrastructure(ctx: PoolContext, entry: Entry, { head, checks, re
   return { head, step: "rerun", note };
 }
 
+/** The line that tells a worker what to do with a failure that is not its change's, so the board can rerun it (A11-300). PURE. */
+const unrelatedAdvice = (url: string): string =>
+  `If a check above failed for a reason that is not your change (it fails without your change too), push nothing for it, and reply on ${url} saying the failure is unrelated to your change and why: the board then reruns the failed jobs once.`;
+
+/** The flake candidates of the checks a rerun is for: the test or step that failed in each, and the run it failed in. PURE. */
+const candidatesOf = (checks: readonly ReadCheck[]): FlakeCandidate[] =>
+  checks.flatMap((check) => (check.detailsUrl === null ? [] : [{ test: failedTestOf(check), check: check.name, run: check.detailsUrl }]));
+
+/** The record of a rerun of the code's own red checks (A11-300), with what failed kept for the flake log. PURE. */
+const rerunRecord = (head: string, note: string, kind: "code" | "reply", at: number, checks: readonly ReadCheck[]): CheckHead =>
+  ({ head, step: "rerun", note, rerun: { for: kind, at, candidates: candidatesOf(checks) } });
+
+/** Whether the pull request has checks still running, and the failure is recent enough to wait for them: the failed jobs of a run can be rerun only once the run has finished. A failure with no time is not waited for. PURE. */
+const runStillGoing = (read: PullFeedback, now: number): boolean => (read.pendingRequired ?? []).length > 0 && read.failedAt !== null && now - read.failedAt < RERUN_WAIT_MS;
+
+/** Whether a record is the rerun of the code's own checks at `head`, which has not yet come out green and been recorded. PURE. */
+const isUnsettledRerun = (known: CheckHead | undefined, head: string | null): known is CheckHead & { rerun: RerunRecord } =>
+  known?.step === "rerun" && known.head === head && known.rerun !== undefined && known.rerun.passed !== true && known.rerun.candidates.length > 0;
+
+/** Whether none of a rerun's checks is red or running now: the host says which required checks are running, and says none, and none of the rerun's checks is among the failures. PURE. */
+const rerunCameOutGreen = (record: RerunRecord, read: PullFeedback): boolean =>
+  read.pendingRequired !== undefined && read.pendingRequired.length === 0 && !record.candidates.some(({ check }) => read.failures.some(({ name }) => name === check));
+
+/**
+ * THE RERUN BEFORE A ROUND (A11-300). The code's own red checks at a head no one has rerun at are rerun once, and a worker is asked only if they are red again. The failed jobs of a run can be rerun only once the run
+ * has finished ({@link runStillGoing} is why `answerPull` waits). Null when the checks are not rerun: one has no job page to rerun, or the host refused, and the round is started as it was before A11-300.
+ */
+function rerunBeforeRound(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[] }>): { lines: string[]; answer: CheckHead } | null {
+  const { read } = pull;
+  const { own, infrastructure } = checks;
+  if (own.some(({ detailsUrl }) => detailsUrl === null)) return null;
+  const now = ctx.now();
+  const head = read.head!;
+  const refused = rerun(ctx, [...own, ...infrastructure]);
+  if (refused !== null) {
+    log(`${entry.ticket.key}: ${names(own)} failed on ${short(head)} and could not be rerun (${refused}): a worker is asked`);
+    return null;
+  }
+  const note = `Reran ${names(own)} on ${short(head)} before asking a worker: a worker is asked only if ${own.length === 1 ? "it fails" : "they fail"} again`;
+  log(`${entry.ticket.key}: ${note}`);
+  return { lines: [], answer: rerunRecord(head, note, "code", now, own) };
+}
+
+/**
+ * THE PASS ON A RERUN (A11-300): the head's record is a rerun of the code's own checks, and none of them is red or running now. Each test or step that failed is written to the flake log with its run and the head, once: the
+ * record that comes back says `passed`. Null when the rerun has not come out green, when the flake log cannot be written (asked again next watch), or the host does not say which required checks are still running, which is no evidence that none is.
+ */
+function recordPassOnRerun(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined): CheckHead | null {
+  const { url, read } = pull;
+  if (!isUnsettledRerun(known, read.head) || !rerunCameOutGreen(known.rerun, read)) return null;
+  const record = known.rerun;
+  const at = ctx.now();
+  const flakes: Flake[] = record.candidates.map((candidate) => ({ ...candidate, head: known.head, pull: url, at }));
+  try {
+    ctx.flakes.record(flakes);
+  } catch (err) {
+    // Not marked passed: the next watch writes it again, and the log says why until the flake log can be written (an unreadable one is mended by hand, and is never written over).
+    log(`${entry.ticket.key}: the flakes of ${url} could not be recorded: ${messageOf(err)}`);
+    return null;
+  }
+  const note = `${record.candidates.map(({ check }) => check).join(", ")} failed on ${short(known.head)} and passed on rerun: recorded as a flake`;
+  log(`${entry.ticket.key}: ${note}`);
+  return { ...known, note, rerun: { ...record, passed: true } };
+}
+
+/** Whether a rerun's red check is still the failure that was rerun, not yet replaced on the host by the rerun's own run (A11-300): it finished before the rerun, shortly after it. PURE. */
+const stillTheRerunFailure = (known: CheckHead | undefined, read: PullFeedback, now: number): boolean =>
+  known?.rerun !== undefined && read.failedAt !== null && read.failedAt <= known.rerun.at && now - known.rerun.at < RERUN_SETTLE_MS;
+
+/**
+ * THE RERUN AFTER A "NOT MINE" (A11-300). A round for the code's red checks ended with the head where it was (the record is still the round's, at this head, and the checks are still red), and the worker's reply on the pull
+ * request says the failure is not its change's: the failed jobs are rerun once, rather than leaving the pull request red and unreviewed. A round's replies are read once. Null when no reply says so, they could not be read, or this
+ * is not the round's end; a host that refuses the rerun names the checks for a person.
+ */
+function rerunOnUnrelatedReply(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, foreign: ForeignReds): CheckHead | null {
+  const { url, read } = pull;
+  const self = ctx.ownLogin.value;
+  const asked = `${url}@${read.head}`;
+  // Without the round's start there is no telling which replies are the round's.
+  if (self === null || entry.startedAt === undefined) return null;
+  if (ctx.repliesRead.has(asked) || typeof ctx.codeHost.readReplies !== "function") return null;
+  const replies = ctx.codeHost.readReplies(url, { since: entry.startedAt, authors: [self] });
+  if (replies === null) return null;
+  ctx.repliesRead.add(asked);
+  if (!replies.some(({ text }) => saysUnrelated(text))) return null;
+  const reds = foreign(entry, url);
+  const checks = checksToAnswer(read).filter(({ name }) => !reds.names.has(name)).map((check) => readCheck(ctx, check));
+  if (checks.length === 0 || checks.some(({ detailsUrl }) => detailsUrl === null)) return null;
+  const head = read.head!;
+  const refused = rerun(ctx, checks);
+  if (refused !== null) {
+    const note = `${names(checks)} failed on ${short(head)}, and the worker's reply says the failure is not from the change, but it could not be rerun (${refused}): a person decides`;
+    log(`${entry.ticket.key}: ${note}`);
+    return { head, step: "named", note };
+  }
+  const note = `Reran ${names(checks)} on ${short(head)}: the worker's reply says the failure is not from the change`;
+  log(`${entry.ticket.key}: ${note}`);
+  return rerunRecord(head, note, "reply", ctx.now(), checks.filter(({ infrastructure }) => infrastructure === null));
+}
+
 /** What the board said on the card of a pull request it brought up to date with main (A11-215). */
 const UPDATED_NOTE = "main is green again: updated from main";
 
@@ -262,18 +371,29 @@ function updateHeld(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
 
 /**
  * What the board does about the red checks of one open pull request at its head, once for each head (A11-154): `heads` for the pull request with the answer added, and the lines
- * a round answers, if any. Checks the code failed are briefed with their log lines. Checks that failed for an infrastructure reason are rerun, once, and named on the card;
- * red again on the same head after that, they are named for a person and no worker gets them. A head with a check of each kind is a round for the code's, which names the others.
+ * a round answers, if any. Checks the code failed are rerun once (A11-300, {@link answerOwn}) and briefed with their log lines only if they are red again; a pass on that rerun is recorded as a flake ({@link recordPassOnRerun}). Checks that failed for an
+ * infrastructure reason are rerun, once, and named on the card; red again on the same head after that, they are named for a person and no worker gets them. A head with a check of each kind is a rerun and then a round for the code's, which names the others.
+ * A round that ended with the head where it was and the checks still red is answered by a rerun when the worker's reply says the failure is not its change's ({@link rerunOnUnrelatedReply}).
  * A check that is red where the run's files are not (`foreign`, A11-179) is the run's no more than an infrastructure failure is a fault in its change: it starts no round and is not rerun, and it is
  * looked at again on every watch, which is why it is the one record that does not end the answer for its head. A pull request held as red on main whose checks main now passes is brought up to date with main instead ({@link updateHeld}).
  */
 function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, foreign: ForeignReds): { lines: string[]; answer: CheckHead | null } {
   const { url, read } = pull;
   const none = { lines: [], answer: null };
-  if (read.head === null || read.failing.length === 0) return none;
+  if (read.head === null) return none;
+  const passed = recordPassOnRerun(ctx, entry, pull, known);
+  if (passed !== null) return { lines: [], answer: passed };
+  if (read.failing.length === 0) return none;
   const reran = known?.head === read.head && known.step === "rerun";
   const looked = known?.head === read.head && known.step === "not-ours";
-  if (known?.head === read.head && !reran && !looked) return none;
+  if (known?.head === read.head && !reran && !looked) {
+    // A round that ended with the head where it was and the checks still red: its worker's reply may say the failure is not the change's, which the board answers with a rerun (A11-300).
+    const answer = known.step === "round" ? rerunOnUnrelatedReply(ctx, entry, pull, foreign) : null;
+    return answer === null ? none : { lines: [], answer };
+  }
+  if (reran && stillTheRerunFailure(known, read, ctx.now())) return none;
+  // The failed jobs of a run are rerun only once the run has finished: a head not answered yet waits for its running checks, before any log is read (A11-300).
+  if (!reran && !looked && runStillGoing(read, ctx.now())) return none;
   const reds = foreign(entry, url);
   const mended = updateHeld(ctx, entry, pull, known, reds);
   if (mended !== null) return mended;
@@ -282,12 +402,33 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
   const checks = answered.filter(({ name }) => !reds.names.has(name)).map((check) => readCheck(ctx, check));
   const own = checks.filter((check) => check.infrastructure === null);
   const infrastructure = checks.filter((check) => check.infrastructure !== null);
-  if (own.length > 0) {
-    const others = outside.length > 0 ? [foreignLine(url, outside.map(({ name }) => name))] : [];
-    return { lines: [...ownLines(url, own), ...infrastructure.map((check) => infrastructureLine(url, check)), ...others], answer: { head: read.head, step: "round" } };
-  }
+  if (own.length > 0) return answerOwn(ctx, entry, pull, { own, infrastructure, outside }, reran ? known : undefined);
+  // The rerun of the code's own checks is still under way, and what is red now is neither the code's own nor an infrastructure failure: its record is kept, not replaced by a hold or an infrastructure rerun that would forget what to record if it passes (A11-300).
+  if (infrastructure.length === 0 && isUnsettledRerun(known, read.head)) return none;
   if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: notOursAnswer(ctx, entry, pull, outside, known, reds) };
-  return { lines: [], answer: answerInfrastructure(ctx, entry, { head: read.head, checks: infrastructure, reran }) };
+  return { lines: [], answer: answerInfrastructure(ctx, entry, { head: read.head, checks: infrastructure, reran: reran && known.rerun === undefined }) };
+}
+
+/**
+ * What the board does about the code's own red checks at a head (A11-300): rerun them once, before any worker is asked; a round for them when they are red again after the rerun, or the rerun could not be made; and, when the rerun
+ * was made because a worker's reply said the failure is not its change's, a person decides, since the worker has been asked once and the checks have been rerun once. The round names the infrastructure failures and the checks red elsewhere that it
+ * is not about. `reran` is the head's record when the board has rerun its checks already (an infrastructure rerun, or one of the code's own), and undefined when it has not.
+ */
+function answerOwn(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[]; outside: readonly FailingCheck[] }>, reran: CheckHead | undefined): { lines: string[]; answer: CheckHead | null } {
+  const { url, read } = pull;
+  const { own, infrastructure, outside } = checks;
+  const head = read.head!;
+  if (reran === undefined) {
+    const rerunFirst = rerunBeforeRound(ctx, entry, pull, { own, infrastructure });
+    if (rerunFirst !== null) return rerunFirst;
+  }
+  if (reran?.rerun?.for === "reply") {
+    const note = `${names(own)} failed again on ${short(head)} after a rerun the worker's reply asked for: a person decides`;
+    log(`${entry.ticket.key}: ${note}`);
+    return { lines: [], answer: { head, step: "named", note } };
+  }
+  const others = outside.length > 0 ? [foreignLine(url, outside.map(({ name }) => name))] : [];
+  return { lines: [...ownLines(url, own), ...infrastructure.map((check) => infrastructureLine(url, check)), unrelatedAdvice(url), ...others], answer: { head, step: "round" } };
 }
 
 /**
@@ -305,7 +446,7 @@ function keptRecord(known: CheckHead, read: PullFeedback): CheckHead {
 
 /**
  * Answer the red checks of a finished run's open pull requests (A11-154): each pull request whose head has checks failing that the board has not answered at that head. The pull
- * requests that are no longer open, and the heads a pull request has moved off, are dropped from the record. The effects are the rerun of an infrastructure check, and the reads of the
+ * requests that are no longer open, and the heads a pull request has moved off, are dropped from the record. The effects are the rerun of a check that is red at a head, the flakes written when a rerun passes, the reads of the replies of a round that ended with its checks red, and the reads of the
  * logs of the checks that failed; the record is returned, for the caller to write with the round it queues. `foreign` says which checks fail where the run's files are not (A11-179).
  */
 export function answerChecks(ctx: PoolContext, entry: Entry, open: readonly Readonly<{ url: string; read: PullFeedback }>[], foreign: ForeignReds = NO_FOREIGN_REDS): CheckAnswer {

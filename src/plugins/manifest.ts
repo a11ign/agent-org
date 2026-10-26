@@ -126,9 +126,9 @@ export type ListedReviewer = { label: string; status: string; paneless?: boolean
  */
 export type ReviewerGate = Readonly<{
   wake: Readonly<{
-    /** Starts the gate's reviewer in a workspace of the session `order.session` names, with `options.cwd` as its checkout: its label, workspace and profile, or the refusal. */
+    /** Starts the gate's reviewer in a workspace of the session `order.session` names, with `options.cwd` as its checkout: its label, workspace and profile, or the refusal. `options.tmpBase` is the base its private `TMPDIR` is made under (A11-303). */
     spawnReviewer(order: Readonly<{ session: string; cause?: string; causeKey?: string; trust?: ReviewTrust }>, agents: { label: string; status: string }[],
-      options: Readonly<{ run?: (args: string[]) => string; env?: Record<string, string>; cwd: string }>): Readonly<{ label: string; workspace: string; profile: Readonly<{ kind: string; model: string; effort: string }> }> | Readonly<{ refusal: string }>;
+      options: Readonly<{ run?: (args: string[]) => string; env?: Record<string, string>; cwd: string; tmpBase?: string }>): Readonly<{ label: string; workspace: string; profile: Readonly<{ kind: string; model: string; effort: string }> }> | Readonly<{ refusal: string }>;
     /** Makes (or re-points) the seat's review checkout at the pull request's head: its path and head, or the refusal. `repoRoot` is a clone the project does not declare. */
     prepareReviewCheckout(options: Readonly<{ pr: number; session: string; trust?: ReviewTrust; repoRoot?: string }>): Readonly<{ path: string; head: string }> | Readonly<{ refusal: string }>;
     /** Removes the seat's review checkout: null, or why it could not be removed. */
@@ -182,6 +182,8 @@ export type ReviewerBoard = Readonly<{
   instance: string;
   /** The head each seat's reviewer was started for, by seat label, which the pool keeps across a restart. */
   heads: Map<string, string>;
+  /** The base each session's private `TMPDIR` is made under (A11-303): a reviewer is started with `<tmpBase>/run-t-<its label>`. Absent: it is started with none, as a board that gives its sessions none does. */
+  tmpBase?: string;
   /** When each OTHER instance was last seen under the claim's context on any head (epoch ms, by instance name), which the pool keeps across a restart (A11-172): a restart within the lease still knows a second instance is there. */
   seen: Map<string, number>;
   attribution: Readonly<{

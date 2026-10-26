@@ -21,7 +21,7 @@ import type { Ticket } from "./source.ts";
  */
 export const LIST_FIELDS = [
   "ticket", "phase", "outcome", "waiting", "prompt", "declined", "trackerState", "pullStates", "queuedAt", "startedAt", "finishedAt", "workspace", "pane", "blockers", "model", "effort", "pathsFailure", "toolVersion",
-  "stoppedForUpdate", "stoppedForBlocker", "ciHold", "resume", "sessionWait", "sessionNote", "overlapOverride", "repos", "plan", "planned", "ticketChange", "ticketChanges", "learned", "review", "batch", "talkFrom",
+  "stoppedForUpdate", "stoppedForBlocker", "ciHold", "resume", "sessionWait", "sessionNote", "overlapOverride", "waitSince", "repos", "plan", "planned", "ticketChange", "ticketChanges", "learned", "review", "batch", "talkFrom",
   "blockersDeclared", "talk", "partial", "declared", "partialOverruled", "steps", "completedBy", "reopenFailure", "afterMerge", "planSteps", "plannedRepo", "projectRepo", "paths", "stepPaths", "pullFiles", "waitMerged",
   "published", "worker", "handedBack", "readopted", "lostInRestart", "working", "verdictNotPosted", "reviewerRefused", "retargets", "stackBase", "checkHeads", "queueHeads", "outcomeHeads", "outcomeBlocks", "pullHeads", "tokens",
 ] as const satisfies readonly (keyof Entry)[];

@@ -20,4 +20,5 @@ export type { PlannedStep } from "../../../src/ticket-mode/plan-step-sections.ts
 export type { RunWorker } from "../../../src/ticket-mode/queue/queue-run-detail.ts";
 export type { RunEvent, RunEventKind } from "../../../src/ticket-mode/queue/run-log.ts";
 export type { DayView, InterventionsView } from "../../../src/ticket-mode/queue/interventions.ts";
+export type { FlakesView, FlakyTest } from "../../../src/ticket-mode/flakes.ts";
 export type { TimelineEvent } from "../../../src/ticket-mode/board-view/run-timeline.ts";

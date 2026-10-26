@@ -157,3 +157,21 @@ test("A11-291: the note is a note on the run and not a hand-back: a Needs you ru
   assert.equal(shownStatus(runWith(STUCK, { mergeNote: HOUR_NOTE, published: { link: null, at: 1 }, outcome: { kind: "reviewed", prs: PRS } }), undefined), "needs-you");
   assert.equal(workStatus(runWith(STUCK, { mergeNote: HOUR_NOTE, published: { link: null, at: 1 }, outcome: { kind: "reviewed", prs: PRS } })), "published", "a run posted for a person to merge stays Published underneath");
 });
+
+const PRIVATE = { private: true, autoMerge: false, armWorkflow: false } as const;
+
+test("A11-291: the reason for a private repository is the merge bot's: its absence, else that it has not merged the pull request; a private repository with the ruleset flow is read as any other", () => {
+  assert.equal(whyNotMerging(REPO, read(), flowOf({ ...PRIVATE, mergeBot: false })), "a11ign/plugin has no merge flow: no .github/workflows/merge-bot.yml (a private repository's flow is the merge bot)");
+  assert.equal(whyNotMerging(REPO, read(), flowOf({ ...PRIVATE, mergeBot: true })), "the merge bot (.github/workflows/merge-bot.yml) has not merged it");
+  assert.equal(whyNotMerging(REPO, read(), flowOf({ private: true, mergeBot: false })), "it is not in the merge queue", "auto-merge and the arm workflow both there: the ordinary reason");
+  assert.equal(whyNotMerging(REPO, read(), flowOf({ autoMerge: false, armWorkflow: false, mergeBot: true })), "a11ign/plugin has no merge flow: auto-merge is not allowed, no .github/workflows/auto-arm.yml", "a public repository's merge bot is not its flow");
+});
+
+test("A11-291: a head that adds the merge bot to a repository with neither workflow is a first install; one that adds it where the bot or the arm workflow already is, is not", () => {
+  const bot = ".github/workflows/merge-bot.yml";
+  const adds = read({ files: ["README.md", bot] });
+  const first = (flow: ReturnType<typeof flowOf>) => "firstFlow" in markedHeads({ [PR]: APPROVED }, { [PR]: adds }, undefined, NOW, () => flow)[PR];
+  assert.equal(first(flowOf({ ...PRIVATE, mergeBot: false })), true);
+  assert.equal(first(flowOf({ ...PRIVATE, mergeBot: true })), false, "the repository has the bot already");
+  assert.equal(first(flowOf({ autoMerge: true, armWorkflow: true, mergeBot: false })), false, "the repository has the arm workflow already");
+});

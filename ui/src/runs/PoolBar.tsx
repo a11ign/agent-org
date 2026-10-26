@@ -1,8 +1,9 @@
-import type { InterventionsView, QueueView } from "../api/types.ts";
+import type { FlakesView, InterventionsView, QueueView } from "../api/types.ts";
 import { settingsSectionHref } from "../shell/routes.ts";
 import type { Pool } from "../settings/use-pool.ts";
 import { PauseIcon } from "./icons.tsx";
 import { poolOf, poolWords } from "./runs-model.ts";
+import { useFlakes } from "./use-flakes.ts";
 import { useHealth } from "./use-health.ts";
 
 /** A day of the title: its date and count, and the stand-offs the board settled with no person that day when it settled any (A11-290). */
@@ -16,6 +17,16 @@ function HealthNumber({ health }: Readonly<{ health: InterventionsView | null }>
   if (health === null) return null;
   const settled = health.days.at(-1)?.standoffs ?? 0;
   return <span className="pool-note pool-health" title={health.days.map(dayLine).join("\n")}>Person interventions today: {health.today}{settled > 0 ? `, stand-offs settled with no person: ${settled}` : ""}</span>;
+}
+
+/** The tests that need a fix (A11-300): how many flaked three times in seven days, each named with its count in the title. Nothing while the list is unread (a read that failed) and nothing while no test needs a fix; a log that is there and cannot be read is said. */
+function FlakyTests({ flakes }: Readonly<{ flakes: FlakesView | null }>) {
+  if (flakes === null) return null;
+  // An unreadable log is not an empty one: the list of flaky tests is unknown, and the note says so (A11-300).
+  if (flakes.unreadable !== undefined) return <span className="pool-note pool-flakes" title={flakes.unreadable}>Flaky tests: the flake log cannot be read</span>;
+  if (flakes.tests.length === 0) return null;
+  const { tests, limit, days } = flakes;
+  return <span className="pool-note pool-flakes" title={tests.map(({ test, count, check }) => `${test} (${check}): flaked ${count} times in ${days} days`).join("\n")}>Flaky tests needing a fix: {tests.length} (flaked {limit}+ times in {days} days)</span>;
 }
 
 /**
@@ -35,6 +46,7 @@ export function PoolBar({ queue, pool, disabled }: Readonly<{ queue: QueueView; 
   const words = poolWords(pool.paused === true ? "paused" : "started");
   const { slots, text } = poolOf(queue);
   const health = useHealth();
+  const flakes = useFlakes();
   return (
     <div className="pool-bar">
       <div className="pool-title">
@@ -50,6 +62,7 @@ export function PoolBar({ queue, pool, disabled }: Readonly<{ queue: QueueView; 
         <span className="pool-busy">{text}</span>
         <HealthNumber health={health} />
         <OrgChecks org={queue.afterMergeOrg} />
+        <FlakyTests flakes={flakes} />
       </div>
       <span className="pool-note">{words.note}</span>
       <div className="pool-spacer" />

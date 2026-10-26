@@ -7,11 +7,10 @@
 import { readFileSync } from "node:fs";
 import { type Herdr } from "./pool-herdr.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { runTmpDir } from "./run-isolation.ts";
+import { runTmpDir, TMPDIR_ENV } from "../session-tmp.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 
-/** The variable that points a process's temporary files at a directory. */
-export const TMPDIR_ENV = "TMPDIR";
+export { TMPDIR_ENV };
 
 /**
  * The variables a run's shell carries: its ticket and branch (a batch's run has no one ticket, and none), the host file `ticket:worktree` reads, and its private `TMPDIR` under `runTmpBase` (`run-isolation.ts`), when the pool

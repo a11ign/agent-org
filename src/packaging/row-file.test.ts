@@ -48,7 +48,7 @@ import { fakeRow as worldRow } from "../plugins/fakes/code-host-rows.ts";
 
 afterEach(() => forgetActivation());
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
-import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
+import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { RESOURCES } from "../project-vocabulary.ts";
 import { moduleSource } from "../lib/source-text-reads.ts";
 
