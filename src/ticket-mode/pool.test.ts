@@ -1,4 +1,5 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
+import { flakesPath, flakesView, readFlakes, recordFlakes } from "./flakes.ts";
 import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -2503,6 +2504,14 @@ async function watchRound(pool: ReturnType<typeof createPool>) {
   await roundStarted();
 }
 
+/** A red check is rerun before a worker is asked (A11-300): the first watch reruns it, and the next, which reads it red again, starts the round. */
+async function rerunThenRound(pool: ReturnType<typeof createPool>) {
+  await watchRound(pool);
+  await watchRound(pool);
+}
+/** A round's brief without the line that tells the worker how to say a failure is not its change's (A11-300). */
+const briefWithoutAdvice = (feedback: string | undefined): string => (feedback ?? "").split("\n").filter((line) => !line.startsWith("If a check above failed for a reason that is not your change")).join("\n");
+
 test("new review feedback on a run Ready to merge starts a feedback round that resumes its worker and names the feedback; its own account's does not", async () => {
   const gh = ghFor({ 1: feedbackPull({
     reviews: [{ state: "COMMENTED", submittedAt: at(300), author: { login: "worker-bot" } }, { state: "CHANGES_REQUESTED", submittedAt: at(200), author: { login: "a11ign-reviewer" } }],
@@ -2540,7 +2549,7 @@ test("a check that is red at the head commit starts a round naming it, and a run
   const gh = ghFor({ 1: feedbackPull({ checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }) });
   const { pool, entry } = await readyRun(gh);
   pool.watchFeedback();
-  assert.equal(entry("NBF-1").feedback, `typecheck failed on the head commit of ${approvedPr.url}; its log could not be read.`, "a check with no job page has no log to quote, and is named as such");
+  assert.equal(briefWithoutAdvice(entry("NBF-1").feedback), `typecheck failed on the head commit of ${approvedPr.url}; its log could not be read.`, "a check with no job page has no log to quote, and is named as such, and has no job to rerun: the round starts at once");
   const unwatched = ghFor({});
   const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched });
   other.watchFeedback();
@@ -5322,21 +5331,41 @@ test("A11-154: a red check at the current head starts one fix round for a run Re
     const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
     const ci = withCi(ghFor(pulls), { 11: TEST_FAILED });
     const ctx = await make(ci);
-    await watchRound(ctx.pool);
+    await rerunThenRound(ctx.pool);
     assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").review], ["running", 1, [approvedPr]], `${kind}: one round`);
-    assert.equal(ctx.entry("NBF-1").feedback, [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"),
+    assert.equal(briefWithoutAdvice(ctx.entry("NBF-1").feedback), [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"),
       `${kind}: the check and its error lines, without the runner's noise, its timestamps or its exit-code line`);
     assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "round" } }, `${kind}: the head is answered`);
     assert.match(readFileSync(join(ctx.dir, "brief.md"), "utf8"), /^>   AssertionError: expected 1 to equal 2$/m, `${kind}: the brief quotes the log lines`);
-    assert.deepEqual(ci.logReads, [11], `${kind}: the log is read once`);
+    assert.deepEqual([ci.logReads, ci.reruns], [[11, 11], [[jobPage(11)]]], `${kind}: the job is rerun once, and the log is read for the rerun and for the brief`);
   }
+});
+
+test("A11-300: a job that is green on rerun starts no round and is written to flakes.json in the board's state; three in seven days list the test as needing a fix", async () => {
+  const { pulls, ci, ctx } = await redRun([redCheck("test", 11)], { 11: stamped(["FAIL  src/a.test.ts > flakes sometimes", "AssertionError: expected 1 to equal 2"]) });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ci.reruns], ["finished", undefined, [[jobPage(11)]]], "reran once, no round");
+  assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.rerun?.for, "code");
+  pulls[1] = feedbackPull({ head: HEAD_1, checks: [{ ...redCheck("test", 11), conclusion: null, status: "IN_PROGRESS", isRequired: true }] });
+  await watchRound(ctx.pool);
+  assert.deepEqual(readFlakes(flakesPath(ctx.settings.stateDir)), [], "while the rerun is under way nothing is recorded");
+  pulls[1] = feedbackPull({ head: HEAD_1, checks: [{ ...redCheck("test", 11), conclusion: "SUCCESS", isRequired: true }] });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", undefined], "green on rerun: no round");
+  assert.deepEqual(readFlakes(flakesPath(ctx.settings.stateDir)).map(({ test, check, run, head, pull }) => ({ test, check, run, head, pull })),
+    [{ test: "src/a.test.ts > flakes sometimes", check: "test", run: jobPage(11), head: HEAD_1, pull: approvedPr.url }], "the test that failed, the run and the head");
+  await watchRound(ctx.pool);
+  assert.equal(readFlakes(flakesPath(ctx.settings.stateDir)).length, 1, "recorded once");
+  const more = [60, 70].map((at) => ({ test: "src/a.test.ts > flakes sometimes", check: "test", run: jobPage(100 + at), head: HEAD_2, pull: approvedPr.url, at }));
+  recordFlakes(flakesPath(ctx.settings.stateDir), more, 100);
+  assert.deepEqual(flakesView(readFlakes(flakesPath(ctx.settings.stateDir)), 1000).tests.map(({ test, count }) => [test, count]), [["src/a.test.ts > flakes sometimes", 3]], "the third flake in seven days lists the test");
 });
 
 test("A11-154: a required roll-up that failed is replaced in the round by the jobs behind it and their log lines", async () => {
   const roll = { ...redCheck("gate", 40), isRequired: true };
   const { ctx } = await redRun([roll, redCheck("suite", 41), redCheck("lint", 42)], { 40: stamped(["##[error]Process completed with exit code 1.", "a job reported 'failure', not success"]), 41: TEST_FAILED, 42: BAD_GATEWAY });
-  await watchRound(ctx.pool);
-  assert.equal(ctx.entry("NBF-1").feedback, [`suite failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2",
+  await rerunThenRound(ctx.pool);
+  assert.equal(briefWithoutAdvice(ctx.entry("NBF-1").feedback), [`suite failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2",
     `lint also failed on the head commit of ${approvedPr.url} for an infrastructure reason (GitHub answered with a server error): that is not a fault in your change, so leave it; the next push runs it again.`].join("\n"),
     "the gate names no cause: the jobs behind it are named, each by what its own log says");
   const infra = await redRun([roll, redCheck("suite", 41)], { 40: stamped(["a job reported 'failure', not success"]), 41: RUNNER_LOST });
@@ -5347,16 +5376,16 @@ test("A11-154: a required roll-up that failed is replaced in the round by the jo
 
 test("A11-154: a head that stays red after its round starts no second round, a restart starts none, and a new red head starts one more", async () => {
   const { pulls, ci, ctx } = await redRun([redCheck("test", 11)], { 11: TEST_FAILED, 12: TEST_FAILED });
-  await watchRound(ctx.pool);
+  await rerunThenRound(ctx.pool);
   assert.equal(ctx.entry("NBF-1").rounds, 1);
   await finishRound(ctx);
   await watchRound(ctx.pool);
   await watchRound(ctx.restart());
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 1], "the worker pushed nothing and the head is red still: it was answered");
-  assert.deepEqual(ci.logReads, [11], "and its log is not read again");
+  assert.deepEqual(ci.logReads, [11, 11], "and its log is not read again");
   pulls[1] = feedbackPull({ head: HEAD_2, checks: [redCheck("test", 12)] });
-  await watchRound(ctx.pool);
-  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 2], "the worker pushed a head that is red: one more round");
+  await rerunThenRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 2], "the worker pushed a head that is red: it is rerun, and red again one more round");
   assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_2, step: "round" } }, "the record follows the head");
   await finishRound(ctx);
   pulls[1] = feedbackPull({ head: HEAD_2 });
@@ -5389,14 +5418,14 @@ test("A11-154: a check whose log cannot be read is named as such, and a head wit
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("lint", 21), redCheck("typecheck", 22)] }) };
   const ci = withCi(ghFor(pulls), { 22: TEST_FAILED });
   const ctx = await readyRun(ci);
-  await captureStderr(async () => { await watchRound(ctx.pool); });
-  assert.equal(ctx.entry("NBF-1").feedback, [`lint failed on the head commit of ${approvedPr.url}; its log could not be read.`,
+  await captureStderr(async () => { await rerunThenRound(ctx.pool); });
+  assert.equal(briefWithoutAdvice(ctx.entry("NBF-1").feedback), [`lint failed on the head commit of ${approvedPr.url}; its log could not be read.`,
     `typecheck failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"));
   const long = stamped(Array.from({ length: 100 }, (_, i) => `Error: failure number ${i}`));
   const many: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_2, checks: [redCheck("a", 31), redCheck("b", 32)] }) };
   const heavy = await readyRun(withCi(ghFor(many), { 31: long, 32: long }));
-  await watchRound(heavy.pool);
-  const quoted = (heavy.entry("NBF-1").feedback ?? "").split("\n").filter((line) => line.startsWith("  "));
+  await rerunThenRound(heavy.pool);
+  const quoted = briefWithoutAdvice(heavy.entry("NBF-1").feedback).split("\n").filter((line) => line.startsWith("  "));
   assert.equal(quoted.length, 40, "forty lines in all, the last of each log");
   assert.equal(quoted.at(-1), "  Error: failure number 99");
 });
@@ -5407,7 +5436,7 @@ test("A11-154: at the round cap a red check hands any run to a person, who reads
     const ctx = await make(ci);
     ctx.store.set({ ...ctx.store.get(), entries: ctx.store.get().entries.map((e) => ({ ...e, rounds: 3 })) });
     ctx.h.calls.length = 0;
-    await watchRound(ctx.pool);
+    await rerunThenRound(ctx.pool);
     const run = ctx.entry("NBF-1");
     assert.deepEqual([run.phase, run.rounds], ["finished", 3], "no round is started");
     assert.match(run.handedBack ?? "", /The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped\. Respond to review starts another\. The latest: test failed on the head commit/);
@@ -5455,18 +5484,18 @@ test("A11-154: an infrastructure check red again on the same head after its reru
 
 test("A11-154: a head with a check the code failed and a check the infrastructure failed starts a round for the first, which names the second, and reruns nothing", async () => {
   const { ci, ctx } = await redRun([redCheck("test", 11), redCheck("install", 12)], { 11: TEST_FAILED, 12: NETWORK_DOWN });
-  await watchRound(ctx.pool);
+  await rerunThenRound(ctx.pool);
   assert.equal(ctx.entry("NBF-1").rounds, 1);
-  assert.equal(ctx.entry("NBF-1").feedback, [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2",
+  assert.equal(briefWithoutAdvice(ctx.entry("NBF-1").feedback), [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2",
     `install also failed on the head commit of ${approvedPr.url} for an infrastructure reason (a network error): that is not a fault in your change, so leave it; the next push runs it again.`].join("\n"));
-  assert.deepEqual(ci.reruns, [], "the push that fixes the first runs the second again");
+  assert.deepEqual(ci.reruns, [[jobPage(11), jobPage(12)]], "both are rerun once, before the round, as the one run's failed jobs; the round does not rerun them again, and the push that fixes the first runs the second again");
 });
 
 test("A11-154: a code host whose read of a log throws leaves the check unread, named as such, and the round still starts", async () => {
   const { ci, ctx } = await redRun([redCheck("test", 11)], { 11: TEST_FAILED });
   ci.codeHost.readCheckLog = () => { throw new Error("the code host fell over\nat somewhere"); };
-  const logged = await captureStderr(async () => { await watchRound(ctx.pool); });
-  assert.equal(ctx.entry("NBF-1").feedback, `test failed on the head commit of ${approvedPr.url}; its log could not be read.`);
+  const logged = await captureStderr(async () => { await rerunThenRound(ctx.pool); });
+  assert.equal(briefWithoutAdvice(ctx.entry("NBF-1").feedback), `test failed on the head commit of ${approvedPr.url}; its log could not be read.`);
   assert.ok(logged.some((line) => line.includes(`the log of test on ${jobPage(11)} could not be read: the code host fell over`)), logged.join("\n"));
 });
 
@@ -5556,7 +5585,7 @@ test("A11-179: a check red on the default branch starts no fix round, is not rer
   await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").rounds, ci.logReads], [undefined, [41]], "looked at again on the next watch, it is the same: nothing more is read or started");
   ci.host.seedDefaultBranch("x/nbl-ui-netbox", []);
-  await watchRound(ctx.pool);
+  await rerunThenRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").checkHeads], ["running", 1, { [approvedPr.url]: { head: HEAD_1, step: "round" } }], "main stops failing it but reports nothing passing (as a host of 1.14 does): the check is the run's, and gets its round (A11-215: with a passing report the pull request is updated from main instead)");
   assert.match(ctx.entry("NBF-1").feedback ?? "", /^refusalOwners failed on the head commit of /);
 });
@@ -5841,10 +5870,10 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
   assert.deepEqual(stacked.edits, [[approvedPr.url]], "the sweep moves the one pull request of the run");
   pulls[1] = feedbackPull({ head: HEAD_1, base: "main", checks: [redCheck("test", 11)] });
 
-  // 3. Nobody presses anything and nothing is retried by hand: the next watch starts a fix round with the failing check and its log lines.
-  await watchRound(ctx.pool);
+  // 3. Nobody presses anything and nothing is retried by hand: the next watch reruns the failing check, and the one after it, red again, starts a fix round with the failing check and its log lines.
+  await rerunThenRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1]);
-  assert.equal(ctx.entry("NBF-1").feedback, [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"));
+  assert.equal(briefWithoutAdvice(ctx.entry("NBF-1").feedback), [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"));
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /^>   AssertionError: expected 1 to equal 2$/m);
   assert.equal(ctx.h.calls.filter((args) => args.includes("start")).length, 2, "the first run and the round");
 
@@ -5854,7 +5883,7 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
   assert.equal(ctx.entry("NBF-1").outcome?.kind, "reviewed", "the round ended reviewed");
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), [HEAD_1, HEAD_2], "the reviewer reviews the new head");
-  assert.deepEqual(ci.reruns, [], "and nothing was rerun by hand");
+  assert.deepEqual(ci.reruns, [[jobPage(11)]], "and nothing was rerun by hand: the board reran the red job once, before the round (A11-300)");
 });
 
 test("a worker's brief has it capture a changed page on a machine with tickets.capture, and says nothing of capture otherwise", async () => {

@@ -1,10 +1,12 @@
 // no-token: gh -- A11-300: the board reruns a red job once before it asks a worker, records a pass on rerun as a flake, and reruns once more when a worker's reply says the failure is not its change's
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { answerChecks, failedTestOf, saysUnrelated, type ReadCheck } from "./pool-checks.ts";
+import { answerChecks, type ReadCheck } from "./pool-checks.ts";
+import { failedTestOf, saysUnrelated } from "./failure-words.ts";
 import { type Flake, flakesView } from "./flakes.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
+import type { ForeignReds } from "./pool-foreign-checks.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
 import type { CheckHead } from "./board-view/view-types-and-filters.ts";
 import type { PoolContext } from "./pool-context.ts";
@@ -95,6 +97,8 @@ test("A11-300: a job that fails while the run's other jobs are still going waits
   const running = feedback(["suite (2)"], { pendingRequired: ["suite (3)"], failedAt: NOW - MINUTE });
   const waiting = watch(running);
   assert.deepEqual([waiting.feedback, waiting.heads, host.checksAndClaims.reruns], [null, {}, []], "GitHub reruns the failed jobs of a finished run only: nothing is rerun, recorded or asked yet");
+  watch(running);
+  assert.equal(host.calls.filter((call) => call.startsWith("readCheckLog")).length, 0, "and no log is read on every watch while it waits");
   clock.at += 50 * MINUTE;
   const overdue = watch(running);
   assert.deepEqual([overdue.heads[URL_1]?.step, host.checksAndClaims.reruns.length], ["rerun", 1], "a check that never concludes does not hold the rerun for ever");
@@ -115,7 +119,7 @@ test("A11-300: the round's brief tells the worker how to say a failure is not it
   const first = watch(RED);
   clock.at += 10 * MINUTE;
   const twice = watch(feedback(["suite (2)"], { failedAt: clock.at - MINUTE }), first.record);
-  assert.match(twice.feedback ?? "", /not your change, push nothing, and reply on https:\/\/github.com\/a11ign\/agent-org\/pull\/1946 saying the failure is unrelated to your change/);
+  assert.match(twice.feedback ?? "", /not your change \(it fails without your change too\), push nothing for it, and reply on https:\/\/github.com\/a11ign\/agent-org\/pull\/1946 saying the failure is unrelated to your change/);
 });
 
 // The worker's reply (A11-300): the round ended with no push and the checks still red.
@@ -173,7 +177,7 @@ test("A11-300: a red head the worker pushed to is a new head: its red check is r
 
 test("A11-300: the words that say a failure is not the change's, and the words that do not", () => {
   const says = ["The failure is unrelated to this pull request.", "SandboxNotRemovedError is the runner's.", "Not caused by my change.", "This test is flaky.", "It is not related to my diff, so I changed nothing.", "The infrastructure failed.", "A pre-existing failure on main.", "It already fails on main."];
-  const not = ["Fixed the failing assertion.", "I pushed a fix for the sandbox.", "All checks pass locally.", "The test was related to my change, so I updated it."];
+  const not = ["This is not a flake: it fails every time.", "It is not unrelated, my change broke it.", "Fixed the failing assertion.", "I pushed a fix for the sandbox.", "All checks pass locally.", "The test was related to my change, so I updated it."];
   assert.deepEqual([says.filter((text) => !saysUnrelated(text)), not.filter(saysUnrelated)], [[], []]);
 });
 
@@ -184,4 +188,50 @@ test("A11-300: the test a failing check names is the first failing test of its l
   assert.equal(failedTestOf(read(["SandboxNotRemovedError at src/packaging/region-paths-checkout.test.ts:41"])), "src/packaging/region-paths-checkout.test.ts");
   assert.equal(failedTestOf(read(["npm error code ETARGET"], "publish")), "publish");
   assert.equal(failedTestOf(read([`FAIL  ${"x".repeat(400)}`])).length, 160);
+});
+
+// A check red elsewhere (A11-179) beside the code's own: the rerun's record is not replaced by the hold.
+const FOREIGN_JOB = "https://github.com/a11ign/agent-org/actions/runs/40382975999/job/9";
+const onMain: ForeignReds = () => ({ names: new Set(["ui"]), onMain: new Set(["ui"]), mainPassing: null, mainPending: null, mainBranch: "main" });
+
+test("A11-300: a rerun still under way keeps its record when only a check red on main is red meanwhile, so the rerun is neither made again nor forgotten", () => {
+  const { host, ctx, entry, recorded, clock } = world();
+  host.checksAndClaims.logs.set(FOREIGN_JOB, SANDBOX);
+  const both = feedback(["suite (2)", "ui"], { failures: [{ name: "suite (2)", detailsUrl: SUITE_JOB }, { name: "ui", detailsUrl: FOREIGN_JOB }] });
+  const watch = (read: PullFeedback, known?: Readonly<Record<string, CheckHead>>) => answerChecks(ctx, entry(known), [{ url: URL_1, read }], onMain);
+  const first = watch(both);
+  assert.deepEqual([first.heads[URL_1]?.step, host.checksAndClaims.reruns], ["rerun", [[SUITE_JOB]]], "the code's own check is rerun, and the one red on main is not");
+  clock.at += 10 * MINUTE;
+  const meanwhile = watch(feedback(["ui"], { failures: [{ name: "ui", detailsUrl: FOREIGN_JOB }], pendingRequired: ["suite (2)"] }), first.heads);
+  assert.deepEqual([meanwhile.heads[URL_1]?.step, meanwhile.heads[URL_1]?.rerun?.for], ["rerun", "code"], "the hold does not replace the record while the rerun runs");
+  const green = watch(feedback(["ui"], { failures: [{ name: "ui", detailsUrl: FOREIGN_JOB }] }), meanwhile.heads);
+  assert.deepEqual([recorded.length, host.checksAndClaims.reruns.length], [1, 1], "the rerun passed: the flake is recorded, and nothing was rerun again");
+  assert.deepEqual([green.heads[URL_1]?.step, green.heads[URL_1]?.rerun?.passed], ["rerun", true]);
+  const held = watch(feedback(["ui"], { failures: [{ name: "ui", detailsUrl: FOREIGN_JOB }] }), green.heads);
+  assert.equal(held.heads[URL_1]?.step, "not-ours", "and once the flake is recorded the check red on main is held as it was");
+});
+
+test("A11-300: a rerun of a worker's reply that is red again is named even with a check red on main beside it", () => {
+  const { host, ctx, entry, clock } = world();
+  host.checksAndClaims.logs.set(FOREIGN_JOB, SANDBOX);
+  reply(host, "This is unrelated to my change.");
+  const both = feedback(["suite (2)", "ui"], { failures: [{ name: "suite (2)", detailsUrl: SUITE_JOB }, { name: "ui", detailsUrl: FOREIGN_JOB }] });
+  const watch = (read: PullFeedback, known: Readonly<Record<string, CheckHead>>) => answerChecks(ctx, entry(known), [{ url: URL_1, read }], onMain);
+  const rerun = watch(both, ROUND);
+  assert.equal(rerun.heads[URL_1]?.rerun?.for, "reply");
+  clock.at += 10 * MINUTE;
+  const again = watch(feedback(["suite (2)", "ui"], { failures: both.failures, failedAt: clock.at - MINUTE }), rerun.heads);
+  assert.deepEqual([again.feedback, again.heads[URL_1]?.step, host.checksAndClaims.reruns.length], [null, "named", 1]);
+});
+
+test("A11-300: an infrastructure failure after a rerun of the code's own check is rerun once itself, and a person is named only if that is red again", () => {
+  const { host, watch, clock } = world();
+  const first = watch(RED);
+  host.checksAndClaims.logs.set(SUITE_JOB, stamped(["##[error]The hosted runner lost communication with the server.", "##[error]Process completed with exit code 143."]));
+  clock.at += 10 * MINUTE;
+  const lost = watch(feedback(["suite (2)"], { failedAt: clock.at - MINUTE }), first.record);
+  assert.deepEqual([lost.heads[URL_1]?.step, lost.feedback, host.checksAndClaims.reruns.length], ["rerun", null, 2], "its first infrastructure rerun");
+  clock.at += 10 * MINUTE;
+  const again = watch(feedback(["suite (2)"], { failedAt: clock.at - MINUTE }), lost.record);
+  assert.deepEqual([again.heads[URL_1]?.step, host.checksAndClaims.reruns.length], ["named", 2]);
 });

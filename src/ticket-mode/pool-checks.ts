@@ -6,6 +6,7 @@ import { rerunOn5xx } from "../ci-rerun-on-5xx.ts";
 import { isRollUpCheck } from "../newest-check-run.ts";
 import type { FailingCheck, PullFeedback, UpdateBranchResult } from "../plugins/contracts/code-host.ts";
 import type { Flake } from "./flakes.ts";
+import { failedTestOf, saysUnrelated } from "./failure-words.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
 import type { FlakeCandidate, RerunRecord } from "./board-view/check-rerun-record.ts";
@@ -30,9 +31,6 @@ const RERUN_WAIT_MS = 45 * 60_000;
 
 /** How long after a rerun a failure that finished before it is read as the failure that was rerun, still on the check's page, and not as the rerun failing again: GitHub's read can lag the rerun by a few seconds. */
 const RERUN_SETTLE_MS = 5 * 60_000;
-
-/** The most characters of the name of a test or step in the flake log. */
-const TEST_CHARS = 160;
 
 /**
  * A failing check with what its job's log says of it: the lines to quote, and why it is the infrastructure's and not the code's, when it is. `refusals` are the log's lines that say the check refused
@@ -179,34 +177,9 @@ function answerInfrastructure(ctx: PoolContext, entry: Entry, { head, checks, re
   return { head, step: "rerun", note };
 }
 
-/** The line of a failing test's log that names the test: a TAP `not ok N - name`, or a runner's `FAIL <file> > <name>`. */
-const FAILED_TEST_LINE = /^(?:not ok\s+\d+\s+-\s+(.+)|(?:FAIL|\u2716|\u2717|\u00d7)\s+(.+))$/;
-
-/** A test file's path in a log line. */
-const TEST_FILE = /[\w@./-]+\.(?:test|spec)\.[cm]?[jt]sx?/;
-
-/**
- * The test or step a failing check's log names (A11-300), for the flake log: the first failing test the log names, else the first test file it names, else the check itself, which is the step that failed. A test is named as the runner
- * names it, so the same test flaking twice is the same line. PURE.
- */
-export function failedTestOf(check: ReadCheck): string {
-  const named = check.lines.map((line) => FAILED_TEST_LINE.exec(line)).find((found) => found !== null);
-  const test = named?.[1] ?? named?.[2] ?? check.lines.map((line) => TEST_FILE.exec(line)?.[0]).find((file) => file !== undefined) ?? check.name;
-  return test.trim().slice(0, TEST_CHARS);
-}
-
-/**
- * The words of a worker's reply that say the failure is not its change's (A11-300): unrelated, not caused by or related to its change, a flake, the runner's, the infrastructure's, or already there. A reply that does not match is the worker's
- * word that the failure is its own, or no word at all; a reply that matches wrongly costs one rerun, which is made once.
- */
-const UNRELATED = /\bunrelated\b|\bnot (?:caused by|related to|due to|from|a fault in|my change|mine|ours)\b|\bisn'?t (?:caused by|related to|mine|ours)\b|\bflak(?:e|y|iness)\b|\brunner'?s\b|\binfrastructure\b|\bpre-?existing\b|\balready (?:fails|failing|red|broken)\b/i;
-
-/** Whether a worker's reply says the failure is not its change's. PURE. */
-export const saysUnrelated = (text: string): boolean => UNRELATED.test(text);
-
 /** The line that tells a worker what to do with a failure that is not its change's, so the board can rerun it (A11-300). PURE. */
 const unrelatedAdvice = (url: string): string =>
-  `If a check above failed for a reason that is not your change, push nothing, and reply on ${url} saying the failure is unrelated to your change and why: the board then reruns the failed jobs once, and no one else will.`;
+  `If a check above failed for a reason that is not your change (it fails without your change too), push nothing for it, and reply on ${url} saying the failure is unrelated to your change and why: the board then reruns the failed jobs once.`;
 
 /** The flake candidates of the checks a rerun is for: the test or step that failed in each, and the run it failed in. PURE. */
 const candidatesOf = (checks: readonly ReadCheck[]): FlakeCandidate[] =>
@@ -229,15 +202,13 @@ const rerunCameOutGreen = (record: RerunRecord, read: PullFeedback): boolean =>
 
 /**
  * THE RERUN BEFORE A ROUND (A11-300). The code's own red checks at a head no one has rerun at are rerun once, and a worker is asked only if they are red again. The failed jobs of a run can be rerun only once the run
- * has finished, so while the pull request has checks still running the board waits for them, for at most {@link RERUN_WAIT_MS} after the failure (null `answer`: nothing is recorded, and the next watch asks again). Null
- * when the checks are not rerun: one has no job page to rerun, or the host refused, and the round is started as it was before A11-300.
+ * has finished ({@link runStillGoing} is why `answerPull` waits). Null when the checks are not rerun: one has no job page to rerun, or the host refused, and the round is started as it was before A11-300.
  */
-function rerunBeforeRound(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[] }>): { lines: string[]; answer: CheckHead | null } | null {
+function rerunBeforeRound(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[] }>): { lines: string[]; answer: CheckHead } | null {
   const { read } = pull;
   const { own, infrastructure } = checks;
   if (own.some(({ detailsUrl }) => detailsUrl === null)) return null;
   const now = ctx.now();
-  if (runStillGoing(read, now)) return { lines: [], answer: null };
   const head = read.head!;
   const refused = rerun(ctx, [...own, ...infrastructure]);
   if (refused !== null) {
@@ -253,7 +224,7 @@ function rerunBeforeRound(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: 
  * THE PASS ON A RERUN (A11-300): the head's record is a rerun of the code's own checks, and none of them is red or running now. Each test or step that failed is written to the flake log with its run and the head, once: the
  * record that comes back says `passed`. Null when the rerun has not come out green, or the host does not say which required checks are still running, which is no evidence that none is.
  */
-function passedOnRerun(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined): CheckHead | null {
+function recordPassOnRerun(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined): CheckHead | null {
   const { url, read } = pull;
   if (!isUnsettledRerun(known, read.head) || !rerunCameOutGreen(known.rerun, read)) return null;
   const record = known.rerun;
@@ -282,8 +253,10 @@ function rerunOnUnrelatedReply(ctx: PoolContext, entry: Entry, pull: Readonly<{ 
   const { url, read } = pull;
   const self = ctx.ownLogin.value;
   const asked = `${url}@${read.head}`;
-  if (self === null || ctx.repliesRead.has(asked) || typeof ctx.codeHost.readReplies !== "function") return null;
-  const replies = ctx.codeHost.readReplies(url, { since: entry.startedAt ?? 0, authors: [self] });
+  // Without the round's start there is no telling which replies are the round's.
+  if (self === null || entry.startedAt === undefined) return null;
+  if (ctx.repliesRead.has(asked) || typeof ctx.codeHost.readReplies !== "function") return null;
+  const replies = ctx.codeHost.readReplies(url, { since: entry.startedAt, authors: [self] });
   if (replies === null) return null;
   ctx.repliesRead.add(asked);
   if (!replies.some(({ text }) => saysUnrelated(text))) return null;
@@ -374,7 +347,7 @@ function updateHeld(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
 
 /**
  * What the board does about the red checks of one open pull request at its head, once for each head (A11-154): `heads` for the pull request with the answer added, and the lines
- * a round answers, if any. Checks the code failed are rerun once (A11-300, {@link answerOwn}) and briefed with their log lines only if they are red again; a pass on that rerun is recorded as a flake ({@link passedOnRerun}). Checks that failed for an
+ * a round answers, if any. Checks the code failed are rerun once (A11-300, {@link answerOwn}) and briefed with their log lines only if they are red again; a pass on that rerun is recorded as a flake ({@link recordPassOnRerun}). Checks that failed for an
  * infrastructure reason are rerun, once, and named on the card; red again on the same head after that, they are named for a person and no worker gets them. A head with a check of each kind is a rerun and then a round for the code's, which names the others.
  * A round that ended with the head where it was and the checks still red is answered by a rerun when the worker's reply says the failure is not its change's ({@link rerunOnUnrelatedReply}).
  * A check that is red where the run's files are not (`foreign`, A11-179) is the run's no more than an infrastructure failure is a fault in its change: it starts no round and is not rerun, and it is
@@ -384,7 +357,7 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
   const { url, read } = pull;
   const none = { lines: [], answer: null };
   if (read.head === null) return none;
-  const passed = passedOnRerun(ctx, entry, pull, known);
+  const passed = recordPassOnRerun(ctx, entry, pull, known);
   if (passed !== null) return { lines: [], answer: passed };
   if (read.failing.length === 0) return none;
   const reran = known?.head === read.head && known.step === "rerun";
@@ -395,6 +368,8 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
     return answer === null ? none : { lines: [], answer };
   }
   if (reran && stillTheRerunFailure(known, read, ctx.now())) return none;
+  // The failed jobs of a run are rerun only once the run has finished: a head not answered yet waits for its running checks, before any log is read (A11-300).
+  if (!reran && !looked && runStillGoing(read, ctx.now())) return none;
   const reds = foreign(entry, url);
   const mended = updateHeld(ctx, entry, pull, known, reds);
   if (mended !== null) return mended;
@@ -403,26 +378,27 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
   const checks = answered.filter(({ name }) => !reds.names.has(name)).map((check) => readCheck(ctx, check));
   const own = checks.filter((check) => check.infrastructure === null);
   const infrastructure = checks.filter((check) => check.infrastructure !== null);
-  if (own.length > 0) return answerOwn(ctx, entry, pull, { own, infrastructure, outside }, known);
+  if (own.length > 0) return answerOwn(ctx, entry, pull, { own, infrastructure, outside }, reran ? known : undefined);
+  // The rerun of the code's own checks is still under way, and what is red now is neither the code's own nor an infrastructure failure: its record is kept, not replaced by a hold or an infrastructure rerun that would forget what to record if it passes (A11-300).
+  if (infrastructure.length === 0 && isUnsettledRerun(known, read.head)) return none;
   if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: notOursAnswer(ctx, entry, pull, outside, known, reds) };
-  return { lines: [], answer: answerInfrastructure(ctx, entry, { head: read.head, checks: infrastructure, reran }) };
+  return { lines: [], answer: answerInfrastructure(ctx, entry, { head: read.head, checks: infrastructure, reran: reran && known.rerun === undefined }) };
 }
 
 /**
  * What the board does about the code's own red checks at a head (A11-300): rerun them once, before any worker is asked; a round for them when they are red again after the rerun, or the rerun could not be made; and, when the rerun
  * was made because a worker's reply said the failure is not its change's, a person decides, since the worker has been asked once and the checks have been rerun once. The round names the infrastructure failures and the checks red elsewhere that it
- * is not about.
+ * is not about. `reran` is the head's record when the board has rerun its checks already (an infrastructure rerun, or one of the code's own), and undefined when it has not.
  */
-function answerOwn(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[]; outside: readonly FailingCheck[] }>, known: CheckHead | undefined): { lines: string[]; answer: CheckHead | null } {
+function answerOwn(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[]; outside: readonly FailingCheck[] }>, reran: CheckHead | undefined): { lines: string[]; answer: CheckHead | null } {
   const { url, read } = pull;
   const { own, infrastructure, outside } = checks;
   const head = read.head!;
-  const reran = known?.head === head && known.step === "rerun";
-  if (!reran) {
+  if (reran === undefined) {
     const rerunFirst = rerunBeforeRound(ctx, entry, pull, { own, infrastructure });
     if (rerunFirst !== null) return rerunFirst;
   }
-  if (reran && known.rerun?.for === "reply") {
+  if (reran?.rerun?.for === "reply") {
     const note = `${names(own)} failed again on ${short(head)} after a rerun the worker's reply asked for: a person decides`;
     log(`${entry.ticket.key}: ${note}`);
     return { lines: [], answer: { head, step: "named", note } };
