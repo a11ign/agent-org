@@ -24,8 +24,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { homeHostConfig } from "./host-config.ts";
+import { cloneOfDeclared } from "./declared-clone.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
+import { HOME_CHECKOUT, declaredCodeOrNone, homeProjectDeclaration } from "./project-config.ts";
 
 export const VERIFY_STATE = Object.freeze({ GREEN: "green", RED: "red", NO_VERIFY: "no-verify" });
 
@@ -117,14 +118,15 @@ export function worktreeAtHead({ checkout, head, git }: { checkout: string; head
 /**
  * The checkout whose worktrees the stamps of a scope's pull requests live in: the tick's own for the primary (`key` ""), the host's
  * declared clone for a keyed repository, and `undefined` -- never a guess -- for a key the host gives none or a host it cannot read.
- * @param {string} key @param {() => { clones?: Readonly<Record<string, string>> }} [host]
+ * A11-292: found by the key, else by the declared repository's name (`.github` for the key `github`), as {@link cloneOfDeclared} says.
+ * @param {string} key @param {() => { clones?: Readonly<Record<string, string>> }} [host] @param {() => readonly { key: string, repo: string }[]} [code]
  * @returns {string | undefined}
  */
-export function verifyCheckoutOf(key: string, host: () => { clones?: Readonly<Record<string, string>>; } = homeHostConfig): string | undefined {
+export function verifyCheckoutOf(key: string, host: () => { clones?: Readonly<Record<string, string>>; } = homeHostConfig, code: () => readonly { key: string; repo: string; }[] = declaredCodeOrNone): string | undefined {
   if (key === "") return HOME_CHECKOUT;
   try {
-    const clones = host().clones;
-    return clones !== undefined && Object.hasOwn(clones, key) ? clones[key] : undefined;
+    const found = cloneOfDeclared(host().clones, key, code());
+    return "clone" in found ? found.clone : undefined;
   } catch {
     return undefined; // an unreadable host declaration leaves the pull requests unstamped, which accuses nobody
   }

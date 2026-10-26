@@ -15,6 +15,8 @@ import type { LabelEvent } from "../claim-provenance.ts";
 import { PluginActivationRefusal } from "../plugins/code-host-slot.ts";
 import { rows } from "../plugins/rows.ts";
 import { hostConfigPath, readHostConfig } from "../host-config.ts";
+import { cloneOfDeclared } from "../declared-clone.ts";
+import { declaredCodeOrNone } from "../project-config.ts";
 import { parseWaits, conditionHolds, isItemWait, type RefFact } from "../wait-condition.ts";
 import { claimRecordOf, type RowComment, type ClaimRecord } from "../claim-record.ts";
 
@@ -305,17 +307,19 @@ export function workAtRisk(io: HostReads, { worktree, branch, repo }: { worktree
  * is never read as "no clone declared", and a clone is never defaulted to the primary's checkout, whose `origin` is the wrong repository's. The reading
  * is `host-config.ts`'s (#2991), so a relative clone is refused with the whole file, naming `clones.<key>`. MOVED HERE from `wake.ts`'s
  * `reviewCloneOf` (which now calls it), because the merged release reads the same clones and this file cannot import `wake.ts`.
- * @param {string} key @param {{ path?: string, read?: typeof readFileSync }} [from] @returns {CloneAnswer}
+ * @param {string} key @param {{ path?: string, read?: typeof readFileSync, declared?: () => readonly { key: string, repo: string }[] }} [from] @returns {CloneAnswer}
  */
-export function cloneOfKey(key: string, { path = hostConfigPath(), read = readFileSync }: { path?: string; read?: typeof readFileSync; } = {}): CloneAnswer {
+export function cloneOfKey(key: string, { path = hostConfigPath(), read = readFileSync, declared = declaredCodeOrNone }: { path?: string; read?: typeof readFileSync; declared?: () => readonly { key: string; repo: string; }[]; } = {}): CloneAnswer {
   let host: Readonly<import("../host-config.ts").HostConfig>;
   try {
     host = readHostConfig(path, read);
   } catch (err) {
     return { refusal: `${path} cannot be read as the host declaration (${String((err as any)?.message ?? err).split("\n")[0]})` };
   }
-  const clone = host.clones !== undefined && Object.hasOwn(host.clones, key) ? host.clones[key] : undefined;
-  return clone === undefined ? { refusal: `${path} declares no absolute \`clones.${key}\` path` } : { clone };
+  const found = cloneOfDeclared(host.clones, key, declared());
+  if ("clone" in found) return found;
+  const [, name] = found.tried;
+  return { refusal: `${path} declares no absolute \`clones.${key}\` path${name === undefined ? "" : ` (nor \`clones.${name}\`, the name of the declared repository)`}` };
 }
 
 /**
