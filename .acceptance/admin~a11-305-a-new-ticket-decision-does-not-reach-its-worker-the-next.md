@@ -2,7 +2,9 @@ A change to a ticket's Decisions reaches its worker. When a finished run's ticke
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/decisions-change.test.ts src/ticket-mode/pool-decisions-change.test.ts src/ticket-mode/board-view/not-merging.test.ts src/ticket-mode/board-view/not-merging-watch.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/decisions-change.test.ts src/ticket-mode/board-view/not-merging.test.ts
 ```
+
+The round the board starts, the brief the pool writes and the card are proved by `src/ticket-mode/pool-decisions-change.test.ts` and `src/ticket-mode/board-view/not-merging-watch.test.ts`, which build a pool over fakes and run in the suite job, not here.
 
 Consumer-declaration: none -- the queue file gains optional `decisions` and `decisionsPending` fields on an entry, which an older reader ignores; `decisions-round.json` is a new file beside a round's outcome file, written and read by the same version; no option is added to a project declaration.
