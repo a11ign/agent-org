@@ -49,6 +49,7 @@ import { fileHeaders, findBuild, isAssetPath, isPage, isReleaseFolder, locate, m
 import { TOOL_ROOT } from "../install/paths.ts";
 import { declaresUiBuild } from "../install/ui-asset.ts";
 import { runningToolVersion } from "../install/tool-versions.ts";
+import { fetchMissingUiBuild } from "../install/tool-install.ts";
 import { startLoopMonitor, type LoopReading } from "./loop-delay.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -228,6 +229,11 @@ export type UiDeps = Readonly<{
   uiBuilds?: readonly string[];
   /** What a request is answered with when no build is found: the Updating page of a release install, or the missing-build page of a checkout (A11-284). Absent, it follows what the running version is. */
   noBuild?: "updating" | "missing";
+  /**
+   * Fetch the running release's missing UI build, called each time the Updating page is answered (2026-10-26). Absent, a release install fetches it itself, at most once a minute, behind the update
+   * lock: the board heals within a minute of a build going missing, and does not wait for the next update timer, which a sleeping Mac does not fire.
+   */
+  healBuild?: () => void;
   /** This service's own loop delay, which its root `/api/health` answers (A11-282). Absent, the route is not served, as on a service from before it. */
   loop?: () => LoopReading;
 }>;
@@ -271,10 +277,30 @@ function sendNoBuild(response: ServerResponse, searched: readonly string[], kind
   response.end(updating ? updatingPage(runningToolVersion()) : missingBuildPage(searched));
 }
 
+/**
+ * Fetch the UI build of the release `root` names, when it has none, once per `everyMs` at most and never while an update holds the lock (that update fetches it). It runs after the current request is
+ * answered. Each attempt's outcome is a line on stderr (the ui service's log). A folder that is not a release has nothing to fetch, so it gives a function that does nothing.
+ */
+export function healBuildOf(root: string = TOOL_ROOT, { everyMs = 60_000, now = Date.now, later = setImmediate as (work: () => void) => unknown, log = (line: string) => process.stderr.write(`${line}\n`) }: {
+  everyMs?: number; now?: () => number; later?: (work: () => void) => unknown; log?: (line: string) => void;
+} = {}): () => void {
+  if (!isReleaseFolder(root)) return () => undefined;
+  let last = Number.NEGATIVE_INFINITY;
+  return () => {
+    if (now() - last < everyMs) return;
+    last = now();
+    later(() => log(`ticket:ui: ${fetchMissingUiBuild(root).line}`));
+  };
+}
+
+
 /** A paired request's `GET` or `HEAD` of a path that is not an instance call: a file of the built UI, the page that says there is no build, or a plain 404. Never a stack trace. */
-async function sendBuild(response: ServerResponse, url: URL, { candidates, noBuild }: { candidates: readonly string[]; noBuild: "updating" | "missing" }): Promise<void> {
+async function sendBuild(response: ServerResponse, url: URL, { candidates, noBuild, heal }: { candidates: readonly string[]; noBuild: "updating" | "missing"; heal?: () => void }): Promise<void> {
   const root = findBuild(candidates);
-  if (root === null) return sendNoBuild(response, candidates, noBuild);
+  if (root === null) {
+    if (noBuild === "updating") heal?.();
+    return sendNoBuild(response, candidates, noBuild);
+  }
   try {
     const located = locate(root, url.pathname);
     if (located === null) return sendNotFound(response);
@@ -328,6 +354,7 @@ function connectionsView(read: Pick<ConnectionsRead, "connections" | "refusal">)
 export function createUi(deps: UiDeps) {
   const { port, key, sessions, read, connections } = deps;
   const pairing = deps.pairing ?? createPairing();
+  const heal = deps.healBuild ?? (deps.uiBuilds === undefined ? healBuildOf() : undefined);
 
   /** A paired browser's call to a connection's instance. A script holding the board key is not passed on. */
   async function proxyConnection(request: IncomingMessage, response: ServerResponse, by: "key" | "browser", name: string, path: string): Promise<void> {
@@ -389,7 +416,7 @@ export function createUi(deps: UiDeps) {
     const readsPage = request.method === "GET" || request.method === "HEAD";
     const moved = readsPage ? movedFromNext(url.pathname, url.search) : null;
     if (moved !== null) return redirect(response, moved);
-    if (readsPage && !isCallPath(url.pathname)) return sendBuild(response, url, { candidates: deps.uiBuilds ?? servedCandidates(), noBuild: deps.noBuild ?? noBuildOf() });
+    if (readsPage && !isCallPath(url.pathname)) return sendBuild(response, url, { candidates: deps.uiBuilds ?? servedCandidates(), noBuild: deps.noBuild ?? noBuildOf(), heal });
     sendJson(response, 404, { error: `no route ${request.method} ${url.pathname}` });
   }
 

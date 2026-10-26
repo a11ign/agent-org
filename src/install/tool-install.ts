@@ -9,9 +9,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpat
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { pinnedPnpm } from "./pnpm.ts";
-import { isReleaseTag } from "../lib/release-tag.ts";
+import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { declaresUiBuild, ensureUiBuild, hasUiBuild, releasesUrl, uiBuildAttached, type UiAttached, type UiSource } from "./ui-asset.ts";
-import { currentLink, mirrorPath, versionFolder, versionsDir } from "./tool-versions.ts";
+import { currentLink, mirrorPath, versionFolder, versionNameOf, versionsDir } from "./tool-versions.ts";
 
 /** A program run as `execFileSync` runs it; a test passes one that records what it was asked to run. */
 export type Exec = (file: string, args: string[], options: object) => unknown;
@@ -83,6 +83,24 @@ function dependenciesIn(folder: string): string[] {
     return Object.keys((JSON.parse(readFileSync(join(folder, "package.json"), "utf8")) as { dependencies?: Record<string, string> }).dependencies ?? {});
   } catch {
     return [];
+  }
+}
+
+/**
+ * Fetch the UI build of the release folder `root` when it declares one and has none (2026-10-26), behind the update lock so it never races an update: what `doctor --fix` and the ui server's heal run.
+ * Returns the line to say and whether it failed. A folder that is not a release, ships no build, or has its build is left alone and says so; a lock another update holds is a failure that says so.
+ */
+export function fetchMissingUiBuild(root: string): { line: string; failed: boolean } {
+  const name = versionNameOf(root);
+  if (name === null || !isReleaseTag(name)) return { line: "not a release folder, so there is no build to fetch", failed: false };
+  if (!declaresUiBuild(root)) return { line: `${name} ships no UI build`, failed: false };
+  if (hasUiBuild(root)) return { line: `the UI build of ${name} is in place`, failed: false };
+  try {
+    const tool = dirname(dirname(root));
+    const done = withUpdateLock(tool, () => completeUiBuild({ tool, name }));
+    return done.state === "failed" ? { line: `the UI build of ${name} could not be fetched: ${done.reason}`, failed: true } : { line: done.said ?? `the UI build of ${name} is in place`, failed: false };
+  } catch (err) {
+    return { line: `the UI build of ${name} was not fetched now: ${String((err as Error).message).split("\n")[0]}`, failed: true };
   }
 }
 
@@ -196,14 +214,16 @@ export function swapCurrent(tool: string, name: string): void {
 }
 
 /**
- * Remove each version folder nothing uses (A11-169): not `current`, not the folder of the process pruning, and not one a run that still has a workspace (live or parked) names. A parked run
+ * Remove each version folder nothing uses (A11-169): not `current`, not the newest older release that holds a UI build (the board's fallback while `current` has none), not the folder of the process
+ * pruning, and not one a run that still has a workspace (live or parked) names. A parked run
  * counts as using its version, because an answer resumes it on its old settings. `inUse` is the queue's, read by the caller; a caller that could not read it prunes nothing. A leftover
  * `.partial` folder of an earlier failed build is removed too. @returns the names removed
  */
 export function pruneVersions({ tool, inUse, self }: { tool: string; inUse: readonly string[]; self: string }): string[] {
   const dir = versionsDir(tool);
   if (!existsSync(dir)) return [];
-  const keep = new Set([self, ...inUse, ...[currentVersionName(tool)].flatMap((name) => (name === null ? [] : [versionFolder(tool, name)]))].map((path) => resolve(path)));
+  const current = currentVersionName(tool);
+  const keep = new Set([self, ...inUse, ...[current, fallbackBuildOf(tool, current)].flatMap((name) => (name === null ? [] : [versionFolder(tool, name)]))].map((path) => resolve(path)));
   const removed: string[] = [];
   for (const name of readdirSync(dir)) {
     const folder = join(dir, name);
@@ -216,6 +236,16 @@ export function pruneVersions({ tool, inUse, self }: { tool: string; inUse: read
     removed.push(name);
   }
   return removed;
+}
+
+/**
+ * The release a board serves while `current` has no UI build of its own (A11-284's fallback): the newest release older than `current` whose folder holds its build. Kept by {@link pruneVersions}, so
+ * the board shows the previous build (Updating, then Back) and not an Updating page with nothing behind it. Null when `current` is not a release or no older one has a build.
+ */
+function fallbackBuildOf(tool: string, current: string | null): string | null {
+  if (current === null || !isReleaseTag(current)) return null;
+  const older = readdirSync(versionsDir(tool)).filter((name) => isReleaseTag(name) && compareReleaseTags(name, current) < 0).toSorted((a, b) => compareReleaseTags(b, a));
+  return older.find((name) => hasUiBuild(versionFolder(tool, name))) ?? null;
 }
 
 function safeRealpath(path: string): string {

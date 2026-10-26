@@ -476,7 +476,7 @@ test("A11-191: the update that finds nothing newer completes the current folder'
   const asked = server.requests().length;
   f.said.length = 0;
   update({ version: undefined, channel: "release" }, f.deps());
-  assert.deepEqual(f.said, ["agent-org is at v0.2.0: nothing newer"], "once it has its build, an update asks for nothing");
+  assert.deepEqual(f.said, ["agent-org is at v0.2.0: nothing newer", "agent-org update: the UI build of v0.2.0 is in place"], "once it has its build, an update asks for nothing, and says the build is in place");
   assert.equal(server.requests().length, asked);
 });
 

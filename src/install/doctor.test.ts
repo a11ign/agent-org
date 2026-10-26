@@ -1314,13 +1314,13 @@ test("A11-191: doctor's ui build row is ok, naming the folder / is served from, 
   assert.deepEqual(checks["ui build"], { name: "ui build", ok: true, detail: `/ is served from ${LOOKED}`, fix: null });
 });
 
-test("A11-191: a version whose release declares a UI build and has none fails, says where it looked, and the fix is `agent-org update`, which fetches it", async () => {
+test("A11-191: a version whose release declares a UI build and has none fails, says where it looked, and the fix is `agent-org doctor --fix`, which fetches it now", async () => {
   const checks = byName(await diagnose(deps({ uiBuild: uiBuildOf({}) })));
   assert.deepEqual(checks["ui build"], {
-    name: "ui build", ok: false, fix: "run `agent-org update`, which fetches it",
+    name: "ui build", ok: false, fix: "run `agent-org doctor --fix`, which fetches it now (or `agent-org update`)",
     detail: `v0.290.0 should have a UI build and none is in ${LOOKED}, so / shows the missing-build page`,
   });
-  assert.match(report(Object.values(checks)), /FAIL {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org update`, which fetches it/);
+  assert.match(report(Object.values(checks)), /FAIL {2}ui build: v0\.290\.0 should have a UI build and none is in .*\n {6}fix: run `agent-org doctor --fix`, which fetches it now \(or `agent-org update`\)/);
 });
 
 test("A11-191: a checkout's fix is to build it, and the main channel's is to move to a release, which has a build to fetch", async () => {
