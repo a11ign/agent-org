@@ -142,7 +142,7 @@ export function plannedFrom(line: string, fields: CheckFields, spilled: Readonly
   const named = [...fields.entries()].find(([, text]) => CHAIRMAN_SESSION.test(text));
   if (named !== undefined) return `"${line}" names the chairman's session in its ${named[0]}, which runs no check: the org verifies its own work, so give the line the runner \`board\` or \`agent\``;
   const runner = value("runner") ?? "";
-  if (runner.toLowerCase() === "session") return `"${line}" has the runner "session", which is no runner: the person's session runs no check. Use \`board\` (with \`Observe:\`) for what the board can see, \`agent\` for a verifier run after release, or \`person\` with an \`Escalation:\` item`;
+  if (runner.toLowerCase() === "session") return `"${line}" has the runner "${runner}", which is no runner: the person's session runs no check. Use \`board\` (with \`Observe:\`) for what the board can see, \`agent\` for a verifier run after release, or \`person\` with an \`Escalation:\` item`;
   if (!RUNNERS.includes(runner)) return `"${line}" has the runner "${runner}", which is not \`board\`, \`agent\` or \`person\``;
   const escalation = value("escalation");
   if (escalation !== undefined && !ESCALATION_IDS.includes(escalation)) return `"${line}" names the escalation item "${escalation}", which is not on the list (${ESCALATION_IDS.join(", ")})`;

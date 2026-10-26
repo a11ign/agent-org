@@ -48,9 +48,11 @@ test("A11-257: the rule tells a run that failed, with no question open, to say w
   assert.match(ESCALATION_RULE, /A run that cannot go on because something failed, such as a skill that is missing or a check that never starts, has no question to decide: it says what failed in its `needs-human` reason, and the board shows that stop as "Off the escalation list:"/);
 });
 
-test("A11-277: the rule tells a run that an After-merge check the person's session runs is no stop, and names the session's queue and the route that closes it", () => {
-  assert.match(ESCALATION_RULE, /An After-merge check that the person's session runs is not a stop either: the board sends it to the session's queue \(`GET \/api\/session-asks`/);
-  assert.ok(ESCALATION_RULE.includes("`POST /api/after-merge/<KEY>/<n>`"));
+test("A11-302: the rule tells a run that an After-merge check is the org's, no stop and never the person's session, and names the route a verifier run closes it on", () => {
+  assert.match(ESCALATION_RULE, /An After-merge check is not a stop either: the org verifies its own work\. A `board` check is watched by the board, and an `agent` check is run by a verifier run the board starts once the change is in a release installed on the host/);
+  assert.ok(ESCALATION_RULE.includes("`POST /api/after-merge/<KEY>/<n>` with `{ \"result\": \"passed\" | \"failed\" | \"superseded\", \"evidence\": \"<one line>\", \"by\": \"agent\" }`"));
+  assert.match(ESCALATION_RULE, /The person's session runs none of them, and a `person` check is only for an item of the list above\./);
+  assert.ok(!ESCALATION_RULE.includes("the board sends it to the session's queue"), "the old sentence is gone: no check is sent to the session");
   assert.ok(!/chairman/i.test(ESCALATION_RULE), "the rule names no organisation's own people: agent-org is public");
 });
 
@@ -60,7 +62,7 @@ test("A11-275: the rule tells a run that an ask only the person's session can do
   assert.ok(ESCALATION_RULE.includes("`GET /api/session-asks`, as `kind: \"waiting-run\"`"));
   assert.ok(ESCALATION_RULE.includes("`POST /api/session-asks/<KEY>/answer`"));
   assert.ok(ESCALATION_RULE.includes("declare it again with a new `until`; never stop on it"));
-  assert.ok(ESCALATION_RULE.includes("An After-merge check that the person's session runs is not a stop either"), "the first sentence stays beside it");
+  assert.ok(ESCALATION_RULE.includes("An After-merge check is not a stop either"), "the first sentence stays beside it");
   assert.ok(offListRefusal("a needs-human outcome that names no item").includes(ESCALATION_RULE), "a stop that names no item is refused with those words");
 });
 

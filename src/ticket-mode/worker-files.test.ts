@@ -6,7 +6,7 @@ import { MOVE_RULE } from "./after-merge-move.ts";
 import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
 import { BLOCKED_BY_RULE } from "./plan-blockers.ts";
 import { outcomeExamples } from "./outcome.ts";
-import type { WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
+import type { TicketWriterMode, WriterForm } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 import { ticketReadOf } from "./ticket-read.ts";
@@ -678,7 +678,7 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
 
 const WRITER = { run: "Run the a11ign:create-ticket skill for this request: {request}.", clones: { "nbl-ui-netbox": "/r/netbox" } };
 /** The brief a run of `mode` is given, for the request "x" with nothing else chosen and the team `A11` on the Pick view. */
-const briefIn = (mode: WriterMode, pickTeam: string | null = "A11") => writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode, placement: "auto", form: {}, dir: "/d", pickTeam });
+const briefIn = (mode: TicketWriterMode, pickTeam: string | null = "A11") => writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode, placement: "auto", form: {}, dir: "/d", pickTeam });
 /** Each pattern is in the text: a brief is checked as one list of what it must say. */
 const says = (text: string, patterns: readonly RegExp[]): void => {
   for (const pattern of patterns) assert.match(text, pattern);

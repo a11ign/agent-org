@@ -335,8 +335,9 @@ const holds = (text: string, match: string | undefined): boolean => match === un
 /** The events of the run log of the kind the spec names, each as a sighting. PURE. */
 function runLogSightings({ event, match }: Extract<WindowedSpec, { kind: "run-log" }>, facts: ObserveFacts): Sighting[] {
   return Object.entries(facts.queue.runLog ?? {}).flatMap(([key, events]) => events.flatMap((each) => {
-    const text = Object.values(each).filter((value) => typeof value === "string").join(" ");
-    return each.kind === event && holds(text, match) ? [{ id: `${key}@${each.at}:${each.kind}`, at: each.at, text: `${key}: ${each.kind} ${text.slice(each.kind.length).trim()}`.trim() }] : [];
+    if (each.kind !== event) return [];
+    const words = Object.entries(each).filter(([name, value]) => name !== "kind" && typeof value === "string").map(([, value]) => value as string).join(" ");
+    return holds(words, match) ? [{ id: `${key}@${each.at}:${each.kind}`, at: each.at, text: `${key}: ${each.kind}${words === "" ? "" : ` ${words}`}` }] : [];
   }));
 }
 

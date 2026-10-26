@@ -81,8 +81,14 @@ const answered = (_file: ChecksFile, run: WriterRun, entries: readonly Migration
 
 // --- QUEUEING ---
 
-/** A run id no other run holds: `c`, the time and a counter. */
-const runIdOf = (now: number, counter: number): string => `c${now.toString(36)}${counter}`;
+/** A run id no other run on the board holds: the prefix, the time and the first counter that is free. */
+function freshId(ctx: PoolContext, prefix: string): string {
+  const taken = new Set((ctx.store.get().writers ?? []).map(({ id }) => id));
+  for (let counter = 0; ; counter += 1) {
+    const id = `${prefix}${ctx.now().toString(36)}${counter}`;
+    if (!taken.has(id)) return id;
+  }
+}
 
 /** The unfinished check runs of the queue. */
 const unfinishedCheckRuns = (ctx: PoolContext): WriterRun[] => (ctx.store.get().writers ?? []).filter((run) => isCheckRun(run.mode) && run.phase !== "finished");
@@ -116,7 +122,6 @@ const withVerifier = (file: ChecksFile, id: string, verifier: CheckRecord["verif
 export function queueCheckRuns(ctx: PoolContext, installed: (check: CheckRecord) => boolean): void {
   const path = afterMergeChecksPath(ctx.settings.stateDir);
   const { now } = ctx;
-  let counter = 0;
   const live = (id: string): boolean => unfinishedCheckRuns(ctx).some((run) => run.id === id);
   // A verifier run that ended with no result: another try, or the end of the tries.
   const unsettled = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && check.verifier?.run != null && !live(check.verifier.run));
@@ -132,7 +137,7 @@ export function queueCheckRuns(ctx: PoolContext, installed: (check: CheckRecord)
   const waiting = stale.filter((check) => !inFlight.has(check.id) && (check.migrating?.tries ?? 0) < MAX_RUN_TRIES);
   for (let from = 0; from < waiting.length && unfinishedCheckRuns(ctx).length < MAX_BOARD_CHECK_RUNS; from += MIGRATION_BATCH) {
     const batch = waiting.slice(from, from + MIGRATION_BATCH).map(({ id }) => id);
-    const id = runIdOf(now(), counter++);
+    const id = freshId(ctx, "c");
     if (queueRun(ctx, { id, request: migrationRequest(batch), mode: "migrate", checks: batch })) {
       changeChecks(path, (file) => ({ checks: { ...file.checks, ...Object.fromEntries(batch.flatMap((each) => (file.checks[each] === undefined ? [] : [[each, { ...file.checks[each], migrating: { tries: (file.checks[each].migrating?.tries ?? 0) + 1 } }]]))) } }));
     }
@@ -141,7 +146,7 @@ export function queueCheckRuns(ctx: PoolContext, installed: (check: CheckRecord)
   const ready = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && !isUnmigrated(check) && (check.verifier?.run ?? null) === null && installed(check));
   for (const check of ready) {
     if (unfinishedCheckRuns(ctx).length >= MAX_BOARD_CHECK_RUNS) break;
-    const id = runIdOf(now(), counter++);
+    const id = freshId(ctx, "c");
     if (queueRun(ctx, { id, request: verifierRequest(check), mode: "verify", checks: [check.id] })) changeChecks(path, (file) => withVerifier(file, check.id, { run: id, tries: (check.verifier?.tries ?? 0) + 1 }));
   }
 }
@@ -160,14 +165,13 @@ export function fileFollowUps(ctx: PoolContext, said: Set<string>): void {
   const path = afterMergeChecksPath(ctx.settings.stateDir);
   const { settings, now } = ctx;
   const failed = Object.values(loadChecks(path).checks).filter((check) => check.state === "failed" && check.followUp === undefined && check.closedBy !== "person" && check.runner !== "person");
-  let counter = 0;
   for (const check of failed) {
     if (settings.writer === null) {
       if (!said.has(check.id)) log(`${check.key}: its After-merge check ${check.id} failed, and this machine names no tickets.writer to file its follow-up`);
       said.add(check.id);
       continue;
     }
-    const id = `f${now().toString(36)}${counter++}`;
+    const id = freshId(ctx, "f");
     try {
       update(ctx, (queue) => queueWriter(queue, { id, request: followUpText(check), mode: "quick", placement: "auto", form: {}, model: settings.writer!.model, effort: settings.writer!.effort }, now()));
     } catch (err) {
