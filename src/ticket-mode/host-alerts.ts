@@ -54,12 +54,12 @@ export function softLockupInJournal(program = "journalctl"): Promise<number | un
   });
 }
 
-/** The first sentence of what the hang settings differ in, from the hang findings of host-kernel.ts; `undefined` when they match (or cannot be read: a read that was refused is not a difference). */
+/** What the hang settings differ in, as the hang findings of hang-settings.ts word it (with the root command that fixes it); `undefined` when they match or cannot be read: a read that was refused is not a difference. */
 function hangDifference(): string | undefined {
   return hangConfFindings(realHostReads).find(({ problem }) => problem === "HANG SETTINGS DIFFER")?.detail;
 }
 
-/** The machine's reads: `/tmp`'s entries (one `readdir`, as `prune-tmp.ts` counts them), this boot's kernel log, and the hang settings against the text host-kernel.ts holds. */
+/** The machine's reads: `/tmp`'s entries (one `readdir`, as `prune-tmp.ts` counts them), this boot's kernel log, and the hang settings against the text hang-settings.ts holds. */
 export function liveHostAlertReads(): HostAlertReads {
   return { tmpEntries: async () => (await readdir("/tmp")).length, softLockupAt: () => softLockupInJournal(), hangSettings: hangDifference };
 }
@@ -93,13 +93,13 @@ function readingConditions(reading: HostReading): readonly Condition[] {
 function settle(ctx: PoolContext): void {
   const { hostAlerts: state } = ctx;
   const conditions = [...readingConditions(state.reading), ...serveConditions(ctx)];
-  const alerts = conditions.map(({ id, sentence, at }): HostAlert => {
-    const since = at ?? state.since.get(id) ?? ctx.now();
+  const began = state.since;
+  state.since = new Map();
+  state.alerts = conditions.map(({ id, sentence, at }): HostAlert => {
+    const since = at ?? began.get(id) ?? ctx.now();
     state.since.set(id, since);
     return { id, sentence, since };
   });
-  for (const id of state.since.keys()) if (!alerts.some((alert) => alert.id === id)) state.since.delete(id);
-  state.alerts = alerts;
 }
 
 /** Ask one read, and keep `previous` when it fails, saying so once. */
