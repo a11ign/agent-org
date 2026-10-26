@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { WORKER_NOTES } from "../../install/house-notes.ts";
 import type { Ticket } from "../source.ts";
 import { briefText, reviewBriefText } from "../worker-files.ts";
-import { heldText, PUSH_ONCE_RULE } from "./rules.ts";
+import { CHECK_CHANGED_RULE, heldText, PUSH_ONCE_RULE } from "./rules.ts";
 
 const ticket = { key: "A11-1", title: "t", description: "d", url: "https://linear.app/x/issue/A11-1", branch: "a11-1-t", status: "Backlog", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null } as Ticket;
 
@@ -52,4 +52,22 @@ test("A11-261: a review round the board held for its CI spend says so before the
   assert.ok(held.includes(`## The board held this run\n\n${REASON}.`));
   assert.ok(held.indexOf("The board held this run") < held.indexOf("## The ticket"));
   assert.equal(round().includes("The board held this run"), false);
+});
+
+test("A11-307: the rule says to run check:changed while working, the full test and lint only on a fallback, and that CI is still the gate", () => {
+  for (const part of ["`npm run check:changed`", "while you work and before you push", "at any depth", "it prints what it ran and why", "The full `npm test` and `npm run lint` are for a fallback", "FALLBACK", "CI still runs every suite on every push and is the gate"]) {
+    assert.ok(CHECK_CHANGED_RULE.includes(part), `the rule says ${part}`);
+  }
+});
+
+test("A11-307: every worker's brief carries the rule in step 3, beside the push rule, with drafts on or off", () => {
+  for (const drafts of [true, false]) {
+    const brief = briefWith(drafts);
+    const step = brief.indexOf("3. Work, commit and push only inside those worktrees.");
+    assert.ok(step >= 0 && brief.indexOf(CHECK_CHANGED_RULE) > step && brief.indexOf(CHECK_CHANGED_RULE) < brief.indexOf("## What to do"), `drafts ${drafts}`);
+  }
+});
+
+test("A11-307: the shipped worker house notes carry the rule", () => {
+  assert.ok(WORKER_NOTES.includes(CHECK_CHANGED_RULE));
 });

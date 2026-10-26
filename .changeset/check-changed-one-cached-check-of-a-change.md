@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`npm run check:changed` checks a change in one command (A11-307): ESLint with `--cache` on the files changed since the merge base, `tsc --noEmit` over the whole program incrementally, and the tests that cover the change, which are every test file that imports a changed file directly or through the import graph, names its path, or is itself changed. It prints what it ran and why. A change to a shared fixture, `scripts/rstest/*`, the runner's setup files, `package.json`, the lockfile or a config falls back to the whole suite and the whole lint. The lint cache lives in `node_modules/.cache/eslint/<key>`, and the key is a hash of `eslint.config.ts`, the lockfile and the installed version of every ESLint package, so a change to any of them drops it; `npm run lint` uses the same cache, and `npm run typecheck` is incremental (`node_modules/.cache/tsc`). The worker brief and the shipped house notes tell workers to run it while they work and the full `npm test` and `npm run lint` only on a fallback. CI's jobs are unchanged.
