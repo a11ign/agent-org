@@ -350,7 +350,7 @@ export interface CodeHost extends CodeHostPort {
    */
   stackMergeFactsOf?(url: string): StackMergeFacts | null;
   /**
-   * Asks the arm bot to merge the pull request (contract 1.16): the board never merges itself, so this starts the arm bot's own job, which re-reads everything with its own identity and trusts nothing the request says. THROWS, with the host's own first line, when the request is refused.
+   * Asks the arm bot to merge the pull request (contract 1.16): the board never merges itself, so this starts the arm bot's own job, which re-reads everything with its own identity and trusts nothing the request says. THROWS, with the host's own first line, when the request is refused. It is also how the board puts a pull request back in the merge queue after a removal that was not the change's (A11-295): the job arms a plain pull request with auto-merge, and does nothing for one that is not approved or is held.
    */
   requestStackMerge?(request: StackMergeRequest): void;
   /**
