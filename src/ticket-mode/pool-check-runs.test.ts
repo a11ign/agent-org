@@ -54,6 +54,13 @@ async function startVerifier(board: ReturnType<typeof world>): Promise<string> {
   return board.writers()[0].id;
 }
 
+/** A sweep and a tick on a world with several installed agent checks: the runs the board started for them. */
+async function startedRuns(board: ReturnType<typeof world>) {
+  await board.sweep();
+  await board.tick();
+  return board.writers();
+}
+
 const MERGED_AT = 10 * HOUR - 2 * HOUR;
 const mergedOther = (key: string): Record<string, readonly RunEvent[]> => ({ [key]: [{ kind: "merged", url: "https://github.com/a11ign/control/pull/9", at: MERGED_AT }] });
 
@@ -134,9 +141,7 @@ test("A11-302: a verifier run that ends with no usable result is tried again, an
 
 test("A11-302: a verifier run over its limit is ended, and a superseded result closes the check superseded with the reason", async () => {
   const board = world([check("A11-310#1"), check("A11-312#1")], { merged: { ...mergedOther("A11-310"), ...mergedOther("A11-312") } });
-  await board.sweep();
-  await board.tick();
-  const [first, second] = board.writers();
+  const [first, second] = await startedRuns(board);
   await board.answers(first.id, { kind: "superseded", evidence: "that machine is no longer in use" });
   assert.deepEqual([board.checks()["A11-310#1"].state, board.checks()["A11-310#1"].result], ["superseded", "that machine is no longer in use"]);
   board.clock.at += 31 * 60_000;
@@ -214,4 +219,16 @@ test("A11-302: a migration pass is given at most ten checks, and its entries are
   const [pass] = board.writers();
   await board.answers(pass.id, { kind: "migrated", checks: [{ id: "A11-400#1", runner: "session", evidence: "x" }] });
   assert.match(board.run(pass.id).failure ?? "", /has the runner "session", which is no runner/, "the pass cannot put a check back on the session");
+});
+
+test("A11-302: a finished check run is dismissed from the queue a day after it ended, unless an open check still reads its ending from it", async () => {
+  const board = world([check("A11-310#1"), check("A11-311#1")], { merged: { ...mergedOther("A11-310"), ...mergedOther("A11-311") } });
+  const [first, second] = await startedRuns(board);
+  await board.answers(first.id, { kind: "passed", evidence: "seen" });
+  board.clock.at += 23 * HOUR;
+  await board.sweep();
+  assert.equal(board.writers().length, 2, "kept for a day");
+  board.clock.at += 2 * HOUR;
+  await board.sweep();
+  assert.deepEqual(board.writers().map(({ id }) => id), [second.id], "the finished run is dismissed; the one still running is not");
 });

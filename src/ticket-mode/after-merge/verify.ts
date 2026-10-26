@@ -7,8 +7,9 @@
 //
 // THE MIGRATION IS A PASS, NOT A SWEEP OF GUESSES. On release 47 checks stood open, 41 of them on "Chairman session". A one-time planner pass (a run of the same kind) re-reads each one and rewrites it as a `board` or an `agent` check, or marks it
 // superseded with a reason (a machine is frozen or no longer in use, the cutover plainly happened). A check the pass did not answer is given to an agent, so none is left on a runner that no longer exists.
-import { closeCheck, evidenceRefusal, isUnmigrated, type CheckRecord, type ChecksFile, type PlannedCheck, type RecordedRunner } from "./checks.ts";
+import { closeCheck, evidenceRefusal, isUnmigrated, type CheckRecord, type ChecksFile, type PlannedCheck } from "./checks.ts";
 import { plannedFrom, PLANNED_EVIDENCE_CHARS, AFTER_MERGE_CHECKS_HEADING } from "./plan-section.ts";
+import { ESCALATION_IDS } from "../escalation.ts";
 import { OBSERVE_FORMS } from "./observe.ts";
 
 /** The model and effort a verifier run, and the migration pass, run on: a short, bounded job. */
@@ -139,14 +140,11 @@ export function migrationOf(outcome: Readonly<Record<string, unknown>>): Migrati
   return entries;
 }
 
-/** What the record was before the migration read it: the retired session runner, or a person's check that names no item of the escalation list. */
-const wasRunner = (check: CheckRecord): RecordedRunner => check.runner;
-
 /** The check rewritten as the pass says: its new runner, escalation item, watch (begun at `now`) and evidence, with what it was recorded as. Whatever the old runner had sent or marked overdue is cleared. PURE. */
 function rewritten(check: CheckRecord, planned: PlannedCheck, now: number): CheckRecord {
   const { sentAt: _sent, overdueAt: _overdue, handedOff: _handed, observe: _watch, escalation: _item, ...kept } = check;
   return { ...kept, runner: planned.runner, ...(planned.escalation === undefined ? {} : { escalation: planned.escalation }), ...(planned.observe === undefined ? {} : { observe: { spec: planned.observe, from: now } }),
-    evidence: planned.evidence, migrated: { from: wasRunner(check), at: now } };
+    evidence: planned.evidence, migrated: { from: check.runner, at: now } };
 }
 
 /** The file with each answered check of the pass rewritten or closed superseded (by the board, with the pass's reason). A check already closed, or already migrated, stays as it was. PURE. */
@@ -155,7 +153,7 @@ export function applyMigration(file: ChecksFile, entries: readonly MigrationEntr
     const check = next.checks[entry.id];
     if (check === undefined || !isUnmigrated(check)) return next;
     if ("superseded" in entry) {
-      const closed = closeCheck({ checks: { ...next.checks, [entry.id]: { ...check, migrated: { from: wasRunner(check), at: now } } } }, entry.id, { result: "superseded", evidence: entry.superseded, by: "board" }, now);
+      const closed = closeCheck({ checks: { ...next.checks, [entry.id]: { ...check, migrated: { from: check.runner, at: now } } } }, entry.id, { result: "superseded", evidence: entry.superseded, by: "board" }, now);
       return closed.ok ? closed.file : next;
     }
     return { checks: { ...next.checks, [entry.id]: rewritten(check, entry.planned, now) } };
@@ -186,7 +184,7 @@ ${listed}
 
 - **\`board\`**, for a check the board can watch itself. It needs \`observe\` (one of ${OBSERVE_FORMS.map((form) => `\`${form}\``).join(", ")}), and for the windowed ones \`pass\` (\`absent\` or \`present\`) and \`window\` (\`30m\`, \`6h\`, \`7d\`). A week-long check ("for a week, no X happens") is \`board\` with \`pass: "absent"\` and \`window: "7d"\`: it passes when the window closes clean and fails on the first breach.
 - **\`agent\`**, for a check a short verifier run can do on the host once the change is installed: it reads the line and your \`evidence\`, does what it says, and records passed or failed. Make \`evidence\` say what to do and what to quote.
-- **\`person\`**, only for something only a person may do, with \`escalation\` set to an id of the escalation list (${["outward", "access", "discard", "frozen", "legal", "reserved", "contradicts"].join(", ")}). Name, licence and a message to an outside organisation are the person's; a check the person would merely run is an \`agent\` check.
+- **\`person\`**, only for something only a person may do, with \`escalation\` set to an id of the escalation list (${ESCALATION_IDS.join(", ")}). Name, licence and a message to an outside organisation are the person's; a check the person would merely run is an \`agent\` check.
 - **\`superseded\`**, with a \`reason\`, when the check no longer applies: a machine is frozen by policy or no longer in use, the cutover plainly happened, the thing was replaced. Read the ticket and the code before you say so; do not supersede a check only because it is old.
 
 Look at the ticket each check belongs to, in the tracker (read only), and at the repositories on this machine. Change nothing.

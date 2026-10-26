@@ -15,9 +15,8 @@ import { type PoolContext } from "./pool-context.ts";
 import { forgetRun, log, messageOf, update, writerAgentRunning, writerPlace } from "./pool-state.ts";
 import { endWriter } from "./pool-board-runs.ts";
 import { parseWriterOutcome } from "./writer.ts";
-import { queueWriter, writerEnded } from "./queue.ts";
+import { dismissWriter, queueWriter, writerEnded } from "./queue.ts";
 import type { WriterRun } from "./queue/queue-entries-and-outcomes.ts";
-import type { RunPlace } from "./pool-paths.ts";
 
 /** The brief of a check run, read from the checks as they stand when it starts. THROWS when the checks it is for are gone or already settled, which fails the run with that reason. */
 export function checkRunBrief(ctx: PoolContext, run: WriterRun, dir: string): string {
@@ -51,7 +50,7 @@ function closeCheckRun(ctx: PoolContext, run: WriterRun): void {
  * A check run's outcome, read once its agent is idle (A11-302). A verifier run's `passed`, `failed` or `superseded` closes its check; a migration pass's answers rewrite the checks it was given (`applyMigration`). An outcome the contract
  * refuses, or a run that could not decide (`needs-human`), ends the run failed with that reason: the sweep then tries the check again, or settles it without the run.
  */
-export async function finishCheckRun(ctx: PoolContext, run: WriterRun, _place: RunPlace, text: string): Promise<void> {
+export async function finishCheckRun(ctx: PoolContext, run: WriterRun, text: string): Promise<void> {
   const { finishing, now, settings } = ctx;
   finishing.add(run.id);
   try {
@@ -63,7 +62,7 @@ export async function finishCheckRun(ctx: PoolContext, run: WriterRun, _place: R
       const [id] = run.checks ?? [];
       if (id !== undefined) closeVerified(ctx, id, outcome.verdict);
     } else if (outcome.kind === "migrated") {
-      changeChecks(afterMergeChecksPath(settings.stateDir), (file) => applyMigration(file, answered(file, run, outcome.entries), now()));
+      changeChecks(afterMergeChecksPath(settings.stateDir), (file) => applyMigration(file, answered(run, outcome.entries), now()));
     } else {
       return endWriter(ctx, run, `it wrote ${outcome.kind}, which a check run cannot end on`);
     }
@@ -77,7 +76,7 @@ export async function finishCheckRun(ctx: PoolContext, run: WriterRun, _place: R
 }
 
 /** The entries of a migration pass that answer a check the pass was given: an entry for any other check is ignored, so a pass cannot rewrite what it was not asked. PURE. */
-const answered = (_file: ChecksFile, run: WriterRun, entries: readonly MigrationEntry[]): MigrationEntry[] => entries.filter(({ id }) => run.checks?.includes(id) === true);
+const answered = (run: WriterRun, entries: readonly MigrationEntry[]): MigrationEntry[] => entries.filter(({ id }) => run.checks?.includes(id) === true);
 
 // --- QUEUEING ---
 
@@ -110,45 +109,66 @@ function endedWith(ctx: PoolContext, check: CheckRecord): string {
   return run?.failure ?? (run === undefined ? "its run is no longer on the board" : "it wrote no result");
 }
 
-/** The file with the verifier run of `check` recorded as `run` (queued, one try more), or released (`null`) when its run ended with no result and the check may be given to another. PURE. */
+/** The file with the verifier of check `id` recorded as `verifier`: the run queued for it and the tries so far, or no run (`run: null`) once the one it had ended with no result, so another may be given the check. PURE. */
 const withVerifier = (file: ChecksFile, id: string, verifier: CheckRecord["verifier"]): ChecksFile =>
   ({ checks: { ...file.checks, [id]: { ...file.checks[id], verifier } } });
 
-/**
- * One pass over the checks the board runs by agents (A11-302). `installed` says whether a check's change is in a release installed on this host: an `agent` check is given to a verifier run only then. A check whose run ended with no result is
- * given to another, and after {@link MAX_RUN_TRIES} runs is closed failed, saying how the last ended, which files a follow-up like any failure. The checks still on the retired session runner are given to a migration pass, {@link MIGRATION_BATCH}
- * at a time, and after {@link MAX_RUN_TRIES} passes are given to an agent. At most {@link MAX_BOARD_CHECK_RUNS} check runs are unfinished at once.
- */
-export function queueCheckRuns(ctx: PoolContext, installed: (check: CheckRecord) => boolean): void {
-  const path = afterMergeChecksPath(ctx.settings.stateDir);
-  const { now } = ctx;
+/** A verifier run that ended with no result: the check is given to another run, and after {@link MAX_RUN_TRIES} runs it is closed failed, saying how the last ended. */
+function settleEndedVerifiers(ctx: PoolContext, path: string): void {
   const live = (id: string): boolean => unfinishedCheckRuns(ctx).some((run) => run.id === id);
-  // A verifier run that ended with no result: another try, or the end of the tries.
-  const unsettled = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && check.verifier?.run != null && !live(check.verifier.run));
-  for (const check of unsettled) {
+  const ended = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && check.verifier?.run != null && !live(check.verifier.run));
+  for (const check of ended) {
     if ((check.verifier?.tries ?? 0) < MAX_RUN_TRIES) changeChecks(path, (file) => withVerifier(file, check.id, { run: null, tries: check.verifier?.tries ?? 0 }));
-    else changeChecks(path, (file) => closeResult(file, check, endedWith(ctx, check), now()));
+    else changeChecks(path, (file) => closeResult(file, check, endedWith(ctx, check), ctx.now()));
   }
-  // The checks still on the retired runner: the pass that re-reads them, or an agent once the passes are spent.
+}
+
+/** The checks still on the retired runner: the migration pass that re-reads them, {@link MIGRATION_BATCH} at a time, or an agent once {@link MAX_RUN_TRIES} passes are spent. */
+function queueMigration(ctx: PoolContext, path: string): void {
   const stale = unmigratedChecks(loadChecks(path));
   const inFlight = new Set(unfinishedCheckRuns(ctx).filter((run) => run.mode === "migrate").flatMap((run) => run.checks ?? []));
-  const spent = stale.filter((check) => !inFlight.has(check.id) && (check.migrating?.tries ?? 0) >= MAX_RUN_TRIES).map(({ id }) => id);
-  if (spent.length > 0) changeChecks(path, (file) => giveToAgent(file, spent, now()));
-  const waiting = stale.filter((check) => !inFlight.has(check.id) && (check.migrating?.tries ?? 0) < MAX_RUN_TRIES);
+  const idle = stale.filter((check) => !inFlight.has(check.id));
+  const spent = idle.filter((check) => (check.migrating?.tries ?? 0) >= MAX_RUN_TRIES).map(({ id }) => id);
+  if (spent.length > 0) changeChecks(path, (file) => giveToAgent(file, spent, ctx.now()));
+  const waiting = idle.filter((check) => (check.migrating?.tries ?? 0) < MAX_RUN_TRIES);
   for (let from = 0; from < waiting.length && unfinishedCheckRuns(ctx).length < MAX_BOARD_CHECK_RUNS; from += MIGRATION_BATCH) {
     const batch = waiting.slice(from, from + MIGRATION_BATCH).map(({ id }) => id);
-    const id = freshId(ctx, "c");
-    if (queueRun(ctx, { id, request: migrationRequest(batch), mode: "migrate", checks: batch })) {
-      changeChecks(path, (file) => ({ checks: { ...file.checks, ...Object.fromEntries(batch.flatMap((each) => (file.checks[each] === undefined ? [] : [[each, { ...file.checks[each], migrating: { tries: (file.checks[each].migrating?.tries ?? 0) + 1 } }]]))) } }));
-    }
+    if (!queueRun(ctx, { id: freshId(ctx, "c"), request: migrationRequest(batch), mode: "migrate", checks: batch })) continue;
+    changeChecks(path, (file) => ({ checks: { ...file.checks, ...Object.fromEntries(batch.flatMap((each) => (file.checks[each] === undefined ? [] : [[each, { ...file.checks[each], migrating: { tries: (file.checks[each].migrating?.tries ?? 0) + 1 } }]]))) } }));
   }
-  // The agent checks whose change is installed and that no run holds.
+}
+
+/** The agent checks whose change is installed and that no run holds are given to a verifier run each. */
+function queueVerifiers(ctx: PoolContext, path: string, installed: (check: CheckRecord) => boolean): void {
   const ready = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && !isUnmigrated(check) && (check.verifier?.run ?? null) === null && installed(check));
   for (const check of ready) {
-    if (unfinishedCheckRuns(ctx).length >= MAX_BOARD_CHECK_RUNS) break;
+    if (unfinishedCheckRuns(ctx).length >= MAX_BOARD_CHECK_RUNS) return;
     const id = freshId(ctx, "c");
     if (queueRun(ctx, { id, request: verifierRequest(check), mode: "verify", checks: [check.id] })) changeChecks(path, (file) => withVerifier(file, check.id, { run: id, tries: (check.verifier?.tries ?? 0) + 1 }));
   }
+}
+
+/**
+ * One pass over the checks the board runs by agents (A11-302). `installed` says whether a check's change is in a release installed on this host: an `agent` check is given to a verifier run only then. A check whose run ended with no result is
+ * given to another, and after {@link MAX_RUN_TRIES} runs is closed failed, saying how the last ended, which files a follow-up like any failure. The checks still on the retired session runner are given to a migration pass, and after
+ * {@link MAX_RUN_TRIES} passes to an agent. At most {@link MAX_BOARD_CHECK_RUNS} check runs are unfinished at once.
+ */
+export function queueCheckRuns(ctx: PoolContext, installed: (check: CheckRecord) => boolean): void {
+  const path = afterMergeChecksPath(ctx.settings.stateDir);
+  settleEndedVerifiers(ctx, path);
+  queueMigration(ctx, path);
+  queueVerifiers(ctx, path, installed);
+  dismissOldCheckRuns(ctx);
+}
+
+/** How long a finished check run stays on the queue before the sweep dismisses it: its result is on its check, and the board keeps no list of them. */
+export const CHECK_RUN_KEPT_MS = 24 * 60 * 60_000;
+
+/** Dismiss the finished check runs kept for {@link CHECK_RUN_KEPT_MS} that no open check still reads its ending from. */
+function dismissOldCheckRuns(ctx: PoolContext): void {
+  const wanted = new Set(Object.values(loadChecks(afterMergeChecksPath(ctx.settings.stateDir)).checks).flatMap((check) => (check.state === "open" && check.verifier?.run != null ? [check.verifier.run] : [])));
+  const old = (ctx.store.get().writers ?? []).filter((run) => isCheckRun(run.mode) && run.phase === "finished" && ctx.now() - (run.finishedAt ?? ctx.now()) > CHECK_RUN_KEPT_MS && !wanted.has(run.id));
+  for (const run of old) update(ctx, (queue) => dismissWriter(queue, run.id));
 }
 
 /** The file with `check` closed failed by the board, with `why` as its evidence. PURE. */

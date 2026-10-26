@@ -391,7 +391,7 @@ function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     }
     const outcomePath = join(place.dir, OUTCOME_FILE);
     if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) {
-      if (!finishing.has(run.id)) void (isCheckRun(run.mode) ? finishCheckRun : finishWriter)(ctx, run, place, readFileSync(outcomePath, "utf8"));
+      if (!finishing.has(run.id)) void (isCheckRun(run.mode) ? finishCheckRun(ctx, run, readFileSync(outcomePath, "utf8")) : finishWriter(ctx, run, place, readFileSync(outcomePath, "utf8")));
     } else if (run.mode === "grill" && (seen === "idle" || seen === "done")) {
       update(ctx, (queue) => writerWaiting(queue, run.id, questionOnFile(place.dir), now()));
     } else if (stoppedWithoutOutcome(run, seen)) endWriter(ctx, run, "it stopped without writing an outcome");

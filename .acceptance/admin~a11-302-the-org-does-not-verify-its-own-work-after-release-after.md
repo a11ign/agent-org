@@ -1,0 +1,19 @@
+The org verifies its own After-merge checks (A11-302). A plan's `Runner:` is `board` (with `Observe:`, `Pass:` and `Window:`), `agent` or `person` (only with an escalation item); the plan check refuses `session` and any field naming the chairman's session, and the planner brief says so. The board watches the run log, the merge queue, CI history, a host's doctor and a release's assets over a window (passed when the window closes clean, failed on the first breach citing the event). An `agent` check is given to a Sonnet verifier run once its change is in an installed release, and the run's passed or failed result closes the check through the after-merge route; a failure files a follow-up through the ticket writer. The person's After-merge list shows only `person` checks, a ticket's Run detail shows the org's, and the pool bar counts the org's open checks older than three days. The checks open on the retired runner are migrated by one planner pass, which rewrites each as a `board` or `agent` check or supersedes it with a reason.
+
+Acceptance:
+
+```bash
+# after-merge/plan-section.test.ts: `session`, `Chairman session` in any field, and a missing Pass or Window are refused; every After-merge line needs a runner; the planner rule and format name board, agent, person and the nine specs
+# after-merge/observe-windows.test.ts: each source (run-log, merge-queue, ci-history, doctor, release-assets) has a window that passes and one that fails, citing the event; an unreadable source or a window with nothing seen hands the check to an agent; a window begins when the change is installed
+# after-merge/installed.test.ts: a change counts as installed when the running release holds its acceptance file, or an hour after a merge elsewhere
+# pool-check-runs.test.ts: a verifier run on Sonnet carries the line and evidence spec, a pass and a fail close the check through the route, a fail files the follow-up, a run with no result is tried again and then failed; the migration pass rewrites a session check as a board check and supersedes another
+# after-merge/verify.test.ts: the verifier's outcome and brief, the migration outcome under the plan check's rules, the 2026-10-25 list migrated and the audit of the ticket's After-merge line holding
+# after-merge/route.test.ts, board-view.test.ts, session-asks.test.ts: the person's list shows only person checks, the Run detail lists every runner, the org count, no check in the session's queue, no close by session or board
+# hook-writer-stop.test.ts, writer.test.ts, escalation.test.ts, worker-files.test.ts: the stop hook holds verify and migrate runs to their outcomes; the escalation rule says the org verifies its own work
+bash -c 'set -euo pipefail
+npm run typecheck
+P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture
+AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/after-merge/ src/ticket-mode/pool-check-runs.test.ts src/ticket-mode/session-asks.test.ts src/ticket-mode/escalation.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/hook-writer-stop.test.ts src/ticket-mode/writer.test.ts src/ticket-mode/pool-plan-send-back.test.ts'
+```
+
+The After-merge line ("Runner: board. Observe: the after-merge list, 7 days after release. Pass: no open check names the chairman's session or no owner, and every open org check is at most 3 days old or inside its week-long window") is run against the board's own list, now and 7 days after release: `curl -s -H "x-ticket-token: <the instance's key>" http://127.0.0.1:<port>/api/after-merge/audit`. A pass reads `{"ok":true,"unmigrated":[],"stale":[]}`; `verify.test.ts` runs the same audit over the 2026-10-25 list after a migration.

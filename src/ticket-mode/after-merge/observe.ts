@@ -392,43 +392,59 @@ const releasesSince = (releases: readonly Release[], began: number): Release[] =
 function releaseStep(spec: Extract<WindowedSpec, { kind: "release-assets" }>, watch: Watch, facts: ObserveFacts, now: number): Step {
   const began = watch.began ?? now;
   const releases = facts.releases?.(spec.repository) ?? null;
-  if (releases === null) return closedOrKept(watch, now, "could not be read from this host");
+  if (releases === null) return closedOrKept(watch, spec.windowMs, now, "could not be read from this host");
   const since = releasesSince(releases, began);
   const lacking = since.find((release) => !release.assets.some((asset) => holds(asset, spec.asset)));
   if (lacking !== undefined) return { close: { result: "failed", evidence: fitted(`release ${lacking.tag} of ${spec.repository} (${stamp(lacking.at)}) has no ${spec.asset} asset`) } };
   if (since.length >= spec.count) return { close: { result: "passed", evidence: fitted(`${describeSpec(spec)}: ${since.slice(0, spec.count).map((release) => release.tag).join(", ")}`) } };
-  return closedOrKept({ ...watch, reads: (watch.reads ?? 0) + 1 }, now, `saw ${since.length} of ${spec.count} releases in ${windowWords(spec.windowMs)}`);
+  return closedOrKept({ ...watch, reads: (watch.reads ?? 0) + 1 }, spec.windowMs, now, `saw ${since.length} of ${spec.count} releases in ${windowWords(spec.windowMs)}`);
 }
 
-/** The watch as it stands, or, once its window has closed without a result, the check handed to an agent: the board cannot say what it did not see. PURE. */
-function closedOrKept(watch: Watch, now: number, why: string): Step {
-  return now >= windowEnd(watch) ? { handoff: `the window of ${windowWords((watch.spec as WindowedSpec).windowMs)} closed and the board ${why}` } : { watch };
+/** The watch as it stands, or, once its window of `windowMs` has closed without a result, the check handed to an agent: the board cannot say what it did not see. PURE. */
+function closedOrKept(watch: Watch, windowMs: number, now: number, why: string): Step {
+  return now >= windowEnd(watch) ? { handoff: `the window of ${windowWords(windowMs)} closed and the board ${why}` } : { watch };
+}
+
+/** The sightings a look at the source adds to what the window already saw: the ones not in its baseline, and none that happened before the window began, earliest first. The baseline is the sightings with no time that were there at the first look. PURE. */
+function freshSightings(sightings: readonly Sighting[], watch: Watch, began: number): Readonly<{ fresh: Sighting[]; baseline: string[] }> {
+  const baseline = new Set(watch.seen ?? sightings.filter((sighting) => sighting.at === undefined).map(({ id }) => id));
+  const fresh = sightings.filter((sighting) => !baseline.has(sighting.id) && (sighting.at === undefined || sighting.at >= began)).sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  return { fresh, baseline: [...baseline] };
+}
+
+/** A sighting as the evidence quotes it: its text, and when it happened when the source says. PURE. */
+const quoted = (sighting: Sighting): string => `${sighting.text}${sighting.at === undefined ? "" : ` at ${stamp(sighting.at)}`}`;
+
+/** An `absent` window: the first breach fails it at once, citing the event; with none, it passes once it has closed. PURE. */
+function absentStep(spec: Exclude<WindowedSpec, { kind: "release-assets" }>, watch: Watch, first: Sighting | undefined, now: number): Step {
+  const began = watch.began ?? now;
+  if (first !== undefined) return { close: { result: "failed", evidence: fitted(`${quoted(first)}: ${describeSpec(spec)} inside the ${windowWords(spec.windowMs)} window from ${stamp(began)}`) } };
+  if (now < windowEnd(watch)) return { watch };
+  return { close: { result: "passed", evidence: fitted(`no ${describeSpec(spec).replace(/^an? /, "")} from ${stamp(began)} to ${stamp(now)} (${windowWords(spec.windowMs)} window, read ${watch.reads} times)`) } };
 }
 
 /** The result of one look at a windowed watch's source: a breach fails an `absent` window at once, citing the event; a window that closes clean passes it; a sighting passes a `present` one. PURE over the facts. */
 function sightingStep(spec: Exclude<WindowedSpec, { kind: "release-assets" }>, watch: Watch, facts: ObserveFacts, now: number): Step {
   const sightings = sightingsOf(spec, facts, now);
-  if (sightings === null) return closedOrKept(watch, now, `could not read ${describeSpec(spec).replace(/^an? /, "")}'s source from this host`);
+  if (sightings === null) return closedOrKept(watch, spec.windowMs, now, `could not read ${describeSpec(spec).replace(/^an? /, "")}'s source from this host`);
   const began = watch.began ?? now;
-  const baseline = new Set(watch.seen ?? sightings.filter((sighting) => sighting.at === undefined).map(({ id }) => id));
-  const fresh = sightings.filter((sighting) => !baseline.has(sighting.id) && (sighting.at === undefined || sighting.at >= began)).sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
-  const next: Watch = { ...watch, began, seen: [...baseline], reads: (watch.reads ?? 0) + 1 };
-  const first = fresh[0];
-  if (spec.pass === "absent") {
-    if (first !== undefined) return { close: { result: "failed", evidence: fitted(`${first.text}${first.at === undefined ? "" : ` at ${stamp(first.at)}`}: ${describeSpec(spec)} inside the ${windowWords(spec.windowMs)} window from ${stamp(began)}`) } };
-    return now >= windowEnd(next) ? { close: { result: "passed", evidence: fitted(`no ${describeSpec(spec).replace(/^an? /, "")} from ${stamp(began)} to ${stamp(now)} (${windowWords(spec.windowMs)} window, read ${next.reads} times)`) } } : { watch: next };
-  }
-  if (first !== undefined) return { close: { result: "passed", evidence: fitted(`${first.text}${first.at === undefined ? "" : ` at ${stamp(first.at)}`}`) } };
-  return closedOrKept(next, now, `did not see ${describeSpec(spec)}`);
+  const { fresh, baseline } = freshSightings(sightings, watch, began);
+  const next: Watch = { ...watch, began, seen: baseline, reads: (watch.reads ?? 0) + 1 };
+  if (spec.pass === "absent") return absentStep(spec, next, fresh[0], now);
+  if (fresh[0] !== undefined) return { close: { result: "passed", evidence: fitted(quoted(fresh[0])) } };
+  return closedOrKept(next, spec.windowMs, now, `did not see ${describeSpec(spec)}`);
 }
 
 /** The watch of an open `board` check, or null for any other check. PURE. */
 export const openWatchOf = (check: CheckRecord): Watch | null => (check.state === "open" && check.runner === "board" && check.observe !== undefined ? check.observe : null);
 
+/** A watch whose spec is windowed. */
+type WindowedWatch = Watch & Readonly<{ spec: WindowedSpec }>;
+
 /** The watch of an open `board` check whose spec is windowed, or null for any other check. PURE. */
-function windowedWatchOf(check: CheckRecord): Watch | null {
+function windowedWatchOf(check: CheckRecord): WindowedWatch | null {
   const watch = openWatchOf(check);
-  return watch !== null && isWindowed(watch.spec) ? watch : null;
+  return watch !== null && isWindowed(watch.spec) ? (watch as WindowedWatch) : null;
 }
 
 /** What watching one windowed check comes to, or null while its change is not installed (the window has not begun) or the check is not a windowed one the board watches. PURE over the facts. */
@@ -436,8 +452,9 @@ export function watchStep(check: CheckRecord, facts: ObserveFacts, now: number):
   const watch = windowedWatchOf(check);
   if (watch === null) return null;
   if (watch.began === undefined && facts.installed?.(check) === false) return null;
-  const begun: Watch = watch.began === undefined ? { ...watch, began: now } : watch;
-  return begun.spec.kind === "release-assets" ? releaseStep(begun.spec, begun, facts, now) : sightingStep(begun.spec as Exclude<WindowedSpec, { kind: "release-assets" }>, begun, facts, now);
+  const begun: WindowedWatch = watch.began === undefined ? { ...watch, began: now } : watch;
+  const { spec } = begun;
+  return spec.kind === "release-assets" ? releaseStep(spec, begun, facts, now) : sightingStep(spec, begun, facts, now);
 }
 
 /** The file after every windowed check the board watches was looked at once: a result closes the check (failed on the first breach, passed when its window closes clean), a window that cannot say hands the check to an agent, and any other keeps its watch updated. Returns `file` itself when nothing changed. PURE over the facts. */
