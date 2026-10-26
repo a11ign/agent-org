@@ -8,7 +8,7 @@ import { useHealth } from "./use-health.ts";
 /** The health number (A11-257): today's person-interventions, with the last 7 days, each as its date and count, in the title. Nothing while the number is unread or its read failed. */
 function HealthNumber({ health }: Readonly<{ health: InterventionsView | null }>) {
   if (health === null) return null;
-  return <span className="pool-note" title={health.days.map(({ date, total }) => `${date}: ${total}`).join("\n")}>Person interventions today: {health.today}</span>;
+  return <span className="pool-note pool-health" title={health.days.map(({ date, total }) => `${date}: ${total}`).join("\n")}>Person interventions today: {health.today}</span>;
 }
 
 /**

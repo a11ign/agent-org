@@ -51,7 +51,7 @@ test("A11-257: the same event logged again is not counted twice", () => {
   assert.deepEqual(logEvent(once, "A", NOON + 1, event).interventions, { "2026-10-26": { needsYou: 2, fixes: 0 } }, "the same words a moment later are another card");
 });
 
-test("A11-257: a run that goes to Needs you through the queue's own transitions is counted once, as its terminal and its outcome both say it", () => {
+test("A11-257: a run that goes to Needs you through the queue's own transitions is counted once however many times the same event is applied", () => {
   let queue = observe(running("A"), "A", "blocked", "Allow this command?", NOON);
   queue = observe(queue, "A", "blocked", "Allow this command?", NOON + 1);
   assert.deepEqual(queue.interventions, { "2026-10-26": { needsYou: 1, fixes: 0 } });
@@ -82,8 +82,13 @@ test("A11-257: the tally lasts across a restart with the queue's file", () => {
   assert.equal(loadQueue(path, 1).interventions, undefined);
 });
 
-test("A11-257: the page's proxy passes on the read and the write of the health number", () => {
+test("A11-257: the page's proxy passes on the read of the health number, and not the write a chairman session makes straight to the instance", () => {
   assert.equal(passedOn("GET", "/api/interventions"), true);
-  assert.equal(passedOn("POST", "/api/interventions"), true);
-  assert.equal(passedOn("DELETE", "/api/interventions"), false);
+  assert.equal(passedOn("POST", "/api/interventions"), false);
+});
+
+test("A11-257: an event with no valid time counts nothing and logging it does not throw", () => {
+  const queue = logEvent(emptyQueue(1), "A", Number.NaN, { kind: "needs-you", reason: "post it?" });
+  assert.equal(queue.interventions, undefined);
+  assert.equal(countFix(emptyQueue(1), Number.POSITIVE_INFINITY).interventions, undefined);
 });

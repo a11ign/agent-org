@@ -57,6 +57,15 @@ describe("the health number", () => {
     expect(bar.textContent).not.toMatch(/Person interventions/);
   });
 
+  it("draws nothing from the tab's kept copy of an earlier visit while this visit's read has not answered", async () => {
+    const first = pageWith(viewOf([0, 0, 0, 0, 0, 0, 9]));
+    await screen.findByText("Person interventions today: 9");
+    first.unmount();
+    pageWith("held");
+    const bar = await poolBar();
+    expect(bar.textContent).not.toMatch(/Person interventions/);
+  });
+
   it("draws nothing when the read failed, and not a zero", async () => {
     pageWith(500);
     const bar = await poolBar();

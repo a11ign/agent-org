@@ -31,6 +31,8 @@ export const dayOf = (at: number): string => new Date(at).toISOString().slice(0,
 
 /** The tally with one more of `kind` on the day of `at`, and the days older than {@link DAYS_KEPT} dropped. */
 function counted(queue: Queue, at: number, kind: keyof DayCount): Queue {
+  // A time that is no date counts nothing, so logging an event never throws (`toISOString` does on one).
+  if (!Number.isFinite(at)) return queue;
   const day = dayOf(at);
   const held = queue.interventions?.[day] ?? { needsYou: 0, fixes: 0 };
   const oldest = dayOf(at - (DAYS_KEPT - 1) * DAY_MS);
