@@ -21,7 +21,7 @@
  */
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
+import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { assertBaseIsLive, gatherChanges } from "../hand-fix-ledger.ts";
 import { REPO } from "../project-identity.ts";

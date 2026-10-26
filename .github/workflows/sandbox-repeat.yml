@@ -1,0 +1,53 @@
+name: sandbox-repeat
+
+# THE GIT SANDBOX'S REMOVAL, RUN 30 TIMES (A11-301). `region-paths-checkout.test.ts` failed twice in an hour on 2026-10-26 with `SandboxNotRemovedError` (runs 40382975143 and
+# 40385719656), a failure that one run cannot show gone: it was rare (two of the thousands of runs of that file). So a pull request that touches the sandbox helper
+# (`src/lib/git-sandbox.ts`), its test, or the file that failed runs the two files 30 times, four at a time on this runner's four cores, and one red run is a red job.
+# It is a workflow of its own, behind `paths`, so the ordinary pull request does not pay for it, and it does not touch the required check (`gate` in ci.yml).
+# A draft pull request does not run it: it is the heavy half of a change that is not yet asked to be reviewed.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - src/lib/git-sandbox.ts
+      - src/lib/git-sandbox.test.ts
+      - src/packaging/region-paths-checkout.test.ts
+      - .github/workflows/sandbox-repeat.yml
+
+permissions:
+  contents: read
+
+env:
+  npm_config_fetch_retries: 5
+
+jobs:
+  repeat:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      # The same fixture project and host declaration `suite` points the tool at (ci.yml says why): the files read `HOME_CHECKOUT` from it.
+      - name: The fixture project, and the host declaration that names it
+        run: |
+          project="$RUNNER_TEMP/project"
+          mkdir "$project"
+          cp -r src/packaging/fixtures/project-tree/. "$project"
+          sed -i "s|@@PROJECT@@|$project|" "$project/.agent-org/host.json"
+          git -C "$project" init -q
+          git -C "$project" add -A
+          git -C "$project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m "the fixture project"
+          echo "AGENT_ORG_HOST=$project/.agent-org/host.json" >> "$GITHUB_ENV"
+      # The install is `suite`'s, version for version (ci.yml carries the reasons for the exact toolchain pin and for the binding).
+      - name: Install the tool's dependencies
+        run: |
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0"
+          BINDING=$(node -p "require('./node_modules/@rspack/binding/package.json').version")
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0" "@rspack/binding-linux-x64-gnu@$BINDING"
+      - name: The sandbox's two test files, 30 runs, four at a time
+        run: |
+          seq 1 30 | xargs -P 4 -I{} sh -c 'node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/lib/git-sandbox.test.ts src/packaging/region-paths-checkout.test.ts > "$RUNNER_TEMP/repeat-{}.log" 2>&1 || { echo "run {} failed"; cat "$RUNNER_TEMP/repeat-{}.log"; exit 255; }'
+          echo "30 runs, all green"

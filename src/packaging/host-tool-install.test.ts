@@ -35,7 +35,7 @@ import { keptClaimsPath } from "../wake/ci-class-and-spares.ts";
 import { reviewerPathsFrom } from "../wake/reviewer-tokens-and-checkouts.ts";
 import { sparePathsFrom } from "../wake/session-endings.ts";
 import { updateTool } from "../update-tool.ts";
-import { sandboxGitEnv, withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
+import { sandboxGitEnv, withGitSandbox } from "../lib/git-sandbox.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");

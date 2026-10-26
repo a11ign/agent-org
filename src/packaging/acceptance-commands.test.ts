@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { classifyCommand, acceptanceReport, testFileArgumentsResolve, unmetCommandClosureRequirements, testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest, measuredSectionReport } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { extractAcceptanceSection, unmetCommandRequirements, singleNodeInvocation, runsTheWholeSuite, suiteTestFiles, suiteScriptsFor, endsInsideQuote, endsInOperator, handRunAcceptanceReason, acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths } from "../acceptance-commands/suite-and-checkout-commands.ts";
 import { testFileRequirements, unmetRequirements, hasFullHistoryDeclaration, jobCapabilities, deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements, createClosureMemo, SUITE_SCRIPTS, SPAWNS_GH, handRunDeclaration, handRunEvidence, declaredFleetAnswer } from "../acceptance-commands/command-classes-and-declarations.ts";
-import { withGitSandbox, sandboxGitEnv } from "@a11ign/toolchain/lib/git-sandbox";
+import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 import { testEach } from "../lib/test-each.ts";
 
