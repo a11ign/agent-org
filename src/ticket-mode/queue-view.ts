@@ -111,13 +111,13 @@ function openedPullLog(runLog: Queue["runLog"]): Readonly<Record<string, readonl
 
 /** The queue as the pages read it: the stored queue with each run as the list sends it, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
 export function queueView(board: ViewBoard) {
-  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
+  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `hostAlerts`: what is wrong with the host itself, each with when it began (A11-279). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134). `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261). The tally of interventions is not sent either: `/api/interventions` answers it (A11-257). The runs' logs are not sent but for the events that
   // opened a pull request (`openedPullLog`); a run's page reads its own (`queueEntryView`).
   const { ciSpend: _ciSpend, interventions: _interventions, runLog, ...queue } = board.store.get();
   const entries = queue.entries.map((entry) => listEntry(entry, ciOf(board, board.store.get(), entry)));
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
+  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
     afterMergeChecks: afterMergeView(board.settings.stateDir) };
 }
 

@@ -108,6 +108,7 @@ import { tick, watchFeedback } from "./pool-watch.ts";
 import { watchKeptPulls } from "./pool-base-merge.ts";
 import { reconcile } from "./pool-readopt.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
+import { hostAlertsSettled } from "./host-alerts.ts";
 import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads } from "./pool-reviewers.ts";
 import { newPoolContext, type PoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
 import { log } from "./pool-state.ts";
@@ -169,6 +170,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     applyEdit: (key: string) => applyEdit(ctx, key),
     discardEdit: (key: string) => discardEdit(ctx, key),
     stopWriterRun: (id: string) => stopWriterRun(ctx, id),
+    /** What is wrong with the host itself (A11-279): `/tmp` over its limit, a soft lockup this boot, a serve the board could not put back, the hang settings drifting. Empty while nothing is. */
+    hostAlerts: () => ctx.hostAlerts.alerts,
+    /** Settles once the host read the last tick started has answered (A11-279). Never rejects. */
+    hostAlertsSettled: () => hostAlertsSettled(ctx),
     /** Why runs are held: the `tickets.preflight` command that failed and what it said, or null while none has. */
     held: () => ctx.gate.held(),
   };
