@@ -17,7 +17,11 @@ function takeEntries(dir: string, limit: number): Dirent[] {
   const stream = opendirSync(dir);
   try {
     const taken: Dirent[] = [];
-    for (let entry = stream.readSync(); entry !== null; entry = taken.length < limit ? stream.readSync() : null) taken.push(entry);
+    while (taken.length < limit) {
+      const entry = stream.readSync();
+      if (entry === null) break;
+      taken.push(entry);
+    }
     return taken;
   } finally {
     stream.closeSync();

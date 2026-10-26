@@ -10,7 +10,7 @@
 //
 // WHAT IT LEAVES. Anything another user owns; anything a process has open or stands in; a socket, pipe or device (a listening socket is no open file of anyone's, and its path is how its clients find it); and the names a
 // session keeps alive without writing to them (dot entries such as `.X11-unix`, `claude-<uid>` and `tmux-<uid>`, `ssh-*`, `systemd-private-*`).
-import { lstatSync, opendirSync, readdirSync, readlinkSync, renameSync, unlinkSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, opendirSync, readdirSync, readlinkSync, renameSync, unlinkSync, type Stats } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { type Budget, removeWithin } from "./bounded-removal.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -138,6 +138,18 @@ function takeLegacy(pass: Pass, names: readonly string[], state: LegacySweepStat
   return gone;
 }
 
+/** The open entries of `config.root`, read the first time they are asked for in a pass and remembered after, and said in the log when `/proc` could not be read. */
+function openOnce(config: LegacyTmp): () => Set<string> | null {
+  let read: { open: Set<string> | null } | undefined;
+  return () => {
+    if (read === undefined) {
+      read = { open: openEntriesOf(config.root, config.procRoot) };
+      if (read.open === null) log(`${config.procRoot ?? "/proc"} could not be listed, so no legacy entry of ${config.root} was taken: "no process holds it" was not read.`);
+    }
+    return read.open;
+  };
+}
+
 /**
  * One pass over `/tmp` (`ctx.deps.legacyTmp`): the trees an earlier pass left half removed, then the next {@link LEGACY_EXAMINED_PER_PASS} names after the cursor, within `budget`. Does nothing when the pool names no directory
  * (every test, and an instance started without one). Never throws.
@@ -147,18 +159,11 @@ export function sweepLegacyTmp(ctx: PoolContext, budget: Budget): void {
   const uid = config?.uid ?? process.getuid?.();
   if (config === undefined || uid === undefined || budget.left === 0) return;
   const state = ctx.legacySweep;
-  let opened: Set<string> | null | undefined;
-  const open = (): Set<string> | null => {
-    if (opened === undefined) {
-      opened = openEntriesOf(config.root, config.procRoot);
-      if (opened === null) log(`${config.procRoot ?? "/proc"} could not be listed, so no legacy entry of ${config.root} was taken: "no process holds it" was not read.`);
-    }
-    return opened;
-  };
-  const pass: Pass = { config, uid, now: ctx.now(), budget, open, guard: underRoot(config.root) };
+  const pass: Pass = { config, uid, now: ctx.now(), budget, open: openOnce(config), guard: underRoot(config.root) };
   try {
     const pending = state.doomed.splice(0);
     takeLegacy(pass, pending, state);
+    state.doomed.push(...pending.filter((name) => !state.doomed.includes(name) && existsSync(join(config.root, name))));
     if (budget.left === 0) return;
     const { names, ended } = namesFrom(config.root, state.skip, LEGACY_EXAMINED_PER_PASS);
     const gone = takeLegacy(pass, names, state);

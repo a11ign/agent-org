@@ -165,3 +165,18 @@ test("A11-303: a directory that is not there is nothing to sweep, and a sweep th
   assert.doesNotThrow(() => sweepLegacyTmp(ctxOver({ root, procRoot: fakeProc() }), budgetOf(0)));
   assert.ok(existsSync(join(root, "ae-old")), "a spent budget removes nothing");
 });
+
+test("A11-303: a half-removed tree that a process holds is left, and is still the next pass's to finish once the process lets go", () => {
+  const root = tmpDir("legacy-tmp-");
+  const doomed = `${DOOMED_PREFIX}tmp.Held`;
+  mkdirSync(join(root, doomed));
+  writeFileSync(join(root, doomed, "f"), "");
+  const ctx = ctxOver({ root, procRoot: fakeProc([[201, "cwd", join(root, doomed)]]) });
+  ctx.legacySweep.doomed.push(doomed);
+  sweepLegacyTmp(ctx, budgetOf());
+  assert.deepEqual(names(root), [doomed], "held: left");
+  assert.deepEqual(ctx.legacySweep.doomed, [doomed], "and remembered, not forgotten until the cursor comes round");
+  (ctx.deps as { legacyTmp: LegacyTmp }).legacyTmp = { root, procRoot: fakeProc() };
+  sweepLegacyTmp(ctx, budgetOf());
+  assert.deepEqual(names(root), [], "let go: finished");
+});

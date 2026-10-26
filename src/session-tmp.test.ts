@@ -15,6 +15,7 @@ import { privateTmpEnv, runTmpDir } from "./session-tmp.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { poolFixture } from "./ticket-mode/pool-fixture.ts";
 import { herdrName } from "./ticket-mode/pool.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 import { loadReviewerGate } from "./ticket-mode/reviewer-port.ts";
 import { queueWriter } from "./ticket-mode/queue.ts";
 import { spawnReviewer } from "./wake/reviewer-tokens-and-checkouts.ts";
@@ -133,4 +134,10 @@ test("A11-303: a publish run is opened with a TMPDIR of its own under the pool's
   const label = herdrName("publish-p1");
   assert.deepEqual(createdWith(made.herdr.calls).map((env) => env.TMPDIR), [runTmpDir(base, label)]);
   assert.ok(existsSync(runTmpDir(base, label)));
+});
+
+test("A11-303: the board's instance and the on-demand review command give their sessions the private base, and the instance names /tmp for the legacy sweep", () => {
+  assert.match(moduleSource("ticket-mode/server.ts"), /reviewingBeforeActivation\(\{[^}]*tmpBase: privateBase\(\) \}\)/, "the instance's reviewers are started under the private base");
+  assert.match(moduleSource("ticket-mode/server.ts"), /privateTmpBase: privateBase\(\), legacyTmp: \{ root: LEGACY_TMP_ROOT \}/, "and its pool makes its runs' directories there and sweeps /tmp");
+  assert.match(moduleSource("ticket-mode/review-command.ts"), /reviewingBeforeActivation\(\{[^}]*tmpBase: privateBase\(\) \}\)/, "a reviewer started by `ticket:review` is started under it too");
 });

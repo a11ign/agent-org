@@ -96,11 +96,21 @@ function removeEnded(ctx: PoolContext, base: string, name: string, budget: Budge
   }
 }
 
-/** True when `name` is a directory of a session that is still there, so it is kept: of a queue entry that is over, or of a session herdr no longer lists, it is not. A directory neither knows is left when herdr could not be listed. */
-function isStillHeld(name: string, queued: ReadonlySet<string>, live: () => ReadonlySet<string> | null): boolean {
-  if (queued.has(name)) return false;
-  const sessions = live();
-  return sessions === null || sessions.has(name);
+/** What is known of a directory no held run owns: its queue run is over or its session is gone (`ended`), its session is listed (`listed`), or herdr could not be asked and so nothing is known (`unknown`). */
+type Fate = "ended" | "listed" | "unknown";
+
+/** The fate of the directory `name`: a queue entry that holds nothing is over without asking herdr; any other name is a session, and herdr's listing says whether it is still there. */
+function fateOf(name: string, queued: ReadonlySet<string>, sessions: () => ReadonlySet<string> | null): Fate {
+  if (queued.has(name)) return "ended";
+  const listed = sessions();
+  if (listed === null) return "unknown";
+  return listed.has(name) ? "listed" : "ended";
+}
+
+/** `read`, run the first time the answer is asked for and remembered after: herdr is asked once a pass, and only when a directory is there that no queue entry owns. */
+function once<T>(read: () => T): () => T {
+  let answer: { value: T } | undefined;
+  return () => (answer ??= { value: read() }).value;
 }
 
 /** The run directories under the base nobody holds any more, removed within `budget`. */
@@ -115,15 +125,12 @@ function sweepRunDirs(ctx: PoolContext, base: string, budget: Budget): void {
   const held = heldNames(ctx);
   for (const name of held) keepHeld(ctx, base, name);
   const queued = queuedNames(ctx);
-  // Herdr is asked once a pass, and only when a directory is there that no queue entry owns.
-  let sessions: Set<string> | null | undefined;
-  const live = (): ReadonlySet<string> | null => (sessions === undefined ? (sessions = liveSessionNames(ctx)) : sessions);
+  const sessions = once(() => liveSessionNames(ctx));
   for (const name of names.filter((each) => !held.has(each))) {
     if (budget.left === 0) return;
-    if (isStillHeld(name, queued, live)) {
-      if (live()?.has(name)) keepHeld(ctx, base, name);
-      continue;
-    }
+    const fate = fateOf(name, queued, sessions);
+    if (fate === "listed") keepHeld(ctx, base, name);
+    if (fate !== "ended") continue;
     try {
       removeEnded(ctx, base, name, budget);
     } catch (err) {
