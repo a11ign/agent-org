@@ -9,7 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
-// 1.25 (A11-291): `PullFeedback.armed`, OPTIONAL: whether auto-merge is on for the pull request (GitHub's `autoMergeRequest`), and `readMergeFlow`, OPTIONAL: whether a repository allows auto-merge and has an arm workflow (`.github/workflows/auto-arm.yml`) on its default branch, which the board reads to say why an approved pull request with green checks is not merging, and which doctor reads for every repository of the host. A plugin of 1.24 is read as one that says nothing of either, and the board then says only that the pull request is not in the merge queue.
+// 1.25 (A11-291): `PullFeedback.armed`, OPTIONAL: whether auto-merge is on for the pull request (GitHub's `autoMergeRequest`), and `readMergeFlow`, OPTIONAL: whether a repository allows auto-merge and has an arm workflow (`.github/workflows/auto-arm.yml`) on its default branch, and which branch that is, which the board reads to say why an approved pull request with green checks is not merging, and which doctor reads for every repository of the host. A plugin of 1.24 is read as one that says nothing of either, and the board then says only that the pull request is not in the merge queue.
 // 1.24 (A11-286): `PullFeedback.behind`, OPTIONAL: whether the host says the pull request's branch is behind its base (GitHub's `mergeStateStatus: BEHIND`, which it reports only where the base requires branches to be up to date), which the board brings up to date with the host's `updateBranch` before the merge queue takes it. A plugin of 1.23 is read as one that says nothing of `behind`, and the board then updates only the pull requests that conflict.
 // 1.23 (A11-248): `closePull`, OPTIONAL: close a pull request with a comment, as the workers' account, which is how the board closes a member of a stack left with no changes of its own once everything it held merged below it. A plugin of 1.22 is read as one that cannot close, and the board then says on the card that the pull request is empty and is to be closed.
 // 1.22 (A11-261): `readBranchCi`, OPTIONAL: the workflow runs on one branch of a repository with each job's runner labels and times, which the board adds up into the CI minutes a ticket's pushes cost (weighted as GitHub bills them) and warns and holds a run on when a ticket passes its budget. A plugin of 1.21 is read as one that reads no branch's CI, and the board then shows and holds nothing.
@@ -103,10 +103,10 @@ export type QueueFailureJob = Readonly<{ name: string; step: string | null; deta
 export type QueueFailure = Readonly<{ runId: number; runUrl: string; jobs: readonly QueueFailureJob[] }>;
 
 /**
- * Whether a repository can merge a pull request by itself (contract 1.25): `autoMerge` is whether the repository allows auto-merge, and `armWorkflow` whether its default branch holds the arm workflow, `.github/workflows/auto-arm.yml`, that turns it on for a pull request. A repository that
- * lacks either has no merge flow: an approved pull request in it waits for a person.
+ * Whether a repository can merge a pull request by itself (contract 1.25): `autoMerge` is whether the repository allows auto-merge, and `armWorkflow` whether its default branch (`defaultBranch`) holds the arm workflow, `.github/workflows/auto-arm.yml`, that turns it on for a pull request. A repository that
+ * lacks either has no merge flow: an approved pull request in it waits for a person. Only a pull request into the default branch goes through the merge queue, so the board calls no other stuck.
  */
-export type MergeFlow = Readonly<{ autoMerge: boolean; armWorkflow: boolean }>;
+export type MergeFlow = Readonly<{ autoMerge: boolean; armWorkflow: boolean; defaultBranch: string }>;
 
 /** The path of the arm workflow a repository's merge flow holds (contract 1.25), which a pull request adds when it installs the flow. */
 export const ARM_WORKFLOW_PATH = ".github/workflows/auto-arm.yml";

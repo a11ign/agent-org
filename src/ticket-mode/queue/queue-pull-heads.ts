@@ -3,7 +3,6 @@
 //
 // WHAT A `needs-human` RUN'S PULL REQUEST WAS AT WHEN IT ENDED, AND WHAT IT IS AT NOW, IS HOW THE BOARD TELLS THAT ITS QUESTION WAS ANSWERED (`pull-answer.ts`).
 import { WAITS_ON_REVIEW, workStatus } from "../board-view/pull-status-and-notes.ts";
-import { isMergeNote } from "../board-view/not-merging.ts";
 import { isStaleBlockNote } from "../board-view/stale-block.ts";
 import type { PullHead } from "../board-view/view-types-and-filters.ts";
 import { find, replace, type Queue } from "./queue-entries-and-outcomes.ts";
@@ -53,12 +52,6 @@ const sameVerdict = (last: Extract<RunEvent, { kind: "verdict" }> | undefined, h
  * is written only over a run that waits on a review or a merge ({@link WAITS_ON_REVIEW}): one that reads Needs you for its own reason (a disputed review the worker handed back), one that failed or concluded, and one that is over keep their own words. PURE.
  */
 export const recordStaleBlock = (queue: Queue, key: string, note: string | null, now?: number): Queue => recordHandedBackNote(queue, key, note, isStaleBlockNote, now);
-
-/**
- * The board's note on a finished run whose pull request is approved and green and that nothing merges (A11-291, {@link mergeNote}): a merge flow's first install the day it is approved, else a pull request out of the merge queue for an hour. It becomes the run's `handedBack`,
- * which reads Needs you, and a null note clears a `handedBack` this wrote, recognised by its sentence form as a stale block's is. It never replaces another `handedBack`, and it is written only over a run that waits on a review or a merge ({@link WAITS_ON_REVIEW}). PURE.
- */
-export const recordMergeNote = (queue: Queue, key: string, note: string | null, now?: number): Queue => recordHandedBackNote(queue, key, note, isMergeNote, now);
 
 /**
  * A board note written as a finished run's `handedBack` and recognised by its sentence form (`isOwn`): a null note clears a `handedBack` that is this note and no other, and a note is written only over a run that waits on a

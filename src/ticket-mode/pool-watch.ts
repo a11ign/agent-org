@@ -27,10 +27,8 @@ import type { Woke } from "./wait-on/wait-types.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
-import { moveOutcomeHeads, recordMergeNote, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
+import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
 import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
-import { isMergeNote, markedHeads, mergeNote } from "./board-view/not-merging.ts";
-import type { MergeFlow } from "../plugins/contracts/code-host.ts";
 import { isReviewerDialogNote, reviewerDialogNote } from "./board-view/reviewer-dialog-note.ts";
 import { recordReviewerDialog } from "./queue/queue-reviewer-dialog.ts";
 import { observeWriter, writerResumed, writerWaiting } from "./queue.ts";
@@ -50,6 +48,9 @@ import { recordQueueHeads } from "./queue/queue-merge-queue.ts";
 import { foreignRedsOf } from "./pool-foreign-checks.ts";
 import { reseatRuns } from "./pool-reseat.ts";
 import { reconcileExposure } from "./pool-exposure.ts";
+import { markedHeads, mergeNote } from "./board-view/not-merging.ts";
+import { recordMergeNote } from "./queue/queue-merge-note.ts";
+import type { MergeFlow } from "../plugins/contracts/code-host.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
@@ -617,13 +618,23 @@ function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: s
 /** How long what the board read of a repository's merge flow is believed (A11-291): the flow changes by a pull request and a setting, both slow, and the card needs the reason once a pull request has sat for a quarter of an hour. */
 const MERGE_FLOW_TTL_MS = 10 * 60_000;
 
+/** What the code host says of a repository's merge flow, or null when it could not say or threw. */
+function readFlowOrNull(codeHost: PoolContext["codeHost"], repository: string): MergeFlow | null {
+  try {
+    return codeHost.readMergeFlow?.(repository) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether `repository` can merge a pull request by itself, as the code host last said within {@link MERGE_FLOW_TTL_MS}, read now when it did not (A11-291). Undefined for a host that cannot be asked, and null for a repository it could not read: neither is "no flow". */
 function mergeFlowOf(ctx: PoolContext, repository: string): MergeFlow | null | undefined {
   const { codeHost, mergeFlows, now } = ctx;
   if (codeHost.readMergeFlow === undefined) return undefined;
   const known = mergeFlows.get(repository);
   if (known !== undefined && now() - known.at < MERGE_FLOW_TTL_MS) return known.flow;
-  const flow = codeHost.readMergeFlow(repository);
+  // A read that fails keeps what was last known, so a reason that depends on it does not flip, and rewrite the queue, with the host's weather; and a host that throws is no reading either (the contract says it does not).
+  const flow = readFlowOrNull(codeHost, repository) ?? known?.flow ?? null;
   mergeFlows.set(repository, { at: now(), flow });
   return flow;
 }
@@ -670,7 +681,7 @@ function clearOverStaleBlocks(ctx: PoolContext): void {
   for (const entry of ctx.store.get().entries) {
     const over = entry.phase === "finished" && (openPulls(entry).length === 0 || SETTLED.has(entry.trackerState ?? ""));
     if (over && isStaleBlockNote(entry.handedBack)) update(ctx, (queue) => recordStaleBlock(queue, entry.ticket.key, null, ctx.now()));
-    if (over && isMergeNote(entry.handedBack)) update(ctx, (queue) => recordMergeNote(queue, entry.ticket.key, null, ctx.now()));
+    if (over && entry.mergeNote !== undefined) update(ctx, (queue) => recordMergeNote(queue, entry.ticket.key, null, ctx.now()));
     if (over && isReviewerDialogNote(entry.handedBack)) update(ctx, (queue) => recordReviewerDialog(queue, entry.ticket.key, null, ctx.now()));
   }
 }
@@ -684,11 +695,15 @@ function flagStaleBlock(ctx: PoolContext, key: string): void {
 }
 
 /**
- * Flag a finished run whose open pull request is approved and green and that nothing merges (A11-291, {@link mergeNote}): a pull request that adds the repository's first merge flow reads Needs you the day it is approved, since no bot can merge it, and any other
- * once it has sat for an hour. The note becomes its `handedBack` and goes again at the first watch that finds the pull request merging or merged. Written only when it changes.
+ * Flag a finished run whose open pull request is approved and green and that nothing merges (A11-291, {@link mergeNote}): a pull request that adds the repository's first merge flow reads Needs you the day it is approved, since no bot can merge it, and any
+ * other once it has sat for an hour. The note becomes the run's `mergeNote`, which `runStatus` reads as Needs you while the board goes on watching the run, and goes again at the first watch that finds the pull request merging or merged. Written only when it changes.
  */
 function flagMerge(ctx: PoolContext, key: string): void {
-  flagHandedBack(ctx, key, (queue, entry, at) => recordMergeNote(queue, key, mergeNote(entry, at), at));
+  const { now, store } = ctx;
+  const entry = store.get().entries.find((e) => e.ticket.key === key);
+  if (entry === undefined) return;
+  const next = recordMergeNote(store.get(), key, mergeNote(entry, now()), now());
+  if (next !== store.get()) update(ctx, () => next);
 }
 
 /** Write what `record` makes of the queue for the run `key` when it changes the run's `handedBack`, and nothing otherwise. */

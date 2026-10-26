@@ -9,29 +9,33 @@ import type { ExecOptions, ExecResult } from "../../src/plugins/manifest.ts";
 import { mergeFlowChecks } from "./merge-flow-checks.ts";
 
 const WORKERS = { workers: "/home/agent/workers" };
-const NOT_FOUND: ExecResult = { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
-const HAS: ExecResult = { status: 0, stdout: "file\n", stderr: "" };
 
-/** What each repository (by `owner/name`) answers: its `allow_auto_merge`, and whether its default branch holds the arm workflow. */
-type Flows = Readonly<Record<string, Readonly<{ autoMerge: string | ExecResult; workflow: ExecResult }>>>;
+/** What each repository (by `owner/name`) answers: its `autoMergeAllowed` and whether its head holds the arm workflow, or `null` for a repository GitHub would not read. */
+type Flows = Readonly<Record<string, Readonly<{ autoMerge: boolean; workflow: boolean }> | null>>;
+
+/** GitHub's answer to the one query, from the repositories it names in order (`r0`, `r1`, ...). */
+function answerOf(query: string, flows: Flows): string {
+  const asked = [...query.matchAll(/repository\(owner: "([^"]+)", name: "([^"]+)"\)/g)].map(([, owner, name]) => `${owner}/${name}`);
+  const data = Object.fromEntries(asked.map((repo, n) => {
+    const flow = flows[repo];
+    return [`r${n}`, flow === null || flow === undefined ? null : { autoMergeAllowed: flow.autoMerge, defaultBranchRef: { name: "main" }, object: flow.workflow ? { __typename: "Blob" } : null }];
+  }));
+  return JSON.stringify({ data });
+}
 
 /** A machine whose clones (name to `owner/name` remote) answer `flows`, and the calls it was asked. */
-function machine(flows: Flows, clones: Readonly<Record<string, string>> = Object.fromEntries(Object.keys(flows).map((repo) => [repo.split("/")[1], repo]))) {
+function machine(flows: Flows, clones: Readonly<Record<string, string>> = Object.fromEntries(Object.keys(flows).map((repo) => [repo.split("/")[1], repo])), refusal?: ExecResult) {
   const asked: { file: string; args: readonly string[]; options: ExecOptions | undefined }[] = [];
   const exec = (file: string, args: readonly string[], options?: ExecOptions): ExecResult => {
     asked.push({ file, args, options });
     if (file === "git") return { status: 0, stdout: `git@github.com:${clones[args[1].split("/").pop() ?? ""] ?? "a11ign/unknown"}.git\n`, stderr: "" };
-    const repo = args[1].split("/").slice(1, 3).join("/");
-    const flow = flows[repo];
-    if (flow === undefined) return NOT_FOUND;
-    if (args.includes(".allow_auto_merge")) return typeof flow.autoMerge === "string" ? { status: 0, stdout: `${flow.autoMerge}\n`, stderr: "" } : flow.autoMerge;
-    return flow.workflow;
+    return refusal ?? { status: 0, stdout: answerOf(args.find((arg) => arg.startsWith("query=")) ?? "", flows), stderr: "" };
   };
   return { asked, deps: fakePluginDeps({ exec, clones: Object.fromEntries(Object.keys(clones).map((name) => [name, `/src/${name}`])) }) };
 }
 
-const WITH_FLOW = { autoMerge: "true", workflow: HAS };
-const WITHOUT_FLOW = { autoMerge: "false", workflow: NOT_FOUND };
+const WITH_FLOW = { autoMerge: true, workflow: true };
+const WITHOUT_FLOW = { autoMerge: false, workflow: false };
 
 test("A11-291: a repository with no merge flow fails the row, which names it and says what to add", () => {
   const [row] = mergeFlowChecks({ gh: WORKERS }, machine({ "a11ign/plugin": WITHOUT_FLOW, "a11ign/lab": WITH_FLOW }).deps);
@@ -45,7 +49,7 @@ test("A11-291: a repository with no merge flow fails the row, which names it and
 
 test("A11-291: every failing repository is named, and each says only what it lacks", () => {
   const [row] = mergeFlowChecks({}, machine({
-    "a11ign/plugin": WITHOUT_FLOW, "a11ign/auth-capture-check": { autoMerge: "true", workflow: NOT_FOUND }, "a11ign/documents": { autoMerge: "false", workflow: HAS }, "a11ign/lab": WITH_FLOW,
+    "a11ign/plugin": WITHOUT_FLOW, "a11ign/auth-capture-check": { autoMerge: true, workflow: false }, "a11ign/documents": { autoMerge: false, workflow: true }, "a11ign/lab": WITH_FLOW,
   }).deps);
   assert.equal(row.ok, false);
   assert.match(row.detail, /^3 of 4 repositories have no merge flow/);
@@ -65,17 +69,19 @@ test("A11-291: the row passes, naming the repositories, when every one has the f
 });
 
 test("A11-291: a repository the row cannot read fails it, saying so, and is never read as having no flow or as having one", () => {
-  const unreadable = { autoMerge: { status: 1, stdout: "", stderr: "gh: Bad credentials (HTTP 401)" } as ExecResult, workflow: HAS };
-  const [row] = mergeFlowChecks({}, machine({ "a11ign/plugin": unreadable, "a11ign/lab": WITH_FLOW }).deps);
+  const [row] = mergeFlowChecks({}, machine({ "a11ign/plugin": null, "a11ign/lab": WITH_FLOW }).deps);
   assert.equal(row.ok, false);
   assert.match(row.detail, /^1 of 2 could not be read: a11ign\/plugin: could not be read$/, "and it is not counted among those with no flow");
   assert.match(row.fix ?? "", /^a11ign\/plugin: run `gh api repos\/a11ign\/plugin --jq \.allow_auto_merge` with the workers' GH_CONFIG_DIR to see why$/);
+  const refused = mergeFlowChecks({}, machine({ "a11ign/plugin": WITH_FLOW }, undefined, { status: 1, stdout: "", stderr: "gh: Bad credentials (HTTP 401)" }).deps)[0];
+  assert.deepEqual([refused.ok, refused.detail], [false, "1 of 1 could not be read: a11ign/plugin: could not be read"], "a call GitHub refused reads none of them");
 });
 
-test("A11-291: each repository is asked once, as the workers' account, and a repository two clones name is asked once", () => {
-  const { asked, deps } = machine({ "a11ign/plugin": WITH_FLOW }, { plugin: "a11ign/plugin", "plugin-copy": "a11ign/plugin" });
+test("A11-291: every repository is asked in ONE call, as the workers' account, and a repository two clones name is asked once", () => {
+  const { asked, deps } = machine({ "a11ign/plugin": WITH_FLOW, "a11ign/lab": WITH_FLOW }, { plugin: "a11ign/plugin", "plugin-copy": "a11ign/plugin", lab: "a11ign/lab" });
   mergeFlowChecks({ gh: WORKERS }, deps);
   const gh = asked.filter(({ file }) => file === "gh");
-  assert.equal(gh.length, 2, "the setting and the file, for the one repository");
-  assert.ok(gh.every(({ options }) => (options?.env as Record<string, string>)?.GH_CONFIG_DIR === "/home/agent/workers/gh"));
+  assert.equal(gh.length, 1, "doctor's plugin checks run under a time limit, so thirteen repositories are not thirteen calls");
+  assert.equal([...(gh[0].args.find((arg) => arg.startsWith("query=")) ?? "").matchAll(/name: "plugin"/g)].length, 1);
+  assert.equal((gh[0].options?.env as Record<string, string>)?.GH_CONFIG_DIR, "/home/agent/workers/gh");
 });

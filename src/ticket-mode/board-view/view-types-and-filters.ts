@@ -118,6 +118,8 @@ export type ViewEntry = Readonly<{
   verdictNotPosted?: string;
   /** Set while herdr has refused twice, for the same reason, to start the reviewer of one of the run's pull requests: the pull request and herdr's reason (A11-241). */
   reviewerRefused?: string;
+  /** Set while an open pull request of the run is approved and green and nothing has merged it for an hour, or adds the repository's first merge flow (A11-291): the note, under the escalation list's access item. The run reads Needs you for it, and is still watched. Written by `recordMergeNote`. */
+  mergeNote?: string;
   /** Set while a stacked pull request of the run needs its base said: by URL, what is needed (A11-106). */
   retargets?: Readonly<Record<string, string>>;
   /** The blocker branch a run was branched from, and what agent-org has done to keep it on that branch (A11-116). */

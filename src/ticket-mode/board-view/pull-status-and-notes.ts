@@ -241,14 +241,17 @@ export function repoLabel(entry: ViewEntry): string {
 /** The statuses of a run that waits on a review or a merge: the ones a board note (a stale block, a reviewer on a dialog, a reviewer herdr will not start) may turn into Needs you without taking the run's work from it. */
 export const WAITS_ON_REVIEW: ReadonlySet<string> = new Set(["awaiting-review", "not-merging", "ready-to-merge", "published"]);
 
+/** Whether the board left a note on the run that asks a person without changing its work: a reviewer herdr refused twice to start (A11-241), or a pull request approved and green that nothing merges (A11-291). */
+const hasBoardNote = (entry: ViewEntry): boolean => entry.reviewerRefused !== undefined || entry.mergeNote !== undefined;
+
 /**
  * What the board shows of a run's status: {@link workStatus}, except that a run waiting on a review or a merge whose reviewer herdr refused twice to start (`reviewerRefused`, A11-241) reads Needs you, since the board retries on
- * every sweep and only a person can mend what herdr says. It is a NOTE on the run and not a change of its work: whether the board watches the run, offers Approve or Publish, or resumes its worker is decided by
+ * every sweep and only a person can mend what herdr says; so does one with a pull request approved and green that nothing has merged for an hour, or that installs a repository's first merge flow (`mergeNote`, A11-291). It is a NOTE on the run and not a change of its work: whether the board watches the run, offers Approve or Publish, or resumes its worker is decided by
  * `workStatus`, so a refused reviewer does not stop the board answering feedback on the pull request.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   const status = workStatus(entry, entries);
-  return entry.phase === "finished" && entry.reviewerRefused !== undefined && WAITS_ON_REVIEW.has(status) ? "needs-you" : status;
+  return entry.phase === "finished" && hasBoardNote(entry) && WAITS_ON_REVIEW.has(status) ? "needs-you" : status;
 }
 
 /**

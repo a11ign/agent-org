@@ -66,5 +66,7 @@ export function notMergingPulls(entry: ViewEntry): readonly Readonly<{ url: stri
   });
 }
 
-/** Whether the run has an open pull request that is approved, green and not merging (A11-291): what its status reads "Approved, not merging" for. PURE. */
-export const isNotMerging = (entry: ViewEntry): boolean => speaksOfMerge(entry) && notMergingPulls(entry).length > 0;
+/**
+ * Whether every open pull request of the run is approved, green and not merging (A11-291): what its status reads "Approved, not merging" for. A run with one pull request that merges nothing and another that still waits for its review is waiting, and says so. PURE.
+ */
+export const isNotMerging = (entry: ViewEntry): boolean => speaksOfMerge(entry) && notMergingPulls(entry).length > 0 && notMergingPulls(entry).length === openPulls(entry).length;

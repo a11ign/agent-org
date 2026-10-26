@@ -44,14 +44,16 @@ const SHIM = "/home/me/.local/bin/agent-org";
 const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
 type Answer = { status: number | null; stdout: string; stderr: string };
 /** The GitHub CLI as the doctor tests see it: the extension is `listing`, and a repository's stacks answer `stacks` (a function of the repository). */
-const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => ({ status: 0, stdout: "[]", stderr: "" }), mergeFlow: (repo: string, ask: "auto-merge" | "arm workflow") => Answer = () => ({ status: 0, stdout: "true\n", stderr: "" })) =>
+const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => ({ status: 0, stdout: "[]", stderr: "" }), mergeFlow: (repo: string) => { autoMerge: boolean; workflow: boolean } | null = () => ({ autoMerge: true, workflow: true })) =>
   (args: readonly string[]): Answer => {
     if (args[0] === "extension") return { status: 0, stdout: listing, stderr: "" };
-    const repo = args[1].split("/").slice(1, 3).join("/");
-    // A11-291: the merge flow's two reads, the repository's `allow_auto_merge` and the arm workflow's file.
-    if (args.includes(".allow_auto_merge")) return mergeFlow(repo, "auto-merge");
-    if (args[1].endsWith("/contents/.github/workflows/auto-arm.yml")) return mergeFlow(repo, "arm workflow");
-    return stacks(repo);
+    // A11-291: the merge flow's one read, for every repository at once: the setting, the default branch and the arm workflow's file.
+    if (args[1] === "graphql") {
+      const asked = [...(args.find((arg) => arg.startsWith("query=")) ?? "").matchAll(/repository\(owner: "([^"]+)", name: "([^"]+)"\)/g)].map(([, owner, name]) => `${owner}/${name}`);
+      const data = Object.fromEntries(asked.map((repo, n) => [`r${n}`, mergeFlow(repo) === null ? null : { autoMergeAllowed: mergeFlow(repo)!.autoMerge, defaultBranchRef: { name: "main" }, object: mergeFlow(repo)!.workflow ? { __typename: "Blob" } : null }]));
+      return { status: 0, stdout: JSON.stringify({ data }), stderr: "" };
+    }
+    return stacks(args[1].split("/").slice(1, 3).join("/"));
   };
 
 /**
@@ -735,10 +737,27 @@ test("A11-160: the plugin's rows come from the host's clones and the workers' ac
     return execOf({ origin: GITHUB_ORIGIN })(file, args, options);
   };
   await diagnose(deps({ readFile: () => WORKERS_HOST, exec }));
-  assert.deepEqual(asked.map(({ args }) => args.join(" ")), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks",
-    // A11-291: and whether the repository has a merge flow, which is its auto-merge setting and the arm workflow's file.
-    "api repos/a11ign/nbl-ui-netbox --jq .allow_auto_merge", "api repos/a11ign/nbl-ui-netbox/contents/.github/workflows/auto-arm.yml --jq .type"]);
+  const said = asked.map(({ args }) => args.join(" "));
+  assert.deepEqual(said.slice(0, 2), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks"]);
+  // A11-291: and whether the repository has a merge flow, in one query for all the host's repositories.
+  assert.equal(said.length, 3);
+  assert.match(said[2], /^api graphql -f query=query \{ r0: repository\(owner: "a11ign", name: "nbl-ui-netbox"\) \{ autoMergeAllowed defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
   assert.ok(asked.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: "/home/agent/workers/gh" })), "every call acts as the workers' account");
+});
+
+test("A11-291: doctor finds a repository with no merge flow: the merge flow row names it, says what to add, and fails the code host's row; with the flow it passes", async () => {
+  const passing = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN }) })));
+  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox allow auto-merge and hold .github/workflows/auto-arm.yml"]);
+  const noFlow = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN, gh: ghFake(GH_LISTING, undefined, () => ({ autoMerge: false, workflow: false })) }) })));
+  const row = noFlow["merge flow"];
+  assert.equal(row.ok, false);
+  assert.equal(row.detail, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch");
+  assert.match(row.fix ?? "", /^a11ign\/nbl-ui-netbox: add \.github\/workflows\/auto-arm\.yml with its `gate` check/);
+  assert.match(row.fix ?? "", /turn on "Allow auto-merge"/);
+  assert.equal(noFlow["code host (github)"].ok, false, "a failing plugin row fails the code host's row");
+  assert.equal(noFlow["code host (github)"].fix, row.fix);
+  const noClone = byName(await diagnose(deps({ readFile: () => WORKERS_HOST })));
+  assert.equal("merge flow" in noClone, false, "a host whose clones name no GitHub repository adds no row");
 });
 
 // `tickets.preflight`: each command is run, as the pool runs it before a start, and a failure says what the command printed.

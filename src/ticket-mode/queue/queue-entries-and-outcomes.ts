@@ -378,6 +378,8 @@ export type Entry = Readonly<{
    * Cleared once no pull request of the run is refused twice. Written by `recordReviewerRefusal`.
    */
   reviewerRefused?: string;
+  /** Set while an open pull request of the run is approved and green and nothing has merged it for an hour, or adds the repository's first merge flow (A11-291): the note, under the escalation list's access item. The run reads Needs you for it, and is still watched. Written by `recordMergeNote`. */
+  mergeNote?: string;
   /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none, and when. */
   published?: Readonly<{ link: string | null; at: number }>;
   /** Set while a running run's worker last said its background work is still running: see {@link WorkingNote}. Dropped when the run ends. */
