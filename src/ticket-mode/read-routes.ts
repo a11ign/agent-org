@@ -20,6 +20,7 @@ import { inWork, takenState } from "./pick-taken.ts";
 import type { PluginsApi } from "./plugins-api.ts";
 import type { ProblemOptions } from "./plugins.ts";
 import { type Entry, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
+import { healthNumber } from "./health-number.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
@@ -204,7 +205,8 @@ export function queueView(board: Pick<ReadBoard, "store" | "pool" | "update" | "
     return { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) };
   });
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
+  // `health`: the person-interventions of each of the last days and the stand-offs the board settled with no person (A11-257, A11-290), from the runs' logs.
+  return { ...queue, entries, health: healthNumber(board.store.get(), Date.now()), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update(),
     afterMergeChecks: afterMergeView(board.settings.stateDir) };
 }
 

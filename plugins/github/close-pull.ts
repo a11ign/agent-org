@@ -26,6 +26,17 @@ export function closePull(url: string, comment: string, gh: Gh): void {
   postComment(repo, pull.number, comment, gh);
 }
 
+/** Posts `comment` on the pull request at `url` (contract 1.25, A11-290), as the workers' account. THROWS, in GitHub's own first line, for an address that is no pull request and for a comment GitHub refuses. */
+export function commentOnPull(url: string, comment: string, gh: Gh): void {
+  const pull = pullOf(url);
+  if (pull === null) throw new Error(`${url} is not a GitHub pull request address`);
+  try {
+    gh(["api", "-X", "POST", `repos/${pull.owner}/${pull.repo}/issues/${pull.number}/comments`, "-f", `body=${comment}`]);
+  } catch (err) {
+    throw new Error(firstLine(err));
+  }
+}
+
 /** Posts `comment` on the pull request that was just closed. A refusal is left unsaid: the pull request is closed, which is what was asked. */
 function postComment(repo: string, number: number, comment: string, gh: Gh): void {
   try {

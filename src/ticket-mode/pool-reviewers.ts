@@ -36,8 +36,11 @@ import { doneWhenOf } from "./done-when.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { partialStepOf } from "./board-view/plan-steps.ts";
 import { decisionsOf, hasDecisionsSection, unsupportedClaims } from "./ticket-decisions.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { planDecisions, planStepSection } from "./pool-ticket-text.ts";
 import { escalationList } from "./escalation.ts";
+import { heldBy, recordRefusedRereview } from "./pool-standoff.ts";
+import { isRereviewComment } from "./standoff-words.ts";
 import type { Reply, Review } from "../plugins/contracts/code-host.ts";
 import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef, ReviewerReply } from "../plugins/contracts/reviewer.ts";
 
@@ -112,9 +115,6 @@ const rereviewKey = (key: string): string => `${key}#rereview`;
  * (A11-172; absent when it could): with a refusal the claim is why nothing started, and without one the reviewer started with no claim, because no other instance is seen.
  */
 type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null; unclaimed?: string }>;
-
-/** The run of the queue that holds the pull request at `url`, or undefined when none does (one a person opened, or a run since removed). */
-const heldBy = (ctx: PoolContext, url: string): Entry | undefined => ctx.store.get().entries.find((entry) => pullsOf(entry).some((pull) => pull.url === url));
 
 /** The pull request body a reviewer reads, as the host gave it; empty when the host gave none. */
 const bodyOf = (state: ReviewState): string => String(state.view.body ?? "");
@@ -204,7 +204,7 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const earlierLook = looks.get(key);
   kind.recorded.add(key);
   // The decisions a start was briefed with are known only when a run holds the pull request: with none, the brief carries no ticket, and a later change cannot be told from the first sight of them.
-  const decisions = heldBy(ctx, url) === undefined ? {} : { decisions: kind.brief.decisions ?? "" };
+  const decisions = heldBy(ctx, url) === undefined ? {} : { decisions: kind.brief.decisions ?? "", plan: kind.brief.planDecisions ?? "" };
   looks.set(key, { at: ctx.now(), body: kind.body, ...decisions });
   reviewerDropped.delete(dropped);
   rememberReviewers(ctx);
@@ -313,6 +313,15 @@ function decisionsChangeSince(look: Look | undefined, held: Entry | undefined): 
   return changedLines(look.decisions, decisionsOf(held.ticket.description) ?? "");
 }
 
+/**
+ * The lines of the plan's decisions that changed since `look` (A11-290): for a pull request a run holds, the decisions its plan records now, against the decisions the head's last start was briefed with. A planner that amends a decision of a stand-off changes them, and the
+ * reviewer re-reviews bound by the amendment. Empty when no run holds the pull request, or the look does not know the plan's decisions (one written before they were kept).
+ */
+function planChangeSince(ctx: PoolContext, look: Look | undefined, held: Entry | undefined): ReviewBodyLine[] {
+  if (look?.plan === undefined || held === undefined) return [];
+  return changedLines(look.plan, planDecisions(ctx, held.ticket.key) ?? "");
+}
+
 /** Whether a run that holds the pull request may be asked for a re-review now: its round has ended, and it has not been handed back for want of a round (A11-235). */
 const awaitsRereview = (held: Entry): boolean => held.phase === "finished" && (held.handedBack === undefined || roundsLeft(held));
 
@@ -324,8 +333,8 @@ const bodyChangedAfterRound = (held: Entry | undefined, block: Review, changed: 
   (held === undefined || (held.finishedAt ?? 0) > block.at ? changed : []);
 
 /** What answered a block, in the words a hand-back and a round's log use: the description edited, the ticket's Decisions changed, or neither (a reply). */
-const answeredHow = ({ edited, decided }: { edited: boolean; decided: boolean }): string =>
-  [...(edited ? ["by editing the description"] : []), ...(decided ? ["by a change to the ticket's Decisions"] : [])].join(" and ") || "in a reply";
+const answeredHow = ({ edited, decided, amended }: { edited: boolean; decided: boolean; amended: boolean }): string =>
+  [...(edited ? ["by editing the description"] : []), ...(decided ? ["by a change to the ticket's Decisions"] : []), ...(amended ? ["by the planner's amendment of a decision"] : [])].join(" and ") || "in a reply";
 
 /** How the run's hand-back names the block it did not re-review: which head, and how it was answered (`how` is "by editing the description" or "in a reply"). */
 const answeredWords = (url: string, head: string, how: string): string => `${REVIEWER_LOGIN}'s block on ${url} at ${head.slice(0, 8)} was answered ${how}, and the board does not review it again`;
@@ -347,17 +356,17 @@ function handBackUnreviewed(ctx: PoolContext, held: Entry, answered: string): vo
 }
 
 /** What answered a block, as a re-review's brief carries it: the replies quoted, and the lines of the description and of the ticket's Decisions that changed. */
-type Answers = Readonly<{ replies: readonly ReviewerReply[]; changed: readonly ReviewBodyLine[]; decided: readonly ReviewBodyLine[] }>;
+type Answers = Readonly<{ replies: readonly ReviewerReply[]; changed: readonly ReviewBodyLine[]; decided: readonly ReviewBodyLine[]; amended: readonly ReviewBodyLine[] }>;
 
 /**
  * The brief of a re-review (A11-156, A11-235, A11-250): the ticket's brief, and what answered the block. A reply or a new description line that claims a person decided something is `unsupported` unless it links the
  * ticket, and a ticket that states no decisions supports none (`ticketUrl` null).
  */
-function rereviewBrief(brief: ReviewBrief, held: Entry | undefined, { replies, changed, decided }: Answers): ReviewBrief {
+function rereviewBrief(brief: ReviewBrief, held: Entry | undefined, { replies, changed, decided, amended }: Answers): ReviewBrief {
   const ticketUrl = held !== undefined && hasDecisionsSection(held.ticket.description) ? held.ticket.url : null;
   const claimed = [...replies.map(({ text }) => text), ...changed.filter(({ kind }) => kind === "added").map(({ text }) => text)];
   const unsupported = unsupportedClaims(claimed, ticketUrl);
-  return { ...brief, rereview: { replies, ...(changed.length === 0 ? {} : { body: changed }), ...(decided.length === 0 ? {} : { decisions: decided }), ...(unsupported.length === 0 ? {} : { unsupported }) } };
+  return { ...brief, rereview: { replies, ...(changed.length === 0 ? {} : { body: changed }), ...(decided.length === 0 ? {} : { decisions: decided }), ...(amended.length === 0 ? {} : { planDecisions: amended }), ...(unsupported.length === 0 ? {} : { unsupported }) } };
 }
 
 /**
@@ -379,17 +388,20 @@ function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, stat
   if (held !== undefined && !awaitsRereview(held)) return null;
   const changed = bodyChangedAfterRound(held, block, bodyChangeSince(look, state));
   const decided = decisionsChangeSince(look, held);
-  const replies = repliesAfter(ctx, url, `${url}@${head}`, Math.max(block.at, look?.at ?? 0));
+  const amended = planChangeSince(ctx, look, held);
+  // The board's own record of a refused re-review is a comment of its account, and answers nothing (A11-290).
+  const replies = repliesAfter(ctx, url, `${url}@${head}`, Math.max(block.at, look?.at ?? 0))?.filter(({ text }) => !isRereviewComment(text)) ?? null;
   if (replies === null) return null;
-  if (replies.length === 0 && changed.length === 0 && decided.length === 0) return null;
+  const unanswered = [replies, changed, decided, amended].every((answer) => answer.length === 0);
+  if (unanswered) return null;
   if (ctx.codeHost.readPullState(url) !== "OPEN") return null;
-  const how = answeredHow({ edited: changed.length > 0, decided: decided.length > 0 });
+  const how = answeredHow({ edited: changed.length > 0, decided: decided.length > 0, amended: amended.length > 0 });
   if (held !== undefined && !roundsLeft(held)) {
     handBackUnreviewed(ctx, held, answeredWords(url, head, how));
     return null;
   }
   const quoted = replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text }));
-  const brief = rereviewBrief(briefOf(ctx, url, state), held, { replies: quoted, changed, decided });
+  const brief = rereviewBrief(briefOf(ctx, url, state), held, { replies: quoted, changed, decided, amended });
   const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state) });
   if (held !== undefined && started.refusal === null) update(ctx, (queue) => countRereview(queue, held.ticket.key, ctx.now(), `the block was answered ${how}`));
   return started;
@@ -495,6 +507,8 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const startable = state.settled && !posted && !reviewerStarted.has(key);
   const first = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, state) : null;
   closeAnsweredReviewer(ctx, reviewer, url, state);
+  // A re-review the verdict door refused leaves its result on the run and on the pull request (A11-290), before another look at the head is asked for.
+  recordRefusedRereview(ctx, reviewer, url, state, (since) => repliesAfter(ctx, url, key, since));
   // The reply to a block asks for one more look at the same head, once the first reviewer has gone.
   const rereview = first === null ? rereviewFor(ctx, reviewer, url, state) : null;
   const started = first ?? rereview;

@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.24 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.25 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.25 (A11-290): `commentOnPull`, OPTIONAL: post a comment on a pull request as the workers' account, which is how the board records the result of a re-review that the verdict door refused (an equal patch) on the pull request itself. A plugin of 1.24 is read as one that cannot, and the board then keeps the result in the run's log alone and says so once.
 // 1.24 (A11-286): `PullFeedback.behind`, OPTIONAL: whether the host says the pull request's branch is behind its base (GitHub's `mergeStateStatus: BEHIND`, which it reports only where the base requires branches to be up to date), which the board brings up to date with the host's `updateBranch` before the merge queue takes it. A plugin of 1.23 is read as one that says nothing of `behind`, and the board then updates only the pull requests that conflict.
 // 1.23 (A11-248): `closePull`, OPTIONAL: close a pull request with a comment, as the workers' account, which is how the board closes a member of a stack left with no changes of its own once everything it held merged below it. A plugin of 1.22 is read as one that cannot close, and the board then says on the card that the pull request is empty and is to be closed.
 // 1.22 (A11-261): `readBranchCi`, OPTIONAL: the workflow runs on one branch of a repository with each job's runner labels and times, which the board adds up into the CI minutes a ticket's pushes cost (weighted as GitHub bills them) and warns and holds a run on when a ticket passes its budget. A plugin of 1.21 is read as one that reads no branch's CI, and the board then shows and holds nothing.
@@ -56,7 +57,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.24";
+export const CODE_HOST_CONTRACT_VERSION = "1.25";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -344,6 +345,11 @@ export interface CodeHost extends CodeHostPort {
    * closed, and for an address that is no pull request of the host; it answers nothing, so a caller never reads a refusal as a close. A pull request that is already closed is not an error. A host without it cannot close, and the board then says on the card that the pull request is to be closed.
    */
   closePull?(url: string, comment: string): void;
+  /**
+   * Posts `comment` on the pull request at `url` as the workers' account (contract 1.25): the board records the result of a re-review the verdict door refused on the pull request itself. THROWS, with the host's own first line, when the comment
+   * cannot be posted (an address that is no pull request of the host included), so no caller reads a refusal as a post.
+   */
+  commentOnPull?(url: string, comment: string): void;
   /**
    * What the pull request at `url` is, as the stack merge sees it (contract 1.16), or null for "could not ask": an address that is no pull request of the host, and a pull request the host will not say are both null. Null is never "it is not in a stack".
    * A host without it is read as one the board asks the arm bot for nothing on.

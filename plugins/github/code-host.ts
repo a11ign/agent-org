@@ -29,7 +29,7 @@ import { readPullState, readReviewState } from "./reviews.ts";
 import { requestStackMerge, stackMergeFactsOf } from "./stack-merge.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
 import { updateBranch } from "./update-branch.ts";
-import { closePull } from "./close-pull.ts";
+import { closePull, commentOnPull } from "./close-pull.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
 import { createRows, type RowsRunners } from "./rows/index.ts";
 import { gateRunner, runGhTogether } from "./rows/gate-runner.ts";
@@ -99,6 +99,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
     updateBranch: (url, expectedHead) => updateBranch(url, expectedHead, gh),
     closePull: (url, comment) => closePull(url, comment, gh),
+    commentOnPull: (url, comment) => commentOnPull(url, comment, gh),
     readReviewClaims: (repository, head) => readReviewClaims(repository, head, gh),
     // The claim is written as the reviewer role: the environment it is given (the account folder and token the reviewer acts with) is laid over this process's for the one call.
     writeReviewClaim: (write) => writeReviewClaim(write, ghRunner(deps, write.environment)),

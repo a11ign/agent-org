@@ -35,6 +35,7 @@ import { observeWriter, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls, type PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
+import { startStandoffRound } from "./pool-standoff.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
 import { releaseTicketWaits } from "./pool-ticket-wait.ts";
@@ -539,6 +540,11 @@ export function watchFeedback(ctx: PoolContext): void {
     const removals = answerQueue(ctx, entry, open);
     // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
     const reviewer = isWatched(entry) ? reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url)) : [];
+    // A re-review that stayed not convinced at an unchanged head is routed to the planner or the worker, once for each head (A11-290), before any other round is asked of the run.
+    if (isWatched(entry) && routeStandoff(ctx, entry.ticket.key)) {
+      queued = true;
+      continue;
+    }
     // A pull request that conflicts or is behind has the base merged into it before a worker is asked (A11-286), unless a round starts in this pass for something else: its worker then finds the branch where it left it, and is told of the conflict.
     if (!startsAnotherRound(entry, readable, [checks.feedback, removals.feedback, removals.conflict, ...reviewer])) mergeBaseOf(ctx, entry, open);
     if (isWatched(entry)) {
@@ -560,6 +566,12 @@ export function watchFeedback(ctx: PoolContext): void {
     flagReviewerDialog(ctx, key);
   }
   if (queued) void tick(ctx);
+}
+
+/** Route the stand-off the run holds now (A11-290), read afresh: the reviewer lines above may have just recorded it. Returns whether a round was queued. */
+function routeStandoff(ctx: PoolContext, key: string): boolean {
+  const current = ctx.store.get().entries.find((each) => each.ticket.key === key);
+  return current !== undefined && current.phase === "finished" && startStandoffRound(ctx, current);
 }
 
 /**
