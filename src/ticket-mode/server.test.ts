@@ -1029,8 +1029,7 @@ test("A11-106: the feedback sweeps are each scheduled on the feedback cadence, a
   };
   const scheduled: { run: () => void; ms: number }[] = [];
   startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
-  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, REVIEW_START_MS], "each sweep is on the feedback cadence, except the reviewers' (A11-306)");
-  assert.ok(REVIEW_START_MS <= 60_000 && REVIEW_START_MS < FEEDBACK_MS, "a green head is looked at at least once a minute, so a reviewer starts well within 2 minutes of the checks going green");
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS], "each sweep is on the feedback cadence");
   const stderr = process.stderr.write;
   const said: string[] = [];
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
@@ -1475,7 +1474,7 @@ test("A11-255: the dependency sweep is scheduled on the feedback cadence beside 
   const calls: string[] = [];
   scheduled.length = 0;
   startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); }, { dependencyUpdates: () => { calls.push("dependencyUpdates"); return Promise.reject(new Error("the code host is down")); } });
-  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, REVIEW_START_MS, FEEDBACK_MS]);
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS));
   const stderr = process.stderr.write;
   const said: string[] = [];
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
@@ -1509,4 +1508,15 @@ test("A11-255: the board's dependency sweep asks the writer for a major, records
   await sweep();
   const [, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
   assert.deepEqual(queue.entries.map((entry: any) => [entry.ticket.key, entry.model, entry.effort]), [["NBF-101", "sonnet", "low"]], "queued like one a person adds, on the saved choice");
+});
+
+test("A11-306: the first review of a green head is its own sweep, on a minute, beside the others on the feedback cadence", () => {
+  const calls: string[] = [];
+  const pool = { watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => { calls.push("reviewNewHeads"); }, startGreenReviewers: () => { calls.push("startGreenReviewers"); } };
+  const scheduled: { run: () => void; ms: number }[] = [];
+  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, REVIEW_START_MS], "the full look at reviewers stays on the feedback cadence; the green heads' is the sixth");
+  assert.ok(REVIEW_START_MS <= 60_000, "a green head is looked at at least once a minute, so a reviewer starts well within 2 minutes of the checks going green");
+  scheduled[5].run();
+  assert.deepEqual(calls, ["startGreenReviewers"], "and the sixth is the pool's startGreenReviewers, not reviewNewHeads");
 });

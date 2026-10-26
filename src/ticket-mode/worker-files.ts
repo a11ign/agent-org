@@ -702,7 +702,7 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
 }
 
 /**
- * A review run's brief, as markdown: the person approved `prs`, so mark each ready, see it through its checks and its review, and fix what they
+ * A review run's brief, as markdown: the person approved `prs`, so mark each ready, answer what is on them, and fix what they
  * find. `reviewNotes` is the host file's `tickets.review`, how this machine's pull requests are checked and reviewed, and `notes` its
  * `tickets.brief`. `resumed` is true when the worker is the one that wrote the code, resumed with its own conversation. `feedback` is set on a
  * round the board started on its own: the new feedback on the pull requests, which are ready already, that the round answers. `asked` is set

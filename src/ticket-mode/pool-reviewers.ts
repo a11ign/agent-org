@@ -184,8 +184,8 @@ function forgetRefusalsExcept(ctx: PoolContext, url: string, kept: string | null
   return stale.length > 0;
 }
 
-/** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, what it is called in a log line, and the pull request body it starts with (its look, A11-235). */
-type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => string; says: string; brief: ReviewBrief; adopts: boolean; body: string }>;
+/** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, what it is called in a log line, the pull request body it starts with (its look, A11-235), and whether a refusal of herdr's is counted toward asking a person: the sweep that only starts first reviews early (A11-306) does not count, so the count stays the one per full sweep it was (A11-241). */
+type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => string; says: string; brief: ReviewBrief; adopts: boolean; body: string; counts: boolean }>;
 
 const withUnclaimed = (reason: string | undefined): { unclaimed?: string } => (reason === undefined ? {} : { unclaimed: reason });
 
@@ -195,6 +195,11 @@ export const REVIEW_START_LIMIT_MS = 2 * 60_000;
 /** Notes the first look that reads a head's checks settled green with no review on it, which the gap to its reviewer's start is counted from (A11-306). */
 function noteGreen(ctx: PoolContext, key: string): void {
   if (!ctx.greenSeen.has(key)) ctx.greenSeen.set(key, ctx.now());
+}
+
+/** Forgets the green read of every head of `url` but the one under `kept` (`url@head`; none when null): a new head is read afresh, and a head whose checks went red again, or whose review is posted, is counted from its next green (A11-306). */
+function forgetGreen(ctx: PoolContext, url: string, kept: string | null): void {
+  for (const key of [...ctx.greenSeen.keys()]) if (key.startsWith(`${url}@`) && key !== kept) ctx.greenSeen.delete(key);
 }
 
 /** Says how long after its checks were first read green a head's reviewer started, and that it was late when it was past {@link REVIEW_START_LIMIT_MS}, so the idle gaps show in the log (A11-306). Forgets the head's green. */
@@ -232,7 +237,7 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const started = adopted ? null : reviewer.start({ pr: url, head }, kind.brief);
   const refusal = started !== null && "refusal" in started ? started.refusal : null;
   // Counted before the memory is written, so a restart keeps the count; the card follows it at the end of the look (A11-241).
-  const counted = countStartRefusal(ctx, key, refusal);
+  const counted = kind.counts && countStartRefusal(ctx, key, refusal);
   if (started === null) {
     if (counted) rememberReviewers(ctx);
     return { refusal: null, tookOver: null };
@@ -263,8 +268,17 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
 }
 
 /** The first review of a head (A11-119): recorded in `reviewerStarted`, under the key `reviewerDropped` has always held it by. */
+const firstReviewKind = (ctx: PoolContext, url: string, state: ReviewState): Omit<StartKind, "counts"> =>
+  ({ recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url, state), adopts: true, body: bodyOf(state) });
+
+/** The first review of a head, whose refusals of herdr's count toward asking a person (A11-241). */
 function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer {
-  return startWith(ctx, reviewer, url, state.head, { recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url, state), adopts: true, body: bodyOf(state) });
+  return startWith(ctx, reviewer, url, state.head, { ...firstReviewKind(ctx, url, state), counts: true });
+}
+
+/** The first review of a head, started by the early pass of green heads (A11-306): the same start, whose refusals count nothing, since the full sweep counts them. */
+function startEarlyFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer {
+  return startWith(ctx, reviewer, url, state.head, { ...firstReviewKind(ctx, url, state), counts: false });
 }
 
 /**
@@ -429,7 +443,7 @@ function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, stat
   }
   const quoted = replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text }));
   const brief = rereviewBrief(briefOf(ctx, url, state), held, { replies: quoted, changed, decided, amended });
-  const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state) });
+  const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state), counts: true });
   if (held !== undefined && started.refusal === null) update(ctx, (queue) => countRereview(queue, held.ticket.key, ctx.now(), `the block was answered ${how}`));
   return started;
 }
@@ -511,9 +525,9 @@ function sayOnce(ctx: PoolContext, key: string, line: string): void {
  * at (`unpostedVerdict`), a head whose checks have settled green gets its reviewer once (`startFor`), and a posted verdict closes its reviewer. What it
  * read is kept for the board (`pullReads`). Returns the state read and the verdict not posted, or null when GitHub did not say, which the caller says.
  */
-function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Readonly<{ state: ReviewState; unposted: string | null }> | null {
+function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string, given: Readonly<{ state?: ReviewState; early?: boolean }> = {}): Readonly<{ state: ReviewState; unposted: string | null }> | null {
   const { codeHost, pullReads, reviewerReposts, reviewerRereviewed, reviewerStarted } = ctx;
-  const state = codeHost.readReviewState(url);
+  const state = given.state ?? codeHost.readReviewState(url);
   if (state === null) return null;
   const { head } = state;
   const key = `${url}@${head}`;
@@ -533,8 +547,8 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   // reviewer for it again. A new head after requested changes has no posted review, so it is started here.
   const startable = state.settled && !posted && !reviewerStarted.has(key);
   if (startable) noteGreen(ctx, key);
-  else if (posted) ctx.greenSeen.delete(key);
-  const first = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, state) : null;
+  else forgetGreen(ctx, url, posted || !state.settled ? null : key);
+  const first = startable && codeHost.readPullState(url) === "OPEN" ? (given.early === true ? startEarlyFor : startFor)(ctx, reviewer, url, state) : null;
   closeAnsweredReviewer(ctx, reviewer, url, state);
   // A re-review the verdict door refused leaves its result on the run and on the pull request (A11-290), before another look at the head is asked for.
   recordRefusedRereview(ctx, reviewer, url, state, (since) => repliesAfter(ctx, url, key, since));
@@ -653,6 +667,26 @@ export function reviewNewHeads(ctx: PoolContext): void {
   if (!unlisted) forgetClosedRefusals(ctx, listed);
   if (!unlisted) for (const key of [...ctx.greenSeen.keys()]) if (!listed.has(splitHeadKey(key).url)) ctx.greenSeen.delete(key);
   forgetMendedClaimProblems(ctx);
+}
+
+/**
+ * THE FIRST REVIEW OF A GREEN HEAD STARTS WITHIN 2 MINUTES OF ITS CHECKS GOING GREEN (A11-306). `reviewNewHeads` looks at everything about a pull request's reviewer, and its counts (the refusals that ask a person, A11-241, and the re-posts of a verdict, A11-83) are
+ * counted per look, so it stays on the feedback cadence; this pass is on a minute and does one thing: it reads each open pull request's state, and looks at the ones whose head is green, has no review and has no reviewer started and no start refused, with the same
+ * `reviewPull` and so the same start. A start it makes counts no refusal (`early`), and a head it left is looked at by `reviewNewHeads` as before, so the idle gap of a green head waiting for a sweep is at most this pass's cadence and nothing else changes.
+ */
+export function startGreenReviewers(ctx: PoolContext): void {
+  const { codeHost, refusedHeads, reviewer, reviewerStarted, settings } = ctx;
+  if (reviewer === undefined) return;
+  adoptRememberedReviewers(ctx);
+  for (const repository of reviewedRepositoriesOf(settings.clones)) {
+    for (const url of codeHost.openPullUrlsOf(repository) ?? []) {
+      const state = codeHost.readReviewState(url);
+      if (state === null) continue;
+      const key = `${url}@${state.head}`;
+      const due = state.settled && !reviewPostedAt(state.reviews, state.head) && !reviewerStarted.has(key) && !refusedHeads.has(key);
+      if (due) reviewPull(ctx, reviewer, url, { state, early: true });
+    }
+  }
 }
 
 /** Forgets the refusals of pull requests that are no longer open (A11-241), so a merged or closed pull request does not keep a run at Needs you, or `agent-org doctor` failing. */
