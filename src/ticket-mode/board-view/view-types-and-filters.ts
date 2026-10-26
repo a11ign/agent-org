@@ -52,6 +52,8 @@ export type ViewEntry = Readonly<{
   sessionNote?: string;
   /** Set when a person started the run past the overlap it was Blocked on: the run it overlapped, and where (A11-125). */
   overlapOverride?: Readonly<{ holder: string; pull: string | null; path: string | null; at: number }>;
+  /** Set on a queued run held by a blocker or by the files of another run: the ticket it waits on and when the board first saw it wait on that one (A11-298). */
+  waitSince?: Readonly<{ on: string; since: number }>;
   /** The repositories the run has made worktrees in, once it has made any. */
   repos?: readonly string[];
   /** Set while the ticket still needs its plan: the model and effort its planning run uses. */

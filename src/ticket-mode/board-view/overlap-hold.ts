@@ -8,7 +8,7 @@ import type { HeldClaim } from "../path-claims.ts";
 import { currentStepOf, currentStepPaths } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
 import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
-import { blockersOf, waitersOn } from "./waits-on.ts";
+import { sequencedBlockers, waitersOn } from "./waits-on.ts";
 
 /** Split a repository-prefixed path, `<repo>:<path>`, into its repository and its path within it. PURE. */
 const repoPath = (path: string): [string, string] => {
@@ -77,7 +77,7 @@ const holds = (entry: ViewEntry): boolean => {
  * Whether two runs are sequenced on purpose: one is a blocker of the other (`waitsOn`, `stackedOn`), so they are never held against each other, and a planner is not shown the other's paths. PURE.
  */
 const sequenced = (entry: ViewEntry, other: ViewEntry): boolean =>
-  blockersOf(entry).some(({ key }) => key === other.ticket.key) || blockersOf(other).some(({ key }) => key === entry.ticket.key);
+  sequencedBlockers(entry).some(({ key }) => key === other.ticket.key) || sequencedBlockers(other).some(({ key }) => key === entry.ticket.key);
 
 /**
  * The question whether a holder waits on a queued run's ticket through more than a blocker of its own: a ticket its idle worker declared a wait on, or one reached through the tickets those wait on ({@link waitersOn},

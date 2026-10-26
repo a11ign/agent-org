@@ -3,6 +3,7 @@
 //
 // One set of edge rules, shared by the overlap hold (a run never holds its files against a ticket it waits on, `overlap-hold.ts`) and the queue's hold of a stopped run (`waitsOn`). A fleet job and a CI run belong to
 // no ticket on the board, so they add no edge. PURE. Like the rest of `board-view/`, it is sent to the browser as one script with its relative imports dropped.
+import { isRoundOnOpenPull } from "./round-pulls.ts";
 import { openPulls, type ViewBlocker, type ViewEntry } from "./view-types-and-filters.ts";
 
 /**
@@ -12,6 +13,15 @@ import { openPulls, type ViewBlocker, type ViewEntry } from "./view-types-and-fi
 export function blockersOf(entry: ViewEntry): readonly ViewBlocker[] {
   const states = entry.stoppedForBlocker?.states;
   return [...(entry.blockers ?? []), ...unlistedStops(entry).map((key) => ({ key, state: states?.[key] ?? "unknown", status: "" }))];
+}
+
+/**
+ * The blockers a run is sequenced behind, which it waits for and which are never held against it (A11-298): all of {@link blockersOf}, except for a review round on an open pull request, which waits on none of its ticket's other
+ * blockers (the pull request exists already) and so is sequenced behind only the tickets its worker waited on. PURE.
+ */
+export function sequencedBlockers(entry: ViewEntry): readonly ViewBlocker[] {
+  const blockers = blockersOf(entry);
+  return isRoundOnOpenPull(entry) ? blockers.filter((blocker) => isStoppedFor(entry, blocker)) : blockers;
 }
 
 /** The tickets a stopped run is queued behind that its blockers, as the tracker last listed them, do not name. PURE. */
@@ -69,7 +79,7 @@ export function declaredWaits(entries: readonly ViewEntry[]): ReadonlyMap<string
 }
 
 /** The tickets a run waits on directly: its blockers that may still hold it ({@link blockersOf}, {@link stillAhead}), then the tickets its worker declared a wait on ({@link declaredIn}). PURE. */
-const directWaits = (entry: ViewEntry, board: Board): string[] => [...blockersOf(entry).filter(stillAhead).map(({ key }) => key), ...declaredIn(entry, board)];
+const directWaits = (entry: ViewEntry, board: Board): string[] => [...sequencedBlockers(entry).filter(stillAhead).map(({ key }) => key), ...declaredIn(entry, board)];
 
 /**
  * The tickets whose runs wait on ticket `key`, directly ({@link directWaits}) or through the tickets those wait on, each once, and never `key` itself. One walk back from `key` over the board's waits, so a caller

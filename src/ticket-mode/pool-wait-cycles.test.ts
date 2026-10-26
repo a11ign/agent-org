@@ -172,3 +172,36 @@ test("A11-272: a tracker with no comment gets the board's log line only, and the
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(made.settings.stateDir, "tickets", "wait-cycles.json"), "utf8")).told), ["NBF-1,NBF-2"]);
   assert.equal(fake.comments.length, 0);
 });
+
+/**
+ * A11-298, the 2026-10-25 board: NBF-1 (A11-229) queued on files, NBF-2 (A11-231) blocked by NBF-1, and NBF-3 (A11-232) a queued review round on pull request #18, which holds #18's files and was queued behind NBF-2
+ * by its worker's own wait.
+ */
+function roundCycle() {
+  const url = "https://github.com/a11ign/lab/pull/18";
+  const source = createFakeTracker([fakeTicket("NBF-1"), fakeTicket("NBF-2"), fakeTicket("NBF-3")]);
+  const made = poolFixture({ keys: ["NBF-1", "NBF-2", "NBF-3"], source, max: 3 });
+  const blocker = (key: string) => [{ key, state: "started", status: "In Progress", pulls: {} }];
+  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => {
+    if (entry.ticket.key === "NBF-1") return { ...entry, paths: FILES };
+    if (entry.ticket.key === "NBF-2") return { ...entry, paths: [], blockers: blocker("NBF-1") };
+    return { ...entry, paths: [], review: [{ repo: "lab", url }], pullFiles: { [url]: ["middleware/README.md"] }, stoppedForBlocker: { at: T0, keys: ["NBF-2"], others: [] }, blockers: [] };
+  }) });
+  return { ...made, source };
+}
+
+test("A11-298: the cycle 229 → (overlap) 232 → (blocker) 231 → (blocker) 229 is told once, and broken: the round's hold is lifted and 229 starts", async () => {
+  const run = roundCycle();
+  await run.pool.tick();
+  assert.ok(["starting", "running"].includes(run.entry("NBF-1").phase), "NBF-1 starts on the files the round holds, because the round waits on it through NBF-2");
+  assert.equal(run.entry("NBF-2").phase, "queued", "and NBF-2 stays behind NBF-1");
+  assert.equal(run.source.comments.length, 1);
+  const [{ key, text }] = run.source.comments;
+  assert.equal(key, "NBF-1");
+  assert.match(text, /Wait cycle NBF-1 → NBF-3 → NBF-2 → NBF-1: NBF-1 is held behind NBF-3's files; NBF-3 is blocked by NBF-2; NBF-2 is blocked by NBF-1\./);
+  assert.match(text, /The board lifts NBF-3's hold on NBF-1/);
+  assert.doesNotMatch(text, /a person must/, "nothing is left for the chairman's session to do");
+  await run.pool.tick();
+  await run.pool.tick();
+  assert.equal(run.source.comments.length, 1, "not again on later ticks");
+});

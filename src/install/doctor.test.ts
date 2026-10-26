@@ -97,7 +97,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     platform: "linux", arch: "x64", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
-    runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
+    runs: () => [], longWaits: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     declaredRepositories: async () => [], reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
@@ -1475,4 +1475,25 @@ test("A11-292: the doctor and onboard import on a machine where no project resol
       { env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", AGENT_ORG_HOST: "/nonexistent/host.json" }, encoding: "utf8", cwd: "/" });
     assert.equal(imported.status, 0, `${file}: ${imported.stderr.split("\n").find((line) => /Error|REFUSED/.test(line)) ?? imported.stderr}`);
   }
+});
+
+// A11-298: a queued run that has waited more than two hours on the same ticket is listed, with what it waits on and whether that ticket can move.
+const longWait = (key: string, on: string, moves: boolean, kind: "blocker" | "files" = "files") => ({ key, on, kind, since: Date.UTC(2026, 9, 25, 13, 0, 0), holder: { moves, words: `${on} is ${moves ? "In progress" : "Blocked"}, so it ${moves ? "can" : "cannot"} move by itself` } });
+
+test("A11-298: doctor lists each wait of more than two hours as a warning, with what it waits on and whether that ticket can move", async () => {
+  const at = Date.UTC(2026, 9, 25, 13, 0, 0) + 31 * HOUR;
+  const checks = byName(await diagnose(deps({ now: () => at, longWaits: () => [longWait("A11-229", "A11-232", false), longWait("A11-254", "A11-300", true, "blocker")] })));
+  const [files, blocker] = [checks["long wait A11-229"], checks["long wait A11-254"]];
+  assert.deepEqual([files.ok, files.warning, blocker.ok, blocker.warning], [true, true, true, true], "a wait is not a failure");
+  assert.deepEqual([files.detail, blocker.detail], [
+    "A11-229 has waited 31 h 0 min on A11-232's files: A11-232 is Blocked, so it cannot move by itself.",
+    "A11-254 has waited 31 h 0 min on A11-300, which blocks it: A11-300 is In progress, so it can move by itself.",
+  ]);
+  assert.match(files.fix ?? "", /^A11-232 cannot move by itself: finish it, or remove the run holding the files$/);
+  assert.match(blocker.fix ?? "", /^it ends when A11-300 is done; if it should not block, remove the blocker relation in the tracker$/);
+});
+
+test("A11-298: doctor says nothing of waits when none is long, or the queue cannot be read", async () => {
+  const longWaitRows = async (over: Parameters<typeof deps>[0]) => Object.keys(byName(await diagnose(deps(over)))).filter((name) => name.startsWith("long wait"));
+  assert.deepEqual([await longWaitRows(undefined), await longWaitRows({ longWaits: () => null })], [[], []]);
 });
