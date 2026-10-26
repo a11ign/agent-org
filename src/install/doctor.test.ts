@@ -51,7 +51,7 @@ const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => (
     // A11-291: the merge flow's one read, for every repository at once: the setting, the default branch and the arm workflow's file.
     if (args[1] === "graphql") {
       const asked = [...(args.find((arg) => arg.startsWith("query=")) ?? "").matchAll(/repository\(owner: "([^"]+)", name: "([^"]+)"\)/g)].map(([, owner, name]) => `${owner}/${name}`);
-      const data = Object.fromEntries(asked.map((repo, n) => [`r${n}`, mergeFlow(repo) === null ? null : { autoMergeAllowed: mergeFlow(repo)!.autoMerge, defaultBranchRef: { name: "main" }, object: mergeFlow(repo)!.workflow ? { __typename: "Blob" } : null }]));
+      const data = Object.fromEntries(asked.map((repo, n) => [`r${n}`, mergeFlow(repo) === null ? null : { autoMergeAllowed: mergeFlow(repo)!.autoMerge, isPrivate: false, defaultBranchRef: { name: "main" }, object: mergeFlow(repo)!.workflow ? { __typename: "Blob" } : null, bot: null }]));
       return { status: 0, stdout: JSON.stringify({ data }), stderr: "" };
     }
     return stacks(args[1].split("/").slice(1, 3).join("/"));
@@ -742,13 +742,13 @@ test("A11-160: the plugin's rows come from the host's clones and the workers' ac
   assert.deepEqual(said.slice(0, 2), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks"]);
   // A11-291: and whether the repository has a merge flow, in one query for all the host's repositories.
   assert.equal(said.length, 3);
-  assert.match(said[2], /^api graphql -f query=query \{ r0: repository\(owner: "a11ign", name: "nbl-ui-netbox"\) \{ autoMergeAllowed defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
+  assert.match(said[2], /^api graphql -f query=query \{ r0: repository\(owner: "a11ign", name: "nbl-ui-netbox"\) \{ autoMergeAllowed isPrivate defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
   assert.ok(asked.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: "/home/agent/workers/gh" })), "every call acts as the workers' account");
 });
 
 test("A11-291: doctor finds a repository with no merge flow: the merge flow row names it, says what to add, and fails the code host's row; with the flow it passes", async () => {
   const passing = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN }) })));
-  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox allow auto-merge and hold .github/workflows/auto-arm.yml"]);
+  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox have a merge flow (auto-merge and .github/workflows/auto-arm.yml, or, for a private repository, .github/workflows/merge-bot.yml)"]);
   const noFlow = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN, gh: ghFake(GH_LISTING, undefined, () => ({ autoMerge: false, workflow: false })) }) })));
   const row = noFlow["merge flow"];
   assert.deepEqual([row.ok, row.detail], [false, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch"]);
@@ -1079,7 +1079,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 1.26, plugins/github)",
+    "code host: github (enabled, contract 1.27, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1114,7 +1114,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.26, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.27, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });

@@ -11,14 +11,14 @@ import { mergeFlowChecks } from "./merge-flow-checks.ts";
 const WORKERS = { workers: "/home/agent/workers" };
 
 /** What each repository (by `owner/name`) answers: its `autoMergeAllowed` and whether its head holds the arm workflow, or `null` for a repository GitHub would not read. */
-type Flows = Readonly<Record<string, Readonly<{ autoMerge: boolean; workflow: boolean }> | null>>;
+type Flows = Readonly<Record<string, Readonly<{ autoMerge: boolean; workflow: boolean; isPrivate?: boolean; bot?: boolean }> | null>>;
 
 /** GitHub's answer to the one query, from the repositories it names in order (`r0`, `r1`, ...). */
 function answerOf(query: string, flows: Flows): string {
   const asked = [...query.matchAll(/repository\(owner: "([^"]+)", name: "([^"]+)"\)/g)].map(([, owner, name]) => `${owner}/${name}`);
   const data = Object.fromEntries(asked.map((repo, n) => {
     const flow = flows[repo];
-    return [`r${n}`, flow === null || flow === undefined ? null : { autoMergeAllowed: flow.autoMerge, defaultBranchRef: { name: "main" }, object: flow.workflow ? { __typename: "Blob" } : null }];
+    return [`r${n}`, flow === null || flow === undefined ? null : { autoMergeAllowed: flow.autoMerge, isPrivate: flow.isPrivate === true, defaultBranchRef: { name: "main" }, object: flow.workflow ? { __typename: "Blob" } : null, bot: flow.bot === true ? { __typename: "Blob" } : null }];
   }));
   return JSON.stringify({ data });
 }
@@ -64,7 +64,7 @@ test("A11-291: every failing repository is named, and each says only what it lac
 
 test("A11-291: the row passes, naming the repositories, when every one has the flow; and it adds no row on a host with no GitHub clone", () => {
   const [row] = mergeFlowChecks({}, machine({ "a11ign/plugin": WITH_FLOW, "a11ign/lab": WITH_FLOW }).deps);
-  assert.deepEqual([row.ok, row.detail, row.fix], [true, "a11ign/plugin, a11ign/lab allow auto-merge and hold .github/workflows/auto-arm.yml", null]);
+  assert.deepEqual([row.ok, row.detail, row.fix], [true, "a11ign/plugin, a11ign/lab have a merge flow (auto-merge and .github/workflows/auto-arm.yml, or, for a private repository, .github/workflows/merge-bot.yml)", null]);
   assert.deepEqual(mergeFlowChecks({}, fakePluginDeps()), []);
 });
 
@@ -84,4 +84,26 @@ test("A11-291: every repository is asked in ONE call, as the workers' account, a
   assert.equal(gh.length, 1, "doctor's plugin checks run under a time limit, so thirteen repositories are not thirteen calls");
   assert.equal([...(gh[0].args.find((arg) => arg.startsWith("query=")) ?? "").matchAll(/name: "plugin"/g)].length, 1);
   assert.equal((gh[0].options?.env as Record<string, string>)?.GH_CONFIG_DIR, "/home/agent/workers/gh");
+});
+
+const PRIVATE_WITH_BOT = { autoMerge: false, workflow: false, isPrivate: true, bot: true };
+const PRIVATE_WITHOUT = { autoMerge: false, workflow: false, isPrivate: true };
+
+test("A11-291: a private repository on a plan with no rulesets has a merge flow when it holds the merge bot, and the row says so", () => {
+  const [row] = mergeFlowChecks({}, machine({ "a11ign/plugin": PRIVATE_WITH_BOT, "a11ign/lab": WITH_FLOW }).deps);
+  assert.deepEqual([row.ok, row.fix], [true, null]);
+  assert.equal(mergeFlowChecks({}, machine({ "a11ign/plugin": { ...WITH_FLOW, isPrivate: true } }).deps)[0].ok, true, "a private repository that does have the ruleset flow passes by it");
+});
+
+test("A11-291: a private repository with no merge bot fails the row, which asks for the bot and not the ruleset or the setting", () => {
+  const [row] = mergeFlowChecks({}, machine({ "a11ign/plugin": PRIVATE_WITHOUT, "a11ign/lab": WITH_FLOW }).deps);
+  assert.deepEqual([row.ok, row.detail], [false, "1 of 2 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/plugin: no .github/workflows/merge-bot.yml on its default branch (private)"]);
+  assert.match(row.fix ?? "", /^a11ign\/plugin: add \.github\/workflows\/merge-bot\.yml with its `gate` check and `\.github\/chainguard\/merge-bot\.sts\.yaml`/);
+  assert.doesNotMatch(row.fix ?? "", /merge-queue-main|auto-arm|Allow auto-merge/, "it is not asked for a ruleset, the arm bot or the setting: a private repository on Free can have none");
+});
+
+test("A11-291: a PUBLIC repository is not accepted for holding the merge bot: it keeps A11-274's flow", () => {
+  const [row] = mergeFlowChecks({}, machine({ "a11ign/lab": { autoMerge: false, workflow: false, bot: true } }).deps);
+  assert.equal(row.ok, false);
+  assert.match(row.detail, /a11ign\/lab: auto-merge is not allowed, no \.github\/workflows\/auto-arm\.yml/);
 });

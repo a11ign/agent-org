@@ -29,6 +29,7 @@ import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
 import { type PoolContext } from "./pool-context.ts";
 import type { MergedFindings } from "../plugins/contracts/code-host.ts";
 import { resumesStoppedSession } from "./queue/queue-blocker-wait.ts";
+import { followDecisionsOf, followsDecisions } from "./pool-decisions-change.ts";
 
 /** The most a findings file holds, as a plan file's: a pull request body past it is cut, and the file says so. */
 const FINDINGS_FILE_BYTES = PLAN_FILE_BYTES;
@@ -290,15 +291,15 @@ const holdsBlockedPull = (ctx: PoolContext, entry: Entry): boolean =>
   entry.phase === "finished" && openPulls(entry).some(({ url }) => ctx.pullReads.get(url)?.verdict === "changes requested");
 
 /**
- * The runs whose tickets are asked about: queued work runs with a stamped plan, live runs whose text is known and whose agent is not planning (A11-167), and finished runs that hold a blocked pull request, whose
- * Decisions the reviewer re-reads (A11-250).
+ * The runs whose tickets are asked about: queued work runs with a stamped plan, live runs whose text is known and whose agent is not planning (A11-167), finished runs that hold a blocked pull request, whose
+ * Decisions the reviewer re-reads (A11-250), and finished runs with a pull request open, whose Decisions start a round when they gain lines (A11-305).
  */
 function watchedKeys(ctx: PoolContext): string[] {
   const { store } = ctx;
   const watched = store.get().entries.filter((entry) => {
     if (entry.review !== undefined && entry.phase === "queued") return false;
     if (entry.talk === true) return false;
-    if (holdsBlockedPull(ctx, entry)) return true;
+    if (holdsBlockedPull(ctx, entry) || followsDecisions(entry)) return true;
     if (entry.phase === "queued") return entry.plan === undefined && entry.plannedAgainst !== undefined && !resumesStoppedSession(entry) && canReplan(ctx);
     return entry.phase === "running" && entry.briefedAgainst !== undefined && !isPlanning(ctx, entry);
   });
@@ -321,9 +322,15 @@ export async function followTicketTexts(ctx: PoolContext): Promise<void> {
     if (text === undefined) continue;
     const read = ticketReadOf({ description: text.description, updatedAt: text.updatedAt }, ctx.now());
     if (entry.phase === "queued") markStale(ctx, entry, read);
-    else if (entry.phase === "finished") readHeldText(ctx, entry, read);
+    else if (entry.phase === "finished") followFinished(ctx, entry, read);
     else tellLiveRun(ctx, entry, read);
   }
+}
+
+/** A finished run's ticket was read: a decision it gained starts a round (A11-305), and a run that holds a blocked pull request keeps its copy of the text current for the reviewer (A11-250). */
+function followFinished(ctx: PoolContext, entry: Entry, read: TicketRead): void {
+  followDecisionsOf(ctx, entry, read);
+  if (holdsBlockedPull(ctx, entry)) readHeldText(ctx, entry, read);
 }
 
 /** Move a finished run's copy of its ticket's description on to what the ticket says now (A11-250), for the reviewer's next brief. Nothing is written when the text is the one it holds. */
