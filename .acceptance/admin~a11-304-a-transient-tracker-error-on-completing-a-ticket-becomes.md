@@ -10,6 +10,14 @@ bash -c 'w="$(mktemp -d)" && mkdir "$w/shim" "$w/project" && printf "#!/bin/sh\n
 npm run typecheck
 ```
 
-Before merge: the tests above pass (`pool-write-retry.test.ts` makes the first two completion writes fail and the third succeed, and covers a 4xx, a missing state and an hour of failures). After merge, for the board's run log (the ticket's Done-when): 7 days after the release, read the run log of every ticket and check that no `needs-you` event has a reason containing "could not be completed (fetch failed" or another transient network error. It only reads, so there is nothing to clean up.
+Before merge: the tests above pass (`pool-write-retry.test.ts` makes the first two completion writes fail and the third succeed, and covers a 4xx, a missing state and an hour of failures).
+
+After merge, run by the chairman's session (the ticket's Done-when names the board as runner, but none of the board's `Observe:` forms reads a run-log reason, so the check is the session's, read-only, with nothing to clean up). 7 days after the release, from the chairman's session, with `BOARD` the board's base URL and `KEY` its key:
+
+```text
+for k in $(curl -s -H "Authorization: Bearer $KEY" "$BOARD/api/queue" | jq -r '.entries[].ticket.key'); do curl -s -H "Authorization: Bearer $KEY" "$BOARD/api/queue/$k" | jq -r --arg k "$k" '.runLog[]? | select(.kind=="needs-you") | select(.reason | test("could not be completed \\((fetch failed|.*(ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up))")) | "\($k): \(.reason)"'; done
+```
+
+A pass is no output: no `needs-you` event in any ticket's run log whose reason contains "could not be completed (fetch failed" or another transient network error. A line printed names the ticket and its reason, and fails the check.
 
 Consumer-declaration: none -- no command, flag or host file key changes for a project: the board's retry of its own tracker write is internal, and the run log gains one event kind the board page words.
