@@ -60,8 +60,8 @@ import { drainPath, readDrain, type Drain } from "./update-drain.ts";
 import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
 import { runningToolVersion, toolDir, versionNameOf } from "./tool-versions.ts";
 import { buildCandidates, findBuild, UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
-import { declaresUiBuild } from "./ui-asset.ts";
-import { mirrorGit, mirrorTags } from "./tool-install.ts";
+import { declaresUiBuild, type UiSource } from "./ui-asset.ts";
+import { fetchMissingUiBuild, mirrorGit, mirrorTags } from "./tool-install.ts";
 import { readQueue } from "./instance-queue.ts";
 import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
 import { runVersions, type PluginCopy, type RunVersion } from "../ticket-mode/queue/queue-pins.ts";
@@ -576,7 +576,13 @@ function uiBuildCheck(deps: DoctorDeps): Check {
   const detail = `${version ?? "this version"} should have a UI build and none is in ${looked}, so / shows the missing-build page`;
   if (version === null) return failed("ui build", detail, "run `pnpm ui:build`");
   if (!isReleaseTag(version)) return failed("ui build", detail, "main has no release to fetch a UI build from: run `agent-org update --channel release`, which moves to the newest release");
-  return failed("ui build", detail, "run `agent-org update`, which fetches it");
+  return failed("ui build", detail, "run `agent-org doctor --fix`, which fetches it now (or `agent-org update`)");
+}
+
+/** `doctor --fix`'s repair of the board UI's build (2026-10-26): the running release's missing build, fetched now. Returns the line to print and whether it failed. */
+export function fixUiBuild(root: string = TOOL_ROOT, ui?: UiSource): { line: string; failed: boolean } {
+  const fetched = fetchMissingUiBuild(root, ui);
+  return { line: `ui build: ${fetched.line}`, failed: fetched.failed };
 }
 
 /**
@@ -999,6 +1005,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   if (values["dry-run"] === true && values.fix !== true) {
     console.error("doctor: --dry-run says what --fix would move, so it needs --fix");
     process.exit(2);
+  }
+  if (values.fix === true && values["dry-run"] !== true) {
+    const ui = fixUiBuild();
+    console.log(ui.line);
+    if (ui.failed) process.exitCode = 1;
   }
   if (values.fix === true) {
     const hostPath = hostFilePath(process.env, homedir(), (file) => {

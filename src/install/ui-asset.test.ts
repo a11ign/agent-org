@@ -111,9 +111,46 @@ test("a folder that has its build is left alone, with no request", async () => {
   const { root, server, folder } = await setUp("v0.5.0");
   mkdirSync(join(folder, "ui-build"));
   writeFileSync(join(folder, "ui-build", "index.html"), "already here\n");
-  assert.deepEqual(ensureUiBuild({ folder, name: "v0.5.0", source: from(server) }), { state: "ok" });
+  assert.deepEqual(ensureUiBuild({ folder, name: "v0.5.0", source: from(server) }), { state: "ok", said: "the UI build of v0.5.0 is in place" });
   assert.deepEqual(server.requests(), []);
   assert.equal(readFileSync(join(folder, "ui-build", "index.html"), "utf8"), "already here\n");
+});
+
+test("a broken ui-build/ (no index.html) is replaced by the fetched build, and nothing is left beside it", async () => {
+  const { root, server, folder } = await setUp("v0.5.0");
+  publishUiAsset(server.root, "v0.5.0", distOf(root, "five"));
+  mkdirSync(join(folder, "ui-build"));
+  writeFileSync(join(folder, "ui-build", "stray.txt"), "half a build\n");
+  assert.equal(ensureUiBuild({ folder, name: "v0.5.0", source: from(server) }).state, "ok");
+  assert.equal(readFileSync(join(folder, "ui-build", "index.html"), "utf8"), "<title>five</title>\n");
+  assert.equal(existsSync(join(folder, "ui-build", "stray.txt")), false, "the broken build is gone");
+  assert.deepEqual(readdirSync(folder).toSorted(), ["package.json", "ui-build"], "no .partial or .old is left");
+  assert.deepEqual(readdirSync(join(root, "versions")), ["v0.5.0"], "no staging folder is left");
+});
+
+test("a whole build another fetch placed while this one was unpacking is kept, not deleted (two fetches racing leave a build, not none)", async () => {
+  const { root, server, folder } = await setUp("v0.5.0");
+  publishUiAsset(server.root, "v0.5.0", distOf(root, "five"));
+  // The tar of this fetch runs while another fetch finishes: the other's build appears in place before this one is placed.
+  const racing: UiSource = { releases: () => server.url, exec: (file, args, options) => {
+    if (file !== "tar") return execFileSync("curl", args, options);
+    const out = execFileSync("tar", args, options);
+    mkdirSync(join(folder, "ui-build"), { recursive: true });
+    writeFileSync(join(folder, "ui-build", "index.html"), "<title>the other fetch</title>\n");
+    return out;
+  } };
+  assert.equal(ensureUiBuild({ folder, name: "v0.5.0", source: racing }).state, "ok");
+  assert.equal(readFileSync(join(folder, "ui-build", "index.html"), "utf8"), "<title>the other fetch</title>\n", "the build that was whole is kept");
+  assert.deepEqual(readdirSync(folder).toSorted(), ["package.json", "ui-build"], "this fetch's own unpack is cleared");
+});
+
+test("each fetch stages under its own name, so a leftover at another fetch's path is never touched", async () => {
+  const { root, server, folder } = await setUp("v0.5.0");
+  publishUiAsset(server.root, "v0.5.0", distOf(root, "five"));
+  const others = [join(root, "versions", "v0.5.0.ui.other-1.partial"), join(folder, "ui-build.other-1.partial")];
+  for (const other of others) mkdirSync(other, { recursive: true });
+  assert.equal(ensureUiBuild({ folder, name: "v0.5.0", source: from(server) }).state, "ok");
+  for (const other of others) assert.equal(existsSync(other), true, `${other} belongs to another fetch and is left`);
 });
 
 test("a declared release whose asset is not attached yet fails and says CI attaches it minutes after the release", async () => {
