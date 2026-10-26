@@ -1,0 +1,60 @@
+name: ui-publish-repeat
+
+# THE PUBLISH PAGE TEST, THIRTY TIMES (A11-299). `ui/test/publish/publish.page.test.ts` once read the stand-in's list of calls when the page had sent a request and the stand-in had not yet recorded it,
+# and so failed at random in six unrelated runs and ejected two pull requests from the merge queue. A race passes most runs, so one green run proves nothing: this job runs the file 30 times in a row,
+# each in a fresh process with its own site and Chromium, and fails on the first red run. It is not a required check and not part of `gate`: it runs only on a pull request that touches the file, the
+# helper that waits for the stand-in's answer (`ui/test/instance-routes.ts`) or this workflow, and never in the merge queue.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ui/test/publish/**
+      - ui/test/instance-routes.ts
+      - ui/test/fixtures.ts
+      - .github/workflows/ui-publish-repeat.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-publish-repeat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repeat:
+    # A draft pull request is still being shaped: thirty Chromium runs wait for it to be ready.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PNPM_VERSION: 10.34.5
+      ASTRO_TELEMETRY_DISABLED: 1
+      RUNS: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Install the UI from its own lockfile
+        run: pnpm --dir ui install --frozen-lockfile --ignore-scripts
+      - name: Chromium, the build playwright-core is pinned to, with its system libraries
+        run: pnpm --dir ui exec playwright-core install --with-deps chromium
+      - name: pnpm ui:build -- static files in ui/dist
+        run: pnpm ui:build
+      - name: The publish page test, repeated RUNS times, each in a process of its own
+        working-directory: ui
+        run: |
+          for run in $(seq 1 "$RUNS"); do
+            echo "::group::publish.page.test run $run of $RUNS"
+            if ! pnpm exec rstest run --config rstest.config.ts test/publish/publish.page.test.ts; then
+              echo "::endgroup::"
+              echo "publish.page.test failed on run $run of $RUNS"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+          echo "publish.page.test passed all $RUNS runs"

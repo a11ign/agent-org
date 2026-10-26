@@ -29,6 +29,9 @@ export function useChoices(client: Client, config: ConfigView, readAgain: () => 
   const [chosen, setChosen] = useState<Partial<Record<ChoicePart, string>>>({});
   const [states, setStates] = useState<Partial<Record<ChoicePart, SaveState>>>({});
   const latest = useRef<Partial<Record<ChoicePart, number>>>({});
+  // The config as the page last read it: a read that lands while a save is in flight replaces the object, and the answer is recorded against that one (A11-294), not the one `change` closed over.
+  const read = useRef(config);
+  read.current = config;
   const settle = (part: ChoicePart, state: SaveState) => setStates((before) => ({ ...before, [part]: state }));
 
   async function change(part: ChoicePart, value: string) {
@@ -40,7 +43,7 @@ export function useChoices(client: Client, config: ConfigView, readAgain: () => 
     if (latest.current[part] !== mine) return;
     setChosen((before) => Object.fromEntries(Object.entries(before).filter(([name]) => name !== part)));
     if (answer.ok) {
-      setSaved({ base: config, choice: answer.data.choice });
+      setSaved({ base: read.current, choice: answer.data.choice });
       settle(part, { kind: "saved" });
       return;
     }
