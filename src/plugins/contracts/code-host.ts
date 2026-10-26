@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.25 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.27 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.27 (A11-291): `MergeFlow.private` and `MergeFlow.mergeBot`, both required of a host that implements `readMergeFlow` (1.25): whether the repository is private, and whether its default branch holds the merge bot, `.github/workflows/merge-bot.yml`, which merges a pull request approved at its head with a green `gate` where the plan offers a private repository no ruleset or merge queue. A repository has a merge flow when it allows auto-merge and holds the arm workflow, or is private and holds the merge bot. A plugin of 1.26 or earlier says neither, and the board and doctor then read every repository by the first rule.
 // 1.26 (A11-290): `commentOnPull`, OPTIONAL: post a comment on a pull request as the workers' account, which is how the board records the result of a re-review that the verdict door refused (an equal patch) on the pull request itself. A plugin of 1.24 is read as one that cannot, and the board then keeps the result in the run's log alone and says so once.
 // 1.25 (A11-291): `PullFeedback.armed`, OPTIONAL: whether auto-merge is on for the pull request (GitHub's `autoMergeRequest`), and `readMergeFlow`, OPTIONAL: whether a repository allows auto-merge and has an arm workflow (`.github/workflows/auto-arm.yml`) on its default branch, and which branch that is, which the board reads to say why an approved pull request with green checks is not merging, and which doctor reads for every repository of the host. A plugin of 1.24 is read as one that says nothing of either, and the board then says only that the pull request is not in the merge queue.
 // 1.24 (A11-286): `PullFeedback.behind`, OPTIONAL: whether the host says the pull request's branch is behind its base (GitHub's `mergeStateStatus: BEHIND`, which it reports only where the base requires branches to be up to date), which the board brings up to date with the host's `updateBranch` before the merge queue takes it. A plugin of 1.23 is read as one that says nothing of `behind`, and the board then updates only the pull requests that conflict.
@@ -58,7 +59,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.26";
+export const CODE_HOST_CONTRACT_VERSION = "1.27";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -106,11 +107,15 @@ export type QueueFailure = Readonly<{ runId: number; runUrl: string; jobs: reado
 /**
  * Whether a repository can merge a pull request by itself (contract 1.25): `autoMerge` is whether the repository allows auto-merge, and `armWorkflow` whether its default branch (`defaultBranch`) holds the arm workflow, `.github/workflows/auto-arm.yml`, that turns it on for a pull request. A repository that
  * lacks either has no merge flow: an approved pull request in it waits for a person. Only a pull request into the default branch goes through the merge queue, so the board calls no other stuck.
+ * A PRIVATE repository on a plan with no rulesets has no merge queue either (contract 1.27): its flow is the merge bot, `mergeBot` being whether its default branch holds `.github/workflows/merge-bot.yml` (A11-291).
  */
-export type MergeFlow = Readonly<{ autoMerge: boolean; armWorkflow: boolean; defaultBranch: string }>;
+export type MergeFlow = Readonly<{ autoMerge: boolean; armWorkflow: boolean; defaultBranch: string; private: boolean; mergeBot: boolean }>;
 
 /** The path of the arm workflow a repository's merge flow holds (contract 1.25), which a pull request adds when it installs the flow. */
 export const ARM_WORKFLOW_PATH = ".github/workflows/auto-arm.yml";
+
+/** The path of the merge bot a private repository's merge flow holds (contract 1.27), which a pull request adds when it installs the flow. */
+export const MERGE_BOT_WORKFLOW_PATH = ".github/workflows/merge-bot.yml";
 
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{

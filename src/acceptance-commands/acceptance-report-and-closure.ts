@@ -815,23 +815,25 @@ export function measuredSectionReport(body: string | null | undefined): { ok: bo
     + "opened (command, then its output, in one fence), or delete the section if the body claims no measurement" };
 }
 
-/** The file a repository's merge flow starts with: the arm bot (A11-291). A pull request that ADDS it installs the repository's first merge flow. */
+/** The files a repository's merge flow starts with (A11-291): the arm bot of the public repositories' flow, and the merge bot of a private repository's, which has no ruleset to arm for. A pull request that ADDS one installs the repository's first merge flow. */
 export const FIRST_FLOW_FILE = ".github/workflows/auto-arm.yml";
+export const FIRST_FLOW_FILES: readonly string[] = [FIRST_FLOW_FILE, ".github/workflows/merge-bot.yml"];
 
 /** The line a body carries to say a person merges it: `Needs a person to merge: <why>`, on a line of its own. */
 const NEEDS_A_PERSON_LINE = /^Needs a person to merge:[ \t]*\S/m;
 
 /**
- * THE VERDICT for a merge flow's first install (A11-291). A pull request that ADDS `.github/workflows/auto-arm.yml` gives the repository its first arm bot, so nothing can arm it: a person merges it, and approved pull requests sat for a day
- * with the board calling them "Awaiting review" (a11ign/plugin#10). Its body says so on a line of its own, `Needs a person to merge: <why>`, and the board's card says it the day the pull request is approved. A pull request that adds no such file owes
- * nothing, and a diff this job could not read, or that does not say which files it added, is named as unchecked and does not fail.
+ * THE VERDICT for a merge flow's first install (A11-291). A pull request that ADDS `.github/workflows/auto-arm.yml` or `.github/workflows/merge-bot.yml` gives a repository its first arm bot or merge bot, so nothing can merge it: a person does, and approved pull
+ * requests sat for a day with the board calling them "Awaiting review" (a11ign/plugin#10). Its body says so on a line of its own, `Needs a person to merge: <why>`, and the board's card says it the day the pull request is approved. A pull request that adds no such
+ * file owes nothing, and a diff this job could not read, or that does not say which files it added, is named as unchecked and does not fail.
  */
 export function firstMergeFlowReport({ body, diff }: { body: string | null | undefined; diff: DiffReading; }): { ok: boolean; line: string; } {
-  if (!diff.ok) return { ok: true, line: `FIRST-FLOW: UNCHECKED -- could not read the diff (${diff.why}); a pull request that adds ${FIRST_FLOW_FILE} owes a \`Needs a person to merge:\` line` };
+  if (!diff.ok) return { ok: true, line: `FIRST-FLOW: UNCHECKED -- could not read the diff (${diff.why}); a pull request that adds ${FIRST_FLOW_FILES.join(" or ")} owes a \`Needs a person to merge:\` line` };
   if (diff.added === undefined) return { ok: true, line: "FIRST-FLOW: UNCHECKED -- the diff does not say which files it adds" };
-  if (!diff.added.includes(FIRST_FLOW_FILE)) return { ok: true, line: `FIRST-FLOW: NOT REQUIRED -- the diff adds no ${FIRST_FLOW_FILE}` };
+  const added = FIRST_FLOW_FILES.find((file) => diff.added?.includes(file));
+  if (added === undefined) return { ok: true, line: `FIRST-FLOW: NOT REQUIRED -- the diff adds no ${FIRST_FLOW_FILES.join(" or ")}` };
   return NEEDS_A_PERSON_LINE.test(body ?? "") ? { ok: true, line: "FIRST-FLOW: DECLARED -- the body says a person merges it" }
-    : { ok: false, line: `FIRST-FLOW: MISSING -- this pull request adds ${FIRST_FLOW_FILE}, the repository's first merge flow, so no arm bot exists to merge it. Its body says so on a line of its own: \`Needs a person to merge: <why>\`` };
+    : { ok: false, line: `FIRST-FLOW: MISSING -- this pull request adds ${added}, the repository's first merge flow, so no bot exists to merge it. Its body says so on a line of its own: \`Needs a person to merge: <why>\`` };
 }
 
 /**
