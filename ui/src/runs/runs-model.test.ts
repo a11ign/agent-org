@@ -22,7 +22,13 @@ describe("the rail", () => {
     const counts = Object.fromEntries(rail.heads.flatMap(({ items }) => items.map(({ label, count }) => [label, count])));
     expect(rail.all).toBe(90);
     expect(counts).toMatchObject({ "Needs you": 0, "In progress": 2, Planning: 1, "Ready to merge": 1, Checked: 1, Completed: 85, Failed: 0 });
-    expect(rail.heads.flatMap(({ items }) => items)).toHaveLength(16);
+    expect(rail.heads.flatMap(({ items }) => items)).toHaveLength(17);
+  });
+
+  it("lists Approved, not merging in the Delivery head, right after Awaiting review (A11-291)", () => {
+    const delivery = railOf(queueOf(boardRuns())).heads.find(({ label }) => label === "Delivery");
+    expect(delivery?.items.map(({ label }) => label).slice(0, 3)).toEqual(["Awaiting review", "Approved, not merging", "Ready to merge"]);
+    expect(filterFrom("not-merging")).toBe("not-merging");
   });
 
   it("takes a remembered status, and All runs for anything else", () => {

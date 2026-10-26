@@ -1,7 +1,7 @@
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, pullsOf, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-types-and-filters.ts";
 import { pullAnswer } from "./pull-answer.ts";
 import { completedEarly, settledByPulls } from "./pull-settled.ts";
-import { isReadyToMerge } from "./pull-readiness.ts";
+import { isNotMerging, isReadyToMerge } from "./pull-readiness.ts";
 import { overlapWait, type OverlapWait } from "./overlap-hold.ts";
 import { currentStepOf, currentStepPaths, stepNamed } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
@@ -240,16 +240,19 @@ export function repoLabel(entry: ViewEntry): string {
 }
 
 /** The statuses of a run that waits on a review or a merge: the ones a board note (a stale block, a reviewer on a dialog, a reviewer herdr will not start) may turn into Needs you without taking the run's work from it. */
-export const WAITS_ON_REVIEW: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
+export const WAITS_ON_REVIEW: ReadonlySet<string> = new Set(["awaiting-review", "not-merging", "ready-to-merge", "published"]);
+
+/** Whether the board left a note on the run that asks a person without changing its work: a reviewer herdr refused twice to start (A11-241), or a pull request approved and green that nothing merges (A11-291). */
+const hasBoardNote = (entry: ViewEntry): boolean => entry.reviewerRefused !== undefined || entry.mergeNote !== undefined;
 
 /**
  * What the board shows of a run's status: {@link workStatus}, except that a run waiting on a review or a merge whose reviewer herdr refused twice to start (`reviewerRefused`, A11-241) reads Needs you, since the board retries on
- * every sweep and only a person can mend what herdr says. It is a NOTE on the run and not a change of its work: whether the board watches the run, offers Approve or Publish, or resumes its worker is decided by
+ * every sweep and only a person can mend what herdr says; so does one with a pull request approved and green that nothing has merged for an hour, or that installs a repository's first merge flow (`mergeNote`, A11-291). It is a NOTE on the run and not a change of its work: whether the board watches the run, offers Approve or Publish, or resumes its worker is decided by
  * `workStatus`, so a refused reviewer does not stop the board answering feedback on the pull request.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   const status = workStatus(entry, entries);
-  return entry.phase === "finished" && entry.reviewerRefused !== undefined && WAITS_ON_REVIEW.has(status) ? "needs-you" : status;
+  return entry.phase === "finished" && hasBoardNote(entry) && WAITS_ON_REVIEW.has(status) ? "needs-you" : status;
 }
 
 /**
@@ -280,15 +283,22 @@ export function workStatus(entry: ViewEntry, entries: readonly ViewEntry[] = [])
   // The board stopped answering a run's red checks or feedback on its own and handed it to a person, whatever the run ended on (A11-154): Respond starts again.
   if (entry.handedBack !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";
-  if (kind === "draft-pr" || kind === "ready-pr") return "awaiting-review";
+  if (kind === "draft-pr") return "awaiting-review";
+  if (kind === "ready-pr") return awaitingReview(entry);
   // A reviewed outcome says the worker's feedback round ended, not that GitHub would merge: the pull requests have to be approved at their head and green there (A11-179).
-  if (kind === "reviewed") return entry.published ? "published" : isReadyToMerge(entry) ? "ready-to-merge" : "awaiting-review";
-  if (kind === "needs-human" && pullAnswer(entry) !== null) return "awaiting-review";
+  if (kind === "reviewed") return entry.published ? "published" : isReadyToMerge(entry) ? "ready-to-merge" : awaitingReview(entry);
+  if (kind === "needs-human" && pullAnswer(entry) !== null) return awaitingReview(entry);
   if (HANDED_BACK.has(kind)) return "needs-you";
   if (kind === "checked") return "checked";
   if (kind === "done") return "completed";
   return kind === "stopped" ? "cancelled" : "failed";
 }
+
+/**
+ * What a run with an open pull request that nobody has merged reads: Awaiting review, except that a pull request approved at its head with green checks that nothing merges for 15 minutes (`NOT_MERGING_MINUTES`) reads
+ * "Approved, not merging", since waiting for a review is not what it does (A11-291). A draft is left out: its Approve is what it waits for. Ready to merge is left as it is: Approve and Publish are offered from it.
+ */
+const awaitingReview = (entry: ViewEntry): RunStatus => (isNotMerging(entry) ? "not-merging" : "awaiting-review");
 
 /** How long a wait has run, as the board says a duration: `5 min`, `1 h 28 min`. PURE. */
 function waitedFor(ms: number): string {
@@ -501,7 +511,7 @@ export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: rea
  */
 export function isWatched(entry: ViewEntry): boolean {
   const status = workStatus(entry);
-  const waitingReady = status === "awaiting-review" && (entry.outcome?.kind === "ready-pr" || entry.outcome?.kind === "reviewed");
+  const waitingReady = (status === "awaiting-review" || status === "not-merging") && (entry.outcome?.kind === "ready-pr" || entry.outcome?.kind === "reviewed");
   return (status === "ready-to-merge" || status === "published" || waitingReady) && !isParked(entry) && openPulls(entry).length > 0;
 }
 

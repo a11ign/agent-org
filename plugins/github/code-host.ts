@@ -18,6 +18,7 @@ import { openPullUrlsOf } from "./open-pulls.ts";
 import { createRepositories } from "./repositories.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
 import { readClosedWork } from "./closed-work.ts";
+import { readMergeFlow } from "./merge-flow.ts";
 import { holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
 import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
@@ -29,7 +30,7 @@ import { readPullState, readReviewState } from "./reviews.ts";
 import { requestStackMerge, stackMergeFactsOf } from "./stack-merge.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
 import { updateBranch } from "./update-branch.ts";
-import { closePull } from "./close-pull.ts";
+import { closePull, commentOnPull } from "./close-pull.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
 import { createRows, type RowsRunners } from "./rows/index.ts";
 import { gateRunner, runGhTogether } from "./rows/gate-runner.ts";
@@ -82,6 +83,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     readQueueFailure: (url, groupCommit) => readQueueFailure(url, groupCommit, gh),
     holdFromQueue: (url, on) => (on ? holdPullRequest(url, gh) : releasePullRequest(url, gh)),
     readDefaultBranchRed: (repository) => readDefaultBranchRed(repository, gh, deps.policy),
+    readMergeFlow: (repository) => readMergeFlow(repository, gh),
     readReplies: (url, request) => readReplies(url, request, gh),
     readReviewState: (url) => readReviewState(url, gh, deps.policy),
     readPullState: (url) => readPullState(url, gh),
@@ -99,6 +101,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
     updateBranch: (url, expectedHead) => updateBranch(url, expectedHead, gh),
     closePull: (url, comment) => closePull(url, comment, gh),
+    commentOnPull: (url, comment) => commentOnPull(url, comment, gh),
     readReviewClaims: (repository, head) => readReviewClaims(repository, head, gh),
     // The claim is written as the reviewer role: the environment it is given (the account folder and token the reviewer acts with) is laid over this process's for the one call.
     writeReviewClaim: (write) => writeReviewClaim(write, ghRunner(deps, write.environment)),

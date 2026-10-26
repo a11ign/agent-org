@@ -18,18 +18,22 @@ export const GONE_LOGS_MAX = 50;
 /** The longest a reason is kept in an event: the first line of what was said, cut here. */
 const REASON_MAX = 160;
 
+/** The longest a re-reviewer's reasons are kept in a `rereview` event (A11-290): the whole verdict file, cut here. */
+export const REREVIEW_REASONS_MAX = 2000;
+
 /**
  * Why a round was started: new feedback, red checks, a conflict, a person's Respond (`asked`), a person's approval of draft pull requests, a talk session, or the reviewer's second look at a blocked head after the block was
  * answered without a commit (`rereview`), which the board counts as one of its own rounds though it queues no worker. A round the board held its run for, when the ticket's CI passed twice its budget, is `ci-budget`: it counts toward no cap, since
- * the cap is for review findings (A11-261).
+ * the cap is for review findings (A11-261). The two rounds of a stand-off (A11-290), the planner's and the worker's, count toward no cap either: a stand-off is routed once for each head, so it cannot repeat.
  */
-export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approved" | "talk" | "rereview" | "ci-budget";
+export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approved" | "talk" | "rereview" | "ci-budget" | "standoff-planner" | "standoff-worker";
 
 /**
  * Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, a stop behind a ticket its worker waits on (A11-272), a hold for its ticket's CI spend (A11-261), or the step
- * it waited with while a conflict round on one of its earlier pull requests ran (`conflict-round`, A11-286).
+ * it waited with while a conflict round on one of its earlier pull requests ran (`conflict-round`, A11-286),
+ * or a restart that caught it still starting, before its agent opened (`restart`, A11-294).
  */
-export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget" | "conflict-round";
+export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget" | "conflict-round" | "restart";
 
 /**
  * What the board did about a pull request that conflicts with its base or is behind it (A11-286, {@link BaseMergeStep}): it asked the host to merge the base in (`merging`, for a conflict; `behind`, for a branch that is only behind), it started a conflict round
@@ -50,6 +54,13 @@ type EventBody =
   | Readonly<{ kind: "round"; cause: RoundCause; reason: string | null }>
   | Readonly<{ kind: "pr-opened"; url: string }>
   | Readonly<{ kind: "verdict"; url: string; head: string; review: "approved" | "changes-requested" }>
+  /**
+   * What a re-review of a blocked head came to when the verdict door refused it for an equal patch (A11-290): `not-convinced` is "rereview: still not convinced", and `convinced` an approval the door refused. `reasons` is the re-reviewer's
+   * verdict file, cut to {@link REREVIEW_REASONS_MAX} characters.
+   */
+  | Readonly<{ kind: "rereview"; url: string; head: string; verdict: "convinced" | "not-convinced"; reasons: string }>
+  /** What the board did with a stand-off (A11-290): routed it to the `planner` or the `worker`, or the planner `decided` it (`detail` says how), or it was `settled` with no person: the head moved on or was approved after it. */
+  | Readonly<{ kind: "standoff"; url: string; head: string; step: "planner" | "worker" | "decided" | "settled"; detail: string | null }>
   | Readonly<{ kind: "needs-you"; reason: string }>
   | Readonly<{ kind: "answered"; by: AnsweredBy }>
   | Readonly<{ kind: "published"; link: string | null }>

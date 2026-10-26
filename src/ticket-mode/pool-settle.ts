@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
 import { FINDINGS_RETRIED_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
 import { ATTACH_TRIES, ATTACH_WAITS_MS, isTransient, MS_PER_SECOND } from "./attach-retry.ts";
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { findingsMiss, findingsRefusal, retriedUrls } from "./blocker-findings-check.ts";
 import { accountRefusal, closedWorkOf, type KeptClosedWork } from "./closed-work-account.ts";
@@ -40,7 +40,10 @@ import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { type PoolContext } from "./pool-context.ts";
+import { recordPlannerDecision, recordWorkerRoundEnded, settlePlannerRound } from "./pool-standoff.ts";
+import { planFiles as downloadPlanFiles } from "./pool-ticket-text.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { PullState } from "./source.ts";
 
@@ -82,7 +85,11 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   if (outcome.kind === "working") return noteStillWorking(ctx, entry, outcome);
   if (outcome.kind === "reviewed") {
     if (entry.review === undefined) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a reviewed outcome, but its run was not a review run" });
-    return end(ctx, entry, { kind: "reviewed", prs: entry.review });
+    // The planner's round for a stand-off decides it, and attaches an amended plan, before it ends (A11-290); the worker's ends the stand-off's second route.
+    if (entry.standoff?.stage === "planner") return void settleStandoffPlanner(ctx, entry).catch(settleFailed(entry));
+    end(ctx, entry, { kind: "reviewed", prs: entry.review });
+    if (entry.standoff?.stage === "worker") recordWorkerRoundEnded(ctx, entry.ticket.key);
+    return;
   }
   // An edit is recorded with the ticket's text before the run ends, so a proposal without that text is read first; with it, the run settles.
   if ("edit" in outcome && outcome.edit !== undefined && outcome.edit.base === undefined) return void proposeEdit(ctx, entry, outcome, outcome.edit).catch(settleFailed(entry));
@@ -92,6 +99,57 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
   const attach = entry.batch === undefined ? attachPlan(ctx, entry) : attachBatch(ctx, entry);
   attach.catch((err) => log(`${entry.batch ?? entry.ticket.key}'s plan: ${messageOf(err)}`));
+}
+
+/**
+ * The planner's round for a stand-off ended `reviewed` (A11-290): its decision is read, an amended plan is attached to the ticket first, and then the round ends as any review round does, and the decision is recorded on the run. A decision that cannot
+ * be taken (none written, or an amended plan the board refuses or cannot attach) ends the round for a person with the reason.
+ */
+async function settleStandoffPlanner(ctx: PoolContext, entry: Entry): Promise<void> {
+  const { attaching } = ctx;
+  const { name } = runPlace(ctx, entry);
+  if (attaching.has(name)) return;
+  attaching.add(name);
+  try {
+    const settled = await settlePlannerRound(ctx, entry, () => attachAmendedPlan(ctx, entry));
+    if (!sameRun(ctx, entry)) return;
+    if ("refused" in settled) return end(ctx, entry, { kind: "needs-human", reason: `the planner's round for a stand-off: ${settled.refused}` });
+    end(ctx, entry, { kind: "reviewed", prs: entry.review ?? [] });
+    recordPlannerDecision(ctx, entry.ticket.key, settled.decided);
+  } finally {
+    attaching.delete(name);
+  }
+}
+
+/**
+ * Attach the amended plan a stand-off's planner wrote in its plan folder (A11-290), through the checks and the stamp a planning run's plan gets, and read the plan back so the reviewer's next brief holds the amended decisions. Null once it is attached, else
+ * the words that refuse it.
+ */
+async function attachAmendedPlan(ctx: PoolContext, entry: Entry): Promise<string | null> {
+  const key = entry.ticket.key;
+  const planDir = join(ticketDir(ctx.settings, key), PLAN_DIR);
+  try {
+    const refused = await attachFiles(ctx, key, planDir);
+    if (refused !== null) return "reason" in refused ? refused.reason : "the amended plan was refused";
+  } catch (err) {
+    return `the amended plan could not be attached (${messageOf(err)})`;
+  }
+  await readPlanBack(ctx, entry, planDir);
+  return null;
+}
+
+/** The plan as the tracker holds it, downloaded again into the folder the reviewer's brief reads it from. A download that fails leaves the planner's own files there instead, which are what was attached. */
+async function readPlanBack(ctx: PoolContext, entry: Entry, planDir: string): Promise<void> {
+  const key = entry.ticket.key;
+  try {
+    const fresh = await ctx.source.read(key);
+    await downloadPlanFiles(ctx, fresh ?? entry.ticket);
+  } catch (err) {
+    log(`${key}: the amended plan could not be downloaded again (${messageOf(err)}); the reviewer reads the files the planner wrote`);
+    const pathsDir = join(ticketDir(ctx.settings, key), "paths");
+    mkdirSync(pathsDir, { recursive: true });
+    for (const name of readdirSync(planDir)) copyFileSync(join(planDir, name), join(pathsDir, name));
+  }
 }
 
 /**

@@ -388,7 +388,7 @@ test("A11-257: /api/interventions answers the last 7 days and today's total, fro
   assert.equal(fixed, 200);
   assert.equal(after.today, 1, "the answer to a record is the view after it");
   const [, read] = await b.api("GET", "/api/interventions", {}) as [number, any];
-  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1 }]);
+  assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0 }]);
   assert.equal("interventions" in ((await b.api("GET", "/api/queue", {}))[1] as object), false, "the queue's own answer does not carry the tally");
 });
 
@@ -1292,7 +1292,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.24", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "1.26", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1337,7 +1337,7 @@ test("A11-161: the Settings page lists slack and atomic with their folders and s
   const b = pluginsBoard({ ...FRESH_BLOCKS, publish, reviewer: { provider: "atomic" } });
   const view = await readPlugins(b);
   assert.deepEqual(["slack", "atomic"].map((name) => { const e = entryOf(view, name); return [name, e.where, e.contract, e.state]; }),
-    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.9", "enabled"]]);
+    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.10", "enabled"]]);
   const hostBlock = (block: string) => JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers[block];
   const off = await saidBy(b, { action: "disable", name: "slack", base: view.bases["host.json"] });
   assert.match(off, /^disabled slack: the board publishes nothing, and its settings are kept for `enable`$/);

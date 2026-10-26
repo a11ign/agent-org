@@ -44,18 +44,37 @@ function refusalLinesOfLog(log: string): string[] {
   return withoutColour(log).split("\n").map((line) => line.replace(LOG_TIMESTAMP, "").trim()).filter((line) => /refus/i.test(line)).slice(-QUOTED_LINES);
 }
 
+/** A job log without the colour codes and the runner's timestamps. PURE. */
+const plainLog = (log: string): string => withoutColour(log).split("\n").map((line) => line.replace(LOG_TIMESTAMP, "")).join("\n");
+
 /**
  * Why a failing check's log shows the infrastructure and not the code failing, or null: a lost runner or a rate limit, a GitHub server error, or a network error. The log is read
  * without the colour codes and the runner's timestamps, which the failing-assertion rule of the rate-limit read anchors its lines without. PURE.
  */
 export function infrastructureCause(log: string): string | null {
-  const plain = withoutColour(log).split("\n").map((line) => line.replace(LOG_TIMESTAMP, "")).join("\n");
+  const plain = plainLog(log);
   // The cause of a job's failure is at its end: a build whose log mentions a rate limit or a refused connection earlier is the code's failure.
   const tail = errorLinesOfLog(plain).slice(-CAUSE_WINDOW);
   if (rateLimitOrLostRunner(tail.join("\n"), CI_CLASS)) return "a runner was lost or a rate limit was hit";
   if (rerunOn5xx({ log: plain, conclusion: "failure", rerunsOnThisHead: false }).action === "rerun") return "GitHub answered with a server error";
   if (tail.some((line) => READS_OUTSIDE.test(line))) return "a network error";
   return null;
+}
+
+/** How many of a log's last lines are read for a registry error: npm prints its `code`, a few explanatory lines and the path of its debug log, in that order, at the end. */
+const REGISTRY_WINDOW = 10;
+
+/** An install that fails on the registry's side, by the lines npm and pnpm print: a version the registry does not list (yet), or a server error. */
+const REGISTRY_ERROR = /^(?:npm error\s+(?:code\s+)?(?:ETARGET|notarget|E5\d\d|5\d\d\s)|\s*ERR_PNPM_(?:NO_MATCHING_VERSION|FETCH_5\d\d))/i;
+
+/**
+ * Why a failing job's log shows the package registry and not the code failing, or null: the install asked for a version the registry does not list (`ETARGET`, a version published minutes ago that
+ * the runner's mirror has not seen yet) or the registry answered with a server error. Read from the log's last lines ({@link REGISTRY_WINDOW}), as {@link infrastructureCause} reads the end of a log, and not
+ * from its error lines, which leave out pnpm's. PURE.
+ */
+export function registryCause(log: string): string | null {
+  const tail = plainLog(log).split("\n").map((line) => line.trim()).filter((line) => line !== "").slice(-REGISTRY_WINDOW);
+  return tail.some((line) => REGISTRY_ERROR.test(line)) ? "the package registry did not serve a version the install asked for" : null;
 }
 
 /**
@@ -68,14 +87,17 @@ function checksToAnswer(read: PullFeedback): readonly FailingCheck[] {
   return behind.length > 0 ? behind : counted;
 }
 
-/** One failing check, with its job's log read. A check with no Actions job, or whose log cannot be read, is `readable: false` and is the code's to answer. */
-export function readCheck(ctx: PoolContext, check: FailingCheck): ReadCheck {
+/**
+ * One failing check, with its job's log read. A check with no Actions job, or whose log cannot be read, is `readable: false` and is the code's to answer. `causeOf` says why a log shows the infrastructure
+ * and not the code ({@link infrastructureCause} unless the caller knows more).
+ */
+export function readCheck(ctx: PoolContext, check: FailingCheck, causeOf: (log: string) => string | null = infrastructureCause): ReadCheck {
   const unread = { name: check.name, lines: [], refusals: [], infrastructure: null, readable: false, detailsUrl: check.detailsUrl } as const;
   if (check.detailsUrl === null) return unread;
   try {
     const text = ctx.codeHost.readCheckLog(check.detailsUrl);
     if (text === null) return unread;
-    return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), refusals: refusalLinesOfLog(text), infrastructure: infrastructureCause(text), readable: true };
+    return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), refusals: refusalLinesOfLog(text), infrastructure: causeOf(text), readable: true };
   } catch (err) {
     log(`the log of ${check.name} on ${check.detailsUrl} could not be read: ${messageOf(err)}`);
     return unread;

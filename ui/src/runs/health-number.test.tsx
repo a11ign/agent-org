@@ -12,7 +12,7 @@ beforeEach(() => {
 });
 
 const WEEK = ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26"];
-const viewOf = (totals: readonly number[]) => ({ today: totals.at(-1), days: WEEK.map((date, index) => ({ date, needsYou: totals[index], fixes: 0, total: totals[index] })) });
+const viewOf = (totals: readonly number[]) => ({ today: totals.at(-1), days: WEEK.map((date, index) => ({ date, needsYou: totals[index], fixes: 0, total: totals[index], standoffs: 0 })) });
 
 /** The Runs page over the stand-in instance, with `/api/interventions` answered by `answer`: a view, a status to fail with, or "held" for a read that never answers. */
 function pageWith(answer: ReturnType<typeof viewOf> | number | "held") {
@@ -43,6 +43,14 @@ describe("the health number", () => {
     expect(number.textContent).toBe("Person interventions today: 4");
     expect(number.getAttribute("title")).toBe(WEEK.map((date, index) => `${date}: ${[2, 0, 0, 1, 0, 3, 4][index]}`).join("\n"));
     expect(bar.querySelector(".pool-busy")?.nextElementSibling).toBe(number);
+  });
+
+  it("says after the number how many stand-offs the board settled with no person today, and names the days in the title (A11-290)", async () => {
+    const view = viewOf([0, 0, 0, 0, 0, 0, 0]);
+    pageWith({ ...view, days: view.days.map((day, index) => ({ ...day, standoffs: index === 5 ? 1 : index === 6 ? 2 : 0 })) });
+    const number = await screen.findByText("Person interventions today: 0, stand-offs settled with no person: 2");
+    expect(number.getAttribute("title")).toContain("2026-10-25: 0 (1 stand-offs settled with no person)");
+    expect(number.getAttribute("title")).toContain("2026-10-24: 0\n");
   });
 
   it("shows 0 as 0: zero is the target and is seen", async () => {

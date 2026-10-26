@@ -21,7 +21,7 @@ describe("which board a run is drawn as", () => {
 
   it.each<[string, RunBoard]>([
     ["working", "running"], ["talking", "running"], ["planning", "running"], ["reviewing", "running"], ["publishing", "publishing"], ["published", "published"], ["ready-to-merge", "ready"],
-    ["checked", "done"], ["completed", "done"], ["queued", "queued"], ["blocked", "blocked"], ["awaiting-review", "awaiting"], ["failed", "failed"], ["cancelled", "cancelled"],
+    ["checked", "done"], ["completed", "done"], ["queued", "queued"], ["blocked", "blocked"], ["awaiting-review", "awaiting"], ["not-merging", "awaiting"], ["failed", "failed"], ["cancelled", "cancelled"],
   ])("draws %s as the %s board", (status, board) => {
     expect(boardOfStatus(status as never, "running")).toBe(board);
     expect(boardOfStatus(status as never, "finished")).toBe(board);
@@ -37,6 +37,27 @@ describe("which board a run is drawn as", () => {
     ["running", "running"], ["queued", "queued"], ["blocked", "blocked"], ["needs", "needs"], ["handback", "handback"], ["awaiting", "awaiting"], ["ready", "ready"], ["done", "done"], ["failed", "failed"], ["cancelled", "cancelled"],
   ])("gives the stand's %s run the %s board", (state, board) => {
     expect(boardOf(runFor(state), queueFor(state))).toBe(board);
+  });
+});
+
+describe("the callout of a run whose pull request is approved and not merging (A11-291)", () => {
+  const PULL = "https://github.com/a11ign/plugin/pull/10";
+  const REASON = "a11ign/plugin has no merge flow: auto-merge is not allowed, no .github/workflows/auto-arm.yml";
+  const stuck = () => ({ ...runFor("awaiting"), outcome: { kind: "ready-pr", prs: [{ repo: "plugin", url: PULL }] }, pullHeads: { [PULL]: { head: "91cfe96d0a1b", approved: true, review: "approved", red: [], pending: [], unmergedSince: 1, notMerging: REASON } } }) as unknown as RunEntry;
+
+  it("is titled Approved, not merging and says why, on the Awaiting board, which draws no icon", () => {
+    const entry = stuck();
+    const queue = queueOf([entry as never]);
+    expect(boardOf(entry, queue)).toBe("awaiting");
+    const callout = calloutOf(entry, queue, "awaiting");
+    expect(callout.title).toBe("Approved, not merging");
+    expect(callout.paragraphs[0]).toBe(`Approved, not merging: a11ign/plugin #10 at 91cfe96d, ${REASON}`);
+    expect(statusWordOf(entry, queue)).toBe("Approved, not merging");
+  });
+
+  it("leaves the title of a run that is merely Awaiting review as it was", () => {
+    const entry = runFor("awaiting");
+    expect(calloutOf(entry, queueFor("awaiting"), "awaiting").title).toBe("Draft pull request. Waiting for you to approve.");
   });
 });
 

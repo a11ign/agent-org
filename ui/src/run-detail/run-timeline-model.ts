@@ -18,12 +18,15 @@ const SHORT_HEAD = 7;
 
 /** The cause of a round, in words: why the run was started again on its pull request. */
 const ROUND_WORDS: Readonly<Record<RoundCause, string>> = {
-  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head", "ci-budget": "Held for its CI spend",
+  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head", "ci-budget": "Held for its CI spend", "standoff-planner": "Planner deciding a stand-off", "standoff-worker": "Answering a stand-off",
 };
+
+/** What the board did with a stand-off (A11-290), in words. */
+const STANDOFF_WORDS: Readonly<Record<"planner" | "worker" | "decided" | "settled", string>> = { planner: "Stand-off sent to the planner", worker: "Stand-off sent to the worker", decided: "Planner decided the stand-off", settled: "Stand-off settled with no person" };
 
 const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", answer: "the board's answer", terminal: "the run's own terminal" };
 
-const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget", "conflict-round": "after its conflict round" };
+const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget", "conflict-round": "after its conflict round", restart: "a restart before its agent opened" };
 
 /** The colour of a base-merge row: violet while the board merges the base in, as a pull request opened, and amber for a round, a wait or the cap, as a round is. */
 const BASE_MERGE_TONES: Readonly<Record<BaseMergeStep, DotTone>> = { merging: "violet", behind: "violet", round: "amber", waiting: "amber", capped: "amber", held: "amber" };
@@ -59,6 +62,8 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
     case "verdict": return event.review === "approved"
       ? { text: `Approved at ${event.head.slice(0, SHORT_HEAD)}`, when: joined(pullLabel(event.url), ago), tone: "green" }
       : { text: `Changes requested at ${event.head.slice(0, SHORT_HEAD)}`, when: joined(pullLabel(event.url), ago), tone: "amber" };
+    case "rereview": return { text: event.verdict === "not-convinced" ? "rereview: still not convinced" : "rereview: convinced, but the door refused it", when: joined(pullLabel(event.url), `at ${event.head.slice(0, SHORT_HEAD)}`, ago), tone: "amber" };
+    case "standoff": return { text: STANDOFF_WORDS[event.step], when: joined(pullLabel(event.url), event.detail, ago), tone: event.step === "settled" ? "green" : "amber" };
     case "needs-you": return { text: "Waiting on a person", when: ago, tone: "amber" };
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };
