@@ -88,8 +88,14 @@ export const OBSERVE_FORMS = [
   "run-log <event kind> [<text>]", "merge-queue <owner/repo> [<failed job>]", "ci-history <owner/repo> <workflow> [<branch>]", "doctor <host> <check>", "release-assets <owner/repo> <asset> [<count>]",
 ] as const;
 
+/** Every kind of event a run's log holds: a record, so a kind added to the log fails the typecheck here until `run-log` can name it. */
+const RUN_EVENT_KIND_SET: Readonly<Record<RunEventKind, true>> = {
+  queued: true, planned: true, started: true, round: true, "pr-opened": true, verdict: true, rereview: true, standoff: true, "needs-you": true, answered: true, published: true, merged: true,
+  "base-merge": true, "tracker-write": true, finished: true, dismissed: true, removed: true, requeued: true,
+};
+
 /** The kinds of event a run's log holds, which `run-log` names. */
-export const RUN_EVENT_KINDS = ["queued", "planned", "started", "round", "pr-opened", "verdict", "rereview", "standoff", "needs-you", "answered", "published", "merged", "base-merge", "finished", "dismissed", "removed", "requeued"] as const satisfies readonly RunEventKind[];
+export const RUN_EVENT_KINDS = Object.keys(RUN_EVENT_KIND_SET) as readonly RunEventKind[];
 
 /** The fields a plan gives a spec of the second family beside `Observe:`. */
 export type ObserveFields = Readonly<{ pass?: string; window?: string }>;
