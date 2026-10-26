@@ -72,7 +72,7 @@ export function readBoardOf(data: RequestThreadData, parts: Readonly<{ source: T
   return {
     settings, source, plugins: parts.plugins, problems: problemsOf(data), health: parts.health, paths: data.paths,
     store: { get: () => latest().queue },
-    pool: { held: () => latest().held, pullReviews: () => latest().pullReviews, claimWarning: () => latest().claimWarning, reviewerState: () => latest().reviewerState ?? reviewerStateOf(settings, null) },
+    pool: { held: () => latest().held, pullReviews: () => latest().pullReviews, claimWarning: () => latest().claimWarning, hostAlerts: () => latest().hostAlerts, reviewerState: () => latest().reviewerState ?? reviewerStateOf(settings, null) },
     known: { tickets: new Map(), claims: new Map() },
     claimant: () => data.claimant,
     plans: plansOf(settings, source),

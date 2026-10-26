@@ -36,7 +36,7 @@ export type RequestThread = Readonly<{
 /** The snapshot of `board` as it is now, with the terminal address last worked out and the board thread's health. */
 export function snapshotOf(board: Pick<ThreadBoard, "store" | "pool" | "update">, terminal: string | null, health: HealthView, at: number): BoardSnapshot {
   const { pool } = board;
-  return { queue: board.store.get(), held: pool.held?.() ?? null, pullReviews: pool.pullReviews?.() ?? {}, claimWarning: pool.claimWarning?.() ?? null, reviewerState: pool.reviewerState?.() ?? null,
+  return { queue: board.store.get(), held: pool.held?.() ?? null, pullReviews: pool.pullReviews?.() ?? {}, claimWarning: pool.claimWarning?.() ?? null, hostAlerts: pool.hostAlerts?.() ?? [], reviewerState: pool.reviewerState?.() ?? null,
     terminal, update: board.update(), loop: health.loop.board, blocking: health.blocking, at };
 }
 

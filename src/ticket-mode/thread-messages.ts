@@ -26,6 +26,7 @@ export type BoardSnapshot = Readonly<{
   held: ReturnType<Pool["held"]> | null;
   pullReviews: Record<string, string>;
   claimWarning: string | null;
+  hostAlerts: ReturnType<Pool["hostAlerts"]>;
   reviewerState: ReturnType<Pool["reviewerState"]> | null;
   terminal: string | null;
   update: UpdateView;

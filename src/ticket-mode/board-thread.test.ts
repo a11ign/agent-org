@@ -26,7 +26,7 @@ function boardOver(tracker = createFakeTracker([ticket("NBF-1"), ticket("NBF-2")
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets: { port: 4747 } });
   const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {},
     refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {},
-    held: () => ({ name: "npm run preflight", reason: "red", since: 5 }), pullReviews: () => ({ "https://github.com/a11ign/agent-org/pull/1": "Reviewer approved" }), claimWarning: () => "GitHub refuses the review claims", reviewerState: () => "on" as const };
+    held: () => ({ name: "npm run preflight", reason: "red", since: 5 }), pullReviews: () => ({ "https://github.com/a11ign/agent-org/pull/1": "Reviewer approved" }), claimWarning: () => "GitHub refuses the review claims", hostAlerts: () => [{ id: "tmp-entries", sentence: "/tmp holds 19,960 entries", since: 5 }], reviewerState: () => "on" as const };
   const paths = { queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") };
   const board = createBoard({ settings, source: tracker, codeHost: createFakeCodeHost(), key: KEY, ...paths, pool, now: () => 7, version: "v0.309.1", next: () => null });
   const data: Omit<RequestThreadData, "snapshot"> = { role: REQUEST_THREAD, settings, key: KEY, claimant: claimantOf(settings), paths, toolVersion: "v0.309.1", agentOrgVersion: "0.309.1" };
@@ -42,9 +42,10 @@ test("the request thread's reads over a snapshot answer what the board's own rou
   for (const path of ["/api/queue", "/api/config", "/api/writer", "/api/pick", "/api/parents"]) {
     assert.deepEqual(await localRoute(reads, "GET", path, {}, new URLSearchParams()), await board.api("GET", path, {}), path);
   }
-  const [, queue] = await localRoute(reads, "GET", "/api/queue", {}, new URLSearchParams()) as [number, { entries: { ticket: { key: string } }[]; held: unknown; pulls: unknown; claimWarning: unknown }];
+  const [, queue] = await localRoute(reads, "GET", "/api/queue", {}, new URLSearchParams()) as [number, { entries: { ticket: { key: string } }[]; held: unknown; pulls: unknown; claimWarning: unknown; hostAlerts: unknown }];
   assert.deepEqual(queue.entries.map((entry) => entry.ticket.key), ["NBF-1"], "the queue is the snapshot's");
   assert.deepEqual([queue.held, queue.pulls, queue.claimWarning], [{ name: "npm run preflight", reason: "red", since: 5 }, { "https://github.com/a11ign/agent-org/pull/1": "Reviewer approved" }, "GitHub refuses the review claims"]);
+  assert.deepEqual(queue.hostAlerts, [{ id: "tmp-entries", sentence: "/tmp holds 19,960 entries", since: 5 }], "the host's alerts cross to the request thread in the snapshot (A11-279)");
 });
 
 test("a read that uses the terminal address asks the board thread to work it out again, and is answered from the snapshot without waiting", async () => {

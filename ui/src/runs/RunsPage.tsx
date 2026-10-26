@@ -10,6 +10,7 @@ import { runningCount } from "../shell/shell-model.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
 import { AfterMergeList } from "./AfterMergeList.tsx";
 import { FailureBanner } from "./FailureBanner.tsx";
+import { HostAlerts } from "./HostAlerts.tsx";
 import { PoolBar } from "./PoolBar.tsx";
 import { PullRequestsList } from "./PullRequestsList.tsx";
 import { PublishBar } from "./PublishBar.tsx";
@@ -59,6 +60,7 @@ function Lists({ queue, disabled }: Readonly<{ queue: QueueView; disabled: boole
 function NoRuns({ queue, pool, disabled, reviewer }: Readonly<{ queue: QueueView; pool: Pool; disabled: boolean; reviewer: ConfigView["reviewer"] | undefined }>) {
   return (
     <>
+      <HostAlerts alerts={queue.hostAlerts} />
       <RunsNotices queue={queue} reviewer={reviewer} now={Date.now()} />
       <PoolBar queue={queue} pool={pool} disabled={disabled} />
       <EmptyState title="No runs yet" text="Queue tickets from the Tickets page and each one shows up here as it runs." actions={<a className="empty-link" href={ticketsHref}>Go to Tickets</a>} />
@@ -101,6 +103,7 @@ function Content({ filter }: Readonly<{ filter: RunStatus | null }>) {
         {(data) =>
           data.entries.length === 0 ? <NoRuns queue={data} pool={pool} disabled={disabled} reviewer={config?.reviewer} /> : (
             <>
+              <HostAlerts alerts={data.hostAlerts} />
               <RunsNotices queue={data} reviewer={config?.reviewer} now={Date.now()} />
               <PoolBar queue={data} pool={pool} disabled={disabled} />
               <RunsList page={paged(groupsOf(data, filteredRuns(data, filter)), paging.limit)} context={context(data)} onMore={paging.more} />
