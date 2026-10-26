@@ -81,9 +81,19 @@ function liftedHolds(ctx: PoolContext, cycle: WaitCycle): WaitEdge[] {
   return cycle.edges.filter(({ kind, from, to }) => kind === "files" && waitersOn(from, entries).has(to));
 }
 
+/** Whether `edges` still make a loop: no wait among them ends where nothing waits, or starts where nothing is waited for. Edges are dropped from the ends inward until none is left, or only a loop. */
+function loops(edges: readonly WaitEdge[]): boolean {
+  let left = edges;
+  for (let before = -1; before !== left.length;) {
+    before = left.length;
+    left = left.filter(({ from, to }) => left.some((edge) => edge.from === to) && left.some((edge) => edge.to === from));
+  }
+  return left.length > 0;
+}
+
 /** What the board did about a cycle by lifting the holds above: each holder that waits on the ticket it holds files against, and the ticket that starts on them. */
 const liftedWords = (lifted: readonly WaitEdge[]): string =>
-  `The board lifts ${lifted.map(({ from, to }) => `${to}'s hold on ${from}`).join(" and ")}, since ${lifted.length === 1 ? "that run waits" : "those runs wait"} on the ticket${lifted.length === 1 ? "" : "s"} held back, so ${lifted.map(({ from }) => from).join(" and ")} can start on those files.`;
+  `The board lifts ${lifted.map(({ from, to }) => `${to}'s hold on ${from}`).join(" and ")}, since ${lifted.length === 1 ? "that run waits" : "those runs wait"} on the ticket${lifted.length === 1 ? "" : "s"} held back, so ${lifted.map(({ from }) => from).join(" and ")} ${lifted.length === 1 ? "is" : "are"} not held by those files.`;
 
 /** What a person must do about a cycle the board cannot break: remove a blocker relation where the cycle has one, else end one of its waits or narrow a plan. */
 function personMust(cycle: WaitCycle): string {
@@ -107,7 +117,7 @@ type Outcome = Readonly<{ released: ReadonlySet<string>; remains: boolean }>;
 function noticeOf(ctx: PoolContext, cycle: WaitCycle, { released, remains }: Outcome): Notice {
   const did = releasedWords(ctx, new Set(cycle.keys.filter((key) => released.has(key))));
   const lifted = liftedHolds(ctx, cycle);
-  const tail = [did.length === 0 ? null : `The board ${did.join(", and ")}.`, lifted.length === 0 ? null : liftedWords(lifted), remains && lifted.length === 0 ? personMust(cycle) : null].filter((part) => part !== null);
+  const tail = [did.length === 0 ? null : `The board ${did.join(", and ")}.`, lifted.length === 0 ? null : liftedWords(lifted), remains && loops(cycle.edges.filter((edge) => !lifted.includes(edge))) ? personMust(cycle) : null].filter((part) => part !== null);
   return { id: cycle.id, on: cycle.keys[0], body: [cycleSentence(cycle), ...tail].join(" ") };
 }
 

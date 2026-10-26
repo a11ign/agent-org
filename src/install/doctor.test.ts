@@ -1462,8 +1462,8 @@ test("A11-298: doctor lists each wait of more than two hours as a warning, with 
     "A11-229 has waited 31 h 0 min on A11-232's files: A11-232 is Blocked, so it cannot move by itself.",
     "A11-254 has waited 31 h 0 min on A11-300, which blocks it: A11-300 is In progress, so it can move by itself.",
   ]);
-  assert.match(files.fix ?? "", /A11-232 cannot move by itself: finish or remove it, or remove the run holding the files/);
-  assert.match(blocker.fix ?? "", /it ends when A11-300 moves/);
+  assert.match(files.fix ?? "", /^A11-232 cannot move by itself: finish it, or remove the run holding the files$/);
+  assert.match(blocker.fix ?? "", /^it ends when A11-300 is done; if it should not block, remove the blocker relation in the tracker$/);
 });
 
 test("A11-298: doctor says nothing of waits when none is long, or the queue cannot be read", async () => {

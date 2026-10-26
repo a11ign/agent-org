@@ -38,7 +38,7 @@ export function holderMove(on: string, entries: readonly ViewEntry[]): HolderMov
   const run = runs.find(({ phase }) => phase !== "finished") ?? runs[0];
   if (run === undefined) return { moves: false, words: `${on} has no run on the board, so nothing is working on it` };
   const status = workStatus(run, entries);
-  const itself = status === "blocked" ? waitTarget(run, entries) : null;
+  const itself = waitTarget(run, entries);
   const behind = itself === null ? "" : `, waiting on ${itself.key}${itself.kind === "files" ? "'s files" : ""}`;
   const moves = MOVES.has(status);
   return { moves, words: `${on} is ${labelOf(status)}${behind}, so it ${moves ? "can" : "cannot"} move by itself` };

@@ -1,6 +1,7 @@
 // @ts-check
 // module: a run's files, written before its agent starts -- its brief, its refusals and connectors, and its settings file
 
+import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { closedWorkOf } from "./closed-work-account.ts";
@@ -111,9 +112,9 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   let resume: string | undefined = resumesStoppedSession(entry) ? sessionToResume(ctx, entry) : undefined;
   if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
-    writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
+    writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: openPulls(entry), notes, reviewNotes: notesFile(settings.review, "tickets.review"),
       connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst, held: entry.ciHold?.reason ?? entry.ciTold }));
-    writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
+    writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(openPulls(entry))}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
     const planDir = emptyPlanDir(dir);
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };

@@ -4,6 +4,7 @@
 // A queued round is not finished, so the tracker sweep that records a finished run's pull request states (`recordPullStates`) never reads it, and `holds()` went on counting a merged pull request's files for 30 hours.
 // The code host is asked about each pull request a queued round names, on the feedback cadence, and `settleRoundPulls` (`queue/queue-round-pulls.ts`) applies what it says.
 import { pullLabel } from "./board-view/pull-label.ts";
+import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { queuedRounds, roundSettled, settleRoundPulls } from "./queue/queue-round-pulls.ts";
@@ -16,7 +17,7 @@ const STATES: Readonly<Record<string, PullState>> = { OPEN: "open", MERGED: "mer
 /** The state of each pull request the round names that the host could say, by URL. One it cannot say is left out, and the next watch asks again. */
 function readStates(ctx: PoolContext, entry: Entry): Record<string, PullState> {
   const states: Record<string, PullState> = {};
-  for (const { url } of entry.review ?? []) {
+  for (const { url } of openPulls(entry)) {
     try {
       const state = STATES[ctx.codeHost.readPullState(url) ?? ""];
       if (state !== undefined) states[url] = state;
@@ -28,11 +29,13 @@ function readStates(ctx: PoolContext, entry: Entry): Record<string, PullState> {
 }
 
 /**
- * Read the state of every pull request each queued review round names. A pull request that merged or closed leaves the round and holds nothing; a round left with none is dropped, and its ticket goes back to the board as the
+ * Read the state of every pull request each queued review round names. A pull request that merged or closed is no longer open for the round and holds nothing; a round left with none is dropped, and its ticket goes back to the board as the
  * finished run it continued, which the tracker sweep completes or queues for its next step. Said in the log, once, when it happens.
  */
 export function settleQueuedRounds(ctx: PoolContext): void {
-  const { now, store } = ctx;
+  const { now, store, tickState } = ctx;
+  // Not while a pass is filling slots: it chose its starts from the queue as it was, and a round that became a finished run under it would be started as one. The next watch settles it (as `startRound` in `pool-base-merge.ts` waits).
+  if (tickState.busy) return;
   for (const entry of queuedRounds(store.get())) {
     const key = entry.ticket.key;
     const states = readStates(ctx, entry);
@@ -40,6 +43,6 @@ export function settleQueuedRounds(ctx: PoolContext): void {
     if (settled === null) continue;
     update(ctx, (queue) => settleRoundPulls(queue, key, states, now()));
     const named = settled.left.map((url) => `${pullLabel(url)} ${states[url]}`).join(", ");
-    log(`${key}: ${named}, so ${settled.dropped ? "its queued round was dropped and the ticket is back on the board for the next step" : "it left the queued round, which goes on with the pull requests still open"}`);
+    log(`${key}: ${named}, so ${settled.dropped ? "its queued round was dropped and the ticket is back on the board for the next step" : "it is no longer open for the queued round, which goes on with the pull requests still open"}`);
   }
 }

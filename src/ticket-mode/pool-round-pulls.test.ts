@@ -81,3 +81,21 @@ test("A11-298: the sweep that settles a finished run then completes the ticket o
   assert.equal(run.source.ticketOf(ROUND)?.statusType, "completed");
   assert.equal(runStatus(run.entry(ROUND), run.entries()), "completed");
 });
+
+test("A11-298: a pass that is filling slots does not have a queued round turned into a finished run under it; the next watch settles it", async () => {
+  const run = stale("merged");
+  const ticking = run.pool.tick();
+  await run.pool.watchFeedback();
+  assert.equal(run.entry(ROUND).phase, "queued", "the pass is under way");
+  await ticking;
+  await run.pool.watchFeedback();
+  assert.equal(run.entry(ROUND).phase, "finished");
+});
+
+test("A11-298: a pull request already read merged is not asked about again", async () => {
+  const run = stale("merged");
+  await run.pool.watchFeedback();
+  run.host.calls.length = 0;
+  await run.pool.watchFeedback();
+  assert.ok(!run.host.calls.some((call) => call.startsWith("readPullState")));
+});

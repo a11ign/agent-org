@@ -50,3 +50,10 @@ test("A11-298: a talk session on a pull request is a person's and keeps its bloc
   const queue = roundBehindBlocker({ talk: true });
   assert.deepEqual(waitsOn(find(queue, "A11-234")!, queue.entries).map(({ key }) => key), ["A11-229"]);
 });
+
+test("A11-298: a round and the ticket that blocks its ticket are not run together on files they share: the blocker is held behind the round's pull request", () => {
+  const queue = roundBehindBlocker();
+  const blocker = replace(queue, "A11-229", (entry) => ({ ...entry, paths: ["announcement-emulator:middleware/package.json"] }));
+  const round = replace(blocker, "A11-234", (entry) => ({ ...entry, pullFiles: { [PULL]: ["middleware/package.json"] } }));
+  assert.deepEqual(nextStarts(round, 0, 14).map((entry) => entry.ticket.key), ["A11-234"], "one of the two starts in a pass, not both");
+});

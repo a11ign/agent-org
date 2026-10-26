@@ -670,8 +670,14 @@ function readCacheGuardChecks(deps: DoctorDeps): Check[] {
  */
 function longWaitChecks(deps: DoctorDeps): Check[] {
   const now = deps.now();
-  return (deps.longWaits() ?? []).map((wait) => warned(`long wait ${wait.key}`, longWaitSentence(wait, now),
-    wait.holder.moves ? `it ends when ${wait.on} moves; if it should not wait, remove the blocker relation in the tracker or press Start anyway on the run's card` : `${wait.on} cannot move by itself: finish or remove it, or remove the ${wait.kind === "files" ? "run holding the files" : "blocker relation in the tracker"}`));
+  return (deps.longWaits() ?? []).map((wait) => warned(`long wait ${wait.key}`, longWaitSentence(wait, now), longWaitFix(wait)));
+}
+
+/** What ends a long wait: the ticket it waits on moving, or, when that ticket cannot move by itself, a person finishing or removing it, or the relation or run that holds the wait. */
+function longWaitFix({ kind, on, holder }: LongWait): string {
+  const ends = kind === "files" ? `remove the run holding the files` : `remove the blocker relation in the tracker`;
+  if (!holder.moves) return `${on} cannot move by itself: finish it, or ${ends}`;
+  return kind === "files" ? `it ends when ${on} lets go of the files; press Start anyway on the run's card to run it beside ${on}` : `it ends when ${on} is done; if it should not block, ${ends}`;
 }
 
 /** The versions of agent-org the live and parked runs started on, beside the instance's (A11-169): one row each, or one line when they all agree. Nothing when no run holds a workspace. */

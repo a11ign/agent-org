@@ -8,7 +8,7 @@ import { openPulls } from "../board-view/view-types-and-filters.ts";
 import { finishedWith, ticketOf } from "../kept-pulls-fixture.ts";
 import { enqueue, find, replace, reviewRound, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
 import { nextStepRuns, queueNextStep } from "./queue-next-step.ts";
-import { settleRoundPulls } from "./queue-round-pulls.ts";
+import { roundSettled, settleRoundPulls } from "./queue-round-pulls.ts";
 import { resumeQueue } from "./queue-transitions.ts";
 import { logOf } from "./run-log.ts";
 
@@ -25,12 +25,21 @@ function roundOn(urls: readonly string[], more: Partial<Entry> = {}, partial?: s
   return replace(finished, KEY, (entry) => ({ ...reviewRound({ ...entry, ...more }, prs, NOW - 50), pullFiles: { [PULL_18]: ["middleware/package.json"] } }));
 }
 
-test("A11-298: a pull request that merged leaves the round's review and stops counting, and the one still open stays", () => {
+test("A11-298: a pull request that merged is no longer open for the round and stops counting, and the one still open stays", () => {
   const settled = settleRoundPulls(roundOn([PULL_18, PULL_19]), KEY, { [PULL_18]: "merged", [PULL_19]: "open" }, NOW);
   const round = find(settled, KEY)!;
-  assert.deepEqual([round.phase, round.review?.map(({ url }) => url)], ["queued", [PULL_19]]);
+  assert.equal(round.phase, "queued");
   assert.deepEqual(openPulls(round).map(({ url }) => url), [PULL_19]);
+  assert.deepEqual(round.review?.map(({ url }) => url), [PULL_18, PULL_19], "the round's record of what it answers keeps both, so a pull request closed with work is still listed");
   assert.deepEqual(logOf(settled, KEY).filter((event) => event.kind === "merged").map((event) => (event.kind === "merged" ? event.url : "")), [PULL_18]);
+});
+
+test("A11-298: a pull request settled once is not settled again, and the last one to end drops the round with all of them judged", () => {
+  const once = settleRoundPulls(roundOn([PULL_18, PULL_19]), KEY, { [PULL_18]: "merged", [PULL_19]: "open" }, NOW);
+  assert.equal(roundSettled(once, KEY, { [PULL_18]: "merged", [PULL_19]: "open" }), null);
+  const dropped = find(settleRoundPulls(once, KEY, { [PULL_18]: "merged", [PULL_19]: "closed" }, NOW + 1), KEY)!;
+  assert.deepEqual([dropped.phase, dropped.pullStates], ["finished", { [PULL_18]: "merged", [PULL_19]: "closed" }]);
+  assert.equal(runStatus(dropped, [dropped]), "completed", "one merged: the ticket's work landed");
 });
 
 test("A11-298: a round whose only pull request merged holds nothing: the ticket queued behind its files is no longer held", () => {
