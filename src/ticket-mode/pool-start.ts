@@ -2,6 +2,7 @@
 // module: starting a run -- its workspace and agent, the start dialogs it may answer, and the fill of the free slots
 
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
+import type { TicketWriterMode } from "./queue/writer-modes.ts";
 import { type PlannedAgainst, recordPlannedAgainst } from "./queue/queue-ticket-text.ts";
 import { earlyCompletionComment, recordCompletedByPerson, recordReopenFailure, recordReopened } from "./queue/queue-next-step.ts";
 import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";
@@ -43,6 +44,8 @@ import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { trackerWritingOf } from "../plugins/registry.ts";
+import { checkRunBrief } from "./pool-check-runs.ts";
+import { isCheckRun, VERIFIER_EFFORT, VERIFIER_MODEL } from "./after-merge/verify.ts";
 import { settleSessions } from "./pool-sessions.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -643,20 +646,23 @@ async function startWriter(ctx: PoolContext): Promise<void> {
   if (queued === undefined) return;
   update(ctx, (queue) => recordWriterPin(markWriterStarting(queue, queued.id, now()), queued.id, toolPinOf(ctx)));
   try {
-    if (writer === null) throw new Error("this machine names no tickets.writer");
-    const model = queued.model ?? writer.model;
-    const effort = queued.effort ?? writer.effort;
+    const checkRun = isCheckRun(queued.mode);
+    // A verifier run and a migration pass (A11-302) file no ticket, so they need no `tickets.writer`: they run on the verifier's model and effort, and may read the tracker and nothing else.
+    if (writer === null && !checkRun) throw new Error("this machine names no tickets.writer");
+    const model = checkRun ? VERIFIER_MODEL : queued.model ?? writer!.model;
+    const effort = checkRun ? VERIFIER_EFFORT : queued.effort ?? writer!.effort;
     const place = writerPlace(ctx, queued);
-    const writing = trackerWritingOf(settings.providers);
+    const writing = checkRun ? null : trackerWritingOf(settings.providers);
     // A Grill run's ticket is read as it is now: its brief is the grill of that text, and the run may file nothing (A11-134).
     const grilled = queued.ticket === undefined ? undefined : await readGrilled(source, queued.ticket);
     clearRunDir(ctx, place.folder, place.dir);
-    writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, placement: queued.placement, form: queued.form, clones: settings.clones,
-      dir: place.dir, team: queued.team ?? null, pickTeam: pickTeamOf(settings.pick), writing, ...(grilled === undefined ? {} : { ticket: grilled }) }));
-    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: grilled === undefined ? writerTools(writing) : [] })}\n`);
+    const brief = checkRun ? checkRunBrief(ctx, queued, place.dir) : writerBriefText({ run: writer!.run, request: queued.request, mode: queued.mode as TicketWriterMode, placement: queued.placement, form: queued.form, clones: settings.clones,
+      dir: place.dir, team: queued.team ?? null, pickTeam: pickTeamOf(settings.pick), writing: writing!, ...(grilled === undefined ? {} : { ticket: grilled }) });
+    writeFileSync(join(place.dir, BRIEF_FILE), brief);
+    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: grilled === undefined && writing !== null ? writerTools(writing) : [] })}\n`);
     writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model, writer: writing });
-    const tail = [writerPrompt(place.dir, queued.mode), ...workerFlags({ name: `writer-${queued.id}`, model, effort, addDirs: [place.dir] })];
-    const { workspace, pane } = await startAgent(ctx, place, {}, tail, "the new-ticket run");
+    const tail = [writerPrompt(place.dir, queued.mode), ...workerFlags({ name: `${checkRun ? queued.mode : "writer"}-${queued.id}`, model, effort, addDirs: [place.dir] })];
+    const { workspace, pane } = await startAgent(ctx, place, {}, tail, checkRun ? "the After-merge check run" : "the new-ticket run");
     if (writerOf(store.get(), queued.id)?.phase !== "starting") {
       closedNote((args) => herdr(args), workspace, session);
       return;

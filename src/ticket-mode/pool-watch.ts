@@ -26,6 +26,8 @@ import type { Judged } from "./wait-on/wait-verdict.ts";
 import type { Woke } from "./wait-on/wait-types.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
+import { finishCheckRun } from "./pool-check-runs.ts";
+import { isCheckRun, MIGRATION_LIMIT_MS, VERIFIER_LIMIT_MS } from "./after-merge/verify.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
 import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
 import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
@@ -391,7 +393,7 @@ function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     }
     const outcomePath = join(place.dir, OUTCOME_FILE);
     if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) {
-      if (!finishing.has(run.id)) void finishWriter(ctx, run, place, readFileSync(outcomePath, "utf8"));
+      if (!finishing.has(run.id)) void (isCheckRun(run.mode) ? finishCheckRun(ctx, run, readFileSync(outcomePath, "utf8")) : finishWriter(ctx, run, place, readFileSync(outcomePath, "utf8")));
     } else if (run.mode === "grill" && (seen === "idle" || seen === "done")) {
       update(ctx, (queue) => writerWaiting(queue, run.id, questionOnFile(place.dir), now()));
     } else if (stoppedWithoutOutcome(run, seen)) endWriter(ctx, run, "it stopped without writing an outcome");
@@ -404,6 +406,10 @@ function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
  * last answer. PURE.
  */
 function writerOverdue(run: WriterRun, now: number): string | null {
+  if (isCheckRun(run.mode)) {
+    const limit = run.mode === "verify" ? VERIFIER_LIMIT_MS : MIGRATION_LIMIT_MS;
+    return now - (run.startedAt ?? now) > limit ? `it did not finish within ${limit / 60_000} minutes` : null;
+  }
   if (run.mode === "quick") {
     return now - (run.startedAt ?? now) > WRITER_LIMIT_MS ? `it did not finish within ${WRITER_LIMIT_MS / 60_000} minutes` : null;
   }

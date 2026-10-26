@@ -105,13 +105,13 @@ describe("the After-merge checks list", () => {
     const list = within(screen.getByRole("region", { name: "After-merge checks" }));
     expect(list.getByRole("link", { name: "A11-70" }).getAttribute("href")).toBe("https://linear.app/a11ign/issue/A11-70");
     expect(list.getByText("The chairman: check the release is out", { exact: false })).toBeTruthy();
-    expect(list.getByText(/^Runs it: The chairman · the session · /)).toBeTruthy(); // on no escalation item, so the session runs it
+    expect(list.getByText(/^Runs it: The chairman · you · /)).toBeTruthy(); // the list shows the person only the checks that wait on them (A11-302)
     expect(textOf(document.querySelector(".runs-extra-head"))).toBe("After-merge checks2");
   });
 
   it("says when no one is named to run a line", async () => {
     await pageOn(standWith());
-    expect(within(screen.getByRole("region", { name: "After-merge checks" })).getByText(/^Runs it: owner not named · the session · /)).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "After-merge checks" })).getByText(/^Runs it: owner not named · you · /)).toBeTruthy();
   });
 
   it("is not drawn while no check is open", async () => {

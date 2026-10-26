@@ -4,10 +4,10 @@ import type { Answer } from "../api/answer.ts";
 import type { AfterMergeCheck, CheckAnswer, CheckResult } from "../api/types.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
 
-const RUNNER_WORDS: Readonly<Record<AfterMergeCheck["runner"], string>> = { session: "the session", person: "you", board: "the board" };
+const RUNNER_WORDS: Readonly<Record<AfterMergeCheck["runner"], string>> = { session: "the session (retired)", person: "you", board: "the board", agent: "a verifier run" };
 
-/** Who the board sends a check to, as its row says it: "the session", "you" or "the board", and "for <role>" when the session runs it for a role. PURE. */
-export const runnerText = ({ runner, role }: Pick<AfterMergeCheck, "runner" | "role">): string => (role === null ? RUNNER_WORDS[runner] : `${RUNNER_WORDS[runner]} for ${role}`);
+/** Who runs a check, as its row says it: "you" for the checks the list shows, and the org's runners for any other (A11-302). PURE. */
+export const runnerText = ({ runner }: Pick<AfterMergeCheck, "runner">): string => RUNNER_WORDS[runner];
 
 /** The escalation item a row waits on the person for, or null: an instance older than A11-277's step 3 sends no `needsYou`, and its rows wait on no one. PURE. */
 export const needsYouOf = (check: AfterMergeCheck): string | null => check.needsYou ?? null;

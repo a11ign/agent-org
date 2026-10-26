@@ -3,7 +3,7 @@
 // ONLY THE FIELDS THE SHELL READS ARE FILLED, so the fixtures are cast to the server's types: a field the shell starts to read that is missing here fails its check. Used by the
 // component checks (as the client's `fetch`) and by the page checks (answered through Playwright's `page.route`), so both see the same instance.
 import type { Fetch } from "../src/api/request.ts";
-import type { ConfigView, ConnectionsView, PickView, QueueView, People, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView } from "../src/api/types.ts";
+import type { ConfigView, ConnectionsView, PickView, QueueView, People, Ticket, TicketCheck, TicketsPageView, TicketView, ViewConnection, WritersView } from "../src/api/types.ts";
 
 export const HERE: ViewConnection = { name: "here", kind: "local" };
 export const PERSONAL: ViewConnection = { name: "personal", kind: "ssh" };
@@ -46,6 +46,10 @@ export type InstanceAnswers = Readonly<{
   config?: ConfigView; tickets?: readonly TicketView[]; queue?: QueueView; queueFails?: Failure; ticketsFail?: Failure; configFail?: Failure;
   parents?: readonly Ticket[]; people?: People; pagesFail?: Failure; pick?: PickView; writer?: WritersView; pages?: Readonly<Record<string, readonly TicketsPageView[]>>;
   post?: (path: string, body: unknown) => unknown | Failure;
+  /** The After-merge checks of each ticket, as its own read (`GET /api/queue/<key>`) sends them (A11-302). */
+  ticketChecks?: Readonly<Record<string, readonly TicketCheck[]>>;
+  /** The sentence an instance sends instead of any ticket's checks when it cannot read them (A11-302). */
+  ticketChecksUnreadable?: string;
 }>;
 
 export type Stand = Readonly<{
@@ -81,7 +85,7 @@ function runAnswer(answers: InstanceAnswers, key: string): { status: number; bod
   if (answers.queueFails !== undefined) return failed(answers.queueFails);
   const queue = (answers.queue ?? queueOf()) as QueueView & { runLog?: Readonly<Record<string, unknown>> };
   const entry = queue.entries.find((candidate) => candidate.ticket.key === key);
-  return entry === undefined ? json({ error: `no run ${key} on the queue` }, 404) : json({ entry, runLog: queue.runLog?.[key] ?? [] });
+  return entry === undefined ? json({ error: `no run ${key} on the queue` }, 404) : json({ entry, runLog: queue.runLog?.[key] ?? [], ...(answers.ticketChecks?.[key] === undefined ? {} : { afterMergeChecks: answers.ticketChecks[key] }), ...(answers.ticketChecksUnreadable === undefined ? {} : { afterMergeUnreadable: answers.ticketChecksUnreadable }) });
 }
 
 /** The answer to a request that changes something, or to a read the instance has no answer for. */

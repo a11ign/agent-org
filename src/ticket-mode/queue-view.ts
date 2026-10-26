@@ -5,12 +5,14 @@
 // the chairman's Mac. A run in the list keeps the fields a list page, and the board-view code those pages run, read (`LIST_FIELDS`), with its ticket's key, title and address. `GET /api/queue/<key>` answers the run in
 // full, with its log, for the run's own page. A run that holds no path (it ended, and so did its ticket) drops the files it once held, which nothing reads of it.
 import type { Entry, Queue, WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import { isTicketWriter } from "./queue/writer-modes.ts";
 import type { CiView } from "./board-view/ci-note.ts";
 import { ENDED_TICKETS } from "./board-view/overlap-hold.ts";
 import type { RunEvent } from "./queue/run-log.ts";
 import type { ReadBoard } from "./read-routes.ts";
 import { ciViewOf } from "./ci-spend/view.ts";
-import { afterMergeView } from "./after-merge/route.ts";
+import { afterMergeQueueView, afterMergeTicketView } from "./after-merge/route.ts";
+import type { TicketCheck } from "./board-view.ts";
 import type { Ticket } from "./source.ts";
 
 /**
@@ -37,8 +39,8 @@ export type QueueListEntry = Readonly<Omit<Pick<Entry, (typeof LIST_FIELDS)[numb
 /** A run in full, as its own page reads it: the list's fields, and whichever of the rest the board holds. A list entry is one, so a page can draw from the list until the full read answers. */
 export type RunDetailEntry = Omit<QueueListEntry, "ticket"> & Readonly<Partial<Omit<Entry, keyof QueueListEntry | "ticket">> & { ticket: ListTicket & Partial<Ticket> }>;
 
-/** What `GET /api/queue/<key>` answers: the run in full, and its log, oldest event first. */
-export type QueueEntryView = Readonly<{ entry: RunDetailEntry; runLog: readonly RunEvent[] }>;
+/** What `GET /api/queue/<key>` answers: the run in full, its log, oldest event first, and the ticket's After-merge checks of every runner (A11-302; absent on an instance from before). */
+export type QueueEntryView = Readonly<{ entry: RunDetailEntry; runLog: readonly RunEvent[]; afterMergeChecks?: readonly TicketCheck[]; afterMergeUnreadable?: string }>;
 
 /** The phases in which a run holds or contests paths. */
 const PATH_PHASES: ReadonlySet<string> = new Set(["queued", "starting", "running"]);
@@ -88,12 +90,12 @@ export function shownEntry(entry: Entry): Entry {
 }
 
 /** A new-ticket run without its Grill's ticket text: the board keeps that text to compare, and the page is not sent it (A11-134). */
-export function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
+export function shownWriter<Run extends WriterRun>(run: Run): Omit<Run, "startedFrom"> {
   const { startedFrom: _startedFrom, ...shown } = run;
   return shown;
 }
 
-type ViewBoard = Pick<ReadBoard, "store" | "pool" | "update" | "settings">;
+type ViewBoard = Pick<ReadBoard, "store" | "pool" | "update" | "settings" | "now">;
 
 /** The CI of a run for the page, from the runs the board holds (A11-261). */
 const ciOf = (board: ViewBoard, queue: Queue, entry: Entry): CiView | undefined => ciViewOf(queue, entry, board.settings.ciBudgetMinutes);
@@ -117,8 +119,8 @@ export function queueView(board: ViewBoard) {
   const { ciSpend: _ciSpend, interventions: _interventions, runLog, ...queue } = board.store.get();
   const entries = queue.entries.map((entry) => listEntry(entry, ciOf(board, board.store.get(), entry)));
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
-    afterMergeChecks: afterMergeView(board.settings.stateDir) };
+  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).filter(isTicketWriter).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
+    ...afterMergeQueueView(board.settings.stateDir, (board.now ?? Date.now)()) };
 }
 
 /** One run in full, with its log, as `GET /api/queue/<key>` answers it; null for a ticket the queue holds no run of. */
@@ -127,5 +129,5 @@ export function queueEntryView(board: ViewBoard, key: string): QueueEntryView | 
   const entry = queue.entries.find((candidate) => candidate.ticket.key === key);
   if (entry === undefined) return null;
   const ci = ciOf(board, queue, entry);
-  return { entry: { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) }, runLog: queue.runLog?.[key] ?? [] };
+  return { entry: { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) }, runLog: queue.runLog?.[key] ?? [], ...afterMergeTicketView(board.settings.stateDir, key) };
 }

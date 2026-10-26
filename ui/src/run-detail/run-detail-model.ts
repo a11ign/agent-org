@@ -10,7 +10,8 @@ import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { cycleNote } from "../../../src/ticket-mode/board-view/wait-cycles.ts";
 import { clockOf, versionLine } from "../../../src/ticket-mode/board-view/update-banner.ts";
 import { diffLines, learnsFrom, ticketChangeOf, type DiffLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
-import type { PlannedStep, QueueEntryView, RunEvent, QueueView, RunAction, RunDetailEntry, ViewConnection } from "../api/types.ts";
+import { ageOf } from "../../../src/ticket-mode/after-merge/checks.ts";
+import type { PlannedStep, QueueEntryView, RunEvent, QueueView, RunAction, RunDetailEntry, TicketCheck, ViewConnection } from "../api/types.ts";
 import { PUBLISH_MERGE_NOTE, PUBLISHED_MERGE_NOTE, PUBLISHING_MERGE_NOTE } from "../runs/publish-model.ts";
 import { actionsOf, type RowAction } from "../runs/run-actions.ts";
 import { labelOf, noteLines, since, timingOf, tokensOf, type NoteContext, type RunEntry } from "../runs/runs-model.ts";
@@ -346,3 +347,30 @@ function changeOf(entry: RunEntry): TicketChange | null {
 export const disclosuresOf = (entry: RunEntry, context: NoteContext): Disclosures => ({
   changed: changeOf(entry), learns: learnsFrom(entry), proposal: proposalOf(entry), noted: noteLines(entry, context),
 });
+
+/** A ticket's After-merge check as the Run detail draws a row (A11-302): its line, who runs it, where it stands, and what is known of it. */
+export type CheckRow = Readonly<{ id: string; line: string; runner: string; state: string; tone: "passed" | "failed" | "open" | "superseded"; detail: string }>;
+
+const CHECK_RUNNER: Readonly<Record<TicketCheck["runner"], string>> = { board: "the board", agent: "a verifier run", person: "a person", session: "the person's session (retired)" };
+const CHECK_STATE: Readonly<Record<TicketCheck["state"], { state: string; tone: CheckRow["tone"] }>> = {
+  open: { state: "Open", tone: "open" }, passed: { state: "Passed", tone: "passed" }, failed: { state: "Failed", tone: "failed" }, superseded: { state: "Superseded", tone: "superseded" },
+};
+const CLOSED_BY: Readonly<Record<NonNullable<TicketCheck["closedBy"]>, string>> = { board: "the board", agent: "a verifier run", person: "a person", session: "the person's session" };
+
+/** A day and a minute in UTC, as a row says when a window closes. */
+const stampOf = (at: number): string => new Date(at).toISOString().slice(0, 16).replace("T", " ");
+
+/** What a row says beyond its state: an open check's watch and window, or why it was handed to an agent; a closed one's evidence and who closed it, and what became of a failure. PURE. */
+function checkDetail(check: TicketCheck, now: number): string {
+  if (check.state === "open") {
+    const watching = check.watching === null ? [] : [`Watching ${check.watching}${check.windowEnds === null ? "" : ` until ${stampOf(check.windowEnds)} UTC`}`];
+    const handed = check.handedOff === undefined ? [] : [`handed to an agent: ${check.handedOff}`];
+    return [...watching, ...handed, `listed ${ageOf(check.listedAt, now)} ago`].join(" · ");
+  }
+  const followUp = check.state !== "failed" || check.followUp === undefined ? [] : [check.followUp === null ? "no follow-up" : `follow-up filed (${check.followUp})`];
+  return [check.result ?? "", check.closedBy === undefined ? "" : `closed by ${CLOSED_BY[check.closedBy]}`, ...followUp].filter((part) => part !== "").join(" · ");
+}
+
+/** The rows of a ticket's After-merge checks, oldest first; none when the instance sent none (an instance from before A11-302 sends no `afterMergeChecks`). PURE. */
+export const checkRowsOf = (checks: readonly TicketCheck[] | undefined, now: number): CheckRow[] =>
+  (checks ?? []).map((check) => ({ id: check.id, line: check.line, runner: CHECK_RUNNER[check.runner], ...CHECK_STATE[check.state], detail: checkDetail(check, now) }));

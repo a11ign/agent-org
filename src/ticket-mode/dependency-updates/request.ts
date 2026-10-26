@@ -2,6 +2,7 @@
 // module: asking the ticket writer for one ticket, and recording that it was asked (A11-255)
 import { queueWriter } from "../queue.ts";
 import { MAX_WRITER_RUNS, type WriterForm } from "../queue/queue-entries-and-outcomes.ts";
+import { isTicketWriter } from "../queue/writer-modes.ts";
 import { placementOf } from "../writer-placement.ts";
 import { firstLine, sayOnce, type SweepContext } from "./context.ts";
 
@@ -28,7 +29,7 @@ export function requestTicket(ctx: SweepContext, { key, repository, request }: T
     sayOnce(ctx, "dependency updates: this machine names no tickets.writer, so no dependency ticket is asked for");
     return false;
   }
-  const unfinished = (deps.store.get().writers ?? []).filter((run) => run.phase !== "finished").length;
+  const unfinished = (deps.store.get().writers ?? []).filter((run) => isTicketWriter(run) && run.phase !== "finished").length;
   if (unfinished >= MAX_WRITER_RUNS - PLACES_KEPT_FOR_PEOPLE) {
     sayOnce(ctx, `dependency updates: ${unfinished} new-ticket requests are unfinished, so the sweep leaves the last place for a person and asks again when one ends`);
     return false;

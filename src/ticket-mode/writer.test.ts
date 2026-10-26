@@ -83,3 +83,14 @@ test("A11-199: the limits are defined once, in a module free of Node, and the wr
   assert.deepEqual([limits.WRITER_REQUEST_CHARS, limits.MAX_CREATED], [8000, 10]);
   assert.equal(MAX_CREATED, limits.MAX_CREATED);
 });
+
+test("A11-302: a verifier run's and a migration pass's outcomes are read by their mode, and a new-ticket run's kinds are not theirs", () => {
+  assert.deepEqual(parseWriterOutcome('{ "kind": "failed", "evidence": "still 0.4.1" }', "verify"), { kind: "verified", verdict: { kind: "failed", evidence: "still 0.4.1" }, created: [] });
+  assert.match(parseWriterOutcome('{ "kind": "created", "created": ["A11-1"] }', "verify") as string, /a verifier run ends on/);
+  assert.deepEqual(parseWriterOutcome('{ "kind": "needs-human", "reason": "no host" }', "verify"), { kind: "needs-human", reason: "no host", created: [] });
+  const migrated = parseWriterOutcome('{ "kind": "migrated", "checks": [{ "id": "A11-1#1", "runner": "agent", "evidence": "x" }] }', "migrate");
+  assert.ok(typeof migrated === "object" && migrated.kind === "migrated" && migrated.entries.length === 1);
+  assert.match(parseWriterOutcome('{ "kind": "migrated", "checks": [] }', "migrate") as string, /lists its checks/);
+  assert.match(parseWriterOutcome('{ "kind": "migrated", "checks": [{ "id": "A11-1#1" }] }', "quick") as string, /which a new-ticket run cannot end on/);
+  assert.match(parseWriterOutcome('{ "kind": "passed", "evidence": "x" }') as string, /which a new-ticket run cannot end on/);
+});

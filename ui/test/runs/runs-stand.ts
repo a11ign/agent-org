@@ -81,10 +81,13 @@ export function boardRuns(): RunFields[] {
 }
 
 /** The queue of the boards: `runs`, ten workers, started unless `paused`, and the review line the pool read of the Ready to merge run's pull request. */
-export function queueWith(runs: readonly RunFields[], { paused = false, max = 10, pulls = {} }: Readonly<{ paused?: boolean; max?: number; pulls?: Readonly<Record<string, string>> }> = {}): QueueView {
-  // The board lists the runs' After-merge lines as checks of their own (A11-277), each copied once, open, as its sweep copies them.
-  const afterMergeChecks = afterMergeChecksOf(seedChecks(emptyChecks(), runs as unknown as ListedRun[], Date.now()));
-  return { entries: runs as unknown as ViewEntry[], max, paused, pulls: { [pullUrl("a11ign/lab", 150)]: "approved at 1f6009d", ...pulls }, update: null, writers: [], held: null, claimWarning: null, afterMergeChecks } as unknown as QueueView;
+export function queueWith(runs: readonly RunFields[], { paused = false, max = 10, pulls = {}, org }: Readonly<{ paused?: boolean; max?: number; pulls?: Readonly<Record<string, string>>; org?: Readonly<{ open: number; stale: number }> }> = {}): QueueView {
+  // The board lists the runs' After-merge lines as checks of their own (A11-277), each copied once, open, as its sweep copies them, and lists the person only the checks that wait on them (A11-302): a stand's
+  // lines are given the runner a plan gives a check only the person can do, so the list has rows to draw. `org` is what the pool bar says of the org's own checks.
+  const now = Date.now();
+  const planned = new Map((runs as unknown as ListedRun[]).map((run) => [run.ticket.key, (run.afterMerge ?? []).map(({ line }) => ({ line, runner: "person" as const, escalation: "outward", evidence: "the person's word" }))]));
+  const afterMergeChecks = afterMergeChecksOf(seedChecks(emptyChecks(), runs as unknown as ListedRun[], now, planned));
+  return { entries: runs as unknown as ViewEntry[], max, paused, pulls: { [pullUrl("a11ign/lab", 150)]: "approved at 1f6009d", ...pulls }, update: null, writers: [], held: null, claimWarning: null, afterMergeChecks, ...(org === undefined ? {} : { afterMergeOrg: org }) } as unknown as QueueView;
 }
 
 /** The stand the Runs boards draw: `personal`, an instance that queues, with the board's 90 runs unless `runs` says others. `queueFails` makes the queue read fail. */

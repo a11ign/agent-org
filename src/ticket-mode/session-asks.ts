@@ -1,36 +1,10 @@
 // @ts-check
-// module: the person's session's queue (A11-277) -- `GET /api/session-asks`, what the board asks the session to run, each with what would close it and the route to answer on
+// module: the person's session's queue (A11-277, A11-302) -- `GET /api/session-asks`, what the board asks the session to run, each with the route to answer on
 //
-// THE SESSION'S QUEUE IS THE BOARD'S API, WITH NO NEW SCREEN (A11-275's routing). The board cannot message a session; it lists what it asks, and the session reads the list. So an ask is "sent" when the list first shows
-// it, and the list says when (`sentAt`): a session that reads with `?since=<at>` from its last read sees only what was sent since, and an overdue check, sent again, once more. Each kind of ask carries its own `kind`;
-// the After-merge checks (`after-merge/dispatch.ts`) are the first, and a run that waits on the session (`wait-on/`, A11-275) the second.
-import { OWNER_NOT_NAMED } from "./board-view.ts";
-import { roleOf, type CheckRecord, type ChecksFile } from "./after-merge/checks.ts";
-import { markSent, sentToSession } from "./after-merge/dispatch.ts";
-import { afterMergeChecksPath, changeChecks } from "./after-merge/store.ts";
+// THE SESSION'S QUEUE IS THE BOARD'S API, WITH NO NEW SCREEN (A11-275's routing). The board cannot message a session; it lists what it asks, and the session reads the list. A11-302 took the After-merge checks out of it: the org
+// verifies its own work, so the session is no runner of a check (it may read the results on a ticket's Run detail, as anyone can). What is left is the run that waits on something only the session can do (`wait-on/`, A11-275).
 import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { type AnswersFile, loadAnswers, sessionAnswersPath, unansweredRuns, waitingRuns } from "./session-answers.ts";
-
-/** What an After-merge check asks of the session when its plan does not say what would close it. */
-export const DEFAULT_CHECK_EVIDENCE = "one line saying what you saw, and where";
-
-/**
- * An After-merge check the session is asked to run: its id, ticket and line, who runs it ("owner not named" when the line names no one) and the role the session runs it for, what evidence would close it, when it was
- * sent, whether it is overdue, and the route its result is posted to (`POST`, with `{ result, evidence, by: "session" }`).
- */
-export type AfterMergeAsk = Readonly<{
-  kind: "after-merge-check";
-  id: string;
-  key: string;
-  url: string | null;
-  line: string;
-  owner: string;
-  role: string | null;
-  evidence: string;
-  sentAt: number;
-  overdue: boolean;
-  close: string;
-}>;
 
 /**
  * A run that waits on something only the session can do (A11-275): its ticket and the ticket's address, the run's pull requests, the ask in the worker's words (the exact command, where it runs and what a pass looks
@@ -46,26 +20,11 @@ export type WaitingRunAsk = Readonly<{
   answer: string;
 }>;
 
-/** One thing the board asks the session to do. In a listing, the After-merge checks come first and the waiting runs after them, each oldest first. */
-export type SessionAsk = AfterMergeAsk | WaitingRunAsk;
+/** One thing the board asks the session to do: a run that waits on something only the session can do. */
+export type SessionAsk = WaitingRunAsk;
 
 /** What `GET /api/session-asks` answers: the board's clock as it listed them, which a session's next read passes as `since`, and the asks, oldest first. */
 export type SessionAsksView = Readonly<{ at: number; asks: readonly SessionAsk[] }>;
-
-/** The route a check's result is posted to: `/api/after-merge/<KEY>/<n>` for check `<KEY>#<n>`. PURE. */
-export const closeRouteOf = (id: string): string => `/api/after-merge/${id.replace("#", "/")}`;
-
-/** The ask an After-merge check the session was sent makes of it. PURE. */
-const askOf = (check: CheckRecord & { sentAt: number }): AfterMergeAsk => ({
-  kind: "after-merge-check", id: check.id, key: check.key, url: check.url, line: check.line, owner: check.owner ?? OWNER_NOT_NAMED, role: roleOf(check.owner),
-  evidence: check.evidence ?? DEFAULT_CHECK_EVIDENCE, sentAt: check.sentAt, overdue: check.overdueAt !== undefined, close: closeRouteOf(check.id),
-});
-
-/** The After-merge checks the session has been sent and that are still open, oldest first; only those sent after `since` when it is given. PURE. */
-export function afterMergeAsks(file: ChecksFile, since?: number): AfterMergeAsk[] {
-  const sent = Object.values(file.checks).filter((check): check is CheckRecord & { sentAt: number } => sentToSession(check) && check.sentAt !== undefined);
-  return sent.filter((check) => since === undefined || check.sentAt > since).sort((a, b) => a.listedAt - b.listedAt).map(askOf);
-}
 
 /** The route a waiting run's result is posted to: `/api/session-asks/<KEY>/answer`. PURE. */
 export const answerRouteOf = (key: string): string => `/api/session-asks/${key}/answer`;
@@ -91,16 +50,14 @@ function sinceOf(query: URLSearchParams): number | undefined {
 export type SessionAsksBoard = Readonly<{ stateDir: string; now: () => number; queue: () => Queue }>;
 
 /**
- * `GET /api/session-asks`: every open After-merge check the session runs, each sent (`sentAt` set) the first time it is listed, so that is when the board sent it; then every ask a run waits on the session for that is not answered, sent when its
- * worker declared it (listing it writes nothing, and `since` does not filter it). Undefined when the request names another route. A checks or answers file that cannot be read THROWS, as the close route does: listed as empty, the session would be told it has
- * nothing to run.
+ * `GET /api/session-asks`: every ask a run waits on the session for that is not answered, sent when its worker declared it (listing it writes nothing, and `since` does not filter it). Undefined when the request names another route.
+ * An answers file that cannot be read THROWS: listed as empty, the session would be told it has nothing to run.
  */
 export function sessionAsksRoute(board: SessionAsksBoard, method: string, path: string, query: URLSearchParams): [number, SessionAsksView] | undefined {
   if (method !== "GET" || path !== "/api/session-asks") return undefined;
-  const since = sinceOf(query);
+  sinceOf(query);
   const at = board.now();
-  // Read before any check is marked sent: a file that cannot be read must not leave checks sent that the session never saw. A queue with no run waiting on the session never reads it.
+  // A queue with no run waiting on the session never reads the answers file.
   const waiting = waitingRuns(board.queue()).length === 0 ? [] : waitingRunAsks(board.queue(), loadAnswers(sessionAnswersPath(board.stateDir)));
-  const file = changeChecks(afterMergeChecksPath(board.stateDir), (before) => markSent(before, at));
-  return [200, { at, asks: [...afterMergeAsks(file, since), ...waiting] }];
+  return [200, { at, asks: waiting }];
 }

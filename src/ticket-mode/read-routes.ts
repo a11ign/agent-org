@@ -22,6 +22,7 @@ export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "
 import { interventionsView } from "./queue/interventions.ts";
 import { flakesPath, flakesViewOf } from "./flakes.ts";
 import { type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
+import { isTicketWriter, type TicketWriterRun } from "./queue/writer-modes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
@@ -195,7 +196,7 @@ async function readClaims(board: Pick<ReadBoard, "settings" | "source" | "store"
 }
 
 /** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
-function writerViewOf(run: WriterRun) {
+function writerViewOf(run: TicketWriterRun) {
   return { ...shownWriter(run), status: writerStatus(run) };
 }
 
@@ -204,7 +205,7 @@ export type WritersView = ReturnType<typeof writersViewOf>;
 
 /** The new-ticket requests, each with its status, as the page shows them. */
 export function writersViewOf(queue: Queue) {
-  return { runs: (queue.writers ?? []).map(writerViewOf) };
+  return { runs: (queue.writers ?? []).filter(isTicketWriter).map(writerViewOf) };
 }
 
 /** What `/api/config` answers: the board's choices and capabilities. The UI's client names this type, so a field renamed here fails its `tsc`. */

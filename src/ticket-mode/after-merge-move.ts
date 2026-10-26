@@ -31,7 +31,7 @@ export type Move = Readonly<{ line: string; reason: MoveReason; who: string }>;
 export const MOVE_RULE = "A Before-merge line of the ticket's Done-when that needs a published release, a person's own machine, or anything else a worker cannot reach cannot be met before merge: no branch can meet it. "
   + `Do not plan a worker to meet it. Move it to After merge: list it in a plan section \`${MOVED_HEADING}\`, one bullet per line, as \`\` - \`<the Before-merge line, quoted exactly>\` — <reason> — <who runs it> \`\`. `
   + "`<reason>` is `release` (it needs a published release), `machine` (it needs a person's own machine) or `unreachable` (it needs something else a worker cannot reach). "
-  + `\`<who runs it>\` is one line of at most ${WHO_CHARS} characters, such as \`the person's session\`. Quote a line that holds a backtick inside double backticks. `
+  + `\`<who runs it>\` is one line of at most ${WHO_CHARS} characters, such as \`a verifier run once the release is installed\`: the org verifies its own work, so it never names the person's session. A moved line runs as an \`agent\` check unless your \`## After-merge checks\` section gives it another runner. Quote a line that holds a backtick inside double backticks. `
   + "The board refuses a plan that quotes a line the ticket does not hold under `### Before merge`. Once the plan is attached, the board moves each line under `### After merge` with who runs it and records the move in the ticket's Decisions, before any worker starts. "
   + "A check a worker can run against its own branch, a test or a command with its cleanup, stays Before merge.";
 
