@@ -5361,6 +5361,20 @@ test("A11-300: a job that is green on rerun starts no round and is written to fl
   assert.deepEqual(flakesView(readFlakes(flakesPath(ctx.settings.stateDir)), 1000).tests.map(({ test, count }) => [test, count]), [["src/a.test.ts > flakes sometimes", 3]], "the third flake in seven days lists the test");
 });
 
+test("A11-300: a round that ends with no push and a worker's reply that says the failure is unrelated ends in one more rerun, and red again after it a person decides", async () => {
+  const { pulls, ci, ctx } = await redRun([redCheck("test", 11)], { 11: TEST_FAILED });
+  await rerunThenRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").rounds, ci.reruns.length], [1, 1], "the rerun was red again: one round");
+  await finishRound(ctx);
+  pulls[1] = feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)], comments: [{ ...replyAt("worker-bot", 30), body: "No change: this failure is unrelated to my pull request, it is the runner's." }] });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ci.reruns.length], ["finished", 1, 2], "no second round, and the failed jobs are rerun once more");
+  assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.rerun?.for, "reply");
+  pulls[1] = feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11, 900)], comments: [{ ...replyAt("worker-bot", 30), body: "No change: this failure is unrelated to my pull request, it is the runner's." }] });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ci.reruns.length, ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.step], ["finished", 1, 2, "named"], "red again: a person decides, and nothing more is rerun");
+});
+
 test("A11-154: a required roll-up that failed is replaced in the round by the jobs behind it and their log lines", async () => {
   const roll = { ...redCheck("gate", 40), isRequired: true };
   const { ctx } = await redRun([roll, redCheck("suite", 41), redCheck("lint", 42)], { 40: stamped(["##[error]Process completed with exit code 1.", "a job reported 'failure', not success"]), 41: TEST_FAILED, 42: BAD_GATEWAY });
