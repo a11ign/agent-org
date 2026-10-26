@@ -8,8 +8,8 @@
 //
 // CI IS UNCHANGED AND IS THE GATE: it runs every suite on every push. This command is what a worker runs while it works, so that it does not re-run everything after each edit.
 //
-// THE SUITE NEEDS A PROJECT TO RUN AGAINST (`AGENT_ORG_HOST`, see AGENTS.md): when the caller has not set one, this makes the same copy of the fixture project CI's `suite` job makes, in a
-// temporary directory it removes afterwards.
+// THE SUITE NEEDS A PROJECT TO RUN AGAINST (`AGENT_ORG_HOST`, see AGENTS.md): this makes the same copy of the fixture project CI's `suite` job makes, in a temporary directory it removes afterwards, and
+// ignores the `AGENT_ORG_HOST` of the caller's environment, which on a worker names the live project.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -110,22 +110,25 @@ function runLint(root: string, scope: LintScope): number {
 /** The variables `npm run` adds to a script's environment. CI runs rstest outside npm, so the suite is not run with them. */
 const NPM_RUN_VARIABLE = /^(npm_|INIT_CWD$)/;
 
-/** The environment the suite runs in: the caller's without what `npm run` adds, and with `AGENT_ORG_HOST` when one is given. */
-export function suiteEnvironment(env: NodeJS.ProcessEnv, host?: string): NodeJS.ProcessEnv {
+/** The environment the suite runs in: the caller's without what `npm run` adds, and with `AGENT_ORG_HOST` naming `host`, whatever the caller had. */
+export function suiteEnvironment(env: NodeJS.ProcessEnv, host: string): NodeJS.ProcessEnv {
   const kept = Object.fromEntries(Object.entries(env).filter(([name]) => !NPM_RUN_VARIABLE.test(name)));
-  return host === undefined ? kept : { ...kept, AGENT_ORG_HOST: host };
+  return { ...kept, AGENT_ORG_HOST: host };
 }
 
-/** Run the selected tests (or the whole suite) against the fixture project, which is removed afterwards unless the caller brought its own. */
+/**
+ * Run the selected tests (or the whole suite) against the fixture project, which is removed afterwards. ALWAYS the fixture, whatever `AGENT_ORG_HOST` the caller has: a worker's environment
+ * names the live project's host file, and the suite run against it is not the suite CI runs (tests that skip against the fixture run, against the project's own tree, and fail).
+ */
 function runTests(root: string, selection: TestSelection): number {
   const files = selection.kind === "selected" ? selection.tests.map((test) => test.file) : [];
   if (selection.kind === "selected" && files.length === 0) return 0;
-  const scratch = process.env.AGENT_ORG_HOST === undefined ? mkdtempSync(join(tmpdir(), "check-changed-")) : null;
+  const scratch = mkdtempSync(join(tmpdir(), "check-changed-"));
   try {
-    const env = suiteEnvironment(process.env, scratch === null ? undefined : layFixtureProject(root, join(scratch, "project")));
+    const env = suiteEnvironment(process.env, layFixtureProject(root, join(scratch, "project")));
     return spawnInherit(root, join(root, "node_modules", ".bin", "rstest"), ["run", "--config", RSTEST_CONFIG, ...files], env);
   } finally {
-    if (scratch !== null) rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 

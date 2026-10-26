@@ -297,8 +297,7 @@ test("the fixture project is the committed copy CI makes: a host file naming the
   assert.ok(existsSync(join(into, "package.json")));
 });
 
-test("the suite runs without the variables npm run adds, keeps the rest, and takes the host it is given", () => {
-  const env = { PATH: "/bin", HOME: "/home/x", npm_lifecycle_event: "check:changed", npm_config_local_prefix: "/r", INIT_CWD: "/r", NPM_TOKEN_NOT: "kept" };
-  assert.deepEqual(suiteEnvironment(env), { PATH: "/bin", HOME: "/home/x", NPM_TOKEN_NOT: "kept" });
-  assert.deepEqual(suiteEnvironment(env, "/p/host.json"), { PATH: "/bin", HOME: "/home/x", NPM_TOKEN_NOT: "kept", AGENT_ORG_HOST: "/p/host.json" });
+test("the suite runs without the variables npm run adds, keeps the rest, and names the fixture host even when the caller's environment names another", () => {
+  const env = { PATH: "/bin", HOME: "/home/x", npm_lifecycle_event: "check:changed", npm_config_local_prefix: "/r", INIT_CWD: "/r", KEPT: "kept", AGENT_ORG_HOST: "/home/x/.agent-org/host.json" };
+  assert.deepEqual(suiteEnvironment(env, "/p/host.json"), { PATH: "/bin", HOME: "/home/x", KEPT: "kept", AGENT_ORG_HOST: "/p/host.json" });
 });
