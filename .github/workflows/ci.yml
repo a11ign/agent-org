@@ -24,7 +24,7 @@ on:
   pull_request:
     branches: [main]
     # `edited`: the `no-release:` line that excuses a change with no changeset is added by editing the pull request body, and the `changeset` job must re-read it.
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   # A merge queue tests the queue's merge commit and waits for a check reporting on THIS event; without it a queued pull request never merges.
   merge_group:
   # A run on `main` itself, so "green on main" is a run and not an inference from a pull request's merge ref.
@@ -371,6 +371,74 @@ jobs:
           else
             npm install --no-save --no-package-lock --ignore-scripts --no-audit --no-fund
           fi
+
+  # THE REQUEST-THREAD LOAD TEST, RUN 50 TIMES (A11-297). `request-thread-load.test.ts` once asserted a wall-clock p99 and failed on shared runners, and each failure took an approved pull request out of the
+  # merge queue. It now proves by order that a read is answered while the board thread is held (the stand-in `gh` returns only when the test opens its gate), with no percentile. This job is the check that
+  # it stays so: it runs the file 50 times in a row and fails if any run fails. It runs only on a pull request that is ready (a draft is not run: 50 runs of an instance cost minutes) and only when the change
+  # touches the test, the load script it starts the instance from, the two threads or what they exchange and answer, since another change cannot alter it. It is NOT one of `gate`'s `needs`: a merge queue's `merge_group` run has
+  # already seen the suite run the file once, and a repeat of 50 there would cost every queue round trip the minutes this job takes. A touched change is judged against the first parent of the merge ref, as in `release-dry-run`.
+  request-thread-repeat:
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REPEATS: 50
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Does the change touch the request-thread load test, its load script or the request path?
+        id: touched
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          echo "changed paths:"
+          echo "$changed"
+          if grep -q -x -F -e src/ticket-mode/request-thread-load.test.ts -e scripts/loop-load.ts -e src/ticket-mode/request-thread.ts -e src/ticket-mode/board-thread.ts -e src/ticket-mode/thread-messages.ts -e src/ticket-mode/read-routes.ts -e src/ticket-mode/health-route.ts <<<"$changed"; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+            echo "none of them changed: the repeat is not needed"
+          fi
+      - uses: actions/setup-node@v7
+        if: steps.touched.outputs.touched == 'true'
+        with:
+          node-version: 24.21.0
+      # The fixture project and the install are `suite`'s, step for step: the test starts this checkout's `ticket:serve`, which reads a host declaration.
+      - name: The fixture project the test runs against, and the host declaration that names it
+        if: steps.touched.outputs.touched == 'true'
+        run: |
+          project="$RUNNER_TEMP/project"
+          mkdir "$project"
+          cp -r src/packaging/fixtures/project-tree/. "$project"
+          sed -i "s|@@PROJECT@@|$project|" "$project/.agent-org/host.json"
+          git -C "$project" init -q
+          git -C "$project" add -A
+          git -C "$project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m "the fixture project"
+          echo "AGENT_ORG_HOST=$project/.agent-org/host.json" >> "$GITHUB_ENV"
+      - name: Install the tool's dependencies
+        if: steps.touched.outputs.touched == 'true'
+        run: |
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0"
+          BINDING=$(node -p "require('./node_modules/@rspack/binding/package.json').version")
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0" "@rspack/binding-linux-x64-gnu@$BINDING"
+      # A run that fails does not stop the loop, so the log shows how many of the 50 failed and which; the step fails if any did.
+      - name: The load test, 50 times in a row (REPEATS)
+        if: steps.touched.outputs.touched == 'true'
+        run: |
+          failed=()
+          for run in $(seq 1 "$REPEATS"); do
+            if node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/request-thread-load.test.ts > "$RUNNER_TEMP/run-$run.log" 2>&1; then
+              echo "run $run of $REPEATS: green"
+            else
+              echo "run $run of $REPEATS: RED"
+              cat "$RUNNER_TEMP/run-$run.log"
+              failed+=("$run")
+            fi
+          done
+          echo "green: $((REPEATS - ${#failed[@]})) of $REPEATS"
+          [ "${#failed[@]}" -eq 0 ] || { echo "::error::red runs: ${failed[*]}"; exit 1; }
 
   # THE ONE CONTEXT `main` REQUIRES (a11ign/a11ign#3986), and the only way `typecheck` is required without an admin's act. `typecheck` is a job of its own so a type error does not wait
   # for the suite, but a job nobody requires is advisory: `rules/branches/main` listed `gate` alone and whether classic protection listed `typecheck` is admin-only to read, so the
