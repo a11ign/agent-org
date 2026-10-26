@@ -88,16 +88,16 @@ function dependenciesIn(folder: string): string[] {
 
 /**
  * Fetch the UI build of the release folder `root` when it declares one and has none (2026-10-26), behind the update lock so it never races an update: what `doctor --fix` and the ui server's heal run.
- * Returns the line to say and whether it failed. A folder that is not a release, ships no build, or has its build is left alone and says so; a lock another update holds is a failure that says so.
+ * `ui` is where the build is fetched from (the mirror's releases by default). Returns the line to say and whether it failed. A folder that is not a release, ships no build, or has its build is left alone and says so; a lock another update holds is a failure that says so.
  */
-export function fetchMissingUiBuild(root: string): { line: string; failed: boolean } {
+export function fetchMissingUiBuild(root: string, ui?: UiSource): { line: string; failed: boolean } {
   const name = versionNameOf(root);
   if (name === null || !isReleaseTag(name)) return { line: "not a release folder, so there is no build to fetch", failed: false };
   if (!declaresUiBuild(root)) return { line: `${name} ships no UI build`, failed: false };
   if (hasUiBuild(root)) return { line: `the UI build of ${name} is in place`, failed: false };
   try {
     const tool = dirname(dirname(root));
-    const done = withUpdateLock(tool, () => completeUiBuild({ tool, name }));
+    const done = withUpdateLock(tool, () => completeUiBuild({ tool, name, ...(ui === undefined ? {} : { ui }) }));
     return done.state === "failed" ? { line: `the UI build of ${name} could not be fetched: ${done.reason}`, failed: true } : { line: done.said ?? `the UI build of ${name} is in place`, failed: false };
   } catch (err) {
     return { line: `the UI build of ${name} was not fetched now: ${String((err as Error).message).split("\n")[0]}`, failed: true };

@@ -47,7 +47,7 @@ import { readTicketSettings } from "./settings.ts";
 import type { TerminalRun } from "./terminal-pair.ts";
 import { fileHeaders, findBuild, isAssetPath, isPage, isReleaseFolder, locate, movedFromNext, servedCandidates } from "./ui-build.ts";
 import { TOOL_ROOT } from "../install/paths.ts";
-import { declaresUiBuild } from "../install/ui-asset.ts";
+import { declaresUiBuild, type UiSource } from "../install/ui-asset.ts";
 import { runningToolVersion } from "../install/tool-versions.ts";
 import { fetchMissingUiBuild } from "../install/tool-install.ts";
 import { startLoopMonitor, type LoopReading } from "./loop-delay.ts";
@@ -281,15 +281,15 @@ function sendNoBuild(response: ServerResponse, searched: readonly string[], kind
  * Fetch the UI build of the release `root` names, when it has none, once per `everyMs` at most and never while an update holds the lock (that update fetches it). It runs after the current request is
  * answered. Each attempt's outcome is a line on stderr (the ui service's log). A folder that is not a release has nothing to fetch, so it gives a function that does nothing.
  */
-export function healBuildOf(root: string = TOOL_ROOT, { everyMs = 60_000, now = Date.now, later = setImmediate as (work: () => void) => unknown, log = (line: string) => process.stderr.write(`${line}\n`) }: {
-  everyMs?: number; now?: () => number; later?: (work: () => void) => unknown; log?: (line: string) => void;
+export function healBuildOf(root: string = TOOL_ROOT, { everyMs = 60_000, now = Date.now, later = setImmediate as (work: () => void) => unknown, log = (line: string) => process.stderr.write(`${line}\n`), ui }: {
+  everyMs?: number; now?: () => number; later?: (work: () => void) => unknown; log?: (line: string) => void; ui?: UiSource;
 } = {}): () => void {
   if (!isReleaseFolder(root)) return () => undefined;
   let last = Number.NEGATIVE_INFINITY;
   return () => {
     if (now() - last < everyMs) return;
     last = now();
-    later(() => log(`ticket:ui: ${fetchMissingUiBuild(root).line}`));
+    later(() => log(`ticket:ui: ${fetchMissingUiBuild(root, ui).line}`));
   };
 }
 

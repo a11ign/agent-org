@@ -59,7 +59,7 @@ import { drainPath, readDrain, type Drain } from "./update-drain.ts";
 import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
 import { runningToolVersion, toolDir, versionNameOf } from "./tool-versions.ts";
 import { buildCandidates, findBuild, UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
-import { declaresUiBuild } from "./ui-asset.ts";
+import { declaresUiBuild, type UiSource } from "./ui-asset.ts";
 import { fetchMissingUiBuild, mirrorGit, mirrorTags } from "./tool-install.ts";
 import { readQueue } from "./instance-queue.ts";
 import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
@@ -542,8 +542,8 @@ function uiBuildCheck(deps: DoctorDeps): Check {
 }
 
 /** `doctor --fix`'s repair of the board UI's build (2026-10-26): the running release's missing build, fetched now. Returns the line to print and whether it failed. */
-export function fixUiBuild(root: string = TOOL_ROOT): { line: string; failed: boolean } {
-  const fetched = fetchMissingUiBuild(root);
+export function fixUiBuild(root: string = TOOL_ROOT, ui?: UiSource): { line: string; failed: boolean } {
+  const fetched = fetchMissingUiBuild(root, ui);
   return { line: `ui build: ${fetched.line}`, failed: fetched.failed };
 }
 
