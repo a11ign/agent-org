@@ -108,10 +108,12 @@ export function recordRefusedRereview(ctx: PoolContext, reviewer: ReviewerPort, 
   const refused = refusedVerdictOf(reviewer, ref, look.at);
   if (refused === null) return;
   const said = repliesSince(block.at);
+  // Replies that could not be read are not "no reply" (the reviewer's reading of this, `repliesAfter`): whether the worker disputed a decision, which only the planner may settle, is unknown, so nothing is recorded or routed on this sweep. The refused verdict stays on disk, and the next sweep asks again.
+  if (said === null) return;
   // The comment is the board's own record, left on the pull request: one already there (a restart, a pull request no run holds) says the re-review was recorded, and is not posted again.
   ctx.refusedHeads.add(memoOf(began));
-  if (held === undefined && recordedOnPull(said ?? [], look.at)) return;
-  const replies = (said ?? []).filter(({ text }) => !isRereviewComment(text));
+  if (held === undefined && recordedOnPull(said, look.at)) return;
+  const replies = said.filter(({ text }) => !isRereviewComment(text));
   const reply = replies.length === 0 ? null : replies.map(({ text }) => text.trim()).join("\n\n").slice(-REPLIES_KEPT);
   log(`${url}: the re-review at ${head.slice(0, 8)} ended ${refused.verdict === "not-convinced" ? "still not convinced" : "convinced, but the verdict door refused it"}; recorded`);
   if (held !== undefined) update(ctx, (queue) => recordRereview(queue, held.ticket.key, { url, head, review: blockTextOf(state), verdict: refused.verdict, reasons: refused.text, reply, decisions: look.decided ?? null }, ctx.now()));
