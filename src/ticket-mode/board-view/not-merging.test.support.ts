@@ -1,10 +1,6 @@
-// no-token: none -- a pool over fakes with an injected clock; nothing is spawned
-// module: the fixtures of the tests of an approved pull request that is not merging (A11-291): the reads, the heads, the notes' sentences, and a pool whose watch reads one approved pull request
+// no-token: none -- plain data; nothing is spawned
+// module: the fixtures of the tests of an approved pull request that is not merging (A11-291): the reads, the heads and the notes' sentences
 import type { MergeFlow, PullFeedback } from "../../plugins/contracts/code-host.ts";
-import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
-import { poolFixture } from "../pool-fixture.ts";
-import { finish } from "../queue/queue-transitions.ts";
-import type { Entry } from "../queue/queue-entries-and-outcomes.ts";
 import type { PullHead, ViewEntry } from "./view-types-and-filters.ts";
 
 export const MINUTE = 60_000;
@@ -37,22 +33,3 @@ export const LINE = "Approved, not merging: a11ign/plugin #10 at 91cfe96d, a11ig
 export const HOUR_NOTE = "money, access or security — a11ign/plugin #10 has been approved at `91cfe96d` with green checks for more than 60 minutes and is not merging (a11ign/plugin has no merge flow: auto-merge is not allowed, no .github/workflows/auto-arm.yml): a person decides";
 
 export const FIRST_FLOW_NOTE = "money, access or security — a11ign/plugin #10 adds a11ign/plugin's first merge flow (.github/workflows/auto-arm.yml), so nothing can arm it: a person merges it";
-
-// The pool: its watch reads the pull request, stamps it from its own clock, records the reason, and sets the run's mergeNote.
-export function approvedPool({ files = ["README.md"], flow = NO_FLOW as MergeFlow | null, kind = "ready-pr" as "ready-pr" | "draft-pr" } = {}) {
-  const clock = { now: NOW };
-  const host = createFakeCodeHost("worker-bot");
-  host.seedPull(REPO, 10, { head: HEAD, files, queue: { queued: false, removals: [] }, feedback: { reviewDecision: "approved", verdictAtHead: "approved", armed: false } });
-  if (flow !== null) host.seedMergeFlow(REPO, flow);
-  const fixture = poolFixture({ keys: ["A11-257"], now: () => clock.now });
-  fixture.store.set(finish(fixture.store.get(), "A11-257", { kind, prs: PRS }, NOW - 5 * MINUTE));
-  const pool = fixture.restart({ codeHost: host });
-  const entry = () => fixture.entry("A11-257") as Entry & ViewEntry;
-  return { clock, host, pool, entry, store: fixture.store };
-}
-
-/** The pool's watch, read `minutes` after the first read. */
-export const watchAt = ({ clock, pool }: Readonly<{ clock: { now: number }; pool: { watchFeedback(): void } }>, minutes: number): void => {
-  clock.now = NOW + minutes * MINUTE;
-  pool.watchFeedback();
-};

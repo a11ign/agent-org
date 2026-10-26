@@ -4,11 +4,35 @@
 // `not-merging.test.ts`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Queue } from "../queue/queue-entries-and-outcomes.ts";
-import { ARM, FIRST_FLOW_NOTE, HOUR_NOTE, LINE, MINUTE, NOW, PR, REPO, approvedPool, flowOf, read, watchAt } from "./not-merging.test.support.ts";
+import type { MergeFlow } from "../../plugins/contracts/code-host.ts";
+import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
+import { poolFixture } from "../pool-fixture.ts";
+import type { Entry, Queue } from "../queue/queue-entries-and-outcomes.ts";
+import { finish } from "../queue/queue-transitions.ts";
+import { ARM, FIRST_FLOW_NOTE, HEAD, HOUR_NOTE, LINE, MINUTE, NOW, NO_FLOW, PR, PRS, REPO, flowOf, read } from "./not-merging.test.support.ts";
 import { mergeNote } from "./not-merging.ts";
 import { runStatus } from "./pull-status-and-notes.ts";
 import { reasonOf } from "./run-reason.ts";
+import type { ViewEntry } from "./view-types-and-filters.ts";
+
+// The pool: its watch reads the pull request, stamps it from its own clock, records the reason, and sets the run's mergeNote.
+function approvedPool({ files = ["README.md"], flow = NO_FLOW as MergeFlow | null, kind = "ready-pr" as "ready-pr" | "draft-pr" } = {}) {
+  const clock = { now: NOW };
+  const host = createFakeCodeHost("worker-bot");
+  host.seedPull(REPO, 10, { head: HEAD, files, queue: { queued: false, removals: [] }, feedback: { reviewDecision: "approved", verdictAtHead: "approved", armed: false } });
+  if (flow !== null) host.seedMergeFlow(REPO, flow);
+  const fixture = poolFixture({ keys: ["A11-257"], now: () => clock.now });
+  fixture.store.set(finish(fixture.store.get(), "A11-257", { kind, prs: PRS }, NOW - 5 * MINUTE));
+  const pool = fixture.restart({ codeHost: host });
+  const entry = () => fixture.entry("A11-257") as Entry & ViewEntry;
+  return { clock, host, pool, entry, store: fixture.store };
+}
+
+/** The pool's watch, read `minutes` after the first read. */
+const watchAt = ({ clock, pool }: Readonly<{ clock: { now: number }; pool: { watchFeedback(): void } }>, minutes: number): void => {
+  clock.now = NOW + minutes * MINUTE;
+  pool.watchFeedback();
+};
 
 test("A11-291: the watch says Approved, not merging after 15 minutes with the reason, Needs you after an hour under access, and goes back once the pull request is in the merge queue", () => {
   const { clock, host, pool, entry } = approvedPool();
