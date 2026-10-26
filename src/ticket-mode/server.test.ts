@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { claimantOf, parseTicketSettings } from "./settings.ts";
@@ -20,6 +20,7 @@ import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import type { View } from "./settings-view.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { flakesPath, recordFlakes } from "./flakes.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const KEY = "a".repeat(48);
@@ -390,6 +391,25 @@ test("A11-257: /api/interventions answers the last 7 days and today's total, fro
   const [, read] = await b.api("GET", "/api/interventions", {}) as [number, any];
   assert.deepEqual(read.days.slice(-2), [{ date: "2026-10-25", needsYou: 1, fixes: 0, total: 1, standoffs: 0 }, { date: "2026-10-26", needsYou: 0, fixes: 1, total: 1, standoffs: 0 }]);
   assert.equal("interventions" in ((await b.api("GET", "/api/queue", {}))[1] as object), false, "the queue's own answer does not carry the tally");
+});
+
+test("A11-300: /api/flakes lists the tests that flaked three times in seven days, from flakes.json in the board's state, and no other", async () => {
+  const noon = Date.UTC(2026, 9, 26, 12);
+  const b = board(4747, {}, { now: () => noon });
+  const [status, empty] = await b.api("GET", "/api/flakes", {}) as [number, any];
+  assert.deepEqual([status, empty], [200, { limit: 3, days: 7, tests: [] }], "no log: nothing to fix");
+  const flake = (test: string, days: number) => ({ test, check: "suite (2)", run: `https://github.com/a11ign/agent-org/actions/runs/${days}/job/1`, head: "fc707690".padEnd(40, "0"), pull: "https://github.com/a11ign/agent-org/pull/1946", at: noon - days * 86_400_000 });
+  recordFlakes(flakesPath(b.settings.stateDir), [flake("a.test.ts > three", 0), flake("a.test.ts > three", 2), flake("a.test.ts > three", 4), flake("b.test.ts > two", 0), flake("b.test.ts > two", 1)], noon);
+  const [, listed] = await b.api("GET", "/api/flakes", {}) as [number, any];
+  assert.deepEqual(listed.tests.map(({ test, count }: { test: string; count: number }) => [test, count]), [["a.test.ts > three", 3]]);
+});
+
+test("A11-300: /api/flakes says when flakes.json cannot be read, and does not read it as no flaky test", async () => {
+  const b = board(4747, {}, { now: () => Date.UTC(2026, 9, 26, 12) });
+  mkdirSync(join(b.settings.stateDir, "tickets"), { recursive: true });
+  writeFileSync(flakesPath(b.settings.stateDir), "{ not a list");
+  const [status, view] = await b.api("GET", "/api/flakes", {}) as [number, any];
+  assert.deepEqual([status, view.tests, /is not JSON/.test(view.unreadable)], [200, [], true]);
 });
 
 test("A11-257: /api/interventions refuses a fix with no `what`, and counts nothing", async () => {

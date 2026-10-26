@@ -14,17 +14,20 @@ beforeEach(() => {
 const WEEK = ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26"];
 const viewOf = (totals: readonly number[]) => ({ today: totals.at(-1), days: WEEK.map((date, index) => ({ date, needsYou: totals[index], fixes: 0, total: totals[index], standoffs: 0 })) });
 
-/** The Runs page over the stand-in instance, with `/api/interventions` answered by `answer`: a view, a status to fail with, or "held" for a read that never answers. */
-function pageWith(answer: ReturnType<typeof viewOf> | number | "held") {
+/** The Runs page over the stand-in instance, with the read at `route` answered by `answer`: a view, a status to fail with, or "held" for a read that never answers. */
+function pageAnswering(route: string, answer: object | number | "held") {
   const stand = standFetch(runsStand());
   const fetchWith = ((input: RequestInfo | URL, init?: RequestInit) => {
-    if (!String(input).endsWith("/api/interventions")) return stand(input, init);
+    if (!String(input).endsWith(route)) return stand(input, init);
     if (answer === "held") return new Promise<Response>(() => undefined);
     if (typeof answer === "number") return Promise.resolve(new Response(JSON.stringify({ error: "no" }), { status: answer }));
     return Promise.resolve(new Response(JSON.stringify(answer), { status: 200, headers: { "Content-Type": "application/json" } }));
   }) as Fetch;
   return render(<RunsApp fetchWith={fetchWith} />);
 }
+
+/** The Runs page with `/api/interventions` answered by `answer`. */
+const pageWith = (answer: ReturnType<typeof viewOf> | number | "held") => pageAnswering("/api/interventions", answer);
 
 const poolBar = async (): Promise<HTMLElement> => {
   await waitFor(() => expect(document.querySelector(".pool-bar")).not.toBeNull());
@@ -80,5 +83,46 @@ describe("the health number", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(bar.textContent).not.toMatch(/Person interventions/);
     expect(bar.textContent).not.toMatch(/today: 0/);
+  });
+});
+
+// A11-300: the tests that flaked three times in seven days, listed on the pool bar as needing a fix.
+const flakyView = (counts: readonly number[]) => ({ limit: 3, days: 7, tests: counts.map((count, index) => ({ test: `src/a${index}.test.ts > flakes`, check: "suite (2)", count, last: 0, runs: [] })) });
+
+/** The Runs page with `/api/flakes` answered by `answer`. */
+const pageWithFlakes = (answer: ReturnType<typeof flakyView> | (ReturnType<typeof flakyView> & { unreadable: string }) | number | "held") => pageAnswering("/api/flakes", answer);
+
+/** The flaky tests' note on the pool bar of a page whose `/api/flakes` answers `answer`, once it is drawn. */
+async function flakesNoteWhen(answer: Parameters<typeof pageWithFlakes>[0]): Promise<HTMLElement> {
+  pageWithFlakes(answer);
+  const bar = await poolBar();
+  return waitFor(() => {
+    const found = bar.querySelector<HTMLElement>(".pool-flakes");
+    expect(found).not.toBeNull();
+    return found!;
+  });
+}
+
+describe("the flaky tests", () => {
+  it("reads 'Flaky tests needing a fix: N' on the pool bar, and its title names each test with how often it flaked", async () => {
+    const note = await flakesNoteWhen(flakyView([4, 3]));
+    expect(note.textContent).toBe("Flaky tests needing a fix: 2 (flaked 3+ times in 7 days)");
+    expect(note.getAttribute("title")).toBe("src/a0.test.ts > flakes (suite (2)): flaked 4 times in 7 days\nsrc/a1.test.ts > flakes (suite (2)): flaked 3 times in 7 days");
+  });
+
+  it("says the flake log cannot be read, rather than drawing nothing as if no test flaked", async () => {
+    const note = await flakesNoteWhen({ ...flakyView([]), unreadable: "/state/tickets/flakes.json is not JSON (Unexpected token)" });
+    expect(note.textContent).toBe("Flaky tests: the flake log cannot be read");
+    expect(note.getAttribute("title")).toBe("/state/tickets/flakes.json is not JSON (Unexpected token)");
+  });
+
+  it("draws nothing when no test needs a fix, while the list is loading, and when the read failed", async () => {
+    for (const answer of [flakyView([]), "held", 500] as const) {
+      const page = pageWithFlakes(answer);
+      const bar = await poolBar();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(bar.querySelector(".pool-flakes")).toBeNull();
+      page.unmount();
+    }
   });
 });

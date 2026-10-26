@@ -578,7 +578,7 @@ function greenDoctor(home: string): DoctorDeps {
     uiBuild: () => ({ found: "/t/ui-build", declared: true, looked: "/t/ui-build", version: "v0.280.0" }),
     drain: () => ({ kind: "none" }), runs: () => [], longWaits: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
-    reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, declaredRepositories: async () => [], reviewerRefusals: () => [], chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
+    reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
     shellCommand: () => installedShell(home),
   };
 }

@@ -20,6 +20,7 @@ import type { ProblemOptions } from "./plugins.ts";
 import { queueEntryView, queueView, shownWriter, type QueueView } from "./queue-view.ts";
 export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
 import { interventionsView } from "./queue/interventions.ts";
+import { flakesPath, flakesViewOf } from "./flakes.ts";
 import { type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
@@ -278,6 +279,8 @@ export async function readRoute(board: ReadBoard, method: string, path: string, 
   if (method === "GET" && path === "/api/health" && board.health !== undefined) return [200, board.health()];
   // The health number (A11-257): `/api/health` is the loop's (A11-282), so the person-interventions are their own route, beside the POST that records a fix.
   if (method === "GET" && path === "/api/interventions") return [200, interventionsView(store.get(), (board.now ?? Date.now)())];
+  // The tests that flaked three times in seven days (A11-300), read from the flake log in the board's state: the chairman's session files a ticket for each.
+  if (method === "GET" && path === "/api/flakes") return [200, flakesViewOf(flakesPath(board.settings.stateDir), (board.now ?? Date.now)())];
   return undefined;
 }
 
