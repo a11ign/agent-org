@@ -11,10 +11,10 @@
 // THE SUITE NEEDS A PROJECT TO RUN AGAINST (`AGENT_ORG_HOST`, see AGENTS.md): when the caller has not set one, this makes the same copy of the fixture project CI's `suite` job makes, in a
 // temporary directory it removes afterwards.
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../src/lib/git-env.ts";
 import { eslintEntryOf, LINT_TARGETS, lintCacheDirectory, lintCacheKey, runKeyedEslint } from "./lint-cache.ts";
 import { buildImporterMap, loadSources } from "./rstest/import-graph.ts";
@@ -140,6 +140,7 @@ export function parseArguments(argv: readonly string[]): { plan: boolean; base?:
   let base: string | undefined;
   let plan = false;
   for (let at = 0; at < argv.length; at += 1) {
+    if (argv[at] === "--") continue; // pnpm hands the script a literal `--`
     if (argv[at] === "--plan") plan = true;
     else if (argv[at] === "--base" && argv[at + 1] !== undefined) base = argv[++at];
     else return null;
@@ -163,6 +164,6 @@ export function main(argv: readonly string[], root: string): number {
   return failed.length === 0 ? 0 : 1;
 }
 
-if (process.argv[1] !== undefined && existsSync(process.argv[1]) && import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   process.exit(main(process.argv.slice(2), join(dirname(fileURLToPath(import.meta.url)), "..")));
 }

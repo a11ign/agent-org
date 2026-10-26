@@ -20,6 +20,18 @@ const OPAQUE_ROOTS = ["src/", "plugins/", "scripts/", "host/"] as const;
 /** Paths no test in the root suite reads by a path it builds: notes, changesets, and the UI package (which has its own `pnpm ui:test`). A change that is only these selects no test. */
 const NOT_READ_BY_ROOT_SUITE = [/^\.changeset\//, /^\.acceptance\//, /^docs\//, /^CHANGELOG\.md$/, /^LICENSE$/, /^README\.md$/, /^AGENTS\.md$/, /^CLAUDE\.md$/, /^ui\//];
 
+/**
+ * The modules that walk the source tree for the tests that pin it (what a file may spawn, call or import). A test that reaches one of them, and a test that lists a directory or
+ * the tracked files itself, is a TREE READER: it names no file it forbids, so no import leads to it from the file that breaks it.
+ */
+export const TREE_READER_MODULES = [
+  "src/lib/walk-scope.ts", "src/lib/tree-wide-guard.ts", "src/lib/tree-wide-guard-org-side.ts", "src/lib/source-text-reads.ts",
+  "src/lib/spawn-census.ts", "src/lib/installed-tool-imports.ts", "src/packaging/gh-call-inventory.ts",
+] as const;
+const TREE_READING_TEXT = /readdirSync\(|ls-files|walkScope|walk-scope|tree-wide-guard/;
+/** A change to one of these can be the line a tree reader forbids: a source file, a test, a unit or a script, added, changed or deleted. */
+const TREE_CONTENT_FILE = /\.(ts|tsx|mjs|js|in|sh)$/;
+
 /** One reason the whole suite runs: the changed path, and why the import graph cannot judge it. */
 export interface Fallback { path: string; why: string }
 
@@ -82,12 +94,18 @@ export function selectTests(args: { changed: readonly string[]; testFiles: reado
   if (fallbacks.length > 0) return { kind: "fallback", fallbacks };
 
   const suite = new Set(testFiles);
-  const reached = filesReaching(importers, sources, changed);
+  const reached = filesReaching(importers, sources, changed, { followNamers: (path) => !isNotReadByRootSuite(path) });
   const tests: SelectedTest[] = changed.filter((path) => suite.has(path)).map((file) => ({ file, why: "changed itself" }));
   const chosen = new Set(tests.map((test) => test.file));
   for (const file of testFiles) {
     const reach = reached.get(file);
     if (reach !== undefined && !chosen.has(file)) tests.push({ file, why: describeReach(reach) });
+  }
+  const treeContentChanged = changed.find((path) => TREE_CONTENT_FILE.test(path) && isUnder(path, OPAQUE_ROOTS));
+  if (treeContentChanged !== undefined) {
+    for (const file of treeReaders(testFiles, importers, sources)) {
+      if (!chosen.has(file) && !tests.some((test) => test.file === file)) tests.push({ file, why: `reads the whole tree, and ${treeContentChanged} changed` });
+    }
   }
   const reachedFrom = new Set([...reached.values()].map((reach) => reach.changed));
   const opaque = changed.filter((path) => isOpaqueData(path) && !reachedFrom.has(path));
@@ -96,6 +114,13 @@ export function selectTests(args: { changed: readonly string[]; testFiles: reado
   }
   const unreached = changed.filter((path) => !suite.has(path) && !reachedFrom.has(path));
   return { kind: "selected", tests: tests.sort((a, b) => a.file.localeCompare(b.file)), unreached };
+}
+
+/** The tests that read the tree rather than import what they judge: those that import a tree-walking helper directly (a transitive importer is most of the suite), and those that list a directory or the tracked files themselves. */
+function treeReaders(testFiles: readonly string[], importers: ImporterMap, sources: readonly SourceText[]): string[] {
+  const usesHelper = new Set(TREE_READER_MODULES.flatMap((module) => importers.get(module) ?? []));
+  const readsTreeItself = new Set(sources.filter((source) => TREE_READING_TEXT.test(source.text)).map((source) => source.path));
+  return testFiles.filter((file) => usesHelper.has(file) || readsTreeItself.has(file));
 }
 
 /** Keep only the tests the root suite's `include` globs reach: `src/` and `plugins/`. */

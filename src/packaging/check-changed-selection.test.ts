@@ -133,6 +133,40 @@ test("notes, changesets and the UI package select no test and do not fall back",
   }
 });
 
+test("a test that runs or reads a file by a relative path literal, without importing it, is selected for it", () => {
+  const files: Tree = {
+    "src/entry.ts": "export const entry = 1;\n",
+    "src/data/table.json": "{}\n",
+    "src/runs-entry.test.ts": 'const url = new URL("./entry.ts", import.meta.url);\nurl;\n',
+    "src/reads-table.test.ts": 'const table = new URL("./data/table.json", import.meta.url);\ntable;\n',
+    "src/unrelated.test.ts": 'const other = new URL("./other.ts", import.meta.url);\nother;\n',
+  };
+  assert.deepEqual(selectedFiles(select(files, ["src/entry.ts"])), ["src/runs-entry.test.ts"]);
+  assert.deepEqual(selectedFiles(select(files, ["src/data/table.json"])), ["src/reads-table.test.ts"]);
+});
+
+const TREE_READERS: Tree = {
+  "src/lib/tree-wide-guard.ts": "export const walk = () => [];\n",
+  "src/guard.test.ts": 'import { walk } from "./lib/tree-wide-guard.ts";\nwalk;\n',
+  "src/lists.test.ts": 'import { readdirSync } from "node:fs";\nreaddirSync(".");\n',
+  "src/through-helper.test.ts": 'import { other } from "./helper.ts";\nother;\n',
+  "src/helper.ts": 'import { walk } from "./lib/tree-wide-guard.ts";\nexport const other = walk;\n',
+  "src/leaf.ts": "export const leaf = 1;\n",
+  "src/direct.test.ts": 'import { leaf } from "./leaf.ts";\nleaf;\n',
+};
+
+test("a new or changed source file also selects the tests that read the whole tree, those that list a directory and those that use a tree-walking helper directly", () => {
+  const brandNew = select({ ...TREE_READERS, "src/brand-new.ts": "export {};\n" }, ["src/brand-new.ts"]);
+  assert.deepEqual(selectedFiles(brandNew), ["src/guard.test.ts", "src/lists.test.ts"]);
+  assert.deepEqual(brandNew.kind === "selected" ? brandNew.tests.map((entry) => entry.why) : [], Array(2).fill("reads the whole tree, and src/brand-new.ts changed"));
+  assert.deepEqual(selectedFiles(select(TREE_READERS, ["src/leaf.ts"])), ["src/direct.test.ts", "src/guard.test.ts", "src/lists.test.ts"]);
+});
+
+test("notes select no tree reader, and a module that only mentions a note in prose does not pull in its importers", () => {
+  const files: Tree = { ...TREE_READERS, "src/prompt.ts": 'export const prompt = "read AGENTS.md first";\n', "src/uses-prompt.test.ts": 'import { prompt } from "./prompt.ts";\nprompt;\n', "src/names-note.test.ts": 'const note = "AGENTS.md";\nnote;\n' };
+  assert.deepEqual(selectedFiles(select(files, ["AGENTS.md"])), ["src/names-note.test.ts"]);
+});
+
 /** One fallback per case: the whole suite runs, and the output names the path and why. */
 const FALLBACKS = [
   { name: "a shared fixture project", path: "src/packaging/fixtures/project-tree/package.json" },
@@ -247,6 +281,7 @@ testEach("the arguments are --plan and --base <ref>, and anything else is refuse
   { name: "an unknown first argument", argv: ["--bogus"], expected: null },
   { name: "an unknown argument after a good one", argv: ["--plan", "stray"], expected: null },
   { name: "a base with no ref", argv: ["--base"], expected: null },
+  { name: "the literal -- pnpm passes", argv: ["--", "--plan"], expected: { plan: true, base: undefined } },
 ], ({ argv, expected }) => {
   assert.deepEqual(parseArguments(argv), expected);
 });
