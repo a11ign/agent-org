@@ -394,16 +394,15 @@ export type Step = Readonly<{ close: { result: "passed" | "failed"; evidence: st
 /** The releases published since the window began, oldest first. PURE. */
 const releasesSince = (releases: readonly Release[], began: number): Release[] => releases.filter((release) => release.at >= began).sort((a, b) => a.at - b.at);
 
-/** A release-assets window: the first release since it began without the asset fails it, and `count` releases each with the asset pass it. PURE over the facts. */
+/** A release-assets window: the first `count` releases since it began each need the asset. One of them without it fails the window; all of them with it pass it; a later release is not looked at, since the contract was met or broken by then. PURE over the facts. */
 function releaseStep(spec: Extract<WindowedSpec, { kind: "release-assets" }>, watch: Watch, facts: ObserveFacts, now: number): Step {
-  const began = watch.began ?? now;
   const releases = facts.releases?.(spec.repository) ?? null;
   if (releases === null) return closedOrKept(watch, spec.windowMs, now, "could not be read from this host");
-  const since = releasesSince(releases, began);
-  const lacking = since.find((release) => !release.assets.some((asset) => holds(asset, spec.asset)));
+  const next = releasesSince(releases, watch.began ?? now).slice(0, spec.count);
+  const lacking = next.find((release) => !release.assets.some((asset) => holds(asset, spec.asset)));
   if (lacking !== undefined) return { close: { result: "failed", evidence: fitted(`release ${lacking.tag} of ${spec.repository} (${stamp(lacking.at)}) has no ${spec.asset} asset`) } };
-  if (since.length >= spec.count) return { close: { result: "passed", evidence: fitted(`${describeSpec(spec)}: ${since.slice(0, spec.count).map((release) => release.tag).join(", ")}`) } };
-  return closedOrKept({ ...watch, reads: (watch.reads ?? 0) + 1 }, spec.windowMs, now, `saw ${since.length} of ${spec.count} releases in ${windowWords(spec.windowMs)}`);
+  if (next.length >= spec.count) return { close: { result: "passed", evidence: fitted(`${describeSpec(spec)}: ${next.map((release) => release.tag).join(", ")}`) } };
+  return closedOrKept({ ...watch, reads: (watch.reads ?? 0) + 1 }, spec.windowMs, now, `saw ${next.length} of ${spec.count} releases in ${windowWords(spec.windowMs)}`);
 }
 
 /** The watch as it stands, or, once its window of `windowMs` has closed without a result, the check handed to an agent: the board cannot say what it did not see. PURE. */

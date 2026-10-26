@@ -185,6 +185,16 @@ test("A11-302: release-assets: the next releases each carrying the asset pass th
   assert.deepEqual([failed.state, failed.result], ["failed", "release v1.0.2 of a11ign/agent-org (1970-04-13 00:00) has no ui-build asset"]);
 });
 
+test("A11-302: release-assets: only the next `count` releases are judged: a later release without the asset does not undo a satisfied count, and an earlier one breaks it", () => {
+  const check = watching(spec("release-assets a11ign/agent-org ui-build 2", "present", "30d"));
+  const releases = (list: Release[]) => facts({ releases: () => list });
+  const good = (tag: string, day: number) => release(tag, BEGAN + day * DAY, ["ui-build.tgz"]);
+  const satisfied = closedBy(watchWindows(fileOf(check), releases([good("v1.0.1", 1), good("v1.0.2", 2), release("v1.0.3", BEGAN + 3 * DAY, ["source.tgz"])]), BEGAN + 4 * DAY));
+  assert.deepEqual([satisfied.state, satisfied.result], ["passed", "the next 2 releases of a11ign/agent-org carrying ui-build: v1.0.1, v1.0.2"]);
+  const broken = closedBy(watchWindows(fileOf(check), releases([good("v1.0.1", 1), release("v1.0.2", BEGAN + 2 * DAY, ["source.tgz"]), good("v1.0.3", 3)]), BEGAN + 4 * DAY));
+  assert.deepEqual([broken.state, broken.result], ["failed", `release v1.0.2 of a11ign/agent-org (${new Date(BEGAN + 2 * DAY).toISOString().slice(0, 16).replace("T", " ")}) has no ui-build asset`]);
+});
+
 test("A11-302: release-assets: a window that closes before enough releases came, or a repository whose releases cannot be read, hands the check to an agent", () => {
   const check = watching(spec("release-assets a11ign/agent-org ui-build 3", "present", "7d"));
   const some = facts({ releases: () => [release("v1.0.1", BEGAN + DAY, ["ui-build.tgz"])] });
