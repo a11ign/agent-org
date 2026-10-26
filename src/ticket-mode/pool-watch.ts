@@ -150,8 +150,8 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, res
       if (sameRun(ctx, current)) {
         // A run resumed this pass already has the one prompt it needs: its wake and its decline wait for a status read after it (A11-279).
         if (resumed.has(name)) continue;
-        // A plan attach being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the planner (A11-216).
-        if (!ctx.attachRetries.has(name)) watchStall(ctx, current, seen);
+        // A plan attach or a result write being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the agent (A11-216, A11-304).
+        if (!ctx.attachRetries.has(name) && !ctx.writeRetries.has(name)) watchStall(ctx, current, seen);
         retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
         watchIdle(ctx, latest(), seen);
       }

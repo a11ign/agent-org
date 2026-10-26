@@ -17,7 +17,7 @@ const NETWORK_ERROR_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", 
 const UNDICI_CODE_PREFIX = "UND_ERR_";
 
 /** `err` and the error it names as its `cause`, one level down: Node's `fetch` throws `TypeError("fetch failed")` and puts the reason in the cause. */
-const withCause = (err: unknown): unknown[] => [err, (err as { cause?: unknown } | null | undefined)?.cause];
+export const withCause = (err: unknown): unknown[] => [err, (err as { cause?: unknown } | null | undefined)?.cause];
 
 function isNetworkFailure(err: unknown): boolean {
   if (err instanceof TypeError && err.message === "fetch failed") return true;
