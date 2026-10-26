@@ -51,6 +51,7 @@ import type { Ticket, TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { liveServeCheck } from "./pool-exposure.ts";
+import { privateBase } from "../private-tmp.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
@@ -733,7 +734,7 @@ async function serve(): Promise<void> {
   // The request thread is told of every queue change once it runs; a change before it starts is in its first snapshot.
   let thread: ReturnType<typeof startBoardThread> | null = null;
   const boardDeps: BoardDeps = { settings, source, codeHost, key, ...paths, exposure: active.exposure(), queueChanged: () => thread?.queueChanged(),
-    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck } };
+    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, privateTmpBase: privateBase() } };
   const board = createBoard(boardDeps);
   // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
