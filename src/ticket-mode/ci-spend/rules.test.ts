@@ -55,7 +55,7 @@ test("A11-261: a review round the board held for its CI spend says so before the
 });
 
 test("A11-307: the rule says to run check:changed while working, the full test and lint only on a fallback, and that CI is still the gate", () => {
-  for (const part of ["`npm run check:changed`", "while you work and before you push", "at any depth", "it prints what it ran and why", "The full `npm test` and `npm run lint` are for a fallback", "FALLBACK", "CI still runs every suite on every push and is the gate"]) {
+  for (const part of ["`pnpm run check:changed`", "while you work and before you push", "at any depth", "it prints what it ran and why", "The full `pnpm test` and `pnpm run lint` are for a fallback", "FALLBACK", "CI still runs every suite on every push and is the gate"]) {
     assert.ok(CHECK_CHANGED_RULE.includes(part), `the rule says ${part}`);
   }
 });

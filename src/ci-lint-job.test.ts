@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { LINT_TARGETS } from "../scripts/lint-cache.ts";
 
 interface Step { name?: string; uses?: string; run?: string; with?: Record<string, unknown>; env?: Record<string, string> }
 interface Job { if?: string; needs?: string[] | string; env?: Record<string, string>; steps?: Step[] }
@@ -61,8 +62,12 @@ function gateProblems(ci: Workflow): string[] {
   return problems;
 }
 
-/** The lint script: the scope `eslint.config.ts` covers, with `plugins/` (A11-158), which holds no `.ts` file until the first bundled agent-org plugin lands, so an unmatched pattern is no error, and `ui/` (A11-188), the UI package's `.ts`, `.tsx` and `.astro`. */
-const LINT_SCRIPT = "eslint --no-error-on-unmatched-pattern src scripts plugins ui";
+/**
+ * The lint script (A11-307): `scripts/lint.ts`, which runs ESLint through a cache keyed by the config, the lockfile and the plugin versions. The scope it lints is `LINT_TARGETS`, held below to the scope
+ * `eslint.config.ts` covers, with `plugins/` (A11-158), which holds no `.ts` file until the first bundled agent-org plugin lands, so an unmatched pattern is no error, and `ui/` (A11-188), the UI package's `.ts`, `.tsx` and `.astro`.
+ */
+const LINT_SCRIPT = "node scripts/lint.ts";
+const LINT_SCOPE = ["src", "scripts", "plugins", "ui"];
 
 /** Each lint tool is in `devDependencies` with an EXACT specifier (no `^`, no `~`), and the lint script runs the scope `eslint.config.ts` covers. */
 function pinProblems(pins: Pins): string[] {
@@ -73,6 +78,7 @@ function pinProblems(pins: Pins): string[] {
     else if (!EXACT_VERSION.test(range)) problems.push(`${name} is ${range} in devDependencies, a range and not an exact version`);
   }
   if (pins.scripts?.lint !== LINT_SCRIPT) problems.push(`the lint script is ${JSON.stringify(pins.scripts?.lint)}, not \`${LINT_SCRIPT}\``);
+  if (JSON.stringify(LINT_TARGETS) !== JSON.stringify(LINT_SCOPE)) problems.push(`the lint script lints ${LINT_TARGETS.join(" ")}, not ${LINT_SCOPE.join(" ")}`);
   return problems;
 }
 

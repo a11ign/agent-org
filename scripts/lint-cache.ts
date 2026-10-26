@@ -11,6 +11,9 @@ import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+/** What `npm run lint` lints: the scope `eslint.config.ts` covers, `plugins/` and `ui/` included (`ci-lint-job.test.ts` and `ci-ui-job.test.ts` hold it). */
+export const LINT_TARGETS = ["src", "scripts", "plugins", "ui"] as const;
+
 const CACHE_ROOT = join("node_modules", ".cache", "eslint");
 const KEY_LENGTH = 16;
 /** The packages whose installed version is part of the key: ESLint itself, every plugin and config of it, the loader for `eslint.config.ts`, and TypeScript. */

@@ -4,9 +4,7 @@
 // (CI's `lint` job) there is no cache and every file is linted, so the result is the one the plain command gave. Extra arguments go to ESLint.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { eslintEntryOf, runKeyedEslint } from "./lint-cache.ts";
-
-export const LINT_TARGETS = ["src", "scripts", "plugins", "ui"] as const;
+import { eslintEntryOf, LINT_TARGETS, runKeyedEslint } from "./lint-cache.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 

@@ -17,8 +17,8 @@ const IGNORED_FOR_LINT = ["ui/dist/", "ui/.astro/", "ui/node_modules/"] as const
 const SUITE_ROOTS = ["src/", "plugins/"] as const;
 /** Paths a change to which can only be judged by running the code, not by reading it: data, notes and shell a test may read by a path it builds. */
 const OPAQUE_ROOTS = ["src/", "plugins/", "scripts/", "host/"] as const;
-/** Files nothing in the suite is run against: a change that is only these selects no test. */
-const NOTES_ONLY = [/^\.changeset\//, /^\.acceptance\//, /^docs\//, /^CHANGELOG\.md$/, /^LICENSE$/, /^README\.md$/, /^AGENTS\.md$/, /^CLAUDE\.md$/, /^ui\//];
+/** Paths no test in the root suite reads by a path it builds: notes, changesets, and the UI package (which has its own `pnpm ui:test`). A change that is only these selects no test. */
+const NOT_READ_BY_ROOT_SUITE = [/^\.changeset\//, /^\.acceptance\//, /^docs\//, /^CHANGELOG\.md$/, /^LICENSE$/, /^README\.md$/, /^AGENTS\.md$/, /^CLAUDE\.md$/, /^ui\//];
 
 /** One reason the whole suite runs: the changed path, and why the import graph cannot judge it. */
 export interface Fallback { path: string; why: string }
@@ -42,7 +42,7 @@ const FALLBACK_RULES: ReadonlyArray<{ matches: (path: string) => boolean; why: s
 const LINT_FALLBACK_PATHS = ["eslint.config.ts", "package.json", "pnpm-lock.yaml"] as const;
 
 const isUnder = (path: string, roots: readonly string[]): boolean => roots.some((root) => path.startsWith(root));
-const isNotesOnly = (path: string): boolean => NOTES_ONLY.some((pattern) => pattern.test(path));
+const isNotReadByRootSuite = (path: string): boolean => NOT_READ_BY_ROOT_SUITE.some((pattern) => pattern.test(path));
 
 /** Why `path` makes the whole suite run, or null when the graph can judge it. */
 export function fallbackReasonFor(path: string): string | null {
@@ -53,7 +53,7 @@ export function fallbackReasonFor(path: string): string | null {
  * A changed path no import and no test naming it can account for, and that the suite may still read at run time: a non-module file under the source roots.
  * Notes and the UI package are not that (nothing in the root suite reads them by a built path), so they select nothing and say so.
  */
-const isOpaqueData = (path: string): boolean => !MODULE_FILE.test(path) && !isNotesOnly(path) && isUnder(path, OPAQUE_ROOTS);
+const isOpaqueData = (path: string): boolean => !MODULE_FILE.test(path) && !isNotReadByRootSuite(path) && isUnder(path, OPAQUE_ROOTS);
 
 /** One selected test, with the reason a reader can check. */
 export interface SelectedTest { file: string; why: string }

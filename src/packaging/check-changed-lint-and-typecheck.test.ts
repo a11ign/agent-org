@@ -21,7 +21,7 @@ import { eslintEntryOf, lintCacheDirectory, lintCacheKey, runKeyedEslint } from 
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
 const ESLINT_ENTRY = eslintEntryOf(REPO);
-const TSC = join(REPO, "node_modules", ".bin", "tsc");
+const TSC_ENTRY = join(REPO, "node_modules", "typescript", "bin", "tsc");
 const ESLINT_TIMEOUT_MS = 60_000;
 
 type Tree = Record<string, string>;
@@ -133,7 +133,7 @@ function typecheckProject(files: Tree): string {
   return root;
 }
 
-const typecheck = (root: string) => spawnSync(TSC, typecheckFlags(), { cwd: root, encoding: "utf8" });
+const typecheck = (root: string) => spawnSync("node", [TSC_ENTRY, ...typecheckFlags()], { cwd: root, encoding: "utf8" });
 
 test("the typecheck script runs incrementally and keeps its build info under node_modules/.cache", () => {
   const flags = typecheckFlags();

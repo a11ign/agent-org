@@ -12,15 +12,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { testEach } from "../lib/test-each.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import rstestConfig from "../../scripts/rstest/rstest.config.ts";
 import { buildImporterMap, loadSources } from "../../scripts/rstest/import-graph.ts";
 import { fallbackReasonFor, RUNNER_SETUP_FILES, selectLintScope, selectTests, suiteTestFiles, type TestSelection } from "../../scripts/rstest/select-tests.ts";
-import { changedSince, describePlan, mergeBaseOf, planChecks } from "../../scripts/check-changed.ts";
+import { changedSince, describePlan, layFixtureProject, mergeBaseOf, parseArguments, planChecks } from "../../scripts/check-changed.ts";
 
 type Tree = Record<string, string>;
 
@@ -237,4 +238,26 @@ testEach("the plan for a fallback says the whole suite and the whole tree run, a
   assert.ok(lines.includes("lint: FALLBACK, the whole tree"), lines.join("\n"));
   assert.ok(lines.includes("tests: FALLBACK, the whole suite"), lines.join("\n"));
   assert.ok(lines.some((line) => line.startsWith(`  ${path}: `)), lines.join("\n"));
+});
+
+testEach("the arguments are --plan and --base <ref>, and anything else is refused", [
+  { name: "none", argv: [], expected: { plan: false, base: undefined } },
+  { name: "plan", argv: ["--plan"], expected: { plan: true, base: undefined } },
+  { name: "base then plan", argv: ["--base", "origin/dev", "--plan"], expected: { plan: true, base: "origin/dev" } },
+  { name: "an unknown first argument", argv: ["--bogus"], expected: null },
+  { name: "an unknown argument after a good one", argv: ["--plan", "stray"], expected: null },
+  { name: "a base with no ref", argv: ["--base"], expected: null },
+], ({ argv, expected }) => {
+  assert.deepEqual(parseArguments(argv), expected);
+});
+
+test("the fixture project is the committed copy CI makes: a host file naming the copy, in a repository with one commit", () => {
+  const into = join(writeTree({}), "project");
+  const hostFile = layFixtureProject(fileURLToPath(new URL("../../", import.meta.url)), into);
+  const host = JSON.parse(readFileSync(hostFile, "utf8")) as { projects: Array<{ checkout: string }> };
+  assert.equal(host.projects[0].checkout, into);
+  assert.equal(readFileSync(hostFile, "utf8").includes("@@PROJECT@@"), false);
+  const log = execFileSync("git", ["log", "--format=%s"], { cwd: into, env: sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }), encoding: "utf8" }).trim();
+  assert.equal(log, "the fixture project");
+  assert.ok(existsSync(join(into, "package.json")));
 });

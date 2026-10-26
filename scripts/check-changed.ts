@@ -16,8 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../src/lib/git-env.ts";
-import { eslintEntryOf, lintCacheDirectory, lintCacheKey, runKeyedEslint } from "./lint-cache.ts";
-import { LINT_TARGETS } from "./lint.ts";
+import { eslintEntryOf, LINT_TARGETS, lintCacheDirectory, lintCacheKey, runKeyedEslint } from "./lint-cache.ts";
 import { buildImporterMap, loadSources } from "./rstest/import-graph.ts";
 import { type LintScope, selectLintScope, selectTests, suiteTestFiles, type TestSelection } from "./rstest/select-tests.ts";
 
@@ -128,24 +127,37 @@ export function executePlan(root: string, plan: CheckPlan): string[] {
     ["typecheck", () => spawnInherit(root, "npm", ["run", "--silent", "typecheck"])],
     ["tests", () => runTests(root, plan.tests)],
   ];
-  return stages.filter(([name, run]) => {
+  const failed: string[] = [];
+  for (const [name, run] of stages) {
     console.log(`\n== ${name} ==`);
-    return run() !== 0;
-  }).map(([name]) => name);
+    if (run() !== 0) failed.push(name);
+  }
+  return failed;
+}
+
+/** The arguments the CLI takes: `--plan`, and `--base <ref>`. Returns null for anything else, including a `--base` with no ref. */
+export function parseArguments(argv: readonly string[]): { plan: boolean; base?: string } | null {
+  let base: string | undefined;
+  let plan = false;
+  for (let at = 0; at < argv.length; at += 1) {
+    if (argv[at] === "--plan") plan = true;
+    else if (argv[at] === "--base" && argv[at + 1] !== undefined) base = argv[++at];
+    else return null;
+  }
+  return { plan, base };
 }
 
 /** The CLI: `check-changed.ts [--base <ref>] [--plan]`. `--plan` prints what would run and runs nothing. */
 export function main(argv: readonly string[], root: string): number {
-  const baseAt = argv.indexOf("--base");
-  const unknown = argv.filter((arg, at) => arg !== "--plan" && arg !== "--base" && at !== baseAt + 1);
-  if (unknown.length > 0 || (baseAt !== -1 && argv[baseAt + 1] === undefined)) {
+  const options = parseArguments(argv);
+  if (options === null) {
     console.error("usage: npm run check:changed -- [--base <ref>] [--plan]");
     return 2;
   }
-  const base = mergeBaseOf(root, baseAt === -1 ? undefined : argv[baseAt + 1]);
+  const base = mergeBaseOf(root, options.base);
   const plan = planChecks(root, base, changedSince(root, base));
   console.log(describePlan(plan, root).join("\n"));
-  if (argv.includes("--plan")) return 0;
+  if (options.plan) return 0;
   const failed = executePlan(root, plan);
   console.log(failed.length === 0 ? "\ncheck:changed: passed" : `\ncheck:changed: FAILED: ${failed.join(", ")}`);
   return failed.length === 0 ? 0 : 1;
