@@ -143,13 +143,14 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  * A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit, as the last watch read them (A11-153). The rest is what the same read said
  * of the pull request's readiness to merge at that head (A11-179), each field absent until a watch has read it, and when the code host does not say it: `review` is `approved` only when the
  * newest verdict on the head approves and GitHub's own review decision does not still ask for a review or for changes, `changes-requested` when either says changes, and `none` otherwise;
- * `red` is the required checks failing, and `pending` the required checks still running, and `mergeable` that GitHub says it merges cleanly (A11-258; `UNKNOWN`, still being computed, is not mergeable). `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
+ * `red` is the required checks failing, and `pending` the required checks still running, and `mergeable` that GitHub says it merges cleanly (A11-258; `UNKNOWN`, still being computed, is not mergeable). `conflict` is present only while the host reads the pull request `CONFLICTING`, with the branch it merges into (null when the host did not say): the card
+ * says it for any run (A11-293). `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
  * stay (A11-213): the stale-block flag counts from it.
  * `unmergedSince` (A11-291) is when the board first read the pull request approved at this head with its required checks green, mergeable and not in the merge queue, kept while the head and that reading stay: the "approved, not merging" card counts from it.
  * `notMerging` is the reason the watch gave once it had been so for `NOT_MERGING_MINUTES`, which is what makes the card say so; it stays while the reading does. `firstFlow` marks an approved head whose pull request adds the repository's first merge flow, which nothing can merge but a person.
  */
 export type PullHead = Readonly<{
-  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; blockedSince?: number;
+  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; conflict?: Readonly<{ base: string | null }>; blockedSince?: number;
   unmergedSince?: number; notMerging?: string; firstFlow?: true;
 }>;
 

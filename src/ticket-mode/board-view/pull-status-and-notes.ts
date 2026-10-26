@@ -528,6 +528,19 @@ export function resumesOnConflict(entry: ViewEntry): boolean {
     && status !== "completed" && status !== "cancelled";
 }
 
+/** Whether the tracker settled the run's ticket: completed, canceled or marked a duplicate. A ticket it completed while a later step is open still reads Needs you ({@link completedEarly}), so the status alone does not say it. */
+const trackerSettled = (entry: ViewEntry): boolean => ["completed", "canceled", "duplicate"].includes(entry.trackerState ?? "");
+
+/**
+ * Whether the board brings a finished run's open pull requests up to date with their base (A11-293, {@link mergeBaseInto} in `pool-base-merge.ts`): every finished run with a pull request still open, whatever its status, Needs you included, since a
+ * conflict rots just as well on a run waiting for a person. A run that concluded with nothing more to do, one a person stopped and one whose ticket the tracker settled are left alone, as {@link resumesOnConflict} leaves them. Whether a worker is woken
+ * for the conflict is that function's.
+ */
+export function mergesBase(entry: ViewEntry): boolean {
+  const kind = entry.outcome?.kind ?? "";
+  return entry.phase === "finished" && openPulls(entry).length > 0 && !CONCLUDED.has(kind) && kind !== "stopped" && !trackerSettled(entry);
+}
+
 /** The fields of the board's publish run that the page reads: its workspace and pane are set once it runs, and dropped when it ends. */
 export type ViewPublish = Readonly<{ keys: readonly string[]; phase: string; failure?: string; workspace?: string; pane?: string }>;
 

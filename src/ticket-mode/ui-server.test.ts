@@ -71,8 +71,9 @@ function sshRunner(fails = false) {
 }
 
 /** The page's service for `list`, in front of this machine's real instance, with ssh connections answered by `forward` or failing. */
-async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal, queue, terminal, lookupFails = false, uiBuilds, noBuild, remembering }: { refusal?: string | null; sshFails?: boolean;
-  mintTerminal?: () => Promise<TerminalMint>; queue?: object; terminal?: string; lookupFails?: boolean; uiBuilds?: readonly string[]; noBuild?: "updating" | "missing"; remembering?: { stateDir: string; down: { value: boolean } } } = {}) {
+async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal, queue, terminal, lookupFails = false, uiBuilds, noBuild, remembering, healBuild }: { refusal?: string | null; sshFails?: boolean;
+  mintTerminal?: () => Promise<TerminalMint>; queue?: object; terminal?: string; lookupFails?: boolean; uiBuilds?: readonly string[]; noBuild?: "updating" | "missing"; remembering?: { stateDir: string; down: { value: boolean } };
+  healBuild?: () => void } = {}) {
   const local = await instance(mintTerminal, { queue, terminal });
   const ssh = sshRunner(sshFails);
   const forwarded: { path: string; key: string; host: string }[] = [];
@@ -88,7 +89,7 @@ async function ui(list: readonly Connection[], { refusal = null, sshFails = fals
     return { status: 200, body: JSON.stringify({ entries: [], max: 1, paused: false }) };
   };
   const sessions = browserSessions(browserSessionsPath(local.stateDir), () => 7);
-  const served = await listen((port) => createUi({ port, key: local.key, sessions, read, connections, forward, uiBuilds, noBuild, ...(remembering === undefined ? {} : { lastKnown: createLastKnown(lastKnownDir(remembering.stateDir)) }) }).handle);
+  const served = await listen((port) => createUi({ port, key: local.key, sessions, read, connections, forward, uiBuilds, noBuild, ...(healBuild === undefined ? {} : { healBuild }), ...(remembering === undefined ? {} : { lastKnown: createLastKnown(lastKnownDir(remembering.stateDir)) }) }).handle);
   return { ...served, local, ssh, forwarded, close: async () => { await served.close(); await local.close(); } };
 }
 
@@ -757,6 +758,25 @@ async function answersFor(u: Awaited<ReturnType<typeof ui>>, paths: readonly str
     return { path, answer, text: await answer.text(), cookie };
   }));
 }
+
+test("2026-10-26: each Updating answer asks the board to fetch its build, and a served build asks nothing", async () => {
+  let asked = 0;
+  const u = await ui([WORK], { uiBuilds: [join(tmpDir("ui-heal-"), "ui-build")], noBuild: "updating", healBuild: () => { asked += 1; } });
+  try {
+    await answersFor(u, ["/", "/tickets"]);
+    assert.equal(asked, 2, "both Updating answers asked (the real heal throttles itself to once a minute)");
+  } finally {
+    await u.close();
+  }
+  let served = 0;
+  const built = await ui([WORK], { uiBuilds: [builtUi().root], noBuild: "updating", healBuild: () => { served += 1; } });
+  try {
+    await answersFor(built, ["/"]);
+    assert.equal(served, 0);
+  } finally {
+    await built.close();
+  }
+});
 
 test("A11-284: a release install with no build answers the Updating page, a 503 that reloads itself, and never the missing-build page; the instance calls still answer", async () => {
   const u = await ui([WORK], { uiBuilds: [join(tmpDir("ui-updating-"), "ui-build")], noBuild: "updating" });

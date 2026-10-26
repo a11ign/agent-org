@@ -12,7 +12,9 @@ import { poolFixture } from "./pool-fixture.ts";
 import { finishedWith, nextStepQueued } from "./kept-pulls-fixture.ts";
 import type { Git } from "./worktree.ts";
 import { find, replace, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
-import { finish, markRunning, markStarting } from "./queue/queue-transitions.ts";
+import { finish, markRunning, markStarting, respond } from "./queue/queue-transitions.ts";
+import { conflictNote } from "./board-view/pull-conflict.ts";
+import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { logOf } from "./queue/run-log.ts";
 
 const NOW = 1_000_000;
@@ -335,4 +337,106 @@ test("A11-286: a ticket the tracker settled while its round ran does not get its
   host.pullAt(URL)!.feedback = {};
   await sweep();
   assert.deepEqual([entry().phase, entry().afterRound !== undefined], ["finished", true]);
+});
+
+// A11-293: a run handed to a person is watched for its base as every finished run is.
+const HANDED = "The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped. Respond to review starts another. The latest: New review feedback on the pull request.";
+
+/** The ticket finished on a `reviewed` outcome for pull request #7, which the A11-213 stall flag then handed to a person (`handedBack`): the case of a11ign/agent-org#1933. */
+const reviewedHandedToAPerson = (more: Partial<Entry> = {}): Queue =>
+  replace(finishedWith(KEY, { kind: "reviewed", prs: [{ repo: "agent-org", url: URL }] }, NOW - 10), KEY, (entry) => ({ ...entry, handedBack: HANDED, ...more }));
+
+test("A11-293: a run handed to a person has the base merged into its conflicting pull request, with no round", async () => {
+  const { pool, entry, events, asked } = world({ queue: reviewedHandedToAPerson() });
+  assert.equal(runStatus(entry()), "needs-you", "the case: a reviewed outcome, handed to a person");
+  pool.watchFeedback();
+  assert.deepEqual([asked(), entry().phase, entry().rounds, events()], [1, "finished", undefined, ["merging"]], "update-branch was asked, and no worker was woken");
+});
+
+test("A11-293: a run handed to a person has a behind pull request brought up to date, once for the head", async () => {
+  const { pool, asked, events } = world({ queue: reviewedHandedToAPerson(), pull: { behind: true } });
+  pool.watchFeedback();
+  pool.watchFeedback();
+  assert.deepEqual([asked(), events()], [1, ["behind"]]);
+});
+
+/** The world of a run handed to a person whose pull request has a real conflict, watched until the board has decided it (`held`, once the files are listed). */
+async function heldConflict() {
+  const held = world({ queue: reviewedHandedToAPerson() });
+  held.host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  held.pool.watchFeedback();
+  await until(() => held.events().includes("held"), "the conflict is decided once its files are listed");
+  return held;
+}
+
+test("A11-293: a real conflict on a run handed to a person is held for it: the card says it, the log says it, and Respond carries it into the round", async () => {
+  const { fixture, entry, events, asked } = await heldConflict();
+  assert.deepEqual([asked(), entry().phase, entry().rounds, events()], [1, "finished", undefined, ["held"]], "no round was started for a run a person holds");
+  assert.deepEqual(entry().pullHeads?.[URL]?.conflict, { base: "main" }, "the watch recorded the conflict");
+  assert.equal(conflictNote(entry()), "a11ign/agent-org #7 conflicts with main", "the card says it");
+  const answered = find(respond(fixture.store.get(), KEY, NOW + 1), KEY)!;
+  assert.equal(answered.conflict, `${URL} conflicts with its base branch main.`, "Respond starts the round with the conflict");
+  assert.equal(answered.phase, "queued");
+});
+
+test("A11-293: a conflict on a run that asked a person, at the board's cap, is not dropped: the card says it and Respond carries it", async () => {
+  // A needs-human outcome names no pull request: the run's review round does.
+  const asking = replace(finishedWith(KEY, { kind: "needs-human", reason: "which side wins?", escalation: "reserved" }, NOW - 10), KEY, (entry) => ({ ...entry, rounds: 3, review: [{ repo: "agent-org", url: URL }] }));
+  const { host, pool, fixture, entry, events } = world({ queue: asking });
+  host.branchUpdates.answers.set(URL, { kind: "conflict" });
+  pool.watchFeedback();
+  await until(() => events().includes("capped"), "the conflict is decided");
+  assert.equal(entry().phase, "finished", "no round is left to queue");
+  assert.equal(conflictNote(entry()), "a11ign/agent-org #7 conflicts with main");
+  assert.equal(find(respond(fixture.store.get(), KEY, NOW + 1), KEY)!.conflict, `${URL} conflicts with its base branch main.`);
+});
+
+test("A11-293: a run the tracker completed or a person stopped is left alone, and so is one whose pull request needs nothing", async () => {
+  const settled = world({ queue: reviewedHandedToAPerson({ trackerState: "completed" }) });
+  settled.pool.watchFeedback();
+  const stopped = world({ queue: replace(finishedWith(KEY, { kind: "stopped" } as never, NOW - 10), KEY, (entry) => ({ ...entry, review: [{ repo: "agent-org", url: URL }] })) });
+  stopped.pool.watchFeedback();
+  const clear = world({ queue: reviewedHandedToAPerson(), pull: {} });
+  clear.pool.watchFeedback();
+  // A run that concluded with nothing to do, as `resumesOnConflict` leaves it, and a ticket the tracker completed while a later step is open (Needs you, not Completed).
+  const concluded = world({ queue: replace(finishedWith(KEY, { kind: "checked", reason: "nothing to change" }, NOW - 10), KEY, (entry) => ({ ...entry, review: [{ repo: "agent-org", url: URL }] })) });
+  concluded.pool.watchFeedback();
+  const doneEarly = world({ queue: reviewedHandedToAPerson({ trackerState: "completed", steps: [{ step: 1, of: 2, prs: [] }] as never }) });
+  assert.equal(runStatus(doneEarly.entry()), "needs-you", "the case: the tracker completed it, yet it reads Needs you");
+  doneEarly.pool.watchFeedback();
+  assert.deepEqual([settled.asked(), stopped.asked(), clear.asked(), concluded.asked(), doneEarly.asked()], [0, 0, 0, 0, 0]);
+  assert.equal(conflictNote(clear.entry()), null, "a pull request that does not conflict says nothing");
+});
+
+/** The world of a run handed to a person, watched once. */
+function handedAndWatched() {
+  const watched = world({ queue: reviewedHandedToAPerson() });
+  watched.pool.watchFeedback();
+  return watched;
+}
+
+test("A11-293: the conflict leaves the card once the pull request reads clear", async () => {
+  const { host, pool, entry } = handedAndWatched();
+  assert.equal(conflictNote(entry()), "a11ign/agent-org #7 conflicts with main");
+  host.pullAt(URL)!.feedback = {};
+  pool.watchFeedback();
+  assert.equal(conflictNote(entry()), null);
+});
+
+test("A11-293: a conflict held for a person is decided again, with its files, once the run is one the board answers", async () => {
+  const { pool, fixture, entry, events, asked } = await heldConflict();
+  pool.watchFeedback();
+  assert.equal(asked(), 1, "held for the same head, nothing is asked again");
+  fixture.store.set(replace(fixture.store.get(), KEY, (e) => ({ ...e, handedBack: undefined })));
+  pool.watchFeedback();
+  await until(() => entry().phase === "queued", "a watched run gets its round");
+  assert.deepEqual([asked(), events()], [2, ["held", "round"]]);
+  assert.match(entry().feedback ?? "", /Merging main into it conflicted in a\.txt\./, "the round names the files");
+});
+
+test("A11-293: a pull request closed unmerged that the host still reads conflicting is not recorded as a conflict", async () => {
+  const { host, pool, entry } = world({ queue: reviewedHandedToAPerson() });
+  host.pullAt(URL)!.state = "closed";
+  pool.watchFeedback();
+  assert.equal(entry().pullHeads?.[URL]?.conflict, undefined);
 });
