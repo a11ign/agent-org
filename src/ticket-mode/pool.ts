@@ -42,7 +42,7 @@
 //
 // A REVIEW RUN RESUMES THE WORKER THAT WROTE THE CODE. A person who approves a run's pull requests queues the ticket again as a review run
 // (`approve`). It starts in the same ticket folder with `claude --resume` on the session the first run ended in, so it keeps that worker's
-// context, and a brief that has it mark the pull requests ready and see them through their checks and review. A run whose session was not
+// context, and a brief that has it mark the pull requests ready, answer what is on them and end at the push (A11-306). A run whose session was not
 // recorded resumes the newest transcript Claude Code kept for that folder, and a fresh worker starts only when there is none.
 //
 // A PARKED RUN THAT WRITES A NEW OUTCOME HAS ENDED AGAIN. A worker woken in its parked workspace, by a person or by a task of its own, can work
@@ -109,7 +109,7 @@ import { watchKeptPulls } from "./pool-base-merge.ts";
 import { reconcile } from "./pool-readopt.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
 import { hostAlertsSettled } from "./host-alerts.ts";
-import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads } from "./pool-reviewers.ts";
+import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads, startGreenReviewers } from "./pool-reviewers.ts";
 import { newPoolContext, type PoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
 import { log } from "./pool-state.ts";
 
@@ -160,6 +160,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     keptWatchDone: () => ctx.keptSweep.done,
     releaseReviewers: () => releaseReviewers(ctx),
     reviewNewHeads: () => reviewNewHeads(ctx),
+    /** The first review of each green head, on its own minute (A11-306). */
+    startGreenReviewers: () => startGreenReviewers(ctx),
     /** The review state of each open pull request the pool has read, by url, as the board words it (A11-119). */
     pullReviews: () => pullReviewsOf(ctx),
     /** The one line for pull requests whose review claim could not be written, or null (A11-172). */

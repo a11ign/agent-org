@@ -12,7 +12,7 @@ import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from
 import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -1508,4 +1508,15 @@ test("A11-255: the board's dependency sweep asks the writer for a major, records
   await sweep();
   const [, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
   assert.deepEqual(queue.entries.map((entry: any) => [entry.ticket.key, entry.model, entry.effort]), [["NBF-101", "sonnet", "low"]], "queued like one a person adds, on the saved choice");
+});
+
+test("A11-306: the first review of a green head is its own sweep, on a minute, beside the others on the feedback cadence", () => {
+  const calls: string[] = [];
+  const pool = { watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => { calls.push("reviewNewHeads"); }, startGreenReviewers: () => { calls.push("startGreenReviewers"); } };
+  const scheduled: { run: () => void; ms: number }[] = [];
+  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, REVIEW_START_MS], "the full look at reviewers stays on the feedback cadence; the green heads' is the sixth");
+  assert.ok(REVIEW_START_MS <= 60_000, "a green head is looked at at least once a minute, so a reviewer starts well within 2 minutes of the checks going green");
+  scheduled[5].run();
+  assert.deepEqual(calls, ["startGreenReviewers"], "and the sixth is the pool's startGreenReviewers, not reviewNewHeads");
 });

@@ -79,6 +79,11 @@ const TICK_MS = 30_000;
 const TRACKER_MS = 120_000;
 /** How often the open pull requests of runs Ready to merge are read for new feedback. Each is one GitHub request per pull request. */
 export const FEEDBACK_MS = 180_000;
+/**
+ * How often the open pull requests are looked at for a head whose checks have gone green and that has no review (A11-306). The first review starts at the first look that reads the head's checks green, so this is the longest
+ * the board leaves a green head unreviewed: well inside the 2 minutes it is to start within (`REVIEW_START_LIMIT_MS`), where the feedback cadence above left up to 3 minutes. `AGENT_ORG_REVIEW_START_MS` shortens it for the load script, as `AGENT_ORG_FEEDBACK_MS` does the rest.
+ */
+export const REVIEW_START_MS = 60_000;
 /** How long herdr web ui may take to mint a terminal pairing code before the link goes out plain (A11-93). */
 const TERMINAL_PAIR_MS = 5_000;
 
@@ -92,7 +97,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "held" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -668,9 +673,9 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
  * The sweeps the server runs on the feedback cadence, each on its own timer (A11-106): one that throws is said, and the others still run on theirs. `every` is
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
-export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads">,
+export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers">>,
   every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void> } = {}): void {
-  const sweeps: { sweep: () => void | Promise<void>; failure: string }[] = [
+  const sweeps: { sweep: () => void | Promise<void>; failure: string; ms?: number }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
     { sweep: () => pool.releaseReviewers(), failure: "the reviewers of merged or closed pull requests could not be released" },
@@ -680,11 +685,13 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
     { sweep: () => pool.rebaseStacked(), failure: "the stacked branches could not be rebased" },
     // A reviewer on each new head of every open pull request, whatever its run is in (A11-119): not the watched runs' only.
     { sweep: () => pool.reviewNewHeads(), failure: "the reviewers of open pull requests could not be started" },
+    // The first review of a green head, on its own minute: the idle time between a green head and its review is its reviewer's start waiting for a sweep (A11-306).
+    ...(pool.startGreenReviewers === undefined ? [] : [{ sweep: () => pool.startGreenReviewers?.(), failure: "the reviewers of green pull requests could not be started", ms: REVIEW_START_MS }]),
     // A Dependabot major, or a group whose gate stays red, is asked of the ticket writer once (A11-255). Asynchronous, so a failure is said when it settles.
     ...(board.dependencyUpdates === undefined ? [] : [{ sweep: board.dependencyUpdates, failure: "the dependency updates could not be turned into tickets" }]),
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
-  for (const { sweep, failure } of sweeps) {
+  for (const { sweep, failure, ms = FEEDBACK_MS } of sweeps) {
     every(() => {
       try {
         const done = sweep();
@@ -692,7 +699,7 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
       } catch (err) {
         said(failure, err);
       }
-    }, FEEDBACK_MS);
+    }, ms);
   }
 }
 
@@ -755,7 +762,7 @@ async function serve(): Promise<void> {
   setInterval(() => { void board.pool.tick(); }, intervalMs(process.env, "TICK_MS", TICK_MS));
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, intervalMs(process.env, "TRACKER_MS", TRACKER_MS));
-  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps) });
+  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, ms === REVIEW_START_MS ? "REVIEW_START_MS" : "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps) });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
