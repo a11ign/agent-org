@@ -2,69 +2,62 @@
  * A11-301: `withGitSandbox` (this repository's, over the toolchain's) removes a sandbox a late writer is still putting files into, and refuses, naming what
  * is in it, one that cannot be removed. `src/lib/git-sandbox.ts` says what CI saw and what was not established.
  *
- *   (1) THE LEFTOVER, REPRODUCED -- a child process writes into the sandbox's `.git/objects` in a tight loop for 600 ms, starting before the removal.
- *       The toolchain's own helper is refused (CONTROL, so the writer really does defeat one removal); this repository's returns, with the directory gone
- *       and still gone when the writer has exited.
+ *   (1) THE LEFTOVER, REPRODUCED -- a removal that a late writer undoes (a file put back into `.git/objects` after `rmSync` returned). The toolchain's
+ *       own helper is refused (CONTROL, so the leftover is the one that raises the error); this repository's removes the tree again, until it is gone.
+ *       A writer that is a real process on a clock was tried first and was flaky on a loaded runner; see `lateWriter`.
  *   (2) NOTHING IS SWALLOWED -- a removal that never takes effect is still `SandboxNotRemovedError`, after the survivor has been described; a refusal
  *       that is not transient is thrown on the first try.
  *   (3) THE USUAL WRITER IS NOT STARTED -- the sandbox repository has `maintenance.auto=false` and `gc.auto=0`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { withGitSandbox as toolchainWithGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
-import { describeSurvivor, pause, removeUntilSettled, withGitSandbox, type GitSandbox } from "./git-sandbox.ts";
+import { describeSurvivor, removeUntilSettled, withGitSandbox } from "./git-sandbox.ts";
 
-const WRITER_MS = 600;
-const WRITER_POLL_MS = 5;
-const WRITER_START_LIMIT_MS = 5000;
-const WRITER = `
-const { mkdirSync, writeFileSync } = require("node:fs");
-const [dir, ms] = process.argv.slice(1);
-const end = Date.now() + Number(ms);
-writeFileSync(dir + "/.writer-started", "");
-for (let n = 0; Date.now() < end; n++) {
-  try { mkdirSync(dir + "/.git/objects/late", { recursive: true }); writeFileSync(dir + "/.git/objects/late/f" + (n % 50), "x"); } catch {}
+/** How many removals a late writer undoes, in `lateWriter`. */
+const UNDONE_REMOVALS = 2;
+
+/**
+ * A removal that a late writer undoes: the tree is removed, and then the writer puts a file back into `.git/objects`, as a detached `git` would. The first
+ * `undone` removals are undone, so what is left after them is a directory that exists although `rmSync` returned. Driven by call count and not by a child
+ * process on a clock: CI's first version of this test used a child writing for 600 ms, and on a loaded runner the child was descheduled for longer than the
+ * helper waited (or ran out before the removal), so the test passed or failed with the load and not with the helper.
+ */
+function lateWriter(undone: number): { remove: (dir: string) => void; removals: () => number } {
+  let removals = 0;
+  return {
+    remove: (dir) => {
+      removals++;
+      rmSync(dir, { recursive: true, force: true });
+      if (removals <= undone) {
+        mkdirSync(join(dir, ".git/objects/late"), { recursive: true });
+        writeFileSync(join(dir, ".git/objects/late/f"), "x");
+      }
+    },
+    removals: () => removals,
+  };
 }
-`;
 
-/** Start the writer in `box` and return once it is writing, so the removal that follows is the removal it is racing. */
-function startWriter(box: GitSandbox, started: ChildProcess[]): void {
-  const child = spawn(process.execPath, ["-e", WRITER, box.dir, String(WRITER_MS)], { stdio: "ignore" });
-  started.push(child);
-  for (let waited = 0; !existsSync(join(box.dir, ".writer-started")); waited += WRITER_POLL_MS) {
-    assert.ok(waited < WRITER_START_LIMIT_MS, "the writer started");
-    pause(WRITER_POLL_MS);
-  }
-}
-
-const exited = (child: ChildProcess): Promise<void> => new Promise((done) => { child.once("exit", () => done()); });
-
-test("A11-301 (1) CONTROL: the writer defeats the toolchain's helper -- it is refused, or the directory is back once the writer is done", async () => {
-  const started: ChildProcess[] = [];
+test("A11-301 (1) CONTROL: after a removal that a late writer undoes, the toolchain's helper refuses with SandboxNotRemovedError", () => {
+  const writer = lateWriter(UNDONE_REMOVALS);
   let dir = "";
-  let refused: unknown;
-  try {
-    toolchainWithGitSandbox((box) => { dir = box.dir; startWriter(box, started); });
-  } catch (error) {
-    refused = error;
-  }
-  await Promise.all(started.map(exited));
-  const back = existsSync(dir);
+  assert.throws(
+    () => toolchainWithGitSandbox((box) => { dir = box.dir; }, undefined, { remove: writer.remove }),
+    (error: unknown) => error instanceof Error && error.name === "SandboxNotRemovedError" && error.message.includes(dir),
+  );
+  assert.equal(writer.removals(), 1, "the toolchain's helper removes once");
   rmSync(dir, { recursive: true, force: true });
-  assert.ok(refused !== undefined || back, "one removal, one writer: either the helper threw, or the writer's last file put the directory back after the helper's existence check");
 });
 
-test("A11-301 (1) BEHAVIOUR: this repository's helper waits out the same writer, and the directory is gone when it has finished", async () => {
-  const started: ChildProcess[] = [];
+test("A11-301 (1) BEHAVIOUR: this repository's helper removes the whole tree again, and the directory is gone when it returns", () => {
+  const writer = lateWriter(UNDONE_REMOVALS);
   let dir = "";
-  withGitSandbox((box) => { dir = box.dir; startWriter(box, started); });
+  withGitSandbox((box) => { dir = box.dir; }, undefined, { remove: writer.remove, pauseMs: 1, settleMs: 1 });
   assert.ok(dir.length > 0);
   assert.equal(existsSync(dir), false, "gone when the helper returns");
-  await Promise.all(started.map(exited));
-  assert.equal(existsSync(dir), false, "and still gone when the writer has exited: nothing was left for the file's own cleanup");
+  assert.equal(writer.removals(), UNDONE_REMOVALS + 1, "one removal per undoing, and the one that held");
 });
 
 test("A11-301 (2) CONTROL: a removal that never takes effect is still SandboxNotRemovedError, and the survivor is described first", () => {

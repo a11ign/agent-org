@@ -14,7 +14,8 @@
  *   1. THE WRITER IS NOT STARTED: every sandbox repository is made with `maintenance.auto=false` and `gc.auto=0`, before the test's first commit.
  *   2. A WRITER THAT IS RUNNING IS WAITED FOR: the removal is run again, whole, until the directory is gone and has stayed gone for `SETTLE_MS`
  *      (`rmSync`'s own `maxRetries` re-runs only the final `rmdir`, so a file made after the scan keeps it failing; see `row-claim-one-row.test.ts`).
- *      A directory that is still there after `ATTEMPTS` tries is left for the toolchain helper to refuse with its own `SandboxNotRemovedError`,
+ *      The settle is a heuristic and not a proof: a writer that is descheduled for longer than `SETTLE_MS` (CI's first version of the test for this saw one, on a
+ *      runner loaded with four test runs) is not seen. A directory that is still there after `ATTEMPTS` tries is left for the toolchain helper to refuse with its own `SandboxNotRemovedError`,
  *      after this module has printed what was in it. Nothing is swallowed.
  */
 import { existsSync, readdirSync, rmSync } from "node:fs";
@@ -43,7 +44,7 @@ export interface RemovalPlan {
   report?: (line: string) => void;
 }
 
-export const pause = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(SLEEP_CELL_BYTES)), 0, 0, ms); };
+const pause = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(SLEEP_CELL_BYTES)), 0, 0, ms); };
 
 const removeTree = (dir: string): void => rmSync(dir, { recursive: true, force: true });
 
