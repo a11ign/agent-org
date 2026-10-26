@@ -1,52 +1,52 @@
-// no-token: gh -- the instance is this checkout's own `ticket:serve` on a throwaway host (`scripts/loop-load.ts`), with stand-ins first on PATH: a `gh` that sleeps 2 s per call, and a `herdr` and a `tailscale` that log their arguments and exit 0; its tracker's `fetch` is offline
+// no-token: gh -- the instance is this checkout's own `ticket:serve` on a throwaway host (`scripts/loop-load.ts`), with stand-ins first on PATH: a `gh` that is held until the test opens its gate, and a `herdr` and a `tailscale` that log their arguments and exit 0; its tracker's `fetch` is offline
 //
-// PROVED UNDER LOAD (A11-282). The instance's sweeps run every second, and each one's `gh` holds the board thread 2 s. While they do, every read the request thread answers is
-// timed 20 times, one at a time, and its p99 must be under 200 ms, with no synchronous spawn on the request thread. `/api/health`'s `boardSnapshotAgeMs` shows the board
-// thread was held while the reads were answered: before the split, every read waited the 2 s with it (`node scripts/loop-load.ts` on the base prints that "before").
+// PROVED UNDER LOAD (A11-282), BY ORDER AND NOT BY A CLOCK (A11-297). The instance's sweeps run every second, and each one's `gh` holds the board thread. Here that `gh` returns only
+// when the test says so: the test waits for a sweep's call to start, reads every route the request thread answers while it has not returned, and only then opens the gate. A read that
+// came back is therefore a read answered while the board thread was held, whatever the runner's speed; a request thread that waited on the board thread would never answer (the read
+// gives up after READ_TIMEOUT_MS and the test fails on it). Every `/api/health` read carrying the one board snapshot's reading shows the board thread posted nothing meanwhile.
+// `node scripts/loop-load.ts` still prints the p50, p99 and max of the same reads against a `gh` that sleeps 2 s, for a person to read; no test asserts on it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { BOARD_THREAD_ROUTES, type Health, percentile, READ_LIMIT_MS, ROUTES, startThrowawayInstance, timedRead, waitFor } from "../../scripts/loop-load.ts";
+import { BOARD_THREAD_ROUTES, type Health, ROUTES, startThrowawayInstance, timedRead, waitFor } from "../../scripts/loop-load.ts";
 import type { RequestHealthView } from "./health-route.ts";
 
-const ROUNDS = 20;
-/** The gap between rounds, so the reads span several of the sweeps' 2 s calls. */
-const ROUND_GAP_MS = 250;
+const ROUNDS = 3;
 /** The routes the request thread answers itself: every GET route but the ones the board thread answers. */
 const LOCAL_ROUTES = ROUTES.filter((route) => !BOARD_THREAD_ROUTES.includes(route));
 const BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin.ts");
-const ghCallsIn = (log: string): number => readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+/** The `gh` calls the log at `log` holds, one line of arguments each: none before its file is written. */
+const callsIn = (log: string): string[] => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+/** The plugin check's `gh extension list`, which the instance runs in a child process of its own, so it holds neither thread: a call that is not it is a sweep's, made on the board thread. */
+const CHECK_CALL = "extension list";
 
-test("while a 2 s gh holds the board thread, every read the request thread answers has a p99 under 200 ms, a write still lands, and the request thread spawns nothing synchronously", { timeout: 240_000 }, async () => {
-  const instance = await startThrowawayInstance(tmpDir("request-thread-load-"));
+test("while a gh holds the board thread, every read the request thread answers is answered before that gh returns, a write lands once it does, and the request thread spawns nothing synchronously", { timeout: 240_000 }, async () => {
+  const instance = await startThrowawayInstance(tmpDir("request-thread-load-"), { gated: true });
   try {
-    await waitFor("a sweep's first gh call", () => { try { return ghCallsIn(instance.ghLog) > 0; } catch { return false; } });
-    const ghBefore = ghCallsIn(instance.ghLog);
-    const times = new Map<string, number[]>(LOCAL_ROUTES.map((route) => [route, []]));
+    await waitFor("a sweep's gh call on the board thread", () => callsIn(instance.ghLog).some((call) => call !== CHECK_CALL));
     const healths: Health[] = [];
     for (let round = 0; round < ROUNDS; round += 1) {
       for (const route of LOCAL_ROUTES) {
         const read = await timedRead(instance.port, route);
-        assert.notEqual(read.status, 0, `${route} answered`);
-        times.get(route)?.push(read.ms);
+        assert.notEqual(read.status, 0, `${route} was answered while the board thread was held`);
+        assert.deepEqual(callsIn(instance.ghDoneLog), [], `${route} was answered before any gh call returned`);
         if (route === "/api/health") healths.push(JSON.parse(read.body) as Health);
       }
-      await new Promise((done) => { setTimeout(done, ROUND_GAP_MS); });
     }
-    assert.ok(ghCallsIn(instance.ghLog) > ghBefore, "a sweep's gh ran while the reads were made");
-    const over = LOCAL_ROUTES.map((route) => [route, Math.round(percentile(times.get(route) ?? [], 99))] as const).filter(([, p99]) => p99 >= READ_LIMIT_MS);
-    assert.deepEqual(over, [], `every read's p99 is under ${READ_LIMIT_MS} ms`);
     const split = healths as RequestHealthView[];
     assert.ok(split.every((health) => health.loop.requests !== undefined && health.loop.board !== undefined), "the health names both threads' loops");
-    assert.ok(Math.max(...split.map((health) => health.boardSnapshotAgeMs)) >= 1_000, "the board thread was held while the reads were answered");
+    assert.equal(new Set(split.map((health) => health.loop.board.at)).size, 1, "the board thread posted no snapshot while the reads were answered: every health carries the one snapshot's reading");
     assert.deepEqual(split.map((health) => health.requestThreadSyncCalls).filter((calls) => calls !== 0), [], "no synchronous spawn on the request thread");
 
-    const paused = await fetch(`http://127.0.0.1:${instance.port}/api/paused`, { method: "POST", headers: { "x-ticket-token": instance.key }, body: JSON.stringify({ paused: true }) });
-    assert.equal(paused.status, 200, "a write is forwarded to the board thread, and answered when it is free");
+    // A write is the board thread's: it waits behind the held gh, and lands once the gate opens.
+    const paused = fetch(`http://127.0.0.1:${instance.port}/api/paused`, { method: "POST", headers: { "x-ticket-token": instance.key }, body: JSON.stringify({ paused: true }) });
+    instance.releaseGh();
+    assert.equal((await paused).status, 200, "a write is forwarded to the board thread, and answered when it is free");
+    assert.notDeepEqual(callsIn(instance.ghDoneLog), [], "the write was answered only after the held gh returned");
     const queue = JSON.parse((await timedRead(instance.port, "/api/queue")).body) as { paused?: boolean };
     assert.equal(queue.paused, true, "the next read shows the write: the board thread posts its snapshot before it answers");
 
