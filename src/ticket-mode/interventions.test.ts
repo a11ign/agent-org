@@ -69,7 +69,7 @@ test("A11-257: the view is the last 7 days, oldest first, a day with none shown 
   assert.equal(view.days.length, 7);
   assert.deepEqual(view.days.map(({ date }) => date), ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26"]);
   assert.deepEqual(view.days.map(({ total }) => total), [1, 0, 0, 0, 0, 0, 3], "the day 7 days back is not in the view");
-  assert.deepEqual(view.days.at(-1), { date: "2026-10-26", needsYou: 2, fixes: 1, total: 3 });
+  assert.deepEqual(view.days.at(-1), { date: "2026-10-26", needsYou: 2, fixes: 1, total: 3, standoffs: 0 });
   assert.equal(view.today, 3);
   assert.deepEqual(interventionsView(emptyQueue(1), NOON).days.map(({ total }) => total), [0, 0, 0, 0, 0, 0, 0]);
 });

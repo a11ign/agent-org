@@ -193,3 +193,32 @@ test("A11-213: recordPullHeads keeps the stamp it is given", () => {
   const queue = recordPullHeads(finishedQueue(), "A11-203", { [PR]: { ...BLOCKED, blockedSince: 42 } });
   assert.equal(queue.entries[0].pullHeads?.[PR]?.blockedSince, 42);
 });
+
+// --- A11-290: a block that is a stand-off waits for both routes, and says what each came to ---------------------------------------------------------------------------
+
+const STANDOFF = { url: PR, head: BLOCKED.head, reasons: "**Review of #132 at `abcd1234`, by reviewer-1: not convinced**\n\nThe bundle is still 340 KB.", reply: "Plan cannot be met: 200 KB is below the entry point.", stage: "done" };
+
+test("A11-290: a stand-off whose planner round and worker round have both ended is flagged at 30 minutes, and the card says what the reviewer and the worker last said and what the planner decided", () => {
+  const note = staleBlockNote(blockedFor(31, { standoff: { ...STANDOFF, planner: { decision: "upheld", reason: "The entry point can be split." } } }), NOW);
+  assert.ok(note !== null && isStaleBlockNote(note), "it is still the A11-213 note, so the board clears it as it clears that one");
+  assert.ok(note.startsWith(NOTE));
+  assert.match(note, /The reviewer last said: The bundle is still 340 KB\./);
+  assert.match(note, /the worker last said: Plan cannot be met: 200 KB is below the entry point\./);
+  assert.match(note, /the planner upheld: The entry point can be split\.$/);
+  const unasked = staleBlockNote(blockedFor(31, { standoff: { ...STANDOFF, reply: null } }), NOW);
+  assert.match(unasked ?? "", /the worker last said: nothing on the pull request; the planner was not asked$/);
+});
+
+test("A11-290: the flag waits while a route is still to go: an open stand-off of a watched run, and a decision the planner took within the limit", () => {
+  const open = { ...STANDOFF, stage: "open" };
+  assert.equal(staleBlockNote(blockedFor(90, { standoff: open, outcome: { kind: "reviewed", prs: PRS } }), NOW), null, "the next watch routes it");
+  assert.notEqual(staleBlockNote(blockedFor(90, { standoff: open, handedBack: "The pull requests keep getting feedback" }), NOW), null, "a run the board does not watch is never routed, so the flag stands");
+  const planned = { ...STANDOFF, stage: "planned", planner: { decision: "amended", reason: "The limit is now 400 KB." }, decidedAt: NOW - 10 * MINUTE };
+  assert.equal(staleBlockNote(blockedFor(90, { standoff: planned }), NOW), null, "the reviewer re-reviews bound by the amendment");
+  assert.notEqual(staleBlockNote(blockedFor(90, { standoff: { ...planned, decidedAt: NOW - 40 * MINUTE } }), NOW), null, "and when it did not within the limit, a person is told");
+});
+
+test("A11-290: a stand-off of another head, or of another pull request, does not hold or colour the flag", () => {
+  assert.equal(staleBlockNote(blockedFor(31, { standoff: { ...STANDOFF, head: "00000000" } }), NOW), NOTE);
+  assert.equal(staleBlockNote(blockedFor(31, { standoff: { ...STANDOFF, url: "https://github.com/a11ign/control/pull/9" } }), NOW), NOTE);
+});

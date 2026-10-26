@@ -1,7 +1,7 @@
 // no-token: gh -- `closePull` is handed a stub `gh`; nothing here spawns `gh` or needs a token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { closePull } from "./close-pull.ts";
+import { closePull, commentOnPull } from "./close-pull.ts";
 import { GhFailure } from "./gh.ts";
 
 const URL = "https://github.com/a11ign/agent-org/pull/1851";
@@ -37,5 +37,18 @@ test("A11-248: a comment that cannot be posted after the close does not undo it,
 test("A11-248: an address that is no pull request throws and nothing is asked", () => {
   const calls: string[][] = [];
   assert.throws(() => closePull("https://github.com/a11ign/agent-org/issues/9", COMMENT, (args) => { calls.push(args); return ""; }), { message: /is not a GitHub pull request address/ });
+  assert.deepEqual(calls, []);
+});
+
+test("A11-290: a comment is one POST of its body to the pull request's conversation, as the workers' account", () => {
+  const calls: string[][] = [];
+  commentOnPull(URL, "rereview: still not convinced", (args) => { calls.push(args); return ""; });
+  assert.deepEqual(calls, [["api", "-X", "POST", "repos/a11ign/agent-org/issues/1851/comments", "-f", "body=rereview: still not convinced"]]);
+});
+
+test("A11-290: a comment GitHub refuses throws in GitHub's first line, and an address that is no pull request asks nothing", () => {
+  assert.throws(() => commentOnPull(URL, COMMENT, refusing("\n gh: Forbidden (HTTP 403)\nmore\n")), { message: "gh: Forbidden (HTTP 403)" });
+  const calls: string[][] = [];
+  assert.throws(() => commentOnPull("https://github.com/a11ign/agent-org/issues/9", COMMENT, (args) => { calls.push(args); return ""; }), { message: /is not a GitHub pull request address/ });
   assert.deepEqual(calls, []);
 });

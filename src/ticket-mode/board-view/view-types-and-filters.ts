@@ -44,6 +44,8 @@ export type ViewEntry = Readonly<{
   ci?: CiView;
   /** The board's last resume prompt to a running run (A11-279): when, after a restart or an idle spell since `idleSince`, and herdr's refusal when it would not take it. */
   resume?: Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string; environment?: "restored" | "missing" }>;
+  /** Set while a re-review at an unchanged head stays not convinced (A11-290): what the reviewer, the worker and the planner last said, and where it stands. The stale-block flag waits for it, and says it. */
+  standoff?: Readonly<{ url: string; head: string; reasons: string; reply: string | null; stage: string; planner?: Readonly<{ decision: string; reason: string }>; decidedAt?: number }>;
   /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
   sessionWait?: string;
   /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */
