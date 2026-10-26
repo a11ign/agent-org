@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 import type { Stand } from "../fixtures.ts";
-import { serveInstance, type Asked } from "../instance-routes.ts";
+import { answeredAfter, serveInstance, type Asked } from "../instance-routes.ts";
 import { overflowProblem, SCREENS } from "../screenshots.ts";
 import { launchBrowser, startSite, UI_ROOT, type Site } from "../site.ts";
 import { detailAddress, detailOf, MESSAGE, PUBLISHER_REASON, REFUSAL, selectOf, TICKABLE, type Board } from "./publish-stand.ts";
@@ -21,6 +21,8 @@ afterAll(async () => {
 /** Where the screenshots go, beside the page's checks: this page's own folder. Each is the board's page at 1440px and at 390px. */
 const CAPTURES = join(UI_ROOT, "captures", "publish");
 const RUNS = "/runs";
+/** How long the late stand-in holds a call before it records it: far longer than the page takes to send it. */
+const LATE_MS = 300;
 
 type Opened = Readonly<{ page: Page; context: BrowserContext; asked: Asked }>;
 
@@ -73,16 +75,29 @@ describe("Publish, driven in Chromium", () => {
   it("posts a run's key from Run detail and the ticked keys from the Runs page", async () => {
     const detail = await open(detailOf("ready", { post: () => ({ entries: [] }) }), detailAddress);
     await drawn(detail.page);
-    await Promise.all([detail.page.waitForRequest((request) => request.url().endsWith("/api/publish")), detail.page.getByRole("button", { name: "Publish" }).click()]);
+    await answeredAfter(detail.page, "/api/publish", () => detail.page.getByRole("button", { name: "Publish" }).click());
     expect(posted(detail.asked)).toEqual([{ keys: ["A11-180"] }]);
     await detail.context.close();
 
     const list = await open(selectOf({ post: () => ({ entries: [] }) }), RUNS);
     await list.page.locator(".run-row").first().waitFor();
     for (const key of TICKABLE) await list.page.getByRole("checkbox", { name: `Select ${key} to publish` }).check();
-    await Promise.all([list.page.waitForRequest((request) => request.url().endsWith("/api/publish")), list.page.getByRole("button", { name: "Publish selected (3)" }).click()]);
+    await answeredAfter(list.page, "/api/publish", () => list.page.getByRole("button", { name: "Publish selected (3)" }).click());
     expect(posted(list.asked)).toEqual([{ keys: [...TICKABLE] }]);
     await list.context.close();
+  });
+
+  it("reads the publish call only once the stand-in has recorded it, however late that is", async () => {
+    const detail = await open(detailOf("ready", { post: () => ({ entries: [] }) }), detailAddress);
+    await drawn(detail.page);
+    // Registered after the stand-in, so it is asked first (Playwright runs the last route that matches): the page has sent the call, and the stand-in has not yet seen it.
+    await detail.context.route("**/api/publish", async (route) => {
+      await new Promise((done) => setTimeout(done, LATE_MS));
+      await route.fallback();
+    });
+    await answeredAfter(detail.page, "/api/publish", () => detail.page.getByRole("button", { name: "Publish" }).click());
+    expect(posted(detail.asked)).toEqual([{ keys: ["A11-180"] }]);
+    await detail.context.close();
   });
 
   it("gives the tick a 44px hit area and the Publish button 44px, in the boards' colours", async () => {

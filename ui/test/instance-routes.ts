@@ -4,7 +4,7 @@
 // `fixtures.ts`). `/runs/<key>` has no file of its own: `ticket:ui` answers it with the nearest page above (`ui-build.ts`'s `locate`), so this does too, from the same function.
 // Every page is sent with the policy `ticket:ui` sends, so a page that needs more than it allows (a linked stylesheet, say) fails its check here.
 import { join } from "node:path";
-import type { BrowserContext, Route } from "playwright-core";
+import type { BrowserContext, Page, Response, Route } from "playwright-core";
 import { locate } from "../../src/ticket-mode/ui-build.ts";
 import { answerFor, type Request, type Stand } from "./fixtures.ts";
 import { UI_ROOT } from "./site.ts";
@@ -30,6 +30,19 @@ async function sendPage(route: Route, pathname: string): Promise<void> {
 
 /** The paths of the calls a stand-in was asked, in order, and each with its method and body in `requests`. */
 export type Asked = string[] & { requests: Request[] };
+
+const ANSWER_MS = 10_000;
+
+/**
+ * Runs `act` (a click, say) and resolves with the answer to the call it makes to the path ending `suffix`.
+ *
+ * WAIT FOR THE ANSWER, NOT FOR THE REQUEST. `page.waitForRequest` resolves the moment the page sends, and `serveInstance` records the call afterwards, in its route handler: a
+ * test that read `Asked.requests` then found it empty (A11-299). The handler records the call before it answers, so once the answer is back the call is in `requests`.
+ */
+export async function answeredAfter(page: Page, suffix: string, act: () => Promise<void>): Promise<Response> {
+  const [response] = await Promise.all([page.waitForResponse((answer) => new URL(answer.url()).pathname.endsWith(suffix), { timeout: ANSWER_MS }), act()]);
+  return response;
+}
 
 /** Answers the instance calls of every page of `context`, and the client-side routes of the built site. Returns the paths of the calls it was asked, in order. */
 export async function serveInstance(context: BrowserContext, { stand = {}, hold = false }: Serving = {}): Promise<Asked> {
