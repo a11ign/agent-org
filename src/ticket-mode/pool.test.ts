@@ -1,5 +1,5 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
-import { flakesPath, flakesView, readFlakes, recordFlakes } from "./flakes.ts";
+import { type Flake, flakesPath, flakesView, readFlakes, recordFlakes } from "./flakes.ts";
 import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -5341,6 +5341,13 @@ test("A11-154: a red check at the current head starts one fix round for a run Re
   }
 });
 
+/** The flakes the log at `path` holds; a log that cannot be read fails the test. */
+function flakesHeld(path: string): readonly Flake[] {
+  const read = readFlakes(path);
+  if ("unreadable" in read) throw new Error(read.unreadable);
+  return read.flakes;
+}
+
 test("A11-300: a job that is green on rerun starts no round and is written to flakes.json in the board's state; three in seven days list the test as needing a fix", async () => {
   const { pulls, ci, ctx } = await redRun([redCheck("test", 11)], { 11: stamped(["FAIL  src/a.test.ts > flakes sometimes", "AssertionError: expected 1 to equal 2"]) });
   await watchRound(ctx.pool);
@@ -5348,17 +5355,17 @@ test("A11-300: a job that is green on rerun starts no round and is written to fl
   assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.rerun?.for, "code");
   pulls[1] = feedbackPull({ head: HEAD_1, checks: [{ ...redCheck("test", 11), conclusion: null, status: "IN_PROGRESS", isRequired: true }] });
   await watchRound(ctx.pool);
-  assert.deepEqual(readFlakes(flakesPath(ctx.settings.stateDir)), [], "while the rerun is under way nothing is recorded");
+  assert.deepEqual(flakesHeld(flakesPath(ctx.settings.stateDir)), [], "while the rerun is under way nothing is recorded");
   pulls[1] = feedbackPull({ head: HEAD_1, checks: [{ ...redCheck("test", 11), conclusion: "SUCCESS", isRequired: true }] });
   await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", undefined], "green on rerun: no round");
-  assert.deepEqual(readFlakes(flakesPath(ctx.settings.stateDir)).map(({ test, check, run, head, pull }) => ({ test, check, run, head, pull })),
+  assert.deepEqual(flakesHeld(flakesPath(ctx.settings.stateDir)).map(({ test, check, run, head, pull }) => ({ test, check, run, head, pull })),
     [{ test: "src/a.test.ts > flakes sometimes", check: "test", run: jobPage(11), head: HEAD_1, pull: approvedPr.url }], "the test that failed, the run and the head");
   await watchRound(ctx.pool);
-  assert.equal(readFlakes(flakesPath(ctx.settings.stateDir)).length, 1, "recorded once");
+  assert.equal(flakesHeld(flakesPath(ctx.settings.stateDir)).length, 1, "recorded once");
   const more = [60, 70].map((at) => ({ test: "src/a.test.ts > flakes sometimes", check: "test", run: jobPage(100 + at), head: HEAD_2, pull: approvedPr.url, at }));
   recordFlakes(flakesPath(ctx.settings.stateDir), more, 100);
-  assert.deepEqual(flakesView(readFlakes(flakesPath(ctx.settings.stateDir)), 1000).tests.map(({ test, count }) => [test, count]), [["src/a.test.ts > flakes sometimes", 3]], "the third flake in seven days lists the test");
+  assert.deepEqual(flakesView(flakesHeld(flakesPath(ctx.settings.stateDir)), 1000).tests.map(({ test, count }) => [test, count]), [["src/a.test.ts > flakes sometimes", 3]], "the third flake in seven days lists the test");
 });
 
 test("A11-300: a round that ends with no push and a worker's reply that says the failure is unrelated ends in one more rerun, and red again after it a person decides", async () => {

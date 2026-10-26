@@ -19,9 +19,12 @@ function HealthNumber({ health }: Readonly<{ health: InterventionsView | null }>
   return <span className="pool-note pool-health" title={health.days.map(dayLine).join("\n")}>Person interventions today: {health.today}{settled > 0 ? `, stand-offs settled with no person: ${settled}` : ""}</span>;
 }
 
-/** The tests that need a fix (A11-300): how many flaked three times in seven days, each named with its count in the title. Nothing while the list is unread, and nothing while no test needs a fix. */
+/** The tests that need a fix (A11-300): how many flaked three times in seven days, each named with its count in the title. Nothing while the list is unread (a read that failed) and nothing while no test needs a fix; a log that is there and cannot be read is said. */
 function FlakyTests({ flakes }: Readonly<{ flakes: FlakesView | null }>) {
-  if (flakes === null || flakes.tests.length === 0) return null;
+  if (flakes === null) return null;
+  // An unreadable log is not an empty one: the list of flaky tests is unknown, and the note says so (A11-300).
+  if (flakes.unreadable !== undefined) return <span className="pool-note pool-flakes" title={flakes.unreadable}>Flaky tests: the flake log cannot be read</span>;
+  if (flakes.tests.length === 0) return null;
   const { tests, limit, days } = flakes;
   return <span className="pool-note pool-flakes" title={tests.map(({ test, count, check }) => `${test} (${check}): flaked ${count} times in ${days} days`).join("\n")}>Flaky tests needing a fix: {tests.length} (flaked {limit}+ times in {days} days)</span>;
 }

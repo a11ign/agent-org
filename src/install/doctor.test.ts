@@ -1409,6 +1409,16 @@ test("A11-300: `flaky tests` passes while no test has flaked three times in seve
   assert.match(report(Object.values(flaky)), /WARN/);
 });
 
+test("A11-300: an unreadable flake log FAILS the `flaky tests` row, saying why and what to do, rather than reading as no flaky test", async () => {
+  const unreadable: DoctorDeps["flakes"] = (stateDir) => ({ limit: 3, days: 7, tests: [], unreadable: `${flakesPath(stateDir)} is not JSON (Unexpected token)` });
+  const checks = byName(await diagnose(deps({ flakes: unreadable })));
+  assertRow(checks, "flaky tests", { ok: false, detail: /flakes\.json is not JSON/, fix: /mend or move .*flakes\.json: the board records no flake while it cannot be read/ });
+  const stateDir = tmpDirForFile("doctor-flakes-bad-");
+  mkdirSync(join(stateDir, "tickets"), { recursive: true });
+  writeFileSync(flakesPath(stateDir), "{ not a list");
+  assert.match(defaultDoctorDeps().flakes(stateDir).unreadable ?? "", /is not JSON/, "the real reading says it too");
+});
+
 test("A11-300: the flakes doctor reads are the ones the pool wrote to flakes.json in the board's state, three in seven days", () => {
   const stateDir = tmpDirForFile("doctor-flakes-");
   const at = Date.now();

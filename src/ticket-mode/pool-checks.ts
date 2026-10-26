@@ -244,7 +244,7 @@ function rerunBeforeRound(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: 
 
 /**
  * THE PASS ON A RERUN (A11-300): the head's record is a rerun of the code's own checks, and none of them is red or running now. Each test or step that failed is written to the flake log with its run and the head, once: the
- * record that comes back says `passed`. Null when the rerun has not come out green, or the host does not say which required checks are still running, which is no evidence that none is.
+ * record that comes back says `passed`. Null when the rerun has not come out green, when the flake log cannot be written (asked again next watch), or the host does not say which required checks are still running, which is no evidence that none is.
  */
 function recordPassOnRerun(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined): CheckHead | null {
   const { url, read } = pull;
@@ -255,7 +255,9 @@ function recordPassOnRerun(ctx: PoolContext, entry: Entry, pull: Readonly<{ url:
   try {
     ctx.flakes.record(flakes);
   } catch (err) {
+    // Not marked passed: the next watch writes it again, and the log says why until the flake log can be written (an unreadable one is mended by hand, and is never written over).
     log(`${entry.ticket.key}: the flakes of ${url} could not be recorded: ${messageOf(err)}`);
+    return null;
   }
   const note = `${record.candidates.map(({ check }) => check).join(", ")} failed on ${short(known.head)} and passed on rerun: recorded as a flake`;
   log(`${entry.ticket.key}: ${note}`);

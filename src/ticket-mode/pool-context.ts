@@ -28,7 +28,7 @@ import type { ServeCheck } from "../install/service.ts";
 import type { ExposureState } from "./pool-exposure.ts";
 import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 import type { BaseMerge } from "./pool-outcome.ts";
-import { type FlakeLog, flakesPath, flakesView, readFlakes, recordFlakes } from "./flakes.ts";
+import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -288,5 +288,5 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
 /** The flake log in `stateDir` (A11-300), read and written as the clock `now` says. */
 function flakeLog(stateDir: string, now: () => number): FlakeLog {
   const path = flakesPath(stateDir);
-  return { record: (found) => recordFlakes(path, found, now()), view: () => flakesView(readFlakes(path), now()) };
+  return { record: (found) => recordFlakes(path, found, now()), view: () => flakesViewOf(path, now()) };
 }

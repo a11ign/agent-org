@@ -90,19 +90,30 @@ describe("the health number", () => {
 const flakyView = (counts: readonly number[]) => ({ limit: 3, days: 7, tests: counts.map((count, index) => ({ test: `src/a${index}.test.ts > flakes`, check: "suite (2)", count, last: 0, runs: [] })) });
 
 /** The Runs page with `/api/flakes` answered by `answer`. */
-const pageWithFlakes = (answer: ReturnType<typeof flakyView> | number | "held") => pageAnswering("/api/flakes", answer);
+const pageWithFlakes = (answer: ReturnType<typeof flakyView> | (ReturnType<typeof flakyView> & { unreadable: string }) | number | "held") => pageAnswering("/api/flakes", answer);
+
+/** The flaky tests' note on the pool bar of a page whose `/api/flakes` answers `answer`, once it is drawn. */
+async function flakesNoteWhen(answer: Parameters<typeof pageWithFlakes>[0]): Promise<HTMLElement> {
+  pageWithFlakes(answer);
+  const bar = await poolBar();
+  return waitFor(() => {
+    const found = bar.querySelector<HTMLElement>(".pool-flakes");
+    expect(found).not.toBeNull();
+    return found!;
+  });
+}
 
 describe("the flaky tests", () => {
   it("reads 'Flaky tests needing a fix: N' on the pool bar, and its title names each test with how often it flaked", async () => {
-    pageWithFlakes(flakyView([4, 3]));
-    const bar = await poolBar();
-    const note = await waitFor(() => {
-      const found = bar.querySelector<HTMLElement>(".pool-flakes");
-      expect(found).not.toBeNull();
-      return found!;
-    });
+    const note = await flakesNoteWhen(flakyView([4, 3]));
     expect(note.textContent).toBe("Flaky tests needing a fix: 2 (flaked 3+ times in 7 days)");
     expect(note.getAttribute("title")).toBe("src/a0.test.ts > flakes (suite (2)): flaked 4 times in 7 days\nsrc/a1.test.ts > flakes (suite (2)): flaked 3 times in 7 days");
+  });
+
+  it("says the flake log cannot be read, rather than drawing nothing as if no test flaked", async () => {
+    const note = await flakesNoteWhen({ ...flakyView([]), unreadable: "/state/tickets/flakes.json is not JSON (Unexpected token)" });
+    expect(note.textContent).toBe("Flaky tests: the flake log cannot be read");
+    expect(note.getAttribute("title")).toBe("/state/tickets/flakes.json is not JSON (Unexpected token)");
   });
 
   it("draws nothing when no test needs a fix, while the list is loading, and when the read failed", async () => {

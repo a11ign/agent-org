@@ -71,6 +71,19 @@ test("A11-300: a job that is green on rerun starts no round, and the pass is rec
   assert.deepEqual([recorded.length, host.checksAndClaims.reruns.length], [1, 1], "a later watch of the same head records it once and reruns nothing");
 });
 
+test("A11-300: a pass whose flake cannot be written is not marked recorded: the next watch writes it, and nothing is lost", () => {
+  const { watch, recorded, ctx, clock } = world();
+  const first = watch(RED);
+  const write = ctx.flakes.record;
+  (ctx.flakes as { record: typeof write }).record = () => { throw new Error("/state/tickets/flakes.json is not JSON (Unexpected token)"); };
+  clock.at += 6 * MINUTE;
+  const refused = watch(GREEN, first.record);
+  assert.deepEqual([refused.heads, recorded], [first.record, []], "nothing is recorded, and the rerun's record is kept as it was, not marked passed");
+  (ctx.flakes as { record: typeof write }).record = write;
+  const later = watch(GREEN, first.record);
+  assert.deepEqual([later.heads[URL_1]?.rerun?.passed, recorded.length], [true, 1], "once the log can be written the flake is recorded");
+});
+
 test("A11-300: a job that is red twice at a head starts a round, and only then; the rerun is made once", () => {
   const { host, watch, recorded, clock } = world();
   const first = watch(RED);

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { claimantOf, parseTicketSettings } from "./settings.ts";
@@ -402,6 +402,14 @@ test("A11-300: /api/flakes lists the tests that flaked three times in seven days
   recordFlakes(flakesPath(b.settings.stateDir), [flake("a.test.ts > three", 0), flake("a.test.ts > three", 2), flake("a.test.ts > three", 4), flake("b.test.ts > two", 0), flake("b.test.ts > two", 1)], noon);
   const [, listed] = await b.api("GET", "/api/flakes", {}) as [number, any];
   assert.deepEqual(listed.tests.map(({ test, count }: { test: string; count: number }) => [test, count]), [["a.test.ts > three", 3]]);
+});
+
+test("A11-300: /api/flakes says when flakes.json cannot be read, and does not read it as no flaky test", async () => {
+  const b = board(4747, {}, { now: () => Date.UTC(2026, 9, 26, 12) });
+  mkdirSync(join(b.settings.stateDir, "tickets"), { recursive: true });
+  writeFileSync(flakesPath(b.settings.stateDir), "{ not a list");
+  const [status, view] = await b.api("GET", "/api/flakes", {}) as [number, any];
+  assert.deepEqual([status, view.tests, /is not JSON/.test(view.unreadable)], [200, [], true]);
 });
 
 test("A11-257: /api/interventions refuses a fix with no `what`, and counts nothing", async () => {
