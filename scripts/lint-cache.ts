@@ -7,9 +7,19 @@
 // read (and is removed), and the next run lints every file it is given. The cache is under `node_modules/.cache/eslint`, which no commit carries.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+
+/**
+ * Whether the module at `metaUrl` is the script node was started on. Compared as URLs through the real path, as the repository's other entries do: `file://${argv[1]}` is false for a path that
+ * needs URL encoding (a space), which made an entry run nothing and exit 0. Not an entry when `argv[1]` is no file (`node -e`, a REPL).
+ */
+export function isEntryScript(metaUrl: string): boolean {
+  const started = process.argv[1];
+  return started !== undefined && existsSync(started) && metaUrl === pathToFileURL(realpathSync(started)).href;
+}
 
 /** What `npm run lint` lints: the scope `eslint.config.ts` covers, `plugins/` and `ui/` included (`ci-lint-job.test.ts` and `ci-ui-job.test.ts` hold it). */
 export const LINT_TARGETS = ["src", "scripts", "plugins", "ui"] as const;

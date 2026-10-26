@@ -15,9 +15,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { eslintEntryOf, lintCacheDirectory, lintCacheKey, runKeyedEslint } from "../../scripts/lint-cache.ts";
+import { eslintEntryOf, isEntryScript, lintCacheDirectory, lintCacheKey, runKeyedEslint } from "../../scripts/lint-cache.ts";
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
 const ESLINT_ENTRY = eslintEntryOf(REPO);
@@ -154,4 +154,20 @@ test("the typecheck is whole-program: changing one file fails a file that did no
   assert.match(failed.stdout, /user\.ts/);
   write(root, { "lib.ts": "export const value: number = 3;\n" });
   assert.equal(typecheck(root).status, 0);
+});
+
+test("a script is the entry only when node was started on it, through any path that needs URL encoding, and never for -e or a missing file", () => {
+  const started = process.argv[1];
+  try {
+    const directory = tmpDir("check-changed-entry-");
+    const spaced = join(directory, "a b#c.ts");
+    writeFileSync(spaced, "");
+    process.argv[1] = spaced;
+    assert.equal(isEntryScript(pathToFileURL(spaced).href), true);
+    assert.equal(isEntryScript(`file://${spaced}`), false, "the unencoded form is what the old guard compared, and it never matched");
+    process.argv[1] = join(directory, "missing.ts");
+    assert.equal(isEntryScript(pathToFileURL(spaced).href), false);
+  } finally {
+    process.argv[1] = started;
+  }
 });
