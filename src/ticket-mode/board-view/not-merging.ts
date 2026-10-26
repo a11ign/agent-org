@@ -113,10 +113,11 @@ export function notMergingLine(entry: ViewEntry): string | null {
 
 /**
  * The note for a finished run that is not parked, one sentence for each pull request that is the first install of a merge flow and is approved (A11-291): nothing can arm it, so a person merges it, and the board says so the day it is approved. Under the
- * escalation list's access item, which a merge flow's token and rules are. Null when none is. PURE.
+ * escalation list's access item, which a merge flow's token and rules are. Null when none is, and while the run's ticket has Decisions no round has answered (`decisionsPending`, A11-305): the pull request is about to change, so a person is not asked to merge
+ * it yet (a round the board has queued or is running holds no note either, since a note is written only over a finished run). PURE.
  */
 export function firstFlowNote(entry: ViewEntry): string | null {
-  if (!speaksOfMerge(entry) || isParked(entry)) return null;
+  if (!speaksOfMerge(entry) || isParked(entry) || entry.decisionsPending !== undefined) return null;
   const installs = openPulls(entry).flatMap(({ url }) => (entry.pullHeads?.[url]?.firstFlow === true ? [url] : []));
   return installs.length === 0 ? null : escalationReason("access", installs.map((url) => `${pullLabel(url)} adds ${repositoryOf(url) ?? "this repository"}'s first merge flow (${ARM_WORKFLOW_PATH} or ${MERGE_BOT_WORKFLOW_PATH}), so no bot exists to merge it: a person merges it`).join("; "));
 }

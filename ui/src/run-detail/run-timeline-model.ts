@@ -18,7 +18,7 @@ const SHORT_HEAD = 7;
 
 /** The cause of a round, in words: why the run was started again on its pull request. */
 const ROUND_WORDS: Readonly<Record<RoundCause, string>> = {
-  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head", "ci-budget": "Held for its CI spend", "standoff-planner": "Planner deciding a stand-off", "standoff-worker": "Answering a stand-off",
+  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", decisions: "Meeting a change of the ticket's Decisions", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head", "ci-budget": "Held for its CI spend", "standoff-planner": "Planner deciding a stand-off", "standoff-worker": "Answering a stand-off",
 };
 
 /** What the board did with a stand-off (A11-290), in words. */

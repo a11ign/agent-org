@@ -23,10 +23,10 @@ export const REREVIEW_REASONS_MAX = 2000;
 
 /**
  * Why a round was started: new feedback, red checks, a conflict, a person's Respond (`asked`), a person's approval of draft pull requests, a talk session, or the reviewer's second look at a blocked head after the block was
- * answered without a commit (`rereview`), which the board counts as one of its own rounds though it queues no worker. A round the board held its run for, when the ticket's CI passed twice its budget, is `ci-budget`: it counts toward no cap, since
+ * answered without a commit (`rereview`), which the board counts as one of its own rounds though it queues no worker. A round the board started because the ticket's Decisions changed is `decisions`: it counts toward no cap either, since a person wrote the change (A11-305). A round the board held its run for, when the ticket's CI passed twice its budget, is `ci-budget`: it counts toward no cap, since
  * the cap is for review findings (A11-261). The two rounds of a stand-off (A11-290), the planner's and the worker's, count toward no cap either: a stand-off is routed once for each head, so it cannot repeat.
  */
-export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "approved" | "talk" | "rereview" | "ci-budget" | "standoff-planner" | "standoff-worker";
+export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "decisions" | "approved" | "talk" | "rereview" | "ci-budget" | "standoff-planner" | "standoff-worker";
 
 /**
  * Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, a stop behind a ticket its worker waits on (A11-272), a hold for its ticket's CI spend (A11-261), or the step

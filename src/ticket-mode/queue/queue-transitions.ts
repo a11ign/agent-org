@@ -7,6 +7,7 @@ import { conflictLine, conflictsIn } from "../worker-files.ts";
 import { conflictingPulls } from "../board-view/pull-conflict.ts";
 import type { RunWorker } from "./queue-run-detail.ts";
 import { loggedPersonRound } from "./queue-person-round.ts";
+import { respondRefusal } from "./queue-respond-refusal.ts";
 import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
 import { declaredMark, repeatOf, undeclaredMark } from "../wait-on/wait-note.ts";
 import type { Judged } from "../wait-on/wait-verdict.ts";
@@ -24,22 +25,6 @@ export function approve(queue: Queue, key: string, now: number): Queue {
   if (entry === undefined || entry.outcome?.kind !== "draft-pr" || !reviewable(entry)) return queue;
   const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, openPulls(entry), now)] };
   return loggedPersonRound(queued, entry, "approve", now, null);
-}
-
-/**
- * Why a person's Respond cannot act on `entry`, or null when it can (A11-154): the run is not on the board, is not finished, has a round queued already, its
- * tracker has completed or canceled the ticket, or it has no pull request open, on the board's record or on `found` (A11-240). A parked run is not refused here: the pool closes its workspace first. PURE.
- */
-function respondRefusal(key: string, entry: Entry | undefined, found: readonly PullRequest[]): string | null {
-  if (entry === undefined) return `${key} is not on the board`;
-  if (entry.phase === "queued" && entry.talk === true) return `a talk session is already queued for ${key}: a round would share its session`;
-  if (entry.phase === "queued") return entry.review !== undefined ? `a round is already queued for ${key}` : `${key} has not run yet, so there is no pull request to answer`;
-  if (entry.phase !== "finished") return `${key} is still running: Respond answers a run that has finished`;
-  if (SETTLED.has(entry.trackerState ?? "")) return `${key}'s ticket is ${entry.trackerState === "completed" ? "completed" : "closed"} in the tracker, so there is nothing to respond to`;
-  if (openPulls(entry).length === 0 && found.length === 0) return `${key} has no pull request open, so there is no feedback to answer`;
-  const kind = entry.outcome?.kind ?? "";
-  if (CONCLUDED.has(kind) || kind === "stopped") return `${key} ${kind === "stopped" ? "was stopped" : `concluded (${kind})`}: there is nothing for a worker to answer`;
-  return null;
 }
 
 /**

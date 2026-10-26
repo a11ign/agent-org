@@ -125,6 +125,8 @@ export type ViewEntry = Readonly<{
   reviewerRefused?: string;
   /** Set while an open pull request of the run is approved and green and nothing has merged it for an hour, or adds the repository's first merge flow (A11-291): the note, under the escalation list's access item. The run reads Needs you for it, and is still watched. Written by `recordMergeNote`. */
   mergeNote?: string;
+  /** Set while the run's ticket gained Decisions lines that no round has answered (A11-305): the first-merge-flow note waits, since the pull request is about to change. */
+  decisionsPending?: Readonly<{ at: number }>;
   /** Set while a stacked pull request of the run needs its base said: by URL, what is needed (A11-106). */
   retargets?: Readonly<Record<string, string>>;
   /** The blocker branch a run was branched from, and what agent-org has done to keep it on that branch (A11-116). */

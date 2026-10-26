@@ -90,7 +90,7 @@ export async function start(ctx: PoolContext, entry: Entry, folder: string, dir:
   // The worker's shell carries its ticket, its branch and the host file, which `ticket:worktree` reads. A batch's run has no one ticket, and makes no worktree.
   const env = withRunTmpMade(ctx, runEnvOf(ctx, entry), runId);
   const { model, effort } = runChoice(ctx, entry);
-  const cause = entry.asked ? "asked" : entry.feedback !== undefined ? "feedback" : "approved";
+  const cause = entry.asked ? "asked" : entry.feedback !== undefined ? "feedback" : entry.decisions ? "decisions" : "approved";
   const prompt = first ?? (entry.talk ? talkPrompt(dir) : entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause));
   return startAgent(ctx, { ...runPlace(ctx, entry), folder }, env, [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })], runId);
 }
