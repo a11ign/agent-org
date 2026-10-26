@@ -1,7 +1,8 @@
 // @ts-check
 // module: starting a run -- its workspace and agent, the start dialogs it may answer, and the fill of the free slots
 
-import { type Entry, leaveBatch, recordMove, SETTLED, type TicketWriterMode } from "./queue/queue-entries-and-outcomes.ts";
+import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
+import type { TicketWriterMode } from "./queue/writer-modes.ts";
 import { type PlannedAgainst, recordPlannedAgainst } from "./queue/queue-ticket-text.ts";
 import { earlyCompletionComment, recordCompletedByPerson, recordReopenFailure, recordReopened } from "./queue/queue-next-step.ts";
 import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";

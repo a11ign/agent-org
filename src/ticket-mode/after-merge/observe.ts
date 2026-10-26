@@ -124,6 +124,15 @@ function windowedOf({ pass, window }: ObserveFields, kind: string, passes: reado
   return typeof windowMs === "string" ? `\`${kind}\`: ${windowMs}` : { pass: given as PassMode, windowMs };
 }
 
+/** Whether a word is an `owner/name` repository. PURE. */
+const isRepository = (word: string | undefined): word is string => word !== undefined && REPOSITORY.test(word);
+
+/** Whether a spec has between `least` and `most` arguments. PURE. */
+const hasArguments = (args: readonly string[], least: number, most: number): boolean => args.length >= least && args.length <= most;
+
+/** Whether the optional count of a `release-assets` spec is absent or a number from 1 to 99. PURE. */
+const isCount = (word: string | undefined): boolean => word === undefined || /^[1-9]\d?$/.test(word);
+
 /** A spec of the second family read from its words, or why it is not one. PURE. */
 function windowedSpec(kind: string, args: readonly string[], fields: ObserveFields): WindowedSpec | string {
   const [first, second, third] = args;
@@ -142,17 +151,17 @@ function windowedSpec(kind: string, args: readonly string[], fields: ObserveFiel
       return typeof window === "string" ? window : { kind, repository: first, ...(rest === "" ? {} : { match: rest }), ...window };
     }
     case "ci-history": {
-      if (first === undefined || !REPOSITORY.test(first) || second === undefined || args.length > 3) return unknown;
+      if (!isRepository(first) || !hasArguments(args, 2, 3)) return unknown;
       const window = windowedOf(fields, kind, ["absent", "present"]);
       return typeof window === "string" ? window : { kind, repository: first, workflow: second, ...(third === undefined ? {} : { branch: third }), ...window };
     }
     case "doctor": {
-      if (first === undefined || second === undefined || args.length > 2) return unknown;
+      if (!hasArguments(args, 2, 2)) return unknown;
       const window = windowedOf(fields, kind, ["absent", "present"]);
       return typeof window === "string" ? window : { kind, host: first, check: second, ...window };
     }
     default: {
-      if (first === undefined || !REPOSITORY.test(first) || second === undefined || args.length > 3 || (third !== undefined && !/^[1-9]\d?$/.test(third))) return unknown;
+      if (!isRepository(first) || !hasArguments(args, 2, 3) || !isCount(third)) return unknown;
       const window = windowedOf(fields, kind, ["present"]);
       return typeof window === "string" ? window : { kind: "release-assets", repository: first, asset: second, count: Number(third ?? 1), ...window };
     }
@@ -413,10 +422,19 @@ function sightingStep(spec: Exclude<WindowedSpec, { kind: "release-assets" }>, w
   return closedOrKept(next, now, `did not see ${describeSpec(spec)}`);
 }
 
+/** The watch of an open `board` check, or null for any other check. PURE. */
+export const openWatchOf = (check: CheckRecord): Watch | null => (check.state === "open" && check.runner === "board" && check.observe !== undefined ? check.observe : null);
+
+/** The watch of an open `board` check whose spec is windowed, or null for any other check. PURE. */
+function windowedWatchOf(check: CheckRecord): Watch | null {
+  const watch = openWatchOf(check);
+  return watch !== null && isWindowed(watch.spec) ? watch : null;
+}
+
 /** What watching one windowed check comes to, or null while its change is not installed (the window has not begun) or the check is not a windowed one the board watches. PURE over the facts. */
 export function watchStep(check: CheckRecord, facts: ObserveFacts, now: number): Step | null {
-  const watch = check.observe;
-  if (check.state !== "open" || check.runner !== "board" || watch === undefined || !isWindowed(watch.spec)) return null;
+  const watch = windowedWatchOf(check);
+  if (watch === null) return null;
   if (watch.began === undefined && facts.installed?.(check) === false) return null;
   const begun: Watch = watch.began === undefined ? { ...watch, began: now } : watch;
   return begun.spec.kind === "release-assets" ? releaseStep(begun.spec, begun, facts, now) : sightingStep(begun.spec as Exclude<WindowedSpec, { kind: "release-assets" }>, begun, facts, now);
@@ -438,7 +456,10 @@ export function watchWindows(file: ChecksFile, facts: ObserveFacts, now: number)
 
 /** Whether any open board check watches a source that is read from outside the queue, so the sweep reads it only then: the code host's workflow runs, a host's doctor, a repository's releases. PURE. */
 export const watchedSources = (file: ChecksFile): ReadonlySet<WindowedSpec["kind"]> =>
-  new Set(Object.values(file.checks).flatMap((check) => (check.state === "open" && check.runner === "board" && check.observe !== undefined && isWindowed(check.observe.spec) ? [check.observe.spec.kind] : [])));
+  new Set(Object.values(file.checks).flatMap((check) => {
+    const watch = windowedWatchOf(check);
+    return watch !== null && isWindowed(watch.spec) ? [watch.spec.kind] : [];
+  }));
 
 /** What any spec watches for, as a ticket's Run detail says it. PURE. */
 export function describeObserve(spec: ObserveSpec): string {

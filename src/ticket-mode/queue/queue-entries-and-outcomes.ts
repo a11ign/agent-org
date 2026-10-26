@@ -474,11 +474,7 @@ export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: b
   title?: string; priority?: number; project?: string | null }>;
 
 /** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. `verify` and `migrate` (A11-302) are runs the board starts for After-merge checks, which file no ticket (`after-merge/verify.ts`). */
-export type CheckRunMode = "verify" | "migrate";
-export type WriterMode = "quick" | "grill" | CheckRunMode;
-
-/** The mode of a run that files tickets for a person's request: the modes that are not the board's own check runs. */
-export type TicketWriterMode = Exclude<WriterMode, CheckRunMode>;
+export type WriterMode = "quick" | "grill" | "verify" | "migrate";
 
 /** The choices the form made, each a requirement in the writer's brief. */
 export type WriterForm = Readonly<{ project?: string; repo?: string; goal?: string; priority?: Priority; parent?: string }>;
@@ -528,12 +524,6 @@ export type WriterRun = Readonly<{
   /** The After-merge checks a `verify` run (one) or a `migrate` pass (up to ten) is for, by id (A11-302). */
   checks?: readonly string[];
 }>;
-
-/** A writer run that files tickets for a person's request, as the Runs page lists it. */
-export type TicketWriterRun = WriterRun & Readonly<{ mode: TicketWriterMode }>;
-
-/** Whether a writer run is a person's request for tickets, and not one of the board's own check runs (A11-302). PURE. */
-export const isTicketWriter = (run: WriterRun): run is TicketWriterRun => run.mode === "quick" || run.mode === "grill";
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
 export const MAX_WRITER_RUNS = 3;

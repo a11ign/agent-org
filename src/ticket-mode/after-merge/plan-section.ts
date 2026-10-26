@@ -149,9 +149,11 @@ export function plannedFrom(line: string, fields: CheckFields, spilled: Readonly
   if (runner === "person" && escalation === undefined) return `"${line}" is the person's and names no escalation item: a check the person would run that is not on the list is an \`agent\` check`;
   if (runner !== "person" && escalation !== undefined) return `"${line}" is the ${runner}'s and names an escalation item, which only a \`person\` runner does`;
   const observeText = value("observe");
-  if (runner !== "board" && (observeText !== undefined || fields.has("pass") || fields.has("window"))) return `"${line}" is the ${runner}'s and names what the board observes (Observe, Pass or Window), which only a \`board\` runner does`;
+  const givesObserve = observeText !== undefined || fields.has("pass") || fields.has("window");
+  if (runner !== "board" && givesObserve) return `"${line}" is the ${runner}'s and names what the board observes (Observe, Pass or Window), which only a \`board\` runner does`;
   const observe = observeText === undefined ? undefined : parseObserve(observeText, { pass: value("pass"), window: value("window") });
-  if (runner === "board" && (observe === undefined || typeof observe === "string")) return `"${line}" is the board's and its observe spec ${observe ?? "is missing"}`;
+  const unreadable = observe === undefined || typeof observe === "string";
+  if (runner === "board" && unreadable) return `"${line}" is the board's and its observe spec ${observe ?? "is missing"}`;
   const evidence = fields.get("evidence") ?? "";
   if (evidence === "" || spilled.has("evidence")) return `"${line}" needs its evidence on one line`;
   if (evidence.length > PLANNED_EVIDENCE_CHARS) return `"${line}" gives evidence of ${evidence.length} characters, more than ${PLANNED_EVIDENCE_CHARS}: shorten it to one line of at most ${PLANNED_EVIDENCE_CHARS}`;

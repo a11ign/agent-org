@@ -45,9 +45,9 @@ export type CheckRecord = Readonly<{
   migrated?: Readonly<{ from: RecordedRunner | "unnamed"; at: number }>;
   /** When the check was listed: its run's finish, or the sweep that copied it when the run has none. */
   listedAt: number;
-  /** When the check was sent: the first time the session's queue listed it, or the first sweep that showed it under Needs you; moved to when it fell overdue. Absent while it has not been sent. */
+  /** When the check was shown to the person: the first sweep that listed it under Needs you. A record written before A11-302 may hold the time the session's queue listed it. Absent while it has not been shown. */
   sentAt?: number;
-  /** When the check fell overdue and was sent to its runner again, once. Absent while it is not overdue. */
+  /** When a Needs-you check fell overdue, once (7 days after it was shown). Absent while it is not overdue. */
   overdueAt?: number;
   state: CheckState;
   /** The one line of evidence a pass or a fail was closed with, or the reason a check was superseded. */

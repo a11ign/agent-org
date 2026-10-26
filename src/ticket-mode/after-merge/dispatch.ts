@@ -5,7 +5,7 @@
 // after release checks an `agent` check (`verify.ts`). The person's session runs none of them (A11-302): it may read them on the ticket's Run detail, as anyone can. A `board` check the board could not settle is handed to an agent,
 // so a check that waits on no one cannot exist; a Needs-you check that waited 7 days is marked overdue, once.
 import { escalationItem, type EscalationItem } from "../escalation.ts";
-import { isWindowed, windowEnd } from "./observe.ts";
+import { isWindowed, openWatchOf, windowEnd, type Watch } from "./observe.ts";
 import type { CheckRecord, ChecksFile } from "./checks.ts";
 
 /** How long an open check waits on its runner before it is marked overdue or handed on. */
@@ -33,14 +33,20 @@ const fallsOverdue = (check: CheckRecord, now: number): boolean => waitsOnPerson
 /** The file with every Needs-you check that has waited {@link OVERDUE_MS} on the person, and was never overdue, marked overdue at `now`. Returns `file` itself when none falls overdue. PURE. */
 export const markOverdue = (file: ChecksFile, now: number): ChecksFile => withChanged(file, (check) => (fallsOverdue(check, now) ? { ...check, overdueAt: now } : null));
 
+/** The watch of an open `board` check that watches an event that has to happen (the first four specs), or null for any other check. PURE. */
+function eventWatchOf(check: CheckRecord): Watch | null {
+  const watch = openWatchOf(check);
+  return watch !== null && !isWindowed(watch.spec) ? watch : null;
+}
+
 /**
  * The file with every open `board` check that watches an event that has to happen (the first four specs), and has watched {@link OVERDUE_MS} without seeing it, handed to an agent (A11-302): the verifier run does what the line says,
  * since the board cannot say it did not happen. A windowed check decides its own handoff when its window closes (`watchWindows`). Returns `file` itself when none is handed on. PURE.
  */
 export function handOverdueToAgent(file: ChecksFile, now: number): ChecksFile {
   return withChanged(file, (check) => {
-    const watch = check.observe;
-    if (check.state !== "open" || check.runner !== "board" || watch === undefined || isWindowed(watch.spec) || now < windowEnd(watch)) return null;
+    const watch = eventWatchOf(check);
+    if (watch === null || now < windowEnd(watch)) return null;
     return { ...check, runner: "agent", handedOff: `the board watched for ${watch.spec.kind} for 7 days and did not see it` };
   });
 }

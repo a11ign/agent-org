@@ -4,7 +4,8 @@
 // THE LIST VIEW IS SMALL BECAUSE THE PAGES POLL IT. `GET /api/queue` answered every field of every run the board ever queued, 1.1 MB on the agents host, and the shell reads it every 5 s on every page, over an SSH tunnel on
 // the chairman's Mac. A run in the list keeps the fields a list page, and the board-view code those pages run, read (`LIST_FIELDS`), with its ticket's key, title and address. `GET /api/queue/<key>` answers the run in
 // full, with its log, for the run's own page. A run that holds no path (it ended, and so did its ticket) drops the files it once held, which nothing reads of it.
-import { isTicketWriter, type Entry, type Queue, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import type { Entry, Queue, WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import { isTicketWriter } from "./queue/writer-modes.ts";
 import type { CiView } from "./board-view/ci-note.ts";
 import { ENDED_TICKETS } from "./board-view/overlap-hold.ts";
 import type { RunEvent } from "./queue/run-log.ts";

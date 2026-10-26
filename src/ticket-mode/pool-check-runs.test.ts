@@ -47,6 +47,13 @@ function world(checks: readonly CheckRecord[], { writer = true, merged = {} }: {
   return { ...made, clock, path, writers, run, sweep, tick, dirOf, answers, checks: () => loadChecks(path).checks };
 }
 
+/** A sweep and a tick on a world holding one installed agent check: the id of the verifier run that started for it. */
+async function startVerifier(board: ReturnType<typeof world>): Promise<string> {
+  await board.sweep();
+  await board.tick();
+  return board.writers()[0].id;
+}
+
 const MERGED_AT = 10 * HOUR - 2 * HOUR;
 const mergedOther = (key: string): Record<string, readonly RunEvent[]> => ({ [key]: [{ kind: "merged", url: "https://github.com/a11ign/control/pull/9", at: MERGED_AT }] });
 
@@ -71,29 +78,27 @@ test("A11-302: an agent check whose change is installed is given to a verifier r
   assert.equal(board.writers().length, 2, "once A11-311's change is installed it is given to a run too");
 });
 
-test("A11-302: a verifier run that records passed closes its check with the evidence, through the after-merge route, and files no follow-up", async () => {
+/** A world whose one installed agent check has been given to a verifier run that answered `outcome`: the world, the run's id and the check as it now is. */
+async function verifierAnswers(outcome: Record<string, unknown>) {
   const board = world([check("A11-310#1")], { merged: mergedOther("A11-310") });
-  await board.sweep();
-  await board.tick();
-  const id = board.writers()[0].id;
-  await board.answers(id, { kind: "passed", evidence: "the doctor on the host shows 0.5.0 on every line (14:02)" });
-  const done = board.checks()["A11-310#1"];
-  assert.deepEqual([done.state, done.result, done.closedBy, done.closedAt], ["passed", "the doctor on the host shows 0.5.0 on every line (14:02)", "agent", 10 * HOUR]);
+  const id = await startVerifier(board);
+  await board.answers(id, outcome);
+  return { board, id, after: board.checks()["A11-310#1"] };
+}
+
+test("A11-302: a verifier run that records passed closes its check with the evidence, through the after-merge route, and files no follow-up", async () => {
+  const { board, id, after } = await verifierAnswers({ kind: "passed", evidence: "the doctor on the host shows 0.5.0 on every line (14:02)" });
+  assert.deepEqual([after.state, after.result, after.closedBy, after.closedAt], ["passed", "the doctor on the host shows 0.5.0 on every line (14:02)", "agent", 10 * HOUR]);
   assert.equal(board.run(id).phase, "finished");
   assert.equal(board.run(id).failure, undefined);
   await board.sweep();
   assert.equal(board.writers().length, 1, "a pass starts no follow-up");
-  assert.equal(done.followUp, undefined);
+  assert.equal(board.checks()["A11-310#1"].followUp, undefined);
 });
 
 test("A11-302: a verifier run that records failed closes its check failed, and the board files the follow-up through the ticket writer", async () => {
-  const board = world([check("A11-310#1")], { merged: mergedOther("A11-310") });
-  await board.sweep();
-  await board.tick();
-  const id = board.writers()[0].id;
-  await board.answers(id, { kind: "failed", evidence: "the doctor still reports 0.4.1 on the second host" });
-  const failed = board.checks()["A11-310#1"];
-  assert.deepEqual([failed.state, failed.result, failed.closedBy], ["failed", "the doctor still reports 0.4.1 on the second host", "agent"]);
+  const { board, after } = await verifierAnswers({ kind: "failed", evidence: "the doctor still reports 0.4.1 on the second host" });
+  assert.deepEqual([after.state, after.result, after.closedBy], ["failed", "the doctor still reports 0.4.1 on the second host", "agent"]);
   await board.sweep();
   const followUp = board.writers().find((one) => one.mode === "quick")!;
   assert.ok(followUp !== undefined, "a follow-up request is queued for the ticket writer");
@@ -105,9 +110,7 @@ test("A11-302: a verifier run that records failed closes its check failed, and t
 
 test("A11-302: a failed check with no ticket writer on the machine keeps its follow-up undecided, and says so on the ticket", async () => {
   const board = world([check("A11-310#1")], { writer: false, merged: mergedOther("A11-310") });
-  await board.sweep();
-  await board.tick();
-  await board.answers(board.writers()[0].id, { kind: "failed", evidence: "nothing shows it" });
+  await board.answers(await startVerifier(board), { kind: "failed", evidence: "nothing shows it" });
   await board.sweep();
   assert.deepEqual([board.checks()["A11-310#1"].state, board.checks()["A11-310#1"].followUp], ["failed", undefined]);
 });

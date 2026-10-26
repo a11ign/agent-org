@@ -71,7 +71,7 @@ export const SESSION_WAIT_SENTENCE = "An ask that only the person's session can 
   + "Declare it as a `session` wait, `{ \"kind\": \"working\", \"reason\": \"...\", \"waitingOn\": [ { \"session\": \"<the exact command, where it runs, and what a pass looks like>\" } ], \"until\": \"<ISO time>\" }`, and end the turn: "
   + "the board lists it in the session's queue (`GET /api/session-asks`, as `kind: \"waiting-run\"`), the session answers it there (`POST /api/session-asks/<KEY>/answer` with `{ \"ask\": \"<the ask>\", \"result\": \"<what it saw>\" }`), and the board wakes you with the result. "
   + "If you are woken at `until` with the ask unanswered, declare it again with a new `until`; never stop on it. "
-  + "A run whose outcomes include no `working` (a plan, a review round) declares nothing: it names the ask in its plan or pull request body as a check the session runs, and goes on.";
+  + "A run whose outcomes include no `working` (a plan, a review round) declares nothing: it names the ask in its plan or pull request body, as a command for the person's session to run, and goes on.";
 
 /**
  * What every agent that may stop is told to do with a question, quoted into the planner, worker and review-round briefs (A11-257): a stop is for an item of the list and names its id, and any other question is decided in line
