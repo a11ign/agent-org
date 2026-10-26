@@ -2,7 +2,7 @@
 // A11-277: After-merge checks are records of their own, with a runner, closed with evidence
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ageOf, claimPost, CLOSED_KEPT_MS, closeCheck, closeComment, decideFollowUp, emptyChecks, EVIDENCE_CHARS, followUpText, listedIds, markUnpostable, pruneChecks, releasePost, roleOf, runnerOf, seedChecks, ticketsToSeed, type ChecksFile } from "./checks.ts";
+import { ageOf, claimPost, CLOSED_KEPT_MS, closeCheck, closeComment, decideFollowUp, emptyChecks, EVIDENCE_CHARS, followUpText, isOrgCheck, isUnmigrated, listedIds, markUnpostable, orgCounts, ORG_STALE_MS, pruneChecks, releasePost, seedChecks, staleOrgChecks, ticketsToSeed, UNPLANNED_RUNNER, type CheckRecord, type ChecksFile } from "./checks.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const run = (key: string, lines: readonly string[], finishedAt?: number) => ({
@@ -16,16 +16,11 @@ function closed(file: ChecksFile, id: string, result: "passed" | "failed" | "sup
   return answer.file;
 }
 
-test("A11-277: each owner runs as the session, the person or (for a named role) the session for that role", () => {
-  assert.equal(runnerOf("Chairman session"), "session");
-  assert.equal(runnerOf("The chairman's session"), "session");
-  assert.equal(runnerOf("On the agents host"), "session", "a host is the session's");
-  assert.equal(runnerOf("The chairman"), "person");
-  assert.equal(runnerOf("the person"), "person");
-  assert.equal(runnerOf("The release manager"), "session", "a named role goes to the session, which passes it on");
-  assert.equal(runnerOf(null), "session", "a line with no owner too");
-  assert.equal(roleOf("The release manager"), "The release manager");
-  assert.deepEqual([roleOf("Chairman session"), roleOf("On the agents host"), roleOf("The chairman"), roleOf(null)], [null, null, null, null], "only a role other than a session, a host or the person is run for");
+test("A11-302: a line no plan names a runner for is an agent's, whoever the line names, and never the person's session", () => {
+  assert.equal(UNPLANNED_RUNNER, "agent");
+  const lines = ["Chairman session: the next major arrives as a ticket.", "On the agents host: the log shows it.", "The chairman chooses the name.", "The release manager signs it off.", "a line with no owner"];
+  const seeded = seedChecks(emptyChecks(), [run("A11-302", lines, 1_000)], 9_000);
+  assert.deepEqual(Object.values(seeded.checks).map((one) => one.runner), ["agent", "agent", "agent", "agent", "agent"], "no seeded check names the session as its runner");
 });
 
 test("A11-277: a run's listed lines are copied once, each with its owner read again from the line and its run's finish as when it was listed", () => {
@@ -33,11 +28,11 @@ test("A11-277: a run's listed lines are copied once, each with its owner read ag
   const seeded = seedChecks(emptyChecks(), runs, 9_000);
   assert.deepEqual(Object.keys(seeded.checks), ["A11-178#1", "A11-178#2", "A11-233#1"]);
   assert.deepEqual(seeded.checks["A11-178#1"], {
-    id: "A11-178#1", key: "A11-178", url: "https://linear.app/a11ign/issue/A11-178", line: "Chairman session: the next partial step goes back to In Progress.", owner: "Chairman session", runner: "session",
+    id: "A11-178#1", key: "A11-178", url: "https://linear.app/a11ign/issue/A11-178", line: "Chairman session: the next partial step goes back to In Progress.", owner: "Chairman session", runner: "agent",
     listedAt: 1_000, state: "open",
   }, "the owner the run recorded (null, from the old reader) is read again");
   assert.equal(seeded.checks["A11-233#1"].listedAt, 9_000, "a run with no finish is listed at the sweep");
-  assert.equal(seeded.checks["A11-233#1"].runner, "person");
+  assert.equal(seeded.checks["A11-233#1"].runner, "agent", "a person's check needs an escalation item, which only a plan names");
   assert.equal(seeded.checks["A11-178#2"].owner, null);
   assert.equal(seedChecks(seeded, runs, 10_000), seeded, "seeding again changes nothing");
   const passed = closed(seeded, "A11-178#1");
@@ -49,7 +44,7 @@ test("A11-277: a person closes a check with one line of evidence, and a second c
   const answer = closeCheck(seeded, "A11-179#1", { result: "failed", evidence: "  A11-174 read Ready to merge while red  ", by: "person" }, 2_000);
   assert.ok(answer.ok);
   assert.deepEqual(answer.check, { ...seeded.checks["A11-179#1"], state: "failed", result: "A11-174 read Ready to merge while red", closedBy: "person", closedAt: 2_000 });
-  assert.deepEqual(closeCheck(answer.file, "A11-179#1", { result: "passed", evidence: "ok", by: "session" }, 3_000),
+  assert.deepEqual(closeCheck(answer.file, "A11-179#1", { result: "passed", evidence: "ok", by: "agent" }, 3_000),
     { ok: false, status: 409, error: "A11-179#1 is already failed, closed by a person: A11-174 read Ready to merge while red" });
   assert.deepEqual(closeCheck(seeded, "A11-179#2", { result: "passed", evidence: "ok", by: "person" }, 3_000), { ok: false, status: 404, error: "no After-merge check A11-179#2" });
 });
@@ -78,10 +73,10 @@ test("A11-277: a failed check's follow-up text is pre-filled from the check, and
 
 test("A11-277: the close is posted from fixed words, the evidence (or the reason) and who closed it", () => {
   const seeded = seedChecks(emptyChecks(), [run("A11-202", ["Chairman session: the board at / is Atomaut."])], 1_000);
-  const superseded = closeCheck(seeded, "A11-202#1", { result: "superseded", evidence: "the route this checked was replaced by A11-217's", by: "session" }, 2_000);
+  const superseded = closeCheck(seeded, "A11-202#1", { result: "superseded", evidence: "the route this checked was replaced by A11-217's", by: "agent" }, 2_000);
   assert.ok(superseded.ok);
   assert.equal(closeComment(superseded.check), [
-    "After-merge check superseded: Chairman session: the board at / is Atomaut.", "Reason: the route this checked was replaced by A11-217's", "Closed by the person's session on the ticket board.",
+    "After-merge check superseded: Chairman session: the board at / is Atomaut.", "Reason: the route this checked was replaced by A11-217's", "Closed by a verifier run on the ticket board.",
   ].join("\n"));
   assert.equal(closeComment(closed(seeded, "A11-202#1").checks["A11-202#1"]).split("\n")[1], "Evidence: the board showed it");
 });
@@ -127,14 +122,45 @@ test("A11-277: a line its plan names takes the plan's runner, escalation item, w
   const moved = "A real update installs the UI. Chairman session, after merge (moved by the planner: it needs a published release).";
   const runs = [run("A11-260", ["The next major arrives as a ticket.", moved, "The chairman: the note is posted."], 1_000)];
   const planned = new Map([["A11-260", [
-    { line: "The next major arrives as a ticket.", runner: "session", evidence: "an earlier bullet" },
+    { line: "The next major arrives as a ticket.", runner: "agent", evidence: "an earlier bullet" },
     { line: "The next major arrives as a ticket.", runner: "board", observe: { kind: "sweep-ticket" }, evidence: "the ticket the sweep files" },
-    { line: "A real update installs the UI.", runner: "session", evidence: "the update's log" },
+    { line: "A real update installs the UI.", runner: "agent", evidence: "the update's log" },
   ] as const]]);
   const seeded = seedChecks(emptyChecks(), runs, 9_000, planned).checks;
   assert.deepEqual([seeded["A11-260#1"].runner, seeded["A11-260#1"].observe, seeded["A11-260#1"].evidence], ["board", { spec: { kind: "sweep-ticket" }, from: 9_000 }, "the ticket the sweep files"]);
-  assert.deepEqual([seeded["A11-260#2"].runner, seeded["A11-260#2"].evidence], ["session", "the update's log"]);
-  assert.deepEqual([seeded["A11-260#3"].runner, "evidence" in seeded["A11-260#3"]], ["person", false], "a line the plan does not name runs as its owner says");
+  assert.deepEqual([seeded["A11-260#2"].runner, seeded["A11-260#2"].evidence], ["agent", "the update's log"]);
+  assert.deepEqual([seeded["A11-260#3"].runner, "evidence" in seeded["A11-260#3"]], ["agent", false], "a line the plan does not name is an agent's");
   assert.deepEqual([...ticketsToSeed(emptyChecks(), runs)], ["A11-260"]);
   assert.deepEqual([...ticketsToSeed({ checks: seeded }, runs)], [], "a ticket whose lines are all seeded needs no plan read");
+});
+
+const record = (id: string, fields: Partial<CheckRecord> = {}): CheckRecord => ({ id, key: id.split("#")[0], url: null, line: "a line", owner: null, runner: "agent", listedAt: 0, state: "open", ...fields });
+const fileOf = (...checks: CheckRecord[]): ChecksFile => ({ checks: Object.fromEntries(checks.map((one) => [one.id, one])) });
+
+test("A11-302: a check is the org's unless it waits on the person for an item of the escalation list", () => {
+  assert.deepEqual([
+    record("A11-1#1"), record("A11-1#2", { runner: "board" }), record("A11-1#3", { runner: "person", escalation: "legal" }), record("A11-1#4", { runner: "person" }),
+    record("A11-1#5", { runner: "person", escalation: "lunch" }), record("A11-1#6", { runner: "session" }),
+  ].map(isOrgCheck), [true, true, false, true, true, true]);
+});
+
+test("A11-302: the migration is owed by an open check on the retired session runner, or a person's on no item of the list, and not by one it already rewrote", () => {
+  assert.deepEqual([
+    record("A11-1#1", { runner: "session" }), record("A11-1#2", { runner: "person" }), record("A11-1#3", { runner: "person", escalation: "outward" }), record("A11-1#4"),
+    record("A11-1#5", { runner: "session", state: "passed" }), record("A11-1#6", { runner: "session", migrated: { from: "session", at: 5 } }),
+  ].map(isUnmigrated), [true, true, false, false, false, false]);
+});
+
+test("A11-302: the pool bar counts the open org checks older than three days, not those inside their watched window or waiting on the person", () => {
+  const now = 10 * DAY;
+  const window = { spec: { kind: "run-log" as const, event: "finished" as const, pass: "absent" as const, windowMs: 7 * DAY }, from: 0, began: 8 * DAY };
+  const file = fileOf(
+    record("A11-1#1", { listedAt: now - 3 * DAY - 1 }), record("A11-1#2", { listedAt: now - 3 * DAY }), record("A11-1#3", { runner: "session", listedAt: 0 }),
+    record("A11-1#4", { runner: "board", observe: window, listedAt: 0 }), record("A11-1#5", { runner: "person", escalation: "legal", listedAt: 0 }),
+    record("A11-1#6", { listedAt: 0, state: "passed" }), record("A11-1#7", { listedAt: 0, migrated: { from: "session", at: now - DAY } }),
+  );
+  assert.deepEqual(staleOrgChecks(file, now).map(({ id }) => id), ["A11-1#1", "A11-1#3"], "older than three days; a window not closed, the person's, a closed one and a freshly migrated one are not counted");
+  assert.deepEqual(orgCounts(file, now), { open: 5, stale: 2 });
+  assert.equal(ORG_STALE_MS, 3 * DAY);
+  assert.deepEqual(staleOrgChecks(file, now + 6 * DAY).map(({ id }) => id), ["A11-1#1", "A11-1#2", "A11-1#3", "A11-1#4", "A11-1#7"], "a window that has closed counts again");
 });

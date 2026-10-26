@@ -7,6 +7,7 @@
 //
 // SO THIS MODULE IMPORTS NOTHING OF THE POOL AT RUN TIME, and nothing that spawns synchronously on a read but the exceptions `request-thread-guard.test.ts` lists, as it walks what
 // this imports. The view types keep their names, and `server.ts` exports them again, because the UI's client names them there.
+import { isCheckRun } from "./after-merge/verify.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { UpdateNote } from "./board-view/update-banner.ts";
@@ -203,7 +204,7 @@ export type WritersView = ReturnType<typeof writersViewOf>;
 
 /** The new-ticket requests, each with its status, as the page shows them. */
 export function writersViewOf(queue: Queue) {
-  return { runs: (queue.writers ?? []).map(writerViewOf) };
+  return { runs: (queue.writers ?? []).filter(({ mode }) => !isCheckRun(mode)).map(writerViewOf) };
 }
 
 /** What `/api/config` answers: the board's choices and capabilities. The UI's client names this type, so a field renamed here fails its `tsc`. */

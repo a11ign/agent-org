@@ -4,14 +4,14 @@
 // `POST /api/after-merge/<KEY>/<n>` with `{ result, evidence, by }` closes check `<KEY>#<n>`: the record closes at once, so its row leaves the list, and the pool's next sweep posts the close on the ticket.
 // `POST /api/after-merge/<KEY>/<n>/follow-up` with `{ writer }` records a failed check's follow-up: the writer request it was filed by, or null for none. Both sit behind the instance's key, as every route does.
 import type { Json } from "../local-http.ts";
-import { afterMergeChecks, type AfterMergeCheck } from "../board-view.ts";
-import { checkIdOf, closeCheck, decideFollowUp, followUpText, type CheckRecord, type ChecksFile, type CheckResult, type Closer, type Transition } from "./checks.ts";
+import { afterMergeChecks, ticketChecks, type AfterMergeCheck, type TicketCheck } from "../board-view.ts";
+import { checkIdOf, closeCheck, decideFollowUp, followUpText, orgCounts, type CheckRecord, type ChecksFile, type CheckResult, type Closer, type Transition } from "./checks.ts";
 import { afterMergeChecksPath, loadChecks, saveChecks } from "./store.ts";
 
 const ROUTE = /^\/api\/after-merge\/([A-Za-z0-9_-]+)\/([1-9]\d*)(\/follow-up)?$/;
 const RESULTS: readonly unknown[] = ["passed", "failed", "superseded"];
-/** Who may close a check through the route: the person's session or a person. The board closes its own checks in its sweep. */
-const ROUTE_CLOSERS: readonly unknown[] = ["session", "person"];
+/** Who may close a check through the route: a verifier run (`agent`) or a person. The board closes its own checks in its sweep, and the person's session is no runner (A11-302). */
+const ROUTE_CLOSERS: readonly unknown[] = ["agent", "person"];
 
 /** What the routes need of the board: where its state is, and its clock. */
 export type CheckRouteBoard = Readonly<{ stateDir: string; now: () => number }>;
@@ -20,7 +20,7 @@ export type CheckRouteBoard = Readonly<{ stateDir: string; now: () => number }>;
 function closeOf(body: Json): { result: CheckResult; evidence: string; by: Closer } {
   if (!RESULTS.includes(body.result)) throw new Error("result must be passed, failed or superseded");
   if (typeof body.evidence !== "string") throw new Error("evidence must be one line saying what was seen, or why the check is superseded");
-  if (!ROUTE_CLOSERS.includes(body.by)) throw new Error("by must be session or person");
+  if (!ROUTE_CLOSERS.includes(body.by)) throw new Error("by must be agent or person: the person's session runs no check, and the board closes its own");
   return { result: body.result as CheckResult, evidence: body.evidence, by: body.by as Closer };
 }
 
@@ -62,6 +62,24 @@ export function afterMergeRoute(board: CheckRouteBoard, method: string, path: st
 export function afterMergeView(stateDir: string): AfterMergeCheck[] {
   try {
     return afterMergeChecks(loadChecks(afterMergeChecksPath(stateDir)));
+  } catch {
+    return [];
+  }
+}
+
+/** What the pool bar shows of the org's own checks (A11-302): how many are open, and how many of them are older than three days and outside their window. A file that cannot be read counts none. */
+export function afterMergeOrgView(stateDir: string, now: number): Readonly<{ open: number; stale: number }> {
+  try {
+    return orgCounts(loadChecks(afterMergeChecksPath(stateDir)), now);
+  } catch {
+    return { open: 0, stale: 0 };
+  }
+}
+
+/** A ticket's After-merge checks of any runner, for its Run detail (A11-302). A file that cannot be read lists none. */
+export function afterMergeTicketView(stateDir: string, key: string): TicketCheck[] {
+  try {
+    return ticketChecks(loadChecks(afterMergeChecksPath(stateDir)), key);
   } catch {
     return [];
   }

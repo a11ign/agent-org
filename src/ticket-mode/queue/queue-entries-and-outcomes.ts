@@ -449,6 +449,8 @@ export type PublishRun = Readonly<{
   /** The version folder its hooks name, recorded when it starts (A11-169). */
   toolRoot?: string;
   toolVersion?: string;
+  /** The After-merge checks a `verify` run (one) or a `migrate` pass (up to ten) is for, by id (A11-302). */
+  checks?: readonly string[];
 }>;
 
 /**
@@ -471,8 +473,12 @@ export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: b
   /** What the tracker held for the ticket when the board read it back, shown on the request's Done row (A11-199). None for a ticket that could not be read. */
   title?: string; priority?: number; project?: string | null }>;
 
-/** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. */
-export type WriterMode = "quick" | "grill";
+/** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. `verify` and `migrate` (A11-302) are runs the board starts for After-merge checks, which file no ticket (`after-merge/verify.ts`). */
+export type CheckRunMode = "verify" | "migrate";
+export type WriterMode = "quick" | "grill" | CheckRunMode;
+
+/** The mode of a run that files tickets for a person's request: the modes that are not the board's own check runs. */
+export type TicketWriterMode = Exclude<WriterMode, CheckRunMode>;
 
 /** The choices the form made, each a requirement in the writer's brief. */
 export type WriterForm = Readonly<{ project?: string; repo?: string; goal?: string; priority?: Priority; parent?: string }>;
@@ -519,6 +525,8 @@ export type WriterRun = Readonly<{
   /** The version folder its hooks name, recorded when it starts (A11-169). */
   toolRoot?: string;
   toolVersion?: string;
+  /** The After-merge checks a `verify` run (one) or a `migrate` pass (up to ten) is for, by id (A11-302). */
+  checks?: readonly string[];
 }>;
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */

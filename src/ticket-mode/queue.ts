@@ -13,6 +13,7 @@ import { overlapWait } from "./board-view/overlap-hold.ts";
 import { waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
 import { placementOf } from "./writer-placement.ts";
+import { isCheckRun } from "./after-merge/verify.ts";
 import { isCiHeld } from "./ci-spend/hold.ts";
 import { runOf, slotsHeld } from "./queue/queue-transitions.ts";
 import type { ToolPin } from "./queue/queue-pins.ts";
@@ -123,9 +124,10 @@ export function writerAsRead(run: LegacyRun): WriterRun {
  * Add a new-ticket request, queued, with the model and effort it runs on. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused,
  * naming why, so a person clears one first. PURE.
  */
-export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom" | "team">>, now: number): Queue {
-  const open = (queue.writers ?? []).filter((run) => run.phase !== "finished").length;
-  if (open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
+export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom" | "team" | "checks">>, now: number): Queue {
+  // The board's own runs for its After-merge checks (A11-302) are not new-ticket requests: they neither count toward the cap nor are held by it.
+  const open = (queue.writers ?? []).filter((run) => run.phase !== "finished" && !isCheckRun(run.mode)).length;
+  if (!isCheckRun(request.mode) && open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
   const run: WriterRun = { ...request, phase: "queued", queuedAt: now, tickets: [] };
   return { ...queue, writers: [...(queue.writers ?? []), run] };
 }

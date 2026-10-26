@@ -10,7 +10,9 @@ import { ENDED_TICKETS } from "./board-view/overlap-hold.ts";
 import type { RunEvent } from "./queue/run-log.ts";
 import type { ReadBoard } from "./read-routes.ts";
 import { ciViewOf } from "./ci-spend/view.ts";
-import { afterMergeView } from "./after-merge/route.ts";
+import { isCheckRun } from "./after-merge/verify.ts";
+import { afterMergeOrgView, afterMergeTicketView, afterMergeView } from "./after-merge/route.ts";
+import type { TicketCheck } from "./board-view.ts";
 import type { Ticket } from "./source.ts";
 
 /**
@@ -37,8 +39,8 @@ export type QueueListEntry = Readonly<Omit<Pick<Entry, (typeof LIST_FIELDS)[numb
 /** A run in full, as its own page reads it: the list's fields, and whichever of the rest the board holds. A list entry is one, so a page can draw from the list until the full read answers. */
 export type RunDetailEntry = Omit<QueueListEntry, "ticket"> & Readonly<Partial<Omit<Entry, keyof QueueListEntry | "ticket">> & { ticket: ListTicket & Partial<Ticket> }>;
 
-/** What `GET /api/queue/<key>` answers: the run in full, and its log, oldest event first. */
-export type QueueEntryView = Readonly<{ entry: RunDetailEntry; runLog: readonly RunEvent[] }>;
+/** What `GET /api/queue/<key>` answers: the run in full, its log, oldest event first, and the ticket's After-merge checks of every runner (A11-302; absent on an instance from before). */
+export type QueueEntryView = Readonly<{ entry: RunDetailEntry; runLog: readonly RunEvent[]; afterMergeChecks?: readonly TicketCheck[] }>;
 
 /** The phases in which a run holds or contests paths. */
 const PATH_PHASES: ReadonlySet<string> = new Set(["queued", "starting", "running"]);
@@ -93,7 +95,7 @@ export function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
   return shown;
 }
 
-type ViewBoard = Pick<ReadBoard, "store" | "pool" | "update" | "settings">;
+type ViewBoard = Pick<ReadBoard, "store" | "pool" | "update" | "settings" | "now">;
 
 /** The CI of a run for the page, from the runs the board holds (A11-261). */
 const ciOf = (board: ViewBoard, queue: Queue, entry: Entry): CiView | undefined => ciViewOf(queue, entry, board.settings.ciBudgetMinutes);
@@ -117,8 +119,8 @@ export function queueView(board: ViewBoard) {
   const { ciSpend: _ciSpend, interventions: _interventions, runLog, ...queue } = board.store.get();
   const entries = queue.entries.map((entry) => listEntry(entry, ciOf(board, board.store.get(), entry)));
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
-    afterMergeChecks: afterMergeView(board.settings.stateDir) };
+  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).filter(({ mode }) => !isCheckRun(mode)).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
+    afterMergeChecks: afterMergeView(board.settings.stateDir), afterMergeOrg: afterMergeOrgView(board.settings.stateDir, (board.now ?? Date.now)()) };
 }
 
 /** One run in full, with its log, as `GET /api/queue/<key>` answers it; null for a ticket the queue holds no run of. */
@@ -127,5 +129,5 @@ export function queueEntryView(board: ViewBoard, key: string): QueueEntryView | 
   const entry = queue.entries.find((candidate) => candidate.ticket.key === key);
   if (entry === undefined) return null;
   const ci = ciOf(board, queue, entry);
-  return { entry: { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) }, runLog: queue.runLog?.[key] ?? [] };
+  return { entry: { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) }, runLog: queue.runLog?.[key] ?? [], afterMergeChecks: afterMergeTicketView(board.settings.stateDir, key) };
 }

@@ -9,12 +9,13 @@ import { useDismissable, usePublish } from "../runs/use-publish.ts";
 import { useRunActions } from "../runs/use-run-actions.ts";
 import { runsHref } from "../shell/routes.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
+import { AfterMergeChecks } from "./AfterMergeChecks.tsx";
 import { Callout } from "./Callout.tsx";
 import { Properties } from "./Properties.tsx";
 import { PullRequests } from "./PullRequests.tsx";
 import { RunDisclosures } from "./RunDisclosures.tsx";
 import { Breadcrumb, RunHeader, type HeaderControls } from "./RunHeader.tsx";
-import { boardOf, calloutOf, detailOf, logOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
+import { boardOf, calloutOf, checkRowsOf, detailOf, logOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
 import { Steps } from "./Steps.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { timelineOf } from "./run-timeline-model.ts";
@@ -39,7 +40,7 @@ function RunGone() {
  * One run, drawn as the board its status maps to. A press of a verb posts it and has the shell read the queue again; Talk to it is its own press, which says in the banner why herdr did not open.
  * The verbs wait while the instance cannot be reached, and while the queue drawn is the tab's kept copy (A11-270).
  */
-function RunDetail({ entry, queue, log }: Readonly<{ entry: RunDetailEntry; queue: QueueView; log: QueueEntryView["runLog"] }>) {
+function RunDetail({ entry, queue, log, checks }: Readonly<{ entry: RunDetailEntry; queue: QueueView; log: QueueEntryView["runLog"]; checks: QueueEntryView["afterMergeChecks"] }>) {
   const { client, config, connection, unreachable, queue: read } = useShell();
   const inputs = { client, connection, config, refresh: read.refresh };
   const actions = useRunActions(inputs);
@@ -85,6 +86,7 @@ function RunDetail({ entry, queue, log }: Readonly<{ entry: RunDetailEntry; queu
           <RunDisclosures disclosures={disclosuresOf(entry, { queue, publisher: config?.publisher })} />
           <Steps steps={stepsOf(entry)} />
           <PullRequests rows={pullRowsOf(entry)} board={board} />
+          <AfterMergeChecks rows={checkRowsOf(checks, Date.now())} />
           <Timeline rows={timelineOf(entry, log, Date.now())} />
         </div>
         <Properties entry={entry} values={propertiesOf(entry, queue)} />
@@ -113,7 +115,7 @@ function Content({ runKey }: Readonly<{ runKey: string }>) {
     <Lifecycle view={queue} skeleton={skeleton} empty={gone} connection={connection?.name ?? ""}>
       {(data) => {
         const entry = data.entries.find((candidate) => candidate.ticket.key === runKey);
-        return entry === undefined ? gone : <RunDetail entry={detailOf(entry, full.data)} queue={data} log={logOf(data, full.data, runKey)} />;
+        return entry === undefined ? gone : <RunDetail entry={detailOf(entry, full.data)} queue={data} log={logOf(data, full.data, runKey)} checks={full.data?.afterMergeChecks} />;
       }}
     </Lifecycle>
   );

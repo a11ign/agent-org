@@ -8,6 +8,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
+import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
+import { migrationOf, verifyOutcomeOf, type MigrationEntry, type VerifyOutcome } from "./after-merge/verify.ts";
 
 export { PRIORITIES, type Priority } from "../plugins/contracts/tracker.ts";
 
@@ -25,7 +27,11 @@ const REASON_CHARS = 2000;
 /** How a writer run's outcome file says it ended: the keys it created, for a run that cannot finish why, or, for a Grill run, the ticket it answered (A11-134). */
 export type WriterOutcome = Readonly<{ kind: "created"; created: readonly string[] }
   | { kind: "needs-human"; reason: string; created: readonly string[] }
-  | { kind: "decided"; ticket: string; created: readonly string[] }>;
+  | { kind: "decided"; ticket: string; created: readonly string[] }
+  /** A verifier run's result for its After-merge check (A11-302). */
+  | { kind: "verified"; verdict: VerifyOutcome; created: readonly string[] }
+  /** A migration pass's answers for the After-merge checks it re-read (A11-302). */
+  | { kind: "migrated"; entries: readonly MigrationEntry[]; created: readonly string[] }>;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -43,7 +49,7 @@ function keysIn(value: unknown): string[] | string {
  * A writer run's outcome, from its file's text: `created` with the keys it made, or `needs-human` with the reason and any keys it made before it stopped.
  * Anything else, or text that is not JSON, is the failure the caller shows, named. PURE.
  */
-export function parseWriterOutcome(text: string): WriterOutcome | string {
+export function parseWriterOutcome(text: string, mode: WriterMode = "quick"): WriterOutcome | string {
   let outcome: unknown;
   try {
     outcome = JSON.parse(text);
@@ -51,6 +57,15 @@ export function parseWriterOutcome(text: string): WriterOutcome | string {
     return "its outcome is not valid JSON";
   }
   if (!isObject(outcome) || typeof outcome.kind !== "string") return "its outcome names no kind";
+  if (mode === "verify" && outcome.kind !== "needs-human") {
+    const verdict = verifyOutcomeOf(outcome);
+    return typeof verdict === "string" ? verdict : { kind: "verified", verdict, created: [] };
+  }
+  if (mode === "migrate" && outcome.kind !== "needs-human") {
+    if (outcome.kind !== "migrated") return `a migration pass ends on "migrated", not ${JSON.stringify(outcome.kind)}`;
+    const entries = migrationOf(outcome);
+    return typeof entries === "string" ? entries : { kind: "migrated", entries, created: [] };
+  }
   const keys = keysIn(outcome.created);
   if (typeof keys === "string") return keys;
   if (outcome.kind === "created") {

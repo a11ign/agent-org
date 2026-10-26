@@ -1,6 +1,6 @@
 // The types the instance API's answers and requests are made of, imported from the server's modules where they live and never copied here.
 // A server change that renames or drops a field the client reads therefore fails `pnpm ui:typecheck`.
-export type { AfterMergeCheck, ViewConnection } from "../../../src/ticket-mode/board-view.ts";
+export type { AfterMergeCheck, TicketCheck, ViewConnection } from "../../../src/ticket-mode/board-view.ts";
 export type { CheckResult, CloseRequest } from "../../../src/ticket-mode/after-merge/checks.ts";
 export type { CheckAnswer } from "../../../src/ticket-mode/after-merge/route.ts";
 export type { RunAction } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";

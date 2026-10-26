@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { StackBase } from "./board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "./board-view/plan-steps.ts";
 import type { DenyRule } from "./settings.ts";
-import type { PullRequest, WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
+import type { PullRequest, TicketWriterMode, WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import type { Placement } from "./writer-placement.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { PUBLISHED_FILE } from "../plugins/contracts/publisher.ts";
@@ -1007,7 +1007,7 @@ export function reviewPrompt(ticketDir: string, cause: RoundCause = "approved"):
 const requestQuoted = (request: string): string => request.split("\n").map((line) => `> ${line}`).join("\n");
 
 /** What each mode asks of the run, which the brief's `## The mode` section says. */
-const MODE_TEXT: Readonly<Record<WriterMode, string>> = {
+const MODE_TEXT: Readonly<Record<TicketWriterMode, string>> = {
   quick: "You are unattended. Nobody will answer a question: the skill's unattended create answers its own grill, and you file the ticket.",
   grill: "You are interactive: the person is in this run's terminal. Run the skill's grill with them: ask your questions one at a time, and wait for each answer before the next. Your first message to them is your first question. To ask a question, end your turn with it: the board shows the question to the person and keeps this run, in its terminal, until they answer. Do not write an outcome to ask a question. Write `created` only once the grill is done, the ticket is filed and its plan is attached.",
 };
@@ -1128,7 +1128,7 @@ function teamRule({ team, pickTeam, writing }: Readonly<{ team: string | null; p
  * Its one prohibition is an update to a ticket it did not create. PURE.
  */
 export function writerBriefText({ run, request, mode, placement, form, clones, dir, team = null, pickTeam, ticket, writing }: {
-  run: string; request: string; mode: WriterMode; placement: Placement; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
+  run: string; request: string; mode: TicketWriterMode; placement: Placement; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
   /** What the tracker plugin files a ticket with: its tools, its priority numbers and what to call it. */
   writing: TrackerWriting;
   /** The team the board set on this request (`WriterRun.team`), or null: the first team the brief's Team rule takes (A11-267). */

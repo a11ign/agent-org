@@ -61,9 +61,10 @@ export function escalationList(): string {
   return `Only these reach a person (the escalation list). Each has an id:\n\n${items}`;
 }
 
-/** Where an After-merge check the person's session runs goes (A11-277): to the session's queue, never to a stop, and how the session closes it. */
-export const AFTER_MERGE_SESSION_SENTENCE = "An After-merge check that the person's session runs is not a stop either: the board sends it to the session's queue (`GET /api/session-asks`, as `kind: \"after-merge-check\"`), "
-  + "and the session closes it there with one line of evidence (`POST /api/after-merge/<KEY>/<n>` with `{ \"result\": \"passed\" | \"failed\" | \"superseded\", \"evidence\": \"<one line>\", \"by\": \"session\" }`).";
+/** Who runs an After-merge check (A11-302): the org, never a stop and never the person's session. A check the person must run is on the escalation list. */
+export const AFTER_MERGE_ORG_SENTENCE = "An After-merge check is not a stop either: the org verifies its own work. A `board` check is watched by the board, and an `agent` check is run by a verifier run the board starts once the change is in a release installed on the host, "
+  + "which records passed or failed with evidence (`POST /api/after-merge/<KEY>/<n>` with `{ \"result\": \"passed\" | \"failed\" | \"superseded\", \"evidence\": \"<one line>\", \"by\": \"agent\" }`). "
+  + "The person's session runs none of them, and a `person` check is only for an item of the list above.";
 
 /** Where an ask only the person's session can do goes (A11-275): a declared `session` wait, never a stop, and how the session answers it. */
 export const SESSION_WAIT_SENTENCE = "An ask that only the person's session can do (running something on the person's machine, reading the board, a live check against a release) is not a stop either. "
@@ -81,7 +82,7 @@ export const ESCALATION_RULE = `${escalationList()}\n\n`
   + "Record each such choice under \"Decisions made without a person\" (in the plan, or in the pull request body), with its reason, and carry on. "
   + "A `needs-human` outcome names its item in `escalation` (`\"escalation\": \"<id>\"`), and a `QUESTION.md` starts with the line `**Escalation:** <id>`: a stop that names none, or one not on this list, is sent back to you. "
   + "A run that cannot go on because something failed, such as a skill that is missing or a check that never starts, has no question to decide: it says what failed in its `needs-human` reason, and the board shows that stop as \"Off the escalation list:\" so that the cause is fixed. "
-  + `${AFTER_MERGE_SESSION_SENTENCE} ${SESSION_WAIT_SENTENCE}`;
+  + `${AFTER_MERGE_ORG_SENTENCE} ${SESSION_WAIT_SENTENCE}`;
 
 /**
  * What the stop hook refuses an agent with when it stops on a question that is not on the list. `what` says which stop and why it is off the list. A run that cannot go on because something FAILED (a check that never started, a
