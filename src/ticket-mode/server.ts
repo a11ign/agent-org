@@ -34,6 +34,7 @@ import { defaultDrainStore, updateNoteOf } from "./pool-drain.ts";
 import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
+import { countFix, interventionsView, type InterventionsView } from "./queue/interventions.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
@@ -288,6 +289,18 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
   return fresh;
 }
 
+/**
+ * A chairman session's fix made by hand, counted with the Needs-you cards in the health number (A11-257). The tally is a count: what was fixed is required, so a fix is never recorded blind, and `key` is the ticket
+ * it was for, when it was for one. The board's log keeps both words, since the tally keeps neither. Answers the view after it.
+ */
+function recordFix({ store, now }: Pick<Board, "store" | "now">, body: Json): InterventionsView {
+  if (typeof body.what !== "string" || body.what.trim() === "") throw new Error("say what was fixed by hand: { \"what\": \"<what>\", \"key\": \"<ticket, optional>\" }");
+  if (body.key !== undefined && typeof body.key !== "string") throw new Error("key must be a ticket key, or left out");
+  store.set(countFix(store.get(), now()));
+  process.stderr.write(`ticket:serve: a fix made by hand is counted${body.key === undefined ? "" : ` for ${body.key}`}: ${body.what.trim()}\n`);
+  return interventionsView(store.get(), now());
+}
+
 /** The POST routes that queue tickets, save the choice and settings, change the queue's pause and cap, and mint the terminal's pairing code. */
 async function postRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { deps, settings, source, store, known, now, wake, queueTickets } = board;
@@ -353,6 +366,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     wake();
     return [200, queueView(board)];
   }
+  if (method === "POST" && path === "/api/interventions") return [200, recordFix(board, body)];
   if (method === "POST" && path === "/api/max") {
     store.set(setMax(store.get(), Number(body.max)));
     wake();
