@@ -19,12 +19,16 @@
 // package, not copied in from outside it), so it sits beside `claim-labels.ts` and `project-vocabulary.ts` instead.
 import { execFileSync } from "node:child_process";
 import { HERDR_AGENT_RULE, derivedName } from "./derived-name.ts";
+import { privateTmpEnv, TMPDIR_ENV } from "./session-tmp.ts";
 
 /** The herdr session the org runs in, and the default of every call in this file. */
 export const ORG_SESSION = "org";
 
 /** Which herdr session a call is made in. Absent means {@link ORG_SESSION}. */
 export type SessionOption = { session?: string };
+
+/** The options of {@link openPane}: the session, and the base the pane's private `TMPDIR` is made under (`session-tmp.ts`), when the caller gives its panes one. */
+export type PaneOption = SessionOption & { tmpBase?: string };
 
 /** The answers an ENDED seat gives a probe: the seat or its pane is gone, which every caller reads as `unknown` / `false` / gone. */
 const GONE_CODES = ["agent_not_found", "pane_not_found"];
@@ -281,14 +285,19 @@ export function agentStartArgs(name: string, kind: string, pane: string, agentTa
  *
  *
  *
+ * A11-303: EVERY PANE THE BOARD OPENS HAS A PRIVATE `TMPDIR`. Given `tmpBase`, the pane's directory `<tmpBase>/run-t-<label>` is made here and named in the pane's environment, unless `env` already names one (a ticket's run carries the
+ * one `runEnvOf` built, made before this). Reviewers had none, and every acceptance and mutation run of theirs wrote into the shared `/tmp`. A directory that cannot be made opens the pane without a `TMPDIR`, said on stderr.
+ *
  * @param [cwd] the directory the pane's shell starts in
  */
-export function openPane(run: (args: string[]) => string, label: string, env: Record<string, string>, cwd?: string, { session = ORG_SESSION }: SessionOption = {}): { pane: string; workspace: string; } | { refusal: string; } {
+export function openPane(run: (args: string[]) => string, label: string, env: Record<string, string>, cwd?: string, { session = ORG_SESSION, tmpBase }: PaneOption = {}): { pane: string; workspace: string; } | { refusal: string; } {
+  const tmp = env[TMPDIR_ENV] === undefined ? privateTmpEnv(tmpBase, label) : { env: {} };
+  if (tmp.refusal !== undefined) defaultSay(`${label} was started without a private TMPDIR: ${tmp.refusal}`);
   let created;
   try {
     created = JSON.parse(run(["--session", session, "workspace", "create", "--label", label, "--no-focus",
       ...(cwd === undefined ? [] : ["--cwd", cwd]),
-      ...Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`])]));
+      ...Object.entries({ ...env, ...tmp.env }).flatMap(([key, value]) => ["--env", `${key}=${value}`])]));
   } catch (err) {
     return { refusal: `herdr could not open a pane for "${label}" (${herdrReason(err)})` };
   }

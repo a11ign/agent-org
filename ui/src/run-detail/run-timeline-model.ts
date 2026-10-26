@@ -5,7 +5,7 @@
 import { baseMergeWords } from "../../../src/ticket-mode/board-view/base-merge-words.ts";
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { runTimeline, type TimelineEvent } from "../../../src/ticket-mode/board-view/run-timeline.ts";
-import type { AnsweredBy, BaseMergeStep, RequeueWhy, RoundCause, RunEvent } from "../../../src/ticket-mode/queue/run-log.ts";
+import type { AnsweredBy, BaseMergeStep, RequeueWhy, RoundCause, RunEvent, TrackerWriteStep } from "../../../src/ticket-mode/queue/run-log.ts";
 import { length, NOTE_JOIN, since, type RunEntry } from "../runs/runs-model.ts";
 
 /** The colour of a row's dot, as the boards give them: amber for what is under way or waits on a person, green for an approval, violet for a pull request and a publish, red for a failure, grey for the rest. */
@@ -30,6 +30,12 @@ const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", 
 
 /** The colour of a base-merge row: violet while the board merges the base in, as a pull request opened, and amber for a round, a wait or the cap, as a round is. */
 const BASE_MERGE_TONES: Readonly<Record<BaseMergeStep, DotTone>> = { merging: "violet", behind: "violet", round: "amber", waiting: "amber", capped: "amber", held: "amber" };
+
+/** What the board did about a write of the run's result to the tracker that failed (A11-304), in words. */
+const TRACKER_WRITE_WORDS: Readonly<Record<TrackerWriteStep, string>> = { retrying: "Recording the result in the tracker failed, trying again", refused: "The tracker refused the result", "gave-up": "Recording the result in the tracker kept failing" };
+
+/** The colour of a tracker-write row: amber while the board tries again, red once it asks a person. */
+const TRACKER_WRITE_TONES: Readonly<Record<TrackerWriteStep, DotTone>> = { retrying: "amber", refused: "red", "gave-up": "red" };
 
 /** How long ago an event was: "just now" inside the first minute, then "5 min ago". */
 const agoOf = (at: number, now: number): string => (now - at < 60_000 ? "just now" : `${since(at, now)} ago`);
@@ -74,6 +80,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
       when: joined(startedAt === undefined ? ago : `after ${length(event.at - startedAt)}`, note),
       tone: FAILED_OUTCOMES.has(event.outcome) ? "red" : "grey",
     };
+    case "tracker-write": return { text: TRACKER_WRITE_WORDS[event.step], when: joined(ago, event.error, note), tone: TRACKER_WRITE_TONES[event.step] };
     case "dismissed": return { text: "Dismissed", when: ago, tone: "grey" };
     case "removed": return { text: "Removed", when: ago, tone: "grey" };
     case "requeued": return { text: "Queued again", when: joined(ago, REQUEUE_WORDS[event.why]), tone: "grey" };

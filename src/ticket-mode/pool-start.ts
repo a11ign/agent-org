@@ -112,7 +112,7 @@ async function startOnceShellReady(ctx: PoolContext, args: string[]): Promise<vo
 async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string, string>, tail: readonly string[], what: string): Promise<{ workspace: string; pane: string }> {
   const { herdr, herdrAsync, session, startedHere } = ctx;
   const run = (args: string[]) => herdr(args);
-  const opened = openPane(run, place.name, env, place.folder, session);
+  const opened = openPane(run, place.name, env, place.folder, { ...session, tmpBase: ctx.runTmpBase });
   if ("refusal" in opened) throw new Error(opened.refusal);
   try {
     await startOnceShellReady(ctx, agentStartArgs(place.name, "claude", opened.pane, [...tail], session));

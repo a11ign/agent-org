@@ -1,0 +1,11 @@
+Every pane the board opens is given a private `TMPDIR`, the board clears the legacy entries of `/tmp` itself, and the host check names who is still writing. `openPane` (`src/herdr-agents.ts`) makes `<base>/run-t-<label>` and names it in the pane's environment for a reviewer (`spawnReviewer`, and the atomic plugin that starts it for the pool), a new-ticket run and a publish run (the pool's `startAgent`), beside the ticket run's own (`runEnvOf`); the pool's sweep (`src/ticket-mode/run-isolation.ts`) keeps the directory of a session herdr lists and takes it once herdr no longer does. `sweepLegacyTmp` (`src/ticket-mode/legacy-tmp.ts`) takes the agent-owned top-level entries of `/tmp` older than a day and open by no process, within the pass's budget of removals and a bounded number of names read. The `/tmp` alert (`src/ticket-mode/host-alerts.ts`) names the prefixes of the last hour's entries. The pool tests that start a writer and a publish run need the org's git history, so the acceptance runs them against the fixture project.
+
+Acceptance:
+
+```bash
+# One line: a recording `tailscale` first on PATH; the tests of each kind of session, the legacy sweep and the host alert, against the fixture project's host; the run must pass AND the stand-in must have recorded no call.
+bash -c 'w="$(mktemp -d)" && mkdir "$w/shim" "$w/project" && printf "#!/bin/sh\necho \"\$*\" >> \"$w/calls.log\"\n" > "$w/shim/tailscale" && chmod +x "$w/shim/tailscale" && cp -r src/packaging/fixtures/project-tree/. "$w/project" && sed -i "s|@@PROJECT@@|$w/project|" "$w/project/.agent-org/host.json" && git -C "$w/project" init -q && git -C "$w/project" add -A && git -C "$w/project" -c user.name=f -c user.email=f@example.invalid commit -q -m fixture && PATH="$w/shim:$PATH" AGENT_ORG_HOST="$w/project/.agent-org/host.json" npx rstest run --config scripts/rstest/rstest.config.ts src/session-tmp.test.ts src/ticket-mode/run-isolation.test.ts src/ticket-mode/legacy-tmp.test.ts src/ticket-mode/host-alerts.test.ts; ran=$?; calls="$(cat "$w/calls.log" 2>/dev/null)"; rm -rf "${w:?}"; echo "tailscale calls recorded: ${calls:-none}"; [ "$ran" -eq 0 ] && [ -z "$calls" ]'
+npm run typecheck
+```
+
+Consumer-declaration: none -- no command, flag or host file key changes.

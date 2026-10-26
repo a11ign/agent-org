@@ -25,6 +25,8 @@ import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, re
 import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { writtenStep } from "./outcome.ts";
 import { escalationItem, escalationReason, questionEscalation, questionText } from "./escalation.ts";
+import { isRetryableWrite, WRITE_GIVE_UP_MS, WRITE_RETRY_NOTE, writeWait } from "./result-write-retry.ts";
+import { logEvent, shortReason, type TrackerWriteStep } from "./queue/run-log.ts";
 import { recordCurrentStep } from "./queue/queue-run-detail.ts";
 import { recordOutcomeBlocks, recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { clearPartial } from "./queue/queue-next-step.ts";
@@ -68,9 +70,10 @@ export function recordWrittenStep(ctx: PoolContext, entry: Entry): void {
  * time says whether it is newer than the note recorded, so reading the same file on every tick changes nothing.
  */
 function noteStillWorking(ctx: PoolContext, entry: Entry, { reason, waitingOn, waits, until }: WorkingOutcome): void {
-  const { attachRetries, now } = ctx;
-  // The agent is working again, so a plan attach waiting to be tried again belongs to an outcome it has replaced: its next `planned` is attached afresh, and the stall watch reads the run as it does any other.
+  const { attachRetries, now, writeRetries } = ctx;
+  // The agent is working again, so a plan attach or a result write waiting to be tried again belongs to an outcome it has replaced: its next outcome is written afresh, and the stall watch reads the run as it does any other.
   attachRetries.delete(runPlace(ctx, entry).name);
+  writeRetries.delete(runPlace(ctx, entry).name);
   const path = join(runPlace(ctx, entry).dir, OUTCOME_FILE);
   const at = existsSync(path) ? statSync(path).mtimeMs : now();
   updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, reason, at, now(), { waitingOn, waits, until }));
@@ -155,7 +158,8 @@ async function readPlanBack(ctx: PoolContext, entry: Entry, planDir: string): Pr
 /**
  * The board's completion of a worker's `done` (A11-91): the ticket moves to its team's completed state and the reason and evidence are posted on it,
  * through the tracker's own `complete`. The ticket's record of its move is cleared once it is complete, so nothing puts it back. A refusal, by the
- * board's rules or by the tracker, ends the run for a person, and the ticket is left where it is. A review round's `done` is judged by its pull requests first (A11-173).
+ * board's rules or by the tracker, ends the run for a person, and the ticket is left where it is. A write that fails on the network or on the tracker's side is tried again on later ticks, and the
+ * run's outcome stays as the worker wrote it ({@link resultWriteFailed}, A11-304). A review round's `done` is judged by its pull requests first (A11-173).
  */
 async function completeDone(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "done" }>): Promise<void> {
   const { attaching, source } = ctx;
@@ -163,26 +167,88 @@ async function completeDone(ctx: PoolContext, entry: Entry, outcome: Extract<Out
   const { name } = runPlace(ctx, entry);
   const refusal = doneRefusal(ctx, entry);
   if (refusal !== null) return end(ctx, entry, { kind: "needs-human", reason: `${refusal}: ${outcome.reason}` });
-  if (attaching.has(name)) return;
+  if (attaching.has(name) || waitingToRetryWrite(ctx, name)) return;
   attaching.add(name);
   try {
     const mergedStates = entry.review === undefined ? {} : await settleReviewDone(ctx, entry, outcome);
     if (mergedStates === null) return;
-    const complete = source.complete?.bind(source);
-    if (complete === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker cannot complete ${key}: ${outcome.reason}` });
-    const note = await complete(key, doneComment(outcome));
+    if (source.complete === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker cannot complete ${key}: ${outcome.reason}` });
+    const note = await completeOrComment(ctx, entry, outcome);
     // Stopped, or stopped and started again, while the tracker was asked: the person's last word stands, and a newer run is not touched.
     if (!sameRun(ctx, entry)) return;
-    if (note !== null) return end(ctx, entry, { kind: "needs-human", reason: `${key} was not completed (${note.trim()}): ${outcome.reason}` });
+    if (note !== null) return end(ctx, entry, handedBackForWrite(`${key} was not completed (${note.trim()}): ${outcome.reason}`));
     update(ctx, (queue) => clearMove(queue, key));
     end(ctx, entry, outcome);
     // Recorded once the run is finished, which is when the card reads them: it says what completed the ticket without waiting for the next refresh.
     if (Object.keys(mergedStates).length > 0) update(ctx, (queue) => recordPullStates(queue, new Map([[key, mergedStates]]), ctx.now()));
   } catch (err) {
-    if (sameRun(ctx, entry)) end(ctx, entry, { kind: "needs-human", reason: `${key} could not be completed (${messageOf(err)}): ${outcome.reason}` });
+    resultWriteFailed(ctx, entry, { err, reasonFor: (error) => `${key} could not be completed (${error}): ${outcome.reason}`, handBack: handedBackForWrite });
   } finally {
     attaching.delete(name);
   }
+}
+
+/**
+ * The tracker's completion of the ticket with the worker's reason and evidence. After a try that failed, the ticket may already have moved (the tracker moves it first and then comments, and a response may be lost after either), and `complete`
+ * leaves a finished ticket and its comment alone: so the evidence is posted as a comment here, and never lost. Null once the ticket is completed, else the tracker's note (A11-304).
+ */
+async function completeOrComment(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "done" }>): Promise<string | null> {
+  const { source, writeRetries } = ctx;
+  const key = entry.ticket.key;
+  const comment = doneComment(outcome);
+  const retrying = writeRetries.has(runPlace(ctx, entry).name);
+  if (retrying && source.comment !== undefined && (await source.read(key))?.statusType === "completed") {
+    await source.comment(key, comment);
+    return null;
+  }
+  return source.complete!(key, comment);
+}
+
+/** Whether the result write of the run `name` is waiting out the backoff after a failure worth trying again (A11-304): no call to the tracker is made before the time it names. */
+const waitingToRetryWrite = (ctx: PoolContext, name: string): boolean => (ctx.writeRetries.get(name)?.nextAt ?? 0) > ctx.now();
+
+/** The outcome that hands a run to a person because the tracker cannot take its result: under the escalation list's access item, with the tracker's own words in `reason`. PURE. */
+const handedBackForWrite = (reason: string): Outcome => ({ kind: "needs-human", reason: escalationReason("access", reason), escalation: "access" });
+
+/**
+ * The outcome that hands a run whose proposed edit could not be recorded to a person: a worker's own stop keeps the item it named (its reason already starts with that item's label), and any other outcome is the tracker's, under the access item. PURE.
+ */
+function handBackOfEdit(outcome: Extract<Outcome, { kind: "checked" | "done" | "needs-human" }>): (reason: string) => Outcome {
+  if (outcome.kind !== "needs-human") return handedBackForWrite;
+  return (reason) => ({ kind: "needs-human", reason, ...(outcome.escalation === undefined ? {} : { escalation: outcome.escalation }) });
+}
+
+/**
+ * A write of a run's result to the tracker that failed: the error it threw, how the run's end words it (`reasonFor` puts the error's message in the sentence a person reads), and the outcome that hands the run to a person
+ * when the write cannot succeed (`handBack` takes that sentence).
+ */
+type ResultWriteFailure = Readonly<{ err: unknown; reasonFor: (error: string) => string; handBack: (reason: string) => Outcome }>;
+
+/**
+ * A write of the result of the run `entry` (the completion of its ticket, the recording of its proposed edit) threw `err`. The run's outcome is the worker's and is not rewritten for a tracker that is down: a failure on the network, a 5xx or a 429
+ * ({@link isRetryableWrite}) is logged as an event of its own, the card says {@link WRITE_RETRY_NOTE}, the run stays running, and the board tries again on later ticks, after a wait that grows ({@link writeWait}). Only a request the tracker refuses
+ * (anything else it answers or throws), or a write that kept failing for {@link WRITE_GIVE_UP_MS}, ends the run for a person, under the access item, with the tracker's words. A run stopped meanwhile is left as it is.
+ */
+function resultWriteFailed(ctx: PoolContext, entry: Entry, { err, reasonFor, handBack }: ResultWriteFailure): void {
+  if (!sameRun(ctx, entry)) return;
+  const { now, writeRetries } = ctx;
+  const { name } = runPlace(ctx, entry);
+  const at = now();
+  const failures = (writeRetries.get(name)?.failures ?? 0) + 1;
+  const firstAt = writeRetries.get(name)?.firstAt ?? at;
+  const logged = (step: TrackerWriteStep) => update(ctx, (queue) => logEvent(queue, entry.ticket.key, at, { kind: "tracker-write", step, failures, error: shortReason(messageOf(err)) ?? "no message" }));
+  if (!isRetryableWrite(err)) {
+    logged("refused");
+    return end(ctx, entry, handBack(reasonFor(messageOf(err))));
+  }
+  if (at - firstAt >= WRITE_GIVE_UP_MS) {
+    logged("gave-up");
+    return end(ctx, entry, handBack(reasonFor(`${messageOf(err)}; it has failed since ${new Date(firstAt).toISOString()}, more than an hour`)));
+  }
+  logged("retrying");
+  writeRetries.set(name, { failures, firstAt, nextAt: at + writeWait(failures) });
+  updateEach(ctx, runMembers(ctx, entry), (queue, member) => noteWorking(queue, member, WRITE_RETRY_NOTE, at, at));
+  log(`${entry.ticket.key}'s result could not be recorded in the tracker (${messageOf(err)}): trying again in ${writeWait(failures) / MS_PER_SECOND} seconds, failure ${failures}`);
 }
 
 /** What a review round's `done` does with its ticket, judged by the round's pull requests (A11-173): complete it now, leave it to the merge of an open pull request, or ask a person. PURE. */
@@ -224,19 +290,21 @@ async function proposeEdit(ctx: PoolContext, entry: Entry, outcome: Extract<Outc
   if (isPlanning(ctx, entry) || entry.review !== undefined) {
     return end(ctx, entry, { kind: "needs-human", reason: `${outcome.reason} (the worker proposed an edit to ${key}'s text from a ${isPlanning(ctx, entry) ? "planning" : "review"} run, which the board does not take)` });
   }
-  if (attaching.has(name)) return;
+  if (attaching.has(name) || waitingToRetryWrite(ctx, name)) return;
   attaching.add(name);
   let base: Ticket | null = null;
-  let failure = "";
+  let failure: { err: unknown } | null = null;
   try {
     base = await source.read(key);
   } catch (err) {
-    failure = messageOf(err);
+    failure = { err };
   } finally {
     attaching.delete(name);
   }
   if (!sameRun(ctx, entry)) return;
-  if (base === null) return end(ctx, entry, { kind: "needs-human", reason: `${outcome.reason} (the worker's proposed edit to ${key}'s text could not be recorded: ${failure || `Linear has no ticket ${key}`})` });
+  const unrecorded = (error: string) => `${outcome.reason} (the worker's proposed edit to ${key}'s text could not be recorded: ${error})`;
+  if (base === null && failure !== null) return resultWriteFailed(ctx, entry, { err: failure.err, reasonFor: unrecorded, handBack: handBackOfEdit(outcome) });
+  if (base === null) return end(ctx, entry, { kind: "needs-human", reason: unrecorded(`Linear has no ticket ${key}`) });
   // The guard is released above, and nothing awaits between here and settle's own checks: the completion or end it starts takes `attaching` itself,
   // before its first await, so a tick that sees this outcome again meanwhile finds the run already held.
   settle(ctx, entry, { ...outcome, edit: { ...edit, base: { title: base.title, description: base.description } } });
