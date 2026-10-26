@@ -53,6 +53,7 @@ import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { liveServeCheck } from "./pool-exposure.ts";
 import { liveHostAlertReads } from "./host-alerts.ts";
 import { privateBase } from "../private-tmp.ts";
+import { LEGACY_TMP_ROOT } from "./legacy-tmp.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
@@ -720,7 +721,7 @@ async function serve(): Promise<void> {
   // remembers its reviewers by.
   const reviewerHeads = new Map<string, string>();
   const reviewerSeen = new Map<string, number>();
-  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads, seen: reviewerSeen });
+  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads, seen: reviewerSeen, tmpBase: privateBase() });
   const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }));
   activated(active);
   const source = active.tracker();
@@ -735,7 +736,7 @@ async function serve(): Promise<void> {
   // The request thread is told of every queue change once it runs; a change before it starts is in its first snapshot.
   let thread: ReturnType<typeof startBoardThread> | null = null;
   const boardDeps: BoardDeps = { settings, source, codeHost, key, ...paths, exposure: active.exposure(), queueChanged: () => thread?.queueChanged(),
-    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, hostAlertReads: liveHostAlertReads(), privateTmpBase: privateBase() } };
+    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, hostAlertReads: liveHostAlertReads(), privateTmpBase: privateBase(), legacyTmp: { root: LEGACY_TMP_ROOT } } };
   const board = createBoard(boardDeps);
   // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
