@@ -21,7 +21,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import rstestConfig from "../../scripts/rstest/rstest.config.ts";
 import { buildImporterMap, loadSources } from "../../scripts/rstest/import-graph.ts";
 import { fallbackReasonFor, RUNNER_SETUP_FILES, selectLintScope, selectTests, suiteTestFiles, type TestSelection } from "../../scripts/rstest/select-tests.ts";
-import { changedSince, describePlan, layFixtureProject, mergeBaseOf, parseArguments, planChecks } from "../../scripts/check-changed.ts";
+import { changedSince, describePlan, layFixtureProject, mergeBaseOf, parseArguments, planChecks, suiteEnvironment } from "../../scripts/check-changed.ts";
 
 type Tree = Record<string, string>;
 
@@ -295,4 +295,10 @@ test("the fixture project is the committed copy CI makes: a host file naming the
   const log = execFileSync("git", ["log", "--format=%s"], { cwd: into, env: sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }), encoding: "utf8" }).trim();
   assert.equal(log, "the fixture project");
   assert.ok(existsSync(join(into, "package.json")));
+});
+
+test("the suite runs without the variables npm run adds, keeps the rest, and takes the host it is given", () => {
+  const env = { PATH: "/bin", HOME: "/home/x", npm_lifecycle_event: "check:changed", npm_config_local_prefix: "/r", INIT_CWD: "/r", NPM_TOKEN_NOT: "kept" };
+  assert.deepEqual(suiteEnvironment(env), { PATH: "/bin", HOME: "/home/x", NPM_TOKEN_NOT: "kept" });
+  assert.deepEqual(suiteEnvironment(env, "/p/host.json"), { PATH: "/bin", HOME: "/home/x", NPM_TOKEN_NOT: "kept", AGENT_ORG_HOST: "/p/host.json" });
 });

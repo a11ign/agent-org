@@ -107,13 +107,22 @@ function runLint(root: string, scope: LintScope): number {
   return runKeyedEslint({ root, eslintEntry: eslintEntryOf(root), targets }).status;
 }
 
+/** The variables `npm run` adds to a script's environment. CI runs rstest outside npm, so the suite is not run with them. */
+const NPM_RUN_VARIABLE = /^(npm_|INIT_CWD$)/;
+
+/** The environment the suite runs in: the caller's without what `npm run` adds, and with `AGENT_ORG_HOST` when one is given. */
+export function suiteEnvironment(env: NodeJS.ProcessEnv, host?: string): NodeJS.ProcessEnv {
+  const kept = Object.fromEntries(Object.entries(env).filter(([name]) => !NPM_RUN_VARIABLE.test(name)));
+  return host === undefined ? kept : { ...kept, AGENT_ORG_HOST: host };
+}
+
 /** Run the selected tests (or the whole suite) against the fixture project, which is removed afterwards unless the caller brought its own. */
 function runTests(root: string, selection: TestSelection): number {
   const files = selection.kind === "selected" ? selection.tests.map((test) => test.file) : [];
   if (selection.kind === "selected" && files.length === 0) return 0;
   const scratch = process.env.AGENT_ORG_HOST === undefined ? mkdtempSync(join(tmpdir(), "check-changed-")) : null;
   try {
-    const env = scratch === null ? process.env : { ...process.env, AGENT_ORG_HOST: layFixtureProject(root, join(scratch, "project")) };
+    const env = suiteEnvironment(process.env, scratch === null ? undefined : layFixtureProject(root, join(scratch, "project")));
     return spawnInherit(root, join(root, "node_modules", ".bin", "rstest"), ["run", "--config", RSTEST_CONFIG, ...files], env);
   } finally {
     if (scratch !== null) rmSync(scratch, { recursive: true, force: true });
