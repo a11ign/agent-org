@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request supersedes the run in flight: 30 runs of a head that is no longer the head are minutes of a runner nobody reads.
+concurrency:
+  group: sandbox-repeat-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 env:
   npm_config_fetch_retries: 5
 

@@ -11,8 +11,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 import { withGitSandbox as toolchainWithGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { describeSurvivor, removeUntilSettled, withGitSandbox } from "./git-sandbox.ts";
 
@@ -138,4 +140,12 @@ test("A11-301 (3) BEHAVIOUR: the sandbox repository is made with automatic maint
     assert.equal(box.run(["config", "--get", "maintenance.auto"]).trim(), "false");
     assert.equal(box.run(["config", "--get", "gc.auto"]).trim(), "0");
   });
+});
+
+test("A11-301 (4) BEHAVIOUR: the 30-run workflow cancels a run that a newer push to the same pull request supersedes", () => {
+  const workflow = parse(readFileSync(fileURLToPath(new URL("../../.github/workflows/sandbox-repeat.yml", import.meta.url)), "utf8")) as {
+    concurrency?: { group?: string; "cancel-in-progress"?: boolean };
+  };
+  assert.equal(workflow.concurrency?.["cancel-in-progress"], true);
+  assert.match(workflow.concurrency?.group ?? "", /github\.event\.pull_request\.number/, "the group is per pull request, so two pull requests do not cancel each other");
 });
