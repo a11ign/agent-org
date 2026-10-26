@@ -15,8 +15,9 @@ import { DECISIONS_CHANGED } from "./decisions-change.ts";
 import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import { settled } from "./pool-standoff-fixture.ts";
-import type { Entry, Outcome } from "./queue/queue-entries-and-outcomes.ts";
+
 import { respond } from "./queue/queue-transitions.ts";
+import { retry, type Entry, type Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import type { TicketSource } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { ticketReadOf } from "./ticket-read.ts";
@@ -205,4 +206,21 @@ test("A11-305: a note raised before the board read the change goes when the roun
   assert.equal(run.entry().phase, "queued");
   assert.equal(run.entry().mergeNote, undefined, "the round dropped the note, with the rest of what a finished run holds");
   assert.notEqual(runStatus(run.entry()), "needs-you");
+});
+
+test("A11-305: a run with no record of what it was briefed with is told of no change", async () => {
+  const legacy = finishedRun({ over: { briefedAgainst: undefined } });
+  const brief = await respondAndRead(legacy);
+  assert.ok(!brief.includes("## The ticket's Decisions changed"), "nothing to compare with");
+  assert.ok(!existsSync(join(legacy.dir, DECISIONS_ROUND_FILE)));
+});
+
+test("A11-305: a retried Decisions round is still a Decisions round, and the cause that started it is not lost", () => {
+  const { fixture } = finishedRun();
+  const queue = fixture.store.get();
+  const pulls = queue.entries[0].outcome && "prs" in queue.entries[0].outcome ? queue.entries[0].outcome.prs : [];
+  const crashed = { ...queue, entries: [{ ...queue.entries[0], review: pulls, decisions: true, outcome: { kind: "crashed", reason: "the agent exited" } as Outcome }] };
+  const retried = retry(crashed, "NBF-1", clock.ms).entries[0];
+  assert.equal(retried.phase, "queued");
+  assert.equal(retried.decisions, true, "it is not retried as the round for approved drafts");
 });

@@ -86,7 +86,7 @@ test("A11-305: a round whose ticket's Decisions did not change has no such secti
 test("A11-305: the board's own round for a changed Decisions answers it, marks nothing ready, and says no feedback came", () => {
   const text = brief({ decisions: true });
   assert.match(text, /^# A11-291: decisions round for Merge bot/);
-  assert.match(text, /No new feedback reached the pull requests: the first section is what you answer\./);
+  assert.match(text, /No new feedback reached the pull requests: the changed Decisions are what you answer\./);
   assert.match(text, /do not run `gh pr ready`/);
   assert.ok(!text.includes("A person reviewed your draft pull requests and approved them"), "it is no round for approved drafts");
   assert.match(text, /1\. Read the new lines of the ticket's Decisions in the first section/);

@@ -818,8 +818,8 @@ const DECISIONS_REVIEWED = "The ticket's Decisions changed since your last round
  * ready already, so it marks none ready; it is the feedback round's steps with the check against the Decisions first.
  */
 function decisionsRound(who: string, prReview: string | null): Round {
-  const first = "Read the new lines of the ticket's Decisions in the first section, and check each pull request against them: its diff, its description and its tests. A decision a pull request does not meet is work: change the code with a test that fails without the change. A decision it already meets needs no change, but your final message must quote the new lines and say why.";
-  return answerRound(who, "The ticket's Decisions changed after your last round, so the board started this round. No new feedback reached the pull requests: the first section is what you answer.", null, prReview, first, "decisions round");
+  const first = "Read the new lines of the ticket's Decisions in the first section (when there is none, the Decisions in the ticket below), and check each pull request against them: its diff, its description and its tests. A decision a pull request does not meet is work: change the code with a test that fails without the change. A decision it already meets needs no change, but your final message must quote the new lines and say why.";
+  return answerRound(who, "The ticket's Decisions changed after your last round, so the board started this round. No new feedback reached the pull requests: the changed Decisions are what you answer.", null, prReview, first, "decisions round");
 }
 
 /** The round a person started by approving the draft pull requests: mark them ready, then see them through their checks and review. */

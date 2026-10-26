@@ -33,7 +33,6 @@ import { type FindingsGiven } from "./blocker-findings-check.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, type HeldClaim } from "./path-claims.ts";
 import { SENT_BACK_FILE } from "./pool-plan-send-back.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
-import { decisionsChange } from "./decisions-change.ts";
 import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
 import { writeDecisionsMark } from "./pool-decisions-change.ts";
 
@@ -123,11 +122,9 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
   } else if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
-    // The text the last round read; a run with no record of it is compared with the copy of its ticket the board holds, so the brief still opens with a change of the Decisions (A11-305).
-    const previous = entry.briefedAgainst ?? ticketReadOf(entry.ticket, ctx.now());
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: openPulls(entry), notes, reviewNotes: notesFile(settings.review, "tickets.review"),
-      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, decisions: entry.decisions === true, standoff: entry.standoff?.stage === "worker", conflict: entry.conflict, prReview: settings.prReview, read, previous, held: entry.ciHold?.reason ?? entry.ciTold }));
-    writeDecisionsMark(ctx, dir, openPulls(entry), decisionsChange(previous.description, read.description));
+      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, decisions: entry.decisions === true, standoff: entry.standoff?.stage === "worker", conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst, held: entry.ciHold?.reason ?? entry.ciTold }));
+    writeDecisionsMark(ctx, entry, dir, { briefed: entry.briefedAgainst, read });
     writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(openPulls(entry))}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
     const planDir = emptyPlanDir(dir);
