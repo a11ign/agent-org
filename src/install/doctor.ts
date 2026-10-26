@@ -19,7 +19,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { request } from "node:http";
 import { homedir } from "node:os";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { parseTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
@@ -31,6 +31,7 @@ import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import { messagingChecksOfFile, messagingStateOfFile } from "../plugins/messaging-state.ts";
 import type { Catalog, HostPlaceReading, PluginDeps, ProbeRequest, ReviewerHelpers } from "../plugins/manifest.ts";
 import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
@@ -68,6 +69,8 @@ import { DEFAULT_TERMINAL_PORT, herdrConfigDir, loopbackPort, PAIRING_STEPS } fr
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { coreRowsHelpers, realExec, realPlace, realProbe } from "../plugins/active.ts";
 import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
+import { cloneOfDeclared, type DeclaredRepository } from "../declared-clone.ts";
+import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -144,6 +147,8 @@ export type DoctorDeps = Readonly<{
    * loads no gate. A test injects one, so no module is loaded.
    */
   reviewing: ReviewerHelpers;
+  /** The code repositories the project declares (`code` in `project.json`). REJECTS with the reader's refusal when the declaration cannot be read, which a machine with no project does as it is imported (A11-292). */
+  declaredRepositories: () => Promise<readonly DeclaredRepository[]>;
   /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
   reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
   /** The Chromium builds this machine has, read now: each build is a check, and `ticket:capture` needs both (A11-151). */
@@ -473,6 +478,38 @@ function pluginSections(settings: TicketSettings, health: PluginHealth, { termin
 }
 
 /**
+ * One row for each repository the project declares (A11-292): a reviewer of its pull requests must find its clone. The reviewer's seat is named for the repository's KEY (`reviewer-<key>-<n>`) and
+ * the clone is found from what that label reads back as, so a key the label cannot carry (`.github`, a key ending in `-<digits>`) is a repository whose pull requests are never reviewed, and a
+ * declared repository with no clone under its key or its name is the same. The primary is reviewed from the tick's own checkout and needs no clone, so it has no row. A machine with no project
+ * (a ticket-only host, `diagnose` asks nothing of it) declares no repository, so it has none; a declaration that cannot be read is one row that says so.
+ */
+async function repositoryCloneChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
+  if (settings === null) return [];
+  let code: readonly DeclaredRepository[];
+  try {
+    code = await deps.declaredRepositories();
+  } catch (err) {
+    return [failed("repository clones", `the project's repositories cannot be read (${String((err as Error)?.message ?? err).split("\n")[0]})`, "fix project.json, or set AGENT_ORG_HOST to the host file of the project")];
+  }
+  return code.filter(({ key }) => key !== "").map((declared) => cloneCheckOf(declared, code, settings.clones));
+}
+
+/** The row for one declared repository: its key must read back from the reviewer's label, and a clone must be listed under the key or the repository's name. */
+function cloneCheckOf({ key, repo }: DeclaredRepository, code: readonly DeclaredRepository[], clones: TicketSettings["clones"]): Check {
+  const name = `clone of ${repo}`;
+  const label = reviewerSeat({ repoKey: key, number: 1 });
+  const read = reviewerInstance(label)?.key;
+  if (read !== key) {
+    return failed(name, `its key \`${key}\` does not survive a reviewer's label: \`${label}\` reads back as ${read === undefined ? "no reviewer" : `the key \`${read}\``}, so no pull request of ${repo} is reviewed`,
+      `give ${repo} a key of lower-case letters, digits and hyphens that does not end in \`-<digits>\`, in \`code\` of project.json`);
+  }
+  const found = cloneOfDeclared(clones, key, code);
+  if ("tried" in found) return failed(name, `host.json \`clones\` has no clone for ${repo} under ${found.tried.map((tried) => `\`${tried}\``).join(" or ")}, so a reviewer of it has no checkout`, `add \`"${found.tried[found.tried.length - 1]}": "<absolute path of the clone>"\` to \`clones\` in the host file`);
+  if (!isAbsolute(found.clone)) return failed(name, `${found.clone} is not an absolute path`, "name the clone by its absolute path in `clones` of the host file");
+  return ok(name, `${found.clone}, found from the reviewer label \`${label}\``);
+}
+
+/**
  * One FAIL row per old key the file still reads (A11-144): the key, and its place under `tickets.providers`. A host file with none is green here. The
  * fix is the same for every row, so the person runs it once.
  */
@@ -504,6 +541,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     judgeShellCommand(deps.shellCommand(), shellContext(deps.env, deps.home, hostText(deps))),
     host,
     ...aliasChecks(settings),
+    ...(noProject ? [] : await repositoryCloneChecks(settings, deps)),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", `run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, or by hand: \`${handInstallCommand(deps.platform, deps.arch, deps.env)}\``) : ok("herdr", herdr),
     ...(herdr === null ? [] : herdrUpkeepChecks(deps)),
     writerCheck(settings, plugins),
@@ -943,6 +981,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewing: gateHelpers(),
+    declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code,
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
     chromium: () => chromiumReport(),
     agentOrgPlugins: {

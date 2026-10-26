@@ -16,6 +16,7 @@ import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.
 import { logEvent, type RunEvent } from "./run-log.ts";
 import type { Standoff } from "./standoff-types.ts";
 import type { CiHold, TicketCi } from "../ci-spend/store.ts";
+import type { Interventions } from "./interventions.ts";
 
 
 
@@ -456,7 +457,9 @@ export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: b
   /** What happened to each run, by ticket key, oldest first (A11-219, ADR 0006). Kept beside the entries so it outlives `dismiss`, `remove` and every transition that builds an entry afresh. Unset until something is logged. */
   runLog?: Readonly<Record<string, readonly RunEvent[]>>;
   /** What each ticket's pushes have cost in CI, by ticket key, as the board last read it (A11-261, `ci-spend/store.ts`). Kept beside the entries for the reason the run log is: a run that is dropped or retried keeps its ticket's total. Unset until something is read. */
-  ciSpend?: Readonly<Record<string, TicketCi>> }>;
+  ciSpend?: Readonly<Record<string, TicketCi>>;
+  /** How often a person had to step in, by UTC day: the runs that went to Needs you and the fixes a chairman session recorded, for the last 30 days (A11-257, `queue/interventions.ts`). Unset until one is counted. */
+  interventions?: Interventions }>;
 
 /**
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list

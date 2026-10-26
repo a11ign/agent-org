@@ -1,9 +1,10 @@
-import type { QueueView } from "../api/types.ts";
+import { useEffect, useRef } from "react";
+import { usePoll } from "../api/use-poll.ts";
+import type { QueueEntryView, QueueView, RunDetailEntry } from "../api/types.ts";
 import { DetailSkeleton } from "../lifecycle/Skeleton.tsx";
 import { Lifecycle } from "../lifecycle/Lifecycle.tsx";
 import { FailureBanner } from "../runs/FailureBanner.tsx";
 import { failedPublishSentence, NOT_PUBLISHED, publishState, showsPublish } from "../runs/publish-model.ts";
-import type { RunEntry } from "../runs/runs-model.ts";
 import { useDismissable, usePublish } from "../runs/use-publish.ts";
 import { useRunActions } from "../runs/use-run-actions.ts";
 import { runsHref } from "../shell/routes.ts";
@@ -13,7 +14,7 @@ import { Properties } from "./Properties.tsx";
 import { PullRequests } from "./PullRequests.tsx";
 import { RunDisclosures } from "./RunDisclosures.tsx";
 import { Breadcrumb, RunHeader, type HeaderControls } from "./RunHeader.tsx";
-import { boardOf, calloutOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
+import { boardOf, calloutOf, detailOf, logOf, disclosuresOf, headerActionsOf, mergeRowOf, propertiesOf, pullRowsOf, stepsOf, terminalHrefOf } from "./run-detail-model.ts";
 import { Steps } from "./Steps.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { timelineOf } from "./run-timeline-model.ts";
@@ -38,7 +39,7 @@ function RunGone() {
  * One run, drawn as the board its status maps to. A press of a verb posts it and has the shell read the queue again; Talk to it is its own press, which says in the banner why herdr did not open.
  * The verbs wait while the instance cannot be reached, and while the queue drawn is the tab's kept copy (A11-270).
  */
-function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueView }>) {
+function RunDetail({ entry, queue, log }: Readonly<{ entry: RunDetailEntry; queue: QueueView; log: QueueEntryView["runLog"] }>) {
   const { client, config, connection, unreachable, queue: read } = useShell();
   const inputs = { client, connection, config, refresh: read.refresh };
   const actions = useRunActions(inputs);
@@ -84,7 +85,7 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
           <RunDisclosures disclosures={disclosuresOf(entry, { queue, publisher: config?.publisher })} />
           <Steps steps={stepsOf(entry)} />
           <PullRequests rows={pullRowsOf(entry)} board={board} />
-          <Timeline rows={timelineOf(entry, queue, Date.now())} />
+          <Timeline rows={timelineOf(entry, log, Date.now())} />
         </div>
         <Properties entry={entry} values={propertiesOf(entry, queue)} />
       </div>
@@ -94,17 +95,25 @@ function RunDetail({ entry, queue }: Readonly<{ entry: RunEntry; queue: QueueVie
 
 /**
  * The page once the connections are read: the run the queue holds under this key, or the board's "run gone" when the queue answered without it. A queue the tab kept (A11-270) that does not
- * hold the run is no proof it is gone, since it may have started since: the page is its skeleton until the instance answers.
+ * hold the run is no proof it is gone, since it may have started since: the page is its skeleton until the instance answers. The queue is the list the shell polls; the run's steps and its log come from its own read
+ * (`GET /api/queue/<key>`), drawn in place when it answers, so a run whose own read fails (it is gone, or the instance is slow) is drawn from the list.
  */
 function Content({ runKey }: Readonly<{ runKey: string }>) {
-  const { queue, connection } = useShell();
+  const { queue, connection, client } = useShell();
+  // Read again whenever the queue answers, so the run's log and steps follow its status (a press has the shell read the queue) and one request is made per poll, not two.
+  const full = usePoll<QueueEntryView>(client.queueEntry(runKey), { connection, isEmpty: () => false, repeat: false });
+  const answered = useRef(queue.data);
+  useEffect(() => {
+    if (answered.current !== queue.data) full.refresh();
+    answered.current = queue.data;
+  }, [queue.data]);
   const skeleton = <DetailSkeleton label={LOADING} />;
   const gone = queue.cached ? skeleton : <RunGone />;
   return (
     <Lifecycle view={queue} skeleton={skeleton} empty={gone} connection={connection?.name ?? ""}>
       {(data) => {
         const entry = data.entries.find((candidate) => candidate.ticket.key === runKey);
-        return entry === undefined ? gone : <RunDetail entry={entry} queue={data} />;
+        return entry === undefined ? gone : <RunDetail entry={detailOf(entry, full.data)} queue={data} log={logOf(data, full.data, runKey)} />;
       }}
     </Lifecycle>
   );

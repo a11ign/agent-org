@@ -17,7 +17,7 @@ import { readTicketSettings } from "../src/ticket-mode/settings.ts";
 /** The reads the shell makes on every page, then each page's own. */
 const SHELL = ["/api/config", "/api/queue"];
 const SETTINGS = [...SHELL, "/api/settings", "/api/plugins"];
-const PAGES: Readonly<Record<string, readonly string[]>> = {
+export const PAGES: Readonly<Record<string, readonly string[]>> = {
   Tickets: [...SHELL, "/api/tickets", "/api/writer"],
   Runs: SHELL,
   Settings: SETTINGS,
@@ -43,25 +43,28 @@ async function timePage(readOf: ReadOf, paths: readonly string[]) {
   return { ms: performance.now() - started, reads };
 }
 
-/** Every page's reads, `runs` times over, one page after another. */
-export async function timePages(readOf: ReadOf, runs: number): Promise<Timing> {
-  const pages = Object.fromEntries(Object.keys(PAGES).map((page) => [page, { times: [] as number[], failed: new Set<string>() }]));
+/** A run's page: the shell's reads, and the run's own full read (A11-270). */
+export const runPage = (key: string): readonly string[] => [...SHELL, `/api/queue/${encodeURIComponent(key)}`];
+
+/** Every page's reads (`pages`: the pages above unless a test names its own), `runs` times over, one page after another. */
+export async function timePages(readOf: ReadOf, runs: number, pages: Readonly<Record<string, readonly string[]>> = PAGES): Promise<Timing> {
+  const timed = Object.fromEntries(Object.keys(pages).map((page) => [page, { times: [] as number[], failed: new Set<string>() }]));
   const sizes = new Map<string, number>();
   for (let run = 0; run < runs; run += 1) {
-    for (const [page, paths] of Object.entries(PAGES)) {
+    for (const [page, paths] of Object.entries(pages)) {
       const { ms, reads } = await timePage(readOf, paths);
-      pages[page].times.push(ms);
+      timed[page].times.push(ms);
       for (const { path, status, bytes } of reads) {
-        if (status !== 200) pages[page].failed.add(`${path} ${status}`);
+        if (status !== 200) timed[page].failed.add(`${path} ${status}`);
         else sizes.set(path, bytes);
       }
     }
   }
-  return { runs, pages, sizes };
+  return { runs, pages: timed, sizes };
 }
 
 /** The nearest-rank percentile of `sorted`. */
-const percentile = (sorted: readonly number[], p: number): number => sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
+export const percentile = (sorted: readonly number[], p: number): number => sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
 const ms = (value: number): string => `${Math.round(value)}`.padStart(7);
 const size = (bytes: number): string => (bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(2)} MB` : `${(bytes / 1000).toFixed(1)} KB`);
 
@@ -89,7 +92,11 @@ async function main(): Promise<void> {
   if (connection === undefined) throw new Error(`no connection ${name ?? ""}: the connections are ${read.connections.map((candidate) => candidate.name).join(", ")}`);
   const connections = createConnections(read.connections, { local: { port: settings.port, keyPath: boardKeyPath(settings.stateDir) } });
   try {
-    const timing = await timePages((path) => proxy(connections, connection.name, { method: "GET", path, body: null }), runs);
+    const readOf: ReadOf = (path) => proxy(connections, connection.name, { method: "GET", path, body: null });
+    // The newest run of the queue stands for the Run page, when the queue holds one.
+    const [, queue] = await readOf("/api/queue");
+    const key = (queue as { entries?: readonly { ticket: { key: string } }[] })?.entries?.at(-1)?.ticket.key;
+    const timing = await timePages(readOf, runs, key === undefined ? PAGES : { ...PAGES, Run: runPage(key) });
     console.log(reportOf(timing, `connection ${connection.name} (${connection.kind})`));
   } finally {
     connections.close();

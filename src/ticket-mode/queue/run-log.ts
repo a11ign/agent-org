@@ -6,6 +6,7 @@
 //
 // EACH TRANSITION THAT RECORDS ONE LOGS IT ON A CHANGE IT ALREADY DETECTS, through {@link logEvent}, and a transition that is not given a time logs nothing, so the pure transitions the board and the tests share keep their
 // old signatures. Every call the pool and the server make gives it.
+import { countNeedsYou } from "./interventions.ts";
 import type { Queue } from "./queue-entries-and-outcomes.ts";
 
 /** The most events kept for one ticket: its last ones. */
@@ -91,13 +92,20 @@ export const logOf = (queue: Queue, key: string): readonly RunEvent[] => queue.r
 export const logHas = (queue: Queue, key: string, matches: (event: RunEvent) => boolean): boolean => logOf(queue, key).some(matches);
 
 /**
- * Append `body` to ticket `key`'s log, at `at`, and keep the log's last {@link RUN_LOG_MAX} events and the logs of the {@link GONE_LOGS_MAX} tickets that ended most recently. With no `at` it logs nothing:
+ * Append `body` to ticket `key`'s log, at `at`, count a Needs-you event as one person-intervention that day (A11-257), and keep the log's last {@link RUN_LOG_MAX} events and the logs of the {@link GONE_LOGS_MAX} tickets that ended most recently. With no `at` it logs nothing:
  * a caller that has no clock is a pure helper's, which records no time. PURE.
  */
 export function logEvent(queue: Queue, key: string, at: number | undefined, body: EventBody): Queue {
   if (at === undefined) return queue;
   const kept = [...logOf(queue, key), { ...body, at }].slice(-RUN_LOG_MAX);
-  return { ...queue, runLog: withoutOldGone(queue, { ...queue.runLog, [key]: kept }) };
+  const logged = { ...queue, runLog: withoutOldGone(queue, { ...queue.runLog, [key]: kept }) };
+  return body.kind === "needs-you" && !repeats(queue, key, { ...body, at }) ? countNeedsYou(logged, at) : logged;
+}
+
+/** Whether `event` is the one ticket `key`'s log ends with, the same at the same time: logged twice, it is one person-intervention. */
+function repeats(queue: Queue, key: string, event: RunEvent): boolean {
+  const last = logOf(queue, key).at(-1);
+  return last !== undefined && JSON.stringify(last) === JSON.stringify(event);
 }
 
 /** The logs with those of tickets no longer on the queue cut to the {@link GONE_LOGS_MAX} whose last event is newest, a tie going to the one logged later. PURE. */

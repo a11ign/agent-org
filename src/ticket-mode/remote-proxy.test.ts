@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingHttpHeaders } from "node:http";
+import { gzipSync } from "node:zlib";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createTcpServer } from "node:net";
@@ -70,7 +71,7 @@ test("the instance is sent its own host, the key and the JSON body over the tunn
     await new Promise<void>((done) => server.close(() => done()));
     rmSync(dir, { recursive: true, force: true });
   }
-  assert.deepEqual(Object.keys(forwardHeaders({ host: "127.0.0.1:1", key: KEY }, null)).sort(), ["accept", "host", "x-ticket-token"], "nothing else is sent");
+  assert.deepEqual(Object.keys(forwardHeaders({ host: "127.0.0.1:1", key: KEY }, null)).sort(), ["accept", "accept-encoding", "host", "x-ticket-token"], "nothing else is sent: the encoding an answer may be packed in, and nothing of the browser's");
 });
 
 test("A11-129: a worker link's run lookup is passed on as a POST, and never as a GET", () => {
@@ -291,6 +292,58 @@ test("A11-282: an SSH connection's health is passed on but never kept, since it 
   assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [200, { loop: { board: { p99Ms: 4 } } }]);
   instance.state.down = true;
   assert.deepEqual(await proxy(up.remotes, "personal", request, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE }]);
+});
+
+test("A11-270: one run's full read is passed on as a GET only, and never kept as last known, so a path for each run does not push the pages' own out", async () => {
+  assert.equal(passedOn("GET", "/api/queue/A11-270"), true);
+  assert.equal(passedOn("POST", "/api/queue/A11-270"), false, "the path alone is no write");
+  for (const path of ["/api/queue/", "/api/queue/A11-270/", "/api/queue/A11-270/extra", "/api/queue/../config"]) assert.equal(passedOn("GET", path), false, path);
+  const store = createLastKnown(lastKnownDir(tmpDir("proxy-last-known-")));
+  const up = fixed(overSsh("/s"));
+  const instance = flaky({ entry: { ticket: { key: "A11-270" } }, runLog: [] });
+  const run = { method: "GET", path: "/api/queue/A11-270", body: null };
+  assert.deepEqual(await proxy(up.remotes, "personal", run, instance.forward, store), [200, { entry: { ticket: { key: "A11-270" } }, runLog: [] }]);
+  instance.state.down = true;
+  assert.deepEqual(await proxy(up.remotes, "personal", run, instance.forward, store), [502, { error: CANNOT_REACH_INSTANCE }], "nothing was kept for the run");
+});
+
+/** An instance that packs its answer when asked to (`Accept-Encoding: gzip`), and says what it was asked. */
+async function packing(answer: string, encoding: "gzip" | "none" = "gzip") {
+  const asked: (string | string[] | undefined)[] = [];
+  const server = createServer((req, res) => {
+    asked.push(req.headers["accept-encoding"]);
+    const packed = encoding === "gzip" && String(req.headers["accept-encoding"]).includes("gzip");
+    res.writeHead(200, { "Content-Type": "application/json", ...(packed ? { "Content-Encoding": "gzip" } : {}) });
+    res.end(packed ? gzipSync(answer) : answer);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const { port } = server.address() as { port: number };
+  const target: Target = { key: KEY, host: `127.0.0.1:${port}`, address: { origin: `http://127.0.0.1:${port}` }, terminal: () => null };
+  return { target, asked, close: () => new Promise<void>((done) => server.close(() => done())) };
+}
+
+test("A11-270: an answer the instance packed in gzip is unpacked, one it did not pack is read as it is, and the limit is on the unpacked size", async () => {
+  const big = JSON.stringify({ entries: Array.from({ length: 2000 }, (_, n) => ({ key: `A11-${n}`, title: "a ticket title that repeats" })) });
+  const instance = await packing(big);
+  try {
+    const answer = await httpForward(instance.target, { method: "GET", path: "/api/queue", body: null });
+    assert.deepEqual([answer.status, answer.body], [200, big], "the page's service reads the same text it would have been sent unpacked");
+    assert.deepEqual(instance.asked, ["gzip"], "the instance was told it may pack");
+  } finally {
+    await instance.close();
+  }
+  const plain = await packing('{"entries":[]}', "none");
+  try {
+    assert.equal((await httpForward(plain.target, { method: "GET", path: "/api/queue", body: null })).body, '{"entries":[]}', "an older instance sends plain text");
+  } finally {
+    await plain.close();
+  }
+  const bomb = await packing(`"${"x".repeat(9 * 1024 * 1024)}"`);
+  try {
+    await assert.rejects(httpForward(bomb.target, { method: "GET", path: "/api/tickets", body: null }), /an answer over 8388608 bytes/, "9 MB of text packs to a few KB, and is refused all the same");
+  } finally {
+    await bomb.close();
+  }
 });
 
 test("A11-195: a local or https connection, a POST, a refusal and a body that is not JSON are neither kept nor recalled", async () => {

@@ -8,7 +8,8 @@
 import { openPulls } from "../board-view/view-types-and-filters.ts";
 import { find, replace, reviewRound, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
 import type { PlannerDecision, Standoff } from "./standoff-types.ts";
-import { logEvent, logOf, REREVIEW_REASONS_MAX, shortReason } from "./run-log.ts";
+import { countStandoffSettled } from "./interventions.ts";
+import { logEvent, REREVIEW_REASONS_MAX, shortReason } from "./run-log.ts";
 
 /** What a re-review that the verdict door refused came to: the pull request and head, the reviewer's block the worker answered (null when its text was not read), the verdict the re-reviewer wrote, its file as it wrote it, and the worker's replies on the pull request (null when none was read). */
 export type RereviewResult = Readonly<{ url: string; head: string; review: string | null; verdict: "convinced" | "not-convinced"; reasons: string; reply: string | null; decisions: string | null }>;
@@ -81,10 +82,7 @@ export function settleStandoff(queue: Queue, key: string, now?: number): Queue {
   if (how === null) return queue;
   const { standoff: _settled, ...rest } = entry;
   const dropped = replace(queue, key, () => rest);
-  return logEvent(dropped, key, now, { kind: "standoff", url: standoff.url, head: standoff.head, step: "settled", detail: `by ${how}` });
-}
-
-/** The stand-offs the logs show settled with no person, with the time each was: the health number's count (A11-290). PURE. */
-export function standoffsSettled(queue: Queue): readonly number[] {
-  return Object.keys(queue.runLog ?? {}).flatMap((key) => logOf(queue, key).filter((event) => event.kind === "standoff" && event.step === "settled").map(({ at }) => at)).sort((a, b) => a - b);
+  const logged = logEvent(dropped, key, now, { kind: "standoff", url: standoff.url, head: standoff.head, step: "settled", detail: `by ${how}` });
+  // Counted on the day it settled, beside the day's interventions (A11-257's health number): the chairman sees the route work.
+  return now === undefined ? logged : countStandoffSettled(logged, now);
 }

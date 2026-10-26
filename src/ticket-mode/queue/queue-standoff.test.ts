@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { emptyQueue } from "../queue.ts";
 import { retry, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
 import { checkRound, finish } from "./queue-transitions.ts";
-import { plannerDecided, recordRereview, settleStandoff, standoffRound, standoffsSettled, workerRoundEnded } from "./queue-standoff.ts";
+import { plannerDecided, recordRereview, settleStandoff, standoffRound, workerRoundEnded } from "./queue-standoff.ts";
+import { interventionsView } from "./interventions.ts";
 import { logOf, REREVIEW_REASONS_MAX } from "./run-log.ts";
 import type { Standoff } from "./standoff-types.ts";
 
@@ -73,8 +74,10 @@ test("A11-290: a stand-off ends with no person when the pull request moves to a 
   assert.equal(entryOf(settleStandoff(open, "A11-270", 200)).standoff?.stage, "open", "still blocked at its head: nothing settled");
   const moved = settleStandoff({ ...open, entries: [{ ...entryOf(open), pullHeads: { [URL]: { head: "h2", approved: false, review: "none" } } }] }, "A11-270", 200);
   assert.equal(entryOf(moved).standoff, undefined);
-  assert.deepEqual(standoffsSettled(moved), [200]);
-  assert.deepEqual(standoffsSettled(settleStandoff(moved, "A11-270", 300)), [200], "a second read finds no stand-off to settle");
+  assert.deepEqual(moved.interventions, { "1970-01-01": { needsYou: 0, fixes: 0, standoffs: 1 } }, "counted on the day it settled, beside the interventions");
+  assert.deepEqual(settleStandoff(moved, "A11-270", 300).interventions, moved.interventions, "a second read finds no stand-off to settle");
+  const today = interventionsView(moved, 300).days.at(-1);
+  assert.deepEqual(today, { date: "1970-01-01", needsYou: 0, fixes: 0, total: 0, standoffs: 1 }, "the health number shows it, and it is no intervention: the total stays 0");
 });
 
 test("A11-290: a stand-off round that ends on anything but reviewed has ended its route, so a later round of the run is no stand-off round", () => {

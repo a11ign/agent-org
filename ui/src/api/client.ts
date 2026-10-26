@@ -2,7 +2,7 @@ import type { Answer } from "./answer.ts";
 import { mutate } from "./mutate.ts";
 import { send, type Fetch, type Target } from "./request.ts";
 import type {
-  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, People, PickView, PluginActionDone, PluginActionRequest, PluginsAnswer, QueueChildrenView, QueueView, RunAction, RunChoice,
+  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, InterventionsView, People, PickView, PluginActionDone, PluginActionRequest, PluginsAnswer, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
   SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
 
@@ -44,7 +44,11 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     parents: read<Ticket[]>("/api/parents"),
     pick: read<PickView>("/api/pick"),
     queue: read<QueueView>("/api/queue"),
+    /** One run in full with its log (A11-270): the list `queue` sends each run without the long text, and the run's own page reads the rest from here. */
+    queueEntry: (key: string) => read<QueueEntryView>(keyed(key)),
     writer: read<WritersView>("/api/writer"),
+    /** The person-interventions of the last 7 days and today's total (A11-257): the board's health number. */
+    interventions: read<InterventionsView>("/api/interventions"),
     settings: read<SettingsView>("/api/settings"),
     plugins: read<PluginsAnswer>("/api/plugins"),
     /** The plugins, with the instance asked to run their checks again (A11-270): what a person's Retry and "Read the plugins again" send. */
