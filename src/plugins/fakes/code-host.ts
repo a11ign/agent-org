@@ -21,7 +21,7 @@ export type FakePull = {
   dependency?: { title: string; headRefName: string; author: string };
   /** What the merge queue did to the pull request (contract 1.21). A pull request given none is one the fake does not say anything of: `PullFeedback.queue` is then absent, which is not "no removals". */
   queue?: PullQueue;
-  feedback: Partial<PullFeedback>; replies: readonly Reply[]; body?: string; reviews: ReviewState["reviews"]; settled: boolean; unrequiredRed?: ReviewState["unrequiredRed"]; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
+  feedback: Partial<PullFeedback>; replies: readonly Reply[]; body?: string; /** More of the pull request as the gate reads it (`ReviewState.view`), such as its `reviews` with their bodies (A11-290). */ view?: Readonly<Record<string, any>>; reviews: ReviewState["reviews"]; settled: boolean; unrequiredRed?: ReviewState["unrequiredRed"]; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
 };
 
 const HOST = "fake";
@@ -70,7 +70,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
     readReviewState(url) {
       calls.push(`readReviewState ${url}`);
       const pull = pulls.get(url);
-      return pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled, ...(pull.unrequiredRed === undefined ? {} : { unrequiredRed: pull.unrequiredRed }), view: { number: pull.number, ...(pull.body === undefined ? {} : { body: pull.body }) } };
+      return pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled, ...(pull.unrequiredRed === undefined ? {} : { unrequiredRed: pull.unrequiredRed }), view: { number: pull.number, ...(pull.body === undefined ? {} : { body: pull.body }), ...pull.view } };
     },
     readPullState(url) {
       calls.push(`readPullState ${url}`);
@@ -222,6 +222,27 @@ function closesOf(state: FakeCloses, pulls: Pulls, calls: string[]): Pick<CodeHo
       if (pull.state === "closed") return;
       pull.state = "closed";
       state.closed.push({ url, comment });
+    },
+  };
+}
+
+/**
+ * What the fake does when asked to comment on a pull request (contract 1.26), and what a test sets: why it refuses a pull request (`refusals`, by address), and each comment posted, in order (`posted`). A pull request the fake does not hold throws, as a host
+ * does for an address that is no pull request of its own.
+ */
+export type FakeComments = { refusals: Map<string, string>; posted: { url: string; comment: string }[] };
+
+/** The comment on a pull request over what a test seeded. */
+function commentsOf(state: FakeComments, pulls: Pulls, calls: string[], login: string | null): Pick<CodeHost, "commentOnPull"> {
+  return {
+    commentOnPull(url, comment) {
+      calls.push(`commentOnPull ${url}`);
+      const pull = pulls.get(url);
+      if (pull === undefined) throw new Error(`fake code host: no pull request ${url}`);
+      if (state.refusals.has(url)) throw new Error(state.refusals.get(url));
+      state.posted.push({ url, comment });
+      // The comment is the account's own, and reads back as a reply of it, as a conversation comment does.
+      if (login !== null) pull.replies = [...pull.replies, { author: login, at: Date.now(), url: `${url}#comment-${state.posted.length}`, text: comment }];
     },
   };
 }
@@ -439,12 +460,13 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
   const closes: FakeCloses = { refusals: new Map(), closed: [] };
+  const comments: FakeComments = { refusals: new Map(), posted: [] };
   const stackMerges: FakeStackMerges = { facts: new Map(), requestRefusal: null, requests: [] };
   const ciRuns: FakeCiRuns = { runs: new Map(), asked: [] };
   const branchCi: FakeBranchCi = { runs: new Map(), asked: [] };
   const queues: FakeQueues = { failures: new Map(), holdRefusal: null, held: new Set(), holds: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls), ...mergeFlowsOf(mergeFlows, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...commentsOf(comments, pulls, calls, login), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls), ...mergeFlowsOf(mergeFlows, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -457,6 +479,8 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     branchUpdates,
     /** The pull requests the fake was asked to close, with the comment each was closed with, and why it refuses one, for a test to seed and read (see {@link FakeCloses}). */
     closes,
+    /** The comments the fake was asked to post on pull requests, and why it refuses one, for a test to seed and read (see {@link FakeComments}). */
+    comments,
     /** What the fake says of each pull request's stack, and the requests it was given to hand to the arm bot, for a test to seed and read (see {@link FakeStackMerges}). */
     stackMerges,
     /** The workflow runs the fake says it holds, by `owner/name#runId`, and the runs it was asked about, for a test to seed and read (see {@link FakeCiRuns}). */

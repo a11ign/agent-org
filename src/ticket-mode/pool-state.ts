@@ -25,8 +25,13 @@ export const isPlanning = (ctx: PoolContext, entry: Entry): boolean => {
   return entry.plan !== undefined && settings.planner !== null;
 };
 
-/** The model and effort a run starts on: the planning ones for a planning run, and the entry's own otherwise. */
-export const runChoice = (ctx: PoolContext, entry: Entry): RunChoice => (isPlanning(ctx, entry) && entry.plan ? entry.plan : entry);
+/**
+ * The model and effort a run starts on: the planning ones for a planning run, the ones its plan was written with for the planner's round of a stand-off (A11-290, when the plan recorded them), and the entry's own otherwise.
+ */
+export const runChoice = (ctx: PoolContext, entry: Entry): RunChoice => {
+  if (isPlanning(ctx, entry) && entry.plan) return entry.plan;
+  return entry.standoff?.stage === "planner" && entry.plannedWith ? entry.plannedWith : entry;
+};
 
 export const update = (ctx: PoolContext, change: (queue: Queue) => Queue) => {
   const { store } = ctx;

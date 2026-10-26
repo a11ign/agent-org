@@ -55,12 +55,16 @@
 // filing tool. A creation is refused when it names an `id` (an update) or `blocks` (a relation on another ticket), and past ten in the run. An attachment is
 // refused unless it names a ticket the run created, which the POST-TOOL-USE hook records as each creation returns (`created-issues.jsonl`, which only the
 // hook writes). A build worker is refused every filing tool by name, before the connector allow list is read, and the refusal names New ticket.
+import { execFileSync } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { escapeRegExp } from "../lib/escape-regexp.ts";
-import { escalationItem, offListRefusal, questionEscalation } from "./escalation.ts";
+import { escalationItem, escalationList, offListRefusal, questionEscalation } from "./escalation.ts";
+import type { PullNow } from "./pull-now-command.ts";
+import { bodyHash } from "./standoff-body-hash.ts";
+import { STANDOFF_DECISION_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE } from "./standoff-files.ts";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
@@ -73,7 +77,7 @@ import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMiss
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
-  ORDER_FILE, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+  ORDER_FILE, PLAN_DIR, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
@@ -121,7 +125,7 @@ function readyRefusal(approved: readonly string[]): Refusal {
  * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
  * tickets hold and the mark of the retry made for a folder claim (A11-212).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -555,7 +559,23 @@ type StopIo = Readonly<{
   exists: (path: string) => boolean; read: (path: string) => string; write: (path: string, text: string) => void;
   /** The names of the plan files in a plan folder, as the board takes them. */
   planNames: (planDir: string) => string[];
+  /** The head and the description a pull request has now, or null when they could not be read (A11-290). */
+  pull: (url: string) => PullNow | null;
 }>;
+
+/**
+ * The pull request's head and description through `ticket:pull-now`, which reads it through the enabled code host as the board does (A11-290): a call to GitHub belongs in `plugins/github/` (ADR 0012), so the hook asks the tool's own command and
+ * never `gh`. Null when the command cannot say.
+ */
+function pullNowViaCommand(url: string): PullNow | null {
+  try {
+    const out = execFileSync(process.execPath, [fileURLToPath(new URL("./pull-now-command.ts", import.meta.url)), url], { encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "ignore"] });
+    const { head, body } = JSON.parse(out) as { head?: unknown; body?: unknown };
+    return typeof head === "string" ? { head, body: typeof body === "string" ? body : "" } : null;
+  } catch {
+    return null;
+  }
+}
 
 /** The outcome file a stop is judged on, the stamp a `working` one leaves beside it, the transcript that may wake it, and whether the run is a new-ticket run, whose outcomes are the writer's (A11-267). */
 type StopSubject = Readonly<{ outcome: string; stamp: string; transcriptPath: string | undefined; writer: boolean }>;
@@ -663,6 +683,57 @@ function offListQuestion(checked: OffListQuestions): Judgment | null {
   if (questions.length === 0) return null;
   const listed = questions.map(({ key, path }) => `${key}: ${path}`).join("; ");
   return { ask: offListRefusal(`${listed} is a question whose first line is not \`**Escalation:** <id>\` with the id of an item of the escalation list`), stuck: `on a QUESTION.md that is not on the escalation list (${listed}), so this one is allowed and the board marks it "Off the escalation list"` };
+}
+
+/**
+ * A STAND-OFF ROUND'S `reviewed` (A11-290). The planner's round (`standoff-planner-run`) must have written its decision (`standoff-decision.json`: amended or upheld, with a reason) and, for an amended one, the amended plan in its plan folder. The worker's round
+ * (`standoff-round.json`, the head and a hash of the description each pull request had when the round began) must have changed something: a `reviewed` that leaves every pull request at the same head with the same description is a second reply with no change, and is
+ * refused unless the worker stops on an item of the escalation list. Both are counted and bounded like every refusal. A pull request `gh` cannot read allows the stop out loud, as the other checks do. Null for a run that is neither, and for an outcome that is not `reviewed`.
+ */
+function standoffStop(ticketDir: string, { text }: OutcomeRead, io: StopIo): Judgment | null {
+  const checked = checkOutcome(text);
+  if ("problem" in checked || checked.outcome.kind !== "reviewed") return null;
+  if (io.exists(join(ticketDir, STANDOFF_PLANNER_FILE))) return plannerDecisionStop(ticketDir, io);
+  const round = join(ticketDir, STANDOFF_ROUND_FILE);
+  return io.exists(round) ? unchangedStop(round, io) : null;
+}
+
+/** The refusal of a stand-off planner's `reviewed` that has no usable decision, or null when it has one. */
+function plannerDecisionStop(ticketDir: string, io: StopIo): Judgment | null {
+  const file = join(ticketDir, STANDOFF_DECISION_FILE);
+  const stuck = `without a usable ${file}, so this one is allowed and the board hands the run to a person`;
+  const ask = (why: string): Judgment => ({ ask: `${why}. Write ${file} as \`{ "decision": "amended" | "upheld", "reason": "<one or two sentences>" }\` before you write reviewed again.`, stuck });
+  if (!io.exists(file)) return ask(`this is the planner's round for a stand-off, and ${file} is not there`);
+  try {
+    const { decision, reason } = JSON.parse(io.read(file)) as { decision?: unknown; reason?: unknown };
+    if (decision !== "amended" && decision !== "upheld") return ask(`${file} needs decision: "amended" or "upheld"`);
+    if (typeof reason !== "string" || reason.trim() === "") return ask(`${file} needs a reason, in words`);
+    return decision === "amended" && io.planNames(join(ticketDir, PLAN_DIR)).length === 0 ? ask(`${file} says amended, but the plan folder ${join(ticketDir, PLAN_DIR)} holds no amended plan file`) : null;
+  } catch (err) {
+    return ask(`${file} cannot be read (${firstLine(err)})`);
+  }
+}
+
+/** The refusal of a stand-off worker's `reviewed` that changed no pull request's head or description since the round began, or null when something changed or could not be told. */
+function unchangedStop(round: string, io: StopIo): Judgment | null {
+  let began: Record<string, { head?: unknown; body?: unknown }>;
+  try {
+    began = JSON.parse(io.read(round)) as typeof began;
+  } catch (err) {
+    return { verdict: { code: 0, say: [`ticket:hook: ${round} cannot be read (${firstLine(err)}), so the stand-off round's change was not checked and the stop is ALLOWED.`] } };
+  }
+  const unchanged: string[] = [];
+  for (const [url, then] of Object.entries(began)) {
+    const now = io.pull(url);
+    if (now === null) return { verdict: { code: 0, say: [`ticket:hook: ${url} could not be read, so the stand-off round's change was not checked and the stop is ALLOWED.`] } };
+    const sameBody = typeof then.body !== "string" || bodyHash(now.body) === then.body;
+    if (now.head === then.head && sameBody) unchanged.push(url);
+    else return null;
+  }
+  if (unchanged.length === 0) return null;
+  return { ask: `This round answers a stand-off: the reviewer is still not convinced at an unchanged head after your reply. ${unchanged.join(", ")} has the head and the description it had when the round began, so this is a second reply with no change, which is refused. `
+    + `Meet the re-reviewer's reasons: change the code, or the measurement or the evidence they name (push, or change the description), then write reviewed again. If you cannot, stop with a \`needs-human\` outcome that names an item of the escalation list:\n\n${escalationList()}`,
+  stuck: `on a stand-off round that changed nothing at ${unchanged.join(", ")}, so this one is allowed and the board's A11-213 flag stands behind it` };
 }
 
 /**
@@ -809,18 +880,20 @@ function claimsRetry(ticketDir: string, { text, mtime }: OutcomeRead, io: StopIo
  * pull request its brief listed is refused once, with the missing addresses (A11-207), and so is one that claims a folder other tickets write into, with the narrower paths to use (A11-212).
  */
 export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t),
-  readOutcome = readOutcomeFile, planNames = planFileNames, transcriptPath, lastMessage }: {
+  readOutcome = readOutcomeFile, planNames = planFileNames, pull = pullNowViaCommand, transcriptPath, lastMessage }: {
   exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void;
   readOutcome?: (path: string) => OutcomeRead | null;
   /** The names of the plan files in a plan folder, as the board takes them. */
   planNames?: (planDir: string) => string[];
+  /** The head and the description a pull request has now (A11-290), or null when they cannot be read. */
+  pull?: (url: string) => PullNow | null;
   transcriptPath?: string;
   /** The message the agent ended its turn with, as the Stop payload carries it. */
   lastMessage?: string;
 } = {}): HookResult {
   const outcome = join(ticketDir, OUTCOME_FILE);
   const counter = join(ticketDir, STOP_COUNT_FILE);
-  const io: StopIo = { exists, read, write, planNames };
+  const io: StopIo = { exists, read, write, planNames, pull };
   // The board does not move the outcome while this stop reads it (A11-152). The mark goes when the stop ends, whatever it decided.
   write(join(ticketDir, STOP_ACTIVE_FILE), String(Date.now()));
   try {
@@ -831,7 +904,7 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
       return ALLOW;
     }
     const judged: Judgment = found !== null
-      ? offListStop(ticketDir, found, io) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath, writer: exists(join(ticketDir, WRITER_FILE)) }, found, io)
+      ? offListStop(ticketDir, found, io) ?? standoffStop(ticketDir, found, io) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath, writer: exists(join(ticketDir, WRITER_FILE)) }, found, io)
       : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
     if ("verdict" in judged) {
       // A plan that misses a blocker pull request is refused once, before the planner ends, and the refusal is no outcome problem: the count is left as it is (A11-207).

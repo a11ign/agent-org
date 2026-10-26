@@ -24,10 +24,25 @@ function fakePanes(isLive: (ref: ReviewerRef) => boolean) {
   };
 }
 
+/**
+ * The verdict file each head's reviewer wrote, by `url@head` (A11-290): it stays in the checkout when the reviewer closes, as the atomic reviewer's does, until the pull request is retired, so the board can read the verdict of a
+ * re-review the door refused after the reviewer is gone.
+ */
+function fakeCheckout() {
+  const files = new Map<string, string>();
+  return {
+    keep: (ref: ReviewerRef, file: string | null): void => { if (file === null) files.delete(key(ref)); else files.set(key(ref), file); },
+    fileOf: (ref: ReviewerRef): string | null => files.get(key(ref)) ?? null,
+    /** Forgets what the checkout holds for `pr`, and the reviewers in `live` for it: its pull request is retired. */
+    forget: (pr: string, live: Map<string, unknown>): void => { for (const held of [files, live]) for (const each of [...held.keys()]) if (each.startsWith(`${pr}@`)) held.delete(each); },
+  };
+}
+
 export function createFakeReviewer(refusalOfHost: string | null = null) {
   let refusal = refusalOfHost;
   let loaded = false;
-  const live = new Map<string, { label: string; turn: ReviewerSettled; file: string | null }>();
+  const live = new Map<string, { label: string; turn: ReviewerSettled }>();
+  const checkout = fakeCheckout();
   const started: ReviewerRef[] = [];
   /** The brief each start and each reprompt was given, in order (A11-156): what the pool told the reviewer of the ticket and of the replies. */
   const briefs: (ReviewBrief | undefined)[] = [];
@@ -50,7 +65,7 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       if (refusal !== null) return { refusal };
       started.push(ref);
       briefs.push(brief);
-      live.set(key(ref), { label: `fake-reviewer-${started.length}`, turn: "working", file: null });
+      live.set(key(ref), { label: `fake-reviewer-${started.length}`, turn: "working" });
       return { label: entryOf(ref)!.label };
     },
     live: (ref) => live.has(key(ref)),
@@ -63,13 +78,13 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       return { state: "closed" };
     },
     retire(pr) {
-      for (const [held] of live) if (held.startsWith(`${pr}@`)) live.delete(held);
+      checkout.forget(pr, live);
       retired.push(pr);
       return { retired: true, report: null };
     },
     listedPulls: () => [...new Set([...live.keys()].map((held) => held.slice(0, held.lastIndexOf("@"))))],
     settled: (ref) => entryOf(ref)?.turn ?? "gone",
-    verdictFileOf: (ref) => entryOf(ref)?.file ?? null,
+    verdictFileOf: (ref) => checkout.fileOf(ref),
     repostVerdict(ref, file) {
       reposted.push({ ref, file });
       return entryOf(ref) === undefined ? { refusal: `no reviewer for ${ref.pr}`, final: false } : { posted: true };
@@ -92,7 +107,7 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       const entry = entryOf(ref);
       if (entry === undefined) throw new RangeError(`fake reviewer: none is live for ${key(ref)}`);
       entry.turn = "ended";
-      entry.file = file;
+      checkout.keep(ref, file);
     },
     /** The reviewer for `ref` is blocked on a dialog (`showing`), which `unblock` answers or leaves stuck, or on none (null). */
     showing: panes.showing,

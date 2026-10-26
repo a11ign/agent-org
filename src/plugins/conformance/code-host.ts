@@ -541,6 +541,13 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(throws(() => host.closePull!("not a pull request", "closed by the conformance suite")), "closePull must throw for what is no pull request of the host, not answer as if it had closed it");
     },
   },
+  "commentOnPull throws for an address that is no pull request, so no caller reads a refusal as a post": {
+    applies: ({ host }) => typeof host.commentOnPull === "function",
+    reason: "the code host has no commentOnPull, which is optional (contract 1.26)",
+    run: ({ host }) => {
+      expect(throws(() => host.commentOnPull!("not a pull request", "posted by the conformance suite")), "commentOnPull must throw for what is no pull request of the host, not answer as if it had posted");
+    },
+  },
   "stackMergeFactsOf answers null for a pull request it cannot read, and says a pull request in no stack is not stacked": {
     applies: ({ host }) => typeof host.stackMergeFactsOf === "function",
     reason: "the code host has no stackMergeFactsOf, which is optional (contract 1.16)",

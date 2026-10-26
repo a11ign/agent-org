@@ -60,6 +60,7 @@ export const COMMANDS = {
   "ticket:capture": "ticket-mode/capture-command.ts",
   "ticket:hook": "ticket-mode/hook.ts",
   "ticket:pair": "ticket-mode/pair-command.ts",
+  "ticket:pull-now": "ticket-mode/pull-now-command.ts",
   "ticket:remote-info": "ticket-mode/remote-info-command.ts",
   "ticket:review": "ticket-mode/review-command.ts",
   "ticket:serve": "ticket-mode/server.ts",

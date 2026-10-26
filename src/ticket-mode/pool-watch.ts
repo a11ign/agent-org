@@ -35,6 +35,7 @@ import { observeWriter, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls, type PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
+import { startStandoffRound } from "./pool-standoff.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
 import { releaseTicketWaits } from "./pool-ticket-wait.ts";
@@ -557,7 +558,9 @@ export function watchFeedback(ctx: PoolContext): void {
     if (isWatched(entry)) {
       const lines = [feedbackSince(readable, entry.finishedAt ?? 0, ctx.baseMerges), checks.feedback, removals.feedback, removals.conflict, ...reviewer]
         .filter((line): line is string => line !== null);
-      if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
+      // A re-review that stayed not convinced at an unchanged head is routed to the planner or the worker, once for each head (A11-290), when no other round is due: feedback of another kind is answered first, and the stand-off is still open when that round ends.
+      if (lines.length === 0 && routeStandoff(ctx, entry.ticket.key)) queued = true;
+      else if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
       else {
         recordQueueAnswer(ctx, entry, removals.heads);
         update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads));
@@ -574,6 +577,12 @@ export function watchFeedback(ctx: PoolContext): void {
     flagReviewerDialog(ctx, key);
   }
   if (queued) void tick(ctx);
+}
+
+/** Route the stand-off the run holds now (A11-290), read afresh: the reviewer lines above may have just recorded it. Returns whether a round was queued. */
+function routeStandoff(ctx: PoolContext, key: string): boolean {
+  const current = ctx.store.get().entries.find((each) => each.ticket.key === key);
+  return current !== undefined && current.phase === "finished" && startStandoffRound(ctx, current);
 }
 
 /**

@@ -22,6 +22,7 @@ import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
 import { ESCALATION_RULE } from "./escalation.ts";
+import { DISPUTE_PHRASES } from "./standoff-dispute.ts";
 import { MOVE_RULE } from "./after-merge-move.ts";
 import { BLOCKED_BY_RULE } from "./plan-blockers.ts";
 import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
@@ -30,6 +31,7 @@ import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
 import { closedWorkText, type KeptClosedWork } from "./closed-work-account.ts";
+import { connectorsText, MISSING_SKILL, quoted, STALLING_COMMANDS } from "./brief-common.ts";
 import { diffText, type Finding, findingsText, lostText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
@@ -148,12 +150,6 @@ const FOREGROUND_WAIT = `Wait in the foreground, with blocking commands, such as
  */
 const CHECKS_NOT_STARTED = `When no check has started on your head commit, run \`gh pr view <url> --json mergeable,mergeStateStatus\` for each pull request first, before you wait longer or do anything else. GitHub runs no \`pull_request\` workflow on a pull request that conflicts with its base, so if it says CONFLICTING or DIRTY, merge the base branch in: \`git fetch\`, then \`git merge origin/<base>\` in its worktree. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, push, and wait for the checks on the new head. Never write \`needs-human\`, and never ask a person to re-run CI, for checks that did not start while the pull request is CONFLICTING or DIRTY. If it says UNKNOWN, GitHub is still computing it: look again in a minute. Write \`needs-human\` for checks that did not start only when the pull request is mergeable and they still have not started after the wait.`;
 
-/** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
-const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
-
-/** What an unattended run does with a command Claude Code would stop to ask a person about (A11-174, A11-209): the pool answers that prompt No, whether the main agent or one of its subagents raised it, so the command is written to raise none. */
-const STALLING_COMMANDS = "## Commands that stall an unattended run\n\nClaude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`. The subagents you start inherit these rules, so tell them. Every delete names an explicit path guarded with `${VAR:?}`, never a bare `*` after `cd`.";
-
 /**
  * What a planner does with a ticket that is only a parent: an epic whose work is all in the tickets under it is not work for one run, so its plan
  * says so and points the person at the children, rather than planning a run of its own (A11-24, an epic, was handed to a person on 2026-10-17).
@@ -252,16 +248,6 @@ ${quoted(ticket.description)}
 ### Files from ${ticket.key}
 
 ${filesText(attachments)}
-`;
-}
-
-/** The connectors section of the brief, or nothing when the machine allows none. */
-function connectorsText(connectors: readonly string[]): string {
-  if (connectors.length === 0) return "";
-  return `
-## Connectors
-
-This machine lets you call the connector tools whose names match ${connectors.map((pattern) => `\`${pattern}\``).join(", ")}. Use them for what your ticket needs, such as reading its parent, the tickets that block it and related work. Every other connector is refused.
 `;
 }
 
@@ -384,8 +370,6 @@ export function conflictsIn(text: string): string | null {
   return found === null ? null : found.join("\n");
 }
 
-/** A description quoted, so its own headings cannot read as the brief's. */
-const quoted = (description: string): string => (description.trim() || "(no description)").split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
 
 /**
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
@@ -724,17 +708,18 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
  * round the board started on its own: the new feedback on the pull requests, which are ready already, that the round answers. `asked` is set
  * on a round a person asked for with Respond to review: it answers the ready pull requests' current feedback, and `conflict` is the conflict lines the board
  * handed the run back for at its round cap, when it was (`conflictsIn`). `prReview` is the skill `tickets.prReview`
- * names, which each round runs on its whole diff before it pushes, or null for none.
+ * names, which each round runs on its whole diff before it pushes, or null for none. `standoff` is set on the worker's round for a stand-off (A11-290): the re-review stayed not convinced at an unchanged head, and `feedback` carries its reasons.
  */
-export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, conflict, prReview = null, read, previous, held }: {
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, standoff = false, conflict, prReview = null, read, previous, held }: {
   ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
-  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; conflict?: string; prReview?: string | null; read?: TicketRead; previous?: TicketRead; held?: string;
+  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; standoff?: boolean; conflict?: string; prReview?: string | null; read?: TicketRead; previous?: TicketRead; held?: string;
 }): string {
   const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
   const who = resumed
     ? "You wrote these pull requests earlier in this conversation."
     : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
-  const round = asked ? askedRound(who, conflict, feedback, prReview)
+  const round = standoff && feedback !== undefined ? standoffWorkerRound(who, feedback, prReview)
+    : asked ? askedRound(who, conflict, feedback, prReview)
     : feedback === undefined ? approvedRound(who, prReview)
     : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`,
       CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null, prReview);
@@ -816,7 +801,8 @@ type Round = Readonly<{ title: string; opening: string; steps: string; reviewed:
  * CHANGES_REQUESTED pull request left idle backs it up. A request it judges wrong on other grounds is answered with the evidence, and none of these ends in a stop that is not on the escalation list.
  */
 const DISPUTED_REVIEW = "When a review requests changes that go against the plan or the ticket's Decisions: make no change for it, reply on that pull request quoting the decision (the plan's line, or the ticket's Decisions entry with its heading), "
-  + "and end the round `reviewed`. Your reply starts the reviewer's re-review of the same head, which that decision binds. A request you judge wrong on other grounds is answered with the evidence. End `needs-human` only for an item on the escalation list.";
+  + "and end the round `reviewed`. Your reply starts the reviewer's re-review of the same head, which that decision binds. A request you judge wrong on other grounds is answered with the evidence. End `needs-human` only for an item on the escalation list. "
+  + `Start the line that disputes a decision with \`${DISPUTE_PHRASES[0]}\`, and the line that says the plan's own decision cannot be met, with the evidence, with \`${DISPUTE_PHRASES[1]}\`: if the reviewer is still not convinced at the same head, the board sends the dispute to the planner (where this machine has one), who can change a decision of the plan, and then back to you.`;
 
 /** The line a round's `reviewed` condition carries for a review it disputed on a decision (A11-257): the reply is the answer, and the reviewer re-reviews the head. */
 const REVIEWED_DISPUTED = "A review you disputed on a decision counts as answered once your reply quoting the decision is on the pull request.";
@@ -874,6 +860,28 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
     opening: [`${first} ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`, ...rest].join("\n\n"),
     steps: (merge === null ? items : [merge, ...items]).map((item, index) => `${index + 1}. ${item}`).join("\n"),
     reviewed: `Write \`reviewed\` only when every finding is answered and every check passed on the last commit you pushed. ${REVIEWED_DISPUTED}`,
+  };
+}
+
+/**
+ * The worker's round for a STAND-OFF (A11-290): the reviewer re-reviewed the head after the worker's reply and is still not convinced, and the planner has upheld the decision the reply disputed, or the reply disputed none. The worker must
+ * meet the re-reviewer's reasons with a change: a push, or a change to the measurement or the evidence the description holds. A second reply with no change at the same head is refused by the Stop hook (`standoff-round.json`), so the only other way out is a
+ * stop that names an item of the escalation list.
+ */
+function standoffWorkerRound(who: string, feedback: string, prReview: string | null): Round {
+  const wait = REVIEW_WAIT_MINUTES;
+  const items = [
+    "Read the stand-off above: the review you answered, your reply, the re-reviewer's reasons, and what the planner decided when it did. Each reason is a finding you must meet.",
+    "Meet each reason with a change in the worktree, with a test that fails without it where the reason is about behaviour: change the code, or redo the measurement or the evidence the reason names, and put the new figures in the pull request description. Do not reply again without a change: a second reply at the same head, with the description as it was, is refused by the Stop hook. Where you still judge a reason wrong, the evidence you change is how you show it. Run the repository's checks on what you changed.",
+    roundPushStep(prReview),
+    "Reply on each pull request with one comment: each reason, and what you changed for it.",
+    `Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
+  ];
+  return {
+    title: "stand-off round",
+    opening: `The board started this round for a stand-off on your pull requests. ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.\n\n${quoted(feedback)}`,
+    steps: items.map((item, index) => `${index + 1}. ${item}`).join("\n"),
+    reviewed: "Write `reviewed` only when each reason is met by a change: the head of each pull request has moved, or its description's measurement or evidence has changed, and every check passed on the last commit you pushed. A `reviewed` that changes neither is refused. The only other end is `needs-human` that names an item of the escalation list.",
   };
 }
 
