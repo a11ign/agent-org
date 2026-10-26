@@ -12,7 +12,7 @@ import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from
 import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -1029,7 +1029,8 @@ test("A11-106: the feedback sweeps are each scheduled on the feedback cadence, a
   };
   const scheduled: { run: () => void; ms: number }[] = [];
   startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
-  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS], "each sweep is on the feedback cadence");
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, REVIEW_START_MS], "each sweep is on the feedback cadence, except the reviewers' (A11-306)");
+  assert.ok(REVIEW_START_MS <= 60_000 && REVIEW_START_MS < FEEDBACK_MS, "a green head is looked at at least once a minute, so a reviewer starts well within 2 minutes of the checks going green");
   const stderr = process.stderr.write;
   const said: string[] = [];
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
@@ -1474,7 +1475,7 @@ test("A11-255: the dependency sweep is scheduled on the feedback cadence beside 
   const calls: string[] = [];
   scheduled.length = 0;
   startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); }, { dependencyUpdates: () => { calls.push("dependencyUpdates"); return Promise.reject(new Error("the code host is down")); } });
-  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS));
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, REVIEW_START_MS, FEEDBACK_MS]);
   const stderr = process.stderr.write;
   const said: string[] = [];
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;

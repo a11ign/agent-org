@@ -79,6 +79,11 @@ const TICK_MS = 30_000;
 const TRACKER_MS = 120_000;
 /** How often the open pull requests of runs Ready to merge are read for new feedback. Each is one GitHub request per pull request. */
 export const FEEDBACK_MS = 180_000;
+/**
+ * How often the open pull requests are looked at for a head whose checks have gone green and that has no review (A11-306). A reviewer starts at the first look that reads the head's checks green, so this is
+ * the longest the board leaves a green head unreviewed: well inside the 2 minutes it is to start within (`REVIEW_START_LIMIT_MS`), where the feedback cadence above left up to 3 minutes and more.
+ */
+export const REVIEW_START_MS = 60_000;
 /** How long herdr web ui may take to mint a terminal pairing code before the link goes out plain (A11-93). */
 const TERMINAL_PAIR_MS = 5_000;
 
@@ -670,7 +675,7 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
  */
 export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads">,
   every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void> } = {}): void {
-  const sweeps: { sweep: () => void | Promise<void>; failure: string }[] = [
+  const sweeps: { sweep: () => void | Promise<void>; failure: string; ms?: number }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
     { sweep: () => pool.releaseReviewers(), failure: "the reviewers of merged or closed pull requests could not be released" },
@@ -679,12 +684,13 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
     // The stacked branches are rebased when their blocker's branch moves (A11-116). Asynchronous, so a failure is said when it settles.
     { sweep: () => pool.rebaseStacked(), failure: "the stacked branches could not be rebased" },
     // A reviewer on each new head of every open pull request, whatever its run is in (A11-119): not the watched runs' only.
-    { sweep: () => pool.reviewNewHeads(), failure: "the reviewers of open pull requests could not be started" },
+    // On its own, faster cadence: the idle time between a green head and its review is the reviewer's start waiting for this sweep (A11-306).
+    { sweep: () => pool.reviewNewHeads(), failure: "the reviewers of open pull requests could not be started", ms: REVIEW_START_MS },
     // A Dependabot major, or a group whose gate stays red, is asked of the ticket writer once (A11-255). Asynchronous, so a failure is said when it settles.
     ...(board.dependencyUpdates === undefined ? [] : [{ sweep: board.dependencyUpdates, failure: "the dependency updates could not be turned into tickets" }]),
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
-  for (const { sweep, failure } of sweeps) {
+  for (const { sweep, failure, ms = FEEDBACK_MS } of sweeps) {
     every(() => {
       try {
         const done = sweep();
@@ -692,7 +698,7 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
       } catch (err) {
         said(failure, err);
       }
-    }, FEEDBACK_MS);
+    }, ms);
   }
 }
 

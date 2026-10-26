@@ -1,6 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { END_AT_PUSH } from "./ci-wait.ts";
 import { ESCALATION_RULE } from "./escalation.ts";
 import { MOVE_RULE } from "./after-merge-move.ts";
 import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
@@ -329,23 +330,23 @@ const reviewed = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-net
 const review = (feedback?: string) => reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true,
   ...(feedback === undefined ? {} : { feedback }) });
 
-test("a review round waits for checks in the foreground, each call under 10 minutes, and never ends its turn or a background task to wait", () => {
+test("A11-306: a review round waits on its own processes in the foreground, each call under 10 minutes, and never ends its turn or a background task to wait; it waits on neither CI nor the review", () => {
   for (const brief of [review(), review("New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.")]) {
-    assert.ok(brief.includes("`gh pr checks <url> --watch --interval 30`"), "a blocking command that returns when the checks finish");
-    assert.match(brief, /Keep each Bash call under 10 minutes, and run it again until what you wait for has finished or 30 minutes have passed\./);
-    assert.match(brief, /Never end your turn to wait, and never wait with `run_in_background` or a background task/);
+    assert.equal(brief.includes("--interval 30"), false, "no blocking command that returns when the checks finish");
+    assert.match(brief, /Wait on a process you started yourself, such as a build or a test run, in the foreground, with a blocking command, and keep each Bash call under 10 minutes\./);
+    assert.match(brief, /Never end your turn to wait for it, and never wait with `run_in_background` or a background task/);
     assert.match(brief, /The one background wait the brief allows is a Monitor on a process you started detached \(with `nohup`, `&`, `setsid` or a unit\)/, "a detached process is waited on by a Monitor, the one background wait the brief allows");
   }
 });
 
-test("a round the board started on new feedback names it, marks nothing ready, and writes reviewed only with the last commit's checks passing", () => {
+test("a round the board started on new feedback names it, marks nothing ready, and writes reviewed once its findings are answered and pushed, without waiting for the checks", () => {
   const feedback = "New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.";
   const brief = review(feedback);
   assert.match(brief, /^# NBF-1270: feedback round for Refresh Data gives no feedback\n/);
   assert.ok(brief.includes(`> ${feedback}`), "what started the round, quoted");
   assert.match(brief, /do not run `gh pr ready`/);
   assert.equal(/1\. Mark each pull request ready/.test(brief), false);
-  assert.match(brief, /Write `reviewed` only when every finding is answered and every check passed on the last commit you pushed\./);
+  assert.match(brief, /Write `reviewed` once every finding is answered and what it needed is pushed\. The checks on your push are the board's to watch, not yours to wait for\./);
   assert.match(review(), /1\. Mark each pull request ready with `gh pr ready <url>`\./, "POSITIVE CONTROL: a person's approval still marks them ready");
   assert.equal(reviewPrompt("/d", "feedback"), "New feedback reached this ticket's pull requests. Read /d/brief.md and follow it.");
   assert.equal(reviewPrompt("/d", "asked"), "A person asked you to answer the feedback on this ticket's pull requests. Read /d/brief.md and follow it.");
@@ -518,7 +519,7 @@ test("A11-82: a round whose feedback names a conflict merges the base in first, 
   assert.match(brief, /Never rebase, and never force-push\. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push\./);
   assert.match(brief, /Say in your reply on that pull request which files conflicted and how each was resolved\./);
   assert.match(brief, /^2\. Read that feedback/m);
-  assert.match(brief, /^6\. Wait at most 30 minutes/m, "the wait step is last, after the merge");
+  assert.match(brief, /^6\. \*\*End the round at the push\.\*\*/m, "the step that ends the round at the push is last, after the merge");
   assert.ok(brief.includes(conflicted), "the round says what started it");
 });
 
@@ -576,13 +577,41 @@ test("A11-89: every review round tells the worker, when no check has started, to
   const asked = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true });
   for (const [why, brief] of [["approved", approved], ["feedback", review(conflictFeedback)], ["asked", asked]] as const) {
     assert.match(brief, /^## When no check has started$/m, why);
-    assert.match(brief, /When no check has started on your head commit, run `gh pr view <url> --json mergeable,mergeStateStatus` for each pull request first, before you wait longer or do anything else\./, why);
+    assert.match(brief, /If you find that no check has started on your head commit, run `gh pr view <url> --json mergeable,mergeStateStatus` for each pull request first\./, why);
     assert.match(brief, /GitHub runs no `pull_request` workflow on a pull request that conflicts with its base, so if it says CONFLICTING or DIRTY, merge the base branch in: `git fetch`, then `git merge origin\/<base>`/, why);
     assert.match(brief, /Never rebase, and never force-push\. Resolve each conflict keeping both changes' intent/, `${why}: never a rebase, and both changes kept`);
     assert.match(brief, /Never write `needs-human`, and never ask a person to re-run CI, for checks that did not start while the pull request is CONFLICTING or DIRTY\./, why);
-    assert.match(brief, /Write `needs-human` for checks that did not start only when the pull request is mergeable and they still have not started after the wait\./, why);
+    assert.match(brief, /Do not wait for checks that have not started or have not finished, and do not write `needs-human` for them: they are not on the escalation list, and the board watches them\./, why);
   }
-  assert.match(approved, /If a check or the review has not finished by then, write a `needs-human` outcome that names what you waited for\./, "the approved round's wait keeps its words");
+});
+
+// A11-306: a worker ends its round at the push; the board wakes the run on a red required check and on review feedback.
+const WAITS_ON_CI = [/Wait at most/, /--interval/, /gh pr checks <url> --watch/, /If one fails, fix it, push, and wait again/, /Wait for each one's checks/];
+
+test("A11-306: the first-run brief says: push, write the outcome, end, and do not wait on CI", () => {
+  for (const [why, brief] of [["ready", briefWith({ drafts: false })], ["draft", briefWith()]] as const) {
+    assert.ok(brief.includes(END_AT_PUSH), `${why}: the brief carries the rule word for word`);
+    assert.match(brief, /\*\*End the round at the push\.\*\* Push, write the outcome file, and end your turn\. Do not wait on CI and do not wait for the review: the board watches both, and wakes this run with a new round on a red required check .* and on review feedback\./, why);
+    assert.match(brief, /The hook refuses `gh pr checks … --watch`, `gh run watch` and a `sleep` over 60 seconds, and says so\./, why);
+    for (const waits of WAITS_ON_CI) assert.equal(waits.test(brief), false, `${why}: ${waits} is no instruction of the brief`);
+  }
+});
+
+test("A11-306: every review round ends at the push, as the last step of its steps, and tells the worker to wait for neither the checks on its push nor a second review", () => {
+  const rounds = [
+    ["approved", reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true })],
+    ["feedback", review("New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.")],
+    ["asked", reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true })],
+    ["stand-off", reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, standoff: true, feedback: "The reviewer is still not convinced at the same head." })],
+  ] as const;
+  for (const [why, brief] of rounds) {
+    assert.ok(brief.includes(END_AT_PUSH), `${why}: the round carries the rule word for word`);
+    const steps = brief.slice(brief.indexOf("## What to do"), brief.indexOf("## When no check has started"));
+    const last = steps.split("\n").filter((line) => /^\d+\. /.test(line)).at(-1) ?? "";
+    assert.ok(last.includes("**End the round at the push.**"), `${why}: the last step ends the round at the push`);
+    for (const waits of WAITS_ON_CI) assert.equal(waits.test(brief), false, `${why}: ${waits} is no instruction of the round`);
+    assert.equal(/every check passed on (its|the) last commit/.test(brief), false, `${why}: reviewed does not wait for the checks of the push`);
+  }
 });
 
 test("A11-89: the first-run brief has no such section, since it never waits for checks", () => {

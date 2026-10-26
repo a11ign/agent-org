@@ -35,6 +35,9 @@
 // `protected-paths.json` beside the outcome file, and may not run `host:install` or any other command that installs them. The hook cannot see a TEST that writes
 // the file, so this is defence in depth: the guarded writer (`writeGhWrapper`) is what keeps a test from writing it.
 //
+// A WORKER DOES NOT WAIT ON CI (A11-306). `gh pr checks ... --watch`, `gh run watch` and a `sleep` over a minute (`ci-wait.ts`) are refused on any run, with the reason that the board watches the
+// checks and the review and wakes the run on a red required check and on review feedback: the run ends at its push. The Stop hook is as it was.
+//
 // On a machine with `tickets.drafts: false` the pool leaves `ready-run` beside the outcome file, and a worker may open its pull request ready
 // (`gh pr create` without `--draft`) only then. Without that mark, the draft refusal applies to every run, as before. No worker may write the mark.
 //
@@ -75,6 +78,7 @@ import type { Wait } from "./wait-on/wait-types.ts";
 import { checkOutcome, isStale } from "./outcome.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMisses, parseClaimsGiven, planClaimPaths, siblingClaims } from "./path-claims.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
+import { ciWaitRefusal } from "./ci-wait.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
   ORDER_FILE, PLAN_DIR, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
@@ -323,6 +327,8 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   if (toolName !== "Bash") return ALLOW;
   const command = String(input.command ?? "");
   if (/\bgh\s+pr\s+create\b/.test(command) && !/--draft\b/.test(command) && !ready) return refuse("open the pull request as a draft: `gh pr create --draft`");
+  const waiting = ciWaitRefusal(command);
+  if (waiting !== null) return refuse(`refused, because ${waiting}: ${command.split("\n")[0].slice(0, 120)}`);
   const hit = [...BASH_REFUSALS, HOST_INSTALL_REFUSAL, protectedWriteRefusal(hostPrograms), readyRefusal(approved), MARK_REFUSAL, BOARD_KEY_REFUSAL, BOARD_ROUTE_REFUSAL, ...machine]
     .find(({ pattern }) => pattern.test(command));
   return hit ? refuse(`refused, because ${hit.why}: ${command.split("\n")[0].slice(0, 120)}`) : ALLOW;

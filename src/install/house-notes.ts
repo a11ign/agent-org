@@ -10,12 +10,14 @@
 import { join } from "node:path";
 import { PUSH_ONCE_RULE } from "../ticket-mode/ci-spend/rules.ts";
 import { escalationList } from "../ticket-mode/escalation.ts";
+import { END_AT_PUSH } from "../ticket-mode/ci-wait.ts";
 import { agentOrgHome, type Env } from "./paths.ts";
 
 export const WORKER_NOTES = `# Worker house rules
 
 - **Identity.** Every \`gh\` call goes out as the GitHub login this machine's \`gh\` uses. Never set \`GH_TOKEN\` by hand.
 - **Toolchain and pushes.** ${PUSH_ONCE_RULE}
+- **After a push.** ${END_AT_PUSH}
 - **Releases.** A change to a published package carries a changeset. A change with no release says \`no-release: <reason>\` in the pull request body.
 - **Acceptance.** A pull request carries \`.acceptance/<branch>.md\`. It says what the change does and gives an \`Acceptance:\` bash block that proves it. The reviewer runs that block.
 - **Opening a pull request:** use \`gh pr create\`, ready and not draft. Its body says what changed and how it was verified, names the ticket with \`Closes <ticket key>\` when the pull request completes the ticket, or \`Refs <ticket key>\` with a \`Partial: <what remains>\` line when it does not (a plan step, \`step <N> of <M>\`, never an After-merge line of the Done-when: a pull request that leaves only those names the ticket \`Closes\`; pull requests that finish the ticket together each say \`Refs\`, with the others named in their \`Partial:\` line and no \`partial\` in the outcome), and gives an \`Outside-Region: <path> — <reason>\` line for each path outside the plan.
@@ -50,7 +52,7 @@ export const REVIEW_NOTES = `# How pull requests are reviewed
 
 A pull request is opened ready, never as a draft. Once it is ready, this machine's reviewer runs on its head and posts a verdict: APPROVED, or CHANGES_REQUESTED with each finding.
 
-**What the worker waits for.** CI on the last commit, and that review. Answer every finding: fix it, with a test where it is about behaviour, or rebut it with evidence. Then push, and reply once on the pull request. A new head gets a new review.
+**What the worker does not wait for.** CI on the last commit, and that review. The board watches both, and starts a round when a required check is red or the review has findings. Answer every finding: fix it, with a test where it is about behaviour, or rebut it with evidence. Then push, reply once on the pull request, and end the round. A new head gets a new review.
 
 **Merging.** A person merges the pull request. Nothing is published anywhere.
 `;

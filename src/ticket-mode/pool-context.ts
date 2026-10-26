@@ -174,6 +174,8 @@ export type PoolContext = Readonly<{
   pullReads: Map<string, PullRead>;
   /** The `url@head` keys whose refusal to start a reviewer was said, so a sweep says each once (A11-119). */
   refusedHeads: Set<string>;
+  /** When a look first read the checks of each `url@head` settled green with no review on it, until its reviewer starts: the green the gap to the reviewer's start is counted from (A11-306). */
+  greenSeen: Map<string, number>;
   /** The `url@head` keys the pool forgot or un-recorded: a memory file that still holds one does not put it back (A11-119). */
   reviewerDropped: Set<string>;
   claudeSessions: Map<string, string>;
@@ -285,6 +287,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The last read of each open pull request's review, and the refusals said, for the board and the sweep (A11-119). */
   const pullReads = new Map<string, PullRead>();
   const refusedHeads = new Set<string>();
+  const greenSeen = new Map<string, number>();
   const reviewerDropped = new Set<string>();
   /** The feedback a worker answers is read without the reviewer's own reviews, so its verdict never moves `feedbackAt`. */
   const feedbackIgnores = settings.reviewer === null ? [] : [REVIEWER_LOGIN];
@@ -295,7 +298,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
   };

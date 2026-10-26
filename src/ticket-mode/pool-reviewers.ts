@@ -189,6 +189,23 @@ type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => 
 
 const withUnclaimed = (reason: string | undefined): { unclaimed?: string } => (reason === undefined ? {} : { unclaimed: reason });
 
+/** How soon after the required checks go green a head with no review is to have its reviewer started (A11-306): the idle gaps of 9 to 22 minutes between a green head and a review were measured on 2026-10-26. */
+export const REVIEW_START_LIMIT_MS = 2 * 60_000;
+
+/** Notes the first look that reads a head's checks settled green with no review on it, which the gap to its reviewer's start is counted from (A11-306). */
+function noteGreen(ctx: PoolContext, key: string): void {
+  if (!ctx.greenSeen.has(key)) ctx.greenSeen.set(key, ctx.now());
+}
+
+/** Says how long after its checks were first read green a head's reviewer started, and that it was late when it was past {@link REVIEW_START_LIMIT_MS}, so the idle gaps show in the log (A11-306). Forgets the head's green. */
+function sayGreenGap(ctx: PoolContext, url: string, head: string, key: string): void {
+  const seen = ctx.greenSeen.get(key);
+  ctx.greenSeen.delete(key);
+  if (seen === undefined) return;
+  const gap = ctx.now() - seen;
+  log(`${url}: the reviewer started ${Math.round(gap / 1000)} s after the checks of ${head.slice(0, 8)} were first read green${gap > REVIEW_START_LIMIT_MS ? `, later than the ${REVIEW_START_LIMIT_MS / 60_000} minutes it is to start within` : ""}`);
+}
+
 /**
  * Starts the reviewer for `url` at `head` (A11-119's one start path, and A11-156's re-review by the same path). Recorded BEFORE the start, so an instance stopped while the reviewer starts never
  * starts it again for this head; a refusal un-records it. A first review adopts one herdr already lists for this head, where a re-review has none to adopt. The port claims the head for
@@ -227,6 +244,7 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
     // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
     rememberReviewers(ctx);
     log(`${url}: started ${started.label} ${kind.says} ${head.slice(0, 8)}`);
+    if (kind.recorded === ctx.reviewerStarted) sayGreenGap(ctx, url, head, key);
     if (started.tookOver !== undefined) log(`${url}: ${started.tookOver}`);
     return { refusal: null, tookOver: started.tookOver ?? null, ...withUnclaimed(started.unclaimed) };
   }
@@ -514,6 +532,8 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   // does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads it open must not start a
   // reviewer for it again. A new head after requested changes has no posted review, so it is started here.
   const startable = state.settled && !posted && !reviewerStarted.has(key);
+  if (startable) noteGreen(ctx, key);
+  else if (posted) ctx.greenSeen.delete(key);
   const first = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, state) : null;
   closeAnsweredReviewer(ctx, reviewer, url, state);
   // A re-review the verdict door refused leaves its result on the run and on the pull request (A11-290), before another look at the head is asked for.
@@ -631,6 +651,7 @@ export function reviewNewHeads(ctx: PoolContext): void {
   // A pull request no longer open is no longer shown, unless a repository could not be listed: then what it showed stays until the next sweep reads it.
   if (!unlisted) for (const url of [...pullReads.keys()]) if (!listed.has(url)) pullReads.delete(url);
   if (!unlisted) forgetClosedRefusals(ctx, listed);
+  if (!unlisted) for (const key of [...ctx.greenSeen.keys()]) if (!listed.has(splitHeadKey(key).url)) ctx.greenSeen.delete(key);
   forgetMendedClaimProblems(ctx);
 }
 

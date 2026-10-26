@@ -27,6 +27,7 @@ import { MOVE_RULE } from "./after-merge-move.ts";
 import { BLOCKED_BY_RULE } from "./plan-blockers.ts";
 import { AFTER_MERGE_CHECKS_RULE } from "./after-merge/plan-section.ts";
 import { heldText, PUSH_ONCE_RULE } from "./ci-spend/rules.ts";
+import { END_AT_PUSH } from "./ci-wait.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
@@ -85,8 +86,6 @@ export const protectedPaths = (binDir: string): string[] => PROTECTED_PROGRAMS.m
  * hook allow `gh pr ready`, which only that person's approval makes the worker's to run.
  */
 export const REVIEW_FILE = "review-run";
-/** How long a review run waits for a pull request's checks or its review before it hands the run back. */
-export const REVIEW_WAIT_MINUTES = 30;
 /**
  * Present beside a PUBLISH RUN's outcome file, written by the board: the connector tool names it may call, as `{ "connectors": [...] }`. It lets
  * the PreToolUse hook allow the publisher plugin's skill and those connectors, which only a person's Publish makes a run's to use.
@@ -137,18 +136,17 @@ export const PR_REVIEW_LOG_FILE = "pr-review-log";
 export { PUBLISHED_FILE };
 
 /**
- * How a review run waits. A worker that ended its turn to wait was read as a run that stopped: the Stop hook let the third stop through, the
- * agent went idle with no outcome, and the board parked the run mid-review (NBF-1463, 2026-10-16). So it waits in the foreground.
+ * How a review round waits on its own processes. It never waits on CI or on the review ({@link END_AT_PUSH}). A worker that ended its turn to wait on a process it started was read as a run that stopped: the Stop hook let the third stop through, the
+ * agent went idle with no outcome, and the board parked the run mid-review (NBF-1463, 2026-10-16). So that wait is in the foreground.
  */
-const FOREGROUND_WAIT = `Wait in the foreground, with blocking commands, such as \`gh pr checks <url> --watch --interval 30\`. Keep each Bash call under 10 minutes, and run it again until what you wait for has finished or ${REVIEW_WAIT_MINUTES} minutes have passed. Never end your turn to wait, and never wait with \`run_in_background\` or a background task: the board reads a turn that ends without an outcome file as a run that stopped. The one background wait the brief allows is a Monitor on a process you started detached (with \`nohup\`, \`&\`, \`setsid\` or a unit), since such a process wakes you when it ends only if a Monitor is armed on its PID or its log, such as \`until ! kill -0 <pid>; do sleep 5; done\`: write \`working\` for it only while that Monitor runs, since a bare \`working\` for a detached process is refused.`;
+const OWN_PROCESS_WAIT = `Wait on a process you started yourself, such as a build or a test run, in the foreground, with a blocking command, and keep each Bash call under 10 minutes. Never end your turn to wait for it, and never wait with \`run_in_background\` or a background task: the board reads a turn that ends without an outcome file as a run that stopped. The one background wait the brief allows is a Monitor on a process you started detached (with \`nohup\`, \`&\`, \`setsid\` or a unit), since such a process wakes you when it ends only if a Monitor is armed on its PID or its log, such as \`until ! kill -0 <pid>; do sleep 5; done\`: write \`working\` for it only while that Monitor runs, since a bare \`working\` for a detached process is refused.`;
 
 /**
  * What a review round does when no check has started on its head commit (A11-89). GitHub runs no `pull_request` workflow on a pull request that
  * conflicts with its base, so a worker that waited for one parked as "CI never started" and asked a person to re-run CI, which a merge of the base
- * clears and a re-run cannot. It reads the merge state first. The approved round's "needs-human" for a check that has not finished is kept, and
- * this section is the exception to it for checks that did not start.
+ * clears and a re-run cannot. It reads the merge state first.
  */
-const CHECKS_NOT_STARTED = `When no check has started on your head commit, run \`gh pr view <url> --json mergeable,mergeStateStatus\` for each pull request first, before you wait longer or do anything else. GitHub runs no \`pull_request\` workflow on a pull request that conflicts with its base, so if it says CONFLICTING or DIRTY, merge the base branch in: \`git fetch\`, then \`git merge origin/<base>\` in its worktree. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, push, and wait for the checks on the new head. Never write \`needs-human\`, and never ask a person to re-run CI, for checks that did not start while the pull request is CONFLICTING or DIRTY. If it says UNKNOWN, GitHub is still computing it: look again in a minute. Write \`needs-human\` for checks that did not start only when the pull request is mergeable and they still have not started after the wait.`;
+const CHECKS_NOT_STARTED = `If you find that no check has started on your head commit, run \`gh pr view <url> --json mergeable,mergeStateStatus\` for each pull request first. GitHub runs no \`pull_request\` workflow on a pull request that conflicts with its base, so if it says CONFLICTING or DIRTY, merge the base branch in: \`git fetch\`, then \`git merge origin/<base>\` in its worktree. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, push, and end the round at the push. Never write \`needs-human\`, and never ask a person to re-run CI, for checks that did not start while the pull request is CONFLICTING or DIRTY. If it says UNKNOWN, GitHub is still computing it: the board reads it again. Do not wait for checks that have not started or have not finished, and do not write \`needs-human\` for them: they are not on the escalation list, and the board watches them.`;
 
 /**
  * What a planner does with a ticket that is only a parent: an epic whose work is all in the tickets under it is not work for one run, so its plan
@@ -671,6 +669,8 @@ ${commitStep(prReview)}
 ${capture ? `${captureStep(ticketDir)}\n` : ""}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords, read) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords, read)}
 ${designTools ? DESIGN_CHECK_DONE : DESIGN_CHECK_DECLINED}
 
+${END_AT_PUSH}
+
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
 
 ${MISSING_SKILL}
@@ -747,7 +747,7 @@ ${TICKET_DECISIONS}
 
 ${RELAY_DECISION}
 
-${FOREGROUND_WAIT}
+${OWN_PROCESS_WAIT}
 
 ## When no check has started
 
@@ -807,21 +807,20 @@ const DISPUTED_REVIEW = "When a review requests changes that go against the plan
 /** The line a round's `reviewed` condition carries for a review it disputed on a decision (A11-257): the reply is the answer, and the reviewer re-reviews the head. */
 const REVIEWED_DISPUTED = "A review you disputed on a decision counts as answered once your reply quoting the decision is on the pull request.";
 
-/** The round a person started by approving the draft pull requests: mark them ready, then see them through their checks and review. */
+/** The round a person started by approving the draft pull requests: mark them ready, answer what is on them, and end at the push (A11-306). */
 function approvedRound(who: string, prReview: string | null): Round {
-  const wait = REVIEW_WAIT_MINUTES;
   return {
     title: "review round",
     opening: `A person reviewed your draft pull requests and approved them. ${who} You are unattended again: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`,
     steps: `If a pull request conflicts with its base branch (\`gh pr view <its url> --json mergeable,mergeStateStatus\` says CONFLICTING or DIRTY), merge the base into your branch first, as step 1 of a feedback round says: never rebase, and never force-push.
 
 1. Mark each pull request ready with \`gh pr ready <url>\`.
-2. Wait for each one's checks and its review, as "How this machine reviews" says. Wait at most ${wait} minutes for each. If a check or the review has not finished by then, write a \`needs-human\` outcome that names what you waited for.
-3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. ${DISPUTED_REVIEW} Run the repository's checks on what you changed.
+2. Read every review comment and every failed check that is on each pull request now. Do not wait for a check or the review that has not finished: the board watches them.
+3. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. ${DISPUTED_REVIEW} Run the repository's checks on what you changed.
 4. ${roundPushStep(prReview)}
 5. Reply on each pull request with one comment: each finding, and what you did about it.
-6. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again. Do not wait for a second review: the board starts another round when new feedback comes.`,
-    reviewed: `Write \`reviewed\` only when every pull request is ready, every finding is answered, and every check passed on its last commit. ${REVIEWED_DISPUTED}`,
+6. ${END_AT_PUSH}`,
+    reviewed: `Write \`reviewed\` once every pull request is ready and every finding that was on it is answered. The checks on your push and a second review are the board's to watch, not yours to wait for. ${REVIEWED_DISPUTED}`,
   };
 }
 
@@ -846,20 +845,19 @@ function roundPushStep(prReview: string | null): string {
  * `prReview` is the skill the machine's review runs before the round's push, or null.
  */
 function answerRound(who: string, why: string, merge: string | null, prReview: string | null): Round {
-  const wait = REVIEW_WAIT_MINUTES;
   const [first, ...rest] = why.split("\n\n");
   const items = [
     "Read that feedback and everything else on each pull request since your last reply: its reviews, its conversation comments, its inline review comments and its failed checks. The pull requests are ready already: do not run `gh pr ready`.",
     `Fix each finding that is right in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: answer it with the evidence instead. ${DISPUTED_REVIEW} Run the repository's checks on what you changed.`,
     roundPushStep(prReview),
     "Reply on each pull request with one comment: each finding, and what you did about it.",
-    `Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
+    END_AT_PUSH,
   ];
   return {
     title: "feedback round",
     opening: [`${first} ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`, ...rest].join("\n\n"),
     steps: (merge === null ? items : [merge, ...items]).map((item, index) => `${index + 1}. ${item}`).join("\n"),
-    reviewed: `Write \`reviewed\` only when every finding is answered and every check passed on the last commit you pushed. ${REVIEWED_DISPUTED}`,
+    reviewed: `Write \`reviewed\` once every finding is answered and what it needed is pushed. The checks on your push are the board's to watch, not yours to wait for. ${REVIEWED_DISPUTED}`,
   };
 }
 
@@ -869,19 +867,18 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
  * stop that names an item of the escalation list.
  */
 function standoffWorkerRound(who: string, feedback: string, prReview: string | null): Round {
-  const wait = REVIEW_WAIT_MINUTES;
   const items = [
     "Read the stand-off above: the review you answered, your reply, the re-reviewer's reasons, and what the planner decided when it did. Each reason is a finding you must meet.",
     "Meet each reason with a change in the worktree, with a test that fails without it where the reason is about behaviour: change the code, or redo the measurement or the evidence the reason names, and put the new figures in the pull request description. Do not reply again without a change: a second reply at the same head, with the description as it was, is refused by the Stop hook. Where you still judge a reason wrong, the evidence you change is how you show it. Run the repository's checks on what you changed.",
     roundPushStep(prReview),
     "Reply on each pull request with one comment: each reason, and what you changed for it.",
-    `Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
+    END_AT_PUSH,
   ];
   return {
     title: "stand-off round",
     opening: `The board started this round for a stand-off on your pull requests. ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.\n\n${quoted(feedback)}`,
     steps: items.map((item, index) => `${index + 1}. ${item}`).join("\n"),
-    reviewed: "Write `reviewed` only when each reason is met by a change: the head of each pull request has moved, or its description's measurement or evidence has changed, and every check passed on the last commit you pushed. A `reviewed` that changes neither is refused. The only other end is `needs-human` that names an item of the escalation list.",
+    reviewed: "Write `reviewed` only when each reason is met by a change: the head of each pull request has moved, or its description's measurement or evidence has changed. The checks on your push are the board's to watch, not yours to wait for. A `reviewed` that changes neither is refused. The only other end is `needs-human` that names an item of the escalation list.",
   };
 }
 
