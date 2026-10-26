@@ -228,7 +228,7 @@ describe("a filter", () => {
 
   it("draws every status in the rail, a status with no runs dimmed", async () => {
     await pageOn();
-    expect(rail().getAllByRole("button")).toHaveLength(17);
+    expect(rail().getAllByRole("button")).toHaveLength(18);
     expect(rail().getByRole("button", { name: /^Needs you/ }).className).toContain("rail-button-empty");
     expect(rail().getByRole("button", { name: /^Completed/ }).className).not.toContain("rail-button-empty");
     expect(textOf(rail().getByRole("button", { name: /^All runs/ }))).toBe("All runs90");

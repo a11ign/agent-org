@@ -18,14 +18,19 @@ function originOf(path: string, deps: Pick<PluginDeps, "exec">): string | null {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
-/** Whether GitHub makes stacked pull requests available to each GitHub repository a clone names. A host with no GitHub clone adds no check. */
-function stacksChecks(account: Account, deps: PluginDeps): PluginCheck[] {
-  const name = "stacked pull requests";
-  const repos = [...new Set(Object.values(deps.clones).flatMap((path) => {
+/** Each GitHub repository a clone of this host names, once, as `owner/name`: the repositories the board opens pull requests in. A host with no GitHub clone names none. */
+export function githubRepositoriesOf(deps: Pick<PluginDeps, "clones" | "exec">): string[] {
+  return [...new Set(Object.values(deps.clones).flatMap((path) => {
     const remote = originOf(path, deps);
     const repo = remote === null ? null : githubRepoOf(remote);
     return repo === null ? [] : [repo];
   }))];
+}
+
+/** Whether GitHub makes stacked pull requests available to each GitHub repository a clone names. A host with no GitHub clone adds no check. */
+function stacksChecks(account: Account, deps: PluginDeps): PluginCheck[] {
+  const name = "stacked pull requests";
+  const repos = githubRepositoriesOf(deps);
   if (repos.length === 0) return [];
   const run = accountRunner(deps, account);
   const readings = repos.map((repo) => [repo, stacksOf(run, repo)] as const);

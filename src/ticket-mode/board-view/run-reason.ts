@@ -4,6 +4,7 @@ import { pullAnswer, type PullAnswer } from "./pull-answer.ts";
 import { afterPartialMerge, stepQueuedLine, stepRunningLine } from "./plan-steps.ts";
 import { completedEarly, settledByPulls } from "./pull-settled.ts";
 import { mergeWaitLine } from "./pull-readiness.ts";
+import { notMergingLine } from "./not-merging.ts";
 import { rebaseNote, retargetNote, runStatus, verdictNote, workingNote } from "./pull-status-and-notes.ts";
 import { openPulls, pullsOf, type ViewEntry } from "./view-types-and-filters.ts";
 import { pullLabel } from "./pull-label.ts";
@@ -157,6 +158,8 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   const asked = once(askedReason(entry, now));
   // A reviewer herdr would not start twice is what the card says first, and the worker's question, if it asked one, stays one click away (A11-241).
   if (entry.reviewerRefused !== undefined && runStatus(entry) === "needs-you") return { line: entry.reviewerRefused, question: asked };
+  // A pull request approved and green that nothing merges, for an hour, or that installs a merge flow, is what the card says first (A11-291).
+  if (entry.mergeNote !== undefined && runStatus(entry) === "needs-you") return { line: entry.mergeNote, question: asked };
   const answer = pullAnswer(entry);
   if (answer !== null) return { line: answerLine(entry, answer), question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).
@@ -167,8 +170,8 @@ export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: strin
   // A `needs-human` run whose pull requests merged and whose next step is not simply queued says the blocker is gone and what happens next, in place of the question it asked, which stays one click away (A11-258).
   const cleared = blockerClearedLine(entry);
   if (cleared !== null) return { line: ticketChangeLine(entry) ?? [cleared, stepNote(entry)].filter((part) => part !== null).join("; "), question: asking ?? asked };
-  // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167). A reviewed run that is not ready says what it waits on (A11-179).
-  return { line: ticketChangeLine(entry) ?? asked ?? stepNote(entry) ?? mergeWait(entry), question: asking };
+  // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167). A pull request approved and green that nothing merges says so, with the reason (A11-291). A reviewed run that is not ready says what it waits on (A11-179).
+  return { line: ticketChangeLine(entry) ?? asked ?? notMergingLine(entry) ?? stepNote(entry) ?? mergeWait(entry), question: asking };
 }
 
 

@@ -15,7 +15,7 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mergeBaseInto } from "./pool-base-merge.ts";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, mergesBase, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
-import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, type Queue, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
 import { wakePrompt } from "./wait-on/wait-prompt.ts";
 import { reseatMoved, resumeAfterRestart, sendToAgent, watchIdle } from "./pool-resume.ts";
@@ -48,6 +48,9 @@ import { recordQueueHeads } from "./queue/queue-merge-queue.ts";
 import { foreignRedsOf } from "./pool-foreign-checks.ts";
 import { reseatRuns } from "./pool-reseat.ts";
 import { reconcileExposure } from "./pool-exposure.ts";
+import { markedHeads, mergeNote } from "./board-view/not-merging.ts";
+import { recordMergeNote } from "./queue/queue-merge-note.ts";
+import type { MergeFlow } from "../plugins/contracts/code-host.ts";
 import { sweepRunTmp } from "./run-isolation.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
@@ -564,6 +567,7 @@ export function watchFeedback(ctx: PoolContext): void {
   // After every run's round was decided: a run that was handed a round has left `finished`, and a note does not change what the loop above decided for the run.
   for (const key of recorded) {
     flagStaleBlock(ctx, key);
+    flagMerge(ctx, key);
     flagReviewerDialog(ctx, key);
   }
   if (queued) void tick(ctx);
@@ -609,11 +613,37 @@ function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer,
 function recordHeads(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): void {
   const key = entry.ticket.key;
   followUpdatesFromMain(ctx, entry, readable);
-  const heads = stampedBlocks(withMergeableForBlocked(pullHeadsOf(readable), entry), entry.pullHeads, ctx.now());
+  const reads = Object.fromEntries(readable.map(({ url, read }) => [url, read]));
+  const marked = markedHeads(pullHeadsOf(readable), reads, entry.pullHeads, ctx.now(), (repository) => mergeFlowOf(ctx, repository));
+  const heads = stampedBlocks(withMergeableForBlocked(marked, entry), entry.pullHeads, ctx.now());
   if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads, ctx.now()));
   const open = readable.filter(({ read }) => read.state === "open");
   const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
   if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
+}
+
+/** How long what the board read of a repository's merge flow is believed (A11-291): the flow changes by a pull request and a setting, both slow, and the card needs the reason once a pull request has sat for a quarter of an hour. */
+const MERGE_FLOW_TTL_MS = 10 * 60_000;
+
+/** What the code host says of a repository's merge flow, or null when it could not say or threw. */
+function readFlowOrNull(codeHost: PoolContext["codeHost"], repository: string): MergeFlow | null {
+  try {
+    return codeHost.readMergeFlow?.(repository) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `repository` can merge a pull request by itself, as the code host last said within {@link MERGE_FLOW_TTL_MS}, read now when it did not (A11-291). Undefined for a host that cannot be asked, and null for a repository it could not read: neither is "no flow". */
+function mergeFlowOf(ctx: PoolContext, repository: string): MergeFlow | null | undefined {
+  const { codeHost, mergeFlows, now } = ctx;
+  if (codeHost.readMergeFlow === undefined) return undefined;
+  const known = mergeFlows.get(repository);
+  if (known !== undefined && now() - known.at < MERGE_FLOW_TTL_MS) return known.flow;
+  // A read that fails keeps what was last known, so a reason that depends on it does not flip, and rewrite the queue, with the host's weather; and a host that throws is no reading either (the contract says it does not).
+  const flow = readFlowOrNull(codeHost, repository) ?? known?.flow ?? null;
+  mergeFlows.set(repository, { at: now(), flow });
+  return flow;
 }
 
 /**
@@ -651,13 +681,14 @@ function headUpdatedFromMain(ctx: PoolContext, entry: Entry, url: string): strin
 }
 
 /**
- * Clear the stale-block note (A11-213) and the reviewer-dialog note (A11-221) of a finished run that has no pull request left open, or whose ticket the tracker settled: the watch below reads only runs with an open pull request, so a pull
+ * Clear the stale-block note (A11-213), the merge note (A11-291) and the reviewer-dialog note (A11-221) of a finished run that has no pull request left open, or whose ticket the tracker settled: the watch below reads only runs with an open pull request, so a pull
  * request merged or closed since the note was set would leave it on the card. The status is already Completed or Cancelled; this keeps the card from quoting a block that is gone.
  */
 function clearOverStaleBlocks(ctx: PoolContext): void {
   for (const entry of ctx.store.get().entries) {
     const over = entry.phase === "finished" && (openPulls(entry).length === 0 || SETTLED.has(entry.trackerState ?? ""));
     if (over && isStaleBlockNote(entry.handedBack)) update(ctx, (queue) => recordStaleBlock(queue, entry.ticket.key, null, ctx.now()));
+    if (over && entry.mergeNote !== undefined) update(ctx, (queue) => recordMergeNote(queue, entry.ticket.key, null, ctx.now()));
     if (over && isReviewerDialogNote(entry.handedBack)) update(ctx, (queue) => recordReviewerDialog(queue, entry.ticket.key, null, ctx.now()));
   }
 }
@@ -667,10 +698,27 @@ function clearOverStaleBlocks(ctx: PoolContext): void {
  * it goes again once a push, an approval or a round ends the block. Written only when it changes, as the heads are. A run's heads are those the watch has just recorded.
  */
 function flagStaleBlock(ctx: PoolContext, key: string): void {
+  flagHandedBack(ctx, key, (queue, entry, at) => recordStaleBlock(queue, key, staleBlockNote(entry, at), at));
+}
+
+/**
+ * Flag a finished run whose open pull request is approved and green and that nothing merges (A11-291, {@link mergeNote}): a pull request that adds the repository's first merge flow reads Needs you the day it is approved, since no bot can merge it, and any
+ * other once it has sat for an hour. The note becomes the run's `mergeNote`, which `runStatus` reads as Needs you while the board goes on watching the run, and goes again at the first watch that finds the pull request merging or merged. Written only when it changes.
+ */
+function flagMerge(ctx: PoolContext, key: string): void {
   const { now, store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   if (entry === undefined) return;
-  const next = recordStaleBlock(store.get(), key, staleBlockNote(entry, now()), now());
+  const next = recordMergeNote(store.get(), key, mergeNote(entry, now()), now());
+  if (next !== store.get()) update(ctx, () => next);
+}
+
+/** Write what `record` makes of the queue for the run `key` when it changes the run's `handedBack`, and nothing otherwise. */
+function flagHandedBack(ctx: PoolContext, key: string, record: (queue: Queue, entry: Entry, at: number) => Queue): void {
+  const { now, store } = ctx;
+  const entry = store.get().entries.find((e) => e.ticket.key === key);
+  if (entry === undefined) return;
+  const next = record(store.get(), entry, now());
   if (next.entries.find((e) => e.ticket.key === key)?.handedBack !== entry.handedBack) update(ctx, () => next);
 }
 
