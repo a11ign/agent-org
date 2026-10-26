@@ -11,4 +11,3 @@ export const STANDOFF_PLANNER_FILE = "standoff-planner-run";
 export const STANDOFF_ROUND_FILE = "standoff-round.json";
 /** What the planner's round writes: its decision and the reason. */
 export const STANDOFF_DECISION_FILE = "standoff-decision.json";
-

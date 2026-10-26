@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { verdictAtHead, verdictBearers } from "../review-verdict.ts";
 import { logOf } from "./queue/run-log.ts";
-import { clock, HEAD, MINUTE, refusedFile, standoffRun } from "./pool-standoff-fixture.ts";
+import { clock, HEAD, MINUTE, PLANNER, refusedFile, settled, standoffRun } from "./pool-standoff-fixture.ts";
 
 const REASONS = "The 200 KB limit is still exceeded: `dist/app.js` is 340 KB.";
 
@@ -111,4 +111,25 @@ test("A11-290: the scan of the reviewer's checkout is made once for a re-review 
   spied.verdictFileOf = (ref) => { looked += 1; return original(ref); };
   for (let sweep = 0; sweep < 3; sweep += 1) pool.reviewNewHeads();
   assert.equal(looked, 0);
+});
+
+test("A11-290: replies that cannot be read are not 'no reply': nothing is recorded or routed until they can, and then a disputed decision goes to the planner", async () => {
+  const { fixture, host, pool, entry, startRereview, refuseRereview } = await standoffRun({ tickets: PLANNER });
+  startRereview("Plan cannot be met: the plan's 200 KB limit is below the entry point's 300 KB.");
+  const reads = host as { readReplies: typeof host.readReplies };
+  const readable = reads.readReplies.bind(host);
+  reads.readReplies = () => null;
+  refuseRereview();
+  pool.reviewNewHeads();
+  assert.equal(logOf(fixture.store.get(), "NBF-1").filter((event) => event.kind === "rereview").length, 0, "the worker's reply is unknown, so the result is held");
+  assert.equal(entry().standoff, undefined);
+  assert.equal(host.comments.posted.length, 0);
+  reads.readReplies = readable;
+  pool.reviewNewHeads();
+  assert.equal(logOf(fixture.store.get(), "NBF-1").filter((event) => event.kind === "rereview").length, 1, "the next sweep records it");
+  assert.match(entry().standoff?.reply ?? "", /Plan cannot be met/);
+  clock.ms += MINUTE;
+  pool.watchFeedback();
+  assert.equal(entry().standoff?.stage, "planner", "and the dispute reaches the planner, not the worker");
+  await settled();
 });
