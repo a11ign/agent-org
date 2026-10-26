@@ -48,6 +48,8 @@ export type InstanceAnswers = Readonly<{
   post?: (path: string, body: unknown) => unknown | Failure;
   /** The After-merge checks of each ticket, as its own read (`GET /api/queue/<key>`) sends them (A11-302). */
   ticketChecks?: Readonly<Record<string, readonly TicketCheck[]>>;
+  /** The sentence an instance sends instead of any ticket's checks when it cannot read them (A11-302). */
+  ticketChecksUnreadable?: string;
 }>;
 
 export type Stand = Readonly<{
@@ -83,7 +85,7 @@ function runAnswer(answers: InstanceAnswers, key: string): { status: number; bod
   if (answers.queueFails !== undefined) return failed(answers.queueFails);
   const queue = (answers.queue ?? queueOf()) as QueueView & { runLog?: Readonly<Record<string, unknown>> };
   const entry = queue.entries.find((candidate) => candidate.ticket.key === key);
-  return entry === undefined ? json({ error: `no run ${key} on the queue` }, 404) : json({ entry, runLog: queue.runLog?.[key] ?? [], ...(answers.ticketChecks?.[key] === undefined ? {} : { afterMergeChecks: answers.ticketChecks[key] }) });
+  return entry === undefined ? json({ error: `no run ${key} on the queue` }, 404) : json({ entry, runLog: queue.runLog?.[key] ?? [], ...(answers.ticketChecks?.[key] === undefined ? {} : { afterMergeChecks: answers.ticketChecks[key] }), ...(answers.ticketChecksUnreadable === undefined ? {} : { afterMergeUnreadable: answers.ticketChecksUnreadable }) });
 }
 
 /** The answer to a request that changes something, or to a read the instance has no answer for. */

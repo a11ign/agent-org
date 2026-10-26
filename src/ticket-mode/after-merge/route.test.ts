@@ -12,6 +12,7 @@ import { enqueue } from "../queue/queue-entries-and-outcomes.ts";
 import { ticketOf } from "../kept-pulls-fixture.ts";
 import { parseTicketSettings } from "../settings.ts";
 import { seedChecks, emptyChecks } from "./checks.ts";
+import { readFileSync, writeFileSync } from "node:fs";
 import { afterMergeChecksPath, loadChecks, saveChecks } from "./store.ts";
 
 const LINE = "Chairman session: the next major arrives as a ticket.";
@@ -34,7 +35,7 @@ function board(now = 9_000) {
   const seeded = seedChecks(emptyChecks(), [{ ticket: { key: "A11-235", url: "https://linear.app/a11ign/issue/A11-235" }, finishedAt: 1_000, afterMerge: [{ line: LINE, owner: null }] },
     { ticket: { key: "A11-233", url: "https://linear.app/a11ign/issue/A11-233" }, finishedAt: 2_000, afterMerge: [{ line: PERSON_LINE, owner: "The chairman" }] }], 1_000);
   saveChecks(path, { checks: { ...seeded.checks, "A11-233#1": { ...seeded.checks["A11-233#1"], runner: "person", escalation: "legal" } } });
-  const listed = async () => ((await made.api("GET", "/api/queue", {}))[1] as QueueView).afterMergeChecks.map(({ id, state }) => [id, state]);
+  const listed = async () => ((await made.api("GET", "/api/queue", {}))[1] as QueueView).afterMergeChecks?.map(({ id, state }) => [id, state]);
   return { ...made, path, listed };
 }
 
@@ -120,4 +121,20 @@ test("A11-302: GET /api/after-merge/audit says whether any open check is still o
   const retired = board();
   saveChecks(retired.path, { checks: { ...loadChecks(retired.path).checks, "A11-235#1": { ...loadChecks(retired.path).checks["A11-235#1"], runner: "session" } } });
   assert.deepEqual((await retired.api("GET", "/api/after-merge/audit", {}))[1], { ok: false, unmigrated: ["A11-235#1"], stale: [] });
+});
+
+test("A11-302: a checks file that cannot be read is said by the queue, the Run detail and the audit, never shown as an empty list, a zero count or a ticket with no checks", async () => {
+  const made = board();
+  made.store.set(enqueue(emptyQueue(1), [ticketOf("A11-235")], { model: "sonnet", effort: "high" }, 1));
+  writeFileSync(made.path, "{ not json");
+  const queue = (await made.api("GET", "/api/queue", {}))[1] as QueueView;
+  assert.match(queue.afterMergeUnreadable ?? "", /^the After-merge checks cannot be read, so none is listed: /);
+  assert.deepEqual([queue.afterMergeChecks, queue.afterMergeOrg], [undefined, undefined], "no list and no count are made up");
+  const detail = (await made.api("GET", "/api/queue/A11-235", {}))[1] as QueueEntryView;
+  assert.match(detail.afterMergeUnreadable ?? "", /cannot be read/);
+  assert.equal(detail.afterMergeChecks, undefined);
+  await assert.rejects(made.api("GET", "/api/after-merge/audit", {}), SyntaxError, "the audit throws, which the handler answers with 400: it never reports ok on a file it could not read");
+  assert.equal((await made.api("GET", "/api/queue", {}))[0], 200, "the rest of the queue is still answered");
+  writeFileSync(made.path, "{ not json");
+  assert.equal(readFileSync(made.path, "utf8"), "{ not json", "and the file is not written over");
 });

@@ -14,23 +14,28 @@ beforeEach(() => {
 const MINUTE = 60_000;
 const run = { ...completed({ key: "A11-70", title: "A merged run", startedAgo: 40 * MINUTE }), afterMerge: [{ line: "The chairman chooses the name.", owner: null }] };
 
-const standOf = (org?: { open: number; stale: number }) =>
-  ({ connections: [PERSONAL], instances: { personal: { config: queueingConfig(), queue: queueWith([run], { org }) } } });
+const standOf = (org?: { open: number; stale: number }, unreadable?: string) =>
+  ({ connections: [PERSONAL], instances: { personal: { config: queueingConfig(), queue: { ...queueWith([run], { org }), ...(unreadable === undefined ? {} : { afterMergeChecks: undefined, afterMergeUnreadable: unreadable }) } as never } } });
 
 const poolBar = async (): Promise<HTMLElement> => {
   await waitFor(() => expect(document.querySelector(".pool-bar")).not.toBeNull());
   return document.querySelector<HTMLElement>(".pool-bar")!;
 };
 
+/** The pool bar's note about the org's checks, once the page has drawn it. */
+async function orgNote(): Promise<HTMLElement> {
+  const bar = await poolBar();
+  return waitFor(() => {
+    const found = [...bar.querySelectorAll<HTMLElement>(".pool-note")].find((each) => /Org checks/.test(each.textContent ?? ""));
+    expect(found).toBeDefined();
+    return found!;
+  });
+}
+
 describe("the org's own checks on the pool bar", () => {
   it("reads 'Org checks open over 3 days: N', and its title says how many are open in all", async () => {
     render(<RunsApp fetchWith={standFetch(standOf({ open: 41, stale: 12 }))} />);
-    const bar = await poolBar();
-    const note = await waitFor(() => {
-      const found = [...bar.querySelectorAll<HTMLElement>(".pool-note")].find((each) => /Org checks/.test(each.textContent ?? ""));
-      expect(found).toBeDefined();
-      return found!;
-    });
+    const note = await orgNote();
     expect(note.textContent).toBe("Org checks open over 3 days: 12");
     expect(note.getAttribute("title")).toBe("41 After-merge checks the org verifies are open; this counts those older than 3 days and outside their window");
   });
@@ -41,6 +46,17 @@ describe("the org's own checks on the pool bar", () => {
     unmount();
     render(<RunsApp fetchWith={standFetch(standOf())} />);
     await poolBar();
+    expect(screen.queryByText(/Org checks open over/)).toBeNull();
+  });
+});
+
+describe("an After-merge checks file the board cannot read", () => {
+  it("is said on the pool bar and over the list, and is not drawn as no checks or a count of 0", async () => {
+    render(<RunsApp fetchWith={standFetch(standOf(undefined, "the After-merge checks cannot be read, so none is listed: Unexpected token"))} />);
+    const note = await orgNote();
+    expect(note.textContent).toBe("Org checks: cannot be read");
+    expect(note.getAttribute("title")).toBe("the After-merge checks cannot be read, so none is listed: Unexpected token");
+    expect((await screen.findByRole("alert")).textContent).toBe("the After-merge checks cannot be read, so none is listed: Unexpected token");
     expect(screen.queryByText(/Org checks open over/)).toBeNull();
   });
 });

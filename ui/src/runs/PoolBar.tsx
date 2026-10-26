@@ -33,7 +33,9 @@ function FlakyTests({ flakes }: Readonly<{ flakes: FlakesView | null }>) {
  * The count of After-merge checks the org itself has open past three days (A11-302): the org verifies its own work, so the person sees only their own checks in the list, and this number says whether the org keeps up. Its title says how many
  * are open in all. Nothing from an instance that sends no count.
  */
-function OrgChecks({ org }: Readonly<{ org: QueueView["afterMergeOrg"] }>) {
+function OrgChecks({ org, unreadable }: Readonly<{ org: QueueView["afterMergeOrg"]; unreadable: QueueView["afterMergeUnreadable"] }>) {
+  // A checks file that cannot be read is said, not counted as none: the list and the count would both read clean (A11-302).
+  if (unreadable !== undefined) return <span className="pool-note pool-org-checks" title={unreadable}>Org checks: cannot be read</span>;
   if (org === undefined) return null;
   return <span className="pool-note pool-org-checks" title={`${org.open} After-merge checks the org verifies are open; this counts those older than 3 days and outside their window`}>Org checks open over 3 days: {org.stale}</span>;
 }
@@ -61,7 +63,7 @@ export function PoolBar({ queue, pool, disabled }: Readonly<{ queue: QueueView; 
         </div>
         <span className="pool-busy">{text}</span>
         <HealthNumber health={health} />
-        <OrgChecks org={queue.afterMergeOrg} />
+        <OrgChecks org={queue.afterMergeOrg} unreadable={queue.afterMergeUnreadable} />
         <FlakyTests flakes={flakes} />
       </div>
       <span className="pool-note">{words.note}</span>

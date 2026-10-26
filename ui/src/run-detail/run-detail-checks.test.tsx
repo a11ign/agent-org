@@ -67,6 +67,12 @@ describe("the Run detail page", () => {
     expect(textOf(document.querySelector("#h-checks"))).toBe("After-merge checks · the org verifies its own work");
   });
 
+  it("says when the board cannot read the checks, instead of drawing no section", async () => {
+    const stand = detailStand("done");
+    await pageFor("done", { ...stand, instances: { personal: { ...stand.instances!.personal, ticketChecks: undefined, ticketChecksUnreadable: "the After-merge checks cannot be read, so none is listed: x" } } });
+    expect((await screen.findByRole("alert")).textContent).toBe("the After-merge checks cannot be read, so none is listed: x");
+  });
+
   it("draws no checks section for a ticket with none", async () => {
     await pageFor("done");
     expect(screen.queryByRole("region", { name: /After-merge checks/ })).toBeNull();

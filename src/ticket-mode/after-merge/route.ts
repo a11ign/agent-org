@@ -62,29 +62,30 @@ export function afterMergeRoute(board: CheckRouteBoard, method: string, path: st
   return answerOf(file, (checks) => closeCheck(checks, id, close, board.now()));
 }
 
-/** The rows `GET /api/queue` lists as `afterMergeChecks`, read from the file each time. A file that cannot be read lists none: the sweep logs why, and writes nothing over it. */
-export function afterMergeView(stateDir: string): AfterMergeCheck[] {
+/** Why the checks file cannot be read, in a sentence the page shows: a file that cannot be read is said, never shown as empty (A11-302). */
+const unreadableSentence = (err: unknown): string => `the After-merge checks cannot be read, so none is listed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`;
+
+/** What `GET /api/queue` carries of the After-merge checks: the person's list (`afterMergeChecks`), the org's count for the pool bar (`afterMergeOrg`), or, when the file cannot be read, `afterMergeUnreadable` and neither: the sweep logs why and writes nothing over it. */
+export type AfterMergeQueueView = Readonly<{ afterMergeChecks?: AfterMergeCheck[]; afterMergeOrg?: Readonly<{ open: number; stale: number }>; afterMergeUnreadable?: string }>;
+
+/** The After-merge fields of the queue view, read from the file each time. PURE over the file. */
+export function afterMergeQueueView(stateDir: string, now: number): AfterMergeQueueView {
   try {
-    return afterMergeChecks(loadChecks(afterMergeChecksPath(stateDir)));
-  } catch {
-    return [];
+    const file = loadChecks(afterMergeChecksPath(stateDir));
+    return { afterMergeChecks: afterMergeChecks(file), afterMergeOrg: orgCounts(file, now) };
+  } catch (err) {
+    return { afterMergeUnreadable: unreadableSentence(err) };
   }
 }
 
-/** What the pool bar shows of the org's own checks (A11-302): how many are open, and how many of them are older than three days and outside their window. A file that cannot be read counts none. */
-export function afterMergeOrgView(stateDir: string, now: number): Readonly<{ open: number; stale: number }> {
-  try {
-    return orgCounts(loadChecks(afterMergeChecksPath(stateDir)), now);
-  } catch {
-    return { open: 0, stale: 0 };
-  }
-}
+/** What a ticket's Run detail carries of its After-merge checks (A11-302): every check of any runner, or `afterMergeUnreadable` when the file cannot be read. */
+export type AfterMergeTicketView = Readonly<{ afterMergeChecks?: TicketCheck[]; afterMergeUnreadable?: string }>;
 
-/** A ticket's After-merge checks of any runner, for its Run detail (A11-302). A file that cannot be read lists none. */
-export function afterMergeTicketView(stateDir: string, key: string): TicketCheck[] {
+/** A ticket's After-merge checks of any runner, for its Run detail (A11-302). */
+export function afterMergeTicketView(stateDir: string, key: string): AfterMergeTicketView {
   try {
-    return ticketChecks(loadChecks(afterMergeChecksPath(stateDir)), key);
-  } catch {
-    return [];
+    return { afterMergeChecks: ticketChecks(loadChecks(afterMergeChecksPath(stateDir)), key) };
+  } catch (err) {
+    return { afterMergeUnreadable: unreadableSentence(err) };
   }
 }
