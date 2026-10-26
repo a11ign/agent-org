@@ -26,7 +26,7 @@ export type RunBoard = "running" | "needs" | "handback" | "ready" | "publishing"
  */
 const BOARD_OF_STATUS: Readonly<Record<RunStatus, RunBoard | "needs-you">> = {
   "needs-you": "needs-you", talking: "running", working: "running", waiting: "running", planning: "running", reviewing: "running", blocked: "blocked", queued: "queued",
-  "awaiting-review": "awaiting", "ready-to-merge": "ready", publishing: "publishing", published: "published", checked: "done", completed: "done", failed: "failed", cancelled: "cancelled",
+  "awaiting-review": "awaiting", "not-merging": "awaiting", "ready-to-merge": "ready", publishing: "publishing", published: "published", checked: "done", completed: "done", failed: "failed", cancelled: "cancelled",
 };
 
 /** The board a status is drawn as, and for Needs you the Needs board while the run is live and Handed back once it has finished. PURE. */
@@ -100,8 +100,12 @@ const isWaitingOnRunning = (entry: RunEntry, queue: Pick<QueueView, "publish" | 
 /** The board whose icon and status colour the header draws: the run's board, except that a Waiting run takes the Queued board's still ring and quiet colour, since nothing is at work in it (A11-272). */
 export const drawnBoardOf = (entry: RunEntry, queue: Pick<QueueView, "publish" | "entries">, board: RunBoard): RunBoard => (isWaitingOnRunning(entry, queue, board) ? "queued" : board);
 
-/** The title of a board's callout for a run: the board's, except that a run Waiting on the running board says Waiting, since nothing is at work in it (A11-272). */
-const titleOf = (entry: RunEntry, queue: QueueView, board: RunBoard): string => (isWaitingOnRunning(entry, queue, board) ? labelOf("waiting") : CALLOUT_TITLE[board]);
+/** The title of a board's callout for a run: the board's, except that a run Waiting on the running board says Waiting, since nothing is at work in it (A11-272), and one Approved, not merging says so (A11-291). */
+const titleOf = (entry: RunEntry, queue: QueueView, board: RunBoard): string => {
+  if (isWaitingOnRunning(entry, queue, board)) return labelOf("waiting");
+  // An approved pull request that nothing merges is on the Awaiting board, which draws no icon and whose title is for a draft: it says what it is (A11-291).
+  return shownStatus(entry, queue.publish, queue.entries) === "not-merging" ? labelOf("not-merging") : CALLOUT_TITLE[board];
+};
 
 /** The callout of a run: the board's title, the backend's own words, the wait cycle it is in when it is in one, and the question the worker asked when it kept one. A string the backend has none of is not drawn. PURE. */
 export function calloutOf(entry: RunEntry, queue: QueueView, board: RunBoard): Callout {

@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { branchCiOf, type FakeBranchCi } from "./code-host-ci.ts";
 import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
-import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type ClosedCommit, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergedFindings, type RepositoryOwner, type PullFeedback, type PullQueue, type QueueFailure, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
+import { DEPENDENCY_PULL_AUTHOR, type ChangeFacts, type ChangeRef, type CiRun, type ClosedCommit, type CodeHost, type CodeHostEvent, type CodeHostEventKind, type CodeHostRepositories, type CodeHostWrapper, type DefaultBranchRed, type HostRepository, type MergeFlow, type MergedFindings, type RepositoryOwner, type PullFeedback, type PullQueue, type QueueFailure, type Reply, type RetargetRequest, type ReviewClaimEntry, type ReviewState, type StackMergeFacts, type StackMergeRequest, type UpdateBranchResult, type VerdictDoor, type WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -106,6 +106,16 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       const pull = pulls.get(ref.id);
       if (ref.host !== HOST || pull === undefined) return null;
       return { ref, head: pull.head, checks: [], reviews: [], merge: { state: pull.state, armed: pull.merge.armed, mergeable: pull.merge.mergeable } };
+    },
+  };
+}
+
+/** The read of whether a repository has a merge flow (contract 1.25) over what a test seeded: null for a repository it was never given, as a host answers one it cannot read. */
+function mergeFlowsOf(flows: Map<string, MergeFlow>, calls: string[]): Pick<CodeHost, "readMergeFlow"> {
+  return {
+    readMergeFlow(repository) {
+      calls.push(`readMergeFlow ${repository}`);
+      return flows.get(repository) ?? null;
     },
   };
 }
@@ -418,6 +428,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const pulls: Pulls = new Map();
   const repositories = new Set<string>();
   const defaultBranches = new Map<string, DefaultBranchRed>();
+  const mergeFlows = new Map<string, MergeFlow>();
   const subscribers: Subscriber[] = [];
   const calls: string[] = [];
   const armed: string[] = [];
@@ -433,7 +444,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const branchCi: FakeBranchCi = { runs: new Map(), asked: [] };
   const queues: FakeQueues = { failures: new Map(), holdRefusal: null, held: new Set(), holds: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls), ...mergeFlowsOf(mergeFlows, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
@@ -480,6 +491,10 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     /** Say what fails on the head of `repository`'s default branch (`main` at head `main-head`, unless a test says otherwise; `over` may add `passing`, contract 1.15, which the fake leaves out otherwise, as a host of 1.14 does): until it does, the fake cannot be asked and answers null. */
     seedDefaultBranch(repository: string, failing: readonly string[], over: Partial<DefaultBranchRed> = {}) {
       defaultBranches.set(repository, { branch: "main", head: "main-head", failing, ...over });
+    },
+    /** Say whether `repository` allows auto-merge and holds the arm workflow (contract 1.25): until it does, the fake cannot be asked and answers null. */
+    seedMergeFlow(repository: string, flow: MergeFlow) {
+      mergeFlows.set(repository, flow);
     },
     /** Deliver an event to every subscriber whose filter it matches. */
     emit(event: CodeHostEvent) {

@@ -143,8 +143,13 @@ export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
  * newest verdict on the head approves and GitHub's own review decision does not still ask for a review or for changes, `changes-requested` when either says changes, and `none` otherwise;
  * `red` is the required checks failing, and `pending` the required checks still running, and `mergeable` that GitHub says it merges cleanly (A11-258; `UNKNOWN`, still being computed, is not mergeable). `blockedSince` is when the board first read the pull request changes-requested at this head, kept while the head and the block
  * stay (A11-213): the stale-block flag counts from it.
+ * `unmergedSince` (A11-291) is when the board first read the pull request approved at this head with its required checks green, mergeable and not in the merge queue, kept while the head and that reading stay: the "approved, not merging" card counts from it.
+ * `notMerging` is the reason the watch gave once it had been so for `NOT_MERGING_MINUTES`, which is what makes the card say so; it stays while the reading does. `firstFlow` marks an approved head whose pull request adds the repository's first merge flow, which nothing can merge but a person.
  */
-export type PullHead = Readonly<{ head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; blockedSince?: number }>;
+export type PullHead = Readonly<{
+  head: string; approved: boolean; review?: "approved" | "none" | "changes-requested"; red?: readonly string[]; pending?: readonly string[]; mergeable?: boolean; blockedSince?: number;
+  unmergedSince?: number; notMerging?: string; firstFlow?: true;
+}>;
 
 /**
  * What the board did about the red checks on one pull request at one head (A11-154): a fix round was started for them (`round`), the checks that failed for an
@@ -412,7 +417,7 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
 export type RunStatus =
-  "needs-you" | "talking" | "working" | "waiting" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "checked"
+  "needs-you" | "talking" | "working" | "waiting" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "not-merging" | "ready-to-merge" | "publishing" | "published" | "checked"
   | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
@@ -426,6 +431,7 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
   { status: "blocked", label: "Blocked" },
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
+  { status: "not-merging", label: "Approved, not merging" },
   { status: "ready-to-merge", label: "Ready to merge" },
   { status: "publishing", label: "Publishing" },
   { status: "published", label: "Published" },

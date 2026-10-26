@@ -38,7 +38,7 @@ const MILLION = 1_000_000;
 export const RAIL_HEADS: readonly Readonly<{ label: string; statuses: readonly RunStatus[] }>[] = [
   { label: "Attention", statuses: ["needs-you", "talking"] },
   { label: "Active", statuses: ["working", "waiting", "planning", "reviewing", "blocked", "queued"] },
-  { label: "Delivery", statuses: ["awaiting-review", "ready-to-merge", "publishing", "published", "checked"] },
+  { label: "Delivery", statuses: ["awaiting-review", "not-merging", "ready-to-merge", "publishing", "published", "checked"] },
   { label: "Finished", statuses: ["completed", "failed", "cancelled"] },
 ];
 

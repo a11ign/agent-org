@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.24 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.25 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.25 (A11-291): `PullFeedback.armed`, OPTIONAL: whether auto-merge is on for the pull request (GitHub's `autoMergeRequest`), and `readMergeFlow`, OPTIONAL: whether a repository allows auto-merge and has an arm workflow (`.github/workflows/auto-arm.yml`) on its default branch, which the board reads to say why an approved pull request with green checks is not merging, and which doctor reads for every repository of the host. A plugin of 1.24 is read as one that says nothing of either, and the board then says only that the pull request is not in the merge queue.
 // 1.24 (A11-286): `PullFeedback.behind`, OPTIONAL: whether the host says the pull request's branch is behind its base (GitHub's `mergeStateStatus: BEHIND`, which it reports only where the base requires branches to be up to date), which the board brings up to date with the host's `updateBranch` before the merge queue takes it. A plugin of 1.23 is read as one that says nothing of `behind`, and the board then updates only the pull requests that conflict.
 // 1.23 (A11-248): `closePull`, OPTIONAL: close a pull request with a comment, as the workers' account, which is how the board closes a member of a stack left with no changes of its own once everything it held merged below it. A plugin of 1.22 is read as one that cannot close, and the board then says on the card that the pull request is empty and is to be closed.
 // 1.22 (A11-261): `readBranchCi`, OPTIONAL: the workflow runs on one branch of a repository with each job's runner labels and times, which the board adds up into the CI minutes a ticket's pushes cost (weighted as GitHub bills them) and warns and holds a run on when a ticket passes its budget. A plugin of 1.21 is read as one that reads no branch's CI, and the board then shows and holds nothing.
@@ -56,7 +57,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.24";
+export const CODE_HOST_CONTRACT_VERSION = "1.25";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -101,6 +102,15 @@ export type QueueFailureJob = Readonly<{ name: string; step: string | null; deta
 /** The failing `merge_group` run behind one removal (contract 1.21): its id and address, and every job of it that failed or timed out. */
 export type QueueFailure = Readonly<{ runId: number; runUrl: string; jobs: readonly QueueFailureJob[] }>;
 
+/**
+ * Whether a repository can merge a pull request by itself (contract 1.25): `autoMerge` is whether the repository allows auto-merge, and `armWorkflow` whether its default branch holds the arm workflow, `.github/workflows/auto-arm.yml`, that turns it on for a pull request. A repository that
+ * lacks either has no merge flow: an approved pull request in it waits for a person.
+ */
+export type MergeFlow = Readonly<{ autoMerge: boolean; armWorkflow: boolean }>;
+
+/** The path of the arm workflow a repository's merge flow holds (contract 1.25), which a pull request adds when it installs the flow. */
+export const ARM_WORKFLOW_PATH = ".github/workflows/auto-arm.yml";
+
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{
   state: "open" | "merged" | "closed";
@@ -121,6 +131,8 @@ export type PullFeedback = Readonly<{
   conflicting: boolean;
   /** Whether the host says the branch is behind its base and may not merge until it is brought up to date (contract 1.24): GitHub's `BEHIND`. Absent when the host does not say, which is not the same as false. */
   behind?: boolean;
+  /** Whether auto-merge is on for the pull request (contract 1.25): GitHub's `autoMergeRequest` is set. Absent when the host does not say, which is not the same as false. */
+  armed?: boolean;
   /** Whether GitHub says it merges cleanly: `MERGEABLE`. `UNKNOWN` (still being computed) is not mergeable, as it is not a conflict either. */
   mergeable: boolean;
   /** The commit its branch is at, or null when GitHub does not say. */
@@ -334,6 +346,11 @@ export interface CodeHost extends CodeHostPort {
    * null. Null is never "nothing is red". A host without it is read as one that names none, and no red check is called main's.
    */
   readDefaultBranchRed?(repository: string): DefaultBranchRed | null;
+  /**
+   * Whether `repository` (`owner/name`) allows auto-merge and has the arm workflow on its default branch (contract 1.25), or null for "could not ask": a repository the host cannot read and an answer it cannot read are both null. Null is never "it has no merge flow".
+   * A host without it is read as one that cannot be asked: the board then gives the reason it can read from the pull request alone, and doctor says the repository could not be read.
+   */
+  readMergeFlow?(repository: string): MergeFlow | null;
   /**
    * Brings the branch of the pull request at `url` up to date with its base (contract 1.15), as the workers' account, provided its head is still `expectedHead`: a head that moved since the caller read it is `refused`, not raced. Never throws: a host that cannot say
    * answers `refused` with a reason, and an address that is no pull request of the host is `refused`. A host without it cannot update a branch, and the board then holds a pull request as it did before.

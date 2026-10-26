@@ -8,7 +8,7 @@ import { type HookCommand } from "./worker-files.ts";
 import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.ts";
 import { type TicketSource } from "./source.ts";
-import type { CodeHost } from "../plugins/contracts/code-host.ts";
+import type { CodeHost, MergeFlow } from "../plugins/contracts/code-host.ts";
 import { type ReviewerState, reviewerStateOf, startsReviewers } from "./concern-states.ts";
 import type { Publisher } from "../plugins/contracts/publisher.ts";
 import type { Reviewer } from "../plugins/contracts/reviewer.ts";
@@ -174,6 +174,8 @@ export type PoolContext = Readonly<{
   restackSaid: Set<string>;
   /** What the board did about each pull request's base at the head it was read at, by the pull request's address (A11-286): one try for each head. Kept in memory: a restart asks the host once more, which answers a branch that has its base with up-to-date. */
   baseMerges: Map<string, BaseMerge>;
+  /** What the board last read of each repository's merge flow, by `owner/name` (A11-291), with when: kept for `MERGE_FLOW_TTL_MS` (`pool-watch.ts`), so a pull request that needs the reason is not a call to the host on every watch. Kept in memory: a restart asks once more. */
+  mergeFlows: Map<string, Readonly<{ at: number; flow: MergeFlow | null }>>;
   /** The pull requests a read found merged or closed (A11-286), so a pull request the board opened and no entry holds any more is read once for a process and not again. */
   settledPulls: Set<string>;
   /** The longest the files of a conflict are given to be listed (A11-286). */
@@ -268,7 +270,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, baseMerges: new Map<string, BaseMerge>(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() },
   };

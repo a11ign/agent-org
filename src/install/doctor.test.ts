@@ -44,8 +44,15 @@ const SHIM = "/home/me/.local/bin/agent-org";
 const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
 type Answer = { status: number | null; stdout: string; stderr: string };
 /** The GitHub CLI as the doctor tests see it: the extension is `listing`, and a repository's stacks answer `stacks` (a function of the repository). */
-const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => ({ status: 0, stdout: "[]", stderr: "" })) =>
-  (args: readonly string[]): Answer => (args[0] === "extension" ? { status: 0, stdout: listing, stderr: "" } : stacks(args[1].split("/").slice(1, 3).join("/")));
+const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => ({ status: 0, stdout: "[]", stderr: "" }), mergeFlow: (repo: string, ask: "auto-merge" | "arm workflow") => Answer = () => ({ status: 0, stdout: "true\n", stderr: "" })) =>
+  (args: readonly string[]): Answer => {
+    if (args[0] === "extension") return { status: 0, stdout: listing, stderr: "" };
+    const repo = args[1].split("/").slice(1, 3).join("/");
+    // A11-291: the merge flow's two reads, the repository's `allow_auto_merge` and the arm workflow's file.
+    if (args.includes(".allow_auto_merge")) return mergeFlow(repo, "auto-merge");
+    if (args[1].endsWith("/contents/.github/workflows/auto-arm.yml")) return mergeFlow(repo, "arm workflow");
+    return stacks(repo);
+  };
 
 /**
  * The programs the Linear plugin's checks run, as the doctor tests see them (A11-159): `security` prints `key` (or fails, for null), and `claude mcp list` prints `mcp` (or cannot run,
@@ -728,7 +735,9 @@ test("A11-160: the plugin's rows come from the host's clones and the workers' ac
     return execOf({ origin: GITHUB_ORIGIN })(file, args, options);
   };
   await diagnose(deps({ readFile: () => WORKERS_HOST, exec }));
-  assert.deepEqual(asked.map(({ args }) => args.join(" ")), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks"]);
+  assert.deepEqual(asked.map(({ args }) => args.join(" ")), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks",
+    // A11-291: and whether the repository has a merge flow, which is its auto-merge setting and the arm workflow's file.
+    "api repos/a11ign/nbl-ui-netbox --jq .allow_auto_merge", "api repos/a11ign/nbl-ui-netbox/contents/.github/workflows/auto-arm.yml --jq .type"]);
   assert.ok(asked.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: "/home/agent/workers/gh" })), "every call acts as the workers' account");
 });
 
@@ -1051,7 +1060,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 1.24, plugins/github)",
+    "code host: github (enabled, contract 1.25, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1086,7 +1095,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.24, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.25, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });
