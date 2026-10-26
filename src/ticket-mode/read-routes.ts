@@ -19,6 +19,7 @@ import type { Pool } from "./pool.ts";
 import { inWork, takenState } from "./pick-taken.ts";
 import type { PluginsApi } from "./plugins-api.ts";
 import type { ProblemOptions } from "./plugins.ts";
+import { interventionsView } from "./queue/interventions.ts";
 import { type Entry, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
@@ -81,6 +82,8 @@ export type ReadBoard = Readonly<{
   problems?: ProblemOptions;
   /** What `/api/health` answers (A11-282). Absent, the route is not served, as on an instance from before it. */
   health?: () => unknown;
+  /** The clock `/api/interventions` names today by: the time now when absent. */
+  now?: () => number;
 }> & TrackerReads;
 
 /** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
@@ -197,8 +200,8 @@ export type QueueView = ReturnType<typeof queueView>;
 export function queueView(board: Pick<ReadBoard, "store" | "pool" | "update" | "settings">) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
-  // `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261).
-  const { ciSpend: _ciSpend, ...queue } = board.store.get();
+  // `ci`: what each run's and its ticket's pushes cost in CI, read from the workflow runs the board holds, which are not sent (A11-261). The tally of interventions is not sent either: `/api/interventions` answers it (A11-257).
+  const { ciSpend: _ciSpend, interventions: _interventions, ...queue } = board.store.get();
   const entries = board.store.get().entries.map((entry) => {
     const ci = ciViewOf(board.store.get(), entry, board.settings.ciBudgetMinutes);
     return { ...shownEntry(entry), ...(ci === undefined ? {} : { ci }) };
@@ -302,6 +305,8 @@ export async function readRoute(board: ReadBoard, method: string, path: string, 
   if (method === "GET" && path === "/api/queue") return [200, queueView(board)];
   if (method === "GET" && path === "/api/writer") return [200, writersViewOf(store.get())];
   if (method === "GET" && path === "/api/health" && board.health !== undefined) return [200, board.health()];
+  // The health number (A11-257): `/api/health` is the loop's (A11-282), so the person-interventions are their own route, beside the POST that records a fix.
+  if (method === "GET" && path === "/api/interventions") return [200, interventionsView(store.get(), (board.now ?? Date.now)())];
   return undefined;
 }
 
