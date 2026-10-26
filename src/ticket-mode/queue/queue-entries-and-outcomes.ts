@@ -355,6 +355,13 @@ export type Entry = Readonly<{
   feedback?: string;
   /** Set on a review round a person asked for with Respond to review: it answers the pull requests' current feedback. See {@link respond}. */
   asked?: boolean;
+  /** Set on a review round the board started because the ticket's Decisions changed (A11-305): it makes the pull requests meet the new lines, or replies quoting why they already do. See {@link decisionsRound}. */
+  decisions?: boolean;
+  /**
+   * Set on a finished run whose ticket's Decisions gained lines that no round has answered yet (A11-305): when the board noticed, and the lines. The first-merge-flow card waits while it is set, since the pull request is about to change. A round
+   * of the run drops it (a round is built from the fields it names), and so does a ticket whose Decisions read as the run was briefed with again.
+   */
+  decisionsPending?: Readonly<{ at: number; added: readonly string[] }>;
   /**
    * A person opened this run's saved session to talk to its agent (a draft they have a problem with, or a planner's question they will answer). The run
    * starts again in the same session, with a prompt that says a person is here, and ends as any run does.

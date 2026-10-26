@@ -1,0 +1,42 @@
+// @ts-check
+// module: a finished run follows its ticket's Decisions (A11-305) -- a decision a person adds while its pull requests are open starts a round that answers it
+
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { openPulls } from "./board-view/view-types-and-filters.ts";
+import { asksForWork, type DecisionsChange, decisionsChange } from "./decisions-change.ts";
+import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
+import { type PoolContext } from "./pool-context.ts";
+import { update } from "./pool-state.ts";
+import { clearDecisionsPending, decisionsRound } from "./queue/queue-decisions.ts";
+import { SETTLED, type Entry, type PullRequest } from "./queue/queue-entries-and-outcomes.ts";
+import { type TicketRead } from "./ticket-read.ts";
+
+/**
+ * Whether the board follows the Decisions of a finished run: a pull request of its ticket is open, the tracker has not settled the ticket, it is no talk session, and the text it was briefed with is known, which is what a change is told from. A run that
+ * ended before the board kept that text has nothing to compare, and the tracker is not asked about it. PURE.
+ */
+export const followsDecisions = (entry: Entry): boolean =>
+  entry.phase === "finished" && entry.talk !== true && entry.briefedAgainst !== undefined && openPulls(entry).length > 0 && !SETTLED.has(entry.trackerState ?? "");
+
+/**
+ * Start the round a change of the Decisions asks for (A11-305). The run was briefed with a text of its ticket (`briefedAgainst`); when the ticket's Decisions now hold lines that text did not, the board queues a review round that answers them, with no one pressing
+ * Respond. A run with no record of what it was briefed with has nothing to compare, and is left alone; the brief of its next round compares against the copy of the ticket the board holds. A ticket whose Decisions read as the run was briefed with again loses the
+ * mark of an unanswered change.
+ */
+export function followDecisionsOf(ctx: PoolContext, entry: Entry, read: TicketRead): void {
+  if (entry.briefedAgainst === undefined || !followsDecisions(entry)) return;
+  const change = decisionsChange(entry.briefedAgainst.description, read.description);
+  if (asksForWork(change)) update(ctx, (queue) => decisionsRound(queue, entry.ticket.key, change.added, ctx.now()));
+  else if (entry.decisionsPending !== undefined) update(ctx, (queue) => clearDecisionsPending(queue, entry.ticket.key));
+}
+
+/**
+ * Leave beside a review round's outcome file the lines of the Decisions its brief opens with and the head each pull request has now, for the Stop hook to judge a `reviewed` by (A11-305, `decisions-files.ts`). A round whose brief names no change leaves
+ * none (`clearRunDir` removed the last run's), and so does a change that only takes lines out. A pull request the code host cannot read is recorded with no head, and the hook then allows the stop out loud.
+ */
+export function writeDecisionsMark(ctx: PoolContext, dir: string, prs: readonly PullRequest[], change: DecisionsChange | null): void {
+  if (!asksForWork(change)) return;
+  const heads = Object.fromEntries(prs.map(({ url }) => [url, ctx.codeHost.readReviewState(url)?.head ?? null]));
+  writeFileSync(join(dir, DECISIONS_ROUND_FILE), `${JSON.stringify({ added: change.added, heads })}\n`);
+}

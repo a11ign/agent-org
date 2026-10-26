@@ -1,0 +1,8 @@
+A change to a ticket's Decisions reaches its worker. When a finished run's ticket gains a Decisions line the run was not briefed with, the board queues a review round (cause `decisions`, `src/ticket-mode/pool-decisions-change.ts`, `queue/queue-decisions.ts`) with no one pressing Respond, and counts it toward no cap. Every review round's brief, whatever started it (Respond, feedback, conflict, approved drafts, stand-off), opens with a section "The ticket's Decisions changed" holding the changed lines and the instruction "The ticket's Decisions changed: make the pull requests meet them, or reply quoting why they already do." (`src/ticket-mode/decisions-change.ts`, `worker-files.ts`). The Stop hook refuses a `reviewed` that pushed to no pull request and whose final message does not quote the new lines and say why they are met (`decisions-stop.ts`, `hook.ts`). The "a person merges it" card of a merge flow's first install is not raised for a run whose ticket has Decisions no round has answered (`board-view/not-merging.ts`).
+
+Acceptance:
+```bash
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/decisions-change.test.ts src/ticket-mode/pool-decisions-change.test.ts src/ticket-mode/board-view/not-merging.test.ts src/ticket-mode/board-view/not-merging-watch.test.ts
+```
+
+Consumer-declaration: none -- the queue file gains optional `decisions` and `decisionsPending` fields on an entry, which an older reader ignores; `decisions-round.json` is a new file beside a round's outcome file, written and read by the same version; no option is added to a project declaration.

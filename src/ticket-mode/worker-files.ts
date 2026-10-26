@@ -32,6 +32,7 @@ import { claimsText, type HeldClaim } from "./path-claims.ts";
 import { PLANNER_TICKET_DECISIONS, RELAY_DECISION, TICKET_DECISIONS } from "./brief-decisions.ts";
 import { closedWorkText, type KeptClosedWork } from "./closed-work-account.ts";
 import { connectorsText, MISSING_SKILL, quoted, STALLING_COMMANDS } from "./brief-common.ts";
+import { decisionsChange, decisionsChangedSection } from "./decisions-change.ts";
 import { diffText, type Finding, findingsText, lostText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
 
@@ -708,24 +709,26 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
  * round the board started on its own: the new feedback on the pull requests, which are ready already, that the round answers. `asked` is set
  * on a round a person asked for with Respond to review: it answers the ready pull requests' current feedback, and `conflict` is the conflict lines the board
  * handed the run back for at its round cap, when it was (`conflictsIn`). `prReview` is the skill `tickets.prReview`
- * names, which each round runs on its whole diff before it pushes, or null for none. `standoff` is set on the worker's round for a stand-off (A11-290): the re-review stayed not convinced at an unchanged head, and `feedback` carries its reasons.
+ * names, which each round runs on its whole diff before it pushes, or null for none. `decisions` is set on a round the board started because the ticket's Decisions changed (A11-305). Whatever started a round, a brief opens with the lines of the Decisions that differ
+ * from the text `previous` holds, when they do. `standoff` is set on the worker's round for a stand-off (A11-290): the re-review stayed not convinced at an unchanged head, and `feedback` carries its reasons.
  */
-export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, standoff = false, conflict, prReview = null, read, previous, held }: {
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, decisions = false, standoff = false, conflict, prReview = null, read, previous, held }: {
   ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
-  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; standoff?: boolean; conflict?: string; prReview?: string | null; read?: TicketRead; previous?: TicketRead; held?: string;
+  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; decisions?: boolean; standoff?: boolean; conflict?: string; prReview?: string | null; read?: TicketRead; previous?: TicketRead; held?: string;
 }): string {
   const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
   const who = resumed
     ? "You wrote these pull requests earlier in this conversation."
     : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
+  const change = previous === undefined || read === undefined ? null : decisionsChange(previous.description, read.description);
   const round = standoff && feedback !== undefined ? standoffWorkerRound(who, feedback, prReview)
     : asked ? askedRound(who, conflict, feedback, prReview)
-    : feedback === undefined ? approvedRound(who, prReview)
+    : feedback === undefined ? (decisions ? decisionsRound(who, prReview) : approvedRound(who, prReview))
     : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`,
       CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null, prReview);
   return `# ${ticket.key}: ${round.title} for ${ticket.title}
 
-${heldText(held)}${round.opening}
+${change === null ? "" : `${decisionsChangedSection(change)}\n`}${heldText(held)}${round.opening}
 
 ## The ticket
 
@@ -767,7 +770,7 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 ${outcomeExamples(["reviewed", "needs-human"])}
 \`\`\`
 
-${round.reviewed} A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+${round.reviewed}${change === null ? "" : ` ${DECISIONS_REVIEWED}`} A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
 `;
 }
 
@@ -807,6 +810,18 @@ const DISPUTED_REVIEW = "When a review requests changes that go against the plan
 /** The line a round's `reviewed` condition carries for a review it disputed on a decision (A11-257): the reply is the answer, and the reviewer re-reviews the head. */
 const REVIEWED_DISPUTED = "A review you disputed on a decision counts as answered once your reply quoting the decision is on the pull request.";
 
+/** What a round whose brief opens with a change of the Decisions is held to at its end (A11-305): a push, or a final message that quotes the new lines. The Stop hook refuses a `reviewed` that does neither. */
+const DECISIONS_REVIEWED = "The ticket's Decisions changed since your last round, so a `reviewed` with no push is allowed only when your final message quotes the new lines of the Decisions, word for word, and says why each pull request already meets them. Reply on each pull request with the same quote.";
+
+/**
+ * The round the board started because the ticket's Decisions changed (A11-305), with no feedback to answer and nothing for a person to have asked: it makes each pull request meet the new lines, or says, quoting them, why it already does. The pull requests are
+ * ready already, so it marks none ready; it is the feedback round's steps with the check against the Decisions first.
+ */
+function decisionsRound(who: string, prReview: string | null): Round {
+  const first = "Read the new lines of the ticket's Decisions in the first section, and check each pull request against them: its diff, its description and its tests. A decision a pull request does not meet is work: change the code with a test that fails without the change. A decision it already meets needs no change, but your final message must quote the new lines and say why.";
+  return answerRound(who, "The ticket's Decisions changed after your last round, so the board started this round. No new feedback reached the pull requests: the first section is what you answer.", null, prReview, first, "decisions round");
+}
+
 /** The round a person started by approving the draft pull requests: mark them ready, then see them through their checks and review. */
 function approvedRound(who: string, prReview: string | null): Round {
   const wait = REVIEW_WAIT_MINUTES;
@@ -845,7 +860,7 @@ function roundPushStep(prReview: string | null): string {
  * `why` says which, and what started it. `merge` is the step that merges a conflicting base in first, or null for a round with no conflict.
  * `prReview` is the skill the machine's review runs before the round's push, or null.
  */
-function answerRound(who: string, why: string, merge: string | null, prReview: string | null): Round {
+function answerRound(who: string, why: string, merge: string | null, prReview: string | null, check: string | null = null, title = "feedback round"): Round {
   const wait = REVIEW_WAIT_MINUTES;
   const [first, ...rest] = why.split("\n\n");
   const items = [
@@ -856,9 +871,9 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
     `Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
   ];
   return {
-    title: "feedback round",
+    title,
     opening: [`${first} ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`, ...rest].join("\n\n"),
-    steps: (merge === null ? items : [merge, ...items]).map((item, index) => `${index + 1}. ${item}`).join("\n"),
+    steps: [...(merge === null ? [] : [merge]), ...(check === null ? [] : [check]), ...items].map((item, index) => `${index + 1}. ${item}`).join("\n"),
     reviewed: `Write \`reviewed\` only when every finding is answered and every check passed on the last commit you pushed. ${REVIEWED_DISPUTED}`,
   };
 }
@@ -989,13 +1004,14 @@ export function firstPrompt(ticketDir: string): string {
   return `Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
 }
 
-/** Why a review round started, which its first prompt says: a person approved the drafts, the board saw new feedback, or a person asked. */
-export type RoundCause = "approved" | "feedback" | "asked";
+/** Why a review round started, which its first prompt says: a person approved the drafts, the board saw new feedback, a person asked, or the ticket's Decisions changed. */
+export type RoundCause = "approved" | "feedback" | "asked" | "decisions";
 
 const ROUND_CAUSES: Readonly<Record<RoundCause, string>> = {
   approved: "A person reviewed this ticket's pull requests and approved them.",
   feedback: "New feedback reached this ticket's pull requests.",
   asked: "A person asked you to answer the feedback on this ticket's pull requests.",
+  decisions: "This ticket's Decisions changed.",
 };
 
 /** A review run's first prompt, which a resumed worker reads after its own earlier turns. */

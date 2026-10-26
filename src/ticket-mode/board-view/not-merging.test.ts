@@ -157,3 +157,11 @@ test("A11-291: the note is a note on the run and not a hand-back: a Needs you ru
   assert.equal(shownStatus(runWith(STUCK, { mergeNote: HOUR_NOTE, published: { link: null, at: 1 }, outcome: { kind: "reviewed", prs: PRS } }), undefined), "needs-you");
   assert.equal(workStatus(runWith(STUCK, { mergeNote: HOUR_NOTE, published: { link: null, at: 1 }, outcome: { kind: "reviewed", prs: PRS } })), "published", "a run posted for a person to merge stays Published underneath");
 });
+
+test("A11-305: the first-install note waits while the run's ticket has Decisions no round has answered, and comes back once it has none", () => {
+  const installing = { ...APPROVED, firstFlow: true as const };
+  const pending = runWith(installing, { decisionsPending: { at: NOW } });
+  assert.equal(firstFlowNote(pending), null, "the pull request is about to change: no person is asked to merge it");
+  assert.equal(mergeNote(pending, NOW), null);
+  assert.equal(firstFlowNote(runWith(installing)), FIRST_FLOW_NOTE, "the same run without the mark is the card of A11-291");
+});
