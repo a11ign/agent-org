@@ -750,8 +750,7 @@ test("A11-291: doctor finds a repository with no merge flow: the merge flow row 
   assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox allow auto-merge and hold .github/workflows/auto-arm.yml"]);
   const noFlow = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN, gh: ghFake(GH_LISTING, undefined, () => ({ autoMerge: false, workflow: false })) }) })));
   const row = noFlow["merge flow"];
-  assert.equal(row.ok, false);
-  assert.equal(row.detail, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch");
+  assert.deepEqual([row.ok, row.detail], [false, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch"]);
   assert.match(row.fix ?? "", /^a11ign\/nbl-ui-netbox: add \.github\/workflows\/auto-arm\.yml with its `gate` check/);
   assert.match(row.fix ?? "", /turn on "Allow auto-merge"/);
   assert.equal(noFlow["code host (github)"].ok, false, "a failing plugin row fails the code host's row");
