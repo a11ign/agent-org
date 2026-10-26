@@ -363,7 +363,10 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
   const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
   const { review: _borrowed, ...unborrowed } = kept;
-  const rest = borrowed ? unborrowed : kept;
+  // A stand-off round (A11-290) that ends on anything but `reviewed` (a stop that names an item of the list, a crash) has ended its route: the stand-off is done, so a later conflict or check round of the run is no stand-off round.
+  const roundEnded = outcome.kind !== "reviewed" && (kept.standoff?.stage === "planner" || kept.standoff?.stage === "worker");
+  const settled = roundEnded && kept.standoff !== undefined ? { ...kept, standoff: { ...kept.standoff, stage: "done" as const } } : kept;
+  const rest = borrowed ? { ...unborrowed, ...(settled.standoff === undefined ? {} : { standoff: settled.standoff }) } : settled;
   const partial = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" ? outcome.partial : outcome.kind === "done" ? undefined : entry.partial;
   // What the merged pull requests declared goes with the `partial` it decided (A11-181): a pull request outcome or a `done` sets `partial` afresh, and any other keeps both.
   const resets = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" || outcome.kind === "done";

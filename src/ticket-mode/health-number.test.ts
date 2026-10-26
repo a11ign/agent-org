@@ -18,7 +18,7 @@ const ticket = { key: "A11-270", title: "t", description: "", url: "u", branch: 
 const standoffQueue = (head: string, review: "approved" | "changes-requested"): Queue => ({
   ...emptyQueue(3),
   entries: [{ ticket, repos: [], model: "m", effort: "e", phase: "finished", queuedAt: 0,
-    standoff: { url: URL, head: "h1", review: null, reasons: "still 340 KB", reply: null, stage: "done" }, pullHeads: { [URL]: { head, approved: review === "approved", review } } } as unknown as Entry],
+    standoff: { url: URL, head: "h1", review: null, reasons: "still 340 KB", reply: null, decisions: null, stage: "done" }, pullHeads: { [URL]: { head, approved: review === "approved", review } } } as unknown as Entry],
 });
 
 test("A11-290: a stand-off settled by a new head or by an approval is counted on the day it was settled, beside that day's Needs-you cards", () => {

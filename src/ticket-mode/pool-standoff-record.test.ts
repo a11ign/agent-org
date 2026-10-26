@@ -68,7 +68,7 @@ test("A11-290: the stand-off opens on the run with the review it answered, the r
   startRereview("Disputes a decision: the plan says 200 KB.");
   refuseRereview();
   assert.deepEqual({ ...entry().standoff }, {
-    url: entry().standoff!.url, head: HEAD, review: "The bundle is over the plan's 200 KB limit.", reasons: refusedFile("not convinced"), reply: "Disputes a decision: the plan says 200 KB.", stage: "open",
+    url: entry().standoff!.url, head: HEAD, review: "The bundle is over the plan's 200 KB limit.", reasons: refusedFile("not convinced"), reply: "Disputes a decision: the plan says 200 KB.", decisions: null, stage: "open",
   });
   assert.equal(logOf(fixture.store.get(), "NBF-1").filter((event) => event.kind === "rereview").length, 1);
 });
@@ -81,4 +81,34 @@ test("A11-290: a verdict file written before the re-review began is the first re
   pool.reviewNewHeads();
   assert.equal(logOf(fixture.store.get(), "NBF-1").filter((event) => event.kind === "rereview").length, 0, "the file is older than the look the re-review started with");
   assert.equal(host.comments.posted.length, 0);
+});
+
+test("A11-290: a verdict file the reviewer left itself, that the door never refused, is no refused re-review", async () => {
+  const { fixture, host, startRereview, refuseRereview } = await standoffRun();
+  startRereview("Not a defect in this diff.");
+  refuseRereview(refusedFile("not convinced"), "verdict.md");
+  assert.equal(logOf(fixture.store.get(), "NBF-1").filter((event) => event.kind === "rereview").length, 0, "only the copy the door keeps of what it refused is read");
+  assert.equal(host.comments.posted.length, 0);
+});
+
+test("A11-290: a pull request no run holds is recorded once on the pull request, however often the board restarts", async () => {
+  const { fixture, host, reviewer, startRereview, refuseRereview } = await standoffRun({ held: false });
+  startRereview("Not a defect in this diff.");
+  refuseRereview();
+  assert.equal(host.comments.posted.length, 1);
+  fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
+  fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
+  assert.equal(host.comments.posted.length, 1, "the comment already on the pull request says it was recorded");
+});
+
+test("A11-290: the scan of the reviewer's checkout is made once for a re-review that is recorded, not on every sweep", async () => {
+  const { reviewer, pool, startRereview, refuseRereview } = await standoffRun();
+  startRereview("Not a defect in this diff.");
+  refuseRereview();
+  let looked = 0;
+  const spied = reviewer as { verdictFileOf: (ref: { pr: string; head: string }) => string | null };
+  const original = spied.verdictFileOf.bind(reviewer);
+  spied.verdictFileOf = (ref) => { looked += 1; return original(ref); };
+  for (let sweep = 0; sweep < 3; sweep += 1) pool.reviewNewHeads();
+  assert.equal(looked, 0);
 });

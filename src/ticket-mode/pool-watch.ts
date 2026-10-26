@@ -540,17 +540,14 @@ export function watchFeedback(ctx: PoolContext): void {
     const removals = answerQueue(ctx, entry, open);
     // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
     const reviewer = isWatched(entry) ? reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url)) : [];
-    // A re-review that stayed not convinced at an unchanged head is routed to the planner or the worker, once for each head (A11-290), before any other round is asked of the run.
-    if (isWatched(entry) && routeStandoff(ctx, entry.ticket.key)) {
-      queued = true;
-      continue;
-    }
     // A pull request that conflicts or is behind has the base merged into it before a worker is asked (A11-286), unless a round starts in this pass for something else: its worker then finds the branch where it left it, and is told of the conflict.
     if (!startsAnotherRound(entry, readable, [checks.feedback, removals.feedback, removals.conflict, ...reviewer])) mergeBaseOf(ctx, entry, open);
     if (isWatched(entry)) {
       const lines = [feedbackSince(readable, entry.finishedAt ?? 0, ctx.baseMerges), checks.feedback, removals.feedback, removals.conflict, ...reviewer]
         .filter((line): line is string => line !== null);
-      if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
+      // A re-review that stayed not convinced at an unchanged head is routed to the planner or the worker, once for each head (A11-290), when no other round is due: feedback of another kind is answered first, and the stand-off is still open when that round ends.
+      if (lines.length === 0 && routeStandoff(ctx, entry.ticket.key)) queued = true;
+      else if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
       else {
         recordQueueAnswer(ctx, entry, removals.heads);
         update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads));

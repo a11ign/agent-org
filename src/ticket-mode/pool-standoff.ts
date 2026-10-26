@@ -6,7 +6,7 @@
 // for each head: to the planner when the worker's reply disputes a decision (only the planner can change one), else to the worker. `settlePlannerRound` takes the planner's decision, attaches an amended plan, and leaves the re-review to the sweep:
 // the plan's decisions are in the re-review's brief and its look, so an amended decision is a new answer and the reviewer re-reviews bound by it.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { reviewVerdict as readVerdict } from "../review-verdict.ts";
 import type { Reply } from "../plugins/contracts/code-host.ts";
 import { pullsOf } from "./board-view/view-types-and-filters.ts";
@@ -40,10 +40,16 @@ function blockTextOf(state: ReviewState): string | null {
   return typeof body === "string" && body.trim() !== "" ? body.trim() : null;
 }
 
-/** The verdict file the re-review's reviewer left, when it was written since the re-review began (`since`) and carries a verdict: its text and its word. Null otherwise. */
+/** How the verdict door names the copy it keeps of a verdict it refuses (`keep_refused_verdict` in `pr-review-verdict.sh`): a verdict file with this name was refused by the door, and the reviewer's own was not. */
+const REFUSED_PREFIX = "refused-";
+
+/**
+ * The verdict file the door refused, when it was written since the re-review began (`since`) and carries a verdict: its text and its word. Null otherwise. A reviewer's own file that the door never saw (it ended without calling it) is no refusal,
+ * so only the door's copy is read.
+ */
 function refusedVerdictOf(reviewer: ReviewerPort, ref: { pr: string; head: string }, since: number): { text: string; verdict: "convinced" | "not-convinced" } | null {
   const file = reviewer.verdictFileOf(ref);
-  if (file === null) return null;
+  if (file === null || !basename(file).startsWith(REFUSED_PREFIX)) return null;
   try {
     if (statSync(file).mtimeMs < since) return null;
     const text = readFileSync(file, "utf8");
@@ -69,6 +75,19 @@ function commentRefused(ctx: PoolContext, url: string, comment: string): void {
   }
 }
 
+/** Whether the board's own record of a re-review is among `replies` already, posted at `since` or after. */
+const recordedOnPull = (replies: readonly Reply[], since: number): boolean => replies.some(({ text, at }) => isRereviewComment(text) && at >= since);
+
+/** The pool's memory of a re-review recorded for a pull request no run holds (it keeps no log): one key for each re-review, which began at `since`. */
+const memoOf = ({ url, head, since }: ReReview): string => `${url}@${head}#rereview-recorded@${since}`;
+
+/** A re-review of `url` at `head` that began at `since`. */
+type ReReview = Readonly<{ url: string; head: string; since: number }>;
+
+/** Whether the re-review was recorded already: the run's log says so when a run holds the pull request, and the pool's memory of the sweep does when none does. */
+const wasRecorded = (ctx: PoolContext, held: Entry | undefined, re: ReReview): boolean =>
+  (held === undefined ? ctx.refusedHeads.has(memoOf(re)) : logHas(ctx.store.get(), held.ticket.key, (event) => event.kind === "rereview" && event.url === re.url && event.head === re.head && event.at >= re.since));
+
 /**
  * A RE-REVIEW THE VERDICT DOOR REFUSED IS RECORDED (A11-290): the head was re-reviewed (`reviewerRereviewed`), its reviewer has ended or is gone, the block still stands (no second review was posted), and the reviewer left a verdict file written
  * since the re-review began. Its verdict and reasons are logged on the run that holds the pull request, as a `rereview` event ("rereview: still not convinced"), the stand-off is opened for a `not convinced` one, and the result is commented on
@@ -82,18 +101,31 @@ export function recordRefusedRereview(ctx: PoolContext, reviewer: ReviewerPort, 
   const ref = { pr: url, head };
   const rereviewEnded = ctx.reviewerRereviewed.has(key) && reviewer.settled(ref) !== "working";
   if (look === undefined || block === null || !rereviewEnded) return;
+  const held = heldBy(ctx, url);
+  const began = { url, head, since: look.at };
+  // Asked of the log first: the scan of the reviewer's checkout below is made only for a re-review not recorded yet.
+  if (wasRecorded(ctx, held, began)) return;
   const refused = refusedVerdictOf(reviewer, ref, look.at);
   if (refused === null) return;
-  const held = heldBy(ctx, url);
-  const memo = `${key}#rereview-recorded@${look.at}`;
-  const done = held === undefined ? ctx.refusedHeads.has(memo) : logHas(ctx.store.get(), held.ticket.key, (event) => event.kind === "rereview" && event.url === url && event.head === head && event.at >= look.at);
-  if (done) return;
-  ctx.refusedHeads.add(memo);
-  const replies = (repliesSince(block.at) ?? []).filter(({ text }) => !isRereviewComment(text));
+  const said = repliesSince(block.at);
+  // The comment is the board's own record, left on the pull request: one already there (a restart, a pull request no run holds) says the re-review was recorded, and is not posted again.
+  ctx.refusedHeads.add(memoOf(began));
+  if (held === undefined && recordedOnPull(said ?? [], look.at)) return;
+  const replies = (said ?? []).filter(({ text }) => !isRereviewComment(text));
   const reply = replies.length === 0 ? null : replies.map(({ text }) => text.trim()).join("\n\n").slice(-REPLIES_KEPT);
   log(`${url}: the re-review at ${head.slice(0, 8)} ended ${refused.verdict === "not-convinced" ? "still not convinced" : "convinced, but the verdict door refused it"}; recorded`);
-  if (held !== undefined) update(ctx, (queue) => recordRereview(queue, held.ticket.key, { url, head, review: blockTextOf(state), verdict: refused.verdict, reasons: refused.text, reply }, ctx.now()));
+  if (held !== undefined) update(ctx, (queue) => recordRereview(queue, held.ticket.key, { url, head, review: blockTextOf(state), verdict: refused.verdict, reasons: refused.text, reply, decisions: look.decided ?? null }, ctx.now()));
   commentRefused(ctx, url, rereviewComment(head, refused.verdict, refused.text));
+}
+
+/**
+ * What makes a stand-off a dispute over a decision, in words, or null when it is none (A11-290): the ticket's Decisions changed and the re-review, which had them, stayed not convinced (a reviewer that denies a Decision it was given is the planner's to
+ * answer at once), or the worker's reply disputes a decision of the plan or the ticket.
+ */
+function decisionAtIssue(ctx: PoolContext, entry: Entry, standoff: NonNullable<Entry["standoff"]>): string | null {
+  if (standoff.decisions !== null) return "the ticket's Decisions changed and the re-review stayed not convinced";
+  const disputed = disputedDecision(standoff.reply === null ? [] : [standoff.reply], [planDecisions(ctx, entry.ticket.key), decisionsOf(entry.ticket.description)]);
+  return disputed === null ? null : `the worker's reply disputes a decision: ${disputed}`;
 }
 
 /**
@@ -104,11 +136,9 @@ export function startStandoffRound(ctx: PoolContext, entry: Entry): boolean {
   const { standoff } = entry;
   if (standoff === undefined || (standoff.stage !== "open" && standoff.stage !== "planned")) return false;
   if (entry.pullHeads?.[standoff.url]?.head !== standoff.head) return false;
-  const disputed = standoff.stage === "open" && ctx.settings.planner !== null
-    ? disputedDecision(standoff.reply === null ? [] : [standoff.reply], [planDecisions(ctx, entry.ticket.key), decisionsOf(entry.ticket.description)])
-    : null;
+  const disputed = standoff.stage === "open" && ctx.settings.planner !== null ? decisionAtIssue(ctx, entry, standoff) : null;
   const stage = disputed === null ? "worker" : "planner";
-  log(`${entry.ticket.key}: ${standoff.url} stayed not convinced at ${standoff.head.slice(0, 8)}; the stand-off goes to ${stage === "planner" ? `the planner (the worker's reply disputes a decision: ${disputed})` : "the worker"}`);
+  log(`${entry.ticket.key}: ${standoff.url} stayed not convinced at ${standoff.head.slice(0, 8)}; the stand-off goes to ${stage === "planner" ? `the planner (${disputed})` : "the worker"}`);
   update(ctx, (queue) => standoffRound(queue, entry.ticket.key, stage, stage === "planner" ? standoffPlannerFeedback(standoff) : standoffWorkerFeedback(standoff), ctx.now()));
   return true;
 }

@@ -802,7 +802,7 @@ type Round = Readonly<{ title: string; opening: string; steps: string; reviewed:
  */
 const DISPUTED_REVIEW = "When a review requests changes that go against the plan or the ticket's Decisions: make no change for it, reply on that pull request quoting the decision (the plan's line, or the ticket's Decisions entry with its heading), "
   + "and end the round `reviewed`. Your reply starts the reviewer's re-review of the same head, which that decision binds. A request you judge wrong on other grounds is answered with the evidence. End `needs-human` only for an item on the escalation list. "
-  + `Start the line that disputes a decision with \`${DISPUTE_PHRASES[0]}\`, and the line that says the plan's own decision cannot be met, with the evidence, with \`${DISPUTE_PHRASES[1]}\`: if the reviewer is still not convinced at the same head, the board sends the dispute to the planner, who can change a decision of the plan, and then back to you.`;
+  + `Start the line that disputes a decision with \`${DISPUTE_PHRASES[0]}\`, and the line that says the plan's own decision cannot be met, with the evidence, with \`${DISPUTE_PHRASES[1]}\`: if the reviewer is still not convinced at the same head, the board sends the dispute to the planner (where this machine has one), who can change a decision of the plan, and then back to you.`;
 
 /** The line a round's `reviewed` condition carries for a review it disputed on a decision (A11-257): the reply is the answer, and the reviewer re-reviews the head. */
 const REVIEWED_DISPUTED = "A review you disputed on a decision counts as answered once your reply quoting the decision is on the pull request.";

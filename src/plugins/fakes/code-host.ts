@@ -223,14 +223,16 @@ function closesOf(state: FakeCloses, pulls: Pulls, calls: string[]): Pick<CodeHo
 export type FakeComments = { refusals: Map<string, string>; posted: { url: string; comment: string }[] };
 
 /** The comment on a pull request over what a test seeded. */
-function commentsOf(state: FakeComments, pulls: Pulls, calls: string[]): Pick<CodeHost, "commentOnPull"> {
+function commentsOf(state: FakeComments, pulls: Pulls, calls: string[], login: string | null): Pick<CodeHost, "commentOnPull"> {
   return {
     commentOnPull(url, comment) {
       calls.push(`commentOnPull ${url}`);
-      if (!pulls.has(url)) throw new Error(`fake code host: no pull request ${url}`);
-      const refusal = state.refusals.get(url);
-      if (refusal !== undefined) throw new Error(refusal);
+      const pull = pulls.get(url);
+      if (pull === undefined) throw new Error(`fake code host: no pull request ${url}`);
+      if (state.refusals.has(url)) throw new Error(state.refusals.get(url));
       state.posted.push({ url, comment });
+      // The comment is the account's own, and reads back as a reply of it, as a conversation comment does.
+      if (login !== null) pull.replies = [...pull.replies, { author: login, at: Date.now(), url: `${url}#comment-${state.posted.length}`, text: comment }];
     },
   };
 }
@@ -453,7 +455,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const branchCi: FakeBranchCi = { runs: new Map(), asked: [] };
   const queues: FakeQueues = { failures: new Map(), holdRefusal: null, held: new Set(), holds: [] };
   const host: CodeHost = {
-    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...commentsOf(comments, pulls, calls), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
+    ...readsOf(pulls, repositories, defaultBranches, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls), ...branchUpdatesOf(branchUpdates, pulls, calls), ...closesOf(closes, pulls, calls), ...commentsOf(comments, pulls, calls, login), ...stackMergesOf(stackMerges, pulls, calls), ...ciRunsOf(ciRuns, calls), ...branchCiOf(branchCi, calls), ...closedWorkOf(pulls, calls), ...queuesOf(queues, pulls, calls),
     sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld), repositories: repositoriesOf(repositoriesWorld, calls),
     repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };

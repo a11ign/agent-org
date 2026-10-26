@@ -37,7 +37,8 @@ import { doneWhenOf } from "./done-when.ts";
 import { partialStepOf } from "./board-view/plan-steps.ts";
 import { decisionsOf, hasDecisionsSection, unsupportedClaims } from "./ticket-decisions.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { planDecisions, planStepSection } from "./pool-ticket-text.ts";
+import { isPlanUnreadable, planDecisions, planStepSection } from "./pool-ticket-text.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { escalationList } from "./escalation.ts";
 import { heldBy, recordRefusedRereview } from "./pool-standoff.ts";
 import { isRereviewComment } from "./standoff-words.ts";
@@ -205,7 +206,9 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   kind.recorded.add(key);
   // The decisions a start was briefed with are known only when a run holds the pull request: with none, the brief carries no ticket, and a later change cannot be told from the first sight of them.
   const decisions = heldBy(ctx, url) === undefined ? {} : { decisions: kind.brief.decisions ?? "", plan: kind.brief.planDecisions ?? "" };
-  looks.set(key, { at: ctx.now(), body: kind.body, ...decisions });
+  // The lines of the ticket's Decisions that summoned this re-review, kept so that a re-review that stays not convinced after them can be shown to the planner (A11-290).
+  const decided = (kind.brief.rereview?.decisions ?? []).filter(({ kind: change }) => change === "added").map(({ text }) => text).join("\n");
+  looks.set(key, { at: ctx.now(), body: kind.body, ...decisions, ...(decided === "" ? {} : { decided }) });
   reviewerDropped.delete(dropped);
   rememberReviewers(ctx);
   const adopted = kind.adopts && reviewer.live({ pr: url, head });
@@ -313,13 +316,19 @@ function decisionsChangeSince(look: Look | undefined, held: Entry | undefined): 
   return changedLines(look.decisions, decisionsOf(held.ticket.description) ?? "");
 }
 
+/** Whether a look's plan decisions are known: it recorded some, and they were read (a look taken when the plan had none, or could not be read, has nothing to compare). */
+const knowsPlan = (recorded: string): boolean => recorded !== "" && !isPlanUnreadable(recorded);
+
 /**
  * The lines of the plan's decisions that changed since `look` (A11-290): for a pull request a run holds, the decisions its plan records now, against the decisions the head's last start was briefed with. A planner that amends a decision of a stand-off changes them, and the
- * reviewer re-reviews bound by the amendment. Empty when no run holds the pull request, or the look does not know the plan's decisions (one written before they were kept).
+ * reviewer re-reviews bound by the amendment. Empty when no run holds the pull request, the look does not know the plan's decisions (one written before they were kept, or taken when the plan could not be read or had none), or the plan cannot be read now.
  */
 function planChangeSince(ctx: PoolContext, look: Look | undefined, held: Entry | undefined): ReviewBodyLine[] {
-  if (look?.plan === undefined || held === undefined) return [];
-  return changedLines(look.plan, planDecisions(ctx, held.ticket.key) ?? "");
+  const before = look?.plan;
+  if (before === undefined || held === undefined || !knowsPlan(before)) return [];
+  const now = planDecisions(ctx, held.ticket.key);
+  // A plan that cannot be read now, or records no decision now, is not a plan that was amended: a transient read failure must not summon the reviewer for a block nobody answered.
+  return now === null || isPlanUnreadable(now) ? [] : changedLines(before, now);
 }
 
 /** Whether a run that holds the pull request may be asked for a re-review now: its round has ended, and it has not been handed back for want of a round (A11-235). */

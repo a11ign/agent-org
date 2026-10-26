@@ -3,14 +3,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { emptyQueue } from "../queue.ts";
-import type { Entry, Queue } from "./queue-entries-and-outcomes.ts";
+import { retry, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
+import { checkRound, finish } from "./queue-transitions.ts";
 import { plannerDecided, recordRereview, settleStandoff, standoffRound, standoffsSettled, workerRoundEnded } from "./queue-standoff.ts";
 import { logOf, REREVIEW_REASONS_MAX } from "./run-log.ts";
 import type { Standoff } from "./standoff-types.ts";
 
 const URL = "https://github.com/a11ign/agent-org/pull/1933";
 const ticket = { key: "A11-270", title: "t", description: "", url: "u", branch: "b", status: "s", statusOrder: 0, team: "A11", project: null, priority: 0 };
-const RESULT = { url: URL, head: "h1", review: "The bundle is over 200 KB.", verdict: "not-convinced", reasons: "Still 340 KB.", reply: "Plan cannot be met." } as const;
+const RESULT = { url: URL, head: "h1", review: "The bundle is over 200 KB.", verdict: "not-convinced", reasons: "Still 340 KB.", reply: "Plan cannot be met.", decisions: null } as const;
 
 /** A finished run holding the pull request, with `over` on it. */
 const run = (over: Partial<Entry> = {}): Queue => ({
@@ -21,7 +22,7 @@ const entryOf = (queue: Queue): Entry => queue.entries[0];
 
 test("A11-290: a not-convinced result opens the stand-off and is logged with the reasons; a later result for the same head keeps the stage and takes the newest reasons", () => {
   const opened = recordRereview(run(), "A11-270", RESULT, 100);
-  assert.deepEqual(entryOf(opened).standoff, { url: URL, head: "h1", review: RESULT.review, reasons: "Still 340 KB.", reply: "Plan cannot be met.", stage: "open" });
+  assert.deepEqual(entryOf(opened).standoff, { url: URL, head: "h1", review: RESULT.review, reasons: "Still 340 KB.", reply: "Plan cannot be met.", decisions: null, stage: "open" });
   assert.deepEqual(logOf(opened, "A11-270").map(({ at: _at, ...event }) => event), [{ kind: "rereview", url: URL, head: "h1", verdict: "not-convinced", reasons: "Still 340 KB." }]);
   // The planner's round has run and finished, having decided; the amended plan's re-review stays not convinced.
   const decided = plannerDecided(standoffRound(opened, "A11-270", "planner", "feedback", 200), "A11-270", { decision: "amended", reason: "r" }, 250);
@@ -74,4 +75,25 @@ test("A11-290: a stand-off ends with no person when the pull request moves to a 
   assert.equal(entryOf(moved).standoff, undefined);
   assert.deepEqual(standoffsSettled(moved), [200]);
   assert.deepEqual(standoffsSettled(settleStandoff(moved, "A11-270", 300)), [200], "a second read finds no stand-off to settle");
+});
+
+test("A11-290: a stand-off round that ends on anything but reviewed has ended its route, so a later round of the run is no stand-off round", () => {
+  const open = recordRereview(run(), "A11-270", RESULT, 100);
+  for (const stage of ["planner", "worker"] as const) {
+    const round = standoffRound(open, "A11-270", stage, "x", 200);
+    const stopped = finish(round, "A11-270", { kind: "needs-human", reason: "the fix needs a licence", escalation: "legal" }, 300);
+    assert.equal(entryOf(stopped).standoff?.stage, "done", stage);
+    const later = checkRound(stopped, "A11-270", "a check is red", 400, {});
+    assert.equal(entryOf(later).standoff?.stage, "done", `a red-check round after a ${stage} round that stopped is a plain round`);
+  }
+  const reviewed = finish(standoffRound(open, "A11-270", "worker", "x", 200), "A11-270", { kind: "reviewed", prs: [] }, 300);
+  assert.equal(entryOf(reviewed).standoff?.stage, "worker", "a worker round that reviewed is ended by the pool, which says so (workerRoundEnded)");
+});
+
+test("A11-290: a retry of a crashed stand-off round keeps the stand-off, which its card and its flag read", () => {
+  const open = recordRereview(run(), "A11-270", RESULT, 100);
+  const crashed = finish(standoffRound(open, "A11-270", "worker", "x", 200), "A11-270", { kind: "crashed", reason: "herdr died" }, 300);
+  const retried = retry(crashed, "A11-270", 400);
+  assert.equal(entryOf(retried).standoff?.url, URL);
+  assert.equal(entryOf(retried).standoff?.stage, "done");
 });

@@ -21,17 +21,20 @@ export function rereviewComment(head: string, verdict: "convinced" | "not-convin
 }
 
 /** The text a stand-off's round carries in common: the review the worker answered, what it replied, and the re-review that stayed not convinced. */
-function accountOf({ url, head, review, reply, reasons }: Standoff): string {
+function accountOf({ url, head, review, reply, reasons, decisions }: Standoff): string {
   return [
     `The reviewer re-reviewed ${url} at \`${head.slice(0, 8)}\` after the worker answered its block with no commit, and is still not convinced. The head has not changed, so the verdict door did not post a second review: it recorded the result.`,
     review === null ? "The review it answered: read it on the pull request." : `The review it answered:\n\n${quoted(review)}`,
     reply === null ? "The worker's reply: none was read; read the conversation on the pull request." : `The worker's reply:\n\n${quoted(reply)}`,
     `The re-review, as the re-reviewer wrote it:\n\n${quoted(reasons)}`,
+    ...(decisions === null ? [] : [`The ticket's Decisions changed before this re-review, which had them in its prompt, and it still stayed not convinced. The changed Decision, as the ticket words it:\n\n${quoted(decisions)}`]),
   ].join("\n\n");
 }
 
 /** What the planner's round is told: the account, and that the decision is its to settle. */
-export const standoffPlannerFeedback = (standoff: Standoff): string => `${accountOf(standoff)}\n\nThe worker's reply disputes a decision of the plan or the ticket, which only you can change.`;
+export const standoffPlannerFeedback = (standoff: Standoff): string => (standoff.decisions === null
+  ? `${accountOf(standoff)}\n\nThe worker's reply disputes a decision of the plan or the ticket, which only you can change.`
+  : `${accountOf(standoff)}\n\nThe ticket's Decisions bind the reviewer and the plan, and a person made them: you cannot change one. Decide whether the re-reviewer's reasons deny or contradict the changed Decision. If they do, uphold it and quote the Decision in your reason, so the worker answers the pull request with it.`);
 
 /** What the worker's round is told: the account, what the planner decided when it did, and what it must do. */
 export function standoffWorkerFeedback(standoff: Standoff): string {

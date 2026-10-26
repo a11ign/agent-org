@@ -11,7 +11,7 @@ import type { PlannerDecision, Standoff } from "./standoff-types.ts";
 import { logEvent, logOf, REREVIEW_REASONS_MAX, shortReason } from "./run-log.ts";
 
 /** What a re-review that the verdict door refused came to: the pull request and head, the reviewer's block the worker answered (null when its text was not read), the verdict the re-reviewer wrote, its file as it wrote it, and the worker's replies on the pull request (null when none was read). */
-export type RereviewResult = Readonly<{ url: string; head: string; review: string | null; verdict: "convinced" | "not-convinced"; reasons: string; reply: string | null }>;
+export type RereviewResult = Readonly<{ url: string; head: string; review: string | null; verdict: "convinced" | "not-convinced"; reasons: string; reply: string | null; decisions: string | null }>;
 
 /** The text cut to `chars` characters, with an ellipsis when it was longer. PURE. */
 const cut = (text: string, chars: number): string => (text.length > chars ? `${text.slice(0, chars - 1).trimEnd()}…` : text);
@@ -24,12 +24,12 @@ const isFor = (standoff: Standoff | undefined, url: string, head: string): stand
  * request (a finished one; any other run is mid-round, and its round reads the pull request itself). A stand-off already open for that head keeps its stage and takes the newest reasons and reply. PURE.
  */
 export function recordRereview(queue: Queue, key: string, result: RereviewResult, now?: number): Queue {
-  const { url, head, review, verdict, reasons, reply } = result;
+  const { url, head, review, verdict, reasons, reply, decisions } = result;
   const logged = logEvent(queue, key, now, { kind: "rereview", url, head, verdict, reasons: cut(reasons.trim(), REREVIEW_REASONS_MAX) });
   if (verdict !== "not-convinced") return logged;
   return replace(logged, key, (entry) => {
     if (entry.phase !== "finished") return entry;
-    const standoff: Standoff = isFor(entry.standoff, url, head) ? { ...entry.standoff, review, reasons, reply } : { url, head, review, reasons, reply, stage: "open" };
+    const standoff: Standoff = isFor(entry.standoff, url, head) ? { ...entry.standoff, review, reasons, reply, decisions } : { url, head, review, reasons, reply, decisions, stage: "open" };
     return { ...entry, standoff };
   });
 }

@@ -715,7 +715,7 @@ function plannerDecisionStop(ticketDir: string, io: StopIo): Judgment | null {
 }
 
 /** The refusal of a stand-off worker's `reviewed` that changed no pull request's head or description since the round began, or null when something changed or could not be told. */
-function unchangedStop(round: string, io: StopIo): Judgment | { verdict: HookResult } | null {
+function unchangedStop(round: string, io: StopIo): Judgment | null {
   let began: Record<string, { head?: unknown; body?: unknown }>;
   try {
     began = JSON.parse(io.read(round)) as typeof began;

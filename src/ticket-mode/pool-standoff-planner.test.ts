@@ -2,7 +2,7 @@
 // module: the planner's round for a stand-off (A11-290) -- it gets the review, the reply and the re-review, and it decides: it amends the plan's decision (and the reviewer re-reviews bound by the amendment), or it upholds it (and the worker acts)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { herdrName } from "./pool-herdr.ts";
 import { clock, MINUTE, PLANNER, settled, standoffRun, trackerWith } from "./pool-standoff-fixture.ts";
@@ -19,10 +19,8 @@ async function plannerRound() {
   const attached: { key: string; files: readonly string[] }[] = [];
   const attachPlan = tracker.attachPlan!.bind(tracker);
   tracker.attachPlan = async (key, files, state) => { attached.push({ key, files }); return attachPlan(key, files, state); };
-  const run = await standoffRun({ tickets: PLANNER, tracker });
+  const run = await standoffRun({ tickets: PLANNER, tracker, plan: OLD_PLAN });
   const dir = ticketDir(run.fixture.settings, "NBF-1");
-  mkdirSync(join(dir, "paths"), { recursive: true });
-  writeFileSync(join(dir, "paths", "NBF-1-0001-plan-first.md"), OLD_PLAN);
   run.startRereview("Plan cannot be met: the plan's own 200 KB limit is below the entry point's 300 KB.");
   run.refuseRereview();
   run.pool.watchFeedback();
@@ -102,5 +100,22 @@ test("A11-290: a planner round that decides nothing, or whose amended plan the b
   await empty.decide("amended");
   assert.equal(empty.entry().outcome?.kind, "needs-human", "an amended decision with no plan files is refused by the board's plan check");
   assert.deepEqual(empty.attached, []);
+  await settled();
+});
+
+test("A11-290: a plan the board cannot read now, or that records no decision now, is not an amended plan, and summons no reviewer for a block nobody answered", async () => {
+  const run = await standoffRun({ tickets: PLANNER, plan: OLD_PLAN });
+  const started = run.reviewer.started.length;
+  const paths = join(ticketDir(run.fixture.settings, "NBF-1"), "paths");
+  rmSync(paths, { recursive: true, force: true });
+  writeFileSync(paths, "not a folder\n");
+  run.pool.reviewNewHeads();
+  rmSync(paths, { force: true });
+  mkdirSync(paths, { recursive: true });
+  run.pool.reviewNewHeads();
+  assert.equal(run.reviewer.started.length, started, "an unreadable plan and an empty one are no answer");
+  writeFileSync(join(paths, "NBF-1-0001-plan-first.md"), NEW_PLAN);
+  run.pool.reviewNewHeads();
+  assert.equal(run.reviewer.started.length, started + 1, "CONTROL: the amended decisions are");
   await settled();
 });
