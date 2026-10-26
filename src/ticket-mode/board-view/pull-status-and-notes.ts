@@ -6,6 +6,7 @@ import { overlapWait, type OverlapWait } from "./overlap-hold.ts";
 import { currentStepOf, currentStepPaths, stepNamed } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
 import { blockersOf, isStoppedFor, ticketWaitEnded } from "./waits-on.ts";
+import { isRoundOnOpenPull } from "./round-pulls.ts";
 import { clockOf } from "./update-banner.ts";
 import { deadlineOf } from "./wait-deadline.ts";
 
@@ -16,10 +17,12 @@ import { deadlineOf } from "./wait-deadline.ts";
  * That lets go only a blocker nothing more is coming from ({@link holdReason}): one with a live run holds, whatever its pull requests so far did, and so does one whose merged pull request
  * declared itself partial (A11-206). A canceled or duplicate blocker never lets go: the work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
  * be stacked on ({@link stackedOn}) does not hold it back. A run the board stopped for a wait on other tickets is held by each of them until the tracker reads it completed or canceled, whether or not the tracker lists
- * it as a blocker yet, and is never stacked on it ({@link blockersOf}, {@link ticketWaitEnded}, A11-272).
+ * it as a blocker yet, and is never stacked on it ({@link blockersOf}, {@link ticketWaitEnded}, A11-272). A review round on a pull request that is open waits on none of its ticket's other blockers: the pull request exists, and
+ * what the round answers (a review, a conflict, a removal from the merge queue) does not need them finished (A11-298, {@link isRoundOnOpenPull}).
  */
 export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
-  return blockersOf(entry).filter((blocker) => (isStoppedFor(entry, blocker) ? !ticketWaitEnded(blocker.state) : !isDoneFor(entry, blocker, entries) && stackBaseOf(entry, blocker) === null));
+  const answersPull = isRoundOnOpenPull(entry);
+  return blockersOf(entry).filter((blocker) => (isStoppedFor(entry, blocker) ? !ticketWaitEnded(blocker.state) : !answersPull && !isDoneFor(entry, blocker, entries) && stackBaseOf(entry, blocker) === null));
 }
 
 /** Whether the planner said the run waits for this blocker to merge, rather than stacking on it: its key is in the run's `waitMerged`. */

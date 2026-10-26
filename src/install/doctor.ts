@@ -37,6 +37,7 @@ import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
 import { readReviewerMemory, reviewerMemoryPath, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
+import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -134,6 +135,8 @@ export type DoctorDeps = Readonly<{
   drain: () => Drain;
   /** Each live or parked run with the version of agent-org it started on, or null when the queue cannot be read (A11-169). */
   runs: () => readonly RunVersion[] | null;
+  /** The queued runs that have waited more than two hours on the same ticket, read from the queue now, or null when the queue cannot be read (A11-298). */
+  longWaits: () => readonly LongWait[] | null;
   /** The board UI's build, read now (A11-191). */
   uiBuild: () => UiBuildReading;
   /** The version this instance runs: its version folder's name, else its package's. */
@@ -559,6 +562,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     registeredCheck("auto-update", deps, "it runs `agent-org update` every ten minutes"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
     ...drainChecks(deps),
+    ...longWaitChecks(deps),
     ...runVersionChecks(settings, deps),
     ...chromiumChecks(deps),
   ];
@@ -658,6 +662,16 @@ function herdrScopeChecks(settings: TicketSettings | null, instanceState: Servic
  */
 function readCacheGuardChecks(deps: DoctorDeps): Check[] {
   return deps.guards().readCacheDropIn ? [failed("gh-read-cache-off.conf", "the instance unit still turns the gh read cache off, which the review claim no longer needs", "run `agent-org onboard`, which retires it")] : [];
+}
+
+/**
+ * A queued run that has waited more than two hours on the same ticket (A11-298): one warning row each, saying what it waits on and whether that ticket can move by itself. A wait is not a failure, so the row is `ok`, and
+ * the fix is what ends the wait. Nothing when no run has waited that long, or the queue cannot be read.
+ */
+function longWaitChecks(deps: DoctorDeps): Check[] {
+  const now = deps.now();
+  return (deps.longWaits() ?? []).map((wait) => warned(`long wait ${wait.key}`, longWaitSentence(wait, now),
+    wait.holder.moves ? `it ends when ${wait.on} moves; if it should not wait, remove the blocker relation in the tracker or press Start anyway on the run's card` : `${wait.on} cannot move by itself: finish or remove it, or remove the ${wait.kind === "files" ? "run holding the files" : "blocker relation in the tracker"}`));
 }
 
 /** The versions of agent-org the live and parked runs started on, beside the instance's (A11-169): one row each, or one line when they all agree. Nothing when no run holds a workspace. */
@@ -980,6 +994,10 @@ export function defaultDoctorDeps(): DoctorDeps {
     runs: () => {
       const queue = readQueue();
       return queue === null ? null : runVersions(queue);
+    },
+    longWaits: () => {
+      const queue = readQueue();
+      return queue === null ? null : longWaits(queue.entries, Date.now());
     },
     uiBuild: () => ({ found: findBuild(buildCandidates()), declared: declaresUiBuild(TOOL_ROOT), looked: join(TOOL_ROOT, UI_BUILD_DIR), version: versionNameOf(TOOL_ROOT) }),
     instanceVersion: () => runningToolVersion(),

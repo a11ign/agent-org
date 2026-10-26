@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cycleNote, cycleSentence, waitCycles } from "./wait-cycles.ts";
+import { overlapWait } from "./overlap-hold.ts";
 import type { ViewEntry } from "./view-types-and-filters.ts";
 
 const FILES = ["lab:middleware/runtime/main.py", "lab:middleware/src/"];
@@ -71,4 +72,37 @@ test("A11-272: the card of a ticket in a cycle names it; the card of another tic
 test("A11-272: a worker woken from its wait waits on no ticket its note named, so the files alone make no cycle", () => {
   const entries = [entry("A11-231", { phase: "running", working: { reason: "w", at: 1, waits: [{ kind: "ticket", key: "A11-229" }] }, paths: FILES }), entry("A11-229", { paths: FILES })];
   assert.deepEqual(waitCycles(entries), []);
+});
+
+const PULL_18 = "https://github.com/a11ign/announcement-emulator/pull/18";
+const MIDDLEWARE_FILES = ["announcement-emulator:middleware/package.json", "announcement-emulator:middleware/src/"];
+/**
+ * The 2026-10-25 board (A11-298): A11-229 queued on the middleware files, A11-231 queued behind A11-229, and A11-232 a queued review round on #18 that holds #18's files. `behind232` is what holds the round back:
+ * the ticket its worker waited on (`stoppedForBlocker`), which a round stays behind, or a plain blocker of its ticket, which a round on an open pull request does not wait on.
+ */
+const stuckBoard = (behind232: Record<string, unknown>) => [
+  entry("A11-229", { paths: MIDDLEWARE_FILES }),
+  entry("A11-231", { blockers: [blocker("A11-229")] }),
+  entry("A11-232", { review: [{ repo: "announcement-emulator", url: PULL_18 }], pullFiles: { [PULL_18]: ["middleware/package.json"] }, ...behind232 }),
+];
+
+test("A11-298: 229 → (overlap) 232 → (blocker) 231 → (blocker) 229 is one cycle, found once, with the overlap edge counted", () => {
+  const [cycle, ...rest] = waitCycles(stuckBoard({ stoppedForBlocker: { at: 1, keys: ["A11-231"] } }));
+  assert.equal(rest.length, 0);
+  assert.deepEqual([cycle.id, cycle.loop], ["A11-229,A11-231,A11-232", ["A11-229", "A11-232", "A11-231", "A11-229"]]);
+  assert.deepEqual(cycle.edges.map(({ from, to, kind }) => `${from} ${kind} ${to}`), ["A11-229 files A11-232", "A11-232 blocked-by A11-231", "A11-231 blocked-by A11-229"]);
+  assert.equal(cycleSentence(cycle), "Wait cycle A11-229 → A11-232 → A11-231 → A11-229: A11-229 is held behind A11-232's files; A11-232 is blocked by A11-231; A11-231 is blocked by A11-229.");
+});
+
+test("A11-298: and the board breaks it: the round waits on A11-229 through A11-231, so its files do not hold A11-229, which starts", () => {
+  const entries = stuckBoard({ stoppedForBlocker: { at: 1, keys: ["A11-231"] } });
+  assert.equal(overlapWait(entries[0], entries), null);
+});
+
+test("A11-298: a round on an open pull request is not blocked by its ticket's blockers, so the same board without the worker's own wait is no cycle", () => {
+  assert.deepEqual(waitCycles(stuckBoard({ blockers: [blocker("A11-231")] })), []);
+});
+
+test("A11-298: a round whose pull request merged holds nothing, so it is in no cycle", () => {
+  assert.deepEqual(waitCycles(stuckBoard({ stoppedForBlocker: { at: 1, keys: ["A11-231"] }, pullStates: { [PULL_18]: "merged" } })), []);
 });

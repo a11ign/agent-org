@@ -7,7 +7,8 @@
 // board no longer finds is removed from it, so one that forms again later is told again.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { cycleSentence, waitCycles, type WaitCycle } from "./board-view/wait-cycles.ts";
+import { cycleSentence, waitCycles, type WaitCycle, type WaitEdge } from "./board-view/wait-cycles.ts";
+import { waitersOn } from "./board-view/waits-on.ts";
 import { log, messageOf } from "./pool-state.ts";
 import { find } from "./queue/queue-entries-and-outcomes.ts";
 import { POLL_EVERY_MS } from "./wait-on/wait-watch.ts";
@@ -71,6 +72,19 @@ export function waitCyclesDue(ctx: PoolContext, found: readonly WaitCycle[]): bo
   return found.length > 0 || Object.keys(ledger.told).length > 0 || ledger.pending.size > 0 || ledger.awaiting.size > 0;
 }
 
+/**
+ * The files edges of a cycle that the overlap hold already lifts (A11-272): the run that holds the files waits on the ticket it holds them against, directly or through the tickets in between, so that ticket starts on them and
+ * the cycle is broken by the queue itself (A11-298).
+ */
+function liftedHolds(ctx: PoolContext, cycle: WaitCycle): WaitEdge[] {
+  const entries = ctx.store.get().entries;
+  return cycle.edges.filter(({ kind, from, to }) => kind === "files" && waitersOn(from, entries).has(to));
+}
+
+/** What the board did about a cycle by lifting the holds above: each holder that waits on the ticket it holds files against, and the ticket that starts on them. */
+const liftedWords = (lifted: readonly WaitEdge[]): string =>
+  `The board lifts ${lifted.map(({ from, to }) => `${to}'s hold on ${from}`).join(" and ")}, since ${lifted.length === 1 ? "that run waits" : "those runs wait"} on the ticket${lifted.length === 1 ? "" : "s"} held back, so ${lifted.map(({ from }) => from).join(" and ")} can start on those files.`;
+
 /** What a person must do about a cycle the board cannot break: remove a blocker relation where the cycle has one, else end one of its waits or narrow a plan. */
 function personMust(cycle: WaitCycle): string {
   const blockers = cycle.edges.filter(({ kind }) => kind === "blocked-by");
@@ -92,7 +106,8 @@ type Outcome = Readonly<{ released: ReadonlySet<string>; remains: boolean }>;
 /** The comment for a cycle: its sentence, then what the board did or what a person must. */
 function noticeOf(ctx: PoolContext, cycle: WaitCycle, { released, remains }: Outcome): Notice {
   const did = releasedWords(ctx, new Set(cycle.keys.filter((key) => released.has(key))));
-  const tail = [did.length === 0 ? null : `The board ${did.join(", and ")}.`, remains ? personMust(cycle) : null].filter((part) => part !== null);
+  const lifted = liftedHolds(ctx, cycle);
+  const tail = [did.length === 0 ? null : `The board ${did.join(", and ")}.`, lifted.length === 0 ? null : liftedWords(lifted), remains && lifted.length === 0 ? personMust(cycle) : null].filter((part) => part !== null);
   return { id: cycle.id, on: cycle.keys[0], body: [cycleSentence(cycle), ...tail].join(" ") };
 }
 

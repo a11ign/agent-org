@@ -38,6 +38,8 @@ import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forceDrain } from "./pool-drain.ts";
 import { releaseTicketWaits } from "./pool-ticket-wait.ts";
+import { settleQueuedRounds } from "./pool-round-pulls.ts";
+import { recordWaits } from "./queue/queue-long-waits.ts";
 import { ageHolds } from "./ci-spend/hold.ts";
 import { watchCiSpend } from "./ci-spend/watch.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -491,10 +493,19 @@ export async function tick(ctx: PoolContext): Promise<void> {
       // A run held for its ticket's CI spend has seen one more pass; after two it is released, and this pass's fill may start it (A11-261).
       ageCiHolds(ctx);
       await fill(ctx);
+      // After the fill, which decides who starts: what each queued run waits on, and since when, so a wait on the same ticket for hours is listed (A11-298). Written only when a wait began, changed or ended.
+      noteWaits(ctx);
     } while (pass.again);
   } finally {
     pass.busy = false;
   }
+}
+
+/** Record on each queued run which ticket it waits on and since when (`recordWaits`); the queue is written only when a wait began, changed or ended. */
+function noteWaits({ now, store }: PoolContext): void {
+  const queue = store.get();
+  const next = recordWaits(queue, now());
+  if (next !== queue) store.set(next);
 }
 
 /**
@@ -511,6 +522,8 @@ export function watchFeedback(ctx: PoolContext): void {
   // What each ticket's pushes cost in CI is read on the same cadence, whether or not a pull request is finished: a live worker's pushes are the ones that cost (A11-261). It never throws and the watch does not wait for it.
   void watchCiSpend(ctx);
   clearOverStaleBlocks(ctx);
+  // A queued round holds the files of the pull requests it names until one is read merged or closed, and no sweep of a finished run reads a queued one (A11-298): before the finished runs, which may return early.
+  settleQueuedRounds(ctx);
   const finished = store.get().entries.filter((entry) => entry.phase === "finished" && openPulls(entry).length > 0);
   if (finished.length === 0) return;
   ctx.ownLogin.value ??= codeHost.readOwnLogin();

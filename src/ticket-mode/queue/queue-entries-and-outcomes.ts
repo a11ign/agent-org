@@ -370,6 +370,8 @@ export type Entry = Readonly<{
    * long as the run is on the board. Kept through a start, a finish and a retry, and carried by a review round.
    */
   overlapOverride?: Readonly<{ holder: string; pull: string | null; path: string | null; at: number }>;
+  /** Set on a queued run held by a blocker or by the files of another run: the ticket it waits on and when the board first saw it wait on that one (A11-298). See {@link recordWaits}. */
+  waitSince?: Readonly<{ on: string; since: number }>;
   /** How many rounds the board has started on its own since a person last approved: at most {@link MAX_FEEDBACK_ROUNDS}. */
   rounds?: number;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. A person's Approve clears it. */
