@@ -33,9 +33,9 @@ export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker"
 
 /**
  * What the board did about a pull request that conflicts with its base or is behind it (A11-286, {@link BaseMergeStep}): it asked the host to merge the base in (`merging`, for a conflict; `behind`, for a branch that is only behind), it started a conflict round
- * because the merge reported a real conflict (`round`), it left the pull request to the worker that holds the run's workspace (`waiting`), or it could not start a round because the run has used the board's own (`capped`).
+ * because the merge reported a real conflict (`round`), it left the pull request to the worker that holds the run's workspace (`waiting`), it could not start a round because the run has used the board's own (`capped`), or it started none because the run waits on a person, whose card says the conflict (`held`, A11-293).
  */
-export type BaseMergeStep = "merging" | "behind" | "round" | "waiting" | "capped";
+export type BaseMergeStep = "merging" | "behind" | "round" | "waiting" | "capped" | "held";
 
 /** What answered a run that needed a person: a person's Respond, approval or talk, their answer through the board's answer route (A11-250), or the run's own terminal. */
 export type AnsweredBy = "respond" | "approve" | "talk" | "answer" | "terminal";

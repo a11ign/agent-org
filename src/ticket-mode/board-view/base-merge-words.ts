@@ -14,6 +14,7 @@ export function baseMergeWords(url: string, base: string | null, step: BaseMerge
     case "behind": return `${pull} is behind ${into}: merging ${into} in`;
     case "round": return `${pull} conflicts with ${into}: conflict round started`;
     case "waiting": return `${pull} conflicts with ${into}: waits for the running worker`;
+    case "held": return `${pull} conflicts with ${into}: the run waits on a person, so no round is started`;
     case "capped": return `${pull} conflicts with ${into}: the board's rounds are used up; Respond to review starts another`;
   }
 }
