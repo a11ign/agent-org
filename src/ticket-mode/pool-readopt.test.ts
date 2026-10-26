@@ -11,6 +11,8 @@ import { readoptNote } from "./board-view/readopt-note.ts";
 import { clockOf } from "./board-view/update-banner.ts";
 import { replace, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { finish } from "./queue/queue-transitions.ts";
+import { lostBeforeThisStart } from "./queue/queue-readopt.ts";
+import { logOf } from "./queue/run-log.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import type { TicketSource } from "./source.ts";
 
@@ -79,8 +81,62 @@ test("a run adopted from `starting` takes the steps its start was cut short of: 
   assert.equal(claims.length, 1, "the claim the start would have made after its agent opened");
 });
 
-test("a restart with the pane gone ends the run `lost in a restart` and queues it again once; lost again, it ends", async () => {
+// A11-294: a run whose agent never opened has no work to lose, so a restart starts it again instead of ending it crashed.
+test("a restart in a run's `starting` with no agent listed queues it again with the same round, ends nothing, and the run then starts again", async () => {
   const made = await caughtStarting();
+  const round = { review: [pr], feedback: "tighten the test", asked: true };
+  made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, ...round, startedAt: 90 })));
+  made.restart({}).reconcile();
+  const queued = made.entry("NBF-1");
+  assert.deepEqual([queued.phase, queued.outcome, queued.lostInRestart, queued.startedAt, queued.finishedAt], ["queued", undefined, undefined, undefined, undefined], "queued, not crashed");
+  assert.deepEqual({ review: queued.review, feedback: queued.feedback, asked: queued.asked }, round, "the same round");
+  assert.equal(readoptNote(queued), null, "it lost nothing, so the card says nothing of a loss");
+  assert.deepEqual(logOf(made.store.get(), "NBF-1").flatMap((event) => (event.kind === "requeued" ? [event.why] : [])), ["restart"], "the log says a restart queued it again");
+  await made.restart({}).tick();
+  const started = made.entry("NBF-1");
+  assert.deepEqual([started.phase, started.workspace, started.outcome], ["running", "w2", undefined], "it starts again");
+  assert.deepEqual({ review: started.review, feedback: started.feedback, asked: started.asked }, round, "and its round is the one it had");
+});
+
+test("a run caught `running` with no workspace on record, and no agent listed, is queued again the same way", async () => {
+  const made = poolFixture();
+  await made.pool.tick();
+  made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, phase: "running", workspace: undefined, pane: undefined })));
+  made.restart({}).reconcile();
+  assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").outcome, made.entry("NBF-1").lostInRestart], ["queued", undefined, undefined]);
+});
+
+test("a batch caught `starting` with nothing listed is queued again for every ticket", async () => {
+  const made = await caughtStarting({ keys: ["NBF-1", "NBF-2"] });
+  for (const key of ["NBF-1", "NBF-2"]) made.store.set(replace(made.store.get(), key, (entry) => ({ ...entry, batch: "b1" })));
+  made.restart({}).reconcile();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [made.entry(key).phase, made.entry(key).outcome, made.entry(key).lostInRestart, made.entry(key).batch]), Array(2).fill(["queued", undefined, undefined, "b1"]), "still one batch");
+});
+
+test("a talk session caught `starting` keeps its version-folder pin; a work run's start records go, with the stale marks of the start", async () => {
+  const made = await caughtStarting();
+  const pinned = { toolRoot: "/tool/versions/v0.1.0", toolVersion: "v0.1.0", readopted: { at: 5, from: "starting" } as const };
+  made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, ...pinned, talk: true })));
+  made.restart({}).reconcile();
+  assert.deepEqual([made.entry("NBF-1").toolRoot, made.entry("NBF-1").toolVersion, made.entry("NBF-1").readopted], ["/tool/versions/v0.1.0", "v0.1.0", undefined]);
+  const work = await caughtStarting();
+  work.store.set(replace(work.store.get(), "NBF-1", (entry) => ({ ...entry, ...pinned })));
+  work.restart({}).reconcile();
+  assert.deepEqual([work.entry("NBF-1").toolRoot, work.entry("NBF-1").toolVersion], [undefined, undefined]);
+});
+
+test("a run lost in a restart once and caught `starting` by the next is queued again with its mark moved to this queueing, so its brief still says its worktree holds earlier work", async () => {
+  const made = await caughtStarting();
+  made.store.set(replace(made.store.get(), "NBF-1", (entry) => ({ ...entry, lostInRestart: { at: 50 } })));
+  made.restart({}).reconcile();
+  const queued = made.entry("NBF-1");
+  assert.equal(queued.phase, "queued");
+  assert.equal(lostBeforeThisStart(queued), queued.queuedAt);
+});
+
+test("a restart with the pane gone ends a run that had an agent `lost in a restart` and queues it again once; lost again, it ends", async () => {
+  const made = poolFixture();
+  await made.pool.tick();
   made.restart({}).reconcile();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").lostInRestart], ["queued", { at: 100 }], "no pull request on record: queued again");
   await made.restart({}).tick();

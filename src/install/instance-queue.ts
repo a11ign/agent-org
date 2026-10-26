@@ -5,6 +5,7 @@
 // needs to be sure (the drain) treats null as "unknown" and a caller that must not be held back by it (a machine with no host file) treats it as nothing live.
 import { join } from "node:path";
 import { liveRunCount, type Queue } from "../ticket-mode/queue/queue-entries-and-outcomes.ts";
+import { startingRunCount } from "../ticket-mode/queue/queue-readopt.ts";
 import { loadQueue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { hostFilePath } from "./paths.ts";
@@ -39,4 +40,10 @@ export function readQueue(env: NodeJS.ProcessEnv = process.env): Queue | null {
 export function readLiveRuns(env: NodeJS.ProcessEnv = process.env): number | null {
   const queue = readQueue(env);
   return queue === null ? null : liveRunCount(queue);
+}
+
+/** How many of the instance's runs are still starting (A11-294), or null when its queue cannot be read. */
+export function readStartingRuns(env: NodeJS.ProcessEnv = process.env): number | null {
+  const queue = readQueue(env);
+  return queue === null ? null : startingRunCount(queue);
 }

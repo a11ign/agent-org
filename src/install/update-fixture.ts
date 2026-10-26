@@ -84,7 +84,7 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
   const git = mirrorGit(tool);
   const env = { AGENT_ORG_HOME: join(home, ".agent-org"), HOME: home } as NodeJS.ProcessEnv;
   const checkout = join(remote.root, "agent-org");
-  const state = { ui: OFFLINE, failBuild: false, live: options.live ?? 0, inUse: options.inUse === undefined ? [] as readonly string[] | null : options.inUse, now: NOW, root: checkout };
+  const state = { ui: OFFLINE, failBuild: false, pauses: [] as number[], startingAfter: undefined as ((pauses: number) => number | null) | undefined, live: options.live ?? 0, starting: 0 as number | null, inUse: options.inUse === undefined ? [] as readonly string[] | null : options.inUse, now: NOW, root: checkout };
   const drainFile = drainPath(env, home);
   const hostPath = join(home, ".agent-org", "host.json");
   const binDir = join(home, ".local", "bin");
@@ -109,6 +109,8 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
     state: (name) => stub.states[name] ?? "not-registered",
     restart: (name) => { restarted.push(name); },
     liveRuns: () => state.live,
+    startingRuns: () => state.starting,
+    pause: (ms) => { state.pauses.push(ms); if (state.startingAfter !== undefined) state.starting = state.startingAfter(state.pauses.length); },
     inUse: () => state.inUse,
     prune: (inUse) => pruneVersions({ tool, inUse, self: state.root }),
     migrate: () => migrateInstall({ oldRoot: checkout, tool, home, env, services: stub.services, hostPath, binDir }),
