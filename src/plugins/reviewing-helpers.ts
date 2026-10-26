@@ -15,7 +15,7 @@ import type { ReviewerBoard, ReviewerHelpers } from "./manifest.ts";
 import { gateHelpers } from "./reviewing-gate.ts";
 
 /** What a board names of itself: the rest of a {@link ReviewerBoard} is core's own functions. */
-export type BoardCollaborators = Pick<ReviewerBoard, "session" | "run" | "codeHost" | "clones" | "instance" | "heads"> & Partial<Pick<ReviewerBoard, "seen">>;
+export type BoardCollaborators = Pick<ReviewerBoard, "session" | "run" | "codeHost" | "clones" | "instance" | "heads"> & Partial<Pick<ReviewerBoard, "seen" | "tmpBase">>;
 
 /** The helpers a reviewer plugin is given on a board: the gate's, and the board's collaborators with the functions the reviewer calls. */
 export const reviewingHelpers = (collaborators: BoardCollaborators): ReviewerHelpers => {

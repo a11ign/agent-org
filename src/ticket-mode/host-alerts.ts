@@ -1,5 +1,5 @@
 // @ts-check
-// module: what is wrong with the host itself, said on the board (A11-279) -- /tmp over its limit, a soft lockup this boot, a serve the board could not put back, and the hang settings drifting
+// module: what is wrong with the host itself, said on the board (A11-279, A11-303) -- /tmp over its limit and who is still writing to it, a soft lockup this boot, a serve the board could not put back, and the hang settings drifting
 //
 // THE 15:20Z CRASH WAS FOUR SLOW FAILURES NOBODY SAW. `/tmp` held 19,960 entries, a kernel thread spent 26 s listing it, and the host's `softlockup_panic = 1` turned the stall into a reboot that killed every run; the serves
 // then stayed gone until a person put them back. The chairman's ruling: a soft lockup is LOGGED and the board's alert raises it, the host is not rebooted for one. So the board names each condition on the Runs page, once, with
@@ -9,8 +9,10 @@
 // serve that comes back clears its alert in the same pass. A read that fails keeps the last answer, and says so once: "could not read" is not "all well", and not an alert either, since the board cannot name what it did not see.
 // A pool made without `deps.hostAlertReads` (every test; the instance passes the machine's) reads nothing of the host, and shows the exposure's alerts alone.
 import { execFile } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { HANG_CONF_PATH, hangConfFindings, realHostReads, type HostReads } from "../hang-settings.ts";
+import { LEGACY_TMP_ROOT } from "./legacy-tmp.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { log } from "./pool-state.ts";
 
@@ -19,6 +21,16 @@ export const HOST_ALERTS_EVERY_MS = 60_000;
 
 /** The most entries `/tmp` may hold before the board says so: the chairman's limit (A11-279). */
 export const TMP_ENTRY_LIMIT = 1_000;
+
+/** How far back an entry of `/tmp` is "still being written": the alert names the prefixes of the entries modified in this time (A11-303). */
+export const TMP_WRITERS_WINDOW_MS = 60 * 60_000;
+
+/** How many prefixes the alert names. */
+export const TMP_WRITERS_NAMED = 5;
+
+/** The most entries of `/tmp` whose age is read for the alert, in batches of {@link TMP_WRITERS_BATCH}: the count is of the whole directory, the writers are named from this many. */
+export const TMP_WRITERS_EXAMINED = 30_000;
+const TMP_WRITERS_BATCH = 64;
 
 /** The longest `journalctl` is given: the read runs inside the tick, which waits for it. */
 const JOURNAL_CALL_MS = 5_000;
@@ -29,16 +41,19 @@ export const HOST_READ_MS = 5_000;
 /** One condition of the host, as the board words it: a stable id, the sentence, and when it began (ms since the epoch). */
 export type HostAlert = Readonly<{ id: string; sentence: string; since: number }>;
 
-/** What the reads last found of the host; null where nothing is to be said (not read yet, or nothing wrong). `softLockupAt`: when this boot's first soft lockup was logged. `hangSettings`: the sentence of what differs. */
-type HostReading = { tmpEntries: number | null; softLockupAt: number | null; hangSettings: string | null };
+/** One prefix of the names in `/tmp`, as `ae-pw-*`, and how many entries modified lately carry it. */
+export type TmpWriter = Readonly<{ prefix: string; count: number }>;
 
-/** The host's reads, each asked on its own so a failing one does not hide the others. Injected: the instance passes {@link liveHostAlertReads}. */
-export type HostAlertReads = Readonly<{ tmpEntries: () => Promise<number>; softLockupAt: () => Promise<number | undefined>; hangSettings: () => string | undefined }>;
+/** What the reads last found of the host; null where nothing is to be said (not read yet, or nothing wrong). `softLockupAt`: when this boot's first soft lockup was logged. `hangSettings`: the sentence of what differs. `tmpWriters`: the prefixes of the entries of `/tmp` modified in the last hour, read only while `/tmp` is over its limit. */
+type HostReading = { tmpEntries: number | null; tmpWriters: readonly TmpWriter[] | null; softLockupAt: number | null; hangSettings: string | null };
+
+/** The host's reads, each asked on its own so a failing one does not hide the others. Injected: the instance passes {@link liveHostAlertReads}. `tmpWriters` is asked for the entries modified since the time it is given, and only when `/tmp` is over its limit. */
+export type HostAlertReads = Readonly<{ tmpEntries: () => Promise<number>; tmpWriters?: (since: number) => Promise<readonly TmpWriter[]>; softLockupAt: () => Promise<number | undefined>; hangSettings: () => string | undefined }>;
 
 /** What the pool keeps of the host's alerts between passes. */
 export type HostAlertState = { at: number | null; reading: HostReading; alerts: readonly HostAlert[]; since: Map<string, number>; said: Set<string>; pending: Promise<void> | null };
 
-export const newHostAlertState = (): HostAlertState => ({ at: null, reading: { tmpEntries: null, softLockupAt: null, hangSettings: null }, alerts: [], since: new Map(), said: new Set(), pending: null });
+export const newHostAlertState = (): HostAlertState => ({ at: null, reading: { tmpEntries: null, tmpWriters: null, softLockupAt: null, hangSettings: null }, alerts: [], since: new Map(), said: new Set(), pending: null });
 
 /** The first time in `journalctl -o short-unix` output (`1792941622.123456 host kernel: ...`), in ms, or `undefined` for output with no line. PURE. */
 export function firstLogTime(output: string): number | undefined {
@@ -77,9 +92,50 @@ export function withinMs<T>(read: () => Promise<T> | T, ms: number, what: string
   return Promise.race([Promise.resolve().then(read), late]).finally(() => clearTimeout(timer));
 }
 
-/** The machine's reads: `/tmp`'s entries (one `readdir`, as `prune-tmp.ts` counts them), this boot's kernel log, and the hang settings against the text hang-settings.ts holds. */
+/**
+ * The prefix a temporary name starts with, as its source leaves it: the leading words of the name, each ended by a `-`, `_` or `.`, up to three, and not the random tail `mkdtemp` adds. `ae-pw-Xk3j2L` is `ae-pw-*`,
+ * `tmp.Xk3j2L` is `tmp.*`, and a name that starts with a number or a long token is `(other)`. A11-303: so a new leak points at the test or tool that makes it. PURE.
+ */
+export function prefixOf(name: string): string {
+  const words = name.split(/(?<=[-_.])/).filter((piece) => /[-_.]$/.test(piece));
+  const leading: string[] = [];
+  for (const word of words.slice(0, 3)) {
+    if (!/^[A-Za-z][A-Za-z0-9]{0,7}[-_.]$/.test(word)) break;
+    leading.push(word);
+  }
+  return leading.length === 0 ? "(other)" : `${leading.join("")}*`;
+}
+
+/** The {@link TMP_WRITERS_NAMED} prefixes most of `names` carry, most first and by name among equals. PURE. */
+export function topPrefixes(names: readonly string[]): readonly TmpWriter[] {
+  const counts = new Map<string, number>();
+  for (const prefix of names.map(prefixOf)) counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+  return [...counts].map(([prefix, count]) => ({ prefix, count })).sort((a, b) => b.count - a.count || a.prefix.localeCompare(b.prefix)).slice(0, TMP_WRITERS_NAMED);
+}
+
+/**
+ * The prefixes of the entries of `root` modified since `since`, who is still writing there. One `readdir` (the listing the count already makes), then an `lstat` of each of at most {@link TMP_WRITERS_EXAMINED} entries in
+ * batches, so it neither holds the thread nor reads a directory of a million entries one by one; an entry that is gone by then is not counted.
+ */
+export async function tmpWritersIn(root: string, since: number): Promise<readonly TmpWriter[]> {
+  const names = (await readdir(root)).slice(0, TMP_WRITERS_EXAMINED);
+  const recent: string[] = [];
+  for (let at = 0; at < names.length; at += TMP_WRITERS_BATCH) {
+    const batch = await Promise.all(names.slice(at, at + TMP_WRITERS_BATCH).map(async (name) => {
+      try {
+        return (await lstat(join(root, name))).mtimeMs >= since ? name : null;
+      } catch {
+        return null;
+      }
+    }));
+    recent.push(...batch.filter((name): name is string => name !== null));
+  }
+  return topPrefixes(recent);
+}
+
+/** The machine's reads: `/tmp`'s entries (one `readdir`, as `prune-tmp.ts` counts them) and, while it is over its limit, the prefixes of the entries of the last hour; this boot's kernel log, and the hang settings against the text hang-settings.ts holds. */
 export function liveHostAlertReads(): HostAlertReads {
-  return { tmpEntries: async () => (await readdir("/tmp")).length, softLockupAt: () => softLockupInJournal(), hangSettings: hangDifference };
+  return { tmpEntries: async () => (await readdir(LEGACY_TMP_ROOT)).length, tmpWriters: (since) => tmpWritersIn(LEGACY_TMP_ROOT, since), softLockupAt: () => softLockupInJournal(), hangSettings: hangDifference };
 }
 
 /** An alert before it has a time: its id and sentence, and the time the condition says of itself, when it does (a soft lockup's is its log line's). */
@@ -97,11 +153,18 @@ function serveConditions(ctx: PoolContext): readonly Condition[] {
   });
 }
 
+/** What the alert says of who is writing to `/tmp`: the prefixes of the last hour's entries, or that there are none (then what is there is old, and the sweep is what clears it). Nothing when the writers were not read. PURE. */
+function writersSentence(writers: readonly TmpWriter[] | null): string {
+  if (writers === null) return "";
+  if (writers.length === 0) return " Nothing in it was modified in the last hour: it is all old.";
+  return ` Entries modified in the last hour start with ${writers.map(({ prefix, count }) => `${prefix} (${count.toLocaleString("en-US")})`).join(", ")}.`;
+}
+
 /** The alerts the last reading raises. PURE. */
 function readingConditions(reading: HostReading): readonly Condition[] {
-  const { tmpEntries, softLockupAt, hangSettings } = reading;
+  const { tmpEntries, tmpWriters, softLockupAt, hangSettings } = reading;
   return [
-    ...(tmpEntries !== null && tmpEntries > TMP_ENTRY_LIMIT ? [{ id: "tmp-entries", sentence: `/tmp holds ${tmpEntries.toLocaleString("en-US")} entries, over the ${TMP_ENTRY_LIMIT.toLocaleString("en-US")} it should stay under. Listing a directory that size stalled the host's kernel on 2026-10-25.` }] : []),
+    ...(tmpEntries !== null && tmpEntries > TMP_ENTRY_LIMIT ? [{ id: "tmp-entries", sentence: `/tmp holds ${tmpEntries.toLocaleString("en-US")} entries, over the ${TMP_ENTRY_LIMIT.toLocaleString("en-US")} it should stay under. Listing a directory that size stalled the host's kernel on 2026-10-25.${writersSentence(tmpWriters)}` }] : []),
     ...(softLockupAt === null ? [] : [{ id: "soft-lockup", at: softLockupAt, sentence: "The kernel logged a soft lockup this boot (a CPU stuck in the kernel for seconds). The host is not rebooted for one: look at the kernel log (journalctl -k -b --grep 'soft lockup')." }]),
     ...(hangSettings === null ? [] : [{ id: "hang-settings", sentence: hangSettings }]),
   ];
@@ -139,6 +202,9 @@ async function readHost(ctx: PoolContext, reads: HostAlertReads): Promise<void> 
   const { reading } = state;
   const ms = ctx.deps.hostReadMs ?? HOST_READ_MS;
   reading.tmpEntries = await attempt(state, "the host's /tmp listing", reads.tmpEntries, reading.tmpEntries, ms);
+  // Who is writing is asked only while there is a reason to: a directory under its limit is not listed again entry by entry.
+  const over = reading.tmpEntries !== null && reading.tmpEntries > TMP_ENTRY_LIMIT;
+  reading.tmpWriters = over && reads.tmpWriters !== undefined ? await attempt(state, "the host's /tmp entries of the last hour", () => reads.tmpWriters!(ctx.now() - TMP_WRITERS_WINDOW_MS), reading.tmpWriters, ms) : null;
   reading.softLockupAt = await attempt(state, "the host's kernel log", async () => (await reads.softLockupAt()) ?? null, reading.softLockupAt, ms);
   reading.hangSettings = await attempt(state, "the host's hang settings", () => reads.hangSettings() ?? null, reading.hangSettings, ms);
   settle(ctx);

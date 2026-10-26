@@ -836,10 +836,13 @@ export function repointedForReviewer(order: { session: string; prompt: string; }
  * so a caller that named one variable started a pane with no session name and its verdicts posted UNSIGNED.
  *
  *
+ * A11-303: A REVIEWER IS GIVEN A PRIVATE `TMPDIR` WHEN THE BOARD GIVES IT A BASE (`tmpBase`, `openPane`). Its acceptance and mutation runs wrote into the host's `/tmp` (884 entries in two hours); the directory is
+ * `<tmpBase>/run-t-<session>`, which the board's sweep removes once herdr no longer lists the reviewer. The sandbox lets a codex reviewer write to the directory its `TMPDIR` names, so no `writable_roots` entry is needed.
+ *
  * @param deps `cwd` is the verified checkout
  */
-export function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; reviewDepth?: Depth; trust?: ReviewTrust; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig, token }: {
-        run?: (args: string[]) => string; env?: Record<string, string>; cwd: string;
+export function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; reviewDepth?: Depth; trust?: ReviewTrust; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig, token, tmpBase }: {
+        run?: (args: string[]) => string; env?: Record<string, string>; cwd: string; tmpBase?: string;
         registry?: Record<string, ReviewerEntry>; codexConfig?: () => string | null; token?: (tree: string) => string | null;
     }): { label: string; workspace: string; profile: { kind: string; model: string; effort: string; }; } |
 { refusal: string; } {
@@ -853,7 +856,7 @@ export function spawnReviewer(order: { session: string; cause?: string; causeKey
   const minted = outside || token === undefined ? null : token(cwd);
   if (minted !== null) return { refusal: `no reviewer spawn for "${reviewer.session}": ${minted}` };
   const pane = openPane(run, reviewer.session, outside ? outsideReviewerEnvironment(reviewer.session, reviewedRepositoryOf(reviewer.session))
-    : reviewerEnvironment(reviewer.session, env, cwd), cwd);
+    : reviewerEnvironment(reviewer.session, env, cwd), cwd, { tmpBase });
   if ("refusal" in pane) return pane;
   // #4888: THE DEPTH SETS THE EFFORT the reviewer is started with; absent, the cause's own profile is what it was.
   const effort = depthEffort(order.reviewDepth);
