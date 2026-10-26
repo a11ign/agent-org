@@ -1,6 +1,7 @@
 // no-token: none -- the files and the keys are in-memory; nothing is read from or written to disk
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { END_AT_PUSH } from "../ticket-mode/ci-wait.ts";
 import { escalationList } from "../ticket-mode/escalation.ts";
 import { houseNotes, REVIEW_NOTES, WORKER_NOTES } from "./house-notes.ts";
 
@@ -71,4 +72,10 @@ test("A11-275: the shipped worker notes send an ask only the person's session ca
   assert.ok(WORKER_NOTES.includes("Never write `needs-human` for it."));
   assert.ok(WORKER_NOTES.includes("A check that only the person's session can run now is not a stop: ask it with a `session` wait (below)."));
   assert.ok(WORKER_NOTES.includes("`session` wait") && WORKER_NOTES.indexOf("## Proof before merge") < WORKER_NOTES.indexOf("## Outcome file shape"), "the sentence in Proof before merge points at the shape below it");
+});
+
+test("A11-306: the house notes tell a worker to end at the push, and say the board watches CI and the review", () => {
+  assert.ok(WORKER_NOTES.includes(END_AT_PUSH), "the worker notes carry the rule");
+  assert.match(REVIEW_NOTES, /\*\*What the worker does not wait for\.\*\* CI on the last commit, and that review\. The board watches both, and starts a round when a required check is red or the review has findings\./);
+  assert.equal(/What the worker waits for/.test(REVIEW_NOTES), false);
 });

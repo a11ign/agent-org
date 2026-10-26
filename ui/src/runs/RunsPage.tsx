@@ -51,6 +51,7 @@ function Lists({ queue, disabled }: Readonly<{ queue: QueueView; disabled: boole
   return (
     <>
       <PullRequestsList entries={queue.entries} reviews={queue.pulls ?? {}} runLog={queue.openedPullLog} />
+      {queue.afterMergeUnreadable === undefined ? null : <div role="alert" className="run-meta after-merge-refused">{queue.afterMergeUnreadable}</div>}
       <AfterMergeList checks={queue.afterMergeChecks ?? []} disabled={disabled} />
     </>
   );

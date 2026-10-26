@@ -30,7 +30,7 @@ const START = Date.now() + 3_600_000;
 const settled = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 const reasonOf = (outcome: Outcome | undefined): string => (outcome?.kind === "needs-human" ? outcome.reason : "");
 
-const planWith = (evidence: string): string => `# Plan\n\n## Approach\n\nDo it.\n\n${AFTER_MERGE_CHECKS_HEADING}\n\n- \`${LINE}\`\n  - Runner: session\n  - Evidence: ${evidence}\n\n## Paths\n\n- \`agent-org:src/a.ts\`\n`;
+const planWith = (evidence: string): string => `# Plan\n\n## Approach\n\nDo it.\n\n${AFTER_MERGE_CHECKS_HEADING}\n\n- \`${LINE}\`\n  - Runner: agent\n  - Evidence: ${evidence}\n\n## Paths\n\n- \`agent-org:src/a.ts\`\n`;
 const GOOD = planWith("each machine's update log");
 const TOO_LONG = planWith("x".repeat(250));
 

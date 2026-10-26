@@ -1,17 +1,23 @@
 // @ts-check
 // module: the After-merge checks as records of their own (A11-277) -- who runs each, seeding them from the runs' listed lines, closing one with evidence, and the rows the board lists. PURE
 //
+// THE ORG VERIFIES ITS OWN WORK (A11-302). A check's runner is the `board` (it watches what the check names), an `agent` (a verifier run after release) or a `person` (only for an item of the escalation list). The person's
+// session is no runner: 41 of the 47 checks open on 2026-10-26 named it, and it may read results as anyone can. A record written before keeps `session` as its runner until the migration rewrites it.
+//
 // A CHECK OUTLIVES ITS RUN. A11-173 recorded a merged run's After-merge lines on the run, so a row left only when its run was dismissed, and a pass, a fail and a check nobody ran all left the same way. Each line is
 // now copied once into a record of its own, `<KEY>#<n>` (its 1-based place in the run's list, which is recorded once), and leaves the list only when its runner closes it with one line of evidence.
 import { ownerOf } from "../done-when.ts";
+import { escalationItem } from "../escalation.ts";
 import { isBoardMoved, isMovedLine } from "../after-merge-move.ts";
 import type { AfterMergeLine } from "../board-view/view-types-and-filters.ts";
-import type { ObserveSpec } from "./observe.ts";
+import { windowEnd, type ObserveSpec, type Watch } from "./observe.ts";
 
-/** Who the board sends a check to: the person's session, the person (Needs you), or the board itself, which watches for what the check names. */
-export type Runner = "session" | "person" | "board";
-/** Who closed a check: the board, the session, or a person on the ticket board. */
-export type Closer = Runner;
+/** Who runs a check: the board, which watches for what the check names; an agent, in a verifier run after release; or a person, under Needs you, for an item of the escalation list. */
+export type Runner = "board" | "agent" | "person";
+/** A runner as a record on disk may hold it: `session` is no runner any more (A11-302), and a record written before keeps it until the migration rewrites the record. */
+export type RecordedRunner = Runner | "session";
+/** Who closed a check: the board, a verifier run, a person on the ticket board, or (on a record written before A11-302) the person's session. */
+export type Closer = RecordedRunner;
 export type CheckResult = "passed" | "failed" | "superseded";
 export type CheckState = "open" | CheckResult;
 
@@ -22,18 +28,26 @@ export type CheckRecord = Readonly<{
   line: string;
   /** Who the line names to run it, read by `ownerOf` when the record was made; null when it names no one. */
   owner: string | null;
-  runner: Runner;
+  runner: RecordedRunner;
   /** The escalation item (A11-257) a person check is on, as the plan's `## After-merge checks` section names it. */
   escalation?: string;
-  /** What the board watches for to pass the check by itself, as the plan names it: the spec, when the board began to watch, and, for `sweep-ticket`, the dependency sweep's filed keys then. */
-  observe?: Readonly<{ spec: ObserveSpec; from: number; filed?: readonly string[] }>;
+  /** What the board watches for to pass or fail the check by itself, as the plan names it (`observe.ts`): the spec, when the board began to watch, and what it had read since. */
+  observe?: Watch;
   /** What would close the check, in one line, as the plan says; not the evidence it was closed with, which is `result`. */
   evidence?: string;
+  /** Why the board handed its own check to a verifier run (A11-302): its window closed without it seeing what the check names, or it could not read the source. Absent for a check that was an agent's from the plan. */
+  handedOff?: string;
+  /** The verifier run that checks an `agent` check (A11-302): the writer run's id once it is queued, and how many runs have been queued for it. */
+  verifier?: Readonly<{ run: string | null; tries: number }>;
+  /** How many migration passes (A11-302) have been queued for a check still on the retired runner: after two, the board gives it to an agent. */
+  migrating?: Readonly<{ tries: number }>;
+  /** What the one-time migration (A11-302) did to the record: the runner it was read as, and when. */
+  migrated?: Readonly<{ from: RecordedRunner | "unnamed"; at: number }>;
   /** When the check was listed: its run's finish, or the sweep that copied it when the run has none. */
   listedAt: number;
-  /** When the check was sent: the first time the session's queue listed it, or the first sweep that showed it under Needs you; moved to when it fell overdue. Absent while it has not been sent. */
+  /** When the check was shown to the person: the first sweep that listed it under Needs you. A record written before A11-302 may hold the time the session's queue listed it. Absent while it has not been shown. */
   sentAt?: number;
-  /** When the check fell overdue and was sent to its runner again, once. Absent while it is not overdue. */
+  /** When a Needs-you check fell overdue, once (7 days after it was shown). Absent while it is not overdue. */
   overdueAt?: number;
   state: CheckState;
   /** The one line of evidence a pass or a fail was closed with, or the reason a check was superseded. */
@@ -59,23 +73,23 @@ export const CLOSED_KEPT_MS = 30 * 24 * 60 * 60 * 1000;
 /** A check's id: its ticket and its 1-based place in the run's After-merge list. PURE. */
 export const checkIdOf = (key: string, place: number): string => `${key}#${place}`;
 
-/** Whether an owner names a session or a host the session works on ("Chairman session", "On the agents host"). */
-const SESSION_OWNER = /\bsession\b|^On\s/i;
+/** Whether an owner names a session or a host the session works on ("Chairman session", "On the agents host"). Such an owner runs nothing any more (A11-302): a line that names one is given a runner by the plan. */
+export const SESSION_OWNER = /\bsession\b|^On\s/i;
+
+/**
+ * Who runs a line no plan names a runner for: an agent. A verifier run reads the line and does what it says, or closes it superseded with its reason; the person's session is no runner (A11-302), and a `person` runner needs an item of
+ * the escalation list, which only a plan names.
+ */
+export const UNPLANNED_RUNNER: Runner = "agent";
+
 /** Whether an owner names the person themself. */
 const PERSON_OWNER = /^(?:the\s+)?(?:chairman|person)$/i;
 
 /**
- * Who runs a check with this owner: a session or a host is the session's, the chairman or the person is the person's, and any other named role, or none, is the session's, which is the one runner the
- * board can reach and passes it on. The board runs a check only when a plan says so ({@link PlannedCheck}). PURE.
+ * Whether a line with this owner must be given its runner by the plan (A11-302): it names nobody, a session or a host the session works on, or the person, so before A11-302 it waited on the session or the person. Any other named role
+ * ("The release manager") runs as an agent unless the plan says otherwise. PURE.
  */
-export function runnerOf(owner: string | null): Runner {
-  return owner !== null && PERSON_OWNER.test(owner) ? "person" : "session";
-}
-
-/** The role a session check is run for, "for <role>", when its owner is a role other than a session, a host or the person; null otherwise. PURE. */
-export function roleOf(owner: string | null): string | null {
-  return owner === null || SESSION_OWNER.test(owner) || PERSON_OWNER.test(owner) ? null : owner;
-}
+export const needsPlannedRunner = (owner: string | null): boolean => owner === null || SESSION_OWNER.test(owner) || PERSON_OWNER.test(owner);
 
 /** A run as the seeding reads it: its ticket, when it finished, and the After-merge lines the board listed for it. */
 export type ListedRun = Readonly<{ ticket: Readonly<{ key: string; url?: string | null }>; finishedAt?: number; afterMerge?: readonly AfterMergeLine[] }>;
@@ -132,7 +146,7 @@ export function seedChecks(file: ChecksFile, runs: readonly ListedRun[], now: nu
   for (const { id, line, run } of linesToSeed(file, runs)) {
     const owner = ownerOf(line);
     const plan = plannedFor(line, planned.get(run.ticket.key) ?? []);
-    added[id] = { id, key: run.ticket.key, url: run.ticket.url ?? null, line, owner, runner: runnerOf(owner), ...(plan === undefined ? {} : plannedFields(plan, now)), listedAt: run.finishedAt ?? now, state: "open" };
+    added[id] = { id, key: run.ticket.key, url: run.ticket.url ?? null, line, owner, runner: UNPLANNED_RUNNER, ...(plan === undefined ? {} : plannedFields(plan, now)), listedAt: run.finishedAt ?? now, state: "open" };
   }
   return Object.keys(added).length === 0 ? file : { checks: { ...file.checks, ...added } };
 }
@@ -144,7 +158,7 @@ export function pruneChecks(file: ChecksFile, now: number, listed: ReadonlySet<s
 }
 
 /** A close a runner asks for: the result, its one line of evidence (or the reason, when superseded), and who closes it. */
-export type CloseRequest = Readonly<{ result: CheckResult; evidence: string; by: Closer }>;
+export type CloseRequest = Readonly<{ result: CheckResult; evidence: string; by: Runner }>;
 
 /** What a close or a follow-up comes to: the file with the check changed, or a refusal with the HTTP status it is answered with. */
 export type Transition = Readonly<{ ok: true; file: ChecksFile; check: CheckRecord }> | Readonly<{ ok: false; status: 400 | 404 | 409; error: string }>;
@@ -152,7 +166,7 @@ export type Transition = Readonly<{ ok: true; file: ChecksFile; check: CheckReco
 const refused = (status: 400 | 404 | 409, error: string): Transition => ({ ok: false, status, error });
 
 /** The words of who closed a check, as the ticket's comment and a refusal say them. */
-const CLOSER_WORDS: Readonly<Record<Closer, string>> = { board: "the board", session: "the person's session", person: "a person" };
+const CLOSER_WORDS: Readonly<Record<Closer, string>> = { board: "the board", agent: "a verifier run", session: "the person's session", person: "a person" };
 
 /** Why one line of evidence is refused, or null when it is one line of 1 to {@link EVIDENCE_CHARS} characters. PURE. */
 export function evidenceRefusal(evidence: string): string | null {
@@ -215,6 +229,8 @@ export function closeComment(check: CheckRecord): string {
   return [`After-merge check ${check.state}: ${check.line}`, `${label}: ${check.result ?? ""}`, `Closed by ${CLOSER_WORDS[check.closedBy ?? "person"]} on the ticket board.`].join("\n");
 }
 
+
+
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
@@ -224,4 +240,40 @@ export function ageOf(listedAt: number, now: number): string {
   const ms = Math.max(0, now - listedAt);
   if (ms >= DAY_MS) return `${Math.floor(ms / DAY_MS)} d`;
   return ms >= HOUR_MS ? `${Math.floor(ms / HOUR_MS)} h` : `${Math.floor(ms / MINUTE_MS)} min`;
+}
+
+/** How long an open check of the org's may stand before the pool bar counts it (A11-302). */
+export const ORG_STALE_MS = 3 * DAY_MS;
+
+/**
+ * Whether an open check is the org's to settle: any check that does not wait on the person for an item of the escalation list (A11-302). That includes a record still on the retired `session` runner, and a `person` record naming no
+ * item, which the one-time migration rewrites. PURE.
+ */
+export const isOrgCheck = (check: CheckRecord): boolean => check.runner !== "person" || escalationItem(check.escalation) === undefined;
+
+/** Whether an open check still has the runner a record had before A11-302: the retired `session`, or a `person` that names no item of the escalation list. The one-time migration rewrites it. PURE. */
+export const isUnmigrated = (check: CheckRecord): boolean => check.state === "open" && check.migrated === undefined && (check.runner === "session" || (check.runner === "person" && escalationItem(check.escalation) === undefined));
+
+/** When an org check's clock started: its listing, or the migration that gave it a runner, whichever is later. PURE. */
+const orgSince = (check: CheckRecord): number => Math.max(check.listedAt, check.migrated?.at ?? 0);
+
+/** Whether `now` is inside a check's watched window: the board watches it and its window is not closed. PURE. */
+const insideWindow = (check: CheckRecord, now: number): boolean => check.observe !== undefined && check.runner === "board" && windowEnd(check.observe) > now;
+
+/** The open org checks older than {@link ORG_STALE_MS} and not inside their watched window, which the pool bar counts (A11-302). PURE. */
+export const staleOrgChecks = (file: ChecksFile, now: number): CheckRecord[] =>
+  Object.values(file.checks).filter((check) => check.state === "open" && isOrgCheck(check) && now - orgSince(check) > ORG_STALE_MS && !insideWindow(check, now));
+
+/** How many org checks are open, and how many of them the pool bar counts as stale (A11-302). PURE. */
+export const orgCounts = (file: ChecksFile, now: number): Readonly<{ open: number; stale: number }> =>
+  ({ open: Object.values(file.checks).filter((check) => check.state === "open" && isOrgCheck(check)).length, stale: staleOrgChecks(file, now).length });
+
+/** What stands against "no open check names the chairman's session or no owner, and every open org check is at most 3 days old or inside its week-long window" (A11-302): the ids of the open checks still on the retired runner, and of those past three days and outside their window. */
+export type CheckAudit = Readonly<{ ok: boolean; unmigrated: readonly string[]; stale: readonly string[] }>;
+
+/** The audit of a file of checks at `now`. It holds when every open check has a runner of the org's (or the person's, on an item of the list) and none of the org's is overdue. PURE. */
+export function auditChecks(file: ChecksFile, now: number): CheckAudit {
+  const unmigrated = Object.values(file.checks).filter(isUnmigrated).map(({ id }) => id);
+  const stale = staleOrgChecks(file, now).map(({ id }) => id);
+  return { ok: unmigrated.length === 0 && stale.length === 0, unmigrated, stale };
 }

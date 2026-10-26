@@ -1,5 +1,5 @@
 // no-token: none -- the tracker is a stub, the queue is in memory and the state directory is temporary
-// A11-277: the sweep copies the runs' After-merge lines into checks that outlive their runs, and posts each close once
+// A11-277, A11-302: the sweep copies the runs' After-merge lines into checks that outlive their runs, hands the org's own to the board and to agents, and posts each close once
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import type { Queue } from "../queue/queue-entries-and-outcomes.ts";
 import { BOARD_LINES_2026_10_25 } from "./board-lines-fixture.ts";
 import { closeCheck } from "./checks.ts";
 import { afterMergeChecksPath, changeChecks, loadChecks, saveChecks } from "./store.ts";
-import { markSent, OVERDUE_MS } from "./dispatch.ts";
+import { OVERDUE_MS } from "./dispatch.ts";
 import { syncAfterMergeChecks } from "./sweep.ts";
 import { AFTER_MERGE_CHECKS_HEADING } from "./plan-section.ts";
 import { ticketDir } from "../ticket-paths.ts";
@@ -32,7 +32,8 @@ function world(entries: Entries, { comments = true, reviews = new Map<string, Re
   };
   const codeHost: Pick<CodeHost, "readReviewState"> = { readReviewState: (url) => reviews.get(url) ?? null };
   const clock = { at: 50_000 };
-  const ctx = { settings: { stateDir, plan: PLAN }, store: { get: () => queue }, source: comments ? { comment } : {}, codeHost, now: () => clock.at } as never;
+  const store = { get: () => queue as unknown as Queue, set: (next: Queue) => { Object.assign(queue, next); } };
+  const ctx = { settings: { stateDir, plan: PLAN, writer: null }, store, source: comments ? { comment } : {}, codeHost, now: () => clock.at, hook: { bin: "/tool/src/bin.ts" } } as never;
   const path = afterMergeChecksPath(stateDir);
   /** Attach `text` as ticket `key`'s plan, where the board downloads it. */
   const plan = (key: string, text: string) => {
@@ -63,6 +64,7 @@ test("A11-277: the 33 lines on the board on 2026-10-25 are seeded on the first s
   assert.equal(checks.length, 33);
   assert.deepEqual(checks.filter((check) => check.owner === null).map(({ id }) => id), [], "no check is owner not named");
   assert.ok(checks.every((check) => check.state === "open" && check.listedAt === 1_000));
+  assert.ok(checks.every((check) => check.runner === "agent"), "A11-302: with no plan, each is an agent's, and none is the session's");
 });
 
 test("A11-277: a dismissed run keeps its checks", async () => {
@@ -123,21 +125,25 @@ const REVIEW_LINE = "The next pull request numbered 10 or above in lab gets a re
 const PULL = "https://github.com/a11ign/lab/pull/12";
 const reviewPlan = `# Plan\n\n${AFTER_MERGE_CHECKS_HEADING}\n\n- \`${REVIEW_LINE}\`\n  - Runner: board\n  - Observe: review ${PULL}\n  - Evidence: a review on lab #12\n- \`The chairman: the release note is posted.\`\n  - Runner: person\n  - Escalation: outward\n  - Evidence: the post's address\n`;
 
-test("A11-277: a planned line's runner, escalation item, watch and evidence reach its record, and an unplanned line runs as its owner says", async () => {
+test("A11-302: a planned line's runner, escalation item, watch and evidence reach its record, and an unplanned line is an agent's", async () => {
   const board = world([merged("A11-260", [REVIEW_LINE, "The chairman: the release note is posted.", "Chairman session: the board shows it."])] as unknown as Entries);
   board.plan("A11-260", reviewPlan);
   await board.sweep();
   const checks = board.checks();
   assert.deepEqual([checks["A11-260#1"].runner, checks["A11-260#1"].observe, checks["A11-260#1"].evidence], ["board", { spec: { kind: "review", url: PULL }, from: 50_000 }, "a review on lab #12"]);
   assert.deepEqual([checks["A11-260#2"].runner, checks["A11-260#2"].escalation, checks["A11-260#2"].evidence], ["person", "outward", "the post's address"]);
-  assert.deepEqual([checks["A11-260#3"].runner, checks["A11-260#3"].observe, checks["A11-260#3"].evidence], ["session", undefined, undefined], "the plan does not name it");
+  assert.deepEqual([checks["A11-260#3"].runner, checks["A11-260#3"].observe, checks["A11-260#3"].evidence], ["agent", undefined, undefined], "the plan does not name it");
 });
 
-test("A11-277: a ticket whose plan cannot be read has its lines seeded as their owners say, and none is held back", async () => {
+test("A11-302: a ticket whose plan cannot be read, or names the session, has its lines seeded as agent checks, and none is held back", async () => {
   const board = world([merged("A11-260", [REVIEW_LINE])] as unknown as Entries);
   board.plan("A11-260", `# Plan\n\n${AFTER_MERGE_CHECKS_HEADING}\n\n- \`${REVIEW_LINE}\`\n  - Runner: nobody\n  - Evidence: x\n`);
   await board.sweep();
-  assert.deepEqual([board.checks()["A11-260#1"].state, board.checks()["A11-260#1"].runner], ["open", "session"]);
+  assert.deepEqual([board.checks()["A11-260#1"].state, board.checks()["A11-260#1"].runner], ["open", "agent"]);
+  const onSession = world([merged("A11-261", [REVIEW_LINE])] as unknown as Entries);
+  onSession.plan("A11-261", `# Plan\n\n${AFTER_MERGE_CHECKS_HEADING}\n\n- \`${REVIEW_LINE}\`\n  - Runner: session\n  - Evidence: x\n`);
+  await onSession.sweep();
+  assert.deepEqual([onSession.checks()["A11-261#1"].state, onSession.checks()["A11-261#1"].runner], ["open", "agent"], "an old plan that names the session is read as no plan at all");
 });
 
 test("A11-277: the board closes a check it observes by itself, with its evidence, and posts the close on the ticket once", async () => {
@@ -168,30 +174,41 @@ test("A11-277: a sweep-ticket check records the dependency sweep's filed tickets
   assert.deepEqual([board.checks()["A11-255#1"].state, board.checks()["A11-255#1"].result], ["passed", "A11-301 filed by the dependency sweep for a11ign/agent-org:typescript@7"]);
 });
 
-test("A11-277: the sweep sends a check open 7 days after it was sent again, once, overdue, and not again on the 8th day", async () => {
-  const board = world([merged("A11-245", ["Chairman session: the next run that waits on a fleet job is woken by the board."])] as unknown as Entries);
-  await board.sweep();
-  changeChecks(board.path, (file) => markSent(file, 50_000));
-  board.clock.at = 50_000 + OVERDUE_MS - 1;
-  await board.sweep();
-  assert.equal(board.checks()["A11-245#1"].overdueAt, undefined, "not before 7 days");
-  board.clock.at = 50_000 + OVERDUE_MS;
-  await board.sweep();
-  board.clock.at += 24 * 60 * 60 * 1000;
-  await board.sweep();
-  const { sentAt, overdueAt } = board.checks()["A11-245#1"];
-  assert.deepEqual([sentAt, overdueAt], [50_000 + OVERDUE_MS, 50_000 + OVERDUE_MS], "sent again once, at 7 days, and not on the 8th");
-});
-
-test("A11-277: the sweep sends a board check nobody saw pass for 7 days to the session, overdue", async () => {
+test("A11-302: the sweep hands a board check nobody saw pass for 7 days to an agent, keeping what it watched, and sends it to no session", async () => {
   const board = world([] as unknown as Entries);
   const watched = { id: "A11-246#1", key: "A11-246", url: null, line: "The board: the next run that waits on a fleet job is woken.", owner: "The board", runner: "board" as const,
     observe: { spec: { kind: "wake" as const }, from: 1_000 }, evidence: "the wake", listedAt: 1_000, state: "open" as const };
   saveChecks(board.path, { checks: { [watched.id]: watched } });
+  board.clock.at = 1_000 + OVERDUE_MS - 1;
+  await board.sweep();
+  assert.equal(board.checks()["A11-246#1"].runner, "board", "not before 7 days");
   board.clock.at = 1_000 + OVERDUE_MS;
   await board.sweep();
-  const { runner, sentAt, overdueAt } = board.checks()["A11-246#1"];
-  assert.deepEqual([runner, sentAt, overdueAt], ["session", 1_000 + OVERDUE_MS, 1_000 + OVERDUE_MS]);
+  const { runner, observe, handedOff, sentAt, overdueAt } = board.checks()["A11-246#1"];
+  assert.deepEqual([runner, observe, handedOff, sentAt, overdueAt], ["agent", watched.observe, "the board watched for wake for 7 days and did not see it", undefined, undefined]);
+});
+
+test("A11-302: the sweep passes a windowed board check when its window closes clean and fails it on the first breach, citing the event, and a failure with no ticket writer stays undecided", async () => {
+  const window = { spec: { kind: "run-log" as const, event: "finished" as const, match: "lost in a restart", pass: "absent" as const, windowMs: 7 * 24 * 60 * 60_000 }, from: 1_000, began: 1_000 };
+  const watched = (id: string) => ({ id, key: id.split("#")[0], url: null, line: "No run is lost in a restart for a week.", owner: null, runner: "board" as const, observe: window, evidence: "the run log", listedAt: 1_000, state: "open" as const });
+  const clean = world([] as unknown as Entries);
+  saveChecks(clean.path, { checks: { "A11-294#1": watched("A11-294#1") } });
+  clean.clock.at = 1_000 + 3 * 24 * 60 * 60_000;
+  await clean.sweep();
+  assert.equal(clean.checks()["A11-294#1"].state, "open", "inside its window");
+  clean.clock.at = 1_000 + 7 * 24 * 60 * 60_000;
+  await clean.sweep();
+  assert.deepEqual([clean.checks()["A11-294#1"].state, clean.checks()["A11-294#1"].closedBy], ["passed", "board"]);
+  assert.equal(clean.posted.length, 1, "the pass is posted on its ticket");
+  const breached = world([{ ticket: { key: "A11-310" }, phase: "running", startedAt: 5 }] as unknown as Entries);
+  (breached.queue as Queue & { runLog?: unknown }).runLog = { "A11-310": [{ kind: "finished", outcome: "needs-human", reason: "lost in a restart", at: 20_000 }] } as unknown as Queue["runLog"];
+  saveChecks(breached.path, { checks: { "A11-294#1": watched("A11-294#1") } });
+  breached.clock.at = 50_000;
+  await breached.sweep();
+  const failed = breached.checks()["A11-294#1"];
+  assert.deepEqual([failed.state, failed.closedBy, failed.followUp], ["failed", "board", undefined]);
+  assert.match(failed.result ?? "", /^A11-310: finished needs-human lost in a restart at 1970-01-01 00:00: /);
+  assert.equal(breached.posted.length, 1, "the failure is posted on its ticket");
 });
 
 test("A11-277: a Needs-you check seeded from a run that merged weeks ago is shown to the person by the sweep, and is not overdue", async () => {

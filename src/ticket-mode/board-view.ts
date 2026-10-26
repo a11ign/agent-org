@@ -12,8 +12,9 @@
 import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
 import type { RunEvent } from "./queue/run-log.ts";
-import { followUpText, roleOf, type CheckRecord, type ChecksFile } from "./after-merge/checks.ts";
-import { personItemOf, runnerSentTo } from "./after-merge/dispatch.ts";
+import { followUpText, type CheckRecord, type ChecksFile } from "./after-merge/checks.ts";
+import { personItemOf } from "./after-merge/dispatch.ts";
+import { describeObserve, windowEnd } from "./after-merge/observe.ts";
 
 /**
  * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a
@@ -143,25 +144,47 @@ export function unlistedPulls(entries: readonly ViewEntry[], reviews: Readonly<R
 }
 
 /**
- * A row of the board's "After-merge checks" list (A11-173, A11-277): an open check, or a failed one whose follow-up is undecided, with its ticket (and the ticket's address when it has one), the line, who runs it
- * ("owner not named" when the line names no one), the runner the board sends it to, the role a session runs it for, when it was listed, a failed check's pre-filled follow-up request, the label of the escalation item
- * a check waiting on the person under Needs you is on (null for any other), and whether it is overdue.
+ * A row of the board's "After-merge checks" list (A11-173, A11-277, A11-302): a check that waits on the person, or a failed one the person closed whose follow-up is undecided, with its ticket (and the ticket's address when it has
+ * one), the line, who the line names ("owner not named" when it names no one), the runner (always the person's: the org's checks are on their ticket's Run detail), when it was listed, a failed check's pre-filled follow-up request,
+ * the label of the escalation item the check is on, and whether it is overdue.
  */
 export type AfterMergeCheck = Pick<CheckRecord, "id" | "key" | "url" | "line" | "runner" | "listedAt" | "state" | "result">
-  & Readonly<{ owner: string; role: string | null; followUpText: string | null; needsYou: string | null; overdue: boolean }>;
+  & Readonly<{ owner: string; followUpText: string | null; needsYou: string | null; overdue: boolean }>;
 
 /** The words a check says when its line names no one. */
 export const OWNER_NOT_NAMED = "owner not named";
 
+/** Whether a person closed the check, or the person's session did before A11-302: a failure they closed is theirs to follow up. PURE. */
+const closedByPerson = (check: CheckRecord): boolean => check.closedBy === "person" || check.closedBy === "session";
+
 /**
- * The After-merge checks the board lists (A11-277): every open check, and every failed one whose follow-up is undecided, oldest first. The checks are records of their own (`after-merge/checks.ts`), so a row
- * outlives its run and leaves only when its runner closes it. PURE.
+ * The After-merge checks the board lists for the person (A11-302): every open check that waits on them for an item of the escalation list, and every failed one they (or, before A11-302, their session) closed whose follow-up is undecided, oldest first. A board or agent
+ * check never shows here: the org verifies its own work, and those are on their ticket's Run detail ({@link ticketChecks}). The checks are records of their own (`after-merge/checks.ts`), so a row outlives its run and leaves only when
+ * its runner closes it. PURE.
  */
 export function afterMergeChecks(file: ChecksFile): AfterMergeCheck[] {
-  const listed = Object.values(file.checks).filter((check) => check.state === "open" || (check.state === "failed" && check.followUp === undefined));
+  const listed = Object.values(file.checks).filter((check) => personItemOf(check) !== undefined || (check.state === "failed" && check.followUp === undefined && closedByPerson(check)));
   return listed.sort((a, b) => a.listedAt - b.listedAt).map((check) => ({
-    id: check.id, key: check.key, url: check.url, line: check.line, runner: runnerSentTo(check), listedAt: check.listedAt, state: check.state, ...(check.result === undefined ? {} : { result: check.result }),
-    owner: check.owner ?? OWNER_NOT_NAMED, role: roleOf(check.owner), followUpText: check.state === "failed" ? followUpText(check) : null,
+    id: check.id, key: check.key, url: check.url, line: check.line, runner: check.runner, listedAt: check.listedAt, state: check.state, ...(check.result === undefined ? {} : { result: check.result }),
+    owner: check.owner ?? OWNER_NOT_NAMED, followUpText: check.state === "failed" ? followUpText(check) : null,
     needsYou: personItemOf(check)?.label ?? null, overdue: check.overdueAt !== undefined,
   }));
+}
+
+/**
+ * One of a ticket's After-merge checks as its Run detail shows it (A11-302): the line, who runs it (the board, a verifier run or a person), where it stands, the evidence or reason it closed with and who closed it, what the board
+ * watches for and until when, why the board handed it to an agent, and how a failure was followed up (the writer request, or null for none; absent while undecided).
+ */
+export type TicketCheck = Pick<CheckRecord, "id" | "line" | "runner" | "state" | "result" | "closedBy" | "closedAt" | "listedAt" | "handedOff" | "followUp"> & Readonly<{ watching: string | null; windowEnds: number | null }>;
+
+/** Every After-merge check of the ticket `key`, any runner and any state, oldest first: what its Run detail lists. PURE. */
+export function ticketChecks(file: ChecksFile, key: string): TicketCheck[] {
+  return Object.values(file.checks).filter((check) => check.key === key).sort((a, b) => a.listedAt - b.listedAt).map((check) => {
+    const { id, line, runner, state, result, closedBy, closedAt, listedAt, handedOff, followUp } = check;
+    const spec = check.observe?.spec;
+    const end = check.observe === undefined ? Number.POSITIVE_INFINITY : windowEnd(check.observe);
+    return { id, line, runner, state, listedAt, ...(result === undefined ? {} : { result }), ...(closedBy === undefined ? {} : { closedBy }), ...(closedAt === undefined ? {} : { closedAt }),
+      ...(handedOff === undefined ? {} : { handedOff }), ...(followUp === undefined ? {} : { followUp }),
+      watching: spec === undefined ? null : describeObserve(spec), windowEnds: Number.isFinite(end) && check.observe?.began !== undefined ? end : null };
+  });
 }

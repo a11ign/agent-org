@@ -355,6 +355,13 @@ export type Entry = Readonly<{
   feedback?: string;
   /** Set on a review round a person asked for with Respond to review: it answers the pull requests' current feedback. See {@link respond}. */
   asked?: boolean;
+  /** Set on a review round the board started because the ticket's Decisions changed (A11-305): it makes the pull requests meet the new lines, or replies quoting why they already do. See {@link decisionsRound}. */
+  decisions?: boolean;
+  /**
+   * Set on a finished run whose ticket's Decisions gained lines that no round has answered yet (A11-305): when the board noticed, and the lines. The first-merge-flow card waits while it is set, since the pull request is about to change. A round
+   * of the run drops it (a round is built from the fields it names), and so does a ticket whose Decisions read as the run was briefed with again.
+   */
+  decisionsPending?: Readonly<{ at: number; added: readonly string[] }>;
   /**
    * A person opened this run's saved session to talk to its agent (a draft they have a problem with, or a planner's question they will answer). The run
    * starts again in the same session, with a prompt that says a person is here, and ends as any run does.
@@ -451,6 +458,8 @@ export type PublishRun = Readonly<{
   /** The version folder its hooks name, recorded when it starts (A11-169). */
   toolRoot?: string;
   toolVersion?: string;
+  /** The After-merge checks a `verify` run (one) or a `migrate` pass (up to ten) is for, by id (A11-302). */
+  checks?: readonly string[];
 }>;
 
 /**
@@ -473,8 +482,8 @@ export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: b
   /** What the tracker held for the ticket when the board read it back, shown on the request's Done row (A11-199). None for a ticket that could not be read. */
   title?: string; priority?: number; project?: string | null }>;
 
-/** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. */
-export type WriterMode = "quick" | "grill";
+/** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. `verify` and `migrate` (A11-302) are runs the board starts for After-merge checks, which file no ticket (`after-merge/verify.ts`). */
+export type WriterMode = "quick" | "grill" | "verify" | "migrate";
 
 /** The choices the form made, each a requirement in the writer's brief. */
 export type WriterForm = Readonly<{ project?: string; repo?: string; goal?: string; priority?: Priority; parent?: string }>;
@@ -521,6 +530,8 @@ export type WriterRun = Readonly<{
   /** The version folder its hooks name, recorded when it starts (A11-169). */
   toolRoot?: string;
   toolVersion?: string;
+  /** The After-merge checks a `verify` run (one) or a `migrate` pass (up to ten) is for, by id (A11-302). */
+  checks?: readonly string[];
 }>;
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
@@ -708,11 +719,11 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
-  const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
+  const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}), ...(decisions ? { decisions } : {}),
     ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).

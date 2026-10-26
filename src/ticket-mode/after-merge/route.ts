@@ -2,26 +2,29 @@
 // module: the After-merge checks' routes (A11-277) -- a runner closes a check with one line of evidence, and decides a failed check's follow-up
 //
 // `POST /api/after-merge/<KEY>/<n>` with `{ result, evidence, by }` closes check `<KEY>#<n>`: the record closes at once, so its row leaves the list, and the pool's next sweep posts the close on the ticket.
-// `POST /api/after-merge/<KEY>/<n>/follow-up` with `{ writer }` records a failed check's follow-up: the writer request it was filed by, or null for none. Both sit behind the instance's key, as every route does.
+// `GET /api/after-merge/audit` answers `{ ok, unmigrated, stale }` (A11-302), the ids of the open checks on the retired runner and of the org's that are past three days outside their window.
+// `POST /api/after-merge/<KEY>/<n>/follow-up` with `{ writer }` records a failed check's follow-up: the writer request it was filed by, or null for none. Each sits behind the instance's key, as every route does.
 import type { Json } from "../local-http.ts";
-import { afterMergeChecks, type AfterMergeCheck } from "../board-view.ts";
-import { checkIdOf, closeCheck, decideFollowUp, followUpText, type CheckRecord, type ChecksFile, type CheckResult, type Closer, type Transition } from "./checks.ts";
+import { afterMergeChecks, ticketChecks, type AfterMergeCheck, type TicketCheck } from "../board-view.ts";
+import { auditChecks, checkIdOf, closeCheck, decideFollowUp, followUpText, orgCounts, type CheckRecord, type ChecksFile, type CheckResult, type Runner, type Transition } from "./checks.ts";
 import { afterMergeChecksPath, loadChecks, saveChecks } from "./store.ts";
 
+/** `GET /api/after-merge/audit` (A11-302): whether any open check is still on the retired runner or is an org check past three days outside its window: the runnable form of the ticket's After-merge line. */
+const AUDIT_PATH = "/api/after-merge/audit";
 const ROUTE = /^\/api\/after-merge\/([A-Za-z0-9_-]+)\/([1-9]\d*)(\/follow-up)?$/;
 const RESULTS: readonly unknown[] = ["passed", "failed", "superseded"];
-/** Who may close a check through the route: the person's session or a person. The board closes its own checks in its sweep. */
-const ROUTE_CLOSERS: readonly unknown[] = ["session", "person"];
+/** Who may close a check through the route: a verifier run (`agent`) or a person. The board closes its own checks in its sweep, and the person's session is no runner (A11-302). */
+const ROUTE_CLOSERS: readonly unknown[] = ["agent", "person"];
 
 /** What the routes need of the board: where its state is, and its clock. */
 export type CheckRouteBoard = Readonly<{ stateDir: string; now: () => number }>;
 
 /** The close a request names. A malformed one THROWS, which the board answers with 400 and the sentence. */
-function closeOf(body: Json): { result: CheckResult; evidence: string; by: Closer } {
+function closeOf(body: Json): { result: CheckResult; evidence: string; by: Runner } {
   if (!RESULTS.includes(body.result)) throw new Error("result must be passed, failed or superseded");
   if (typeof body.evidence !== "string") throw new Error("evidence must be one line saying what was seen, or why the check is superseded");
-  if (!ROUTE_CLOSERS.includes(body.by)) throw new Error("by must be session or person");
-  return { result: body.result as CheckResult, evidence: body.evidence, by: body.by as Closer };
+  if (!ROUTE_CLOSERS.includes(body.by)) throw new Error("by must be agent or person: the person's session runs no check, and the board closes its own");
+  return { result: body.result as CheckResult, evidence: body.evidence, by: body.by as Runner };
 }
 
 /** The writer request a follow-up names, or null for none. A malformed one THROWS. */
@@ -45,6 +48,7 @@ function answerOf(path: string, transition: (file: ChecksFile) => Transition): [
 
 /** The After-merge routes, or undefined when the request names none of them. */
 export function afterMergeRoute(board: CheckRouteBoard, method: string, path: string, body: Json): [number, unknown] | undefined {
+  if (method === "GET" && path === AUDIT_PATH) return [200, auditChecks(loadChecks(afterMergeChecksPath(board.stateDir)), board.now())];
   const named = ROUTE.exec(path);
   if (method !== "POST" || named === null) return undefined;
   const [, key, place, followUp] = named;
@@ -58,11 +62,30 @@ export function afterMergeRoute(board: CheckRouteBoard, method: string, path: st
   return answerOf(file, (checks) => closeCheck(checks, id, close, board.now()));
 }
 
-/** The rows `GET /api/queue` lists as `afterMergeChecks`, read from the file each time. A file that cannot be read lists none: the sweep logs why, and writes nothing over it. */
-export function afterMergeView(stateDir: string): AfterMergeCheck[] {
+/** Why the checks file cannot be read, in a sentence the page shows: a file that cannot be read is said, never shown as empty (A11-302). */
+const unreadableSentence = (err: unknown): string => `the After-merge checks cannot be read, so none is listed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`;
+
+/** What `GET /api/queue` carries of the After-merge checks: the person's list (`afterMergeChecks`), the org's count for the pool bar (`afterMergeOrg`), or, when the file cannot be read, `afterMergeUnreadable` and neither: the sweep logs why and writes nothing over it. */
+export type AfterMergeQueueView = Readonly<{ afterMergeChecks?: AfterMergeCheck[]; afterMergeOrg?: Readonly<{ open: number; stale: number }>; afterMergeUnreadable?: string }>;
+
+/** The After-merge fields of the queue view, read from the file each time. PURE over the file. */
+export function afterMergeQueueView(stateDir: string, now: number): AfterMergeQueueView {
   try {
-    return afterMergeChecks(loadChecks(afterMergeChecksPath(stateDir)));
-  } catch {
-    return [];
+    const file = loadChecks(afterMergeChecksPath(stateDir));
+    return { afterMergeChecks: afterMergeChecks(file), afterMergeOrg: orgCounts(file, now) };
+  } catch (err) {
+    return { afterMergeUnreadable: unreadableSentence(err) };
+  }
+}
+
+/** What a ticket's Run detail carries of its After-merge checks (A11-302): every check of any runner, or `afterMergeUnreadable` when the file cannot be read. */
+export type AfterMergeTicketView = Readonly<{ afterMergeChecks?: TicketCheck[]; afterMergeUnreadable?: string }>;
+
+/** A ticket's After-merge checks of any runner, for its Run detail (A11-302). */
+export function afterMergeTicketView(stateDir: string, key: string): AfterMergeTicketView {
+  try {
+    return { afterMergeChecks: ticketChecks(loadChecks(afterMergeChecksPath(stateDir)), key) };
+  } catch (err) {
+    return { afterMergeUnreadable: unreadableSentence(err) };
   }
 }

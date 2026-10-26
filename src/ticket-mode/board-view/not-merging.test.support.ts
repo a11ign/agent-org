@@ -11,7 +11,7 @@ export const PRS = [{ repo: "plugin", url: PR }];
 export const HEAD = "91cfe96d0a1b2c3d4e5f";
 export const ARM = ".github/workflows/auto-arm.yml";
 /** A repository's merge flow as the host reads it, into `main` unless said. */
-export const flowOf = (over: Partial<MergeFlow>): MergeFlow => ({ autoMerge: true, armWorkflow: true, defaultBranch: "main", ...over });
+export const flowOf = (over: Partial<MergeFlow>): MergeFlow => ({ autoMerge: true, armWorkflow: true, defaultBranch: "main", private: false, mergeBot: false, ...over });
 export const NO_FLOW = flowOf({ autoMerge: false, armWorkflow: false });
 export const FULL_FLOW = flowOf({ autoMerge: true, armWorkflow: true });
 
@@ -32,4 +32,4 @@ export const LINE = "Approved, not merging: a11ign/plugin #10 at 91cfe96d, a11ig
 
 export const HOUR_NOTE = "money, access or security — a11ign/plugin #10 has been approved at `91cfe96d` with green checks for more than 60 minutes and is not merging (a11ign/plugin has no merge flow: auto-merge is not allowed, no .github/workflows/auto-arm.yml): a person decides";
 
-export const FIRST_FLOW_NOTE = "money, access or security — a11ign/plugin #10 adds a11ign/plugin's first merge flow (.github/workflows/auto-arm.yml), so nothing can arm it: a person merges it";
+export const FIRST_FLOW_NOTE = "money, access or security — a11ign/plugin #10 adds a11ign/plugin's first merge flow (.github/workflows/auto-arm.yml or .github/workflows/merge-bot.yml), so no bot exists to merge it: a person merges it";

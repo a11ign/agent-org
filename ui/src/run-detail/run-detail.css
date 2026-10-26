@@ -380,6 +380,23 @@
   stroke: var(--color-text-nav);
 }
 
+/* A ticket's After-merge checks (A11-302) use the pull request rows; a failed one is in the danger tone, and a row's meta line sits under its check. */
+.pull-failed.pull-state {
+  color: var(--color-danger-text);
+}
+.pull-passed.pull-state {
+  color: var(--color-success-dot);
+}
+.pull-superseded.pull-state {
+  color: var(--color-text-muted);
+}
+.check-meta {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+
 /* The properties. */
 .props {
   box-sizing: content-box;

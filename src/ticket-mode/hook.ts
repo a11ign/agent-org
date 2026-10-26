@@ -35,6 +35,9 @@
 // `protected-paths.json` beside the outcome file, and may not run `host:install` or any other command that installs them. The hook cannot see a TEST that writes
 // the file, so this is defence in depth: the guarded writer (`writeGhWrapper`) is what keeps a test from writing it.
 //
+// A WORKER DOES NOT WAIT ON CI (A11-306). `gh pr checks ... --watch`, `gh run watch` and a `sleep` over a minute (`ci-wait.ts`) are refused on any run, with the reason that the board watches the
+// checks and the review and wakes the run on a red required check and on review feedback: the run ends at its push. The Stop hook is as it was.
+//
 // On a machine with `tickets.drafts: false` the pool leaves `ready-run` beside the outcome file, and a worker may open its pull request ready
 // (`gh pr create` without `--draft`) only then. Without that mark, the draft refusal applies to every run, as before. No worker may write the mark.
 //
@@ -64,6 +67,8 @@ import { escapeRegExp } from "../lib/escape-regexp.ts";
 import { escalationItem, escalationList, offListRefusal, questionEscalation } from "./escalation.ts";
 import type { PullNow } from "./pull-now-command.ts";
 import { bodyHash } from "./standoff-body-hash.ts";
+import { decisionsStop } from "./decisions-stop.ts";
+import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
 import { STANDOFF_DECISION_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE } from "./standoff-files.ts";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
@@ -75,10 +80,12 @@ import type { Wait } from "./wait-on/wait-types.ts";
 import { checkOutcome, isStale } from "./outcome.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMisses, parseClaimsGiven, planClaimPaths, siblingClaims } from "./path-claims.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
+import { ciWaitRefusal } from "./ci-wait.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
   ORDER_FILE, PLAN_DIR, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -125,7 +132,7 @@ function readyRefusal(approved: readonly string[]): Refusal {
  * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
  * tickets hold and the mark of the retry made for a folder claim (A11-212).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, DECISIONS_ROUND_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -323,6 +330,8 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   if (toolName !== "Bash") return ALLOW;
   const command = String(input.command ?? "");
   if (/\bgh\s+pr\s+create\b/.test(command) && !/--draft\b/.test(command) && !ready) return refuse("open the pull request as a draft: `gh pr create --draft`");
+  const waiting = ciWaitRefusal(command);
+  if (waiting !== null) return refuse(`refused, because ${waiting}: ${command.split("\n")[0].slice(0, 120)}`);
   const hit = [...BASH_REFUSALS, HOST_INSTALL_REFUSAL, protectedWriteRefusal(hostPrograms), readyRefusal(approved), MARK_REFUSAL, BOARD_KEY_REFUSAL, BOARD_ROUTE_REFUSAL, ...machine]
     .find(({ pattern }) => pattern.test(command));
   return hit ? refuse(`refused, because ${hit.why}: ${command.split("\n")[0].slice(0, 120)}`) : ALLOW;
@@ -577,8 +586,8 @@ function pullNowViaCommand(url: string): PullNow | null {
   }
 }
 
-/** The outcome file a stop is judged on, the stamp a `working` one leaves beside it, the transcript that may wake it, and whether the run is a new-ticket run, whose outcomes are the writer's (A11-267). */
-type StopSubject = Readonly<{ outcome: string; stamp: string; transcriptPath: string | undefined; writer: boolean }>;
+/** The outcome file a stop is judged on, the stamp a `working` one leaves beside it, the transcript that may wake it, and the mode of the new-ticket run it is, whose outcomes are the writer's (A11-267), or null for a ticket run. */
+type StopSubject = Readonly<{ outcome: string; stamp: string; transcriptPath: string | undefined; writer: WriterMode | null }>;
 
 /** A stop's judgment: allowed (`verdict`), or refused with what to ask (`ask`) and the words the count limit uses for it (`stuck`). */
 type Judgment = Readonly<{ verdict: HookResult } | { ask: string; stuck: string }>;
@@ -606,7 +615,7 @@ function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, mtime: nu
 
 /** The judgment of the outcome file as it stands: refused when the contract refuses it, allowed unless it says `working`, and `working` judged on its own. */
 function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: StopIo): Judgment {
-  if (subject.writer) return judgeWriterOutcome(subject.outcome, text);
+  if (subject.writer !== null) return judgeWriterOutcome(subject.outcome, text, subject.writer);
   const checked = checkOutcome(text);
   if ("problem" in checked) {
     // The field the contract wants is named, so the worker fixes the file in the same turn; a near miss is refused here too (A11-118).
@@ -622,8 +631,8 @@ function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: St
  * The judgment of a new-ticket run's outcome file (A11-267): the writer's own contract, `parseWriterOutcome`, which is the one the board reads it with (`pool-board-runs.ts`). The kinds a ticket worker ends on are not the writer's:
  * a writer ends on `created`, `decided` or `needs-human`, so `created` is allowed here and refused for a worker, and a writer's `working` is refused, since nothing in its brief lets it wait.
  */
-function judgeWriterOutcome(outcome: string, text: string): Judgment {
-  const parsed = parseWriterOutcome(text);
+function judgeWriterOutcome(outcome: string, text: string, mode: WriterMode): Judgment {
+  const parsed = parseWriterOutcome(text, mode);
   if (typeof parsed !== "string") return { verdict: ALLOW };
   return { ask: `${outcome}: ${parsed}. Write ${outcome} again as the last thing you do, in the shape your brief shows.`, stuck: `on the same invalid outcome in ${outcome}, so this one is allowed and the board fails the run` };
 }
@@ -698,6 +707,18 @@ function standoffStop(ticketDir: string, { text }: OutcomeRead, io: StopIo): Jud
   return io.exists(round) ? unchangedStop(round, io) : null;
 }
 
+/**
+ * A `reviewed` THAT ANSWERS A CHANGE OF THE TICKET'S DECISIONS (A11-305). A round whose brief opens with new lines of the Decisions (`decisions-round.json`) that pushed to no pull request must quote them in its final message and say why the pull requests already meet them;
+ * otherwise it is refused, counted and bounded like every refusal. See `decisions-stop.ts`. Null for any other round and any other outcome.
+ */
+function decisionsRoundStop(ticketDir: string, { text }: OutcomeRead, io: StopIo, said: string): Judgment | null {
+  const checked = checkOutcome(text);
+  if ("problem" in checked) return null;
+  const judged = checked.outcome.kind === "reviewed" ? decisionsStop(ticketDir, `${said}\n${text}`, io) : null;
+  if (judged === null) return null;
+  return "ask" in judged ? judged : { verdict: { code: 0, say: [judged.say] } };
+}
+
 /** The refusal of a stand-off planner's `reviewed` that has no usable decision, or null when it has one. */
 function plannerDecisionStop(ticketDir: string, io: StopIo): Judgment | null {
   const file = join(ticketDir, STANDOFF_DECISION_FILE);
@@ -745,6 +766,18 @@ function currentOutcome(ticketDir: string, found: OutcomeRead | null, io: StopIo
   const mark = join(ticketDir, STALE_OUTCOME_FILE);
   if (found === null || !io.exists(mark)) return found;
   return isStale(found.mtime, io.read(mark)) ? null : found;
+}
+
+/** The mode of the new-ticket run whose mark is in the folder (a mark that names none, or cannot be read, is `quick`), or null when the folder holds no mark: it is a ticket run's. */
+function writerModeOf(ticketDir: string, io: StopIo): WriterMode | null {
+  const mark = join(ticketDir, WRITER_FILE);
+  if (!io.exists(mark)) return null;
+  try {
+    const { mode } = JSON.parse(io.read(mark)) as { mode?: unknown };
+    return mode === "grill" || mode === "verify" || mode === "migrate" ? mode : "quick";
+  } catch {
+    return "quick";
+  }
 }
 
 /**
@@ -904,7 +937,7 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
       return ALLOW;
     }
     const judged: Judgment = found !== null
-      ? offListStop(ticketDir, found, io) ?? standoffStop(ticketDir, found, io) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath, writer: exists(join(ticketDir, WRITER_FILE)) }, found, io)
+      ? offListStop(ticketDir, found, io) ?? standoffStop(ticketDir, found, io) ?? decisionsRoundStop(ticketDir, found, io, questionAsked(lastMessage, transcriptPath, read)) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath, writer: writerModeOf(ticketDir, io) }, found, io)
       : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
     if ("verdict" in judged) {
       // A plan that misses a blocker pull request is refused once, before the planner ends, and the refusal is no outcome problem: the count is left as it is (A11-207).
