@@ -16,7 +16,9 @@ import { forgetRun, log, messageOf, update, writerAgentRunning, writerPlace } fr
 import { endWriter } from "./pool-board-runs.ts";
 import { parseWriterOutcome } from "./writer.ts";
 import { dismissWriter, queueWriter, writerEnded } from "./queue.ts";
-import type { WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import { MAX_WRITER_RUNS, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import { isTicketWriter } from "./queue/writer-modes.ts";
+import { PLACES_KEPT_FOR_PEOPLE } from "./dependency-updates/request.ts";
 
 /** The brief of a check run, read from the checks as they stand when it starts. THROWS when the checks it is for are gone or already settled, which fails the run with that reason. */
 export function checkRunBrief(ctx: PoolContext, run: WriterRun, dir: string): string {
@@ -109,6 +111,12 @@ function endedWith(ctx: PoolContext, check: CheckRecord): string {
   return run?.failure ?? (run === undefined ? "its run is no longer on the board" : "it wrote no result");
 }
 
+/** Whether the verifier run of `check` ended for the board's own reasons, which are no try of the check's: it never got an agent, an update stopped it, or the pool restarted under it. */
+function boardEnded(ctx: PoolContext, check: CheckRecord): boolean {
+  const run = (ctx.store.get().writers ?? []).find((each) => each.id === check.verifier?.run);
+  return run !== undefined && (run.workspace === undefined || /^(stopped for the update|the pool restarted)/.test(run.failure ?? ""));
+}
+
 /** The file with the verifier of check `id` recorded as `verifier`: the run queued for it and the tries so far, or no run (`run: null`) once the one it had ended with no result, so another may be given the check. PURE. */
 const withVerifier = (file: ChecksFile, id: string, verifier: CheckRecord["verifier"]): ChecksFile =>
   ({ checks: { ...file.checks, [id]: { ...file.checks[id], verifier } } });
@@ -118,8 +126,9 @@ function settleEndedVerifiers(ctx: PoolContext, path: string): void {
   const live = (id: string): boolean => unfinishedCheckRuns(ctx).some((run) => run.id === id);
   const ended = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && check.verifier?.run != null && !live(check.verifier.run));
   for (const check of ended) {
-    if ((check.verifier?.tries ?? 0) < MAX_RUN_TRIES) changeChecks(path, (file) => withVerifier(file, check.id, { run: null, tries: check.verifier?.tries ?? 0 }));
-    else changeChecks(path, (file) => closeResult(file, check, endedWith(ctx, check), ctx.now()));
+    const tries = (check.verifier?.tries ?? 0) - (boardEnded(ctx, check) ? 1 : 0);
+    if (tries < MAX_RUN_TRIES) changeChecks(path, (file) => withVerifier(file, check.id, { run: null, tries }));
+    else changeChecks(path, (file) => closeResult({ ...file, checks: { ...file.checks, [check.id]: { ...file.checks[check.id], verifier: { run: check.verifier?.run ?? null, tries } } } }, check, endedWith(ctx, check), ctx.now()));
   }
 }
 
@@ -177,6 +186,9 @@ function closeResult(file: ChecksFile, check: CheckRecord, why: string, now: num
   return closed.ok ? closed.file : file;
 }
 
+/** How many new-ticket requests are unfinished: the places the follow-ups share with the people's requests. */
+const unfinishedTicketRequests = (ctx: PoolContext): number => (ctx.store.get().writers ?? []).filter((run) => isTicketWriter(run) && run.phase !== "finished").length;
+
 /**
  * File the follow-up of each failed check of the org's whose follow-up is undecided (A11-302): the board is the runner, so it decides, as a person did on the page. A follow-up is a quick ticket-writer request with the text a person's would have
  * (`followUpText`); the check records the request that was queued. A machine with no `tickets.writer` files none, and says so once; the check stays failed with its follow-up undecided on the ticket's Run detail.
@@ -184,8 +196,9 @@ function closeResult(file: ChecksFile, check: CheckRecord, why: string, now: num
 export function fileFollowUps(ctx: PoolContext, said: Set<string>): void {
   const path = afterMergeChecksPath(ctx.settings.stateDir);
   const { settings, now } = ctx;
-  const failed = Object.values(loadChecks(path).checks).filter((check) => check.state === "failed" && check.followUp === undefined && check.closedBy !== "person" && check.runner !== "person");
+  const failed = Object.values(loadChecks(path).checks).filter((check) => check.state === "failed" && check.followUp === undefined && (check.closedBy === "board" || check.closedBy === "agent"));
   for (const check of failed) {
+    if (unfinishedTicketRequests(ctx) >= MAX_WRITER_RUNS - PLACES_KEPT_FOR_PEOPLE) return;
     if (settings.writer === null) {
       if (!said.has(check.id)) log(`${check.key}: its After-merge check ${check.id} failed, and this machine names no tickets.writer to file its follow-up`);
       said.add(check.id);
@@ -195,7 +208,8 @@ export function fileFollowUps(ctx: PoolContext, said: Set<string>): void {
     try {
       update(ctx, (queue) => queueWriter(queue, { id, request: followUpText(check), mode: "quick", placement: "auto", form: {}, model: settings.writer!.model, effort: settings.writer!.effort }, now()));
     } catch (err) {
-      log(`${check.key}: the follow-up of ${check.id} could not be queued, and is tried again at the next refresh: ${messageOf(err)}`);
+      if (!said.has(`${check.id}:queue`)) log(`${check.key}: the follow-up of ${check.id} could not be queued, and is tried again at the next refresh: ${messageOf(err)}`);
+      said.add(`${check.id}:queue`);
       continue;
     }
     changeChecks(path, (file) => {

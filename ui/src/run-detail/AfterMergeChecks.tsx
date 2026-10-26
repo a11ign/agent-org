@@ -8,7 +8,7 @@ export function AfterMergeChecks({ rows }: Readonly<{ rows: readonly CheckRow[] 
   if (rows.length === 0) return null;
   return (
     <section aria-labelledby="h-checks" className="detail-section">
-      <h2 id="h-checks" className="detail-heading">After-merge checks <span className="detail-heading-note">· run by the org, not by a person</span></h2>
+      <h2 id="h-checks" className="detail-heading">After-merge checks <span className="detail-heading-note">· the org verifies its own work</span></h2>
       <div className="pulls">
         {rows.map(({ id, line, runner, state, tone, detail }) => (
           <div key={id} className="pull-row check-row">

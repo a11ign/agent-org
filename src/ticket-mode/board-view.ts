@@ -154,13 +154,16 @@ export type AfterMergeCheck = Pick<CheckRecord, "id" | "key" | "url" | "line" | 
 /** The words a check says when its line names no one. */
 export const OWNER_NOT_NAMED = "owner not named";
 
+/** Whether a person closed the check, or the person's session did before A11-302: a failure they closed is theirs to follow up. PURE. */
+const closedByPerson = (check: CheckRecord): boolean => check.closedBy === "person" || check.closedBy === "session";
+
 /**
- * The After-merge checks the board lists for the person (A11-302): every open check that waits on them for an item of the escalation list, and every failed one they closed whose follow-up is undecided, oldest first. A board or agent
+ * The After-merge checks the board lists for the person (A11-302): every open check that waits on them for an item of the escalation list, and every failed one they (or, before A11-302, their session) closed whose follow-up is undecided, oldest first. A board or agent
  * check never shows here: the org verifies its own work, and those are on their ticket's Run detail ({@link ticketChecks}). The checks are records of their own (`after-merge/checks.ts`), so a row outlives its run and leaves only when
  * its runner closes it. PURE.
  */
 export function afterMergeChecks(file: ChecksFile): AfterMergeCheck[] {
-  const listed = Object.values(file.checks).filter((check) => check.runner === "person" && (personItemOf(check) !== undefined || (check.state === "failed" && check.followUp === undefined)));
+  const listed = Object.values(file.checks).filter((check) => personItemOf(check) !== undefined || (check.state === "failed" && check.followUp === undefined && closedByPerson(check)));
   return listed.sort((a, b) => a.listedAt - b.listedAt).map((check) => ({
     id: check.id, key: check.key, url: check.url, line: check.line, runner: check.runner, listedAt: check.listedAt, state: check.state, ...(check.result === undefined ? {} : { result: check.result }),
     owner: check.owner ?? OWNER_NOT_NAMED, followUpText: check.state === "failed" ? followUpText(check) : null,

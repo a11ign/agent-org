@@ -132,10 +132,10 @@ export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "reque
   return { ...queue, writers: [...(queue.writers ?? []), run] };
 }
 
-/** The writer run that starts now: the first queued one, when a worker slot is free. A run waits for no Pause: a person just asked for it. */
+/** The writer run that starts now: the first queued one, when a worker slot is free. A person's request waits for no Pause: they just asked for it. The board's own check runs (A11-302) do wait for it. */
 export function writerToStart(queue: Queue): WriterRun | undefined {
   if (slotsHeld(queue) >= queue.max) return undefined;
-  return (queue.writers ?? []).find((run) => run.phase === "queued");
+  return (queue.writers ?? []).find((run) => run.phase === "queued" && !(queue.paused && isCheckRun(run.mode)));
 }
 
 export const markWriterStarting = (queue: Queue, id: string, now: number): Queue =>

@@ -232,3 +232,38 @@ test("A11-302: a finished check run is dismissed from the queue a day after it e
   await board.sweep();
   assert.deepEqual(board.writers().map(({ id }) => id), [second.id], "the finished run is dismissed; the one still running is not");
 });
+
+test("A11-302: a verifier run that ended for the board's own reasons (no agent started, an update stopped it, a restart) is no try of its check", async () => {
+  const board = world([check("A11-310#1")], { merged: mergedOther("A11-310") });
+  const ends = ["stopped for the update to v1 at 10:00: ask again", "the pool restarted while it was running", "herdr did not start"];
+  for (const failure of ends) {
+    await board.sweep();
+    const live = board.writers().find((one) => one.phase === "queued")!;
+    board.store.set({ ...board.store.get(), writers: board.writers().map((one) => (one.id === live.id ? { ...one, phase: "finished" as const, finishedAt: 10 * HOUR, failure, ...(failure.startsWith("herdr") ? {} : { workspace: "w9" }) } : one)) });
+  }
+  await board.sweep();
+  assert.equal(board.checks()["A11-310#1"].state, "open", "three ends of the board's own are no result of the check");
+  assert.equal(board.writers().filter((one) => one.mode === "verify").length, ends.length + 1, "each was given a new run");
+});
+
+test("A11-302: workers paused hold the board's own check runs back, and a person's new-ticket request is not held", async () => {
+  const board = world([check("A11-310#1")], { merged: mergedOther("A11-310") });
+  board.store.set({ ...board.store.get(), paused: true });
+  await board.sweep();
+  await board.tick();
+  assert.deepEqual(board.writers().map(({ mode, phase }) => [mode, phase]), [["verify", "queued"]]);
+  board.store.set({ ...board.store.get(), paused: false });
+  await board.tick();
+  assert.equal(board.writers()[0].phase, "running");
+});
+
+test("A11-302: the board files follow-ups only for the failures it closed itself, and leaves the last new-ticket place to a person", async () => {
+  const board = world([
+    check("A11-1#1", { state: "failed", result: "x", closedBy: "board", closedAt: 5 }), check("A11-2#1", { state: "failed", result: "x", closedBy: "agent", closedAt: 5 }),
+    check("A11-3#1", { state: "failed", result: "x", closedBy: "session", runner: "session", closedAt: 5 }), check("A11-4#1", { state: "failed", result: "x", closedBy: "person", runner: "person", closedAt: 5 }),
+    check("A11-5#1", { state: "failed", result: "x", closedBy: "board", closedAt: 5 }),
+  ]);
+  await board.sweep();
+  assert.deepEqual(board.writers().map((one) => one.request.split("\n")[0]), ["Follow-up to A11-1: its after-merge check failed.", "Follow-up to A11-2: its after-merge check failed."], "two places; the third is a person's");
+  assert.deepEqual(Object.values(board.checks()).filter((one) => one.followUp !== undefined).map(({ id }) => id), ["A11-1#1", "A11-2#1"], "the session's and the person's closes are left to the person, who sees them listed");
+});

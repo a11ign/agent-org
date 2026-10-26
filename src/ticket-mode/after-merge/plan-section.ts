@@ -10,7 +10,7 @@ import { ESCALATION_IDS } from "../escalation.ts";
 import { isBoardMoved, type Move } from "../after-merge-move.ts";
 import { linesOf, sectionEnd, type Line } from "../ticket-decisions.ts";
 import { OBSERVE_FORMS, parseObserve } from "./observe.ts";
-import { lineKey, namesLine, type PlannedCheck, type Runner } from "./checks.ts";
+import { lineKey, namesLine, needsPlannedRunner, type PlannedCheck, type Runner } from "./checks.ts";
 
 /** The plan section the planner names each After-merge check's runner in. */
 export const AFTER_MERGE_CHECKS_HEADING = "## After-merge checks";
@@ -179,9 +179,23 @@ export function plannedChecks(plans: readonly string[]): { checks: PlannedCheck[
 }
 
 /**
+ * The checks the plans' sections name that the board can record, for a plan attached before the board held it to today's rules (A11-302): a bullet that is refused is left out and its line runs as an agent's, instead of the whole section being lost.
+ * A section whose bullets cannot be told apart names nothing. PURE.
+ */
+export function plannedChecksLeniently(plans: readonly string[]): PlannedCheck[] {
+  return plans.flatMap((plan) => {
+    const written = writtenChecks(sectionLines(plan));
+    return typeof written === "string" ? [] : written.flatMap((each) => {
+      const planned = plannedOf(each);
+      return typeof planned === "string" ? [] : [planned];
+    });
+  });
+}
+
+/**
  * Why the plans' `## After-merge checks` sections are refused against the ticket's `description` as the planner read it and the lines the plan moves to After merge (A11-275), or null when they are not: a check
  * the board cannot record, a quoted line that is not one of the ticket's After-merge lines (compared by {@link lineKey}: quotes, backticks and white space aside), a moved one, or one the board moved already, or an
- * After-merge line that the section leaves out (A11-302): every line names its runner in the plan, since a line whose owner is a session, a role or nobody would wait on no one. A line the board moved names its `who`, however
+ * After-merge line that the section leaves out and whose owner is nobody, a session or the person (A11-302): such a line waited on the session or the person, so the plan gives it a runner. A line the board moved names its `who`, however
  * long, so it needs no bullet. PURE.
  */
 export function afterMergeChecksRefusal(plans: readonly string[], description: string, moves: readonly Move[]): string | null {
@@ -191,7 +205,7 @@ export function afterMergeChecksRefusal(plans: readonly string[], description: s
   const known = (quoted: string): boolean => moves.some(({ line }) => lineKey(line) === lineKey(quoted)) || ticketLines.some(({ line }) => namesLine(quoted, line));
   const stranger = read.checks.find(({ line }) => !known(line));
   if (stranger !== undefined) return `the plan's \`${AFTER_MERGE_CHECKS_HEADING}\` section quotes "${stranger.line}", which is not one of the ticket's After-merge lines`;
-  const unlisted = ticketLines.find(({ line }) => !isBoardMoved(line) && !read.checks.some((check) => namesLine(check.line, line)));
+  const unlisted = ticketLines.find(({ line, owner }) => needsPlannedRunner(owner) && !isBoardMoved(line) && !read.checks.some((check) => namesLine(check.line, line)));
   return unlisted === undefined ? null
     : `the ticket's After-merge line "${unlisted.line}" has no runner in the plan: add it to the plan's \`${AFTER_MERGE_CHECKS_HEADING}\` section with its runner (\`board\`, \`agent\` or \`person\`)`;
 }

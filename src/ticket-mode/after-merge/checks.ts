@@ -82,6 +82,15 @@ export const SESSION_OWNER = /\bsession\b|^On\s/i;
  */
 export const UNPLANNED_RUNNER: Runner = "agent";
 
+/** Whether an owner names the person themself. */
+const PERSON_OWNER = /^(?:the\s+)?(?:chairman|person)$/i;
+
+/**
+ * Whether a line with this owner must be given its runner by the plan (A11-302): it names nobody, a session or a host the session works on, or the person, so before A11-302 it waited on the session or the person. Any other named role
+ * ("The release manager") runs as an agent unless the plan says otherwise. PURE.
+ */
+export const needsPlannedRunner = (owner: string | null): boolean => owner === null || SESSION_OWNER.test(owner) || PERSON_OWNER.test(owner);
+
 /** A run as the seeding reads it: its ticket, when it finished, and the After-merge lines the board listed for it. */
 export type ListedRun = Readonly<{ ticket: Readonly<{ key: string; url?: string | null }>; finishedAt?: number; afterMerge?: readonly AfterMergeLine[] }>;
 

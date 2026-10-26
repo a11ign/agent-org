@@ -64,7 +64,7 @@ describe("the Run detail page", () => {
     expect(section.getByText(/^Runs it: the board · Watching no finished event in the run log within 7 d until 2026-10-31 12:00 UTC/)).toBeTruthy();
     expect(section.getByText("Runs it: a verifier run · the doctor reports 0.4.1 · closed by a verifier run · follow-up filed (f1)")).toBeTruthy();
     expect(section.getByText("Failed")).toBeTruthy();
-    expect(textOf(document.querySelector("#h-checks"))).toBe("After-merge checks · run by the org, not by a person");
+    expect(textOf(document.querySelector("#h-checks"))).toBe("After-merge checks · the org verifies its own work");
   });
 
   it("draws no checks section for a ticket with none", async () => {

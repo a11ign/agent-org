@@ -13,7 +13,7 @@ import { ticketDir } from "../ticket-paths.ts";
 import { afterMergeLines } from "../done-when.ts";
 import { withMoves } from "../after-merge-move.ts";
 import { namesLine, seedChecks } from "./checks.ts";
-import { AFTER_MERGE_CHECKS_FORMAT, AFTER_MERGE_CHECKS_HEADING, AFTER_MERGE_CHECKS_RULE, afterMergeChecksRefusal, plannedChecks } from "./plan-section.ts";
+import { AFTER_MERGE_CHECKS_FORMAT, AFTER_MERGE_CHECKS_HEADING, AFTER_MERGE_CHECKS_RULE, afterMergeChecksRefusal, plannedChecks, plannedChecksLeniently } from "./plan-section.ts";
 import { batchPlanBriefText, planBriefText } from "../worker-files.ts";
 
 const OWNERLESS = "The next major arrives as a ticket.";
@@ -228,4 +228,19 @@ test("A11-288: a plan's copy of a moved line, with other quotes, still names the
   const file = seedChecks({ checks: {} }, [{ ticket: { key: "NBF-1" }, afterMerge: [boardMoved] }], 1, new Map([["NBF-1", [{ line: copy, runner: "person" as const, escalation: "outward", evidence: "the release note" }]]]));
   assert.equal(file.checks["NBF-1#1"].runner, "person");
   assert.equal(file.checks["NBF-1#1"].evidence, "the release note");
+});
+
+test("A11-302: only a line that names nobody, a session or the person must be given its runner by the plan; any other named role runs as an agent", () => {
+  const ticket = (line: string) => ["Fix it.", "", "## Done-when", "", "### After merge", "", `* ${line}`, ""].join("\n");
+  for (const line of ["No ticket is lost.", "Chairman session: it shows.", "On the agents host: it shows.", "The chairman: confirm the invoice is paid.", "The person: confirm it."]) {
+    assert.match(afterMergeChecksRefusal([NO_SECTION], ticket(line), []) ?? "", /has no runner in the plan/, line);
+  }
+  assert.equal(afterMergeChecksRefusal([NO_SECTION], ticket("The release manager: signs it off."), []), null, "a role that is none of them");
+});
+
+test("A11-302: a plan attached before the board refused the session is still read, bullet by bullet: the refused bullet's line runs as an agent's, and the rest keep their runner and watch", () => {
+  const old = planWith(`- \`${OWNED}\`\n  - Runner: session\n  - Evidence: x\n${BOARD_MAJOR}\n- \`The chairman: x.\`\n  - Runner: agent\n  - Escalation: legal\n  - Evidence: y`);
+  assert.match(JSON.stringify(plannedChecks([old])), /has the runner/, "the strict reading refuses the whole section");
+  assert.deepEqual(plannedChecksLeniently([old]).map(({ line, runner }) => [line, runner]), [[OWNERLESS, "board"]]);
+  assert.deepEqual(plannedChecksLeniently([NO_SECTION, "# Plan\n\n## After-merge checks\n\n- not a bullet of the form\n"]), []);
 });

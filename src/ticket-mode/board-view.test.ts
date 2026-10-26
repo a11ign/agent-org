@@ -1743,6 +1743,12 @@ test("A11-302: the After-merge checks list is the person's own: the open checks 
   assert.deepEqual(afterMergeChecks(emptyChecks()), []);
 });
 
+test("A11-302: a failure the person (or, before A11-302, their session) closed with no follow-up stays on the person's list, and one the org closed does not", () => {
+  const base = { id: "A11-1#1", key: "A11-1", url: null, line: "x", owner: null, runner: "agent" as const, listedAt: 1, state: "failed" as const, result: "seen", closedAt: 2 };
+  const file: ChecksFile = { checks: Object.fromEntries([{ ...base, closedBy: "session" as const, runner: "session" as const }, { ...base, id: "A11-2#1", closedBy: "person" as const }, { ...base, id: "A11-3#1", closedBy: "agent" as const }, { ...base, id: "A11-4#1", closedBy: "board" as const }].map((one) => [one.id, one])) };
+  assert.deepEqual(afterMergeChecks(file).map(({ id }) => id), ["A11-1#1", "A11-2#1"]);
+});
+
 test("A11-302: the person's list shows no board or agent check, however old, and a ticket's checks of every runner are its Run detail's", () => {
   const runs = [{ ticket: { key: "A11-145" }, finishedAt: 1_000, afterMerge: [{ line: "one", owner: null }, { line: "two", owner: null }, { line: "three", owner: null }, { line: "four", owner: "The chairman" }] }];
   const seeded = seedChecks(emptyChecks(), runs, 9_000, new Map([["A11-145", [

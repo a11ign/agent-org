@@ -6,6 +6,7 @@ import { diagnose, defaultDoctorDeps } from "../../install/doctor.ts";
 import { log, messageOf } from "../pool-state.ts";
 import { toolPinOf } from "../pool-pin.ts";
 import { fileFollowUps, queueCheckRuns } from "../pool-check-runs.ts";
+import type { BranchCiRun } from "../../plugins/contracts/code-host.ts";
 import type { PoolContext } from "../pool-context.ts";
 import { planTexts } from "../pool-ticket-text.ts";
 import { DEPENDENCY_TICKETS_FILE } from "../dependency-updates/board.ts";
@@ -15,7 +16,7 @@ import { claimPost, closeComment, listedIds, markUnpostable, pruneChecks, releas
 import { handOverdueToAgent, markOverdue, markShownToPerson } from "./dispatch.ts";
 import { isInstalled, mergesIn, type InstalledReads } from "./installed.ts";
 import { closeObserved, filedKeys, observedChecks, watchedSources, watchesSweep, watchWindows, withFiledBaselines, type DoctorLine, type ObserveFacts, type Sighting } from "./observe.ts";
-import { plannedChecks } from "./plan-section.ts";
+import { plannedChecksLeniently } from "./plan-section.ts";
 import { afterMergeChecksPath, changeChecks, loadChecks, saveChecks } from "./store.ts";
 
 /**
@@ -65,18 +66,16 @@ async function closeWhatTheBoardSaw(ctx: PoolContext, path: string, file: Checks
 }
 
 /**
- * What the plan of each ticket in `keys` names in its `## After-merge checks` section, by ticket. A plan that cannot be read, or whose section cannot be, names nothing, and is logged: its lines run as their owners
- * say, so the session still gets them, and a check is never held back unlisted.
+ * What the plan of each ticket in `keys` names in its `## After-merge checks` section, by ticket. A bullet the board would refuse today (a plan attached before A11-302 may name the session) is left out and its line runs as an
+ * agent's; a plan that cannot be read names nothing, and is logged. A check is never held back unlisted.
  */
 function plansOf(ctx: PoolContext, keys: ReadonlySet<string>): Map<string, readonly PlannedCheck[]> {
   const planned = new Map<string, readonly PlannedCheck[]>();
   for (const key of keys) {
     try {
-      const read = plannedChecks([...planTexts(ctx, key)]);
-      if ("refusal" in read) log(`${key}: ${read.refusal}, so its After-merge checks run as their lines' owners say`);
-      else planned.set(key, read.checks);
+      planned.set(key, plannedChecksLeniently([...planTexts(ctx, key)]));
     } catch (err) {
-      log(`${key}: ${messageOf(err)}, so its After-merge checks run as their lines' owners say`);
+      log(`${key}: ${messageOf(err)}, so its After-merge checks run as agent checks`);
     }
   }
   return planned;
@@ -91,10 +90,10 @@ const CI_RUNS_READ = 20;
 type ReadRun = Readonly<{ name: string; failure: Sighting | null }>;
 
 /** What the sweep last read of this host's doctor, and the completed runs it has read. */
-type SweepMemory = { doctor: { at: number; lines: readonly DoctorLine[] | null } | null; runs: Map<string, ReadRun> };
+type SweepMemory = { doctor: { at: number; lines: readonly DoctorLine[] | null } | null; runs: Map<string, ReadRun>; branches: Map<string, { at: number; runs: readonly BranchCiRun[] }> };
 const memory = new WeakMap<PoolContext, SweepMemory>();
 const memoryOf = (ctx: PoolContext): SweepMemory => {
-  const held = memory.get(ctx) ?? { doctor: null, runs: new Map() };
+  const held = memory.get(ctx) ?? { doctor: null, runs: new Map(), branches: new Map() };
   memory.set(ctx, held);
   return held;
 };
@@ -116,11 +115,25 @@ async function hostDoctor(ctx: PoolContext): Promise<readonly DoctorLine[] | nul
   return lines;
 }
 
+/** A branch's workflow runs are listed at most this often: the listing is one call to the code host for each watch, each minute. */
+const BRANCH_RUNS_EVERY_MS = 5 * 60_000;
+
+/** The workflow runs of a branch, kept for {@link BRANCH_RUNS_EVERY_MS}; null when the host could not list them. */
+function branchRuns(ctx: PoolContext, repository: string, branch: string): readonly BranchCiRun[] | null {
+  const kept = memoryOf(ctx).branches;
+  const key = `${repository}@${branch}`;
+  const held = kept.get(key);
+  if (held !== undefined && ctx.now() - held.at < BRANCH_RUNS_EVERY_MS) return held.runs;
+  const runs = ctx.codeHost.readBranchCi?.(repository, branch, new Set()) ?? null;
+  if (runs !== null) kept.set(key, { at: ctx.now(), runs });
+  return runs;
+}
+
 /** The failed runs of the workflow `workflow` of `repository`'s branch, as sightings, through the code host's two optional reads of a run; null when the host reads neither. A completed run is read once. */
 function ciFailures(ctx: PoolContext, repository: string, workflow: string, branch: string | undefined): readonly Sighting[] | null {
   const { codeHost } = ctx;
   if (codeHost.readBranchCi === undefined || codeHost.readCiRun === undefined) return null;
-  const runs = codeHost.readBranchCi(repository, branch ?? "main", new Set());
+  const runs = branchRuns(ctx, repository, branch ?? "main");
   if (runs === null) return null;
   const known = memoryOf(ctx).runs;
   const sightings: Sighting[] = [];
