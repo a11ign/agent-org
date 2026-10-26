@@ -485,9 +485,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
       // The board's and the terminal's serves are checked and put back, at the instance's first pass and as it runs (A11-279).
       const checking = reconcileExposure(ctx);
       if (checking !== null) await checking;
-      // What is wrong with the host is read for the board's banner, after the serves, so a serve that came back clears its alert in this pass (A11-279).
-      const reading = refreshHostAlerts(ctx);
-      if (reading !== null) await reading;
+      // What is wrong with the host is put on the board's banner after the serves, so a serve that came back clears its alert in this pass; the slow reads of the host run beside the pass, not in it (A11-279).
+      refreshHostAlerts(ctx);
       // The private temp directories of runs that hold no workspace any more are removed, within a budget of entries a pass (A11-279).
       sweepRunTmp(ctx);
       // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.

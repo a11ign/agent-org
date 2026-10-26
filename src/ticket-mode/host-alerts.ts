@@ -36,9 +36,9 @@ type HostReading = { tmpEntries: number | null; softLockupAt: number | null; han
 export type HostAlertReads = Readonly<{ tmpEntries: () => Promise<number>; softLockupAt: () => Promise<number | undefined>; hangSettings: () => string | undefined }>;
 
 /** What the pool keeps of the host's alerts between passes. */
-export type HostAlertState = { at: number | null; reading: HostReading; alerts: readonly HostAlert[]; since: Map<string, number>; said: Set<string> };
+export type HostAlertState = { at: number | null; reading: HostReading; alerts: readonly HostAlert[]; since: Map<string, number>; said: Set<string>; pending: Promise<void> | null };
 
-export const newHostAlertState = (): HostAlertState => ({ at: null, reading: { tmpEntries: null, softLockupAt: null, hangSettings: null }, alerts: [], since: new Map(), said: new Set() });
+export const newHostAlertState = (): HostAlertState => ({ at: null, reading: { tmpEntries: null, softLockupAt: null, hangSettings: null }, alerts: [], since: new Map(), said: new Set(), pending: null });
 
 /** The first time in `journalctl -o short-unix` output (`1792941622.123456 host kernel: ...`), in ms, or `undefined` for output with no line. PURE. */
 export function firstLogTime(output: string): number | undefined {
@@ -46,10 +46,10 @@ export function firstLogTime(output: string): number | undefined {
   return seconds === undefined ? undefined : Math.round(Number(seconds) * 1000);
 }
 
-/** `journalctl` over this boot's kernel log for a soft lockup. `journalctl` exits 1 with nothing printed when no line matches: that is "none", while any other failure is an error. */
-export function softLockupInJournal(program = "journalctl"): Promise<number | undefined> {
+/** `journalctl` (found on `env`'s PATH, so a test puts a stand-in first) over this boot's kernel log for a soft lockup. `journalctl` exits 1 with nothing printed when no line matches: that is "none", while any other failure is an error. */
+export function softLockupInJournal(env: NodeJS.ProcessEnv = process.env): Promise<number | undefined> {
   return new Promise((resolve, reject) => {
-    execFile(program, ["-k", "-b", "--grep", "soft lockup", "-q", "--no-pager", "-o", "short-unix"], { timeout: JOURNAL_CALL_MS, encoding: "utf8" }, (error, stdout, stderr) => {
+    execFile("journalctl", ["-k", "-b", "--grep", "soft lockup", "-q", "--no-pager", "-o", "short-unix"], { timeout: JOURNAL_CALL_MS, encoding: "utf8", env }, (error, stdout, stderr) => {
       const code = (error as { code?: unknown } | null)?.code;
       if (error === null || (code === 1 && stderr.trim() === "")) resolve(firstLogTime(stdout));
       else reject(error);
@@ -145,15 +145,22 @@ async function readHost(ctx: PoolContext, reads: HostAlertReads): Promise<void> 
 }
 
 /**
- * Bring the host's alerts up to date, in the tick after the serves were checked: the exposure's alerts at once, and the slow reads when {@link HOST_ALERTS_EVERY_MS} has passed since the last. Null when no read is due, so
- * a pass that has nothing to read gives up no turn of the event loop; a read never throws.
+ * Bring the host's alerts up to date, in the tick after the serves were checked: the exposure's alerts at once, and the slow reads when {@link HOST_ALERTS_EVERY_MS} has passed since the last, started and NOT waited for. The
+ * tick holds the board thread's whole pass (`pass.busy`), and a listing of `/tmp` or a `journalctl` that is slow would hold every later step of it; the alerts are a banner, which can wait for a read, and the pass cannot. A read
+ * is not started while the last is still out, and never throws. {@link hostAlertsSettled} waits for it.
  */
-export function refreshHostAlerts(ctx: PoolContext): Promise<void> | null {
+export function refreshHostAlerts(ctx: PoolContext): void {
   const { hostAlertReads: reads } = ctx.deps;
-  const { at } = ctx.hostAlerts;
-  if (reads === undefined || (at !== null && ctx.now() - at < HOST_ALERTS_EVERY_MS)) {
-    settle(ctx);
-    return null;
-  }
-  return readHost(ctx, reads);
+  const state = ctx.hostAlerts;
+  settle(ctx);
+  if (reads === undefined || !readDue(ctx)) return;
+  state.pending = readHost(ctx, reads).finally(() => { state.pending = null; });
 }
+
+/** Whether the slow reads are due: none is out, and {@link HOST_ALERTS_EVERY_MS} has passed since the last started (or none has). */
+function readDue({ hostAlerts: { at, pending }, now }: PoolContext): boolean {
+  return pending === null && (at === null || now() - at >= HOST_ALERTS_EVERY_MS);
+}
+
+/** Settles once the host read that {@link refreshHostAlerts} last started has answered and the alerts are settled on it (at once when none is out). Never rejects. */
+export const hostAlertsSettled = (ctx: PoolContext): Promise<void> => ctx.hostAlerts.pending ?? Promise.resolve();
