@@ -19,6 +19,7 @@ import type { PluginsApi } from "./plugins-api.ts";
 import type { ProblemOptions } from "./plugins.ts";
 import { queueEntryView, queueView, shownWriter, type QueueView } from "./queue-view.ts";
 export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
+import { interventionsView } from "./queue/interventions.ts";
 import { type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
@@ -81,6 +82,8 @@ export type ReadBoard = Readonly<{
   problems?: ProblemOptions;
   /** What `/api/health` answers (A11-282). Absent, the route is not served, as on an instance from before it. */
   health?: () => unknown;
+  /** The clock `/api/interventions` names today by: the time now when absent. */
+  now?: () => number;
 }> & TrackerReads;
 
 /** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
@@ -273,6 +276,8 @@ export async function readRoute(board: ReadBoard, method: string, path: string, 
   }
   if (method === "GET" && path === "/api/writer") return [200, writersViewOf(store.get())];
   if (method === "GET" && path === "/api/health" && board.health !== undefined) return [200, board.health()];
+  // The health number (A11-257): `/api/health` is the loop's (A11-282), so the person-interventions are their own route, beside the POST that records a fix.
+  if (method === "GET" && path === "/api/interventions") return [200, interventionsView(store.get(), (board.now ?? Date.now)())];
   return undefined;
 }
 
