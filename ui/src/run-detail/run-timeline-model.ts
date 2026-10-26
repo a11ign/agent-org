@@ -26,7 +26,7 @@ const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond",
 const REQUEUE_WORDS: Readonly<Record<RequeueWhy, string>> = { retry: "a retry", "next-step": "the next plan step", update: "an update", replan: "the plan written again", blocker: "a wait on another ticket", "ci-budget": "its CI budget", "conflict-round": "after its conflict round" };
 
 /** The colour of a base-merge row: violet while the board merges the base in, as a pull request opened, and amber for a round, a wait or the cap, as a round is. */
-const BASE_MERGE_TONES: Readonly<Record<BaseMergeStep, DotTone>> = { merging: "violet", behind: "violet", round: "amber", waiting: "amber", capped: "amber" };
+const BASE_MERGE_TONES: Readonly<Record<BaseMergeStep, DotTone>> = { merging: "violet", behind: "violet", round: "amber", waiting: "amber", capped: "amber", held: "amber" };
 
 /** How long ago an event was: "just now" inside the first minute, then "5 min ago". */
 const agoOf = (at: number, now: number): string => (now - at < 60_000 ? "just now" : `${since(at, now)} ago`);

@@ -3,7 +3,8 @@ import { overlapWait } from "../board-view/overlap-hold.ts";
 import { isParked, isPublishing, isWatched, resumesOnConflict, runActions, runStatus, workStatus } from "../board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "../board-view/pull-settled.ts";
 import type { Blocker, PullState } from "../source.ts";
-import { conflictsIn } from "../worker-files.ts";
+import { conflictLine, conflictsIn } from "../worker-files.ts";
+import { conflictingPulls } from "../board-view/pull-conflict.ts";
 import type { RunWorker } from "./queue-run-detail.ts";
 import { loggedPersonRound } from "./queue-person-round.ts";
 import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
@@ -45,7 +46,7 @@ function respondRefusal(key: string, entry: Entry | undefined, found: readonly P
  * A person asked the worker to answer the current feedback on a finished run's open pull requests, whatever its outcome ended on: Ready to merge, Published,
  * handed back after the board's own rounds, needs-human, crashed, or ready for review. The ticket goes back on the queue, at the end, as a review round that
  * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it. A run handed back for a conflict carries the
- * conflict lines, so its round merges the base in first (A11-125). A run whose pull requests are drafts is approved, which marks them ready and starts the
+ * conflict lines, and so does one whose open pull request the watch read as conflicting (A11-293), so its round merges the base in first (A11-125). A run whose pull requests are drafts is approved, which marks them ready and starts the
  * same round. Throws, naming why, for a run Respond cannot act on ({@link respondRefusal}), so the board says it. A parked run is the pool's: it closes the
  * run's workspace, then asks this. `foundOnHost` is the open pull requests the code host holds for the ticket that the run's record does not (A11-240): a run whose record holds no
  * open pull request answers those instead of being refused, so a crash that emptied the record does not leave a pull request nobody can respond on.
@@ -59,9 +60,20 @@ export function respond(queue: Queue, key: string, now: number, foundOnHost: rea
   if (entry === undefined || isParked(entry)) throw new Error(`${key}'s workspace is open: it is closed before Respond acts`);
   const recorded = openPulls(entry);
   if (entry.outcome?.kind === "draft-pr") return approve(queue, key, now);
-  const conflict = conflictsIn(entry.handedBack ?? "");
+  const conflict = conflictToCarry(entry);
   const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, recorded.length > 0 ? recorded : found, now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
   return loggedPersonRound(queued, entry, "respond", now, conflict === null ? null : shortReason(conflict));
+}
+
+/**
+ * The conflict lines a Respond round carries, or null: those the run was handed back for (A11-125) and those of its open pull requests the last watch read as conflicting (A11-293), each once. A run handed to a person is not woken for a conflict,
+ * so the pull request's own record is where Respond finds it. PURE.
+ */
+function conflictToCarry(entry: Entry): string | null {
+  const named = conflictsIn(entry.handedBack ?? "")?.split("\n") ?? [];
+  const read = conflictingPulls(entry).map(({ url, base }) => conflictLine(url, base));
+  const lines = [...new Set([...named, ...read])];
+  return lines.length === 0 ? null : lines.join("\n");
 }
 
 /**

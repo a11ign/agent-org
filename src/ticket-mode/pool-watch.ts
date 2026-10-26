@@ -14,7 +14,7 @@ import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mergeBaseInto } from "./pool-base-merge.ts";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
-import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
+import { isParked, isWatched, mergesBase, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
 import { wakePrompt } from "./wait-on/wait-prompt.ts";
@@ -537,7 +537,11 @@ export function watchFeedback(ctx: PoolContext): void {
     recordHeads(ctx, entry, readable);
     recorded.push(entry.ticket.key);
     clearResolvedConflict(ctx, entry, open);
-    if (!resumesOnConflict(entry)) continue;
+    if (!resumesOnConflict(entry)) {
+      // A run no worker is woken for, such as one handed to a person, still has the base merged into its pull requests (A11-293): the free update, and the record of a real conflict for its card and its Respond.
+      if (mergesBase(entry)) mergeBaseOf(ctx, entry, open);
+      continue;
+    }
     const checks = answerChecks(ctx, entry, open, foreign);
     const removals = answerQueue(ctx, entry, open);
     // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
@@ -566,7 +570,7 @@ export function watchFeedback(ctx: PoolContext): void {
 }
 
 /**
- * Merge the base into the open pull requests of a finished run that conflict or are behind (A11-286, {@link mergeBaseInto}). A conflict the host reports as real is decided again, by a second watch, once its files are listed; a second watch that
+ * Merge the base into the open pull requests of a finished run that conflict or are behind (A11-286, {@link mergeBaseInto}), whatever the run's status ({@link mergesBase}, A11-293). A conflict the host reports as real is decided again, by a second watch, once its files are listed; a second watch that
  * throws is said, as the sweep's own failure is, and not left to be an unhandled rejection of the process.
  */
 function mergeBaseOf(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): void {
