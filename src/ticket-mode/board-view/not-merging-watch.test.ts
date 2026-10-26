@@ -150,3 +150,14 @@ test("A11-291: what the host last said of a repository's flow is kept when a lat
   assert.equal(entry().pullHeads?.[PR]?.notMerging, reason, "and one that throws is no reading, and does not stop the watch");
   assert.equal(entry().mergeNote, undefined);
 });
+
+test("A11-305: the watch writes no first-install note over a run whose ticket's Decisions no round has answered, and writes it once they are answered", () => {
+  const { pool, entry, store } = approvedPool({ files: ["README.md", ARM] });
+  store.set({ ...store.get(), entries: store.get().entries.map((e) => ({ ...e, decisionsPending: { at: NOW, added: ["- a new decision"] } })) } as Queue);
+  pool.watchFeedback();
+  assert.equal(entry().mergeNote, undefined);
+  assert.equal(runStatus(entry()), "awaiting-review", "the card does not read Needs you");
+  store.set({ ...store.get(), entries: store.get().entries.map(({ decisionsPending: _answered, ...rest }) => rest) } as Queue);
+  pool.watchFeedback();
+  assert.equal(entry().mergeNote, FIRST_FLOW_NOTE);
+});

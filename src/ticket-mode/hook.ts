@@ -64,6 +64,8 @@ import { escapeRegExp } from "../lib/escape-regexp.ts";
 import { escalationItem, escalationList, offListRefusal, questionEscalation } from "./escalation.ts";
 import type { PullNow } from "./pull-now-command.ts";
 import { bodyHash } from "./standoff-body-hash.ts";
+import { decisionsStop } from "./decisions-stop.ts";
+import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
 import { STANDOFF_DECISION_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE } from "./standoff-files.ts";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
@@ -125,7 +127,7 @@ function readyRefusal(approved: readonly string[]): Refusal {
  * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
  * tickets hold and the mark of the retry made for a folder claim (A11-212).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, DECISIONS_ROUND_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -698,6 +700,18 @@ function standoffStop(ticketDir: string, { text }: OutcomeRead, io: StopIo): Jud
   return io.exists(round) ? unchangedStop(round, io) : null;
 }
 
+/**
+ * A `reviewed` THAT ANSWERS A CHANGE OF THE TICKET'S DECISIONS (A11-305). A round whose brief opens with new lines of the Decisions (`decisions-round.json`) that pushed to no pull request must quote them in its final message and say why the pull requests already meet them;
+ * otherwise it is refused, counted and bounded like every refusal. See `decisions-stop.ts`. Null for any other round and any other outcome.
+ */
+function decisionsRoundStop(ticketDir: string, { text }: OutcomeRead, io: StopIo, said: string): Judgment | null {
+  const checked = checkOutcome(text);
+  if ("problem" in checked) return null;
+  const judged = checked.outcome.kind === "reviewed" ? decisionsStop(ticketDir, `${said}\n${text}`, io) : null;
+  if (judged === null) return null;
+  return "ask" in judged ? judged : { verdict: { code: 0, say: [judged.say] } };
+}
+
 /** The refusal of a stand-off planner's `reviewed` that has no usable decision, or null when it has one. */
 function plannerDecisionStop(ticketDir: string, io: StopIo): Judgment | null {
   const file = join(ticketDir, STANDOFF_DECISION_FILE);
@@ -904,7 +918,7 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
       return ALLOW;
     }
     const judged: Judgment = found !== null
-      ? offListStop(ticketDir, found, io) ?? standoffStop(ticketDir, found, io) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath, writer: exists(join(ticketDir, WRITER_FILE)) }, found, io)
+      ? offListStop(ticketDir, found, io) ?? standoffStop(ticketDir, found, io) ?? decisionsRoundStop(ticketDir, found, io, questionAsked(lastMessage, transcriptPath, read)) ?? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath, writer: exists(join(ticketDir, WRITER_FILE)) }, found, io)
       : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
     if ("verdict" in judged) {
       // A plan that misses a blocker pull request is refused once, before the planner ends, and the refusal is no outcome problem: the count is left as it is (A11-207).

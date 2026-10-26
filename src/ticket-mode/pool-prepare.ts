@@ -33,6 +33,8 @@ import { type FindingsGiven } from "./blocker-findings-check.ts";
 import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, type HeldClaim } from "./path-claims.ts";
 import { SENT_BACK_FILE } from "./pool-plan-send-back.ts";
 import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
+import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
+import { writeDecisionsMark } from "./pool-decisions-change.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
 
@@ -121,7 +123,8 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   } else if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: openPulls(entry), notes, reviewNotes: notesFile(settings.review, "tickets.review"),
-      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, standoff: entry.standoff?.stage === "worker", conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst, held: entry.ciHold?.reason ?? entry.ciTold }));
+      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, decisions: entry.decisions === true, standoff: entry.standoff?.stage === "worker", conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst, held: entry.ciHold?.reason ?? entry.ciTold }));
+    writeDecisionsMark(ctx, entry, dir, { briefed: entry.briefedAgainst, read });
     writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(openPulls(entry))}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
     const planDir = emptyPlanDir(dir);
@@ -167,7 +170,7 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
   // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207). So do the paths it listed
   // other tickets as holding, and the retry made for a folder claim (A11-212). So does the count of After-merge refusals sent back to its planner (A11-288).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, SENT_BACK_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, STANDOFF_DECISION_FILE]) {
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, SENT_BACK_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, STANDOFF_DECISION_FILE, DECISIONS_ROUND_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
 }
