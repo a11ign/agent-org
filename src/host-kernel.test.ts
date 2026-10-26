@@ -23,6 +23,9 @@ import { homeHostConfig } from "./host-config.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
 import { moduleSource } from "./lib/source-text-reads.ts";
 
+/** The text of the module and of the hang-settings code it re-exports: the source-scanning guards cover both, since the sudo texts and the file's path live in the second. */
+const hostKernelSource = (): string => ["./host-kernel.ts", "./hang-settings.ts"].map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
+
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const HOUR = 3_600_000;
 const BOOT = ["vmlinuz", "vmlinuz.old", "vmlinuz-7.0.0-34-generic", "vmlinuz-7.0.0-38-generic", "config-7.0.0-38-generic", "initrd.img-7.0.0-38-generic"];
@@ -285,7 +288,7 @@ describe("the ONE privileged command", () => {
   });
 
   test("every other use of the word in the code is inside a command the chairman is TOLD to run (a *_APPLY text), which nothing passes to `run`", () => {
-    const source = readFileSync(new URL("./host-kernel.ts", import.meta.url), "utf8");
+    const source = hostKernelSource();
     const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line));
     const told = code.filter((line) => /\bsudo\b/.test(line));
     assert.ok(told.length >= 3, "the control: the texts are found");
@@ -295,7 +298,7 @@ describe("the ONE privileged command", () => {
   });
 
   test("the SOURCE names `sudo` once: a second privileged command would be a second literal, and a new sudoers line", () => {
-    const source = readFileSync(new URL("./host-kernel.ts", import.meta.url), "utf8");
+    const source = hostKernelSource();
     const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n");
     assert.equal((code.match(/["']sudo["']/g) ?? []).length, 1);
   });
@@ -486,7 +489,7 @@ describe("the hang settings file: what differs from it", () => {
   });
 
   test("no code path of the module writes the file: the only writes are the reboot record's, and the text is only ever printed", () => {
-    const source = readFileSync(new URL("./host-kernel.ts", import.meta.url), "utf8");
+    const source = hostKernelSource();
     const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n");
     assert.equal((code.match(/writeFileSync\(/g) ?? []).length, 1, "recordStore's write");
     assert.equal((code.match(/\b(rmSync|mkdirSync|appendFileSync|renameSync|copyFileSync)\(/g) ?? []).length, 2, "recordStore's rmSync and mkdirSync");

@@ -95,6 +95,8 @@ export type PoolDeps = Readonly<{
   serveCheck?: () => Promise<readonly ServeCheck[]>;
   /** Reads the host for the board's alerts (A11-279, `host-alerts.ts`): `/tmp`'s entries, this boot's kernel log, the hang settings. The instance passes the machine's. Absent: only the exposure's alerts are raised, as in every test. */
   hostAlertReads?: HostAlertReads;
+  /** The longest any one read of the host is waited for (A11-279, `host-alerts.ts`); five seconds when absent. A test gives a short one. */
+  hostReadMs?: number;
   /** The directory each run's private `TMPDIR` is made under (A11-279, `run-isolation.ts`); the instance passes `privateBase()`. Absent: runs get no `TMPDIR` and nothing is swept, as in every test that does not give one. */
   privateTmpBase?: string;
   /** The longest the files of a conflict are given to be listed before its round starts without them (A11-286); a minute when absent. A test gives a short one. */

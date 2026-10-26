@@ -10,7 +10,7 @@
 // A pool made without `deps.hostAlertReads` (every test; the instance passes the machine's) reads nothing of the host, and shows the exposure's alerts alone.
 import { execFile } from "node:child_process";
 import { readdir } from "node:fs/promises";
-import { hangConfFindings, realHostReads } from "../hang-settings.ts";
+import { HANG_CONF_PATH, hangConfFindings, realHostReads, type HostReads } from "../hang-settings.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { log } from "./pool-state.ts";
 
@@ -22,6 +22,9 @@ export const TMP_ENTRY_LIMIT = 1_000;
 
 /** The longest `journalctl` is given: the read runs inside the tick, which waits for it. */
 const JOURNAL_CALL_MS = 5_000;
+
+/** The longest any one read of the host is waited for (`deps.hostReadMs` when a test gives another). A `readdir` cannot be cancelled, and the stall of 2026-10-25 was a listing of `/tmp` that did not return: the tick, which waits for the reads, must not wait for ever. */
+export const HOST_READ_MS = 5_000;
 
 /** One condition of the host, as the board words it: a stable id, the sentence, and when it began (ms since the epoch). */
 export type HostAlert = Readonly<{ id: string; sentence: string; since: number }>;
@@ -54,9 +57,24 @@ export function softLockupInJournal(program = "journalctl"): Promise<number | un
   });
 }
 
-/** What the hang settings differ in, as the hang findings of hang-settings.ts word it (with the root command that fixes it); `undefined` when they match or cannot be read: a read that was refused is not a difference. */
-function hangDifference(): string | undefined {
-  return hangConfFindings(realHostReads).find(({ problem }) => problem === "HANG SETTINGS DIFFER")?.detail;
+/**
+ * What the hang settings differ in, as the hang findings of hang-settings.ts word it (with the root command that fixes it); `undefined` when they match or cannot be read (a read that was refused is not a difference). A host
+ * with no `90-a11ign-hang.conf` has not been set up for it (a laptop, a CI runner), so it is not drifted; `host:check` still says so on the agents host.
+ */
+export function hangDifference(reads: HostReads = realHostReads): string | undefined {
+  try {
+    reads.readFile(HANG_CONF_PATH);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException | null)?.code === "ENOENT") return undefined;
+  }
+  return hangConfFindings(reads).find(({ problem }) => problem === "HANG SETTINGS DIFFER")?.detail;
+}
+
+/** `read`'s answer, or a rejection when it has not answered in `ms`. The read itself is not cancelled; its answer is dropped. */
+export function withinMs<T>(read: () => Promise<T> | T, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer in ${ms} ms`)), ms); });
+  return Promise.race([Promise.resolve().then(read), late]).finally(() => clearTimeout(timer));
 }
 
 /** The machine's reads: `/tmp`'s entries (one `readdir`, as `prune-tmp.ts` counts them), this boot's kernel log, and the hang settings against the text hang-settings.ts holds. */
@@ -103,13 +121,13 @@ function settle(ctx: PoolContext): void {
 }
 
 /** Ask one read, and keep `previous` when it fails, saying so once. */
-async function attempt<T>(state: HostAlertState, name: string, read: () => Promise<T> | T, previous: T): Promise<T> {
+async function attempt<T>(state: HostAlertState, name: string, read: () => Promise<T> | T, previous: T, ms: number): Promise<T> {
   try {
-    return await read();
+    return await withinMs(read, ms, name);
   } catch (err) {
     if (!state.said.has(name)) {
       state.said.add(name);
-      log(`the host's ${name} could not be read, so its alert keeps the last answer: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+      log(`${name} could not be read, so its alert keeps the last answer: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
     }
     return previous;
   }
@@ -119,9 +137,10 @@ async function readHost(ctx: PoolContext, reads: HostAlertReads): Promise<void> 
   const { hostAlerts: state } = ctx;
   state.at = ctx.now();
   const { reading } = state;
-  reading.tmpEntries = await attempt(state, "/tmp listing", reads.tmpEntries, reading.tmpEntries);
-  reading.softLockupAt = await attempt(state, "kernel log", async () => (await reads.softLockupAt()) ?? null, reading.softLockupAt);
-  reading.hangSettings = await attempt(state, "hang settings", () => reads.hangSettings() ?? null, reading.hangSettings);
+  const ms = ctx.deps.hostReadMs ?? HOST_READ_MS;
+  reading.tmpEntries = await attempt(state, "the host's /tmp listing", reads.tmpEntries, reading.tmpEntries, ms);
+  reading.softLockupAt = await attempt(state, "the host's kernel log", async () => (await reads.softLockupAt()) ?? null, reading.softLockupAt, ms);
+  reading.hangSettings = await attempt(state, "the host's hang settings", () => reads.hangSettings() ?? null, reading.hangSettings, ms);
   settle(ctx);
 }
 

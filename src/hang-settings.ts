@@ -21,7 +21,7 @@ export const HANG_SETTINGS = Object.freeze([
 ]);
 /** THE FILE'S EXACT TEXT, printed by `--hang-conf`. */
 export const HANG_CONF = [
-  "# Written by `node src/host-kernel.ts --hang-conf`: agent-org's src/host-kernel.ts owns this text. Change it there, never here.",
+  "# Written by `node src/host-kernel.ts --hang-conf`: agent-org's src/hang-settings.ts owns this text. Change it there, never here.",
   "# Why this file exists: the product repository's issue #3846. On 2026-10-06 the host hung for 2 h 15 min in a soft lockup and nothing noticed. A panic and a reboot beats a hang.",
   "# Why softlockup_panic is 0: A11-279. On 2026-10-25 a 26 s soft lockup in ext4_dx_readdir would have cleared by itself; the panic rebooted the host and killed every run.",
   ...HANG_SETTINGS.flatMap(({ key, value, reason }) => [`# ${reason}`, `kernel.${key} = ${value}`]),
@@ -30,6 +30,7 @@ export const HANG_CONF = [
 /** What the chairman runs, as root, to apply {@link HANG_CONF}. This module never does. */
 export const HANG_APPLY = `node src/host-kernel.ts --hang-conf | sudo tee ${HANG_CONF_PATH} && sudo sysctl --system`;
 
+/** Every read the crash-preparedness findings make, injected. `listDir` names a directory's entries and `readFile` returns a file's text; both throw what the file system throws. */
 export type HostReads = { readFile: (path: string) => string, listDir: (path: string) => string[] };
 export const realHostReads: HostReads = { readFile: (path) => readFileSync(path, "utf8"), listDir: (path) => readdirSync(path) };
 

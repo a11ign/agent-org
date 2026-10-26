@@ -154,8 +154,6 @@ export function stillOlderFinding(record: RebootRecord | null, reading: KernelRe
       + `is installed, so ${cause}. NO second reboot is made inside 24 h: read the boot loader's default (\`grub-editenv list\`, \`/etc/default/grub\`) and decide.` };
 }
 
-/** Every read the crash-preparedness findings make, injected. `listDir` names a directory's entries and `readFile` returns a file's text; both throw what the file system throws. */
-
 /** KDUMP LOADED: `/sys/kernel/kexec_crash_loaded` reads 1 once `kdump-tools` has loaded the capture kernel. Without it the next crash leaves the pstore excerpt and no dump. @param {HostReads} reads @returns {Finding[]} */
 export function kdumpFindings({ readFile }: HostReads): Finding[] {
   let loaded;
