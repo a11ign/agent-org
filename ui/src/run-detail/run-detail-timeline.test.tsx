@@ -10,7 +10,7 @@ const PULL = "https://github.com/a11ign/lab/pull/150";
 
 const entry = (more: Record<string, unknown> = {}): RunEntry =>
   ({ ticket: { key: "A11-1", title: "t", url: "" }, phase: "running", model: "sonnet", effort: "high", queuedAt: NOW - 60 * MINUTE, ...more }) as unknown as RunEntry;
-const rowsOf = (events: readonly RunEvent[], more: Record<string, unknown> = {}) => timelineOf(entry(more), { runLog: { "A11-1": events } }, NOW);
+const rowsOf = (events: readonly RunEvent[], more: Record<string, unknown> = {}) => timelineOf(entry(more), events, NOW);
 
 describe("the Timeline's rows", () => {
   it("are newest first, each worded from its own event", () => {
@@ -60,10 +60,10 @@ describe("the Timeline's rows", () => {
   });
 
   it("show the newest Started of a run still going in amber, and say a rebuilt event is from the run's times", () => {
-    const going = timelineOf(entry({ startedAt: NOW - 52 * MINUTE }), { runLog: {} }, NOW);
+    const going = timelineOf(entry({ startedAt: NOW - 52 * MINUTE }), [], NOW);
     expect(going.map(({ text, tone }) => [text, tone])).toEqual([["Started", "amber"], ["Queued", "grey"]]);
     expect(going[0]?.when).toContain("from the run's times");
-    expect(timelineOf(entry({ startedAt: NOW - 52 * MINUTE, planned: true }), { runLog: {} }, NOW)[0]?.when).toBe("52 min ago · sonnet/high, unattended plan · from the run's times");
+    expect(timelineOf(entry({ startedAt: NOW - 52 * MINUTE, planned: true }), [], NOW)[0]?.when).toBe("52 min ago · sonnet/high, unattended plan · from the run's times");
   });
 
   it("end a run that asked a person in the Handed back board's words, in amber", () => {
@@ -75,7 +75,7 @@ describe("the Timeline's rows", () => {
     const events: RunEvent[] = [{ at: NOW - 3 * MINUTE, kind: "started", model: "sonnet", effort: "high", instance: null }, { at: NOW - 30_000, kind: "finished", outcome: "stopped" }];
     expect(rowsOf(events, { phase: "finished", trackerState: "canceled" })[0]?.text).toBe("Ticket canceled in the tracker");
     expect(rowsOf(events, { phase: "finished" })[0]?.text).toBe("Run finished");
-    expect(timelineOf({ ticket: { key: "A11-1" }, phase: "running" } as unknown as RunEntry, {}, NOW)).toEqual([]);
+    expect(timelineOf({ ticket: { key: "A11-1" }, phase: "running" } as unknown as RunEntry, [], NOW)).toEqual([]);
   });
 });
 

@@ -58,14 +58,16 @@ import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth } from "./health-route.ts";
-import { answerKeyed, holdsRun, plansOf, queueView, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf, type QueueView } from "./read-routes.ts";
+import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
+import { queueView, type QueueView } from "./queue-view.ts";
 import { startBoardThread } from "./board-thread.ts";
 import { REQUEST_THREAD } from "./thread-messages.ts";
 import { toolVersionOf } from "../plugins/health-read.ts";
 import { agentOrgVersionDefault } from "./plugin-contract.ts";
 
 // The reads moved to `read-routes.ts` (A11-282); the UI's client and the tests name them here.
-export { holdsKey, type ConfigView, type PickView, type QueueView, type SavedChoice, type TicketsPageView, type TicketView, type WritersView } from "./read-routes.ts";
+export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
+export { holdsKey, type ConfigView, type PickView, type SavedChoice, type TicketsPageView, type TicketView, type WritersView } from "./read-routes.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");

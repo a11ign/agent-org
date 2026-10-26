@@ -9,6 +9,8 @@
 // worker terminal's pairing code only for a paired browser following a worker link (`ui-server.ts`), which refuses a browser's own call to it.
 import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
+import type { Readable } from "node:stream";
+import { createGunzip } from "node:zlib";
 import { via, type Connections, type Target } from "./connections.ts";
 import type { LastKnown } from "./last-known.ts";
 import { redact, Unreachable } from "./remote.ts";
@@ -33,6 +35,8 @@ const NEVER_KEPT = new Set(["/api/health"]);
 /** The Settings page's edits of a file, and its install, enable, disable and uninstall of a plugin (A11-163): they change a `.agent-org` file, which only the machine that holds it may do (A11-132). */
 const SETTINGS_EDITS = new Set(["/api/settings/preview", "/api/settings/save", "/api/settings/restore", "/api/plugins/action"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|talk|stop|close|dismiss|apply-edit|discard-edit)$/;
+/** One run in full (`GET /api/queue/<key>`, A11-270): a read, passed on, and never kept as last known, since a path for each run would push out the pages' own (`MOST_PATHS` in `last-known.ts`). */
+const RUN_READ = /^\/api\/queue\/[A-Za-z0-9_-]+$/;
 /** A new-ticket request's own actions: `/api/writer/<run>/stop` and `/api/writer/<run>/dismiss`. */
 const WRITER_ACTION = /^\/api\/writer\/[A-Za-z0-9_-]+\/(?:stop|dismiss)$/;
 /** How a forward fails when nothing is at the other end of the tunnel's socket any more: closed under the request, refused, or removed. */
@@ -40,14 +44,14 @@ const LINK_LOST = /\b(?:ECONNRESET|ECONNREFUSED|ENOENT|EPIPE)\b|socket hang up/;
 
 /** Whether the page may make this call to an instance: one of the routes it calls there, by the method it calls it with. */
 export function passedOn(method: string, pathname: string): boolean {
-  if (method === "GET") return READS.has(pathname);
+  if (method === "GET") return READS.has(pathname) || RUN_READ.test(pathname);
   if (method === "POST") return WRITES.has(pathname) || RUN_ACTION.test(pathname) || WRITER_ACTION.test(pathname);
   return false;
 }
 
-/** The headers an instance is sent: its own host, its key, and the body's type and length. Nothing of the browser's. */
+/** The headers an instance is sent: its own host, its key, the encoding it may pack an answer in (A11-270), and the body's type and length. Nothing of the browser's. */
 export function forwardHeaders(target: Pick<Target, "host" | "key">, body: string | null): Record<string, string> {
-  return { host: target.host, "x-ticket-token": target.key, accept: "application/json",
+  return { host: target.host, "x-ticket-token": target.key, accept: "application/json", "accept-encoding": "gzip",
     ...(body === null ? {} : { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }) };
 }
 
@@ -55,14 +59,17 @@ export function forwardHeaders(target: Pick<Target, "host" | "key">, body: strin
 export const httpForward: Forward = (target, { method, path, body }) => new Promise((done, fail) => {
   const options: RequestOptions = { method, headers: forwardHeaders(target, body), timeout: FORWARD_MS };
   const answered = (response: IncomingMessage) => {
+    // An answer the instance packed (`sendJson`) is unpacked as it arrives, and the limit is on what it unpacks to.
+    const unpacked: Readable = response.headers["content-encoding"] === "gzip" ? response.pipe(createGunzip()) : response;
     const chunks: Buffer[] = [];
     let size = 0;
-    response.on("data", (chunk: Buffer) => {
+    unpacked.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > ANSWER_BYTES) return void response.destroy(new Error(`an answer over ${ANSWER_BYTES} bytes`));
+      if (size > ANSWER_BYTES) return void (unpacked.destroy(new Error(`an answer over ${ANSWER_BYTES} bytes`)), response.destroy());
       chunks.push(chunk);
     });
-    response.on("end", () => done({ status: response.statusCode ?? 502, body: Buffer.concat(chunks).toString("utf8") }));
+    unpacked.on("end", () => done({ status: response.statusCode ?? 502, body: Buffer.concat(chunks).toString("utf8") }));
+    unpacked.on("error", fail);
     response.on("error", fail);
   };
   let outgoing: ClientRequest;
@@ -121,7 +128,7 @@ export async function proxy(connections: Connections, name: string, request: For
   // A remote instance's files are edited on that machine, so nothing this page forwards changes them there.
   if (SETTINGS_EDITS.has(pathname) && connection.kind !== "local") return [403, { error: `${name}'s settings are not changed from here: its files are edited on that machine, and this connection is ${how}` }];
   // A page of a scope read on demand (`?assignee=&after=`) is a cursor, not a state to come back to: only a read with no query is kept.
-  const remembers = lastKnown !== undefined && connection.kind === "ssh" && request.method === "GET" && !request.path.includes("?") && !NEVER_KEPT.has(pathname);
+  const remembers = lastKnown !== undefined && connection.kind === "ssh" && request.method === "GET" && !request.path.includes("?") && !NEVER_KEPT.has(pathname) && !RUN_READ.test(pathname);
   const identity = connection.kind === "ssh" ? connection.ssh : "";
   /** The 502 for a connection that cannot be reached: its sentence, and the last good answer to this path when one was kept. */
   const cannotReach = (error: string): [number, unknown] => {
