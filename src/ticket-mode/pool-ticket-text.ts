@@ -61,12 +61,18 @@ export function planStepSection(ctx: PoolContext, key: string, step: number): st
   return null;
 }
 
+/** How the words for a plan the board could not read begin: `isPlanUnreadable` tells them from a plan's decisions (A11-290). */
+const PLAN_UNREADABLE_START = "The board could not read this ticket's plan";
+
+/** Whether `text` is the reviewer's words for a plan the board could not read, and not a plan's decisions. */
+export const isPlanUnreadable = (text: string): boolean => text.startsWith(PLAN_UNREADABLE_START);
+
 /**
  * What the reviewer is told when the board could not read a ticket's plan (A11-257). A plan it cannot read may hold decisions that bind the reviewer, and silence would read as a plan with none, so the reviewer is told, and does not
  * request changes on a point the plan may have decided.
  */
 export const planUnreadableWords = (why: string): string =>
-  `The board could not read this ticket's plan (${why}), so the plan's decisions are not given to you here. A point the plan may have decided is not yours to request changes on: write a "Note (not a finding)" about it and approve on that point.`;
+  `${PLAN_UNREADABLE_START} (${why}), so the plan's decisions are not given to you here. A point the plan may have decided is not yours to request changes on: write a "Note (not a finding)" about it and approve on that point.`;
 
 /**
  * The decisions the plan files of ticket `key` record (A11-257), quoted as the plan words them, or null when this machine names no plan, no plan file is there, or none records a decision. Reads the folder and downloads nothing, as

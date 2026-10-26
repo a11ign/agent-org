@@ -70,7 +70,8 @@ interface Review { when: string; state: string; commit: string; body: string | n
 const reviewAt = (commit: string, state: string, when: string, body: string | null = `${openerAt(commit)}\n\nbody`): Review =>
   ({ commit, state, when, body });
 
-interface Run { status: number | null; calls: string[]; stderr: string }
+/** `kept` is the copy of the verdict file the door leaves beside it when it refuses (A11-290), or null when it left none. */
+interface Run { status: number | null; calls: string[]; stderr: string; kept: string | null }
 interface Scenario {
   head: string;
   reviews?: Review[];
@@ -133,7 +134,8 @@ esac
     delete env.GH_REPO;
     const run = spawnSync("bash", [DOOR, "7", scenario.verdict ?? "convinced", join(dir, "verdict.md")], { env, encoding: "utf8" });
     const log = join(dir, "log");
-    return { status: run.status, calls: existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [], stderr: run.stderr };
+    const kept = join(dir, "refused-verdict.md");
+    return { status: run.status, calls: existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [], stderr: run.stderr, kept: existsSync(kept) ? readFileSync(kept, "utf8") : null };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -590,4 +592,22 @@ test("514 cost: the common paths read no account; only a named, same-state-diffe
   assert.deepEqual(READ_ACCOUNT(runDoor({ head: FIRST }).calls), [], "no review at all");
   assert.deepEqual(READ_ACCOUNT(runDoor({ head: NEW_WORK, reviews: [blockAt(FIRST)], body: NAMES_BY_ID }).calls), [], "a block at a DIFFERENT patch");
   assert.equal(READ_ACCOUNT(runDoor({ head: FIRST, reviews: [blockAt(FIRST)], body: NAMES_BY_ID }).calls).length, 1);
+});
+
+// --- A11-290: A REFUSED RE-REVIEW IS NOT LOST ----------------------------------------------------------------------------------------------------
+//
+// A re-review that stays not convinced at an unchanged head is refused here, and its reasons used to exist only in the reviewer's pane. The door keeps a copy of the file it refuses, which the board reads, logs and comments.
+
+test("A11-290: a re-review refused for an equal patch leaves a copy of its verdict file beside it, word for word, and says so", () => {
+  const { status, kept, stderr, calls } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(AFTER_MERGE_OF_MAIN, "CHANGES_REQUESTED", "2026-10-02T18:12:56Z")], verdict: "not-convinced", body: "The 200 KB limit is still exceeded: dist/app.js is 340 KB." });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.deepEqual(posted(calls), [], "the refusal still posts nothing");
+  assert.equal(kept, `${openerAt(AFTER_MERGE_OF_MAIN)}\n\nThe 200 KB limit is still exceeded: dist/app.js is 340 KB.\n`);
+  assert.match(stderr, /the refused verdict is kept at .*\/refused-verdict\.md; the board records its reasons on #7 and in the run's log/);
+});
+
+test("A11-290: CONTROL: a review that posts, and a refusal of another kind, leave no copy", () => {
+  assert.equal(runDoor({ head: AFTER_MERGE_OF_MAIN }).kept, null, "a first review posts and keeps nothing");
+  assert.equal(runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(FIRST, "CHANGES_REQUESTED", "2026-10-02T17:48:57Z")], failing: "compare" }).kept, null, "could-not-tell (exit 4) keeps nothing: the door is run again");
+  assert.equal(runDoor({ head: AFTER_MERGE_OF_MAIN, opener: "not a verdict line" }).kept, null, "a malformed call (exit 2) keeps nothing");
 });

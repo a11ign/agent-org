@@ -5,7 +5,7 @@
 // it opens anything (`runPlace`), so one listing finds it. A run herdr lists with a pane is ADOPTED: a `running` one carries on as it was, a `starting` one is marked running in the workspace herdr lists, and the ordinary
 // watch takes over (its outcome file is read, and a workspace with no agent still ends after two listings). An adopted pane is sent no key and no second start (A11-78): it is never in `startedHere`. Its only prompt is the
 // watch's resume of a run left idle at a prompt with no outcome (A11-279, `pool-resume.ts`). A run
-// herdr does not list, or lists with its pane gone, is LOST IN A RESTART, and goes back on the queue once when the board has no pull request on record for it (`loseInRestart`). `unknown` alone does not lose a run: it cannot tell a seat still
+// herdr does not list, or lists with its pane gone, is LOST IN A RESTART (unless it was `starting`, or `running` with no workspace yet: its agent never opened, so it is queued again as it was, `requeueOrLose`, A11-294), and goes back on the queue once when the board has no pull request on record for it (`loseInRestart`). `unknown` alone does not lose a run: it cannot tell a seat still
 // starting from an ended one (`herdr-agents.ts`), only a pane that is gone can, and the watch ends one that never shows an agent.
 //
 // A RUN ALREADY MARKED CRASHED WHOSE PANE IS WORKING IS TAKEN BACK on the next watch pass (`readoptCrashed`). Only `working` counts: an idle or done pane beside a crashed run may be a worker that has finished.
@@ -18,7 +18,7 @@ import { takeTicket } from "./pool-start.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { isLive, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { markPublishRunning, publishFailed, unpark } from "./queue/queue-transitions.ts";
-import { adoptCrashed, adoptStarting, loseInRestart } from "./queue/queue-readopt.ts";
+import { adoptCrashed, adoptStarting, loseInRestart, requeueStarting, agentNotOpened } from "./queue/queue-readopt.ts";
 import { joined, markWriterRunning, writerEnded } from "./queue.ts";
 
 /** Why a publish run or a new-ticket run herdr no longer has is failed. */
@@ -58,7 +58,7 @@ export function reconcile(ctx: PoolContext): void {
     seen.add(name);
     const members = runMembers(ctx, entry);
     const agent = withPane(name);
-    if (agent === undefined) loseRun(ctx, members, listed.get(name));
+    if (agent === undefined) requeueOrLose(ctx, members, listed.get(name));
     else if (entry.phase === "starting") adoptRun(ctx, members, agent);
   }
   for (const entry of store.get().entries.filter(isParked)) {
@@ -86,14 +86,16 @@ function takeBack(ctx: PoolContext, entry: Entry): void {
   void takeTicket(ctx, entry).catch((err) => log(`${entry.ticket.key}: its ticket could not be taken for the run adopted after a restart (${messageOf(err)})`));
 }
 
-/**
- * A run herdr does not list, or lists with its pane gone, is lost in the restart. A workspace herdr still lists with no pane is closed first, so the run queued again does not open a second under its name.
- * Every ticket of a batch's run is ended, and each is queued again by its own pull requests.
- */
-function loseRun(ctx: PoolContext, members: readonly Entry[], leftover: ListedAgent | undefined): void {
-  const { herdr, now, session } = ctx;
+/** A run herdr does not list (or lists with its pane gone): requeued as it was when none of its tickets had an agent open (A11-294), lost in the restart when one had (every ticket of a batch's run is ended, and each is queued again by its own pull requests). */
+function requeueOrLose(ctx: PoolContext, members: readonly Entry[], leftover: ListedAgent | undefined): void {
+  closeLeftover(ctx, leftover);
+  if (members.every(agentNotOpened)) updateEach(ctx, members, (queue, key) => requeueStarting(queue, key, ctx.now()));
+  else updateEach(ctx, members, (queue, key) => loseInRestart(queue, key, ctx.now()));
+}
+
+/** A workspace herdr still lists with no pane is closed first, so the run queued again does not open a second under its name. */
+function closeLeftover({ herdr, session }: PoolContext, leftover: ListedAgent | undefined): void {
   if (leftover?.workspace !== undefined) closedNote((args) => herdr(args), leftover.workspace, session);
-  updateEach(ctx, members, (queue, key) => loseInRestart(queue, key, now()));
 }
 
 /** A publish run caught `starting` is adopted when herdr lists its pane, and one herdr no longer has fails. */

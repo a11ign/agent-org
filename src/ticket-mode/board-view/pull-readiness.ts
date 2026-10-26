@@ -54,3 +54,19 @@ export function mergeWaitLine(entry: ViewEntry): string | null {
   });
   return waits.length === 0 ? null : waits.join(" · ");
 }
+
+/** Whether a finished run is one the board speaks of when its pull requests do not merge (A11-291): not a draft awaiting its Approve, whose pull request is not meant to merge yet. PURE. */
+export const speaksOfMerge = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.outcome?.kind !== "draft-pr";
+
+/** The open pull requests of the run whose head the watch has recorded as approved, green and not merging (`PullHead.notMerging`), with the head and the reason. PURE. */
+export function notMergingPulls(entry: ViewEntry): readonly Readonly<{ url: string; head: PullHead; why: string }>[] {
+  return openPulls(entry).flatMap(({ url }) => {
+    const head = entry.pullHeads?.[url];
+    return head?.notMerging === undefined ? [] : [{ url, head, why: head.notMerging }];
+  });
+}
+
+/**
+ * Whether every open pull request of the run is approved, green and not merging (A11-291): what its status reads "Approved, not merging" for. A run with one pull request that merges nothing and another that still waits for its review is waiting, and says so. PURE.
+ */
+export const isNotMerging = (entry: ViewEntry): boolean => speaksOfMerge(entry) && notMergingPulls(entry).length > 0 && notMergingPulls(entry).length === openPulls(entry).length;

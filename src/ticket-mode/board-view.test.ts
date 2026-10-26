@@ -326,7 +326,7 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "talking", "working", "waiting", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "publishing", "published", "checked", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "talking", "working", "waiting", "planning", "reviewing", "blocked", "queued", "awaiting-review", "not-merging", "ready-to-merge", "publishing", "published", "checked", "completed", "failed", "cancelled"]);
 });
 
 const blocker = (key: string, state: string, status = state) => ({ key, state, status });

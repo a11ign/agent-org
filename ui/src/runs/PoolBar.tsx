@@ -6,10 +6,17 @@ import { poolOf, poolWords } from "./runs-model.ts";
 import { useFlakes } from "./use-flakes.ts";
 import { useHealth } from "./use-health.ts";
 
-/** The health number (A11-257): today's person-interventions, with the last 7 days, each as its date and count, in the title. Nothing while the number is unread or its read failed. */
+/** A day of the title: its date and count, and the stand-offs the board settled with no person that day when it settled any (A11-290). */
+const dayLine = ({ date, total, standoffs }: InterventionsView["days"][number]): string => (standoffs > 0 ? `${date}: ${total} (${standoffs} stand-offs settled with no person)` : `${date}: ${total}`);
+
+/**
+ * The health number (A11-257): today's person-interventions, with the last 7 days, each as its date and count, in the title. When the board settled stand-offs with no person today (a re-review that stayed not convinced, settled by the planner and the worker, A11-290),
+ * the words say so after the number, so the chairman sees that route work. Nothing while the number is unread or its read failed.
+ */
 function HealthNumber({ health }: Readonly<{ health: InterventionsView | null }>) {
   if (health === null) return null;
-  return <span className="pool-note pool-health" title={health.days.map(({ date, total }) => `${date}: ${total}`).join("\n")}>Person interventions today: {health.today}</span>;
+  const settled = health.days.at(-1)?.standoffs ?? 0;
+  return <span className="pool-note pool-health" title={health.days.map(dayLine).join("\n")}>Person interventions today: {health.today}{settled > 0 ? `, stand-offs settled with no person: ${settled}` : ""}</span>;
 }
 
 /** The tests that need a fix (A11-300): how many flaked three times in seven days, each named with its count in the title. Nothing while the list is unread, and nothing while no test needs a fix. */

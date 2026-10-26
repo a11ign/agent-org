@@ -12,7 +12,7 @@ const ACTION_SIZE = 14;
 /** The colour class of each status's icon and label: the boards' (In progress, Planning, Ready to merge, Completed, and the Run detail boards' Queued, Awaiting review, Cancelled and Failed) or `ui.html`'s mapped to them. */
 export const STATUS_TONE: Readonly<Record<RunStatus, string>> = {
   "needs-you": "tone-warn", talking: "tone-planning", working: "tone-warn", waiting: "tone-quiet", planning: "tone-planning", reviewing: "tone-warn", blocked: "tone-quiet", queued: "tone-quiet",
-  "awaiting-review": "tone-planning", "ready-to-merge": "tone-success", publishing: "tone-warn", published: "tone-published", checked: "tone-success", completed: "tone-success", failed: "tone-danger", cancelled: "tone-muted",
+  "awaiting-review": "tone-planning", "not-merging": "tone-warn", "ready-to-merge": "tone-success", publishing: "tone-warn", published: "tone-published", checked: "tone-success", completed: "tone-success", failed: "tone-danger", cancelled: "tone-muted",
 };
 
 /** The board's spinner: a ring in the status colour with its track, turning (`.spin` stops for reduced motion). */
@@ -27,6 +27,16 @@ function Spinner({ track }: Readonly<{ track: string }>) {
 
 /** The ring of Queued, which Waiting takes as well (A11-272): a run parked on a wait has nothing at work in it, so its icon does not turn, and no new design is made for it. */
 const RING = <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" />;
+
+/** The pull request icon of Awaiting review, which Approved, not merging takes as well (A11-291): the same pull request waits, and no new design is made for it. */
+const PULL_REQUEST = (
+  <>
+    <circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </>
+);
 
 /** The 16-unit icons `ui.html` draws for a status, in `currentColor`. */
 const OWN_SHAPES: Partial<Record<RunStatus, ReactNode>> = {
@@ -46,14 +56,8 @@ const OWN_SHAPES: Partial<Record<RunStatus, ReactNode>> = {
       <circle cx="8" cy="11.6" r="1" fill="var(--color-page)" />
     </>
   ),
-  "awaiting-review": (
-    <>
-      <circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      <circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      <circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </>
-  ),
+  "awaiting-review": PULL_REQUEST,
+  "not-merging": PULL_REQUEST,
   checked: (
     <>
       <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" />

@@ -18,8 +18,8 @@ function answering(pull: unknown) {
 }
 
 const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
-  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], head = undefined as string | undefined, reviewDecision = undefined as string | null | undefined, body = undefined as string | undefined } = {}) => ({
-  state, headRefOid: head, reviewDecision, body, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], head = undefined as string | undefined, reviewDecision = undefined as string | null | undefined, body = undefined as string | undefined, autoMergeRequest = undefined as { enabledAt: string } | null | undefined } = {}) => ({
+  state, headRefOid: head, reviewDecision, body, autoMergeRequest, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
   reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
 });
@@ -190,4 +190,14 @@ test("A11-179: the pull request's body is read, for the `Blocked-by:` line that 
   const read = (body: string | undefined) => readPullFeedback(URL, "me", answering(pullWith({ body })).run);
   assert.equal(read("Refs A11-179\n\nBlocked-by: A11-127")?.body, "Refs A11-179\n\nBlocked-by: A11-127");
   assert.equal(read(undefined)?.body, "", "a body GitHub does not give is empty");
+});
+
+test("A11-291: `armed` says whether auto-merge is on for the pull request, and is left out when the answer does not carry the field", () => {
+  const armedOf = (autoMergeRequest: { enabledAt: string } | null | undefined) => readPullFeedback(URL, "worker-bot", answering(pullWith({ autoMergeRequest })).run);
+  assert.equal(armedOf({ enabledAt: at(5) })?.armed, true, "auto-merge is enabled");
+  assert.equal(armedOf(null)?.armed, false, "GitHub answers null for a pull request with auto-merge off");
+  assert.equal(Object.hasOwn(armedOf(undefined) ?? {}, "armed"), false, "an answer without the field is the host not saying, which is not 'off'");
+  const { run, calls } = answering(pullWith({ autoMergeRequest: null }));
+  readPullFeedback(URL, "worker-bot", run);
+  assert.match(calls[0].join(" "), /autoMergeRequest \{ enabledAt \}/, "the query asks for it");
 });

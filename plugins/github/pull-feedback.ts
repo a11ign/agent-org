@@ -25,6 +25,7 @@ const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repositor
   mergeStateStatus
   baseRefName
   mergeQueueEntry { state }
+  autoMergeRequest { enabledAt }
   timelineItems(last: ${QUEUE_WINDOW}, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) { nodes {
     __typename
     ... on RemovedFromMergeQueueEvent { createdAt reason actor { login } beforeCommit { oid } }
@@ -252,6 +253,8 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
     failedAt: newest(failing.map(({ at }) => at)),
     conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
     behind: pr.mergeStateStatus === "BEHIND",
+    // Absent when the answer carries no `autoMergeRequest` at all: that is "the host did not say", and a pull request with auto-merge off has the field as null.
+    ...(pr.autoMergeRequest === undefined ? {} : { armed: pr.autoMergeRequest !== null }),
     mergeable: pr.mergeable === "MERGEABLE",
     head,
     approvedAtHead: head !== null && verdictAt(pr.reviews?.nodes ?? [], head, others) === "approved",

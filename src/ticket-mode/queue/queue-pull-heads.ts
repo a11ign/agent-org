@@ -7,6 +7,7 @@ import { isStaleBlockNote } from "../board-view/stale-block.ts";
 import type { PullHead } from "../board-view/view-types-and-filters.ts";
 import { find, replace, type Queue } from "./queue-entries-and-outcomes.ts";
 import { logEvent, logOf, shortReason, type RunEvent } from "./run-log.ts";
+import { settleStandoff } from "./queue-standoff.ts";
 
 /** Record the commit each open pull request of a finished run was at when it ended, by URL (A11-153). Kept on top of what is there, so a URL not read keeps its head. */
 export function recordOutcomeHeads(queue: Queue, key: string, heads: Readonly<Record<string, string>>): Queue {
@@ -34,10 +35,12 @@ export function recordPullHeads(queue: Queue, key: string, heads: Readonly<Recor
   const recorded = replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, pullHeads: heads } : entry));
   if (find(queue, key)?.phase !== "finished") return recorded;
   // A verdict is logged when a pull request's head or its review differs from the last one logged for it (A11-219): the watch reads the same heads on every pass.
-  return Object.entries(heads).reduce<Queue>((next, [url, { head, review }]) => {
+  const logged = Object.entries(heads).reduce<Queue>((next, [url, { head, review }]) => {
     const verdict = review === "approved" || review === "changes-requested" ? review : null;
     return verdict === null || sameVerdict(lastVerdict(next, key, url), head, verdict) ? next : logEvent(next, key, now, { kind: "verdict", url, head, review: verdict });
   }, recorded);
+  // A stand-off whose pull request moved to another head, or was approved, ended with no person (A11-290).
+  return settleStandoff(logged, key, now);
 }
 
 /** The newest verdict logged for pull request `url` of ticket `key`, or undefined when none was. */

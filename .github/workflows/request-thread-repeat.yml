@@ -1,0 +1,78 @@
+name: request-thread-repeat
+
+# THE REQUEST-THREAD LOAD TEST, RUN 50 TIMES (A11-297). `request-thread-load.test.ts` once asserted a wall-clock p99 and failed on shared runners, and each failure took an approved pull request out of the
+# merge queue. It now proves by order that a read is answered while the board thread is held (the stand-in `gh` returns only when the test opens its gate), with no percentile. This workflow is the check that
+# it stays so: it runs the file 50 times in a row and fails if any run fails.
+#
+# IT IS A WORKFLOW OF ITS OWN, NOT A JOB OF `ci.yml`, so it can carry what `ci.yml` cannot: a workflow-level `paths:` filter (in `ci.yml` one would skip `gate` with the workflow, and a skipped required check
+# counts as passing; see the `release-dry-run` header there), and a `concurrency` group per pull request that cancels the run a newer push makes stale. It runs only on a pull request that touches the test,
+# the load script it starts the instance from, or the request path (the two threads and what they exchange and answer), never in the merge queue and never on `main`: `gate` does not need it, and
+# the suite there has run the file once. A draft is not run (50 runs of an instance cost minutes), and `ready_for_review` runs it when the draft is marked ready, so `ci.yml`'s own triggers stay as they are.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - src/ticket-mode/request-thread-load.test.ts
+      - scripts/loop-load.ts
+      - src/ticket-mode/request-thread.ts
+      - src/ticket-mode/board-thread.ts
+      - src/ticket-mode/thread-messages.ts
+      - src/ticket-mode/read-routes.ts
+      - src/ticket-mode/health-route.ts
+      - .github/workflows/request-thread-repeat.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: request-thread-repeat-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  npm_config_fetch_retries: 5
+  REPEATS: 50
+
+jobs:
+  request-thread-repeat:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      # The fixture project and the install are `ci.yml`'s `suite`, step for step: the test starts this checkout's `ticket:serve`, which reads a host declaration.
+      - name: The fixture project the test runs against, and the host declaration that names it
+        run: |
+          project="$RUNNER_TEMP/project"
+          mkdir "$project"
+          cp -r src/packaging/fixtures/project-tree/. "$project"
+          sed -i "s|@@PROJECT@@|$project|" "$project/.agent-org/host.json"
+          git -C "$project" init -q
+          git -C "$project" add -A
+          git -C "$project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m "the fixture project"
+          echo "AGENT_ORG_HOST=$project/.agent-org/host.json" >> "$GITHUB_ENV"
+      - name: Install the tool's dependencies
+        run: |
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0"
+          BINDING=$(node -p "require('./node_modules/@rspack/binding/package.json').version")
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0" "@rspack/binding-linux-x64-gnu@$BINDING"
+      # A run that fails does not stop the loop, so the log shows how many of the 50 failed and which; the step fails if any did.
+      - name: The load test, 50 times in a row (REPEATS)
+        run: |
+          failed=()
+          for run in $(seq 1 "$REPEATS"); do
+            if node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/request-thread-load.test.ts > "$RUNNER_TEMP/run-$run.log" 2>&1; then
+              echo "run $run of $REPEATS: green"
+            else
+              echo "run $run of $REPEATS: RED"
+              cat "$RUNNER_TEMP/run-$run.log"
+              failed+=("$run")
+            fi
+          done
+          echo "green: $((REPEATS - ${#failed[@]})) of $REPEATS"
+          [ "${#failed[@]}" -eq 0 ] || { echo "::error::red runs: ${failed[*]}"; exit 1; }

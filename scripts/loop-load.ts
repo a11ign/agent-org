@@ -61,14 +61,24 @@ function freePort(): Promise<number> {
 
 const sleep = (ms: number): Promise<void> => new Promise((done) => { setTimeout(done, ms); });
 
-/** A stand-in that appends its arguments to `log`, and for `gh` sleeps first and answers `[]`. */
-function standIn(program: string, log: string): string {
-  const answer = program === "gh" ? `sleep ${GH_SECONDS}\necho '[]'\n` : "";
+/** The longest a gated stand-in `gh` waits for its gate, in 50 ms polls (5 minutes): past any test's own timeout, so it never returns on its own while a test runs, and a test that dies without opening the gate still leaves no `gh` behind for long. */
+const GATE_POLLS = 6_000;
+
+/**
+ * How the stand-in `gh` holds the board thread: `"sleep"` for GH_SECONDS, as the script's timed run does, or `"gate"` until the file `gate` exists, which is how a test holds it
+ * for exactly as long as it reads and so measures nothing with a clock.
+ */
+export type GhHold = Readonly<{ kind: "sleep" }> | Readonly<{ kind: "gate"; gate: string; doneLog: string }>;
+
+/** A stand-in that appends its arguments to `log`, and for `gh` holds as `hold` says and answers `[]`. A gated `gh` also appends its arguments to `hold.doneLog` when it returns. */
+function standIn(program: string, log: string, hold: GhHold): string {
+  const waits = hold.kind === "gate" ? `i=0\nwhile [ ! -e '${hold.gate}' ] && [ "$i" -lt ${GATE_POLLS} ]; do sleep 0.05; i=$((i + 1)); done\necho "$*" >> '${hold.doneLog}'\n` : `sleep ${GH_SECONDS}\n`;
+  const answer = program === "gh" ? `${waits}echo '[]'\n` : "";
   return `#!/bin/sh\n# loop-load's throwaway ${program}: it logs its arguments and reaches nothing.\necho "$*" >> '${log}'\n${answer}exit 0\n`;
 }
 
 /** The throwaway host file, board key and stand-ins in `dir`, and the environment the instance runs in. */
-function throwaway(dir: string, port: number, uiPort: number): Readonly<{ env: NodeJS.ProcessEnv; ghLog: string }> {
+function throwaway(dir: string, port: number, uiPort: number, hold: GhHold): Readonly<{ env: NodeJS.ProcessEnv; ghLog: string }> {
   const stateDir = join(dir, "state");
   const stub = join(dir, "stub");
   mkdirSync(join(stateDir, "tickets"), { recursive: true });
@@ -78,7 +88,7 @@ function throwaway(dir: string, port: number, uiPort: number): Readonly<{ env: N
   writeFileSync(hostPath, JSON.stringify(host), { mode: 0o600 });
   writeFileSync(join(dir, "linear-key"), "placeholder\n", { mode: 0o600 });
   writeFileSync(join(stateDir, "tickets", "board.key"), `${BOARD_KEY}\n`, { mode: 0o600 });
-  for (const program of ["gh", "tailscale"]) writeFileSync(join(stub, program), standIn(program, join(dir, `${program}.log`)));
+  for (const program of ["gh", "tailscale"]) writeFileSync(join(stub, program), standIn(program, join(dir, `${program}.log`), hold));
   writeFileSync(join(stub, "herdr"), HERDR_STUB.replace("#!/bin/sh\n", `#!/bin/sh\necho "$*" >> '${join(dir, "herdr.log")}'\n`));
   for (const program of ["gh", "tailscale", "herdr"]) chmodSync(join(stub, program), 0o755);
   const env = { ...process.env, [HOST_FILE_ENV]: hostPath, XDG_CONFIG_HOME: join(dir, "xdg"), PATH: `${stub}${delimiter}${process.env.PATH ?? ""}`,
@@ -120,17 +130,26 @@ type RouteTimes = Readonly<{ route: string; p50Ms: number; p99Ms: number; maxMs:
 export type Health = RequestHealthView | HealthView;
 type Result = Readonly<{ routes: readonly RouteTimes[]; health: Health | null; rounds: number; ghCalls: number; pass: boolean }>;
 
-/** A throwaway instance of this checkout, answering on `port` to `key`: its environment (whose `AGENT_ORG_HOST` names its host file), the stand-in `gh`'s log, and how to stop it. */
-export type Throwaway = Readonly<{ port: number; key: string; env: NodeJS.ProcessEnv; ghLog: string; stop: () => void }>;
+/**
+ * A throwaway instance of this checkout, answering on `port` to `key`: its environment (whose `AGENT_ORG_HOST` names its host file), the stand-in `gh`'s log, the log of the calls
+ * that have returned (a gated `gh` only; empty file or none while every call is held), how to open the gate (a no-op for a `gh` that sleeps) and how to stop it.
+ */
+export type Throwaway = Readonly<{ port: number; key: string; env: NodeJS.ProcessEnv; ghLog: string; ghDoneLog: string; releaseGh: () => void; stop: () => void }>;
 
-/** Starts this checkout's `ticket:serve` from a throwaway host in `dir`, and resolves once it answers. Throws with its stderr when it exits first. */
-export async function startThrowawayInstance(dir: string): Promise<Throwaway> {
+/**
+ * Starts this checkout's `ticket:serve` from a throwaway host in `dir`, and resolves once it answers. Throws with its stderr when it exits first. `gated` makes every `gh` call
+ * wait until `releaseGh()`, so the board thread stays held for as long as the caller likes and no clock is involved; stopping the instance opens the gate too.
+ */
+export async function startThrowawayInstance(dir: string, { gated = false }: Readonly<{ gated?: boolean }> = {}): Promise<Throwaway> {
   const [port, uiPort] = [await freePort(), await freePort()];
-  const { env, ghLog } = throwaway(dir, port, uiPort);
+  const gate = join(dir, "gh.gate");
+  const ghDoneLog = join(dir, "gh.done.log");
+  const { env, ghLog } = throwaway(dir, port, uiPort, gated ? { kind: "gate", gate, doneLog: ghDoneLog } : { kind: "sleep" });
+  const releaseGh = () => { if (gated) writeFileSync(gate, ""); };
   const instance: ChildProcess = spawn(process.execPath, [join(CHECKOUT, "src", "bin.ts"), "ticket:serve"], { env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   instance.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-  const stop = () => { instance.kill("SIGTERM"); };
+  const stop = () => { releaseGh(); instance.kill("SIGTERM"); };
   try {
     await waitFor("the instance answering", async () => (await timedRead(port, "/api/queue")).status === 200 || instance.exitCode !== null);
   } catch (err) {
@@ -138,7 +157,7 @@ export async function startThrowawayInstance(dir: string): Promise<Throwaway> {
     throw err;
   }
   if (instance.exitCode !== null) throw new Error(`the instance exited ${instance.exitCode}: ${stderr.trim()}`);
-  return { port, key: BOARD_KEY, env, ghLog, stop };
+  return { port, key: BOARD_KEY, env, ghLog, ghDoneLog, releaseGh, stop };
 }
 
 /** How many rounds `readRounds` makes, and for how long it starts them: ROUNDS and READS_FOR_MS unless a test asks for fewer. */

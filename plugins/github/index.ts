@@ -11,6 +11,7 @@ import type { PluginCheck, PluginDeps, PluginSettings } from "../../src/plugins/
 import { stackChecks } from "./checks.ts";
 import { createCodeHost } from "./code-host.ts";
 import { wrapperChecks } from "./identity-checks.ts";
+import { mergeFlowChecks } from "./merge-flow-checks.ts";
 import { ONBOARD_STEPS } from "./onboard.ts";
 
 /** The GitHub code host: it reads nothing until asked, so a host with no `gh` still starts, and doctor says what is missing. */
@@ -18,9 +19,9 @@ export const create = (_settings: PluginSettings, deps: PluginDeps): CodeHost =>
 
 /**
  * The rows doctor shows for the plugin: the installed `gh` wrapper, the roles it routes to Apps and each App's token, then the stacking extension for the workers' account and whether GitHub makes
- * stacked pull requests available.
+ * stacked pull requests available, then whether every repository of the host has a merge flow (A11-291).
  */
-export const doctorChecks = async (settings: PluginSettings, deps: PluginDeps): Promise<readonly PluginCheck[]> => [...await wrapperChecks(settings, deps), ...stackChecks(settings, deps)];
+export const doctorChecks = async (settings: PluginSettings, deps: PluginDeps): Promise<readonly PluginCheck[]> => [...await wrapperChecks(settings, deps), ...stackChecks(settings, deps), ...mergeFlowChecks(settings, deps)];
 
 export const onboardSteps = ONBOARD_STEPS;
 

@@ -395,6 +395,14 @@ test("a verdict file is found by what it says, in the checkout or one folder dow
   assert.equal(verdictFileIn(join(tree, "missing"), 7, H1), null, "none in a checkout that is not there");
 });
 
+test("A11-290: the copy the door keeps of a refused verdict is found where the reviewer's own file is, so the result survives the reviewer deleting its file", async () => {
+  await loadReviewerGate();
+  const tree = tmpDir("reviewer-refused-");
+  const text = `${verdictLine(H1, "not convinced")}\n\nThe limit is still exceeded.\n`;
+  writeFileSync(join(tree, "refused-verdict.md"), text);
+  assert.equal(verdictFileIn(tree, 7, H1), join(tree, "refused-verdict.md"), "the reviewer deleted verdict.md; the door's copy is what is left");
+});
+
 test("a verdict file is posted again through the door: the token is minted first, and the door is given the word the file opens with", async () => {
   await loadReviewerGate();
   const { tree, file } = verdictTree("reviewer-repost-", `${verdictLine(H1, "not convinced")}\n\nfindings\n`);

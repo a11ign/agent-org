@@ -140,21 +140,23 @@ export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, u
 /**
  * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156, A11-235), in this order: what this is and what changed since the review (the description, the ticket's Decisions, a reply, or any of them) with the
  * instruction to review the whole diff again, the description's changed lines, the lines of the ticket's Decisions that changed (A11-250), the replies since the review, the claims of a person's decision the ticket does not record, the ticket's decisions and the rule that they come first (A11-213), the plan's decisions and the order of authority (A11-257), the ticket's Done-when (or the plan step), the CI cost rule (A11-261), the rule for a Before-merge line no branch can meet (A11-275),
- * the post-merge rule, and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure.
+ * the post-merge rule, and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure; the door keeps the refused verdict file, and the board records it (A11-290).
  */
-export function rereviewWords({ number, head, pr, roleFile, replies, body, decided, unsupported, doneWhen, decisions, planDecisions, escalation, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decided?: readonly ReviewBodyLine[]; unsupported?: readonly string[]; doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
+export function rereviewWords({ number, head, pr, roleFile, replies, body, decided, planChanged, unsupported, doneWhen, decisions, planDecisions, escalation, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decided?: readonly ReviewBodyLine[]; planChanged?: readonly ReviewBodyLine[]; unsupported?: readonly string[]; doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
   const head8 = head.slice(0, 8);
   // The verdict door finds the standing review by this spelling, with the backtick before the commit (`names_review` in pr-review-verdict.sh): without it the approval is refused.
   const standing = `Review of #${number} at \`${head8}\``;
   const edited = body !== undefined && body.length > 0;
   const decisionsChanged = decided !== undefined && decided.length > 0;
+  const planAmended = planChanged !== undefined && planChanged.length > 0;
   // What answered the review since: the description, the ticket's Decisions, a reply, or any of them together.
-  const answers = [...(edited ? ["the pull request's description has been edited"] : []), ...(decisionsChanged ? ["the ticket's Decisions have changed"] : []), ...(replies.length > 0 ? ["a reply has been posted to it"] : [])];
+  const answers = [...(edited ? ["the pull request's description has been edited"] : []), ...(decisionsChanged ? ["the ticket's Decisions have changed"] : []), ...(planAmended ? ["the planner amended a decision of the plan"] : []), ...(replies.length > 0 ? ["a reply has been posted to it"] : [])];
   return [
     `This is a re-review of #${number} (${pr}) at \`${head8}\`. The head has no new commit since your \`not convinced\` review, "${standing}"; since that review ${answers.join(" and ")}, and the head is yours to read once more with the answer. `
     + "Review the whole diff again, not only the answer: check that the answer settles your finding, and that the rest of the diff still meets the contract below.",
     ...(edited ? [`The description's lines that changed since your last review ("-" is a line it no longer has, "+" a line it now has):\n\n${bodyLines(body)}`] : []),
     ...(decisionsChanged ? [`The ticket's Decisions changed since your review ("-" is a line it no longer has, "+" a line it now has):\n\n${bodyLines(decided)}`] : []),
+    ...(planAmended ? [`The plan's decisions changed since your review, by the planner's amendment ("-" is a line it no longer has, "+" a line it now has). You are bound by the amended decision, as by any decision of the plan:\n\n${bodyLines(planChanged)}`] : []),
     ...(replies.length > 0 ? [`The replies posted since that review:\n\n${replies.map(replyLine).join("\n")}`] : []),
     ...(unsupportedWords(unsupported) === "" ? [] : [unsupportedWords(unsupported)]),
     afterGateWords({ doneWhen, ...(decisions === undefined ? {} : { decisions }), ...(planDecisions === undefined ? {} : { planDecisions }), ...(escalation === undefined ? {} : { escalation }), ...(step === undefined ? {} : { step }) }, unrequiredRed),
@@ -162,6 +164,7 @@ export function rereviewWords({ number, head, pr, roleFile, replies, body, decid
     POST_MERGE_RULE,
     `Review it per ${roleFile} and post the verdict as it says, with this difference. A \`convinced\` verdict is an approval whose body names the standing review on a line after the verdict line: `
     + `"Corrects review: ${standing}", with the backticks as written. That is the one second review the verdict door accepts at this patch. A \`not convinced\` verdict is refused by the door at this patch (exit 3), and that refusal is `
-    + "the expected end: the standing review stays as it is, and you post nothing more.",
+    + "the expected end: the standing review stays as it is, and you post nothing more. The refusal does not lose your verdict. The door keeps a copy of your verdict file beside it, and the board reads it: it records your reasons on the pull request and in the run's log, "
+    + "and sends the stand-off to the planner or the worker, who must meet them. So write every reason you still hold in the verdict file, each one concrete enough to act on, and leave the file where it is: do not delete it.",
   ].join("\n\n");
 }

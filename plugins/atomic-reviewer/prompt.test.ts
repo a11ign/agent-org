@@ -248,3 +248,17 @@ test("A11-249: a first review and a reprompt with closed work in the brief carry
   assert.equal(closedWorkWords(undefined), "");
   assert.match(closedWorkWords("x".repeat(20000)), /\[cut: 4000 more characters on the pull request\]/, "a long list is cut and says so");
 });
+
+test("A11-290: a re-review is told its refused `not convinced` is recorded from its verdict file, so it keeps the file and writes every reason in it", () => {
+  const words = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies: [{ author: "w", url: "u#c", text: "Disputes a decision: the limit." }], doneWhen: null });
+  assert.match(words, /The refusal does not lose your verdict\. The door keeps a copy of your verdict file beside it, and the board reads it/);
+  assert.match(words, /leave the file where it is: do not delete it/);
+});
+
+test("A11-290: a planner's amendment of a decision is an answer: the re-review is told which lines of the plan's decisions changed, and is bound by the amended decision", () => {
+  const words = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies: [], doneWhen: null, planChanged: [{ kind: "removed", text: "- The bundle stays under 200 KB." }, { kind: "added", text: "- The bundle stays under 400 KB." }], planDecisions: "- The bundle stays under 400 KB." });
+  assert.match(words, /since that review the planner amended a decision of the plan, and the head is yours to read once more/);
+  assert.match(words, /The plan's decisions changed since your review, by the planner's amendment \("-" is a line it no longer has, "\+" a line it now has\)\. You are bound by the amended decision/);
+  assert.match(words, /- - The bundle stays under 200 KB\.\n\+ - The bundle stays under 400 KB\./);
+  assert.ok(words.indexOf("by the planner's amendment") < words.indexOf("The plan's decisions, as the board read them"), "the change is told before the decisions themselves");
+});

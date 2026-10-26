@@ -30,6 +30,7 @@
 #           body opens `**Review of #<n> at ` and whose commit is the head or has the head's patch id; a review that opens any other way, such
 #           as a code owner's scoped approval, is not counted (a11ign#3087). Nothing was posted, and the
 #           message names the review that stands. A refusal that is wrong goes to `product-manager`, never to a second review.
+#           THE REFUSED VERDICT FILE IS KEPT (A11-290): a copy named `refused-<file>` is left beside it, which the board reads, logs and comments on the pull request, so a re-review that stays not convinced is never lost.
 #           A CHANGES_REQUESTED posted while a check run failed at its commit, when none fails at the head, does not stand (a11ign#3199).
 #           EXACTLY ONE THING SUPERSEDES A STANDING REVIEW (agent-org#514, ceo's ruling on a11ign#4558): an APPROVE, over a standing
 #           CHANGES_REQUESTED that this same account posted, whose body NAMES that review on a line after the verdict line (its id, or
@@ -324,6 +325,21 @@ supersedes_block() {
   return 1
 }
 
+# THE REFUSED VERDICT IS KEPT, NOT LOST (A11-290). A re-review that stays not convinced at an unchanged head is refused here (exit 3), and its reasons used to exist only in the reviewer's pane: the reviewer deleted its file, the board logged
+# nothing, and thirty minutes later a card asked a person to decide. The door keeps a copy of the file it refuses, beside the original, as `refused-<name>`; its first line is the same verdict line, so the board finds it where it finds the reviewer's
+# own file, reads it once the re-review's reviewer has ended, logs it on the run, comments it on the pull request, and routes the stand-off. Best effort, and it never changes the refusal. A file that is already a kept copy is not copied again.
+keep_refused_verdict() {
+  local base kept
+  base="$(basename "$file")"
+  [[ "$base" != refused-* ]] || return 0
+  kept="$(dirname "$file")/refused-$base"
+  if cp -- "$file" "$kept" 2>/dev/null; then
+    echo "pr-review-verdict: the refused verdict is kept at $kept; the board records its reasons on #$n and in the run's log (A11-290)." >&2
+  else
+    echo "pr-review-verdict: could not keep a copy of the refused verdict at $kept; its reasons are in '$file' only (A11-290)." >&2
+  fi
+}
+
 refuse_second_review() {
   local reviews lapsed when state user commit url kind rid pid differing=" "
   # ONLY A REVIEW THE DOOR COULD HAVE POSTED: one of the two states it posts, AND a body that opens as a verdict (the same opener the
@@ -365,6 +381,7 @@ refuse_second_review() {
          "head ${PR_HEAD:0:8}). A second review at one patch is refused; the one exception is an APPROVE that names this account's" \
          "own standing CHANGES_REQUESTED.$SUPERSEDE_HINT If this refusal is wrong, escalate to" \
          "product-manager rather than posting again." >&2
+    keep_refused_verdict
     exit "$EXIT_SECOND_REVIEW"
   done <<<"$reviews"
 }
