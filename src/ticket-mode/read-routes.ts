@@ -57,8 +57,8 @@ export function readChoice(path: string): SavedChoice {
 /** The version this instance runs, the breaking update that drains, if one does (A11-169), and the version an update is moving to while it moves (A11-217). */
 export type UpdateView = Readonly<{ version: string | null; note: UpdateNote | null; next: string | null }>;
 
-/** What a read takes from the pool: why runs are held, the pull requests' review lines, the review claims' warning and the reviewer's state. A board with no pool reads none. */
-export type ReadPool = Partial<Pick<Pool, "held" | "pullReviews" | "claimWarning" | "reviewerState">>;
+/** What a read takes from the pool: why runs are held, what is wrong with the host, the pull requests' review lines, the review claims' warning and the reviewer's state. A board with no pool reads none. */
+export type ReadPool = Partial<Pick<Pool, "held" | "hostAlerts" | "pullReviews" | "claimWarning" | "reviewerState">>;
 
 /** The files the reads open: the host file (`AGENT_ORG_HOST`'s when unset), the queue, the saved choice and the Claude Code plugins' install record (the machine's own when unset). */
 export type ReadPaths = Readonly<{ hostPath?: string; queuePath: string; choicePath: string; pluginRecord?: string }>;

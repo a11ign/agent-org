@@ -14,6 +14,7 @@ import type { Publisher } from "../plugins/contracts/publisher.ts";
 import type { Reviewer } from "../plugins/contracts/reviewer.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
+import { newHostAlertState, type HostAlertReads, type HostAlertState } from "./host-alerts.ts";
 import { defaultGit, type Git } from "./worktree.ts";
 import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type DrainStore } from "./pool-drain.ts";
@@ -92,6 +93,8 @@ export type PoolDeps = Readonly<{
   paneEnv?: PaneEnv;
   /** Checks, and puts back, the board's and the terminal's serves on the exposure (A11-279); the instance passes the machine's. Absent: the pool checks nothing, as in every test. */
   serveCheck?: () => Promise<readonly ServeCheck[]>;
+  /** Reads the host for the board's alerts (A11-279, `host-alerts.ts`): `/tmp`'s entries, this boot's kernel log, the hang settings. The instance passes the machine's. Absent: only the exposure's alerts are raised, as in every test. */
+  hostAlertReads?: HostAlertReads;
   /** The directory each run's private `TMPDIR` is made under (A11-279, `run-isolation.ts`); the instance passes `privateBase()`. Absent: runs get no `TMPDIR` and nothing is swept, as in every test that does not give one. */
   privateTmpBase?: string;
   /** The longest the files of a conflict are given to be listed before its round starts without them (A11-286); a minute when absent. A test gives a short one. */
@@ -198,6 +201,8 @@ export type PoolContext = Readonly<{
   paneEnv: PaneEnv;
   /** What the pool last read of the exposure's serves (A11-279). */
   exposure: ExposureState;
+  /** What is wrong with the host, as the board shows it (A11-279). */
+  hostAlerts: HostAlertState;
   /** The directory each run's private `TMPDIR` is made under, or undefined when runs get none (A11-279). */
   runTmpBase: string | undefined;
 }>;
@@ -276,6 +281,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
     startedHere, attaching, attachRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
-    exposure: { at: null, checks: [], said: new Map<string, string>() }, runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase),
+    exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase),
   };
 }

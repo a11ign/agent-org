@@ -169,6 +169,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     applyEdit: (key: string) => applyEdit(ctx, key),
     discardEdit: (key: string) => discardEdit(ctx, key),
     stopWriterRun: (id: string) => stopWriterRun(ctx, id),
+    /** What is wrong with the host itself (A11-279): `/tmp` over its limit, a soft lockup this boot, a serve the board could not put back, the hang settings drifting. Empty while nothing is. */
+    hostAlerts: () => ctx.hostAlerts.alerts,
     /** Why runs are held: the `tickets.preflight` command that failed and what it said, or null while none has. */
     held: () => ctx.gate.held(),
   };
