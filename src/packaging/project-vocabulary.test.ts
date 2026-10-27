@@ -181,7 +181,7 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // A11-144: Linear's state TYPE for work begun, which Pick reads off a ticket to mark it taken. It is the tracker's own word, not a board label, and the
   // board's `started` label of claim-labels.ts is a different fact that happens to spell the same.
   ...nonVocabulary("ticket-mode/pick-taken.ts", ['"started"'], "Linear's state type for work begun, read from the tracker, not a board label"),
-  // A11-347: the same tracker state type, read off a blocker the queue recorded; `board-view/` is sent to the browser as one script, so it cannot import `pick-taken.ts`'s.
+  // A11-347: the same tracker state type, read off a blocker the queue recorded; `board-view/` imports nothing from outside itself, so it keeps its own copy of `pick-taken.ts`'s.
   ...nonVocabulary("ticket-mode/board-view/idle-blocker.ts", ['"started"'], "Linear's state type for work begun, read from the tracker, not a board label"),
   // A11-219: the `started` KIND of a run's event log (the run was started), the timeline's own word for it, not the board label.
   ...nonVocabulary("ticket-mode/queue/run-log.ts", ['"started"'], "the kind of a run's `started` event in its log, not a board label"),

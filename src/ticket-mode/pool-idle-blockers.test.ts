@@ -21,6 +21,7 @@ const pull = (n: number): string => `https://github.com/a11ign/agent-org/pull/${
 function world(pulls: Readonly<Record<number, { state: PullState; body: string }>>) {
   const tracker = createFakeTracker([fakeTicket(IDLE, { status: "In Progress", statusType: "started" }), fakeTicket(DEPENDENT)]);
   void tracker.addBlockers?.(DEPENDENT, [IDLE]);
+  tracker.setClaimant(IDLE, "me");
   const codeHost = createFakeCodeHost();
   for (const [number, { state, body }] of Object.entries(pulls)) {
     tracker.linkPull(IDLE, pull(Number(number)), state);
@@ -30,9 +31,9 @@ function world(pulls: Readonly<Record<number, { state: PullState; body: string }
   const pool = made.restart({ source: tracker, codeHost });
   const choice = { model: "opus", effort: "max" };
   const lines: string[] = [];
-  const { read, claims, complete } = tracker;
+  const { read, claims, complete, stateTypes } = tracker;
   const sweep = idleBlockerSweep({
-    source: { read, claims, complete }, store: made.store, takenStates: [], claimant: () => "me", log: (line) => lines.push(line), runChoice: () => choice,
+    source: { read, claims, complete, stateTypes }, store: made.store, takenStates: [], claimant: () => "me", log: (line) => lines.push(line), runChoice: () => choice,
     queueTickets: (tickets, picked, options) => { made.store.set(enqueue(made.store.get(), tickets, picked, 1_000, null)); assert.deepEqual(options, { plan: false }); },
   });
   return { ...made, tracker, pool, sweep, lines, choice };
@@ -60,7 +61,7 @@ test("A11-347: a ticket In Progress with no run and every pull request merged, o
 test("A11-347: a ticket In Progress with no run and work left is queued on the saved choice, with no plan run first, and the sweep does not queue it twice", async () => {
   const made = world({ 1: { state: "merged", body: `Refs ${IDLE}\n\nPartial: step 1 of 2: the first half` } });
   await refreshed(made);
-  assert.equal(holderMove(IDLE, made.store.get().entries).words, `${IDLE} has no run on the board and still has open work, so the board queues it on the saved model on its next sweep`);
+  assert.equal(holderMove(IDLE, made.store.get().entries).words, `${IDLE} has no run on the board and still has open work, so the board queues it on the saved model on its next sweep, unless a person or another instance holds it`);
   await made.sweep();
   const queued = made.entry(IDLE);
   assert.deepEqual([queued.phase, queued.model, queued.effort, queued.plan], ["queued", "opus", "max", undefined]);
@@ -85,7 +86,7 @@ test("A11-347: a ticket another instance holds is left to it, and said once", as
 test("A11-347: a tracker that refuses the completion is said once, and the next sweep tries again", async () => {
   const made = world({ 1: { state: "merged", body: `Closes ${IDLE}` } });
   const complete: NonNullable<TicketSource["complete"]> = async () => { throw new Error("Linear answered 500"); };
-  const sweep = idleBlockerSweep({ source: { read: made.tracker.read, claims: made.tracker.claims, complete }, store: made.store, takenStates: [], claimant: () => "me", log: (line) => made.lines.push(line), runChoice: () => made.choice, queueTickets: () => {} });
+  const sweep = idleBlockerSweep({ source: { read: made.tracker.read, claims: made.tracker.claims, complete, stateTypes: made.tracker.stateTypes }, store: made.store, takenStates: [], claimant: () => "me", log: (line) => made.lines.push(line), runChoice: () => made.choice, queueTickets: () => {} });
   made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((e) => ({ ...e, stoppedForBlocker: { at: 1, keys: [IDLE], others: [] } })) });
   await refreshed(made);
   await sweep();
@@ -93,4 +94,28 @@ test("A11-347: a tracker that refuses the completion is said once, and the next 
   assert.deepEqual(made.lines, [`${IDLE}: it has no run and blocks ${DEPENDENT}, but the board could not complete it (Linear answered 500); it tries again at the next sweep`]);
   await made.sweep();
   assert.equal(made.tracker.ticketOf(IDLE)?.statusType, "completed");
+});
+
+test("A11-347: a ticket no instance claimed (moved to In Progress by hand, or its run dismissed) is not queued, and said once", async () => {
+  const made = world({ 1: { state: "merged", body: `Refs ${IDLE}\n\nPartial: step 1 of 2: the first half` } });
+  made.tracker.setClaimant(IDLE, undefined);
+  await refreshed(made);
+  await made.sweep();
+  await made.sweep();
+  assert.equal(made.store.get().entries.some((e) => e.ticket.key === IDLE), false);
+  assert.deepEqual(made.lines, [`${IDLE}: it has no run here and blocks ${DEPENDENT}, but no instance claimed it (it was moved to In Progress by hand, or its run was dismissed), so the board leaves it to a person`]);
+});
+
+test("A11-347: a ticket a person has moved out of In Progress since the blockers were read is neither completed nor queued", async () => {
+  const closing = world({ 1: { state: "merged", body: `Closes ${IDLE}` } });
+  await refreshed(closing);
+  closing.tracker.seed(fakeTicket(IDLE, { status: "Todo", statusType: "unstarted" }));
+  await closing.sweep();
+  assert.equal(closing.tracker.ticketOf(IDLE)?.statusType, "unstarted", "not completed");
+  const open = world({ 1: { state: "merged", body: `Refs ${IDLE}\n\nPartial: step 1 of 2: the first half` } });
+  await refreshed(open);
+  open.tracker.seed(fakeTicket(IDLE, { status: "Todo", statusType: "unstarted" }));
+  open.tracker.setClaimant(IDLE, "me");
+  await open.sweep();
+  assert.equal(open.store.get().entries.some((e) => e.ticket.key === IDLE), false, "not queued");
 });

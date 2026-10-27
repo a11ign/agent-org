@@ -51,10 +51,10 @@ test("A11-347: the sentence on the wait names the action the board takes, and fo
   const closing = [waiter({ blockersDeclared: declared("none", "closes") })];
   assert.equal(holderMove("A11-253", closing).words, "A11-253 has no run on the board and all 2 of its pull requests have merged, one of them closing it, so the board completes it on its next sweep");
   const partial = [waiter({ blockersDeclared: declared("none", "partial") })];
-  assert.equal(holderMove("A11-253", partial).words, "A11-253 has no run on the board and still has open work, so the board queues it on the saved model on its next sweep");
+  assert.equal(holderMove("A11-253", partial).words, "A11-253 has no run on the board and still has open work, so the board queues it on the saved model on its next sweep, unless a person or another instance holds it");
   assert.match(holderMove("A11-253", [waiter()]).words, /the board is reading its merged pull requests before it completes or queues it$/);
   const todo = [waiter({ blockers: [blocker({ state: "unstarted" })] })];
   assert.equal(holderMove("A11-253", todo).words, idleWords("A11-253", idleBlockerOf("A11-253", todo)));
-  assert.match(holderMove("A11-253", todo).words, /a person queues it or lifts the block$/);
+  assert.match(holderMove("A11-253", todo).words, /the board takes no action on it: a person decides$/);
   assert.deepEqual([holderMove("A11-253", closing).moves, holderMove("A11-253", todo).moves], [true, false]);
 });

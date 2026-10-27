@@ -6,8 +6,8 @@
 //  - every pull request it links has merged and one of them closes it: the work is over and the tracker did not complete the ticket (its workflow completes on a merge only some of the time), so the board COMPLETES it;
 //  - otherwise work remains (a `Partial:` merge with nothing queued to follow it, a pull request still open, a ticket with no pull request yet): the board QUEUES it, to run on the saved choice.
 // The bodies of its merged pull requests are read first (`blockersDeclared`, recorded on the runs it holds back), since a body that says `Partial:` leaves the ticket open. A blocker in any other state is a person's: a
-// ticket nobody started is not taken up on a dependent's word. The sweep that acts (`idle-blockers.ts`) and the sentence the board says of the wait (`long-waits.ts`) read this one decision. Like the rest of `board-view/`, it
-// is sent to the browser as one script with its relative imports dropped.
+// ticket nobody started is not taken up on a dependent's word. The sweep that acts (`idle-blockers.ts`) and the sentence the board says of the wait (`long-waits.ts`) read this one decision; the sweep alone knows what the tracker
+// says of who holds the ticket, so it may leave one the decision names (`idle-blockers.ts`).
 import { waitsOn } from "./pull-status-and-notes.ts";
 import { sequencedBlockers } from "./waits-on.ts";
 import type { ViewBlocker, ViewEntry } from "./view-types-and-filters.ts";
@@ -19,7 +19,7 @@ export type IdleAction = "complete" | "queue" | "read";
 export type IdleBlocker = Readonly<{ key: string; action: IdleAction; blocks: readonly string[]; pulls: number; merged: readonly string[] }>;
 
 /** The tracker's type for a state work has started in: In Progress and the states like it. */
-const STARTED = "started";
+export const STARTED = "started";
 
 /** The queued runs that are sequenced behind the ticket `key`, whether or not it still holds them. */
 const waitersOf = (key: string, entries: readonly ViewEntry[]): ViewEntry[] =>
@@ -60,8 +60,8 @@ export function idleBlockers(entries: readonly ViewEntry[]): IdleBlocker[] {
 
 /** The sentence the board says of the ticket `on` when it has no run: the action it takes, or that it takes none and a person decides. PURE. */
 export function idleWords(on: string, idle: IdleBlocker | null): string {
-  if (idle === null) return `${on} has no run on the board, so nothing is working on it, and the board takes up only a ticket the tracker holds In Progress: a person queues it or lifts the block`;
+  if (idle === null) return `${on} has no run on the board, so nothing is working on it, and the board takes no action on it: a person decides`;
   if (idle.action === "complete") return `${on} has no run on the board and all ${idle.pulls} of its pull requests have merged, one of them closing it, so the board completes it on its next sweep`;
-  if (idle.action === "queue") return `${on} has no run on the board and still has open work, so the board queues it on the saved model on its next sweep`;
+  if (idle.action === "queue") return `${on} has no run on the board and still has open work, so the board queues it on the saved model on its next sweep, unless a person or another instance holds it`;
   return `${on} has no run on the board, and the board is reading its merged pull requests before it completes or queues it`;
 }
