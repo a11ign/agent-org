@@ -14,7 +14,7 @@ import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/pull-status-and-notes.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, cloneKeyOf, originOf, reviewedRepositoriesOf, reviewWordAt, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, cloneKeyForRepository, originOf, reviewedRepositoriesOf, reviewWordAt, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";
 import { enqueue, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -302,11 +302,11 @@ test("A11-360: the repositories the pool sweeps are the clones' real repositorie
   assert.ok(listed.includes("a11ign/gone"), "a clone whose remote cannot be read is listed under its key, as a repository name");
 });
 
-test("A11-360: cloneKeyOf names the key a repository's clone is listed under, and originOf keeps a read origin for a while and says nothing for a path that is no clone", async () => {
+test("A11-360: cloneKeyForRepository names the key a repository's clone is listed under, and originOf keeps a read origin for a while and says nothing for a path that is no clone", async () => {
   await loadReviewerGate();
   const remotes: Record<string, string> = { "/c/dotgithub": "https://github.com/a11ign/.github.git" };
-  assert.equal(cloneKeyOf({ lab: "/c/lab", github: "/c/dotgithub" }, "a11ign/.github", (path) => remotes[path]), "github");
-  assert.equal(cloneKeyOf({ lab: "/c/lab", github: "/c/dotgithub" }, "a11ign/missing", (path) => remotes[path]), undefined);
+  assert.equal(cloneKeyForRepository({ lab: "/c/lab", github: "/c/dotgithub" }, "a11ign/.github", (path) => remotes[path]), "github");
+  assert.equal(cloneKeyForRepository({ lab: "/c/lab", github: "/c/dotgithub" }, "a11ign/missing", (path) => remotes[path]), undefined);
   const clone = tmpDir("origin-of-");
   const git = (...args: string[]) => execFileSync("git", ["-C", clone, ...args], { encoding: "utf8", env: sandboxGitEnv() });
   git("init", "-q");

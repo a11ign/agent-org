@@ -164,7 +164,7 @@ function repositoriesOfClones(clones: Clones, remote: (path: string) => string |
 }
 
 /** The key under which `clones` lists the clone of `repository` (`owner/name`), or undefined when it lists none: a writer places a ticket by this key. */
-export function cloneKeyOf(clones: Clones, repository: string, remote: (path: string) => string | undefined = originOf): string | undefined {
+export function cloneKeyForRepository(clones: Clones, repository: string, remote: (path: string) => string | undefined = originOf): string | undefined {
   return repositoriesOfClones(clones, remote).find((cloned) => cloned.repository === repository)?.key;
 }
 

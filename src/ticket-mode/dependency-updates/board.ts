@@ -3,7 +3,7 @@
 import { dirname, join } from "node:path";
 import type { CodeHost } from "../../plugins/contracts/code-host.ts";
 import type { Queue, RunChoice } from "../queue/queue-entries-and-outcomes.ts";
-import { cloneKeyOf, reviewedRepositoriesOf } from "../reviewer-port.ts";
+import { cloneKeyForRepository, reviewedRepositoriesOf } from "../reviewer-port.ts";
 import type { TicketSettings } from "../settings.ts";
 import type { Ticket, TicketSource } from "../source.ts";
 import { dependencyUpdateSweep } from "./sweep.ts";
@@ -30,7 +30,7 @@ export type BoardDependencies = Readonly<{
 /** The key the clone of `repository` is listed under, or undefined when the reviewer gate is not loaded: the form then names the repository's own name, as it did before the gate was asked (A11-360). */
 function gateCloneKeyOf(clones: Readonly<Record<string, string>>, repository: string): string | undefined {
   try {
-    return cloneKeyOf(clones, repository);
+    return cloneKeyForRepository(clones, repository);
   } catch (err) {
     void err; // a host that cannot load the gate is told so by the sweep's own read of the repositories
     return undefined;
