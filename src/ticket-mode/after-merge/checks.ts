@@ -39,6 +39,12 @@ export type CheckRecord = Readonly<{
   handedOff?: string;
   /** The verifier run that checks an `agent` check (A11-302): the writer run's id once it is queued, and how many runs have been queued for it. */
   verifier?: Readonly<{ run: string | null; tries: number }>;
+  /** How long after its release the check may first be run (A11-361), in milliseconds: the plan's `Window:` for an `agent` check. Absent when the plan gave none, and the line's own words are read instead (`window.ts`). */
+  windowMs?: number;
+  /** When the check is due (A11-361): its delay after the change was first read as installed. Until then it is shown as due and given to no verifier run. Absent while the change is not installed, or when the check has no delay. */
+  dueAt?: number;
+  /** What a verifier run said this host lacks (A11-361): the capability, in the run's words, a check that cannot run here parks on. It stays open, fails nothing and files no ticket of its own: one ticket is filed for each capability (`request`, the writer run, or null for none), and a runner that has it takes the check (`routedTo`). */
+  needs?: Readonly<{ capability: string; why: string; request?: string | null; routedTo?: string }>;
   /** How many migration passes (A11-302) have been queued for a check still on the retired runner: after two, the board gives it to an agent. */
   migrating?: Readonly<{ tries: number }>;
   /** What the one-time migration (A11-302) did to the record: the runner it was read as, and when. */
@@ -98,7 +104,7 @@ export type ListedRun = Readonly<{ ticket: Readonly<{ key: string; url?: string 
 const listedLines = (run: ListedRun) => (run.afterMerge ?? []).map(({ line }, index) => ({ id: checkIdOf(run.ticket.key, index + 1), line }));
 
 /** One After-merge line as a plan's `## After-merge checks` section names it (`plan-section.ts`): the line quoted, who runs it, the escalation item of a person's, what the board watches for, and what would close it. */
-export type PlannedCheck = Readonly<{ line: string; runner: Runner; escalation?: string; observe?: ObserveSpec; evidence: string }>;
+export type PlannedCheck = Readonly<{ line: string; runner: Runner; escalation?: string; observe?: ObserveSpec; evidence: string; window?: number }>;
 
 /**
  * A line as it is compared (A11-288): a backslash before a quote or a backtick is dropped, typographic double quotes, straight double quotes and backticks are removed, typographic single quotes become `'`, and each run of white space
@@ -116,8 +122,8 @@ export const namesLine = (quoted: string, line: string): boolean => lineKey(quot
 const plannedFor = (line: string, planned: readonly PlannedCheck[]): PlannedCheck | undefined => planned.findLast((check) => namesLine(check.line, line));
 
 /** What a planned line gives its record: the plan's runner, its escalation item, what the board watches for from `now`, and what would close it. PURE. */
-const plannedFields = ({ runner, escalation, observe, evidence }: PlannedCheck, now: number): Pick<CheckRecord, "runner" | "escalation" | "observe" | "evidence"> =>
-  ({ runner, ...(escalation === undefined ? {} : { escalation }), ...(observe === undefined ? {} : { observe: { spec: observe, from: now } }), evidence });
+const plannedFields = ({ runner, escalation, observe, evidence, window }: PlannedCheck, now: number): Pick<CheckRecord, "runner" | "escalation" | "observe" | "evidence" | "windowMs"> =>
+  ({ runner, ...(escalation === undefined ? {} : { escalation }), ...(observe === undefined ? {} : { observe: { spec: observe, from: now } }), evidence, ...(window === undefined ? {} : { windowMs: window }) });
 
 /** The ids of every check the runs list. PURE. */
 export const listedIds = (runs: readonly ListedRun[]): Set<string> => new Set(runs.flatMap((run) => listedLines(run).map(({ id }) => id)));
@@ -257,12 +263,16 @@ export const isUnmigrated = (check: CheckRecord): boolean => check.state === "op
 /** When an org check's clock started: its listing, or the migration that gave it a runner, whichever is later. PURE. */
 const orgSince = (check: CheckRecord): number => Math.max(check.listedAt, check.migrated?.at ?? 0);
 
-/** Whether `now` is inside a check's watched window: the board watches it and its window is not closed. PURE. */
-const insideWindow = (check: CheckRecord, now: number): boolean => check.observe !== undefined && check.runner === "board" && windowEnd(check.observe) > now;
+/** Whether `now` is inside a check's window: the board watches it and its window is not closed, or an agent's check is scheduled for a due time (A11-361) that has not come. PURE. */
+const insideWindow = (check: CheckRecord, now: number): boolean =>
+  (check.observe !== undefined && check.runner === "board" && windowEnd(check.observe) > now) || (check.runner === "agent" && check.dueAt !== undefined && check.dueAt > now);
+
+/** Whether a check cannot run on this host and the ticket for what it lacks is filed (A11-361): it waits on that ticket, which no sweep can hurry, so the pool bar does not count it stale. PURE. */
+const awaitsFiledTicket = (check: CheckRecord): boolean => typeof check.needs?.request === "string";
 
 /** The open org checks older than {@link ORG_STALE_MS} and not inside their watched window, which the pool bar counts (A11-302). PURE. */
 export const staleOrgChecks = (file: ChecksFile, now: number): CheckRecord[] =>
-  Object.values(file.checks).filter((check) => check.state === "open" && isOrgCheck(check) && now - orgSince(check) > ORG_STALE_MS && !insideWindow(check, now));
+  Object.values(file.checks).filter((check) => check.state === "open" && isOrgCheck(check) && now - orgSince(check) > ORG_STALE_MS && !insideWindow(check, now) && !awaitsFiledTicket(check));
 
 /** How many org checks are open, and how many of them the pool bar counts as stale (A11-302). PURE. */
 export const orgCounts = (file: ChecksFile, now: number): Readonly<{ open: number; stale: number }> =>
