@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`src/provider-low-confidence.ts` (new): a question the decision provider is held back on by its floor, on more than 30% of at least 20 decisions in the window, is filed as ONE improvement row of ledger class `provider-low-confidence`, naming the question, the share, the mean and median confidence, the window and the method (raise the provider's confidence on that question). `lowConfidenceQuestions(reading, { minDecisions, share })` is pure over `provider-confidence.ts`'s reading, its two numbers named `MIN_DECISIONS` and `MIN_UNDER_FLOOR_SHARE`; a 422 or a refusal is not a low confidence and is not counted. `fileLowConfidence` never files a second row for a question while one is open (nor one closed inside the window it reads), and with no provider declared or no use switched on it files nothing and does not touch `gh`. The CLI prints what it WOULD file by default; `--file --session=<s>` files. Nothing runs it on a schedule yet, and a project must add a `provider-low-confidence` entry to its `failure-classes.json` before the rows are accepted. a11ign/a11ign#4750.
