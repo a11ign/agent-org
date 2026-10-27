@@ -13,7 +13,8 @@ import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
 import type { StoppedForBlocker } from "./queue-blocker-wait.ts";
 import type { TicketRead } from "../ticket-read.ts";
 import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
-import { logEvent, type RunEvent } from "./run-log.ts";
+import { logEvent, type RequeueWhy, type RunEvent } from "./run-log.ts";
+import type { CrashRetry } from "../crash-retry.ts";
 import type { Standoff } from "./standoff-types.ts";
 import type { CiHold, TicketCi } from "../ci-spend/store.ts";
 import type { Interventions } from "./interventions.ts";
@@ -415,6 +416,8 @@ export type Entry = Readonly<{
   readopted?: Readopted;
   /** Set on a run a restart lost, when it was queued again (A11-240): the run is queued again once, so a second loss in the same chain ends it. A retry or a review round, which build the entry afresh, drop it. */
   lostInRestart?: Readonly<{ at: number }>;
+  /** Set on a run that crashed on a transient network error and the board will start again by itself, and on the run queued again for it (A11-345): how many automatic retries it has had, and when the next may start. A person's retry, which builds the entry afresh, drops it. */
+  crashRetry?: CrashRetry;
   /**
    * When the board first saw a running run's agent idle at a prompt with no outcome but a `working` note (A11-279): its idle clock, which the board resumes it on after ten minutes. Dropped when it is seen working, or
    * waiting, and when the run ends.
@@ -715,7 +718,7 @@ export function dismiss(queue: Queue, key: string, now?: number): Queue {
  * Put a finished entry back at the end of the queue. A draft pull request is not retried: it is the result. Nor is a run that concluded with
  * nothing more to do (`checked`), nor a parked run, until its workspace is closed: a second workspace would take the same herdr name.
  */
-export function retry(queue: Queue, key: string, now: number): Queue {
+export function retry(queue: Queue, key: string, now: number, why: RequeueWhy = "retry"): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
@@ -729,7 +732,7 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
-  return logEvent({ ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] }, key, now, { kind: "requeued", why: "retry" });
+  return logEvent({ ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] }, key, now, { kind: "requeued", why });
 }
 
 /** A run whose outcome is its result, pull requests to show for it: retried, they would only be made again. */

@@ -10,6 +10,7 @@ import { batchDir, createPool, herdrName, type QueueStore } from "./pool.ts";
 import { fakeHerdr } from "./pool-fixture.ts";
 import { workingNote } from "./board-view/pull-status-and-notes.ts";
 import { ATTACH_WAITS_MS } from "./attach-retry.ts";
+import { messageOf } from "./pool-state.ts";
 import { enqueue, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { emptyQueue } from "./queue.ts";
@@ -100,7 +101,7 @@ test("four network failures end Needs you, naming the error and the plan folder,
     await tick(ATTACH_WAITS_MS[2]);
     assert.equal(calls.length, 4);
     assert.equal(entry("NBF-1").outcome?.kind, "needs-human");
-    assert.equal(reasonOf(entry("NBF-1").outcome), `the plan could not be attached after 4 tries (${failure.message}): its files are in ${join(dir, "plan")}`);
+    assert.equal(reasonOf(entry("NBF-1").outcome), `the plan could not be attached after 4 tries (${messageOf(failure)}): its files are in ${join(dir, "plan")}`);
     await tick(ATTACH_WAITS_MS[2]);
     assert.equal(calls.length, 4, "an ended run is not tried again");
   }
@@ -174,7 +175,7 @@ test("a batch whose attach keeps failing on the network ends every member Needs 
   await tick();
   for (const wait of ATTACH_WAITS_MS) await tick(wait);
   assert.equal(calls.length, 4);
-  for (const key of keys) assert.match(reasonOf(entry(key).outcome), /^the plans could not be attached after 4 tries \(fetch failed\): their files are in .*plan$/, key);
+  for (const key of keys) assert.match(reasonOf(entry(key).outcome), /^the plans could not be attached after 4 tries \(fetch failed \(ECONNRESET\)\): their files are in .*plan$/, key);
 });
 
 test("a ticket of a batch the tracker refuses with a 4xx is handed back alone, and the others carry on", async () => {

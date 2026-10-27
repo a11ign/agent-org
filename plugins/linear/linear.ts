@@ -196,13 +196,36 @@ type Client = Readonly<{ key: string; request: Fetch }>;
 /** An error that carries the HTTP `status` the server answered with, as data, so the board tries a 5xx again without reading the message (tracker contract 1.7). */
 const answered = (message: string, status: number): Error => Object.assign(new Error(message), { status });
 
-async function query<T>(client: Client, text: string, variables: Record<string, unknown>): Promise<T> {
+/**
+ * Whether `err` is Node's `fetch` failing to reach Linear (`TypeError("fetch failed")`, the reason in its cause). The board keeps connections to Linear open between calls, and one that Linear or the network closed while it sat idle
+ * (undici's `UND_ERR_SOCKET`, `ECONNRESET`) fails the next call that reuses it (A11-345).
+ */
+const MUTATION = /^\s*mutation\b/;
+
+const isFetchFailure = (err: unknown): boolean => err instanceof TypeError && err.message === "fetch failed";
+
+/**
+ * Send one call to Linear. A query that fails with `fetch failed` is sent once more, asking for the connection to be closed after it (`Connection: close`), so the call after it does not reuse a connection of the pool that has gone stale
+ * as well: the failed call closed its own, and the pool opens a new one when no live one is idle. A second failure is the caller's. A mutation is never sent again here: one that failed after Linear applied it would post a comment twice
+ * or be refused as already made, so the caller that can tell (the plan attach, the result write, the run-start writes) tries it again.
+ */
+async function send(client: Client, text: string, variables: Record<string, unknown>): Promise<Response> {
   const { key, request } = client;
-  const response = await request(LINEAR_API, {
+  const post = (headers: Record<string, string>) => request(LINEAR_API, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: key },
+    headers: { "Content-Type": "application/json", Authorization: key, ...headers },
     body: JSON.stringify({ query: text, variables }),
   });
+  try {
+    return await post({});
+  } catch (err) {
+    if (!isFetchFailure(err) || MUTATION.test(text)) throw err;
+    return post({ Connection: "close" });
+  }
+}
+
+async function query<T>(client: Client, text: string, variables: Record<string, unknown>): Promise<T> {
+  const response = await send(client, text, variables);
   const body = await response.json().catch(() => null) as { data?: T; errors?: { message: string }[] } | null;
   if (!response.ok || body === null || body.errors?.length) {
     throw answered(`Linear answered ${response.status}: ${body?.errors?.map((e) => e.message).join("; ") ?? "no JSON"}`, response.status);
