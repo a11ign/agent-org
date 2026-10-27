@@ -159,6 +159,19 @@ describe("the Timeline's tracker-write rows", () => {
   });
 });
 
+describe("the Timeline's push-check rows", () => {
+  it("word the board's own push when a worker handed back on lost push access: that it worked, and git's error when it failed twice (A11-346)", () => {
+    const rows = rowsOf([
+      { at: NOW - 2 * MINUTE, kind: "push-check", step: "failed", detail: "remote: Permission denied" },
+      { at: NOW - 1 * MINUTE, kind: "push-check", step: "passed", detail: "announcement-emulator" },
+    ], { phase: "running" });
+    expect(rows.map(({ text, when, tone }) => [text, when, tone])).toEqual([
+      ["Push access checked by the board: it works", "1 min ago · announcement-emulator", "green"],
+      ["Push access checked by the board: the push failed", "2 min ago · remote: Permission denied", "red"],
+    ]);
+  });
+});
+
 describe("the Timeline on Run detail", () => {
   it.each(STATES.filter((state): state is Exclude<State, "loading" | "missing"> => state !== "loading" && state !== "missing"))("%s draws a Timeline of what the board recorded, after the pull requests", async (state) => {
     await pageFor(state);

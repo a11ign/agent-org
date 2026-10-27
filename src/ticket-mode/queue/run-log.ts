@@ -70,6 +70,8 @@ type EventBody =
   /** What the board did at the round cap (A11-343): routed the run to the `planner`, the planner `decided` to start one more round (`detail` is its Decision), marked the run `waiting` on a ticket, or the wait `resumed` as that ticket's pull request merged. */
   | Readonly<{ kind: "cap"; step: "planner" | "decided" | "waiting" | "resumed"; detail: string | null }>
   | Readonly<{ kind: "needs-you"; reason: string }>
+  /** What the board's own push found when a worker handed back on a lost push access (A11-346): it `passed` (`detail` names the repositories, and the worker was told access is fine) or `failed` twice (`detail` is git's error, the `remote:` lines among it). */
+  | Readonly<{ kind: "push-check"; step: "passed" | "failed"; detail: string }>
   | Readonly<{ kind: "answered"; by: AnsweredBy }>
   | Readonly<{ kind: "published"; link: string | null }>
   | Readonly<{ kind: "merged"; url: string }>
