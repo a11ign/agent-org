@@ -74,6 +74,13 @@ export const SESSION_WAIT_SENTENCE = "An ask that only the person's session can 
   + "A run whose outcomes include no `working` (a plan, a review round) declares nothing: it names the ask in its plan or pull request body, as a command for the person's session to run, and goes on.";
 
 /**
+ * What a worker is told before it hands back on lost push access (A11-346): `permissions.push` reads false for every repository under an App installation token, so it is not evidence, and a refused push is tried once more before it is
+ * called lost. The error is quoted whole, so the person who reads the card, or the board's own check, can tell a transient refusal from a lost right. The board also pushes the run's branch itself before such a card reaches a person.
+ */
+export const ACCESS_EVIDENCE_SENTENCE = "Before you hand back for lost push access: `permissions.push` (from `gh api repos/<owner>/<repo>`) reads false for every repository under an App installation token, so it is not evidence of anything. "
+  + "Retry a failed push once, and quote the full `remote:` lines of its error in your reason, not a summary. The board pushes your branch itself before such a hand-back reaches a person, and a push that works ends it.";
+
+/**
  * What every agent that may stop is told to do with a question, quoted into the planner, worker and review-round briefs (A11-257): a stop is for an item of the list and names its id, and any other question is decided in line
  * with the plan, the ticket's Decisions, the code and the ADRs, taking the option the agent would have recommended, and recorded as a decision made without a person. PURE.
  */
@@ -82,7 +89,7 @@ export const ESCALATION_RULE = `${escalationList()}\n\n`
   + "Record each such choice under \"Decisions made without a person\" (in the plan, or in the pull request body), with its reason, and carry on. "
   + "A `needs-human` outcome names its item in `escalation` (`\"escalation\": \"<id>\"`), and a `QUESTION.md` starts with the line `**Escalation:** <id>`: a stop that names none, or one not on this list, is sent back to you. "
   + "A run that cannot go on because something failed, such as a skill that is missing or a check that never starts, has no question to decide: it says what failed in its `needs-human` reason, and the board shows that stop as \"Off the escalation list:\" so that the cause is fixed. "
-  + `${AFTER_MERGE_ORG_SENTENCE} ${SESSION_WAIT_SENTENCE}`;
+  + `${AFTER_MERGE_ORG_SENTENCE} ${SESSION_WAIT_SENTENCE} ${ACCESS_EVIDENCE_SENTENCE}`;
 
 /**
  * What the stop hook refuses an agent with when it stops on a question that is not on the list. `what` says which stop and why it is off the list. A run that cannot go on because something FAILED (a check that never started, a
