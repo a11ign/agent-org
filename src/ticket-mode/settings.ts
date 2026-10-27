@@ -41,7 +41,10 @@ export const HOST_FILE_ENV = "AGENT_ORG_HOST";
 export type DenyRule = Readonly<{ pattern: string; reason: string }>;
 
 export type TicketSettings = Readonly<{
-  /** Repository name -> its local checkout, as many as the machine has. */
+  /**
+   * Repository name -> its local checkout, as many as the machine has. The one part of the settings that changes after they are read: the board adds a repository it cloned on demand (A11-355), and no other
+   * code writes it.
+   */
   clones: Readonly<Record<string, string>>;
   max: number;
   /** The port this machine's instance (`ticket:serve`) listens on, on 127.0.0.1. */
@@ -571,7 +574,8 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
   const terminal = settingOf(exposure, "terminal");
   const workingState = settingOf(tracker, "workingState");
   return Object.freeze({
-    clones: Object.freeze(repos),
+    // NOT FROZEN: the board adds a clone it made on demand (`org-repos.ts`, A11-355) to this one record, so every reader of the settings sees it without the board restarting.
+    clones: repos,
     max: positiveInteger(tickets.max, "tickets.max", 3),
     port: portNumber,
     uiPort: uiPortNumber,

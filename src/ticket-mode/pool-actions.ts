@@ -1,14 +1,17 @@
 // @ts-check
 // module: a person's actions on a run -- stop, dismiss, remove, stop a new-ticket run, and apply or discard a proposed edit
 
-import { clearEdit, dismiss as dismissFinished, isLive, proposedEdit, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
+import { clearEdit, dismiss as dismissFinished, isLive, proposedEdit, remove as removeQueued, replace, retry as retryQueued, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { close, end, restoreWorkingState } from "./pool-settle.ts";
 import { stopWriter, writerOf } from "./queue.ts";
 import { filedOf } from "./pool-board-runs.ts";
-import { forgetRun, update, writerPlace } from "./pool-state.ts";
+import { forgetRun, messageOf, update, writerPlace } from "./pool-state.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { isBeingPublished, isParked } from "./board-view/pull-status-and-notes.ts";
 import { respond as respondQueued, unpark } from "./queue/queue-transitions.ts";
+import { retryRefusal } from "./queue/queue-retry-refusal.ts";
+import { cloneOnDemand, organisationRepoNamed } from "./pool-org-repos.ts";
+import type { HostRepository } from "../plugins/contracts/code-host.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { openPullsFound } from "./opened-pulls.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
@@ -35,6 +38,43 @@ export function respond(ctx: PoolContext, key: string): void {
   if (parked) close(ctx, key);
   update(ctx, (queue) => respondQueued(queue, key, now(), found));
 }
+
+/**
+ * A person pressed Retry (A11-355): the run is queued again with a fresh worker. A run that ended `wrong-repo` naming a repository of the organisation is queued in that repository, which is cloned first if this machine has none, so
+ * Retry does what the board does by itself (`settleWrongRepo`); one naming anything else is queued as it was. A `wrong-repo` run holds its workspace (it is parked), which is closed first, because a second workspace would take the same
+ * herdr name. Any other parked run still has an agent a person may answer, so it is not retried until Close has ended it. THROWS, naming why, when the run cannot be retried or its repository cannot be cloned, and nothing is closed
+ * then: Retry used to answer as if it had worked and leave the run finished. A workspace herdr will not close leaves the run parked.
+ */
+export async function retryRun(ctx: PoolContext, key: string): Promise<void> {
+  const { now, store } = ctx;
+  const entry = store.get().entries.find((e) => e.ticket.key === key);
+  if (entry === undefined) throw new Error(`${key} is not on the board`);
+  const parked = isParked(entry);
+  const answerable = parked && entry.outcome?.kind !== "wrong-repo";
+  const refusal = retryRefusal(answerable ? entry : { ...entry, workspace: undefined });
+  if (refusal !== null) throw new Error(`${refusal}, so it was not retried`);
+  const named = entry.outcome?.kind === "wrong-repo" ? organisationRepoNamed(ctx, entry.outcome.where) : null;
+  const repo = named === null ? null : await cloneForRetry(ctx, named, key);
+  const current = store.get().entries.find((e) => e.ticket.key === key);
+  if (current === undefined) throw new Error(`${key} left the board while its repository was cloned, so it was not retried`);
+  // Retried by someone else while the clone ran (a second press of the button): it is queued, which is what was asked.
+  if (current.phase !== "finished") return;
+  if (JSON.stringify(current.outcome) !== JSON.stringify(entry.outcome)) throw new Error(`${key} ended differently while its repository was cloned, so it was not retried`);
+  if (parked) close(ctx, key);
+  update(ctx, (queue) => (repo === null ? retryQueued(queue, key, now()) : placedIn(retryQueued(queue, key, now()), key, repo)));
+}
+
+/** The key of the clone of `repository`, cloned first when there is none. THROWS, naming the run that was not retried, when it cannot be cloned. */
+async function cloneForRetry(ctx: PoolContext, repository: HostRepository, key: string): Promise<string> {
+  try {
+    return await cloneOnDemand(ctx, repository);
+  } catch (err) {
+    throw new Error(`${repository.fullName} is in the organisation but could not be cloned (${messageOf(err).split("\n")[0]}), so ${key} was not retried`);
+  }
+}
+
+/** `queue` with ticket `key`'s run, once it is queued again, planned for `repo`: after the retry, which builds the entry afresh and so would drop it. PURE. */
+const placedIn = (queue: Queue, key: string, repo: string): Queue => replace(queue, key, (entry) => (entry.phase === "queued" ? { ...entry, plannedRepo: repo } : entry));
 
 /**
  * The person stopped a new-ticket run: its workspace is closed, and the tickets it has made stay. A run that has ended is left as it is. A run making its
