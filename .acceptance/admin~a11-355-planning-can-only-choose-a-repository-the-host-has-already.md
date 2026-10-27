@@ -2,15 +2,17 @@ A repository of the organisation that this machine has not cloned is cloned by t
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/org-repos.test.ts src/ticket-mode/queue/queue-reroute.test.ts src/ticket-mode/worker-files.test.ts src/install/doctor.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/org-repos.test.ts src/ticket-mode/queue/queue-reroute.test.ts src/ticket-mode/worker-files.test.ts
 ```
 
-The pool-level tests (`pool-org-repos.test.ts`, `server.test.ts`) need the host's history and run in the suite and under `npm run check:changed`, not in this block:
+The tests that load the host's service units and history (`pool-org-repos.test.ts`, `server.test.ts`, `doctor.test.ts`) need the host's history and run in the suite and under `npm run check:changed`, not in this block:
 
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-org-repos.test.ts src/ticket-mode/server.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-org-repos.test.ts src/ticket-mode/server.test.ts src/install/doctor.test.ts
 ```
 
 Each line of the ticket's Acceptance and Done-when is proven by a named test: the planner choosing a repository with no clone (`pool-org-repos.test.ts`: "the planner's brief offers ...", "a plan naming ..."), cloning on demand with a fake git and a fake org listing (`org-repos.test.ts`: "cloning on demand ..."; `pool-org-repos.test.ts`: "a worker's wrong-repo naming an organisation repository the host has not cloned ..."), the reroute and the outside-the-organisation case that still reads Needs you ("a wrong-repo that names a repository outside the organisation ..."), Retry on a `wrong-repo` entry ("Retry on a wrong-repo run closes its workspace ...", "Retry says why it cannot ...", and the 409 in `server.test.ts`), and doctor ("doctor lists every live organisation repository with no clone ...", with the sweep in "the board's sweep clones every live repository ...").
 
 Consumer-declaration: the host file's `clones` is now also written by the board, which adds the clone it made on demand under the repository's name (a splice that keeps every other byte of the file); nothing a person set changes meaning. `settings.clones` is no longer frozen, because that one record gains the clone without a restart. The run log gains a `requeued` event with `why: "rerouted"`, which the run timeline in the UI words. The board's Retry route answers 409 with the reason for a run that cannot be retried. The code host contract is unchanged (the clone is `git clone` of the https address, and the listing is the `repositories` group of 1.14).
+
+Mutation: the comparison in `wrongRepoTarget` that stops a run being sent back to the repository it is in, first written as `cloneKeyOf(...) === repoOf(entry)`, was null on both sides for a run with no planned repository, so no run was ever moved: `pool-org-repos.test.ts` went red on five tests (the first move, the Retry that clones, the limit, and the plan cases) and green with the `held !== null` guard. It is the only mutant made by hand.
