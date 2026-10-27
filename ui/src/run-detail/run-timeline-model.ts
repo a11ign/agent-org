@@ -3,6 +3,7 @@
 // THE EVENTS ARE THE BACKEND'S (`runTimeline` in `board-view/run-timeline.ts`: the log the board recorded, or what the run's own times rebuild). The boards' lines are illustrations of the wording ("Started", "Run finished",
 // "Approved at 1f6009d"), so each kind of event is worded here in their voice, from the event's own fields and never from a board's example. A reason is the backend's own first line.
 import { baseMergeWords } from "../../../src/ticket-mode/board-view/base-merge-words.ts";
+import { cancelledRerunWords } from "../../../src/ticket-mode/board-view/cancelled-rerun-words.ts";
 import { pullLabel } from "../../../src/ticket-mode/board-view/pull-label.ts";
 import { runTimeline, type TimelineEvent } from "../../../src/ticket-mode/board-view/run-timeline.ts";
 import type { AnsweredBy, BaseMergeStep, RequeueWhy, RoundCause, RunEvent, TrackerWriteStep } from "../../../src/ticket-mode/queue/run-log.ts";
@@ -74,6 +75,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };
     case "base-merge": return { text: baseMergeWords(event.url, event.base, event.step), when: joined(ago, note), tone: BASE_MERGE_TONES[event.step] };
+    case "cancelled-rerun": return { text: cancelledRerunWords(event), when: joined(ago, note), tone: event.refused === undefined ? "violet" : "amber" };
     case "merged": return { text: "Pull request merged", when: joined(pullLabel(event.url), ago, note), tone: "violet" };
     case "finished": return newest && canceled ? { text: "Ticket canceled in the tracker", when: joined(ago, note), tone: "grey" } : event.outcome === "needs-human" ? { text: "Handed back to a person", when: joined(ago, note), tone: "amber" } : {
       text: FAILED_OUTCOMES.has(event.outcome) ? "Run failed" : "Run finished",

@@ -22,6 +22,7 @@ import { readMergeFlow } from "./merge-flow.ts";
 import { holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
 import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
+import { rerunRuns } from "./rerun-runs.ts";
 import { readReplies } from "./replies.ts";
 import { pullsNaming } from "./ticket-pulls.ts";
 import { openDependencyPulls } from "./dependency-pulls.ts";
@@ -99,6 +100,7 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     readBranchCi: (repository, branch, settled) => readBranchCi(repository, branch, settled, gh),
     readCheckLog: (detailsUrl) => readCheckLog(detailsUrl, gh, deps.log),
     rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
+    rerunRuns: (detailsUrls) => rerunRuns(detailsUrls, gh),
     updateBranch: (url, expectedHead) => updateBranch(url, expectedHead, gh),
     closePull: (url, comment) => closePull(url, comment, gh),
     commentOnPull: (url, comment) => commentOnPull(url, comment, gh),

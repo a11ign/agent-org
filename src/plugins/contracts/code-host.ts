@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.27 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.28 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.28 (A11-342): `PullFeedback.blocked` and `PullFeedback.cancelledRequired`, both OPTIONAL: whether the host says the pull request is BLOCKED from merging (GitHub's `mergeStateStatus: BLOCKED`), and the cancelled runs of its required checks on the head when every non-green run of a required check there is a cancelled one; and `rerunRuns`, OPTIONAL: rerun whole runs, which is how the board answers an approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check (a concurrency group cancelled one of two runs of one head, and the cancelled `gate` blocks the merge though the other run's `gate` is green). A plugin of 1.27 is read as one that says none of the three, and the board then reruns nothing.
 // 1.27 (A11-291): `MergeFlow.private` and `MergeFlow.mergeBot`, both required of a host that implements `readMergeFlow` (1.25): whether the repository is private, and whether its default branch holds the merge bot, `.github/workflows/merge-bot.yml`, which merges a pull request approved at its head with a green `gate` where the plan offers a private repository no ruleset or merge queue. A repository has a merge flow when it allows auto-merge and holds the arm workflow, or is private and holds the merge bot. A plugin of 1.26 or earlier says neither, and the board and doctor then read every repository by the first rule.
 // 1.26 (A11-290): `commentOnPull`, OPTIONAL: post a comment on a pull request as the workers' account, which is how the board records the result of a re-review that the verdict door refused (an equal patch) on the pull request itself. A plugin of 1.24 is read as one that cannot, and the board then keeps the result in the run's log alone and says so once.
 // 1.25 (A11-291): `PullFeedback.armed`, OPTIONAL: whether auto-merge is on for the pull request (GitHub's `autoMergeRequest`), and `readMergeFlow`, OPTIONAL: whether a repository allows auto-merge and has an arm workflow (`.github/workflows/auto-arm.yml`) on its default branch, and which branch that is, which the board reads to say why an approved pull request with green checks is not merging, and which doctor reads for every repository of the host. A plugin of 1.24 is read as one that says nothing of either, and the board then says only that the pull request is not in the merge queue.
@@ -59,7 +60,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.27";
+export const CODE_HOST_CONTRACT_VERSION = "1.28";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -137,6 +138,13 @@ export type PullFeedback = Readonly<{
   conflicting: boolean;
   /** Whether the host says the branch is behind its base and may not merge until it is brought up to date (contract 1.24): GitHub's `BEHIND`. Absent when the host does not say, which is not the same as false. */
   behind?: boolean;
+  /** Whether the host says the pull request may not merge as it stands (contract 1.28): GitHub's `mergeStateStatus: BLOCKED`. Absent when the host does not say, which is not the same as false. */
+  blocked?: boolean;
+  /**
+   * The cancelled runs of the required checks on the head commit (contract 1.28), by name and the address of the run's job page, when EVERY run of a required check there that is not green is a cancelled one: a red or a still-running required run leaves it empty, since the
+   * pull request then waits on something else. Several runs of one name are all listed (a concurrency group cancels one of two runs of a head, and the check is green in the other). Empty when none; absent when the host does not say, which is not the same as empty.
+   */
+  cancelledRequired?: readonly FailingCheck[];
   /** Whether auto-merge is on for the pull request (contract 1.25): GitHub's `autoMergeRequest` is set. Absent when the host does not say, which is not the same as false. */
   armed?: boolean;
   /** Whether GitHub says it merges cleanly: `MERGEABLE`. `UNKNOWN` (still being computed) is not mergeable, as it is not a conflict either. */
@@ -448,6 +456,11 @@ export interface CodeHost extends CodeHostPort {
    * once they are rerun. An address that names no run is left out (contract 1.5).
    */
   rerunFailedChecks(detailsUrls: readonly string[]): string | null;
+  /**
+   * Reruns the WHOLE runs the addresses name (`FailingCheck.detailsUrl`), each run once however many of its jobs are named, and answers why the host refused (its own first line), or null once they are rerun. An address that names no run is left out (contract 1.28).
+   * A host without it is read as one that cannot, and the board then reruns nothing for a pull request blocked behind a cancelled run.
+   */
+  rerunRuns?(detailsUrls: readonly string[]): string | null;
   /** The claim entries on `head` of `repository`, read fresh (never from a cache another account's write would not have dropped), or why they could not be read (contract 1.5). */
   readReviewClaims(repository: string, head: string): ReviewClaimRead;
   /** Writes a claim as the reviewer role, and answers why the host refused (its own first line), or null once it is written (contract 1.5). */

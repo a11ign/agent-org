@@ -136,6 +136,16 @@ export function failingChecks(contexts: readonly Check[], policy: CodeHostPolicy
 const PASSED_CONCLUSIONS: ReadonlySet<string> = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 /**
+ * The cancelled runs of the required checks on the head commit (contract 1.28), when EVERY run of a required check there that did not pass is a cancelled one; empty otherwise. A concurrency group that cancels one of two runs of a head leaves a green `gate` beside the cancelled
+ * one, and GitHub keeps the pull request BLOCKED on the cancelled one: all the runs of a name are read, not the newest alone. A required run that failed, is still running or has no conclusion, and a required commit status that has not passed, mean the pull request waits on something else, and the answer is empty.
+ */
+export function cancelledRequired(contexts: readonly Check[]): { name: string; detailsUrl: string | null }[] {
+  const unpassed = contexts.filter((check) => check.isRequired === true && !(check.__typename === "StatusContext" ? check.state === "SUCCESS" : PASSED_CONCLUSIONS.has(check.conclusion ?? "")));
+  const onlyCancelled = unpassed.every((check) => check.__typename !== "StatusContext" && check.conclusion === "CANCELLED");
+  return onlyCancelled ? unpassed.map((check) => ({ name: nameOf(check), detailsUrl: typeof check.detailsUrl === "string" ? check.detailsUrl : null })) : [];
+}
+
+/**
  * The checks whose newest run is not red (`red`, as {@link failingChecks} reads the newest of each name), split into the ones that passed and the ones that have not (contract 1.15): `passing` is the newest run concluded
  * green, `pending` is a run with no conclusion yet, a cancelled or stale one, and a commit status that is pending or expected. A name is in one of `red`, `passing` and `pending`, never two. A commit status is read as a check run, as it is there.
  */
@@ -261,7 +271,10 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
   ];
   // The branch's own head, which a review's commit is compared with: the commits connection can lag the ref by a few seconds after a push.
   const head = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-  const contexts: Check[] = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  const contexts: Check[] = rollup?.nodes ?? [];
+  // A rollup cut at 100 may hide a red or running required run: nothing is said to be only cancelled then.
+  const rollupCut = rollup?.pageInfo?.hasNextPage === true;
   const red = failingChecks(contexts, policy, flowRequires);
   const failing = red.filter(({ counted }) => counted);
   const newest = (times: (number | null)[]): number | null => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);
@@ -274,6 +287,8 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
     failedAt: newest(failing.map(({ at }) => at)),
     conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
     behind: pr.mergeStateStatus === "BEHIND",
+    blocked: pr.mergeStateStatus === "BLOCKED",
+    cancelledRequired: rollupCut ? [] : cancelledRequired(contexts),
     // Absent when the answer carries no `autoMergeRequest` at all: that is "the host did not say", and a pull request with auto-merge off has the field as null.
     ...(pr.autoMergeRequest === undefined ? {} : { armed: pr.autoMergeRequest !== null }),
     mergeable: pr.mergeable === "MERGEABLE",

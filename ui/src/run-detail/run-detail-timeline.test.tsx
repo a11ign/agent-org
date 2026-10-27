@@ -108,6 +108,19 @@ describe("the Timeline's base-merge rows", () => {
   });
 });
 
+describe("the Timeline's cancelled-rerun rows", () => {
+  it("word the rerun of a cancelled run that blocked an approved, armed pull request, and a rerun the code host refused (A11-342)", () => {
+    const rows = rowsOf([
+      { at: NOW - 3 * MINUTE, kind: "cancelled-rerun", url: PULL, head: "8b3d0ba9d1b24e3b5828da68e14db3d2540d87f3", checks: ["gate"], refused: "run 40438392613 cannot be rerun" },
+      { at: NOW - 30_000, kind: "cancelled-rerun", url: PULL, head: "8b3d0ba9d1b24e3b5828da68e14db3d2540d87f3", checks: ["gate"] },
+    ], { phase: "queued" });
+    expect(rows.map(({ text, when, tone }) => [text, when, tone])).toEqual([
+      ["a11ign/lab #150 is blocked behind a cancelled run of gate at 8b3d0ba9: reran it", "just now", "violet"],
+      ["a11ign/lab #150 is blocked behind a cancelled run of gate at 8b3d0ba9: could not rerun it (run 40438392613 cannot be rerun)", "3 min ago", "amber"],
+    ]);
+  });
+});
+
 describe("the Timeline's tracker-write rows", () => {
   it("word each failed write of the run's result to the tracker, with the error it gave (A11-304)", () => {
     const rows = rowsOf([

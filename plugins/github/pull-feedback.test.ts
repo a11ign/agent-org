@@ -36,7 +36,7 @@ test("the newest review, conversation comment or inline comment by anyone but th
   }));
   const read = readPullFeedback(URL, "worker-bot", run);
   assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failures: [], failedAt: null, conflicting: false, behind: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true,
-    verdictAtHead: null, pendingRequired: [], body: "" },
+    verdictAtHead: null, pendingRequired: [], body: "", blocked: false, cancelledRequired: [] },
     "an approval and the workers' own comments are not feedback");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
   assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
@@ -200,6 +200,36 @@ test("A11-291: `armed` says whether auto-merge is on for the pull request, and i
   const { run, calls } = answering(pullWith({ autoMergeRequest: null }));
   readPullFeedback(URL, "worker-bot", run);
   assert.match(calls[0].join(" "), /autoMergeRequest \{ enabledAt \}/, "the query asks for it");
+});
+
+const RUN_URL = (run: number, job: number) => `https://github.com/a11ign/announcement-emulator/actions/runs/${run}/job/${job}`;
+const gateRun = (conclusion: string | null, run: number, minute: number, isRequired = true, name = "gate") => ({ __typename: "CheckRun", name, conclusion, completedAt: at(minute), detailsUrl: RUN_URL(run, run + 1), isRequired });
+
+test("A11-342: BLOCKED reads as blocked, and CLEAN, BEHIND and a pull request still being computed as not", () => {
+  const blockedOf = (mergeStateStatus: string) => readPullFeedback(URL, "me", answering(pullWith({ mergeStateStatus })).run)?.blocked;
+  assert.deepEqual(["BLOCKED", "CLEAN", "BEHIND", "DIRTY", "UNKNOWN"].map(blockedOf), [true, false, false, false, false]);
+});
+
+test("A11-342: a required check whose runs on the head are one green and one cancelled lists the cancelled run, which the other run's green does not excuse", () => {
+  const read = readPullFeedback(URL, "me", answering(pullWith({ mergeStateStatus: "BLOCKED", checks: [gateRun("SUCCESS", 40438392487, 30), gateRun("CANCELLED", 40438392613, 31)] })).run);
+  assert.deepEqual(read?.cancelledRequired, [{ name: "gate", detailsUrl: RUN_URL(40438392613, 40438392614) }], "only the cancelled run is listed, with the address of its job");
+  assert.deepEqual([read?.blocked, read?.failing, read?.pendingRequired], [true, [], ["gate"]], "it is not a failure; it is a required check that has not passed");
+});
+
+test("A11-342: a required run that failed or is still running, beside a cancelled one, leaves the list empty: the pull request waits on something else", () => {
+  const listed = (checks: unknown[]) => readPullFeedback(URL, "me", answering(pullWith({ mergeStateStatus: "BLOCKED", checks })).run)?.cancelledRequired;
+  assert.deepEqual(listed([gateRun("CANCELLED", 1, 30), gateRun("FAILURE", 3, 31, true, "suite")]), [], "a red required check");
+  assert.deepEqual(listed([gateRun("CANCELLED", 1, 30), gateRun(null, 3, 31, true, "suite")]), [], "a required check still running");
+  assert.deepEqual(listed([gateRun("CANCELLED", 1, 30), { __typename: "StatusContext", context: "netlify", state: "PENDING", createdAt: at(32), isRequired: true }]), [], "a required commit status that has not passed");
+  assert.deepEqual(listed([gateRun("CANCELLED", 1, 30, false), gateRun("SUCCESS", 3, 31)]), [], "a cancelled run of a check that is not required blocks nothing");
+  assert.deepEqual(listed([gateRun("SUCCESS", 1, 30), gateRun("SKIPPED", 3, 31, true, "docs"), gateRun("NEUTRAL", 5, 32, true, "types")]), [], "all green, skipped and neutral: nothing is cancelled");
+});
+
+test("A11-342: a rollup cut at 100 entries says nothing is only cancelled, since a red or running required run may be past the cut", () => {
+  const pull = pullWith({ mergeStateStatus: "BLOCKED", checks: [gateRun("SUCCESS", 1, 30), gateRun("CANCELLED", 3, 31)] });
+  const cut = (hasNextPage: boolean) => ({ ...pull, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage }, nodes: pull.commits.nodes[0].commit.statusCheckRollup.contexts.nodes } } } }] } });
+  assert.deepEqual(readPullFeedback(URL, "me", answering(cut(false)).run)?.cancelledRequired?.map(({ name }) => name), ["gate"]);
+  assert.deepEqual(readPullFeedback(URL, "me", answering(cut(true)).run)?.cancelledRequired, []);
 });
 
 /** The feedback read of a pull request in a repository that is `private` and holds the merge bot or not: the repository's own fields beside the pull request, as the query asks them. */

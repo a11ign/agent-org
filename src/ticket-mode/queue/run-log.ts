@@ -73,6 +73,11 @@ type EventBody =
   | Readonly<{ kind: "merged"; url: string }>
   /** `base` is the branch the pull request merges into, or null when the host did not say. */
   | Readonly<{ kind: "base-merge"; url: string; base: string | null; step: BaseMergeStep }>
+  /**
+   * The board reran the cancelled runs of the required `checks` that blocked an approved, armed pull request at `head` (A11-342): once for a head, and this event is what says so. `refused` is why the code host would not rerun them, in its own first line: the board
+   * asks again at the next watch, up to three refusals for a head.
+   */
+  | Readonly<{ kind: "cancelled-rerun"; url: string; head: string; checks: readonly string[]; refused?: string }>
   /** `outcome` is the kind of outcome the run ended on, and `reason` the one it gave, where it has one. */
   | Readonly<{ kind: "finished"; outcome: string; reason?: string }>
   /** A failed write of the run's result to the tracker (A11-304): the `failures`th, and the first line of the error the tracker or the network gave. */
