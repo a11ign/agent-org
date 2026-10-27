@@ -31,9 +31,9 @@ export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "decisio
 /**
  * Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, a stop behind a ticket its worker waits on (A11-272), a hold for its ticket's CI spend (A11-261), or the step
  * it waited with while a conflict round on one of its earlier pull requests ran (`conflict-round`, A11-286),
- * or a restart that caught it still starting, before its agent opened (`restart`, A11-294), or the board's own retry of a run that crashed on a transient network error (`crash-retry`, A11-345).
+ * or a restart that caught it still starting, before its agent opened (`restart`, A11-294), or the board's own retry of a run that crashed on a transient network error (`crash-retry`, A11-345), or a run that ended `wrong-repo` naming a repository of the organisation, which the board moved there and started again (`rerouted`, A11-355).
  */
-export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget" | "conflict-round" | "restart" | "crash-retry";
+export type RequeueWhy = "retry" | "next-step" | "update" | "replan" | "blocker" | "ci-budget" | "conflict-round" | "restart" | "crash-retry" | "rerouted";
 
 /**
  * What the board did about a pull request that conflicts with its base or is behind it (A11-286, {@link BaseMergeStep}): it asked the host to merge the base in (`merging`, for a conflict; `behind`, for a branch that is only behind), it started a conflict round

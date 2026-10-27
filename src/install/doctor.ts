@@ -71,6 +71,8 @@ import { DEFAULT_TERMINAL_PORT, herdrConfigDir, loopbackPort, PAIRING_STEPS } fr
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { coreRowsHelpers, realExec, realPlace, realProbe } from "../plugins/active.ts";
 import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
+import { loadedCodeHost } from "../plugins/code-host-slot.ts";
+import { readOrganisation, unclonedOf } from "../ticket-mode/org-repos.ts";
 import { cloneOfDeclared, type DeclaredRepository } from "../declared-clone.ts";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 
@@ -153,6 +155,11 @@ export type DoctorDeps = Readonly<{
   reviewing: ReviewerHelpers;
   /** The code repositories the project declares (`code` in `project.json`). REJECTS with the reader's refusal when the declaration cannot be read, which a machine with no project does as it is imported (A11-292). */
   declaredRepositories: () => Promise<readonly DeclaredRepository[]>;
+  /**
+   * The live repositories of the organisation the host file holds no clone of, by `owner/name`, or why the organisation could not be listed (A11-355). Absent: doctor asks nothing of the organisation. A test injects one, so no `gh` runs.
+   * The default asks the code host, as the account doctor runs as.
+   */
+  unclonedRepositories?: (clones: Readonly<Record<string, string>>) => Readonly<{ uncloned: readonly string[] }> | Readonly<{ unreadable: string }>;
   /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
   reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
   /** The tests the flake log in `stateDir` lists as needing a fix (A11-300): flaked three times in seven days. A test injects them, so no file is read. */
@@ -533,6 +540,25 @@ function cloneCheckOf({ key, repo }: DeclaredRepository, code: readonly Declared
 }
 
 /**
+ * One row listing every live repository of the organisation this machine has no clone of (A11-355). It is a warning, not a failure: the board clones each one itself, on its own sweep and the moment a plan or a worker names it, so the
+ * row says what is still to come and does not stop an install. A list the code host would not give is said too, and a row that finds none missing is green.
+ */
+function organisationCloneCheck(settings: TicketSettings | null, deps: DoctorDeps): Check[] {
+  if (settings === null || deps.unclonedRepositories === undefined) return [];
+  const name = "organisation clones";
+  let reading: ReturnType<NonNullable<DoctorDeps["unclonedRepositories"]>>;
+  try {
+    reading = deps.unclonedRepositories(settings.clones);
+  } catch (err) {
+    reading = { unreadable: String((err as Error)?.message ?? err).split("\n")[0] };
+  }
+  if ("unreadable" in reading) return [warned(name, `the organisation's repositories could not be listed (${reading.unreadable}), so doctor cannot say which have no clone`, "run `gh auth status`, and check the code host plugin in the host file")];
+  if (reading.uncloned.length === 0) return [ok(name, "every live repository of the organisation has a clone")];
+  return [warned(name, `${reading.uncloned.length} live ${reading.uncloned.length === 1 ? "repository" : "repositories"} of the organisation ${reading.uncloned.length === 1 ? "has" : "have"} no clone: ${reading.uncloned.join(", ")}`,
+    "the board clones each one on its next sweep (every few minutes), and the moment a plan or a worker names it")];
+}
+
+/**
  * One FAIL row per old key the file still reads (A11-144): the key, and its place under `tickets.providers`. A host file with none is green here. The
  * fix is the same for every row, so the person runs it once.
  */
@@ -565,6 +591,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     host,
     ...aliasChecks(settings),
     ...(noProject ? [] : await repositoryCloneChecks(settings, deps)),
+    ...organisationCloneCheck(settings, deps),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", `run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, or by hand: \`${handInstallCommand(deps.platform, deps.arch, deps.env)}\``) : ok("herdr", herdr),
     ...(herdr === null ? [] : herdrUpkeepChecks(deps)),
     writerCheck(settings, plugins),
@@ -1032,6 +1059,11 @@ export function defaultDoctorDeps(): DoctorDeps {
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewing: gateHelpers(),
+    unclonedRepositories: (clones) => {
+      const codeHost = loadedCodeHost();
+      const organisation = readOrganisation(clones, codeHost);
+      return "unreadable" in organisation ? organisation : { uncloned: unclonedOf(organisation.repositories, clones, codeHost).map(({ fullName }) => fullName) };
+    },
     declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code,
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
     flakes: (stateDir) => flakesViewOf(flakesPath(stateDir), Date.now()),

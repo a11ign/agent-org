@@ -344,8 +344,8 @@ const cloneNames = (clones: Readonly<Record<string, string>>): string => Object.
  * What a planner is told of a ticket's repository: its project's, from the address in the project's summary (`project-repo.ts`), which is the default for
  * its `repo` unless the work belongs in another repository. A project naming none leaves the choice to the planner (A11-116). PURE.
  */
-const projectRepoLine = (ticket: Ticket, clones: Readonly<Record<string, string>>): string => {
-  const repo = repoOfProject(ticket.projectSummary, Object.keys(clones));
+const projectRepoLine = (ticket: Ticket, clones: Readonly<Record<string, string>>, uncloned: readonly string[] = []): string => {
+  const repo = repoOfProject(ticket.projectSummary, [...Object.keys(clones), ...uncloned]);
   const project = ticket.project === null ? "No project" : `Its project, ${ticket.project},`;
   return repo === null
     ? `${project} names no repository on this machine, so the plan names the one its work lands in.`
@@ -353,6 +353,16 @@ const projectRepoLine = (ticket: Ticket, clones: Readonly<Record<string, string>
 };
 
 const reposText = (clones: Readonly<Record<string, string>>): string => Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
+
+/**
+ * The organisation's live repositories this machine has no clone of (A11-355), for a planner to choose from beside the clones: the board clones one when a plan names it, so a ticket whose work belongs in a repository nobody cloned is planned
+ * into it. Empty when there are none, or the organisation could not be listed. PURE.
+ */
+const unclonedText = (uncloned: readonly string[]): string => (uncloned.length === 0 ? "" : `
+
+These repositories of the organisation are not cloned on this machine yet. They are as good a choice as the ones above: name one, and the board clones it before a worker starts. You cannot read them, so plan from the ticket.
+
+${uncloned.map((name) => `- \`${name}\``).join("\n")}`);
 
 /**
  * The feedback line for a pull request that conflicts with its base, as `pool.ts` writes it into a round's feedback. `CONFLICT_LINE` finds it there,
@@ -376,9 +386,9 @@ export function conflictsIn(text: string): string | null {
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
  */
-export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, blockers = [], findings = [], closed = [], claims = [], replan }: {
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, uncloned = [], run, notes, connectors = [], read, blockers = [], findings = [], closed = [], claims = [], replan }: {
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
-  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; claims?: readonly HeldClaim[]; replan?: Replan;
+  clones: Readonly<Record<string, string>>; uncloned?: readonly string[]; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; claims?: readonly HeldClaim[]; replan?: Replan;
 }): string {
   const repos = reposText(clones);
   const instruction = plannerInstruction(run, [ticket.key], planDir);
@@ -392,7 +402,7 @@ ${ticket.url}
 
 ${readLine(read)}${ticket.description.trim() || "(no description)"}
 
-${projectRepoLine(ticket, clones)}
+${projectRepoLine(ticket, clones, uncloned)}
 
 ## Files from the ticket
 
@@ -402,7 +412,7 @@ ${parentText(parent)}${findingsText(blockers, findings)}${closedWorkText(closed,
 
 Read them to plan, but never change them, commit in them or change their branches:
 
-${repos}
+${repos}${unclonedText(uncloned)}
 
 ${claimsSection(claims)}
 ## What to do
@@ -445,7 +455,7 @@ Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may
 export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[] }>;
 
 /** One ticket's section of a batch's brief. Its description is quoted, as a parent's is, so its headings cannot read as the brief's. */
-function batchTicketText({ ticket, attachments, parent, read, blockers = [], findings = [], closed = [] }: BatchTicket, clones: Readonly<Record<string, string>>): string {
+function batchTicketText({ ticket, attachments, parent, read, blockers = [], findings = [], closed = [] }: BatchTicket, clones: Readonly<Record<string, string>>, uncloned: readonly string[]): string {
   const parentPart = parent === null ? "" : `
 ### ${ticket.key} is part of ${parent.ticket.key}: ${parent.ticket.title}
 
@@ -464,7 +474,7 @@ ${ticket.url}
 
 ${readLine(read)}${quoted(ticket.description)}
 
-${projectRepoLine(ticket, clones)}
+${projectRepoLine(ticket, clones, uncloned)}
 
 ### Files from ${ticket.key}
 
@@ -477,19 +487,19 @@ ${parentPart}${findingsText(blockers, findings).replace(/^\n## /, "\n### ")}${cl
  * question) per ticket, and the batch's order, in `planDir`. `runDir` holds the run's outcome file. `run` is the host file's
  * `tickets.planner.run`, with the tickets and the folder filled in.
  */
-export function batchPlanBriefText({ tickets, runDir, planDir, clones, run, notes, connectors = [], claims = [] }: {
-  tickets: readonly BatchTicket[]; runDir: string; planDir: string; clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; claims?: readonly HeldClaim[];
+export function batchPlanBriefText({ tickets, runDir, planDir, clones, uncloned = [], run, notes, connectors = [], claims = [] }: {
+  tickets: readonly BatchTicket[]; runDir: string; planDir: string; clones: Readonly<Record<string, string>>; uncloned?: readonly string[]; run: string; notes?: string; connectors?: readonly string[]; claims?: readonly HeldClaim[];
 }): string {
   const keys = tickets.map(({ ticket }) => ticket.key);
   return `# Plan ${keys.length} tickets together: ${keys.join(", ")}
 
 You are an unattended planner. Nobody will answer a question. A person queued these tickets together, so they are likely linked: plan them as one batch, and change no code. Make no worktree, commit, push or pull request. A worker implements each plan once the board has attached it to its ticket.
-${tickets.map((member) => batchTicketText(member, clones)).join("")}
+${tickets.map((member) => batchTicketText(member, clones, uncloned)).join("")}
 ## The repositories on this machine
 
 Read them to plan, but never change them, commit in them or change their branches:
 
-${reposText(clones)}
+${reposText(clones)}${unclonedText(uncloned)}
 
 ${claimsSection(claims, BATCH_CLAIMS_BULLET)}
 ## What to do
@@ -515,7 +525,7 @@ ${STALLING_COMMANDS}
 Write everything in \`${planDir}\`, and nowhere else:
 
 - \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when its plan needs an item of the escalation list. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${PATHS_RULE}
-- \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. A ticket's \`repo\` is its project's repository, named with it above, unless its work belongs in another repository. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
+- \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. A ticket's \`repo\` is its project's repository, named with it above, unless its work belongs in another repository. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}${uncloned.length === 0 ? "" : `, or one of the repositories of the organisation that are not cloned yet, which the board clones for you: ${uncloned.map((name) => `\`${name}\``).join(", ")}`}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
 
 How \`wait\` says how a ticket waits on each ticket in its \`after\`:
 
@@ -658,7 +668,7 @@ You are in this ticket's own folder, \`${folder}\`. These are the repositories o
 
 ${repos}
 
-1. From the ticket, decide which repository the fix belongs in. ${repo === null ? "" : `The ticket's project names \`${repo}\`, so its work lands there unless it belongs in another of these repositories: then name that one. `}A ticket may name a repository that has since been retired or moved into another one: check where the code lives now, and use that. If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a \`wrong-repo\` outcome naming where it belongs.
+1. From the ticket, decide which repository the fix belongs in. ${repo === null ? "" : `The ticket's plan, project or an earlier run names \`${repo}\`, so its work lands there unless it belongs in another of these repositories: then name that one. `}A ticket may name a repository that has since been retired or moved into another one: check where the code lives now, and use that. If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a \`wrong-repo\` outcome naming where it belongs. When it belongs in another repository of the organisation, name it as \`owner/repo\`: the board clones it if this machine has not, and starts you again there, so nothing is asked of a person.
 2. Make your worktree there with \`${worktreeCommand} <repo>\`. It creates \`${folder}/<repo>\` on the ticket's branch \`${ticket.branch}\`, from the repository's default branch, and on a retry it gives you back the one an earlier run made: continue from its commits rather than starting again. Run it once per repository you change; most tickets need one.
 3. Work, commit and push only inside those worktrees. Read each repository's \`CLAUDE.md\` and \`AGENTS.md\` before you change anything, and use the install, test, typecheck and lint commands they give, scoped to the package you change. ${CHECK_CHANGED_RULE} ${PUSH_ONCE_RULE}
 
