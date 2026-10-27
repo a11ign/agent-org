@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The herdr web UI plugin moves to its newest release again (A11-287). Release v0.4.16 renamed the plugin's manifest id from `devswha.herdr-web-ui` to `devswha.ovis`, so `herdr plugin install` added a second `plugins.json` entry and every reader kept the old one: `agent-org update` re-ran the install every ten minutes, the read-back never saw the tag, doctor kept warning, the terminal service kept running the old copy, and `onboard` on a fresh machine failed on the renamed entry. A herdr plugin is now found by its GitHub repository, the entry on the highest release tag is the current one, the terminal service runs its root, and once it does `agent-org update` uninstalls the older copies. An install, read-back or uninstall that does not take is one error line with herdr's own output, is recorded in `herdr-status.json`, and makes that update run exit 1; later runs on the same release stay quiet, a newer release tries again, and `doctor` fails the plugin row until it is fixed.
