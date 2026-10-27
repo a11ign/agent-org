@@ -165,7 +165,7 @@ function applyUpdate(layout: Layout, downMs: number): void {
     prune: () => [],
     migrate: () => [],
     drain: { read: () => readDrain(drainFile), write: (record) => writeDrain(drainFile, record), clear: () => clearDrain(drainFile) },
-    maxDeferHours: 2, now: () => Date.now(), status: { write: () => undefined }, upkeep: () => [], conventions: () => ({ said: [], failed: [] }), herdr: () => ({ said: [], failed: [] }),
+    maxDeferHours: 2, now: () => Date.now(), status: { write: () => undefined }, upkeep: () => [], conventions: () => ({ said: [], failed: [] }), hostInstall: () => ({ said: [], failed: [] }), herdr: () => ({ said: [], failed: [] }),
     out: { log: (line: string) => said.push(line), error: (line: string) => said.push(`error: ${line}`) },
   };
   try {
