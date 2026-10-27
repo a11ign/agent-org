@@ -60,6 +60,7 @@ import { markedHeads, mergeNote } from "./board-view/not-merging.ts";
 import { recordMergeNote } from "./queue/queue-merge-note.ts";
 import type { MergeFlow } from "../plugins/contracts/code-host.ts";
 import { sweepRunTmp } from "./run-isolation.ts";
+import { retryCrashed } from "./pool-crash-retry.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
@@ -507,6 +508,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
       if (releasing !== null) await releasing;
       // A run held for its ticket's CI spend has seen one more pass; after two it is released, and this pass's fill may start it (A11-261).
       ageCiHolds(ctx);
+      // A run that crashed on a transient network error is queued again once its back-off has passed, so this pass's fill may start it (A11-345).
+      retryCrashed(ctx);
       await fill(ctx);
       // After the fill, which decides who starts: what each queued run waits on, and since when, so a wait on the same ticket for hours is listed (A11-298). Written only when a wait began, changed or ended.
       noteWaits(ctx);

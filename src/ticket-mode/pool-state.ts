@@ -7,6 +7,7 @@ import { herdrName } from "./pool-herdr.ts";
 import { ticketDir, ticketFolder, writerDir, writerFolder } from "./ticket-paths.ts";
 import { writerOf } from "./queue.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { causeCodeOf } from "./crash-retry.ts";
 
 /** Listings in a row a run may be missing from before its workspace counts as gone: a running run is then crashed, and a parked one unparked. */
 const MISSES_TO_GONE = 2;
@@ -14,7 +15,12 @@ const MISSES_TO_GONE = 2;
 /** A line in the board's log, which is its standard error. */
 export const log = (line: string): void => { process.stderr.write(`ticket:serve: ${line}\n`); };
 
-export const messageOf = (err: unknown): string => String((err as Error)?.message ?? err);
+/** What `err` says, and, when it carries one, the code of the network error under it, so a `fetch failed` in the board's log says why (A11-345): `fetch failed (UND_ERR_SOCKET)`. */
+export const messageOf = (err: unknown): string => {
+  const message = String((err as Error)?.message ?? err);
+  const code = causeCodeOf(err);
+  return code === undefined || message.includes(code) ? message : `${message} (${code})`;
+};
 
 /** How a run that could not start ended: crashed, with the first line of its error. */
 export const crashed = (err: unknown): Outcome => ({ kind: "crashed", reason: messageOf(err).split("\n")[0] });

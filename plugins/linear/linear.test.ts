@@ -776,3 +776,52 @@ test("A11-168: claims() answers the claimant of each key's latest claim in one a
   assert.deepEqual([...found], [["NBF-4", "new.2"]]);
   assert.equal(requests.length, 1);
 });
+
+/** A fetch that fails the first `failures` calls to Linear with what Node throws for a dropped connection, then answers `page`, recording the headers of every call. */
+function dropping(failures: number, failure: unknown, page: unknown) {
+  const calls: Headers[] = [];
+  const fetch = (async (_url: string, init: RequestInit = {}) => {
+    calls.push(new Headers(init.headers));
+    if (calls.length <= failures) throw failure;
+    return new Response(JSON.stringify(page), { status: 200 });
+  }) as typeof globalThis.fetch;
+  return { fetch, calls };
+}
+const staleSocket = () => new TypeError("fetch failed", { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) });
+const FOUND = { data: { issues: { nodes: [node("NBF-1")] } } };
+
+test("A11-345: a call that fails with fetch failed is sent once more on a connection that is closed after it, and the second answer is the call's", async () => {
+  const { fetch, calls } = dropping(1, staleSocket(), FOUND);
+  assert.equal((await linearSource({ key: "k", fetch }).read("NBF-1"))?.title, "Title NBF-1");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].get("connection"), null, "the first call keeps the pool's connections");
+  assert.equal(calls[1].get("connection"), "close");
+  assert.equal(calls[1].get("authorization"), "k", "the retry sends the key as the first call did");
+});
+
+test("A11-345: a second fetch failed is the caller's, not tried a third time", async () => {
+  const { fetch, calls } = dropping(2, staleSocket(), FOUND);
+  await assert.rejects(linearSource({ key: "k", fetch }).read("NBF-1"), /fetch failed/);
+  assert.equal(calls.length, 2);
+});
+
+test("A11-345: an error that is not fetch failed is not sent again", async () => {
+  const { fetch, calls } = dropping(1, new RangeError("bad"), FOUND);
+  await assert.rejects(linearSource({ key: "k", fetch }).read("NBF-1"), /bad/);
+  assert.equal(calls.length, 1);
+  const refused = dropping(0, null, { errors: [{ message: "Authentication required" }] });
+  await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).read("NBF-1"), /Authentication required/);
+  assert.equal(refused.calls.length, 1, "an answer from Linear, even a refusal, is not a dropped connection");
+});
+
+test("A11-345: a mutation that fails with fetch failed is not sent again by the client, which cannot tell whether Linear applied it", async () => {
+  const sent: string[] = [];
+  const fetch = (async (_url: string, init: RequestInit = {}) => {
+    const { query } = JSON.parse(String(init.body)) as { query: string };
+    sent.push(query.trim().split("(")[0]);
+    if (query.trim().startsWith("mutation")) throw staleSocket();
+    return new Response(JSON.stringify({ data: { issues: { nodes: [{ id: "id-1" }] } } }), { status: 200 });
+  }) as typeof globalThis.fetch;
+  await assert.rejects(linearSource({ key: "k", fetch }).comment!("NBF-1", "hello"), /fetch failed/);
+  assert.equal(sent.filter((each) => each === "mutation").length, 1, "the mutation was sent once");
+});

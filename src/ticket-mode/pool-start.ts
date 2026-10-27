@@ -8,7 +8,7 @@ import { earlyCompletionComment, recordCompletedByPerson, recordReopenFailure, r
 import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";
 import { runEnvOf } from "./run-env.ts";
 import { withRunTmpMade } from "./run-isolation.ts";
-import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
+import { isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentTarget } from "./pool-resume.ts";
@@ -47,6 +47,8 @@ import { trackerWritingOf } from "../plugins/registry.ts";
 import { checkRunBrief } from "./pool-check-runs.ts";
 import { isCheckRun, VERIFIER_EFFORT, VERIFIER_MODEL } from "./after-merge/verify.ts";
 import { settleSessions } from "./pool-sessions.ts";
+import { endCrashed } from "./pool-crash-retry.ts";
+import { ATTACH_WAITS_MS, isTransient, MS_PER_SECOND } from "./attach-retry.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
@@ -516,7 +518,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     await takeTicket(ctx, queuedRun);
     await settleStart(ctx, runPlace(ctx, queuedRun));
   } catch (err) {
-    update(ctx, (queue) => finish(queue, entry.ticket.key, crashed(err), now()));
+    endCrashed(ctx, [entry.ticket.key], err);
   }
 }
 
@@ -561,7 +563,7 @@ async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<vo
     for (const member of members) claimTicket(ctx, member.ticket.key);
     await settleStart(ctx, runPlace(ctx, lead));
   } catch (err) {
-    updateEach(ctx, batch.filter(({ ticket }) => phaseOf(ctx, ticket.key) === "starting"), (queue, key) => finish(queue, key, crashed(err), now()));
+    endCrashed(ctx, batch.filter(({ ticket }) => phaseOf(ctx, ticket.key) === "starting").map(({ ticket }) => ticket.key), err);
   }
 }
 
@@ -593,6 +595,24 @@ export async function undoEarlyCompletion(ctx: PoolContext, entry: Entry): Promi
   }
 }
 
+const START_WRITE_WAITS_MS = ATTACH_WAITS_MS.slice(0, 2);
+
+/**
+ * A tracker write a run makes as it starts, which nothing waits on and nothing turns on (A11-345): a failure of the network or a 5xx is tried again after the first two waits of a plan attach ({@link ATTACH_WAITS_MS}: 5 s and 30 s, so a move that
+ * keeps failing holds a restore of the ticket's state no longer than that), and the write that still fails throws to the caller, which writes it to the board's log. The run itself never waits on it and never crashes on it.
+ */
+async function bestEffort<T>(ctx: PoolContext, write: () => Promise<T>): Promise<T> {
+  for (let tried = 0; ; tried += 1) {
+    try {
+      return await write();
+    } catch (err) {
+      if (!isTransient(err) || tried >= START_WRITE_WAITS_MS.length) throw err;
+      log(`a tracker write at a run's start failed (${messageOf(err)}); trying again in ${START_WRITE_WAITS_MS[tried] / MS_PER_SECOND} s`);
+      await ctx.wait(START_WRITE_WAITS_MS[tried]);
+    }
+  }
+}
+
 /**
  * Tell the tracker a worker has started on the ticket, by moving it to this machine's working state, and keep the state it moved it out of on
  * the run, so the board can put it back. Nothing waits on the move and nothing turns on it, so a failure is written to the board's log rather
@@ -604,7 +624,7 @@ function moveTicketToWorkingState(ctx: PoolContext, key: string): void {
   const move = source.moveToWorkingState?.bind(source);
   if (workingState === null || move === undefined) return;
   // Started inside a promise, so even a source that throws before it answers cannot reach the run.
-  const pending: Promise<void> = Promise.resolve().then(() => move(key, workingState))
+  const pending: Promise<void> = Promise.resolve().then(() => bestEffort(ctx, () => move(key, workingState)))
     .then(({ moved, note }) => {
       if (moved !== null) update(ctx, (queue) => recordMove(queue, key, moved));
       if (note !== null) log(note);
@@ -623,7 +643,7 @@ function claimTicket(ctx: PoolContext, key: string): void {
   const claim = source.claim?.bind(source);
   if (claim === undefined) return;
   // Started inside a promise, so even a source that throws before it answers cannot reach the run.
-  void Promise.resolve().then(() => claim(key, claimantOf(settings)))
+  void Promise.resolve().then(() => bestEffort(ctx, () => claim(key, claimantOf(settings))))
     .catch((err) => log(`${key} could not be claimed in the tracker: ${messageOf(err)}`));
 }
 

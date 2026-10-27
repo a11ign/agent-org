@@ -100,7 +100,7 @@ test("the worker's outcome is never rewritten: the run log ends done, and each f
   const kinds = run.log().map((event) => event.kind);
   assert.deepEqual(kinds.filter((kind) => kind === "tracker-write"), ["tracker-write", "tracker-write"]);
   const writes = run.log().flatMap((event) => (event.kind === "tracker-write" ? [[event.step, event.failures, event.error]] : []));
-  assert.deepEqual(writes, [["retrying", 1, "fetch failed"], ["retrying", 2, "fetch failed"]]);
+  assert.deepEqual(writes, [["retrying", 1, "fetch failed (ECONNRESET)"], ["retrying", 2, "fetch failed (ECONNRESET)"]]);
   const finished = run.log().filter((event) => event.kind === "finished");
   assert.deepEqual(finished.map((event) => (event.kind === "finished" ? event.outcome : "")), ["done"], "the run finished once, as the worker said");
   assert.equal(kinds.includes("needs-you"), false);
@@ -149,7 +149,7 @@ test("a transient error that lasts more than an hour ends Needs you under the ac
   await run.tick(writeWait(tries));
   const outcome = run.entry(KEY).outcome as Extract<Outcome, { kind: "needs-human" }>;
   assert.deepEqual([outcome.kind, outcome.escalation], ["needs-human", "access"]);
-  assert.match(outcome.reason, new RegExp(`^money, access or security — ${KEY} could not be completed \\(fetch failed; it has failed since .+, more than an hour\\): ${DONE.reason}$`));
+  assert.match(outcome.reason, new RegExp(`^money, access or security — ${KEY} could not be completed \\(fetch failed \\(ECONNRESET\\); it has failed since .+, more than an hour\\): ${DONE.reason}$`));
   assert.equal(run.log().some((event) => event.kind === "tracker-write" && event.step === "gave-up"), true);
   assert.ok(WRITE_GIVE_UP_MS === HOUR);
   const after = run.calls.length;
