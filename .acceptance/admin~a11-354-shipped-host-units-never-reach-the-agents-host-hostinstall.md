@@ -6,3 +6,5 @@ npx rstest run --config scripts/rstest/rstest.config.ts src/host-units/keep-prev
 ```
 
 Consumer-declaration: none -- no host file changes meaning. The install a person runs without the unattended flag does what it did, and now also keeps a file it replaces beside the new copy.
+
+History: full

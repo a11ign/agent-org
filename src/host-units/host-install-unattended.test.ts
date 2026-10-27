@@ -1,4 +1,5 @@
 // no-token: gh -- nothing here reaches a real `gh`, `systemctl` or the host's own directories: every shipped directory, installed directory, bin directory and home is a temp directory this file
+// requires: history
 // builds, and `systemctl` is a function that remembers what it was told.
 /**
  * A11-354: THE ORG INSTALLS WHAT A RELEASE SHIPS TO THE HOST ITSELF.

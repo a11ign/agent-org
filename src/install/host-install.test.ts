@@ -1,4 +1,5 @@
 // no-token: none -- the program the install runs is a stand-in function; nothing here starts a process or reads the host.
+// requires: history
 /**
  * A11-354: THE UPDATE RUNS THE HOST INSTALL FROM THE INSTALLED RELEASE.
  *
