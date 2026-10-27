@@ -181,7 +181,7 @@ test("A11-181: a merged pull request the code host cannot read, under an outcome
 test("A11-181: a code host that throws on the read is asked again on the next sweep, as one that answers null is", async () => {
   const made = world();
   let refusing = true;
-  const flaky = { ...made.codeHost, readMergedFindings: (url: string) => { if (refusing) throw new Error("gh exploded"); return made.codeHost.readMergedFindings!(url); } };
+  const flaky = { ...made.codeHost, readMergedFindings: async (url: string) => { if (refusing) throw new Error("gh exploded"); return made.codeHost.readMergedFindings!(url); } };
   const pool = made.restart({ source: made.source, codeHost: flaky });
   seed(made.codeHost, PR, "Closes NBF-1\n");
   finishedOn(made, { partial: DONE_LIST, by: "integration" });

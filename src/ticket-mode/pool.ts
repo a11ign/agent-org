@@ -130,13 +130,13 @@ export { ticketDir, ticketFolder } from "./ticket-paths.ts";
  * would start a plain conflict round that names neither the stack nor the merged member, a round the restack then leaves alone. So the restack goes first: a restack that conflicts starts its own round,
  * which takes the run out of `finished`, and the watch leaves it alone. The restack is idempotent per merged member (its pull requests are read again, and nothing is restacked or asked twice), so it still runs on its own timer too. A restack that throws is said, and the watch runs.
  */
-function restackThenWatch(ctx: PoolContext): void {
+async function restackThenWatch(ctx: PoolContext): Promise<void> {
   try {
-    retargetStacked(ctx);
+    await retargetStacked(ctx);
   } catch (err) {
     log(`the stacked pull requests could not be restacked before the feedback watch: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`);
   }
-  watchFeedback(ctx);
+  await watchFeedback(ctx);
   ctx.keptSweep.done = watchKeptPulls(ctx).then((queued) => { if (queued) void tick(ctx); });
 }
 

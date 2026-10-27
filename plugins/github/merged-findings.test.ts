@@ -59,12 +59,12 @@ test("addedSections takes a heading added inside a fence the diff only shows as 
 /** A `run` that answers `gh pr view` with `view` and `gh pr diff` with `diff`, and records each call. */
 function answering(view: unknown, diff: string) {
   const calls: string[][] = [];
-  return { calls, run: (args: string[]) => { calls.push(args); return args[1] === "view" ? JSON.stringify(view) : diff; } };
+  return { calls, run: async (args: string[]) => { calls.push(args); return args[1] === "view" ? JSON.stringify(view) : diff; } };
 }
 
-test("readMergedFindings returns the pull request's title, number, body and the sections its diff added", () => {
+test("readMergedFindings returns the pull request's title, number, body and the sections its diff added", async () => {
   const { run, calls } = answering({ number: 3, title: "feat: scripted replay", body: "## What it found\n\nCookie dialogs drop pages.", state: "MERGED" }, DIFF);
-  const found = readMergedFindings(URL, run);
+  const found = await readMergedFindings(URL, run);
   assert.equal(found?.title, "feat: scripted replay");
   assert.equal(found?.number, 3);
   assert.equal(found?.body, "## What it found\n\nCookie dialogs drop pages.");
@@ -72,13 +72,13 @@ test("readMergedFindings returns the pull request's title, number, body and the 
   assert.deepEqual(calls.map((args) => args.slice(0, 3)), [["pr", "view", URL], ["pr", "diff", URL]]);
 });
 
-test("readMergedFindings is null, never 'it found nothing', for a pull request that has not merged, a refused gh and an answer that does not parse", () => {
-  assert.equal(readMergedFindings(URL, answering({ number: 3, title: "t", body: "", state: "OPEN" }, DIFF).run), null, "an open pull request's findings are not final");
-  assert.equal(readMergedFindings(URL, () => { throw new Error("gh exited 1"); }), null, "a refused run");
-  assert.equal(readMergedFindings(URL, () => "not json"), null, "an answer that does not parse");
-  assert.equal(readMergedFindings(URL, (args) => { if (args[1] === "diff") throw new Error("diff too large"); return JSON.stringify({ number: 3, title: "t", body: "", state: "MERGED" }); }), null, "a diff that cannot be read");
+test("readMergedFindings is null, never 'it found nothing', for a pull request that has not merged, a refused gh and an answer that does not parse", async () => {
+  assert.equal(await readMergedFindings(URL, answering({ number: 3, title: "t", body: "", state: "OPEN" }, DIFF).run), null, "an open pull request's findings are not final");
+  assert.equal(await readMergedFindings(URL, async () => { throw new Error("gh exited 1"); }), null, "a refused run");
+  assert.equal(await readMergedFindings(URL, async () => "not json"), null, "an answer that does not parse");
+  assert.equal(await readMergedFindings(URL, async (args) => { if (args[1] === "diff") throw new Error("diff too large"); return JSON.stringify({ number: 3, title: "t", body: "", state: "MERGED" }); }), null, "a diff that cannot be read");
 });
 
-test("a merged pull request with no body is read with an empty one", () => {
-  assert.equal(readMergedFindings(URL, answering({ number: 3, title: "t", body: null, state: "MERGED" }, "").run)?.body, "");
+test("a merged pull request with no body is read with an empty one", async () => {
+  assert.equal((await readMergedFindings(URL, answering({ number: 3, title: "t", body: null, state: "MERGED" }, "").run))?.body, "");
 });

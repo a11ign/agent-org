@@ -38,15 +38,19 @@ export const fakePullUrl = (repository: string, number: number): string => `http
 type Pulls = Map<string, FakePull>;
 type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref?: ChangeRef }>; handler: (event: CodeHostEvent) => void };
 
+/** The pull request's state as the reviewer sees it, or null for a pull request the fake was never given. */
+const reviewStateOf = (pull: FakePull | undefined): ReviewState | null => (pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled,
+  ...(pull.unrequiredRed === undefined ? {} : { unrequiredRed: pull.unrequiredRed }), view: { number: pull.number, ...(pull.body === undefined ? {} : { body: pull.body }), ...pull.view } });
+
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
 function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<string, DefaultBranchRed>, login: string | null, calls: string[]):
-  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange"> {
+  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "peekReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange"> {
   return {
-    readOwnLogin() {
+    async readOwnLogin() {
       calls.push("readOwnLogin");
       return login;
     },
-    readPullFeedback(url, self, alsoIgnore = []) {
+    async readPullFeedback(url, self, alsoIgnore = []) {
       calls.push(`readPullFeedback ${url}`);
       const pull = pulls.get(url);
       if (pull === undefined) return null;
@@ -61,33 +65,34 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       calls.push(`readDefaultBranchRed ${repository}`);
       return defaultBranches.get(repository) ?? null;
     },
-    readReplies(url, { since, authors }) {
+    async readReplies(url, { since, authors }) {
       calls.push(`readReplies ${url}`);
       const pull = pulls.get(url);
       // Only the accounts the caller names, and only what was posted after the time: the contract's own filter, so a test seeds every reply and the fake keeps the right ones.
       return pull === undefined ? null : pull.replies.filter((reply) => reply.at > since && authors.includes(reply.author)).sort((a, b) => a.at - b.at);
     },
-    readReviewState(url) {
+    async readReviewState(url) {
       calls.push(`readReviewState ${url}`);
-      const pull = pulls.get(url);
-      return pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled, ...(pull.unrequiredRed === undefined ? {} : { unrequiredRed: pull.unrequiredRed }), view: { number: pull.number, ...(pull.body === undefined ? {} : { body: pull.body }), ...pull.view } };
+      return reviewStateOf(pulls.get(url));
     },
-    readPullState(url) {
+    // What the host holds now, with no read recorded: a fake has no read to remember, and the reviewer's start asks for the state it was just handed.
+    peekReviewState: (url) => reviewStateOf(pulls.get(url)),
+    async readPullState(url) {
       calls.push(`readPullState ${url}`);
       return pulls.get(url)?.state.toUpperCase() ?? null;
     },
-    readMergedFindings(url) {
+    async readMergedFindings(url) {
       calls.push(`readMergedFindings ${url}`);
       const pull = pulls.get(url);
       return pull?.state === "merged" ? pull.findings ?? { title: `Pull request ${pull.number}`, number: pull.number, body: "", sections: [] } : null;
     },
-    openPullUrlsOf(repository) {
+    async openPullUrlsOf(repository) {
       calls.push(`openPullUrlsOf ${repository}`);
       const inRepository = [...pulls.entries()].filter(([, pull]) => pull.repository === repository);
       // A repository the fake was given neither a pull request nor a `seedRepository` of is one it cannot ask about: null, never "none are open".
       return inRepository.length === 0 && !repositories.has(repository) ? null : inRepository.filter(([, pull]) => pull.state === "open").map(([url]) => url);
     },
-    openDependencyPulls(repository) {
+    async openDependencyPulls(repository) {
       calls.push(`openDependencyPulls ${repository}`);
       const inRepository = [...pulls.entries()].filter(([, pull]) => pull.repository === repository);
       if (inRepository.length === 0 && !repositories.has(repository)) return null;

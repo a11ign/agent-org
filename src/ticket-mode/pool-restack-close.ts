@@ -22,10 +22,10 @@ export type CloseInput = Readonly<{ url: string; below: RestackBelow; done: Rest
  * remembered by head, so it is not read again at that head, and a member the board had said was empty that now holds a file of its own is back to "restacked". Null: nothing is decided, so its note stands. A member whose restack conflicted or was refused is never
  * looked at, nor one that is queued to merge, merged, or not based on the default branch, nor one another run is stacked on (closing it would leave that run's base dead). It is closed when a second read, on a later sweep, finds it empty at the same head. NEVER THROWS: a close the code host refuses is a note.
  */
-export function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, below, done, previousNote, read }: CloseInput): string | null {
+export async function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, below, done, previousNote, read }: CloseInput): Promise<string | null> {
   const { codeHost } = ctx;
   if (!isCandidate(previousNote) || !isOpenOnDefaultBranch(read) || done.ownChangesAt === read.head) return null;
-  const feedback = codeHost.readPullFeedback(url, NO_ACCOUNT);
+  const feedback = await codeHost.readPullFeedback(url, NO_ACCOUNT);
   if (feedback === null || feedback.state !== "open") return null;
   if (holdsOwnFile(feedback.files)) {
     remember(ctx, url, done, feedback.head, "ownChangesAt");

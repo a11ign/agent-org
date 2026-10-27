@@ -447,7 +447,7 @@ async function startTalk(ctx: PoolContext, members: readonly Entry[]): Promise<v
     if (resume === undefined) throw new Error(`${key} has no saved session to resume`);
     // The session resumes the run's own settings, which name its pinned version folder. A finished run holds no folder (A11-169), so one pruned since has its hooks written again, naming this instance's.
     if (entry.toolRoot !== undefined && !existsSync(entry.toolRoot)) {
-      writeRunFiles(ctx, entry, place.folder, place.dir);
+      await writeRunFiles(ctx, entry, place.folder, place.dir);
       update(ctx, (queue) => recordToolPin(queue, keys, toolPinOf(ctx)));
     }
     const outcome = join(place.dir, OUTCOME_FILE);

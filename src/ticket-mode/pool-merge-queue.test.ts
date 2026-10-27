@@ -267,7 +267,7 @@ function finishedRun(outcome: Outcome, over: Partial<Entry> = {}, seed: (host: R
 /** Let the tick that a round `watchFeedback` queues wakes, which it does not wait for, finish: left running it writes the run's state folder after the test removed it. */
 const settled = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 /** Watch the run's pull requests once, and wait for the tick that wakes. */
-const watching = async (pool: { watchFeedback: () => void }) => { pool.watchFeedback(); await settled(); };
+const watching = async (pool: { watchFeedback: () => void }) => { await pool.watchFeedback(); await settled(); };
 const seedQueue = (removals: QueueRemoval[], head = HEAD) => (host: ReturnType<typeof createFakeCodeHost>) => { Object.assign(host.pullAt(URL)!, { head, queue: removedFrom(...removals) }); };
 const readyPr = { kind: "ready-pr", prs: [PR] } as Outcome;
 const needsHuman = { kind: "needs-human", reason: "which colour?" } as Outcome;
@@ -352,16 +352,16 @@ test("A11-264: a code host that reads no queue leaves the watch as it was", asyn
 const ARMED = { repo: REPO, number: 18 };
 const lost = (step: string | null = STEP) => failure([{ name: "middleware", step, detailsUrl: MIDDLEWARE }]);
 /** Run `act` and return what the board wrote to its log meanwhile. */
-function logged(act: () => void): string {
+async function logged(act: () => Promise<void>): Promise<string> {
   const lines: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
-  try { act(); } finally { process.stderr.write = write; }
+  try { await act(); } finally { process.stderr.write = write; }
   return lines.join("");
 }
 /** Watch the run's pull requests once and return what the board logged for it. */
 async function watchedWithLog(run: ReturnType<typeof finishedRun>): Promise<string> {
-  const log = logged(() => run.pool.watchFeedback());
+  const log = await logged(async () => { await run.pool.watchFeedback(); });
   await settled();
   return log;
 }

@@ -2,6 +2,7 @@
 // accounts the caller names and posted after a time. Read through an injected `run` (the plugin's `gh`), so this file spawns nothing. WHICH ACCOUNTS COUNT IS CORE'S (`review-trust.ts`
 // draws the org's trust line), so the caller names them and this file never returns a stranger's text.
 import type { RepliesRequest, Reply } from "../../src/plugins/contracts/code-host.ts";
+import type { AsyncGh } from "./gh.ts";
 import { pullOf } from "./pull-feedback.ts";
 
 /** How much of each list one read takes, newest last. A reply to a block is among the newest, so a long history is not read. */
@@ -48,11 +49,11 @@ function replyOf(node: Node, at: string | undefined): Reply | null {
  * THE REPLIES ON THE PULL REQUEST AT `url` that `request` names, oldest first, or null for "could not ask": an address that is not a GitHub pull request, a refused `run`, and an
  * answer without the pull request. Null is never "no replies". A review counts when it is only a comment: an approval or a block is the reviewer's verdict, not a reply to one.
  */
-export function readReplies(url: string, request: RepliesRequest, run: (args: string[]) => string): readonly Reply[] | null {
+export async function readReplies(url: string, request: RepliesRequest, run: AsyncGh): Promise<readonly Reply[] | null> {
   const pull = pullOf(url);
   if (pull === null) return null;
   try {
-    const answer = JSON.parse(run(["api", "graphql", "-f", `query=${QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
+    const answer = JSON.parse(await run(["api", "graphql", "-f", `query=${QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
     const pr = answer?.data?.repository?.pullRequest;
     if (pr === null || typeof pr !== "object") return null;
     const threaded: Node[] = (pr.reviewThreads?.nodes ?? []).flatMap((thread: { comments?: { nodes?: Node[] } }) => thread.comments?.nodes ?? []);

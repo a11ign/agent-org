@@ -133,7 +133,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: openPulls(entry), notes, reviewNotes: notesFile(settings.review, "tickets.review"),
       connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, decisions: entry.decisions === true, standoff: entry.standoff?.stage === "worker", conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst, held: entry.ciHold?.reason ?? entry.ciTold }));
-    writeDecisionsMark(ctx, entry, dir, { briefed: entry.briefedAgainst, read });
+    await writeDecisionsMark(ctx, entry, dir, { briefed: entry.briefedAgainst, read });
     writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(openPulls(entry))}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
     const planDir = emptyPlanDir(dir);
@@ -151,10 +151,10 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
+      read, findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
-  writeRunFiles(ctx, entry, folder, dir);
+  await writeRunFiles(ctx, entry, folder, dir);
   recordPluginCopies(ctx, [entry.ticket.key], folder);
   return { folder, dir, ...(resume ? { resume } : {}) };
 }
@@ -244,17 +244,17 @@ function writeCapMark(entry: Entry, dir: string): void {
  * The marks a stand-off round is given beside its outcome file (A11-290), which no worker writes: the planner's round has `standoff-planner-run`, and the worker's `standoff-round.json`, the head and a hash of the description each of its pull requests has now, by address,
  * which the Stop hook compares with the pull request when the round says `reviewed`. Any other run has neither (`clearRunDir` removed the earlier run's). A pull request the code host cannot read keeps the head the stand-off was about and no description.
  */
-function writeStandoffMarks(ctx: PoolContext, entry: Entry, dir: string): void {
+async function writeStandoffMarks(ctx: PoolContext, entry: Entry, dir: string): Promise<void> {
   rmSync(join(dir, STANDOFF_PLANNER_FILE), { force: true });
   rmSync(join(dir, STANDOFF_ROUND_FILE), { force: true });
   const { standoff } = entry;
   if (standoff === undefined || entry.review === undefined) return;
   if (standoff.stage === "planner") return void writeFileSync(join(dir, STANDOFF_PLANNER_FILE), "\n");
   if (standoff.stage !== "worker") return;
-  const state = entry.review.map(({ url }) => {
-    const read = ctx.codeHost.readReviewState(url);
+  const state = await Promise.all(entry.review.map(async ({ url }) => {
+    const read = await ctx.codeHost.readReviewState(url);
     return [url, { head: read?.head ?? standoff.head, body: typeof read?.view.body === "string" ? bodyHash(read.view.body) : null }] as const;
-  });
+  }));
   writeFileSync(join(dir, STANDOFF_ROUND_FILE), `${JSON.stringify(Object.fromEntries(state))}\n`);
 }
 
@@ -276,7 +276,7 @@ function recordPluginCopies(ctx: PoolContext, keys: readonly string[], folder: s
  * Beside a run's brief, its copy of this machine's refusals and its connectors, and in the folder its agent starts in, its settings file. Exported for a talk session whose pinned version folder was
  * pruned while the run was finished: its hooks must name a folder that exists (A11-169).
  */
-export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, dir: string): void {
+export async function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, dir: string): Promise<void> {
   const { hook, settings } = ctx;
   writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(ctx, entry) || isStandoffPlanner(entry) || isCapPlanner(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
   writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
@@ -284,7 +284,7 @@ export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, di
   // A talk session has a person in its terminal, so its stop is not held to the escalation list (A11-257); no other run is.
   if (entry.talk === true) writeFileSync(join(dir, TALK_FILE), "\n");
   else rmSync(join(dir, TALK_FILE), { force: true });
-  writeStandoffMarks(ctx, entry, dir);
+  await writeStandoffMarks(ctx, entry, dir);
   writeCapMark(entry, dir);
   // A fresh ticket run on a machine with `tickets.drafts: false` may open its pull request ready; no other run, and no machine that keeps drafts, may.
   if (!settings.drafts && entry.review === undefined && !isPlanning(ctx, entry)) writeFileSync(join(dir, READY_FILE), "\n");
@@ -323,7 +323,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
   for (const { ticket, read, findings } of tickets) {
     update(ctx, (queue) => recordFindingsGiven(recordBriefed(queue, [ticket.key], read!), ticket.key, (findings ?? []).map(({ url }) => url)));
   }
-  writeRunFiles(ctx, lead, folder, dir);
+  await writeRunFiles(ctx, lead, folder, dir);
   recordPluginCopies(ctx, members.map((member) => member.ticket.key), folder);
   return { folder, dir };
 }

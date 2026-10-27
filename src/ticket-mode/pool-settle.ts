@@ -1,6 +1,7 @@
 // @ts-check
 // module: ending a run -- how it ended and what that does to its ticket, its plan, its proposed edit, and its ticket's state
 
+import { readEach } from "./pool-reads.ts";
 import { clearMove, type Entry, type Outcome, type ProposedEdit, type Queue, type WorkingOutcome, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { type PlannedAgainst, recordStampedPlan } from "./queue/queue-ticket-text.ts";
 import { join } from "node:path";
@@ -755,7 +756,8 @@ export function end(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
   const record = id === undefined ? {} : { session: id };
   // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
   updateEach(ctx, runMembers(ctx, entry), (queue, key) => (parks ? park : finish)(queue, key, outcome, now(), key === entry.ticket.key ? { ...record, tokens } : record));
-  recordPullsAtEnd(ctx, entry, outcome);
+  // Not waited for (A11-356): the code host answers a promise. Until it has, the run is finished with its files unrecorded, which is the state a read that failed leaves, and `overlapWait` holds its repository in it.
+  void recordPullsAtEnd(ctx, entry, outcome).catch((err: unknown) => log(`${entry.ticket.key}: the files and heads of its pull requests could not be read (${messageOf(err)}), so its repository is held until the next watch reads them`));
   // A run that is not handed back gives its ticket back now. A parked one keeps it In Progress while a person may answer it.
   if (!HANDED_BACK.has(outcome.kind)) for (const member of runMembers(ctx, entry)) void restoreAndLog(ctx, member.ticket.key);
   forgetRun(ctx, name);
@@ -807,28 +809,30 @@ export function headCommitsOf(open: readonly { url: string; read: PullFeedback }
 
 /**
  * A run that ends with a pull request open is footprinted at once (A11-125): the files of its open pull requests are read as the watch reads them and
- * recorded, so a queued run that shares one with it waits from now, not from the next watch. The read and the record are one synchronous block, so no
- * start pass can fall between the run ending and its files being recorded. When a read fails, nothing is recorded: the run holds its repository until
- * a watch records the files (`overlapWait`). The same read records the head each open pull request is at as the run ends (`outcomeHeads`), which is what a
+ * recorded, so a queued run that shares one with it waits from now, not from the next watch. The reads answer a promise (A11-356), so a start pass can fall between the run ending and its files being recorded: that is the state of a read that
+ * failed, in which nothing is recorded and the run holds its repository until a watch records the files (`overlapWait`), so the pass starts nothing that shares one with it. The same read records the head each open pull request is at as the run ends (`outcomeHeads`), which is what a
  * later push answers (A11-153), and, for a run that ends `needs-human`, which of them were changes requested (`outcomeBlocks`, A11-258). That is for a draft or ready pull request, and for a run that ends `needs-human`, which has no result: its pull requests are the
  * round's it continued. Only a draft or ready pull request's files are recorded, as before.
  */
-function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
+async function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): Promise<void> {
   const { codeHost, feedbackIgnores, ownLogin } = ctx;
   const key = entry.ticket.key;
   const isDraftOrReady = outcome.kind === "draft-pr" || outcome.kind === "ready-pr";
   // Only a run that is asking (`needs-human`) is answered by a push, so no other kind pays for a read of its pull requests.
   const pulls = isDraftOrReady || outcome.kind === "needs-human" ? pullsOf({ outcome, review: entry.review }) : [];
   if (pulls.length === 0) return;
-  ownLogin.value ??= codeHost.readOwnLogin();
+  ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ownLogin.value;
   if (self === null) return;
-  const reads = pulls.map(({ url }) => ({ url, read: codeHost.readPullFeedback(url, self, feedbackIgnores) }));
+  const reads = await readEach(pulls, async ({ url }) => ({ url, read: await codeHost.readPullFeedback(url, self, feedbackIgnores) }));
   const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
   if (readable.length < reads.length) {
     log(`${key}: the files and heads of its pull requests could not be read, so its repository is held until the next watch reads them`);
     return;
   }
+  // The reads took time: a run that was dismissed, or handed another round, meanwhile is not recorded over from what was read before.
+  const latest = ctx.store.get().entries.find((each) => each.ticket.key === key);
+  if (latest?.phase !== "finished") return;
   const open = readable.filter(({ read }) => read.state === "open");
   const blocked = outcome.kind === "needs-human" ? blockedPullsOf(open) : {};
   update(ctx, (queue) => recordOutcomeBlocks(recordOutcomeHeads(isDraftOrReady ? recordPullFiles(queue, key, pullFilesOf(open)) : queue, key, headCommitsOf(open)), key, blocked));
