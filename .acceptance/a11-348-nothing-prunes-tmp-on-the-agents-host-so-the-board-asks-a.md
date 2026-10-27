@@ -6,4 +6,8 @@ npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/host-ale
 npx rstest run --config scripts/rstest/rstest.config.ts src/prune-tmp-janitor.test.ts
 ```
 
+History: full
+
+Mutation: none -- the new cases are the janitor's refusals and removals read back per path; a mutant that drops the owner, mount, age or held check leaves a named path removed or kept wrongly, and CI posts the machine-chosen survivors.
+
 Consumer-declaration: none -- no host file changes meaning. The installed unit's `ExecStart` argument changes from `--fixtures-only` to `--timer`; `host:install` rewrites the unit from the shipped template.
