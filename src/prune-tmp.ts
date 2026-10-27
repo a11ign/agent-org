@@ -26,6 +26,12 @@
 //     `npm-cache-<n>`, `npm-cache-rv2-<n>`). Removable only when that pull request is CLOSED.
 //   - SESSION SCRATCHPADS at `/tmp/claude-1000/<project>/<session-uuid>`. Removable only when no
 //     authority below can find a live session behind the uuid.
+// A FOURTH, THE AGED FAMILY, IS THE ONLY ONE NAMED BY WHAT IT IS RATHER THAN BY HOW IT IS CALLED (A11-348). On 2026-10-27 `/tmp` held 1,738 entries and the
+// board asked a person, because the workers' logs, body files and `a11-<n>-*` scratch directories belong to none of the families above and "unrecognised" is not
+// removable. A run that is handed the user it sweeps for (`uid`, the process's own) reads any other direct child of `/tmp` as aged: removable when that user owns it,
+// nothing in its top two levels has been written for 24 hours, and no process holds it. `claude-1000` is excluded (see `agedFamilyOf`). Without a `uid` the
+// stance above stands: a name from no family is unrecognised.
+//
 // `classifyEntry` answers for ANY path handed to it, including one in neither family -- that answer is a
 // REFUSAL naming the path as unrecognised, never a silent skip and never a removal. The sweep walks only
 // the two families, because `/tmp` held 40,116 entries at the same measurement and this tool does not
@@ -105,6 +111,9 @@ export const ACTIVITY_WINDOW_MS = 24 * MS_PER_HOUR;
 /** Where session scratchpads live, relative to the tmp root: `<tmp>/claude-1000/<project>/<uuid>`. */
 export const SCRATCHPAD_ROOT = "claude-1000";
 
+/** The scratchpad root under any uid (`claude-1000`, `claude-1001`): the aged family leaves every one of them alone. */
+const SCRATCHPAD_ROOT_NAME = /^claude-\d+$/;
+
 /** `<root>/<project>/<uuid>`: the depth at which a scratchpad belongs to ONE session. */
 const SCRATCHPAD_DEPTH = 3;
 
@@ -121,6 +130,9 @@ export const PAUSE_BETWEEN_REMOVALS_MS = 20;
 
 /** The most paths one run will look at, so a `/tmp` of young fixtures costs a bounded number of `stat` calls, not 120,000. */
 export const MAX_EXAMINED_PER_RUN = 10 * MAX_REMOVALS_PER_RUN;
+
+/** The most wall-clock time one run spends walking and removing before it stops and leaves the rest to the next: the unit's `TimeoutStartSec` is 50 s, and a run killed mid-way is a state the next run must finish. */
+export const MAX_RUN_MS = 30_000;
 
 /** How many refusals of the fixture family are printed one by one; the rest are tallied by reason (a run can refuse thousands). */
 const FIXTURE_REFUSALS_PRINTED = 10;
@@ -181,7 +193,7 @@ export const REVIEW_PREFIXES = [
   "npm-cache-rv2-", "npm-cache-", "reviewer-source-", "review-base-", "rv2-", "rv-", "rv",
 ];
 
-export type Family = { family: "review", pr: number } | { family: "scratchpad", session: string, project: string } | { family: "fixture", prefix: string } | { family: "doomed" } | { family: "unknown" };
+export type Family = { family: "review", pr: number } | { family: "scratchpad", session: string, project: string } | { family: "fixture", prefix: string } | { family: "doomed" } | { family: "aged" } | { family: "unknown" };
 
 /**
  * Which family a path BELONGS TO, read from its name alone -- pure, so the test can ask it about a
@@ -204,6 +216,26 @@ export function familyOf(relativePath: string): Family {
   if (pr !== null) return { family: "review", pr };
   const prefix = FIXTURE_PREFIXES.find((candidate) => parts[0].startsWith(candidate) && parts[0].length > candidate.length);
   return prefix === undefined ? { family: "unknown" } : { family: "fixture", prefix };
+}
+
+/**
+ * Whether a name is in the AGED family (A11-348): a direct child of the tmp root that no other family owns and that is not the scratchpad root.
+ *
+ * `familyOf` stays what it was -- a name from nobody's family is `unknown` -- so the aged family is a SECOND, opt-in reading that
+ * {@link classifyEntry} makes only when it is handed the user whose entries it may sweep. It is what the ticket asks of `/tmp`: an entry the agent user
+ * owns that nobody has written for a day is gone, whatever its name, because the board's count of `/tmp` includes the reviewers' and the
+ * workers' scratch files and logs (`a11-290-accept.*`, `body3.md`, `agr.log`), which no list of prefixes will ever finish naming.
+ *
+ * THE SCRATCHPAD ROOT IS EXCLUDED, and so is everything below the top level: `claude-1000` is the one entry whose age says nothing (its mtime moves only when a
+ * project directory is made, while a session writes ten levels down), and what is in it is the scratchpad family's, which waits for #2166's announced cycle.
+ *
+ * @param {string} relativePath a path relative to the tmp root, `/`-separated
+ * @returns {Family}
+ */
+export function agedFamilyOf(relativePath: string): Family {
+  const parts = relativePath.split("/").filter((part) => part !== "");
+  if (parts.length !== 1 || SCRATCHPAD_ROOT_NAME.test(parts[0]) || familyOf(parts[0]).family !== "unknown") return { family: "unknown" };
+  return { family: "aged" };
 }
 
 /**
@@ -283,10 +315,32 @@ export function processStrings(procRoot: string = "/proc"): string[] | "unknown"
     for (const name of ["cmdline", "environ"]) {
       try { strings.push(readFileSync(join(dir, name), "utf8").split("\0").join(" ")); } catch { /* gone or not ours */ }
     }
-    try { strings.push(readlinkSync(join(dir, "cwd"))); } catch { /* gone or not ours */ }
+    // `cwd` and `exe`: a daemon started as `./server` from /tmp/x that then moved away is still running that file.
+    for (const link of ["cwd", "exe"]) {
+      try { strings.push(readlinkSync(join(dir, link))); } catch { /* gone or not ours */ }
+    }
     strings.push(...openFdTargets(join(dir, "fd")));
   }
+  const sockets = boundSocketPaths(join(procRoot, "net", "unix"));
+  // A table that cannot be read is "I could not look", not "no socket is bound": the same answer as an unlistable /proc.
+  if (sockets === "unknown") return "unknown";
+  strings.push(...sockets);
   return strings;
+}
+
+/**
+ * The filesystem paths a unix socket is bound to, from `/proc/net/unix` (its last column, after the seven the kernel always prints). A LISTENING SOCKET IS NOT
+ * A PATH IN ANY PROCESS'S FD LIST (`readlink` of its fd reads `socket:[inode]`), so a server whose socket sits in `/tmp/qs-AbC123/s` or `/tmp/codex-daemon-1000/<hash>`
+ * names that directory nowhere the other four reads look, and an age check alone would remove the directory from under it and leave a live server nobody can reach.
+ * `"unknown"` when the table cannot be read: with no table, a directory holding a live socket reads as unheld, and the age check alone would remove it.
+ * @param {string} table @returns {string[] | "unknown"}
+ */
+function boundSocketPaths(table: string): string[] | "unknown" {
+  try {
+    return readFileSync(table, "utf8").split("\n").slice(1).map((line) => line.trim().split(/\s+/)[7]).filter((path): path is string => path !== undefined && path.startsWith("/"));
+  } catch {
+    return "unknown";
+  }
 }
 
 /** Where every open fd of one process points. `[]` when the directory is gone or not ours.
@@ -353,24 +407,49 @@ function boundedAt(text: string, path: string): boolean {
  */
 export function newestMtimeMs(path: string): number | "unknown" {
   let top: import("node:fs").Stats;
-  try { top = statSync(path); } catch { return "unknown"; }
+  // `lstat`, so a symlink directly under the root is aged by the link itself: following it reads the target's time (a young target hides an old link) and a dangling one is unreadable for ever.
+  try { top = lstatSync(path); } catch { return "unknown"; }
   if (!top.isDirectory()) return top.mtimeMs;
-  let newest = top.mtimeMs;
-  for (const child of childPaths(path)) {
-    try { newest = Math.max(newest, statSync(child).mtimeMs); } catch { /* removed under us */ }
-    for (const grandchild of childPaths(child)) {
-      try { newest = Math.max(newest, statSync(grandchild).mtimeMs); } catch { /* removed under us */ }
-    }
+  return newestBelow(path, top.mtimeMs, 2);
+}
+
+/**
+ * `newest`, raised by every entry `levels` deep below `dir`, or `"unknown"` when ANY directory or entry there cannot be read. An unreadable activity marker is not an absent one: a
+ * session's `tasks/` that cannot be listed may be the very thing written an hour ago, so the age is not known and the caller refuses. An entry that is GONE (removed under us) is
+ * the ordinary case on a busy `/tmp` and counts for nothing.
+ * @param {string} dir @param {number} newest @param {number} levels @returns {number | "unknown"}
+ */
+function newestBelow(dir: string, newest: number, levels: number): number | "unknown" {
+  if (levels === 0) return newest;
+  const names = namesIn(dir);
+  if (names === "unknown") return "unknown";
+  let latest = newest;
+  for (const name of names) {
+    const child = join(dir, name);
+    const stat = statIfPresent(child);
+    if (stat === "unknown") return "unknown";
+    if (stat === null) continue;
+    latest = Math.max(latest, stat.mtimeMs);
+    if (!stat.isDirectory()) continue;
+    const deeper = newestBelow(child, latest, levels - 1);
+    if (deeper === "unknown") return "unknown";
+    latest = deeper;
   }
-  return newest;
+  return latest;
 }
 
-/** @param {string} dir @returns {string[]} */
-function childPaths(dir: string): string[] {
-  try { return readdirSync(dir).map((name) => join(dir, name)); } catch { return []; }
+/** The names in `dir`: `[]` when it is gone, `"unknown"` for any other failure to list it. @param {string} dir @returns {string[] | "unknown"} */
+function namesIn(dir: string): string[] | "unknown" {
+  try { return readdirSync(dir); } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : "unknown"; }
 }
 
-export type Authorities = { openPrs: Set<number> | "unknown", held: Set<string> | "unknown", selfSessions: Set<string>, now: number, windowMs?: number, fixtureWindowMs?: number, mtime?: (path: string) => number | "unknown" };
+/** The stat of `path` (a symlink followed), `null` when it is gone, `"unknown"` for any other failure. @param {string} path @returns {import("node:fs").Stats | null | "unknown"} */
+function statIfPresent(path: string): import("node:fs").Stats | null | "unknown" {
+  try { return statSync(path); } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : "unknown"; }
+}
+
+/** `agedOwner`: the user whose entries the aged family may sweep (A11-348); without it a name from no family is unrecognised. `owner`: whose a path is. */
+export type Authorities = { openPrs: Set<number> | "unknown", held: Set<string> | "unknown", selfSessions: Set<string>, now: number, windowMs?: number, fixtureWindowMs?: number, mtime?: (path: string) => number | "unknown", agedOwner?: number, owner?: (path: string) => PathStatus };
 
 export type Verdict = { path: string, family: Family["family"], verdict: "remove" | "refuse", reason: string };
 
@@ -392,13 +471,14 @@ export function classifyEntry(absolutePath: string, tmpRoot: string, authorities
   if (relative === null) {
     return refuse(absolutePath, "unknown", `outside ${tmpRoot} -- this tool removes nothing it did not walk`);
   }
-  const family = familyOf(relative);
+  const named = familyOf(relative);
+  const family = named.family === "unknown" && authorities.agedOwner !== undefined ? agedFamilyOf(relative) : named;
   if (family.family === "unknown") {
     return refuse(absolutePath, "unknown",
       "unrecognised: no family owns this name, so nothing here can say whether it is finished");
   }
   return sessionVerdict(absolutePath, family, authorities) ?? reviewVerdict(absolutePath, family, authorities)
-    ?? activityVerdict(absolutePath, family, authorities);
+    ?? ownerVerdict(absolutePath, tmpRoot, family, authorities) ?? activityVerdict(absolutePath, family, authorities);
 }
 
 /** @param {string} path @param {Family["family"]} family @param {string} reason @returns {Verdict} */
@@ -441,6 +521,28 @@ function reviewVerdict(path: string, family: Family, { openPrs }: Authorities): 
     : null;
 }
 
+/** Whose a path is and which filesystem it is on, or `"unknown"`. */
+export type PathStatus = { uid: number, dev: number } | "unknown";
+
+/** The aged family's refusals for an entry that is not the sweeping user's, or sits on another filesystem than the root (a mount point: removing "its" files would delete the mounted filesystem's), or `null` when neither, or the path is not an aged one. An entry that cannot be read is refused, not assumed ours.
+ * @param {string} path @param {string} tmpRoot @param {Family} family @param {Authorities} authorities @returns {Verdict | null} */
+function ownerVerdict(path: string, tmpRoot: string, family: Family, { agedOwner, owner = statusOf }: Authorities): Verdict | null {
+  if (family.family !== "aged") return null;
+  const here = owner(path);
+  const root = owner(tmpRoot);
+  if (here === "unknown" || root === "unknown") return refuse(path, family.family, "its owner and filesystem could not be read, so it is not known to be the agent user's");
+  if (here.uid !== agedOwner) return refuse(path, family.family, `owned by uid ${here.uid}, not the agent user's ${agedOwner}: not this host's work to remove`);
+  return here.dev === root.dev ? null : refuse(path, family.family, "a mount point: it is on another filesystem than the tmp root, and removing it would empty that filesystem");
+}
+
+/** @param {string} path @returns {PathStatus} */
+function statusOf(path: string): PathStatus {
+  try {
+    const { uid, dev } = lstatSync(path);
+    return { uid, dev };
+  } catch { return "unknown"; }
+}
+
 /** The last authority, and the only one that can see a live session holding nothing open.
  * @param {string} path @param {Family} family @param {Authorities} authorities @returns {Verdict} */
 function activityVerdict(path: string, family: Family, { now, windowMs = ACTIVITY_WINDOW_MS, fixtureWindowMs = FIXTURE_WINDOW_MS, mtime = newestMtimeMs }: Authorities): Verdict {
@@ -456,17 +558,23 @@ function activityVerdict(path: string, family: Family, { now, windowMs = ACTIVIT
   const hours = (ms: number) => (ms / MS_PER_HOUR).toFixed(1);
   const window = family.family === "fixture" ? fixtureWindowMs : windowMs;
   if (ageMs < window) {
-    // A fixed sentence for a fixture, so thousands of young ones tally as ONE reason in the report rather than thousands of lines.
-    return refuse(path, family.family, family.family === "fixture"
-      ? `a test fixture written less than ${hours(window)}h ago, so a test may still be using it`
-      : `written ${hours(ageMs)}h ago, inside the ${hours(window)}h window -- a session may still be using it`);
+    // A fixed sentence for a fixture or an aged entry, so thousands of young ones tally as ONE reason in the report rather than thousands of lines.
+    if (family.family === "fixture") return refuse(path, family.family, `a test fixture written less than ${hours(window)}h ago, so a test may still be using it`);
+    if (family.family === "aged") return refuse(path, family.family, youngAgedReason(window));
+    return refuse(path, family.family, `written ${hours(ageMs)}h ago, inside the ${hours(window)}h window -- a session may still be using it`);
   }
   return { path, family: family.family, verdict: "remove", reason: `${settledBecause(family)}, and nothing has written here for ${hours(ageMs)}h` };
+}
+
+/** The one sentence every young aged entry is refused with, so thousands of them tally as one line. @param {number} windowMs @returns {string} */
+function youngAgedReason(windowMs: number): string {
+  return `written less than ${(windowMs / MS_PER_HOUR).toFixed(1)}h ago, so a run may still be using it`;
 }
 
 /** @param {Family} family @returns {string} */
 function settledBecause(family: Family): string {
   if (family.family === "review") return `pull request #${family.pr} is closed`;
+  if (family.family === "aged") return "the agent user's own, and no process holds it";
   return family.family === "fixture" ? `a ${family.prefix}* test fixture no process holds` : "no live session claims it";
 }
 
@@ -496,6 +604,15 @@ export function sweepablePaths(tmpRoot: string, top: import("node:fs").Dirent[] 
  */
 export function fixturePaths(tmpRoot: string, top: import("node:fs").Dirent[] = topEntries(tmpRoot) ?? []): string[] {
   return directChildren(tmpRoot, top, (name) => familyOf(name).family === "fixture");
+}
+
+/**
+ * The entries directly under `tmpRoot` in the aged family (A11-348), names only: whether one is the agent's, and how old, is read lazily by {@link classifyEntry},
+ * for as many as the run can use. Entries of any type, because a log or a body file is as much a leftover as a directory.
+ * @param {string} tmpRoot @param {import("node:fs").Dirent[]} [top] @returns {string[]}
+ */
+export function agedPaths(tmpRoot: string, top: import("node:fs").Dirent[] = topEntries(tmpRoot) ?? []): string[] {
+  return top.filter((entry) => agedFamilyOf(entry.name).family === "aged").map((entry) => join(tmpRoot, entry.name)).sort();
 }
 
 /** The trees an earlier run began removing and did not finish, which are the first thing the next run does. @param {string} tmpRoot @param {import("node:fs").Dirent[]} [top] @returns {string[]} */
@@ -558,40 +675,61 @@ const sleep: (ms: number) => void = (ms): void => { Atomics.wait(new Int32Array(
  * @param {{ dryRun?: boolean, now?: number, windowMs?: number, fixtureWindowMs?: number, env?: NodeJS.ProcessEnv,
  *   run?: typeof defaultRun, procRoot?: string, remove?: (path: string) => void | boolean,
  *   claim?: typeof claimRefusal, record?: typeof recordRemoval, pause?: (ms: number) => void,
- *   maxRemovals?: number, maxExamined?: number, families?: Family["family"][] }} [deps] `claim` and `record` are #2782's: the ROW's claim
- *   on any worktree inside a path, and the removal's log line. `families` narrows the walk (the timer passes the fixtures and the
- *   unfinished trees only); `remove` returns `false` for "stopped before the end", and anything else is "finished".
+ *   maxRemovals?: number, maxExamined?: number, maxMs?: number, families?: Family["family"][], uid?: number, owner?: (path: string) => PathStatus }} [deps] `claim` and `record` are #2782's: the ROW's claim
+ *   on any worktree inside a path, and the removal's log line. `families` narrows the walk (the timer passes the fixtures, the unfinished trees and the
+ *   aged entries); `remove` returns `false` for "stopped before the end", and anything else is "finished". `uid` is the user whose entries the aged
+ *   family may remove (the process's own), and the aged family is walked only when `families` names it; `owner` says whose a path is and on which device (lstat's, unless a test hands one in). `maxMs` bounds the run's wall clock.
  * @returns {PruneReport}
  */
 export function pruneTmp(tmpRoot: string, deps: {
     dryRun?: boolean; now?: number; windowMs?: number; fixtureWindowMs?: number; env?: NodeJS.ProcessEnv;
     run?: typeof defaultRun; procRoot?: string; remove?: (path: string) => void | boolean;
     claim?: typeof claimRefusal; record?: typeof recordRemoval; pause?: (ms: number) => void;
-    maxRemovals?: number; maxExamined?: number; families?: Family["family"][];
+    maxRemovals?: number; maxExamined?: number; maxMs?: number; families?: Family["family"][]; uid?: number; owner?: (path: string) => PathStatus;
 } = {}): PruneReport {
-  const { dryRun = true, now = Date.now(), windowMs, fixtureWindowMs, env = process.env, run, procRoot,
-    maxRemovals = MAX_REMOVALS_PER_RUN, maxExamined = MAX_EXAMINED_PER_RUN, families } = deps;
+  const { dryRun = true, now = Date.now(), windowMs, fixtureWindowMs, env = process.env, run, procRoot, owner,
+    maxRemovals = MAX_REMOVALS_PER_RUN, maxExamined = MAX_EXAMINED_PER_RUN, maxMs = MAX_RUN_MS, families, uid = process.getuid?.() } = deps;
   const wanted = (family: Family["family"]) => families === undefined || families.includes(family);
+  // THE AGED FAMILY IS NEVER IN A RUN THAT NAMED NO FAMILIES: `--tmp=<dir>` can point this tool anywhere, and "every direct child that user owns and nobody has written for a day" is a sweep of whatever that is. It is asked for by name (`--timer`).
+  const wantsAged = families?.includes("aged") === true && uid !== undefined;
   const topRead = topEntries(tmpRoot);
   const top = topRead ?? [];
   const queue = [...(wanted("doomed") ? doomedPaths(tmpRoot, top) : []),
     ...sweepablePaths(tmpRoot, top).filter((path) => wanted(familyOf(relativeUnder(path, tmpRoot) ?? "").family)),
-    ...(wanted("fixture") ? fixturePaths(tmpRoot, top) : [])];
+    ...(wanted("fixture") ? fixturePaths(tmpRoot, top) : []),
+    ...(wantsAged ? agedPaths(tmpRoot, top) : [])];
   const strings = processStrings(procRoot);
   let openPrs: Set<number> | "unknown" | undefined;
   // The pull request list is read only when a review leftover is reached: a timer that sweeps fixtures must not spend the GraphQL pool every minute.
   const readOpenPrs = () => (openPrs ??= openPullRequests({ run }));
   const budget = { left: maxRemovals };
   const report: PruneReport = { tmpEntries: topRead === null ? "unknown" : topRead.length, examined: 0, candidates: queue.length, removable: [], refused: [], removed: [], partial: [], failed: [] };
+  const stopAt = Date.now() + maxMs;
+  const read = { other: 0, aged: 0 };
   for (const path of queue) {
-    if (budget.left <= 0 || report.examined >= maxExamined) break;
+    if (budget.left <= 0 || Date.now() >= stopAt) break;
+    const aged = agedFamilyOf(relativeUnder(path, tmpRoot) ?? "").family === "aged";
+    // An entry's own mtime is a LOWER bound on its newest write, so one inside the window is young without reading below it. Those cost one `lstat` and no part of the read cap: with the cap spent on young entries sorted ahead of an old one, the old one would never be reached.
+    if (aged && youngByItself(path, now, windowMs ?? ACTIVITY_WINDOW_MS)) {
+      report.examined += 1;
+      report.refused.push(refuse(path, "aged", youngAgedReason(windowMs ?? ACTIVITY_WINDOW_MS)));
+      continue;
+    }
+    const family = aged ? "aged" : "other";
+    if (read[family] >= maxExamined) continue;
+    read[family] += 1;
     report.examined += 1;
-    const family = familyOf(relativeUnder(path, tmpRoot) ?? "").family;
-    const authorities: Authorities = { openPrs: family === "review" ? readOpenPrs() : new Set(), held: heldEntries([path], strings),
-      selfSessions: selfSessions(env), now, windowMs, fixtureWindowMs };
+    const authorities: Authorities = { openPrs: familyOf(relativeUnder(path, tmpRoot) ?? "").family === "review" ? readOpenPrs() : new Set(), held: heldEntries([path], strings),
+      selfSessions: selfSessions(env), now, windowMs, fixtureWindowMs, agedOwner: uid, owner };
     sweepOne(path, { tmpRoot, authorities, budget, report, deps });
   }
   return report;
+}
+
+/** Whether the path's own modification time is inside `windowMs` of `now`. `false` when it cannot be read: that case is the classifier's to refuse, with its reason.
+ * @param {string} path @param {number} now @param {number} windowMs @returns {boolean} */
+function youngByItself(path: string, now: number, windowMs: number): boolean {
+  try { return now - lstatSync(path).mtimeMs < windowMs; } catch { return false; }
 }
 
 /**
@@ -649,12 +787,18 @@ function removeRecorded(path: string, tmpRoot: string, { remove, record, family 
     return { failure: `the removal log could not be written, so nothing was removed (#2782): ${(cause as Error).message}`,
       finished: false, path };
   }
-  const outcome = family === "fixture" ? removeDoomedContained(path, tmpRoot, remove) : removeContained(path, tmpRoot, remove);
+  const outcome = renamedFirst(path, family) ? removeDoomedContained(path, tmpRoot, remove) : removeContained(path, tmpRoot, remove);
   // `partial` is not a log event: the tree is still there, and the next run writes its own `removing` for it.
   if (outcome.failure !== null || outcome.finished) {
     record({ ...line, event: outcome.failure === null ? "removed" : "failed", detail: outcome.failure ?? line.detail });
   }
   return outcome;
+}
+
+/** Whether a tree is marked with {@link DOOMED_PREFIX} before its removal: a fixture, and an aged DIRECTORY (a file goes in the one call, so there is no half-removed state to find). */
+function renamedFirst(path: string, family: Family["family"]): boolean {
+  if (family === "fixture") return true;
+  try { return family === "aged" && lstatSync(path).isDirectory(); } catch { return false; }
 }
 
 /**
@@ -805,43 +949,61 @@ function reportLines(report: PruneReport, header: string): string[] {
   lines.push(`refused ${report.refused.length} path(s), each with its reason -- nothing here was removed:`);
   lines.push(...refusalLines(report.refused));
   const deferred = report.candidates - report.examined;
-  if (deferred > 0) lines.push(`${deferred} more classified path(s) were not looked at: one run is bounded (${MAX_REMOVALS_PER_RUN} removals), and the next run takes them.`);
+  if (deferred > 0) lines.push(`${deferred} more classified path(s) were not looked at: one run is bounded (${MAX_REMOVALS_PER_RUN} removals, ${MAX_EXAMINED_PER_RUN} entries read, ${MAX_RUN_MS / 1000} s), and the next run takes them.`);
   return lines;
 }
 
 /**
- * Every refusal with its reason, except that a fixture refusal past the first few is TALLIED BY REASON: a run over a busy `/tmp` refuses
- * thousands of young fixtures, and a thousand identical lines hide the one that is not. The tally still names the reason and the count.
+ * Every refusal with its reason, except that a fixture or aged refusal past the first few of its family is TALLIED BY REASON: a run over a busy `/tmp` refuses
+ * thousands of young entries, and a thousand identical lines hide the one that is not. The tally still names the family, the reason and the count.
  * @param {Verdict[]} refused @returns {string[]}
  */
 function refusalLines(refused: Verdict[]): string[] {
   const lines = [];
   const tally: Map<string, number> = new Map();
-  let printed = 0;
+  const printed: Map<string, number> = new Map();
   for (const entry of refused) {
-    if (entry.family === "fixture" && printed >= FIXTURE_REFUSALS_PRINTED) {
-      tally.set(entry.reason, (tally.get(entry.reason) ?? 0) + 1);
-      continue;
+    if (entry.family === "fixture" || entry.family === "aged") {
+      const seen = printed.get(entry.family) ?? 0;
+      if (seen >= FIXTURE_REFUSALS_PRINTED) {
+        const key = `${entry.family}\0${entry.reason}`;
+        tally.set(key, (tally.get(key) ?? 0) + 1);
+        continue;
+      }
+      printed.set(entry.family, seen + 1);
     }
-    if (entry.family === "fixture") printed += 1;
     lines.push(`  ${entry.path}  [${entry.family}] -- ${entry.reason}`);
   }
-  for (const [reason, count] of tally) lines.push(`  ...and ${count} more [fixture] -- ${reason}`);
+  for (const [key, count] of tally) {
+    const [family, reason] = key.split("\0");
+    lines.push(`  ...and ${count} more [${family}] -- ${reason}`);
+  }
   return lines;
 }
 
+/**
+ * The families a run walks. `--timer` is the minute timer's set (A11-348): the fixtures, the trees a killed run left, and the aged entries -- every one a thing
+ * nobody's current work can be in once it is a day cold and no process holds it. `--fixtures-only` is the narrower set the timer ran before. Neither flag: every family.
+ * @param {string[]} argv @returns {Family["family"][] | undefined}
+ */
+export function cliFamilies(argv: string[]): Family["family"][] | undefined {
+  if (argv.includes("--timer")) return ["fixture", "doomed", "aged"];
+  return argv.includes("--fixtures-only") ? ["fixture", "doomed"] : undefined;
+}
+
 async function main() {
-  refuseUnknownFlags(["--apply", "--tmp", "--fixtures-only"],
+  refuseUnknownFlags(["--apply", "--tmp", "--fixtures-only", "--timer"],
     { entry: import.meta.url, command: "node packages/agent-org/src/prune-tmp.ts" });
   // THE DEFAULT IS THE LISTING, for the reason `prune-worktrees.ts` paid for: a command whose name reads
   // as a report, on a host with eight live sessions, is one somebody runs to LOOK. There is deliberately
   // no timer for the REVIEW and SCRATCHPAD families -- #2166 puts that decision one cycle after the named list, which is
-  // the precedent #2012/#2146 set. The timer (#3849) passes `--fixtures-only`: a test fixture is made by this repository's own tests,
-  // so nobody's current work lives in one, and that is the one family it may remove unannounced.
+  // the precedent #2012/#2146 set. The timer (#3849) passes `--timer`: a test fixture is made by this repository's own tests,
+  // so nobody's current work lives in one, and an entry the agent user owns that nothing has written for a day and no process holds (A11-348) is cold by the same
+  // reading. Those, with the unfinished trees, are the families it may remove unannounced.
   const dryRun = !process.argv.includes("--apply");
   const tmpRoot = process.argv.find((a) => a.startsWith("--tmp="))?.slice("--tmp=".length) ?? "/tmp";
   if (!existsSync(tmpRoot)) throw new Error(`prune-tmp: ${tmpRoot} does not exist -- nothing was read or written`);
-  const families = process.argv.includes("--fixtures-only") ? (["fixture", "doomed"] as Family["family"][]) : undefined;
+  const families = cliFamilies(process.argv);
   const report = pruneTmp(tmpRoot, { dryRun, families });
   process.stdout.write((dryRun ? formatDryRunReport(report) : formatAppliedReport(report)) + "\n");
 }

@@ -22,6 +22,10 @@ export const HOST_ALERTS_EVERY_MS = 60_000;
 /** The most entries `/tmp` may hold before the board says so: the chairman's limit (A11-279). */
 export const TMP_ENTRY_LIMIT = 1_000;
 
+/** The janitor that clears `/tmp`, named in the alert so a person reads which job to look at (A11-348): the timer `host/tmp-prune.timer.in` ships, and its service's user journal holds the `tmp-entries:` count of every run. */
+export const TMP_PRUNING_JOB = "a11ign-tmp-prune.timer";
+const PRUNING_JOB_SENTENCE = ` ${TMP_PRUNING_JOB} removes the entries of the agent user that nothing has written for 24 hours and no running process holds; if the count stays up, read \`journalctl --user -u a11ign-tmp-prune.service\`.`;
+
 /** How far back an entry of `/tmp` is "still being written": the alert names the prefixes of the entries modified in this time (A11-303). */
 export const TMP_WRITERS_WINDOW_MS = 60 * 60_000;
 
@@ -164,7 +168,7 @@ function writersSentence(writers: readonly TmpWriter[] | null): string {
 function readingConditions(reading: HostReading): readonly Condition[] {
   const { tmpEntries, tmpWriters, softLockupAt, hangSettings } = reading;
   return [
-    ...(tmpEntries !== null && tmpEntries > TMP_ENTRY_LIMIT ? [{ id: "tmp-entries", sentence: `/tmp holds ${tmpEntries.toLocaleString("en-US")} entries, over the ${TMP_ENTRY_LIMIT.toLocaleString("en-US")} it should stay under. Listing a directory that size stalled the host's kernel on 2026-10-25.${writersSentence(tmpWriters)}` }] : []),
+    ...(tmpEntries !== null && tmpEntries > TMP_ENTRY_LIMIT ? [{ id: "tmp-entries", sentence: `/tmp holds ${tmpEntries.toLocaleString("en-US")} entries, over the ${TMP_ENTRY_LIMIT.toLocaleString("en-US")} it should stay under. Listing a directory that size stalled the host's kernel on 2026-10-25.${PRUNING_JOB_SENTENCE}${writersSentence(tmpWriters)}` }] : []),
     ...(softLockupAt === null ? [] : [{ id: "soft-lockup", at: softLockupAt, sentence: "The kernel logged a soft lockup this boot (a CPU stuck in the kernel for seconds). The host is not rebooted for one: look at the kernel log (journalctl -k -b --grep 'soft lockup')." }]),
     ...(hangSettings === null ? [] : [{ id: "hang-settings", sentence: hangSettings }]),
   ];

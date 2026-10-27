@@ -12,7 +12,7 @@ import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from
 import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -1484,24 +1484,34 @@ test("A11-261: /api/queue sends each run's CI as figures and where the ticket st
   assert.equal(over.entries[0]!.ci?.state, "held", "205 weighted minutes of a budget of 100");
 });
 
-test("A11-255: the dependency sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+/** The sweeps `startFeedbackSweeps` schedules over an idle pool and the board's own sweeps `board`, in order. */
+function scheduledWith(board: Parameters<typeof startFeedbackSweeps>[2]): { run: () => void; ms: number }[] {
   const pool = { watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {} };
   const scheduled: { run: () => void; ms: number }[] = [];
-  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
-  assert.equal(scheduled.length, 5, "without the board's sweep there are five, as before");
-  const calls: string[] = [];
-  scheduled.length = 0;
-  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); }, { dependencyUpdates: () => { calls.push("dependencyUpdates"); return Promise.reject(new Error("the code host is down")); } });
-  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS));
+  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); }, board);
+  return scheduled;
+}
+
+/** What the server writes to stderr while a scheduled sweep runs and settles. */
+async function saidWhileRunning(run: () => void): Promise<string[]> {
   const stderr = process.stderr.write;
   const said: string[] = [];
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
   try {
-    scheduled[5]!.run();
+    run();
     await new Promise((resolve) => setImmediate(resolve));
   } finally {
     process.stderr.write = stderr;
   }
+  return said;
+}
+
+test("A11-255: the dependency sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  assert.equal(scheduledWith({}).length, 5, "without the board's sweep there are five, as before");
+  const calls: string[] = [];
+  const scheduled = scheduledWith({ dependencyUpdates: () => { calls.push("dependencyUpdates"); return Promise.reject(new Error("the code host is down")); } });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS));
+  const said = await saidWhileRunning(scheduled[5]!.run);
   assert.deepEqual(calls, ["dependencyUpdates"]);
   assert.deepEqual(said, ["ticket:serve: the dependency updates could not be turned into tickets: the code host is down\n"]);
 });
@@ -1526,6 +1536,36 @@ test("A11-255: the board's dependency sweep asks the writer for a major, records
   await sweep();
   const [, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
   assert.deepEqual(queue.entries.map((entry: any) => [entry.ticket.key, entry.model, entry.effort]), [["NBF-101", "sonnet", "low"]], "queued like one a person adds, on the saved choice");
+});
+
+test("A11-347: the idle-blocker sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  assert.equal(scheduledWith({}).length, 5, "without the board's sweep there are five, as before");
+  const calls: string[] = [];
+  const scheduled = scheduledWith({ idleBlockers: () => { calls.push("idleBlockers"); return Promise.reject(new Error("the tracker is down")); } });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS), "on the feedback cadence, a sweep of its own");
+  const said = await saidWhileRunning(scheduled[5]!.run);
+  assert.deepEqual(calls, ["idleBlockers"]);
+  assert.deepEqual(said, ["ticket:serve: the tickets that hold queued runs back with no run could not be completed or queued: the tracker is down\n"]);
+});
+
+test("A11-347: the board's idle-blocker sweep queues a ticket this instance claimed, on the saved choice, and wakes the pool; the same ticket claimed by nobody is left", async () => {
+  const tracker = createFakeTracker([inProgress("NBF-9"), ticket("NBF-2")]);
+  const b = board(4747, {}, {}, tracker);
+  tracker.setClaimant("NBF-9", claimantOf(b.settings));
+  b.queueTickets([ticket("NBF-2")], { model: "sonnet", effort: "high" }, { plan: false });
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, blockers: [{ key: "NBF-9", state: "started", status: "In Progress", pulls: {} }] })) });
+  await b.api("POST", "/api/choice", { model: "sonnet", effort: "low" });
+  const sweep = idleBlockersOf(b, { settings: b.settings, source: tracker, key: KEY, queuePath: join(b.dir, "queue.json"), choicePath: join(b.dir, "choice.json"), codeHost: createFakeCodeHost(), now: () => 7 } as BoardDeps);
+  b.ticks.length = 0;
+  tracker.setClaimant("NBF-9", undefined);
+  await sweep();
+  assert.equal(b.store.get().entries.some((e) => e.ticket.key === "NBF-9"), false, "nobody claimed it: a person is on it");
+  tracker.setClaimant("NBF-9", claimantOf(b.settings));
+  await sweep();
+  await sweep();
+  const queued = b.store.get().entries.filter((e) => e.ticket.key === "NBF-9");
+  assert.deepEqual(queued.map((e) => [e.phase, e.model, e.effort]), [["queued", "sonnet", "low"]], "queued once, on the saved choice");
+  assert.ok(b.ticks.includes("tick"), "and the pool is woken");
 });
 
 test("A11-306: the first review of a green head is its own sweep, on a minute, beside the others on the feedback cadence", () => {
