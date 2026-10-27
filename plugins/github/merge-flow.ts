@@ -13,6 +13,22 @@ export const ARM_WORKFLOW_PATH: typeof CONTRACT_ARM_WORKFLOW_PATH = ".github/wor
 /** The merge bot's path the contract names (`MERGE_BOT_WORKFLOW_PATH`), held to its spelling in the same way. */
 export const MERGE_BOT_WORKFLOW_PATH: typeof CONTRACT_MERGE_BOT_WORKFLOW_PATH = ".github/workflows/merge-bot.yml";
 
+/** The check the merge bot merges on (`.github/workflows/merge-bot.yml`'s `gate` job): in a repository whose flow is the merge bot, the one check the board waits on (A11-341). */
+export const MERGE_BOT_GATE = "gate";
+
+/** The query's selection of the merge bot's file on the default branch: null where the repository does not hold it. */
+const MERGE_BOT_FILE = `bot: object(expression: "HEAD:${MERGE_BOT_WORKFLOW_PATH}") { __typename }`;
+/** The fields that say whether a repository is private and holds the merge bot, as a query asks them; {@link answerRunsMergeBot} reads the answer. */
+export const MERGE_BOT_FIELDS = `isPrivate ${MERGE_BOT_FILE}`;
+
+const holds = (file: unknown): boolean => file !== null && typeof file === "object";
+
+/** Whether a repository's merge flow is the merge bot: it is private, which GitHub Free offers no ruleset or merge queue, and its default branch holds the bot (A11-291). */
+export const runsMergeBot = (flow: Pick<MergeFlow, "private" | "mergeBot">): boolean => flow.private && flow.mergeBot;
+
+/** {@link runsMergeBot}, read off a GraphQL `repository` answer that asked for {@link MERGE_BOT_FIELDS}: false when the answer does not say. */
+export const answerRunsMergeBot = (repository: any): boolean => runsMergeBot({ private: repository?.isPrivate === true, mergeBot: holds(repository?.bot) });
+
 /** The owner and name of a repository written `owner/name`, or null for any other text (which also keeps a quote out of the query). */
 function repositoryOf(repository: string): { owner: string; name: string } | null {
   const match = /^([^/\s"\\]+)\/([^/\s"\\]+)$/.exec(repository);
@@ -21,7 +37,7 @@ function repositoryOf(repository: string): { owner: string; name: string } | nul
 
 /** The query for the repositories: an alias `r<n>` each, with the setting, whether it is private, the default branch and whether its head holds the arm workflow (`object`) and the merge bot (`bot`), each null where the file is not. */
 const queryOf = (repositories: readonly { owner: string; name: string }[]): string => `query { ${repositories.map(({ owner, name }, n) =>
-  `r${n}: repository(owner: "${owner}", name: "${name}") { autoMergeAllowed isPrivate defaultBranchRef { name } object(expression: "HEAD:${ARM_WORKFLOW_PATH}") { __typename } bot: object(expression: "HEAD:${MERGE_BOT_WORKFLOW_PATH}") { __typename } }`).join(" ")} }`;
+  `r${n}: repository(owner: "${owner}", name: "${name}") { autoMergeAllowed isPrivate defaultBranchRef { name } object(expression: "HEAD:${ARM_WORKFLOW_PATH}") { __typename } ${MERGE_BOT_FILE} }`).join(" ")} }`;
 
 /** The answer's `data`, from the text `gh` printed: a repository GitHub could not read makes `gh` exit non-zero WITH the rest of the answer, so a failure that printed an answer is read too. Null when there is none. */
 function dataOf(run: Gh, query: string): Record<string, unknown> | null {
@@ -43,7 +59,6 @@ function dataOf(run: Gh, query: string): Record<string, unknown> | null {
 /** One repository's answer as a merge flow, or null when it says neither whether auto-merge is allowed nor a default branch (a repository GitHub could not read). */
 function flowOf(answer: any): MergeFlow | null {
   if (typeof answer?.autoMergeAllowed !== "boolean" || typeof answer.isPrivate !== "boolean" || typeof answer.defaultBranchRef?.name !== "string") return null;
-  const holds = (file: unknown): boolean => file !== null && typeof file === "object";
   return { autoMerge: answer.autoMergeAllowed, armWorkflow: holds(answer.object), defaultBranch: answer.defaultBranchRef.name, private: answer.isPrivate, mergeBot: holds(answer.bot) };
 }
 

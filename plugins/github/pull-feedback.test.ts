@@ -201,3 +201,43 @@ test("A11-291: `armed` says whether auto-merge is on for the pull request, and i
   readPullFeedback(URL, "worker-bot", run);
   assert.match(calls[0].join(" "), /autoMergeRequest \{ enabledAt \}/, "the query asks for it");
 });
+
+/** The feedback read of a pull request in a repository that is `private` and holds the merge bot or not: the repository's own fields beside the pull request, as the query asks them. */
+const readInRepository = (repository: { isPrivate?: boolean; bot?: unknown }, checks: unknown[], hasNextPage = false) => {
+  const pull = pullWith({ checks });
+  pull.commits.nodes[0].commit.statusCheckRollup.contexts = { pageInfo: { hasNextPage }, nodes: checks } as never;
+  const run = (_args: string[]) => JSON.stringify({ data: { repository: { ...repository, pullRequest: pull } } });
+  return readPullFeedback(URL, "me", run);
+};
+const check = (name: string, conclusion: string | null, minute: number, isRequired = false) => ({ __typename: "CheckRun", name, conclusion, completedAt: at(minute), isRequired });
+const MERGE_BOT = { isPrivate: true, bot: { __typename: "Blob" } };
+
+test("A11-341: in a merge-bot repository with no required check, `gate` is the one the pull request waits on: a red check that is not the merge condition is listed and holds nothing", () => {
+  const read = readInRepository(MERGE_BOT, [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20)]);
+  assert.deepEqual([read?.failing, read?.failedAt, read?.pendingRequired], [[], null, []], "gate is green: nothing is counted, so no feedback round is opened for capture");
+  assert.deepEqual(read?.failures.map(({ name }) => name), ["capture"], "it is still listed, so a round can name the job behind a roll-up that failed");
+});
+
+test("A11-341: in a merge-bot repository a red `gate` reads red, and a gate still running or not reported is what the pull request waits on", () => {
+  const red = readInRepository(MERGE_BOT, [check("gate", "FAILURE", 10), check("capture", "FAILURE", 20)]);
+  assert.deepEqual([red?.failing, red?.failedAt], [["gate"], ms(10)], "only the gate counts, as today a required check does");
+  const running = readInRepository(MERGE_BOT, [check("gate", null, 10), check("capture", "FAILURE", 20)]);
+  assert.deepEqual([running?.failing, running?.pendingRequired], [[], ["gate"]]);
+  const missing = readInRepository(MERGE_BOT, [check("capture", null, 20)]);
+  assert.deepEqual(missing?.pendingRequired, [], "a gate with no run on the head is not in the rollup, as a required check of a ruleset is not");
+});
+
+test("A11-341: a repository with neither a ruleset nor the merge bot counts every check as before, and a ruleset's required checks win over the merge bot", () => {
+  const checks = [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20)];
+  for (const repository of [{ isPrivate: false, bot: null }, { isPrivate: true, bot: null }, { isPrivate: false, bot: { __typename: "Blob" } }, {}]) {
+    assert.deepEqual(readInRepository(repository, checks)?.failing, ["capture"], JSON.stringify(repository));
+  }
+  const ruleset = readInRepository(MERGE_BOT, [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20, true)]);
+  assert.deepEqual(ruleset?.failing, ["capture"], "GitHub names capture required: that is the condition, not gate");
+});
+
+test("A11-341: a rollup of more than one page is not read in full, so `gate` is not taken as the one required check: the checks seen count as before", () => {
+  const checks = [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20)];
+  assert.deepEqual(readInRepository(MERGE_BOT, checks, true)?.failing, ["capture"]);
+  assert.deepEqual(readInRepository(MERGE_BOT, checks, false)?.failing, []);
+});
