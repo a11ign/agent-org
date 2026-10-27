@@ -61,6 +61,7 @@ import { recordMergeNote } from "./queue/queue-merge-note.ts";
 import type { MergeFlow } from "../plugins/contracts/code-host.ts";
 import { sweepRunTmp } from "./run-isolation.ts";
 import { retryCrashed } from "./pool-crash-retry.ts";
+import { recordOpenedPulls, watchWaitedPulls } from "./pool-wait-pulls.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
@@ -138,6 +139,8 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, res
     if (["working", "idle", "done"].includes(seen)) startedHere.delete(name);
     const repos = worktreesIn(folder);
     if (repos.join("\n") !== entry.repos.join("\n")) update(ctx, (queue) => recordRepos(queue, key, repos));
+    // The pull requests the worker opened so far are the run's, whatever its outcome will list (A11-358).
+    recordOpenedPulls(ctx, entry);
     const sitting = !["working", "idle", "done"].includes(seen);
     if (sitting && answerStartDialog(ctx, runPlace(ctx, entry))) continue;
     // A dialog that is not a start dialog (A11-174): a Claude Code safety prompt is answered No and the agent told why, any other is left for a person, with its first line.
@@ -157,6 +160,8 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, res
         if (resumed.has(name)) continue;
         // A plan attach or a result write being tried again keeps its retry note on the card for minutes: the stall watch must not read that as an agent gone quiet, nor prompt the agent (A11-216, A11-304).
         if (!ctx.attachRetries.has(name) && !ctx.writeRetries.has(name)) watchStall(ctx, current, seen);
+        // The pull requests it waits on or opened are read like the run's own: a review asking for changes on one is told to it at once, not at its `until` (A11-358).
+        watchWaitedPulls(ctx, latest(), seen);
         retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
         watchIdle(ctx, latest(), seen);
       }
@@ -170,6 +175,7 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>, res
   }
   // What was read of a wait belongs to a run that is still running: a run that ended or was stopped leaves nothing behind.
   for (const name of ctx.waitPolls.keys()) if (!watched.has(name)) ctx.waitPolls.delete(name);
+  for (const name of ctx.pullReadAt.keys()) if (!watched.has(name)) ctx.pullReadAt.delete(name);
 }
 
 /**

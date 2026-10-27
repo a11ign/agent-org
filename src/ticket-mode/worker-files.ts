@@ -122,9 +122,14 @@ export const WAITING_FILE = "waiting.json";
 export const ASKED_FILE = "asked.json";
 /**
  * Present beside the outcome file of a run on a machine with `tickets.drafts: false`, written by the pool before the worker starts. It lets the
- * PreToolUse hook allow `gh pr create` without `--draft`: a worker on such a machine opens its pull request ready for review, and no other run may.
+ * PreToolUse hook allow `gh pr create` without `--draft`, and the marking of the run's own pull requests ready: a worker on such a machine opens its pull request ready for review, whatever round it is on, and no machine that keeps drafts may.
  */
 export const READY_FILE = "ready-run";
+/**
+ * The pull requests a run opened while it ran, one address a line, beside the outcome file (A11-358). Only the PostToolUse hook writes it, from the command that created one and printed its address: the board reads it so a pull
+ * request a run opened in another repository is the run's, and watched, even when the run never ended on an outcome that lists it. It is also what lets a `drafts: false` run mark one of them ready by its address.
+ */
+export const OPENED_FILE = "opened-pulls.jsonl";
 /**
  * The skill the host file's `tickets.prReview` names, beside the outcome file as a JSON string, where the PreToolUse hook reads it. Absent when the
  * machine names none, and then the hook gates no push or pull request on a review (A11-86).
@@ -956,7 +961,7 @@ export type HookCommand = Readonly<{ node: string; bin: string }>;
 /**
  * The ticket folder's `.claude/settings.local.json`. `readDirs` are the person's repositories, which the worker reads but never changes.
  * `plugins` are enabled here because a worker starts in the ticket's folder, where no project settings of the person's apply. A new-ticket run
- * (`writer`, the tracker's create tool) also records each ticket it creates, as the creation returns (`ticket:hook post-tool-use`), so the board can check its outcome.
+ * (`writer`, the tracker's create tool) also records each ticket it creates, as the creation returns (`ticket:hook post-tool-use`), so the board can check its outcome. Any other run records, the same way, the pull request a Bash command of its own opens.
  */
 export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [], writer = null }: {
   model: string; ticketDir: string; readDirs: readonly string[]; hook: HookCommand; plugins?: readonly string[]; writer?: Pick<TrackerWriting, "createTool"> | null;
@@ -970,7 +975,8 @@ export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [],
     hooks: {
       Stop: [{ hooks: [command("stop")] }],
       PreToolUse: [{ matcher: "*", hooks: [command("pre-tool-use")] }],
-      ...(writer === null ? {} : { PostToolUse: [{ matcher: writer.createTool, hooks: [command("post-tool-use")] }] }),
+      // A new-ticket run records each ticket it creates; every other run records the pull request a command of its own opens (A11-358).
+      PostToolUse: [{ matcher: writer === null ? "Bash" : writer.createTool, hooks: [command("post-tool-use")] }],
     },
   };
 }

@@ -39,7 +39,8 @@
 // checks and the review and wakes the run on a red required check and on review feedback: the run ends at its push. The Stop hook is as it was.
 //
 // On a machine with `tickets.drafts: false` the pool leaves `ready-run` beside the outcome file, and a worker may open its pull request ready
-// (`gh pr create` without `--draft`) only then. Without that mark, the draft refusal applies to every run, as before. No worker may write the mark.
+// (`gh pr create` without `--draft`) only then, and mark its own pull requests ready (A11-358): the one of its branch with no argument, and any it opened by the URL its creating command printed, which the PostToolUse hook records beside the
+// outcome file (`opened-pulls.jsonl`, `opened-record.ts`). Without that mark, the draft refusal applies to every run, as before. No worker may write the mark or the record.
 //
 // A PRE-PR REVIEW GATE (A11-86). On a machine whose `tickets.prReview` names a skill, a push or a pull request is refused until that skill has run
 // since the worker's last commit. The hook keeps that order in an append-only log beside the outcome file, `pr-review-log`: a `review` line for each
@@ -85,9 +86,10 @@ import { CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, claimsRetryAsk, folderClaimMiss
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { ciWaitRefusal } from "./ci-wait.ts";
 import type { DenyRule } from "./settings.ts";
-import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
+import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, OPENED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
   ORDER_FILE, PLAN_DIR, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import { createdPullOf, readOpenedPulls, recordOpenedPull } from "./opened-record.ts";
 import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
@@ -119,12 +121,26 @@ const BASH_REFUSALS: readonly Refusal[] = [
 
 /**
  * Marking a pull request ready is the person's, until they approve it on the board: then a review run may mark the pull requests they
- * approved, each named by its URL, and never undo one.
+ * approved, each named by its URL, and never undo one. On a machine with `tickets.drafts: false` (`ready`) there is no draft to approve, so a run may mark its OWN pull requests
+ * ready (A11-358): the one of its branch, with no argument, and any it opened, by the URL its creating command printed (`opened`). A number or a branch names a pull request the hook cannot tie to the run, so it is refused.
  */
 function readyRefusal(approved: readonly string[]): Refusal {
-  const named = approved.length === 0 ? "" : `(?![^\\n;&|]*(?:${approved.map(escapeRegExp).join("|")})(?![\\w/]))`;
-  return { pattern: new RegExp(`\\bgh\\s+pr\\s+ready\\b${named}|\\bgh\\s+pr\\s+ready\\b[^\\n;&|]*--undo\\b`),
-    why: "marking a pull request ready is the person's, except a review run's own approved pull requests, by URL" };
+  return { pattern: readyPattern(approved, ""), why: "marking a pull request ready is the person's, except a review run's own approved pull requests, by URL" };
+}
+
+/** {@link readyRefusal} on a machine with `tickets.drafts: false`: the pull requests the person approved and those the run `opened` may be marked ready by URL, and so may the one of the run's branch, named by no argument (A11-358). */
+function ownReadyRefusal(approved: readonly string[], opened: readonly string[]): Refusal {
+  return { pattern: readyPattern([...approved, ...opened], NO_ARGUMENT),
+    why: "marking a pull request ready is the person's, except the run's own: `gh pr ready` with no argument, or with the URL of a pull request this run opened; a number or a branch names none the hook can tie to the run" };
+}
+
+/** The end of a `gh pr ready` that names no pull request: only white space follows it up to the end of the command or the next one. */
+const NO_ARGUMENT = "(?!\\s*(?:$|[\\n;&|]))";
+
+/** The refusal of `gh pr ready` for any pull request but those whose URLs are `allowed`, and of `--undo` always. `unlessBare` is a lookahead that lets a command with no argument through. */
+function readyPattern(allowed: readonly string[], unlessBare: string): RegExp {
+  const named = allowed.length === 0 ? "" : `(?![^\\n;&|]*(?:${allowed.map(escapeRegExp).join("|")})(?![\\w/]))`;
+  return new RegExp(`\\bgh\\s+pr\\s+ready\\b${unlessBare}${named}|\\bgh\\s+pr\\s+ready\\b[^\\n;&|]*--undo\\b`);
 }
 
 /**
@@ -135,7 +151,7 @@ function readyRefusal(approved: readonly string[]): Refusal {
  * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
  * tickets hold and the mark of the retry made for a folder claim (A11-212).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, CAP_PLANNER_FILE, DECISIONS_ROUND_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, OPENED_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, CAP_PLANNER_FILE, DECISIONS_ROUND_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -244,6 +260,22 @@ function writerFiling(toolName: string, input: Record<string, unknown>, run: Rea
   return created.includes(issue) ? ALLOW : refuse(`${toolName} names ${issue || "no ticket"}, which this run did not create: a new-ticket run attaches only to a ticket it created`);
 }
 
+/**
+ * The PostToolUse verdict for a Bash command that opened a pull request (A11-358): the address it printed is appended to the record beside the outcome file, which the board reads so the pull request is the run's and is watched, and which lets a
+ * `drafts: false` run mark it ready by that address. A command that opens none is ignored. A record that cannot be written is said out loud, since the board would not watch a pull request it does not know of; the call itself is not undone.
+ */
+export function recordOpened(ticketDir: string, toolName: string, input: Record<string, unknown>, response: unknown): HookResult {
+  if (toolName !== "Bash") return ALLOW;
+  const pull = createdPullOf(String(input.command ?? ""), response);
+  if (pull === null) return ALLOW;
+  try {
+    recordOpenedPull(ticketDir, pull);
+  } catch (err) {
+    return refuse(`${pull.url} was opened, but ${OPENED_FILE} cannot be written (${firstLine(err)}), so the board will not watch it: name it in your outcome`);
+  }
+  return ALLOW;
+}
+
 /** The filing tools the board granted a new-ticket run, from its mark beside the outcome file: none where the mark names none or cannot be read. PURE over `read`. */
 export function writerGrants(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8"), writings?: readonly TrackerWriting[]): string[] {
   try {
@@ -301,12 +333,14 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   publish?: readonly RegExp[] | null;
   /** The skills only a publish run may run: every publisher plugin of the registry's catalog declares them when absent. */
   publisherSkills?: readonly string[];
-  /** A run on a machine with `tickets.drafts: false` may open its pull request ready. */
+  /** A run on a machine with `tickets.drafts: false` may open its pull request ready, and mark its own pull requests ready (A11-358). */
   ready?: boolean;
+  /** The pull requests this run opened, by URL, from the hook's own record: a `drafts: false` run may mark these ready. */
+  opened?: readonly string[];
   /** The host's own programs a worker may not write, by path. */
   hostPrograms?: readonly string[];
 } = {}): HookResult {
-  const { machine = [], connectors = [], approved = [], publish = null, ready = false, hostPrograms = [], writer = false, grants = [], created = [] } = options;
+  const { machine = [], connectors = [], approved = [], publish = null, ready = false, opened = [], hostPrograms = [], writer = false, grants = [], created = [] } = options;
   if (toolName.startsWith("mcp__")) {
     const writings = options.trackers ?? trackerWritings();
     const filed = writings.find(({ filingTools }) => new RegExp(filingTools).test(toolName));
@@ -335,7 +369,7 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   if (/\bgh\s+pr\s+create\b/.test(command) && !/--draft\b/.test(command) && !ready) return refuse("open the pull request as a draft: `gh pr create --draft`");
   const waiting = ciWaitRefusal(command);
   if (waiting !== null) return refuse(`refused, because ${waiting}: ${command.split("\n")[0].slice(0, 120)}`);
-  const hit = [...BASH_REFUSALS, HOST_INSTALL_REFUSAL, protectedWriteRefusal(hostPrograms), readyRefusal(approved), MARK_REFUSAL, BOARD_KEY_REFUSAL, BOARD_ROUTE_REFUSAL, ...machine]
+  const hit = [...BASH_REFUSALS, HOST_INSTALL_REFUSAL, protectedWriteRefusal(hostPrograms), ready ? ownReadyRefusal(approved, opened) : readyRefusal(approved), MARK_REFUSAL, BOARD_KEY_REFUSAL, BOARD_ROUTE_REFUSAL, ...machine]
     .find(({ pattern }) => pattern.test(command));
   return hit ? refuse(`refused, because ${hit.why}: ${command.split("\n")[0].slice(0, 120)}`) : ALLOW;
 }
@@ -1012,7 +1046,10 @@ export function main(stdin: string, argv: string[]): HookResult {
     if (event === "stop") return stopVerdict(ticketDir, stopPayload(stdin));
     const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown };
     const tool = String(payload.tool_name ?? "");
-    if (event === "post-tool-use") return recordCreated(ticketDir, tool, payload.tool_response);
+    if (event === "post-tool-use") {
+      const created = recordCreated(ticketDir, tool, payload.tool_response);
+      return created.code === 0 ? recordOpened(ticketDir, tool, payload.tool_input ?? {}, payload.tool_response) : created;
+    }
     const input = payload.tool_input ?? {};
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
@@ -1020,7 +1057,7 @@ export function main(stdin: string, argv: string[]): HookResult {
     const resolved = typeof input.file_path === "string" ? { ...input, file_path: resolveWritePath(input.file_path) } : input;
     const verdict = toolVerdict(tool, resolved, {
       machine: refusals, connectors: allowed.connectors, approved: approvedPulls(ticketDir), publish: publishConnectors(ticketDir),
-      ready: existsSync(join(ticketDir, READY_FILE)), hostPrograms: guarded.paths, writer: existsSync(join(ticketDir, WRITER_FILE)),
+      ready: existsSync(join(ticketDir, READY_FILE)), opened: readOpenedPulls(ticketDir).map(({ url }) => url), hostPrograms: guarded.paths, writer: existsSync(join(ticketDir, WRITER_FILE)),
       grants: writerGrants(ticketDir), created: readCreatedKeys(ticketDir),
     });
     const review = prReviewSetting(ticketDir);
