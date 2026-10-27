@@ -2,7 +2,7 @@ The After-merge comment poster finds a Linear ticket whether or not Linear has a
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts plugins/linear/linear.test.ts src/declared-clone.test.ts src/ticket-mode/reviewer-port.test.ts src/install/doctor.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts plugins/linear/linear.test.ts src/declared-clone.test.ts src/install/doctor.test.ts
 ```
 
 Consumer-declaration: none -- no host file changes meaning. A `clones` key that is a declared key or a repository's name resolves exactly as before; a key that is neither is resolved by the clone's `origin` and no longer turned into a repository name.
