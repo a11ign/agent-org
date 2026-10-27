@@ -3,7 +3,7 @@
 // A11-258: which pull requests a needs-human run is about, when the board lets its parked workspace go, and what its card says once its blocker merged.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { blockerClearedLine, isReleasable, namedBlockers, namedPulls } from "./blocker-cleared.ts";
+import { blockerClearedLine, isMergedBlocker, isReleasable, namedBlockers, namedPulls } from "./blocker-cleared.ts";
 import { stepQueuedLine, stepRunningLine } from "./plan-steps.ts";
 import type { ViewEntry } from "./view-types-and-filters.ts";
 
@@ -55,6 +55,8 @@ test("A11-258: a parked needs-human run is released once every pull request it h
 
 test("A11-274: a parked run that stopped without an outcome is released once every pull request it holds merged and the merged bodies are read, and its card does not say a blocker cleared", () => {
   const stopped = run({ outcome: { kind: "no-outcome" }, review: [{ repo: "agent-org", url: PR }], pullStates: { [PR]: "merged" }, declared: { kind: "closes", urls: [PR] } });
+  assert.equal(isMergedBlocker(stopped), true, "its merged pull requests leave nothing for a person to answer");
+  assert.equal(isMergedBlocker({ ...stopped, pullStates: { [PR]: "open" } }), false);
   assert.equal(isReleasable(stopped), true);
   assert.equal(isReleasable({ ...stopped, pullStates: { [PR]: "open" } }), false, "its pull request is still open");
   assert.equal(isReleasable({ ...stopped, review: [{ repo: "agent-org", url: PR }, { repo: "lab", url: OTHER }], pullStates: { [PR]: "merged", [OTHER]: "open" } }), false, "every pull request it holds");
