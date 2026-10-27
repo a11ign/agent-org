@@ -91,6 +91,19 @@ test("A11-258: a needs-human run whose pull request merged with Closes is releas
   assert.equal(reasonOf(done).question, QUESTION, "what it asked stays one click away");
 });
 
+test("A11-274: a parked run that stopped without an outcome is released once its pull request merged, its next step is queued in the same sweep, and neither its log nor its card says a blocker cleared", async () => {
+  const made = world();
+  parkedNeedsHuman(made);
+  made.store.set({ ...made.store.get(), entries: [{ ...run(made), outcome: { kind: "no-outcome" } }] });
+  const lines = await logged(() => made.pool.refreshTracker());
+  assert.deepEqual(closed(made).map((args) => args.at(-1)), ["w1"], "its workspace was closed, once");
+  assert.ok(lines.some((line) => line.includes("NBF-1: a11ign/agent-org #1885 merged; its workspace was closed")), lines.join(""));
+  assert.ok(!lines.some((line) => line.includes("blocker cleared")), lines.join(""));
+  const queued = run(made);
+  assert.deepEqual([queued.phase, queued.workspace, queued.steps?.map(({ step, of }) => `${step} of ${of}`)], ["queued", undefined, ["1 of 2"]], "step 2 stands in the old run's place");
+  assert.doesNotMatch(reasonOf(queued).line ?? "", /blocker cleared/);
+});
+
 test("A11-258: a needs-human run that holds no pull request but names one in its reason waits on it, and takes the same path when it merges", async () => {
   const made = world();
   parkedNeedsHuman(made, { held: false, state: "open", body: null, reason: `${QUESTION} (${PR})` });

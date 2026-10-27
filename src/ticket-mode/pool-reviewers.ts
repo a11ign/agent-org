@@ -13,8 +13,8 @@
 //
 // A FINDING ANSWERED WITHOUT A COMMIT IS RE-REVIEWED WHEN SOMETHING NEW ANSWERS IT (A11-235). A description edit is not a new head, and a worker that fixes a finding by editing the description (and replies, or not) left the head blocked. Each start of the
 // reviewer for a head records a LOOK (`reviewerMemory.looks`): the time and the pull request body it started with. A blocked head is re-reviewed when its body now differs from the last look's, or a trusted reply came after both the block and the last
-// look, and the brief carries the changed lines and the replies. That takes something new each time, and for a pull request a run holds, each re-review is one of the run's rounds (`countRereview`), started only once the run's round has ended
-// (`finished`) and while a round is left: a dispute ends at the cap, handed to a person.
+// look, and the brief carries the changed lines and the replies. That takes something new each time, and for a pull request a run holds, each re-review is one of the run's rounds (`countRereview`), started only once its worker has
+// stopped working, in whatever state the run is (`mayRereview`, A11-274), and while a round is left: a dispute ends at the cap, handed to a person.
 
 import { earlierReviewWord, type Look, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, splitHeadKey, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
@@ -22,7 +22,7 @@ import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted, roundsLeft } from "./queue/queue-transitions.ts";
 import { recordReviewerRefusal } from "./queue/queue-reviewer-refusal.ts";
-import { countRereview, handBackRereview } from "./queue/queue-rereview.ts";
+import { bodyAnswersBlock, countRereview, handBackRereview, mayRereview } from "./queue/queue-rereview.ts";
 import { diffLines } from "./board-view/ticket-change.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { AWAITING_PERSON_LINE, claimWarning, NOT_READ_LINE, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
@@ -363,16 +363,6 @@ function planChangeSince(ctx: PoolContext, look: Look | undefined, held: Entry |
   return now === null || isPlanUnreadable(now) ? [] : changedLines(before, now);
 }
 
-/** Whether a run that holds the pull request may be asked for a re-review now: its round has ended, and it has not been handed back for want of a round (A11-235). */
-const awaitsRereview = (held: Entry): boolean => held.phase === "finished" && held.waitingOnTicket === undefined && (held.handedBack === undefined || roundsLeft(held));
-
-/**
- * The description lines that changed, as an answer to `block`: for a pull request a run holds, only when the run's last round ended after the block was posted. A description edited while the reviewer was still
- * reading, before the block, was not made in answer to it, and the block's own round (the worker's) is the one that answers it (A11-235).
- */
-const bodyChangedAfterRound = (held: Entry | undefined, block: Review, changed: ReviewBodyLine[]): ReviewBodyLine[] =>
-  (held === undefined || (held.finishedAt ?? 0) > block.at ? changed : []);
-
 /** What answered a block, in the words a hand-back and a round's log use: the description edited, the ticket's Decisions changed, or neither (a reply). */
 const answeredHow = ({ edited, decided, amended }: { edited: boolean; decided: boolean; amended: boolean }): string =>
   [...(edited ? ["by editing the description"] : []), ...(decided ? ["by a change to the ticket's Decisions"] : []), ...(amended ? ["by the planner's amendment of a decision"] : [])].join(" and ") || "in a reply";
@@ -417,7 +407,7 @@ function rereviewBrief(brief: ReviewBrief, held: Entry | undefined, { replies, c
  * line that claims a person decided something and does not link the ticket (`unsupported`), so the reviewer checks the answer, and it still reads the whole diff. A head with no look (started before looks were kept) is re-reviewed by a reply only, and
  * never again if it was re-reviewed then. Every start records a look, so a re-review needs something new each time: a reply the reviewer still rejects cannot summon it again without new work.
  *
- * For a pull request a run holds, the re-review waits for the end of the run's round (phase `finished`), so the reviewer never reads a body the worker is still editing, and counts as one of the run's rounds
+ * For a pull request a run holds, the re-review waits only while the run's worker is working (`mayRereview`, A11-274), so the reviewer never reads a body the worker is still editing, and counts as one of the run's rounds
  * (`countRereview`): with none left the run is handed to a person and no reviewer starts. A pull request no run holds has no rounds and no cap. Returns the start's answer, or null when nothing was asked.
  */
 function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer | null {
@@ -426,8 +416,8 @@ function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, stat
   const look = ctx.reviewerMemory.looks.get(`${url}@${head}`);
   if (block === null || !rereviewable(ctx, reviewer, url, state, look)) return null;
   const held = heldBy(ctx, url);
-  if (held !== undefined && !awaitsRereview(held)) return null;
-  const changed = bodyChangedAfterRound(held, block, bodyChangeSince(look, state));
+  if (held !== undefined && !mayRereview(held)) return null;
+  const changed = bodyAnswersBlock(held, block, bodyChangeSince(look, state));
   const decided = decisionsChangeSince(look, held);
   const amended = planChangeSince(ctx, look, held);
   // The board's own record of a refused re-review is a comment of its account, and answers nothing (A11-290).

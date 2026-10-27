@@ -1,5 +1,5 @@
 // @ts-check
-// module: a needs-human run whose pull requests merged -- which pull requests it is about, when the board lets it go, and what its card says (A11-258) -- PURE
+// module: a needs-human run whose pull requests merged -- which pull requests it is about, when the board lets it go, and what its card says (A11-258); a run that stopped without an outcome is let go the same way (A11-274) -- PURE
 //
 // A run that ends `needs-human` keeps its herdr workspace (parked), and the merge machinery skips a parked run: its next plan step was never queued, and a `Closes` merge left it parked under the old
 // question. When every pull request the run is about has merged, the blocker it asked about is gone, so the pool's sweep (`pool-blocker-cleared.ts`) closes the workspace and the merge machinery acts on it as on
@@ -55,16 +55,24 @@ export function namedBlockers(entry: ViewEntry, now: Readonly<Record<string, str
 /** The tracker states of a ticket that will not be done: its card reads Cancelled, so it does not say a blocker cleared. */
 const CANCELLED: ReadonlySet<string> = new Set(["canceled", "duplicate"]);
 
-/** Whether a finished run ended `needs-human` and every pull request it is about has merged or closed with one merged. PURE. */
-export const isMergedBlocker = (entry: ViewEntry): boolean =>
-  entry.phase === "finished" && entry.outcome?.kind === "needs-human" && settledByPulls(entry) === "completed";
+/** The outcomes of a parked run that the merge of its pull requests lets go: a question (`needs-human`, A11-258), and a run that stopped without writing an outcome (A11-274). */
+const RELEASED_ON_MERGE: ReadonlySet<string> = new Set(["needs-human", "no-outcome"]);
 
 /**
- * Whether the board lets a run's parked workspace go (A11-258): it is parked (and no talk session, a person at its terminal), ended `needs-human`, its pull requests merged, and their bodies are read, so the
- * `Closes` or `Partial:` that decides what the merge means (A11-181) is known before the next step is queued or the ticket completed. PURE.
+ * Whether a finished run ended `needs-human`, or stopped without an outcome (A11-274), and every pull request it is about has merged or closed with one merged: nothing is left for a person to answer. PURE.
+ */
+export const isMergedBlocker = (entry: ViewEntry): boolean =>
+  entry.phase === "finished" && RELEASED_ON_MERGE.has(entry.outcome?.kind ?? "") && settledByPulls(entry) === "completed";
+
+/**
+ * Whether the board lets a run's parked workspace go (A11-258): it is parked (and no talk session, a person at its terminal), ended `needs-human` or stopped without an outcome (A11-274), its pull requests merged, and their
+ * bodies are read, so the `Closes` or `Partial:` that decides what the merge means (A11-181) is known before the next step is queued or the ticket completed. PURE.
  */
 export const isReleasable = (entry: ViewEntry): boolean =>
   isMergedBlocker(entry) && entry.workspace !== undefined && entry.talk !== true && entry.declared !== undefined;
+
+/** Whether a run asked a question (`needs-human`) that the merge of its pull requests answered. PURE. */
+const isAnsweredByMerge = (entry: ViewEntry): boolean => entry.outcome?.kind === "needs-human" && isMergedBlocker(entry);
 
 /** The merged pull requests of a run, as a card names them. */
 const mergedNames = (entry: ViewEntry): string => pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] === "merged").map(({ url }) => pullLabel(url)).join(", ");
@@ -72,9 +80,12 @@ const mergedNames = (entry: ViewEntry): string => pullsOf(entry).filter(({ url }
 /** `the blocker cleared: <the merged pull requests> merged`, the head of a card line for a `needs-human` run whose pull requests merged. */
 export const blockerClearedHead = (names: string): string => `the blocker cleared: ${names} merged`;
 
-/** The head of the card line of a run whose `needs-human` blocker merged ({@link blockerClearedHead}), or null for a run that is not one. PURE. */
+/**
+ * The head of the card line of a run whose `needs-human` blocker merged ({@link blockerClearedHead}), or null for a run that is not one. A run that stopped without an outcome asked nothing, so no blocker of it cleared: its
+ * card says what completed it (A11-274). PURE.
+ */
 export function blockerClearedLine(entry: ViewEntry): string | null {
-  return isMergedBlocker(entry) && !CANCELLED.has(entry.trackerState ?? "") ? blockerClearedHead(mergedNames(entry)) : null;
+  return isAnsweredByMerge(entry) && !CANCELLED.has(entry.trackerState ?? "") ? blockerClearedHead(mergedNames(entry)) : null;
 }
 
 /** `the blocker cleared: the requested changes on <the pull requests> were lifted`, the card line of a `needs-human` run whose open pull requests stopped it on changes requested and are lifted and mergeable now (A11-258), or null. PURE. */
