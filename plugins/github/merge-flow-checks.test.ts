@@ -80,9 +80,11 @@ test("A11-274: a repository shaped like a11ign.github.io before the fix fails, n
 
 test("A11-274: auto-merge and the arm workflow are not a flow without an active merge queue ruleset that requires `gate`", () => {
   const [row] = mergeFlowChecks({}, machine({
-    "a11ign/no-ruleset": { autoMerge: true, workflow: true }, "a11ign/no-gate": { autoMerge: true, workflow: true, queue: true }, "a11ign/evaluate": { ...WITH_FLOW, enforcement: "EVALUATE" }, "a11ign/lab": WITH_FLOW,
+    "a11ign/no-ruleset": { autoMerge: true, workflow: true }, "a11ign/no-gate": { autoMerge: true, workflow: true, queue: true }, "a11ign/no-queue": { autoMerge: true, workflow: true, gate: true },
+    "a11ign/evaluate": { ...WITH_FLOW, enforcement: "EVALUATE" }, "a11ign/lab": WITH_FLOW,
   }).deps);
-  assert.match(row.detail, /^3 of 4 repositories have no merge flow/);
+  assert.match(row.detail, /^4 of 5 repositories have no merge flow/);
+  assert.match(row.detail, /a11ign\/no-queue: no active ruleset with a merge queue(;|$)/, "a required `gate` with no merge queue is not the flow");
   assert.match(row.detail, /a11ign\/no-ruleset: no active ruleset with a merge queue, `gate` is not a required check(;|$)/);
   assert.match(row.detail, /a11ign\/no-gate: `gate` is not a required check(;|$)/);
   assert.match(row.detail, /a11ign\/evaluate: no active ruleset with a merge queue, `gate` is not a required check(;|$)/, "a ruleset in evaluate mode enforces nothing");
