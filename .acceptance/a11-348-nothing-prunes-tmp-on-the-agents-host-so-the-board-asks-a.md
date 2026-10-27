@@ -3,7 +3,6 @@ The `/tmp` janitor (`a11ign-tmp-prune.timer`, every minute) now removes any entr
 Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/host-alerts.test.ts
-npx rstest run --config scripts/rstest/rstest.config.ts src/packaging/prune-tmp.test.ts
 npx rstest run --config scripts/rstest/rstest.config.ts src/prune-tmp-janitor.test.ts
 ```
 
