@@ -49,7 +49,7 @@ test("A11-298: the longest wait comes first", () => {
 });
 
 test("A11-298: a ticket with no run on the board cannot move, and a blocker that is queued behind another cannot either", () => {
-  assert.deepEqual(holderMove("A11-231", [entry("A11-229")]), { moves: false, words: "A11-231 has no run on the board, so nothing is working on it" });
+  assert.deepEqual(holderMove("A11-231", [entry("A11-229")]), { moves: false, words: "A11-231 has no run on the board, so nothing is working on it, and the board takes no action on it: a person decides" });
   const stuck = entry("A11-231", { blockers: [blocker("A11-229")] });
   const waiter = entry("A11-229", { paths: FILES, blockers: [blocker("A11-231")], waitSince: { on: "A11-231", since: NOW - 5 * HOUR } });
   const other = running("A11-229b");
