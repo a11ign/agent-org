@@ -467,6 +467,18 @@ test("Publish queues one run for the ticked runs Ready to merge with their open 
   assert.doesNotThrow(() => queuePublish(publishFailed(queued, "x", 40), ["A"], 41), "a finished publish run is no bar to the next");
 });
 
+test("Publish on a machine that publishes before review queues a run awaiting only its review, refuses it by default, and refuses a draft, red checks or an unread head under either setting", () => {
+  const unreviewed = (fields: Record<string, unknown> = {}, head: Record<string, unknown> = {}) => readyToMerge({ pullHeads: { [pr.url]: { ...GREEN_HEAD, approved: false, review: "none", ...head } }, ...fields });
+  assert.deepEqual(queuePublish(unreviewed(), ["A"], 36, "awaiting-review").publish?.keys, ["A"]);
+  assert.deepEqual(queuePublish(readyToMerge(), ["A"], 36, "awaiting-review").publish?.keys, ["A"], "Ready to merge still publishes");
+  assert.throws(() => queuePublish(unreviewed(), ["A"], 36), /A is not Ready to merge, so it cannot be published/, "the default is today's");
+  assert.throws(() => queuePublish(unreviewed(), ["A"], 36, "ready-to-merge"), /A is not Ready to merge, so/);
+  for (const [why, queue] of [["red", unreviewed({}, { red: ["gate"] })], ["running", unreviewed({}, { pending: ["suite"] })], ["not read yet", readyToMerge({ pullHeads: {} })],
+    ["a draft", unreviewed({ outcome: { kind: "draft-pr", prs: [pr] } })], ["published", unreviewed({ published: { link: null, at: 1 } })]] as const) {
+    assert.throws(() => queuePublish(queue, ["A"], 36, "awaiting-review"), /A is not Ready to merge, nor awaiting only its review/, why);
+  }
+});
+
 test("a publish run holds a slot while it is live, starts while workers are paused, and its result marks its runs Published or leaves them as they were", () => {
   const queued = queuePublish(pauseQueue(readyToMerge()), ["A"], 36);
   assert.equal(publishStarts(queued), true, "the person just asked for it");

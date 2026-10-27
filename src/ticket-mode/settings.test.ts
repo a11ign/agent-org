@@ -27,7 +27,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, pick: "assigned", stallMinutes: 30, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, publishWhen: "ready-to-merge", pick: "assigned", stallMinutes: 30, ciBudgetMinutes: 300, updateMaxDeferHours: 2 });
 });
 
 test("A11-261: the CI budget is a whole number of weighted minutes per ticket, 300 by default, and 0 is none", () => {
@@ -392,6 +392,25 @@ test("A11-158: disabling the publisher gives the board no publisher, and enablin
   assert.deepEqual(settingsOf({ provider: "slack", run: PUBLISH_RUN, connectors: ["^mcp__slack__send"] }).publish, { run: PUBLISH_RUN, model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] });
   assert.equal(settingsOf({ provider: "slack", run: PUBLISH_RUN, enabled: false }).publish, null);
   assert.deepEqual(settingsOf({ provider: "slack", run: PUBLISH_RUN, enabled: true }).publish?.run, PUBLISH_RUN);
+});
+
+// When a run can be published is `tickets.providers.publish.when`, a setting of the publisher concern that any provider takes, `none` included, as the reviewer's `required` is.
+test("publishWhen is the publisher block's `when` when it holds one, else ready-to-merge, under any provider, none and a disabled one included", () => {
+  const whenOf = (tickets: Record<string, unknown>) => parseTicketSettings({ clones, tickets }).publishWhen;
+  assert.equal(whenOf({}), "ready-to-merge", "no block: today's behaviour");
+  assert.equal(whenOf({ providers: { publish: { provider: "slack", run: PUBLISH_RUN } } }), "ready-to-merge", "a publisher with no `when`");
+  assert.equal(whenOf({ publish: { run: PUBLISH_RUN } }), "ready-to-merge", "the old tickets.publish");
+  assert.equal(whenOf({ providers: { publish: { provider: "slack", run: PUBLISH_RUN, when: "awaiting-review" } } }), "awaiting-review");
+  assert.equal(whenOf({ providers: { publish: { provider: "slack", run: PUBLISH_RUN, when: "ready-to-merge" } } }), "ready-to-merge");
+  assert.equal(whenOf({ providers: { publish: { provider: "slack", run: PUBLISH_RUN, enabled: false, when: "awaiting-review" } } }), "awaiting-review", "a disabled publisher keeps it");
+  assert.equal(whenOf({ providers: { publish: { provider: "none", when: "awaiting-review" } } }), "awaiting-review", "`when` is valid under none");
+});
+
+test("a publisher `when` that is not ready-to-merge or awaiting-review is refused by name, whichever provider the block names", () => {
+  for (const publish of [{ provider: "slack", run: PUBLISH_RUN, when: "always" }, { provider: "none", when: true }]) {
+    assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { publish } } }), (error: unknown) => error instanceof TicketSettingsRefusal
+      && error.field === "tickets.providers.publish.when" && /must be one of "ready-to-merge", "awaiting-review", not /.test(error.message), publish.provider);
+  }
 });
 
 test("A11-158: a disabled publisher whose run is not one is still refused by name, so `enable` never restores a refused file", () => {

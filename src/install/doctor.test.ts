@@ -914,6 +914,13 @@ function assertRow(checks: Record<string, Check>, name: string, expected: Readon
 }
 const fakeOf = (name: string, over: Partial<CatalogPlugin> = {}): CatalogPlugin => ({ ...(fakeAgentOrgPlugins().catalog().plugins.find((plugin) => plugin.name === name) as CatalogPlugin), ...over });
 
+test("the publisher row says when the machine publishes before review, and says nothing of `when` at the default", async () => {
+  const before = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: { ...PUBLISH, when: "awaiting-review" } }) })));
+  assertRow(before, "publisher (slack)", { ok: true, detail: "from tickets.providers.publish, publishing a run once it awaits only its review (when: awaiting-review), and its checks pass" });
+  const ready = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: { ...PUBLISH, when: "ready-to-merge" } }) })));
+  assertRow(ready, "publisher (slack)", { ok: true, detail: "from tickets.providers.publish, and its checks pass" });
+});
+
 test("A11-158: a disabled publisher is named as disabled, says what the board does without it, and is not a failure", async () => {
   const disabled = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: { ...PUBLISH, enabled: false } }) })));
   assert.equal(disabled["publisher (slack, disabled)"].ok, true);

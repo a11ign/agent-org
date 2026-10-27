@@ -25,6 +25,7 @@ import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type Bloc
 import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
+import { DEFAULT_PUBLISH_WHEN, PUBLISH_WHEN, type PublishWhen } from "./board-view/publish-when.ts";
 import { defaultTakenStates } from "./pick-taken.ts";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -113,6 +114,11 @@ export type TicketSettings = Readonly<{
    * the atomic reviewer and is.
    */
   reviewerRequired: boolean;
+  /**
+   * When this machine's runs can be published: `tickets.providers.publish.when`, else `"ready-to-merge"`, once a reviewer approved the pull requests. `"awaiting-review"` is for a machine where people review,
+   * where the post is how a reviewer finds the pull request: a run out of draft can be published once its pull requests wait on their review and nothing else. Valid under any publisher, `none` included.
+   */
+  publishWhen: PublishWhen;
   /** Which tickets the Pick view lists. `"assigned"` by default. */
   pick: PickScope;
   /**
@@ -371,6 +377,12 @@ function reviewerRequiredOf(reviewer: BlockReport): boolean {
   return typeof value === "boolean" ? value : reviewer.provider !== "none";
 }
 
+/** When this machine's runs can be published: the block's `when` (already checked to be one of {@link PUBLISH_WHEN}), else Ready to merge. */
+function publishWhenOf(publish: BlockReport): PublishWhen {
+  const { value } = settingOf(publish, "when");
+  return PUBLISH_WHEN.find((when) => when === value) ?? DEFAULT_PUBLISH_WHEN;
+}
+
 /** The settings of a publisher that names a plugin, refused by name when its run is not one. */
 function publisherSettingsOf(publish: BlockReport): Publisher {
   const run = settingOf(publish, "run");
@@ -587,6 +599,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     prReview: prReviewOf(tickets.prReview),
     reviewer: isActive(reviewer) ? reviewer.provider : null,
     reviewerRequired: reviewerRequiredOf(reviewer),
+    publishWhen: publishWhenOf(publish),
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     ciBudgetMinutes: nonNegativeInteger(tickets.ciBudgetMinutes, "tickets.ciBudgetMinutes", DEFAULT_CI_BUDGET_MINUTES),

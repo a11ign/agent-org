@@ -100,7 +100,7 @@ function Tick({ entry, context, ticks }: Readonly<{ entry: RunEntry; context: Ro
   const { key } = entry.ticket;
   return (
     <div className="run-tick">
-      {publishable(entry, context.queue.publish) ? (
+      {publishable(entry, context.queue.publish, context.queue.publishWhen) ? (
         <label className="tick">
           <input type="checkbox" checked={ticks.picked.includes(key)} disabled={context.disabled} onChange={() => ticks.toggle(key)} aria-label={`Select ${key} to publish`} />
         </label>

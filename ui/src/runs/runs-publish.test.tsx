@@ -1,5 +1,5 @@
 import { act } from "@testing-library/react";
-import { selectOf, selectRuns, PUBLISHER_REASON, REFUSAL, TICKABLE, MESSAGE } from "../../test/publish/publish-stand.ts";
+import { AWAITING_KEY, awaitingReviewRuns, selectOf, selectRuns, PUBLISHER_REASON, REFUSAL, TICKABLE, MESSAGE } from "../../test/publish/publish-stand.ts";
 import { fireEvent, keysShown, pageOn, posts, rowOf, screen, textOf, waitFor, within } from "./runs-harness.tsx";
 
 const tickOf = (key: string): HTMLInputElement | null => within(rowOf(key)).queryByRole("checkbox", { name: `Select ${key} to publish` });
@@ -25,6 +25,25 @@ describe("Publish on a machine with no publisher", () => {
   it("shows no publish run's failure, since this machine has none", async () => {
     await pageOn(selectOf({ publisher: false }, selectRuns(), { keys: ["A11-30"], phase: "finished", failure: PUBLISHER_REASON }));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("Publish on a machine that publishes before review (tickets.providers.publish.when)", () => {
+  it("draws no tick box on a run awaiting its review where the machine publishes at Ready to merge, as an instance that sends no `when` does", async () => {
+    await pageOn(selectOf({}, awaitingReviewRuns()));
+    expect(tickOf(AWAITING_KEY)).toBeNull();
+    await pageOn(selectOf({ publishWhen: "ready-to-merge" }, awaitingReviewRuns()));
+    expect(tickOf(AWAITING_KEY)).toBeNull();
+  });
+
+  it("draws a tick box on a run awaiting only its review, beside the Ready to merge ones, and posts it to /api/publish", async () => {
+    const { fetchWith } = await pageOn(selectOf({ publishWhen: "awaiting-review", post: () => ({ entries: [] }) }, awaitingReviewRuns()));
+    const withBox = keysShown().filter((key) => tickOf(key) !== null);
+    expect(withBox.sort()).toEqual([...TICKABLE, AWAITING_KEY].sort());
+    expect(tickOf("A11-27")).toBeNull();
+    tick(AWAITING_KEY);
+    press("Publish selected (1)");
+    expect(await publishedBody(fetchWith)).toEqual({ keys: [AWAITING_KEY] });
   });
 });
 

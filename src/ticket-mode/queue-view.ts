@@ -119,7 +119,8 @@ export function queueView(board: ViewBoard) {
   const { ciSpend: _ciSpend, interventions: _interventions, runLog, ...queue } = board.store.get();
   const entries = queue.entries.map((entry) => listEntry(entry, ciOf(board, board.store.get(), entry)));
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading. `afterMergeChecks`: the open checks, oldest first (A11-277).
-  return { ...queue, entries, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).filter(isTicketWriter).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
+  // `publishWhen`: when a run can be published here (`tickets.providers.publish.when`), so the page ticks the runs `queuePublish` accepts.
+  return { ...queue, entries, publishWhen: board.settings.publishWhen, openedPullLog: openedPullLog(runLog), writers: (queue.writers ?? []).filter(isTicketWriter).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, hostAlerts: board.pool.hostAlerts?.() ?? [], update: board.update(),
     ...afterMergeQueueView(board.settings.stateDir, (board.now ?? Date.now)()) };
 }
 

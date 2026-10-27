@@ -7,7 +7,6 @@ import { reviewLinesOf } from "../../../src/ticket-mode/board-view.ts";
 import { learnsLine } from "../../../src/ticket-mode/board-view/ticket-change.ts";
 import { conflictNote } from "../../../src/ticket-mode/board-view/pull-conflict.ts";
 import { checkNote, promptNote, queueNote, reasonOf, updateLines } from "../../../src/ticket-mode/board-view/run-reason.ts";
-import { publishingOffLine } from "../../../src/ticket-mode/board-view/pull-review-state.ts";
 import { ciNote } from "../../../src/ticket-mode/board-view/ci-note.ts";
 import { readoptNote } from "../../../src/ticket-mode/board-view/readopt-note.ts";
 import { sharedRunNote } from "../../../src/ticket-mode/board-view/run-terminal.ts";
@@ -16,6 +15,7 @@ import { cycleNote } from "../../../src/ticket-mode/board-view/wait-cycles.ts";
 import {
   isParked, overrideNote, rebaseNote, retargetNote, runsShown, shownStatus, stackedOn, stackNote, statusCounts, verdictNote, waitNote, waitsOn, workingNote,
 } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
+import { publishingOffLine } from "../../../src/ticket-mode/board-view/publishing-off.ts";
 import { RUN_STATUSES, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import type { ConfigView, QueueView } from "../api/types.ts";
 
@@ -213,7 +213,7 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
     rebaseNote(entry),
     waitNote(entry, entries),
     cycleNote(entry, entries),
-    publishingOffLine(shownStatus(entry, queue.publish, entries), publisher),
+    publishingOffLine(entry, queue, publisher),
     entry.sessionNote,
     readoptNote(entry),
     overrideNote(entry),

@@ -366,7 +366,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
   }
   if (method === "POST" && path === "/api/publish") {
     if (settings.publish === null) throw new Error("this machine names no tickets.publish (or its publisher is disabled), so it publishes nothing");
-    store.set(queuePublish(store.get(), Array.isArray(body.keys) ? body.keys.map(String) : [], now()));
+    store.set(queuePublish(store.get(), Array.isArray(body.keys) ? body.keys.map(String) : [], now(), settings.publishWhen));
     wake();
     return [200, queueView(board)];
   }

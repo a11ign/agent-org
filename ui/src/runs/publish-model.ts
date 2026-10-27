@@ -3,6 +3,7 @@
 // THE RULE IS board-view's. `publishable` decides which runs can be published, `isBeingPublished` which are held by the publish run under way, and `publishLabel`, `publishNote` and `publishTerminalLink` word them; this
 // file only adds the machine's gate (`/api/config`'s `publish`) and the words the five Publish boards draw. No channel is named: the backend holds none to name (`configView` sends only whether the machine publishes).
 import { isBeingPublished, publishable, publishNote, shownStatus, type ViewPublish } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
+import type { Publishing as BoardPublishing } from "../../../src/ticket-mode/board-view/publishing-off.ts";
 import type { ConfigView, QueueView } from "../api/types.ts";
 import type { RunEntry } from "./runs-model.ts";
 
@@ -37,18 +38,18 @@ export const showsPublish = (config: Pick<ConfigView, "publish"> | null): boolea
 /** The header button of a run: Publish when a person can publish it, Publish disabled while the publish run under way is posting it, and none for any other run. */
 export type PublishState = "publish" | "publishing";
 
-/** What the Publish rules read of the queue: the runs, and the publish run if there is one. */
-type Publishing = Readonly<{ publish?: ViewPublish; entries: QueueView["entries"] }>;
+/** What the Publish rules read of the queue: the runs, beside the publish run and when this machine publishes (`Publishing`, board-view's). */
+type Publishing = BoardPublishing & Readonly<{ entries: QueueView["entries"] }>;
 
 /** The Publish button a run's header draws, or null. PURE. */
 export function publishState(entry: RunEntry, queue: Publishing): PublishState | null {
-  if (publishable(entry, queue.publish)) return "publish";
+  if (publishable(entry, queue.publish, queue.publishWhen)) return "publish";
   return shownStatus(entry, queue.publish, queue.entries) === "publishing" && isBeingPublished(entry, queue.publish) ? "publishing" : null;
 }
 
-/** The ticked keys that can still be published: a run that left Ready to merge, was dismissed or is now held by a publish run drops out, as `ui.html` prunes its ticks on every read. Order is kept. PURE. */
+/** The ticked keys that can still be published: a run that is no longer publishable, was dismissed or is now held by a publish run drops out, as `ui.html` prunes its ticks on every read. Order is kept. PURE. */
 export function prunePicked(picked: readonly string[], queue: Publishing): string[] {
-  const open = new Set(queue.entries.filter((entry) => publishable(entry, queue.publish)).map((entry) => entry.ticket.key));
+  const open = new Set(queue.entries.filter((entry) => publishable(entry, queue.publish, queue.publishWhen)).map((entry) => entry.ticket.key));
   return picked.filter((key) => open.has(key));
 }
 

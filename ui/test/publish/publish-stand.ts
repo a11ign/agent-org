@@ -3,6 +3,7 @@
 // THE OTHER PAGES' STANDS ARE NOT EDITED: these build on `run-detail-stand.ts` and `runs-stand.ts` and put `publish` in the config and the publish run in the queue, the two things the Publish boards read. Used by the component
 // checks (as the client's `fetch`, through `standFetch`) and by the page checks (through Playwright's route), so both see the same instance.
 import type { ViewPublish } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
+import type { PublishWhen } from "../../../src/ticket-mode/board-view/publish-when.ts";
 import type { QueueView } from "../../src/api/types.ts";
 import { PERSONAL, queueingConfig, type InstanceAnswers, type Stand } from "../fixtures.ts";
 import { queueOf as detailQueue, RUNS_OF, runLogOf, TERMINAL, type RunFields } from "../run-detail/run-detail-stand.ts";
@@ -45,11 +46,15 @@ const DETAIL: Readonly<Record<Exclude<Board, "select">, Readonly<{ run?: RunFiel
   failed: { publish: { keys: [RUN_KEY], phase: "finished", failure: PUBLISHER_REASON } },
 };
 
-/** What a stand's config and posts are: `publisher` false is a machine with no `tickets.publish`, and `post` answers a press. */
-export type Machine = Readonly<{ publisher?: boolean; post?: InstanceAnswers["post"]; queueFails?: InstanceAnswers["queueFails"] }>;
+/**
+ * What a stand's config and posts are: `publisher` false is a machine with no `tickets.publish`, `post` answers a press, and `publishWhen` is the queue's `tickets.providers.publish.when` (absent, as an
+ * older instance sends it, is Ready to merge).
+ */
+export type Machine = Readonly<{ publisher?: boolean; post?: InstanceAnswers["post"]; queueFails?: InstanceAnswers["queueFails"]; publishWhen?: PublishWhen }>;
 
-function standOf(queue: QueueView, { publisher = true, post }: Machine): Stand {
-  return { connections: [PERSONAL], instances: { personal: { config: queueingConfig({ terminal: TERMINAL, publish: publisher } as never), queue, ...(post === undefined ? {} : { post }) } } };
+function standOf(queue: QueueView, { publisher = true, post, publishWhen }: Machine): Stand {
+  const read = publishWhen === undefined ? queue : ({ ...queue, publishWhen } as QueueView);
+  return { connections: [PERSONAL], instances: { personal: { config: queueingConfig({ terminal: TERMINAL, publish: publisher } as never), queue: read, ...(post === undefined ? {} : { post }) } } };
 }
 
 /** A queue with `publish` as the publish run the board shows. */
@@ -91,6 +96,16 @@ export function selectRuns(): RunFields[] {
 export function selectOf(machine: Machine = {}, runs: readonly RunFields[] = selectRuns(), publish: PublishRun | undefined = underway(["A11-32"])): Stand {
   return standOf(withPublish(queueWith(runs), publish), machine);
 }
+
+/** The run out of draft whose pull request waits on its review alone, read at its head with its checks green: what a machine that publishes before review lets a person tick. */
+export const AWAITING_KEY = "A11-185";
+
+/** The Runs publish board's runs with {@link AWAITING_KEY} among them. */
+export const awaitingReviewRuns = (): RunFields[] => [
+  ...selectRuns(),
+  readyRun({ key: AWAITING_KEY, title: "A machine where people review publishes before the review", repo: "a11ign/agent-org", number: 1990, startedAgo: 12 * MINUTE,
+    pullHeads: { [pullUrl("a11ign/agent-org", 1990)]: { head: "4b7d2e0c9a11", approved: false, review: "none", red: [], pending: [] } } }),
+];
 
 /** The keys of the runs the Runs board lets a person tick: the Ready to merge ones the publish run is not posting. */
 export const TICKABLE = ["A11-180", "A11-30", "A11-29"] as const;
