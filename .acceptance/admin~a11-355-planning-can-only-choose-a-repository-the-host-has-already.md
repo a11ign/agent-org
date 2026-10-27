@@ -2,7 +2,13 @@ A repository of the organisation that this machine has not cloned is cloned by t
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/org-repos.test.ts src/ticket-mode/pool-org-repos.test.ts src/ticket-mode/queue/queue-reroute.test.ts src/ticket-mode/server.test.ts src/ticket-mode/worker-files.test.ts src/install/doctor.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/org-repos.test.ts src/ticket-mode/queue/queue-reroute.test.ts src/ticket-mode/worker-files.test.ts src/install/doctor.test.ts
+```
+
+The pool-level tests (`pool-org-repos.test.ts`, `server.test.ts`) need the host's history and run in the suite and under `npm run check:changed`, not in this block:
+
+```bash
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/pool-org-repos.test.ts src/ticket-mode/server.test.ts
 ```
 
 Each line of the ticket's Acceptance and Done-when is proven by a named test: the planner choosing a repository with no clone (`pool-org-repos.test.ts`: "the planner's brief offers ...", "a plan naming ..."), cloning on demand with a fake git and a fake org listing (`org-repos.test.ts`: "cloning on demand ..."; `pool-org-repos.test.ts`: "a worker's wrong-repo naming an organisation repository the host has not cloned ..."), the reroute and the outside-the-organisation case that still reads Needs you ("a wrong-repo that names a repository outside the organisation ..."), Retry on a `wrong-repo` entry ("Retry on a wrong-repo run closes its workspace ...", "Retry says why it cannot ...", and the 409 in `server.test.ts`), and doctor ("doctor lists every live organisation repository with no clone ...", with the sweep in "the board's sweep clones every live repository ...").
