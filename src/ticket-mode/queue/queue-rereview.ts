@@ -10,18 +10,20 @@
 import { type Entry, find, replace, type Queue } from "./queue-entries-and-outcomes.ts";
 import { logEvent, shortReason } from "./run-log.ts";
 import { MAX_FEEDBACK_ROUNDS, roundsLeft } from "./queue-transitions.ts";
+import { capPlannerRound, type RoundOptions } from "./queue-cap.ts";
 import { isWatched } from "../board-view/pull-status-and-notes.ts";
 
 /** Whether a running run's agent is not working now: it sits on a dialog or a prompt (`waiting`), or idle on a `working` note. PURE. */
 const idleWhileRunning = (entry: Entry): boolean => entry.phase === "running" && (entry.waiting === true || entry.working?.idleSince !== undefined);
 
 /**
- * Whether a run that holds a blocked pull request may be asked for a re-review now: its worker is not working. A finished run, in any outcome, is asked unless it was handed back for want of a round (A11-235); a running one
+ * Whether a run that holds a blocked pull request may be asked for a re-review now: its worker is not working, and the planner has not set it waiting on another ticket (A11-343). A finished run, in any outcome, is asked
+ * unless it was handed back for want of a round (A11-235); a running one
  * on a dialog or idle on a `working` note only while it has a round left, since a hand-back is a finished run's and the end of the run would drop it (a run with none waits for its end, and is handed back then). A queued or
  * starting run, and a running one last seen working, wait for a sweep that finds it stopped. PURE.
  */
 export const mayRereview = (entry: Entry): boolean =>
-  (entry.phase === "finished" ? entry.handedBack === undefined || roundsLeft(entry) : idleWhileRunning(entry) && roundsLeft(entry));
+  entry.waitingOnTicket === undefined && (entry.phase === "finished" ? entry.handedBack === undefined || roundsLeft(entry) : idleWhileRunning(entry) && roundsLeft(entry));
 
 /**
  * Whether the block starts a worker round that answers it: the run is watched, so the block queues it a feedback round (`isWatched`), or it is in a round queued since the block was posted, which is that round under way. PURE.
@@ -56,9 +58,11 @@ export function countRereview(queue: Queue, key: string, now?: number, answered?
  * A run that is already handed back is left as it is, so a sweep that finds the same answer again says nothing more. A run that is not finished is left alone too: the end of the run drops a hand-back, and
  * {@link mayRereview} keeps a running one with no round left waiting for its end. PURE.
  */
-export function handBackRereview(queue: Queue, key: string, answered: string, now?: number): Queue {
+export function handBackRereview(queue: Queue, key: string, answered: string, now?: number, options: RoundOptions = {}): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || entry.handedBack !== undefined) return queue;
+  // The cap is not on the escalation list: on a machine with a planner a watched run goes to it, and not to a person (A11-343).
+  if (options.planner === true && now !== undefined && isWatched(entry)) return capPlannerRound(queue, entry, answered, now);
   const handedBack = `The pull requests keep getting feedback: the board answered ${entry.rounds ?? MAX_FEEDBACK_ROUNDS} rounds on its own and stopped. Respond to review starts another. The latest: ${answered}`;
   const handed = replace(queue, key, (held) => ({ ...held, handedBack }));
   return logEvent(handed, key, now, { kind: "needs-you", reason: shortReason(handedBack) ?? handedBack });

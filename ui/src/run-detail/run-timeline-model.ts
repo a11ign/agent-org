@@ -19,11 +19,14 @@ const SHORT_HEAD = 7;
 
 /** The cause of a round, in words: why the run was started again on its pull request. */
 const ROUND_WORDS: Readonly<Record<RoundCause, string>> = {
-  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", decisions: "Meeting a change of the ticket's Decisions", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head", "ci-budget": "Held for its CI spend", "standoff-planner": "Planner deciding a stand-off", "standoff-worker": "Answering a stand-off",
+  feedback: "Feedback round", checks: "Fixing red checks", conflict: "Resolving a conflict", asked: "Answering a question", decisions: "Meeting a change of the ticket's Decisions", approved: "Working on the approved drafts", talk: "Talk session", rereview: "Second look at a blocked head", "ci-budget": "Held for its CI spend", "standoff-planner": "Planner deciding a stand-off", "standoff-worker": "Answering a stand-off", "cap-planner": "Planner deciding at the round cap", "cap-round": "One more round, with the planner's Decision", "wait-ended": "Round after the ticket it waited on merged",
 };
 
 /** What the board did with a stand-off (A11-290), in words. */
 const STANDOFF_WORDS: Readonly<Record<"planner" | "worker" | "decided" | "settled", string>> = { planner: "Stand-off sent to the planner", worker: "Stand-off sent to the worker", decided: "Planner decided the stand-off", settled: "Stand-off settled with no person" };
+
+/** What the board did at the round cap (A11-343), in words. */
+const CAP_WORDS: Readonly<Record<"planner" | "decided" | "waiting" | "resumed", string>> = { planner: "Sent to the planner at the round cap", decided: "Planner recorded a Decision", waiting: "Planner marked the run as waiting on a ticket", resumed: "The ticket it waited on merged" };
 
 const ANSWER_WORDS: Readonly<Record<AnsweredBy, string>> = { respond: "Respond", approve: "approval", talk: "Talk to it", answer: "the board's answer", terminal: "the run's own terminal" };
 
@@ -71,6 +74,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
       : { text: `Changes requested at ${event.head.slice(0, SHORT_HEAD)}`, when: joined(pullLabel(event.url), ago), tone: "amber" };
     case "rereview": return { text: event.verdict === "not-convinced" ? "rereview: still not convinced" : "rereview: convinced, but the door refused it", when: joined(pullLabel(event.url), `at ${event.head.slice(0, SHORT_HEAD)}`, ago), tone: "amber" };
     case "standoff": return { text: STANDOFF_WORDS[event.step], when: joined(pullLabel(event.url), event.detail, ago), tone: event.step === "settled" ? "green" : "amber" };
+    case "cap": return { text: CAP_WORDS[event.step], when: joined(ago, event.detail), tone: event.step === "resumed" ? "green" : "amber" };
     case "needs-you": return { text: "Waiting on a person", when: ago, tone: "amber" };
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };

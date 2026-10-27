@@ -280,6 +280,8 @@ export function workStatus(entry: ViewEntry, entries: readonly ViewEntry[] = [])
   if (settled !== null) return settled;
   // A parked talk session waiting for the person in its terminal: settled runs are not Talking, whatever pane they still hold (A11-171).
   if (isTalking(entry)) return "talking";
+  // The planner marked the run as waiting on another ticket (A11-343): nothing is asked of a person, and a round starts when that ticket's pull request merges.
+  if (entry.waitingOnTicket !== undefined) return "waiting";
   // The board stopped answering a run's red checks or feedback on its own and handed it to a person, whatever the run ended on (A11-154): Respond starts again.
   if (entry.handedBack !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";
@@ -522,6 +524,8 @@ export function isWatched(entry: ViewEntry): boolean {
  * person. A run the tracker completed or canceled is left alone, and so is one whose pull requests all merged or closed.
  */
 export function resumesOnConflict(entry: ViewEntry): boolean {
+  // A run the planner marked as waiting on a ticket gets its round when that ticket's pull request merges, not from the feedback it waits out (A11-343).
+  if (entry.waitingOnTicket !== undefined) return false;
   if (isWatched(entry)) return true;
   const kind = entry.outcome?.kind ?? "";
   const status = workStatus(entry);

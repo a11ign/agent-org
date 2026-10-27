@@ -10,6 +10,8 @@ import { afterMergeDue, afterMergeUnposted, markAfterMergePosted, markAfterMerge
 import { moveOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
+import { resumeTicketWaits } from "./pool-cap.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { startStackConflictRound } from "./pool-watch.ts";
 import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
@@ -61,6 +63,8 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       // the tracker could not be asked: the next refresh asks again
     }
   }
+  // A run the planner marked as waiting on another ticket starts again once that ticket's pull request merged (A11-343).
+  await resumeTicketWaits(ctx);
   // What each merged pull request's body declares decides over the outcome's `partial`, so it is read before anything acts on the merge (A11-181).
   readPullDeclarations(ctx);
   // A ticket the tracker's integration completed on a partial merge is put back first, so the same sweep queues the next step (A11-178).

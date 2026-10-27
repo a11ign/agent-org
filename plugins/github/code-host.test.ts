@@ -162,14 +162,23 @@ const requiredAnswer = (required: string[], all: string[], hasNextPage = false) 
 const mergeFlowAnswer = ({ private: isPrivate, mergeBot }: { private: boolean; mergeBot: boolean }) => JSON.stringify({ data: { r0: {
   autoMergeAllowed: false, isPrivate, defaultBranchRef: { name: "main" }, object: null, bot: mergeBot ? { __typename: "Blob" } : null } } });
 
-/** A code host over a scripted `gh`: `pr view` answers the pull request, `api graphql` answers which of its checks are required (or fails when `required` is null). */
-function hostWithChecks(rollup: unknown[], required: string[] | null, hasNextPage = false, flow?: { private: boolean; mergeBot: boolean }) {
+/** The answer of the query for the merge bot's file on a pull request's head (`merge-flow.ts`, A11-344): held or not. */
+const headBotAnswer = (headBot: boolean) => JSON.stringify({ data: { r0: { headBot: headBot ? { __typename: "Blob" } : null } } });
+
+/**
+ * A code host over a scripted `gh`: `pr view` answers the pull request, `api graphql` answers which of its checks are required (or fails when `required` is null), and, with a `flow`, the merge flow of the repository
+ * and whether the pull request's head holds the merge bot (`headBot`, default no).
+ */
+function hostWithChecks(rollup: unknown[], required: string[] | null, hasNextPage = false, flow?: { private: boolean; mergeBot: boolean; headBot?: boolean }) {
   const asked: string[][] = [];
   const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf }));
   const pull = { headRefOid: HEAD, reviews: [], author: { login: "someone" }, statusCheckRollup: rollup };
   const exec = (_file: string, args: readonly string[]) => {
     asked.push([...args]);
     if (args[0] === "pr") return { status: 0, stdout: JSON.stringify(pull), stderr: "" };
+    if (args.some((arg) => arg.includes("refs/pull/") && arg.includes(".github/workflows/merge-bot.yml"))) {
+      return flow === undefined ? { status: 1, stdout: "", stderr: "gh: HTTP 502" } : { status: 0, stdout: headBotAnswer(flow.headBot === true), stderr: "" };
+    }
     if (args.some((arg) => arg.includes(".github/workflows/merge-bot.yml"))) {
       return flow === undefined ? { status: 1, stdout: "", stderr: "gh: HTTP 502" } : { status: 0, stdout: mergeFlowAnswer(flow), stderr: "" };
     }
@@ -237,4 +246,29 @@ test("A11-341: a repository with neither a ruleset nor the merge bot counts ever
   const ruleset = rulesetHost.host.readReviewState(URL);
   assert.equal(rulesetHost.asked.length, 2, "a ruleset's required checks end the read: the merge flow is not asked");
   assert.deepEqual([ruleset?.settled, ruleset?.unrequiredRed], [false, undefined], "GitHub names capture required: the ruleset decides, and the merge bot is not asked");
+});
+
+test("A11-344: the pull request that adds the merge bot is read as a merge-bot pull request: the default branch has none, the head holds it, so `gate` alone is waited on and a red check that is not the merge condition is named and holds nothing", () => {
+  const rollup = [lab("gate", "SUCCESS"), lab("capture", "FAILURE")];
+  const { host, asked } = hostWithChecks(rollup, [], false, { private: true, mergeBot: false, headBot: true });
+  const state = host.readReviewState(URL);
+  assert.deepEqual([state?.settled, state?.unrequiredRed], [true, ["capture"]], "gate is green: the reviewer starts, and capture is reported as unrequired red");
+  const headRead = asked.find((args) => args.some((arg) => arg.includes("refs/pull/806/head:.github/workflows/merge-bot.yml")));
+  assert.ok(headRead !== undefined, "the head is read by the pull request's own ref");
+
+  const gateRed = hostWithChecks([lab("gate", "FAILURE"), lab("capture", "SUCCESS")], [], false, { private: true, mergeBot: false, headBot: true }).host.readReviewState(URL);
+  assert.deepEqual([gateRed?.settled, gateRed?.unrequiredRed], [false, undefined], "a red gate holds the start on the pull request that adds the bot too");
+});
+
+test("A11-344: a private repository with no merge bot on its default branch or its head counts every check, and so does one whose head cannot be read", () => {
+  const rollup = [lab("gate", "SUCCESS"), lab("capture", "FAILURE")];
+  const neither = hostWithChecks(rollup, [], false, { private: true, mergeBot: false, headBot: false }).host.readReviewState(URL);
+  assert.deepEqual([neither?.settled, neither?.unrequiredRed], [false, undefined], "no bot on either: every check counts, as before");
+  const publicHead = hostWithChecks(rollup, [], false, { private: false, mergeBot: false, headBot: true }).host.readReviewState(URL);
+  assert.deepEqual([publicHead?.settled, publicHead?.unrequiredRed], [false, undefined], "a public repository has a ruleset's way: the bot on a head changes nothing");
+  const onDefault = hostWithChecks(rollup, [], false, { private: true, mergeBot: true, headBot: false });
+  assert.deepEqual([onDefault.host.readReviewState(URL)?.settled], [true], "the bot on the default branch still covers a pull request whose head is read without it");
+  assert.equal(onDefault.asked.some((args) => args.some((arg) => arg.includes("refs/pull/"))), false, "the head is not asked where the default branch already holds the bot");
+  const ruleset = hostWithChecks(rollup, ["capture"], false, { private: true, mergeBot: false, headBot: true });
+  assert.deepEqual([ruleset.host.readReviewState(URL)?.settled], [false], "a ruleset's required checks win over the bot a head adds");
 });

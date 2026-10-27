@@ -58,6 +58,12 @@ test("A11-274: a run handed back with no round left is not re-reviewed, and one 
   assert.equal(mayRereview({ ...handed, rounds: 0 }), true);
 });
 
+test("A11-343 kept: a run the planner set waiting on another ticket is not re-reviewed, whatever its state", () => {
+  const waitingOn = { key: "A11-1", reason: "its pull request lands first", since: ENDED };
+  assert.equal(mayRereview(entryOf(finished({ kind: "no-outcome" }, ENDED, { waitingOnTicket: waitingOn }))), false);
+  assert.equal(mayRereview(live("running", { waiting: true, waitingOnTicket: waitingOn })), false);
+});
+
 test("A11-274: a running run with no round left waits for its end, where it is handed back, rather than being handed back while it runs", () => {
   assert.equal(mayRereview(live("running", { waiting: true, rounds: MAX_FEEDBACK_ROUNDS })), false);
   assert.equal(mayRereview(live("running", { waiting: true, rounds: MAX_FEEDBACK_ROUNDS - 1 })), true);

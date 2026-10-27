@@ -45,6 +45,8 @@ import { herdrRefusal } from "./pool-herdr.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { type PoolContext } from "./pool-context.ts";
 import { recordPlannerDecision, recordWorkerRoundEnded, settlePlannerRound } from "./pool-standoff.ts";
+import { recordCapDecision, settleCapRound } from "./pool-cap.ts";
+import { isCapPlanner } from "./queue/queue-cap.ts";
 import { planFiles as downloadPlanFiles } from "./pool-ticket-text.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import type { PullState } from "./source.ts";
@@ -88,6 +90,8 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   if (outcome.kind === "working") return noteStillWorking(ctx, entry, outcome);
   if (outcome.kind === "reviewed") {
     if (entry.review === undefined) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a reviewed outcome, but its run was not a review run" });
+    // The planner's round for a run at the board's round cap decides what happens to the run, and attaches an amended plan, before it ends (A11-343).
+    if (isCapPlanner(entry)) return void settleCapPlanner(ctx, entry).catch(settleFailed(entry));
     // The planner's round for a stand-off decides it, and attaches an amended plan, before it ends (A11-290); the worker's ends the stand-off's second route.
     if (entry.standoff?.stage === "planner") return void settleStandoffPlanner(ctx, entry).catch(settleFailed(entry));
     end(ctx, entry, { kind: "reviewed", prs: entry.review });
@@ -105,24 +109,37 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
 }
 
 /**
- * The planner's round for a stand-off ended `reviewed` (A11-290): its decision is read, an amended plan is attached to the ticket first, and then the round ends as any review round does, and the decision is recorded on the run. A decision that cannot
- * be taken (none written, or an amended plan the board refuses or cannot attach) ends the round for a person with the reason.
+ * A planner's round ended `reviewed`: `decide` reads its decision and attaches an amended plan first; the round then ends as any review round does, and `record` writes the decision on the run. A decision that cannot be taken (none written, or an amended plan
+ * the board refuses or cannot attach) ends the round for a person with `what` and the reason.
  */
-async function settleStandoffPlanner(ctx: PoolContext, entry: Entry): Promise<void> {
+async function settlePlannerOf<Decided>(ctx: PoolContext, entry: Entry, { what, decide, record }: Readonly<{
+  what: string; decide: () => Promise<Readonly<{ decided: Decided } | { refused: string }>>; record: (key: string, decided: Decided) => void;
+}>): Promise<void> {
   const { attaching } = ctx;
   const { name } = runPlace(ctx, entry);
   if (attaching.has(name)) return;
   attaching.add(name);
   try {
-    const settled = await settlePlannerRound(ctx, entry, () => attachAmendedPlan(ctx, entry));
+    const settled = await decide();
     if (!sameRun(ctx, entry)) return;
-    if ("refused" in settled) return end(ctx, entry, { kind: "needs-human", reason: `the planner's round for a stand-off: ${settled.refused}` });
+    if ("refused" in settled) return end(ctx, entry, { kind: "needs-human", reason: `${what}: ${settled.refused}` });
     end(ctx, entry, { kind: "reviewed", prs: entry.review ?? [] });
-    recordPlannerDecision(ctx, entry.ticket.key, settled.decided);
+    record(entry.ticket.key, settled.decided);
   } finally {
     attaching.delete(name);
   }
 }
+
+/** The planner's round for a stand-off ended `reviewed` (A11-290): its decision is read, an amended plan is attached to the ticket first, and the decision is recorded on the run. */
+const settleStandoffPlanner = (ctx: PoolContext, entry: Entry): Promise<void> =>
+  settlePlannerOf(ctx, entry, { what: "the planner's round for a stand-off", decide: () => settlePlannerRound(ctx, entry, () => attachAmendedPlan(ctx, entry)), record: (key, decided) => recordPlannerDecision(ctx, key, decided) });
+
+/**
+ * The planner's round for a run at the board's round cap ended `reviewed` (A11-343): its decision is read, an amended plan is attached first, and the decision is recorded on the run: one more round of the worker with the Decision, or a wait on a ticket. A
+ * decision that cannot be taken ends the round with the reason: the board shows it as a failure, not as a question.
+ */
+const settleCapPlanner = (ctx: PoolContext, entry: Entry): Promise<void> =>
+  settlePlannerOf(ctx, entry, { what: "the planner's round at the round cap", decide: () => settleCapRound(ctx, entry, () => attachAmendedPlan(ctx, entry)), record: (key, decided) => recordCapDecision(ctx, key, decided) });
 
 /**
  * Attach the amended plan a stand-off's planner wrote in its plan folder (A11-290), through the checks and the stamp a planning run's plan gets, and read the plan back so the reviewer's next brief holds the amended decisions. Null once it is attached, else

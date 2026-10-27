@@ -47,6 +47,8 @@ export type ViewEntry = Readonly<{
   resume?: Readonly<{ at: number; after: "restart" | "idle"; idleSince?: number; refused?: string; environment?: "restored" | "missing" }>;
   /** Set while a re-review at an unchanged head stays not convinced (A11-290): what the reviewer, the worker and the planner last said, and where it stands. The stale-block flag waits for it, and says it. */
   standoff?: Readonly<{ url: string; head: string; reasons: string; reply: string | null; stage: string; planner?: Readonly<{ decision: string; reason: string }>; decidedAt?: number }>;
+  /** Set on a finished run the planner marked as waiting on another ticket (A11-343): the ticket, why, and when. The run reads Waiting. */
+  waitingOnTicket?: Readonly<{ key: string; reason: string; since: number }>;
   /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
   sessionWait?: string;
   /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */
@@ -167,9 +169,9 @@ export type PullHead = Readonly<{
  * card shows for the last two. `not-ours` (A11-179) is a head whose red checks are all ones the run cannot mend, because they fail on the default branch or on pull requests that touch none of the
  * run's files: no round is started and nothing is rerun, `notOurs` names them, each with the ticket that owns it or null, and the record is made again on every watch, so it lasts only as long as the checks are red elsewhere.
  * `waitingOnMain` (A11-215) is which of `notOurs` were red on the default branch when the record was made: the checks the pull request waits on main to mend. When main reports them all passing the board brings the pull request up to date with main
- * and records `updated`, a head it did that from, whose `note` the card keeps showing until the new head's checks have run. `rerun` (A11-300) is on a `rerun` record of checks the code failed: see {@link RerunRecord}.
+ * and records `updated`, a head it did that from, whose `note` the card keeps showing until the new head's checks have run. `rerun` (A11-300) is on a `rerun` record of checks the code failed: see {@link RerunRecord}. `redAgain` (A11-343) is the checks a rerun the worker's reply asked for found red again; the record of every later head carries them, so a round that answers only those is `uncounted` toward the board's round cap, as is one that answers only checks the ticket's Decisions call unrelated.
  */
-export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named" | "not-ours" | "updated"; note?: string; notOurs?: Readonly<Record<string, string | null>>; waitingOnMain?: readonly string[]; rerun?: RerunRecord }>;
+export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named" | "not-ours" | "updated"; note?: string; notOurs?: Readonly<Record<string, string | null>>; waitingOnMain?: readonly string[]; rerun?: RerunRecord; redAgain?: readonly string[]; uncounted?: true }>;
 
 /**
  * The branch a run was branched from: the blocker's key, the repository and branch, the commit it has the blocker's branch merged in up to (`sha`), and what

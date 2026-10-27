@@ -6,7 +6,7 @@
 import type { Review, ReviewState } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 import type { Gh } from "./gh.ts";
-import { MERGE_BOT_GATE, readMergeFlow, runsMergeBot } from "./merge-flow.ts";
+import { MERGE_BOT_GATE, readHeadHoldsMergeBot, readMergeFlow, runsMergeBot } from "./merge-flow.ts";
 
 /**
  * The named `fields` (a `--json` list) of pull request `number` of `repo`, or null when they could not be had: a refused `gh`, or an answer that does not parse. Absence is not proof, so a
@@ -53,7 +53,7 @@ function readRequiredChecks(pull: { repository: string; number: number }, gh: Gh
 }
 
 /**
- * The checks the pull request waits on: those its base requires, or, where it requires none and the repository's flow is the merge bot (A11-341), the bot's own condition, `gate`. A private repository on
+ * The checks the pull request waits on: those its base requires, or, where it requires none and the repository's flow is the merge bot (A11-341), the bot's own condition, `gate`. The flow is the merge bot when the default branch holds it or the pull request's head does (A11-344: the pull request that adds the bot). A private repository on
  * GitHub Free has no ruleset to require anything, so every check would hold the review, and a red one that is not the merge condition would hold it for good. Null when GitHub did not say what is required;
  * a repository whose flow could not be read is read as one without the bot, which counts every check as before.
  */
@@ -61,7 +61,9 @@ function readWaitedOnChecks(pull: { repository: string; number: number }, gh: Gh
   const required = readRequiredChecks(pull, gh);
   if (required === null || required.length > 0) return required;
   const flow = readMergeFlow(pull.repository, gh);
-  return flow !== null && runsMergeBot(flow) ? [MERGE_BOT_GATE] : required;
+  if (flow === null) return required;
+  const headBot = flow.private && !flow.mergeBot && readHeadHoldsMergeBot(pull.repository, pull.number, gh);
+  return runsMergeBot({ ...flow, headBot }) ? [MERGE_BOT_GATE] : required;
 }
 
 /** The pull request's repository (`owner/name`) and number, or null for a url that is none. */
