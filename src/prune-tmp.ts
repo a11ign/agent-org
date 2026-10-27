@@ -321,7 +321,10 @@ export function processStrings(procRoot: string = "/proc"): string[] | "unknown"
     }
     strings.push(...openFdTargets(join(dir, "fd")));
   }
-  strings.push(...boundSocketPaths(join(procRoot, "net", "unix")));
+  const sockets = boundSocketPaths(join(procRoot, "net", "unix"));
+  // A table that cannot be read is "I could not look", not "no socket is bound": the same answer as an unlistable /proc.
+  if (sockets === "unknown") return "unknown";
+  strings.push(...sockets);
   return strings;
 }
 
@@ -329,14 +332,14 @@ export function processStrings(procRoot: string = "/proc"): string[] | "unknown"
  * The filesystem paths a unix socket is bound to, from `/proc/net/unix` (its last column, after the seven the kernel always prints). A LISTENING SOCKET IS NOT
  * A PATH IN ANY PROCESS'S FD LIST (`readlink` of its fd reads `socket:[inode]`), so a server whose socket sits in `/tmp/qs-AbC123/s` or `/tmp/codex-daemon-1000/<hash>`
  * names that directory nowhere the other four reads look, and an age check alone would remove the directory from under it and leave a live server nobody can reach.
- * `[]` when the table cannot be read (a fixture `/proc` has none), which says nothing the fd reads did not.
- * @param {string} table @returns {string[]}
+ * `"unknown"` when the table cannot be read: with no table, a directory holding a live socket reads as unheld, and the age check alone would remove it.
+ * @param {string} table @returns {string[] | "unknown"}
  */
-function boundSocketPaths(table: string): string[] {
+function boundSocketPaths(table: string): string[] | "unknown" {
   try {
     return readFileSync(table, "utf8").split("\n").slice(1).map((line) => line.trim().split(/\s+/)[7]).filter((path): path is string => path !== undefined && path.startsWith("/"));
   } catch {
-    return [];
+    return "unknown";
   }
 }
 
@@ -407,19 +410,42 @@ export function newestMtimeMs(path: string): number | "unknown" {
   // `lstat`, so a symlink directly under the root is aged by the link itself: following it reads the target's time (a young target hides an old link) and a dangling one is unreadable for ever.
   try { top = lstatSync(path); } catch { return "unknown"; }
   if (!top.isDirectory()) return top.mtimeMs;
-  let newest = top.mtimeMs;
-  for (const child of childPaths(path)) {
-    try { newest = Math.max(newest, statSync(child).mtimeMs); } catch { /* removed under us */ }
-    for (const grandchild of childPaths(child)) {
-      try { newest = Math.max(newest, statSync(grandchild).mtimeMs); } catch { /* removed under us */ }
-    }
-  }
-  return newest;
+  return newestBelow(path, top.mtimeMs, 2);
 }
 
-/** @param {string} dir @returns {string[]} */
-function childPaths(dir: string): string[] {
-  try { return readdirSync(dir).map((name) => join(dir, name)); } catch { return []; }
+/**
+ * `newest`, raised by every entry `levels` deep below `dir`, or `"unknown"` when ANY directory or entry there cannot be read. An unreadable activity marker is not an absent one: a
+ * session's `tasks/` that cannot be listed may be the very thing written an hour ago, so the age is not known and the caller refuses. An entry that is GONE (removed under us) is
+ * the ordinary case on a busy `/tmp` and counts for nothing.
+ * @param {string} dir @param {number} newest @param {number} levels @returns {number | "unknown"}
+ */
+function newestBelow(dir: string, newest: number, levels: number): number | "unknown" {
+  if (levels === 0) return newest;
+  const names = namesIn(dir);
+  if (names === "unknown") return "unknown";
+  let latest = newest;
+  for (const name of names) {
+    const child = join(dir, name);
+    const stat = statIfPresent(child);
+    if (stat === "unknown") return "unknown";
+    if (stat === null) continue;
+    latest = Math.max(latest, stat.mtimeMs);
+    if (!stat.isDirectory()) continue;
+    const deeper = newestBelow(child, latest, levels - 1);
+    if (deeper === "unknown") return "unknown";
+    latest = deeper;
+  }
+  return latest;
+}
+
+/** The names in `dir`: `[]` when it is gone, `"unknown"` for any other failure to list it. @param {string} dir @returns {string[] | "unknown"} */
+function namesIn(dir: string): string[] | "unknown" {
+  try { return readdirSync(dir); } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : "unknown"; }
+}
+
+/** The stat of `path` (a symlink followed), `null` when it is gone, `"unknown"` for any other failure. @param {string} path @returns {import("node:fs").Stats | null | "unknown"} */
+function statIfPresent(path: string): import("node:fs").Stats | null | "unknown" {
+  try { return statSync(path); } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : "unknown"; }
 }
 
 /** `agedOwner`: the user whose entries the aged family may sweep (A11-348); without it a name from no family is unrecognised. `owner`: whose a path is. */

@@ -14,7 +14,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,7 +55,7 @@ const HOST = (() => {
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
 const {
   DOOMED_PREFIX, FIXTURE_PREFIXES, FIXTURE_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS,
-  agedFamilyOf, agedPaths, classifyEntry, cliFamilies, doomedPaths, familyOf, fixturePaths, formatDryRunReport, formatAppliedReport, pruneTmp: pruneTmpWithClaims, removeFromLeaves,
+  agedFamilyOf, agedPaths, classifyEntry, cliFamilies, doomedPaths, familyOf, newestMtimeMs, processStrings, fixturePaths, formatDryRunReport, formatAppliedReport, pruneTmp: pruneTmpWithClaims, removeFromLeaves,
 } = await import("./prune-tmp.ts");
 const { installTmpfiles } = await import("./host-units.ts");
 const { toolForm } = await import("./host-units/shipped-unit-texts-and-declarations.ts");
@@ -88,9 +88,12 @@ let procCounter = 0;
 function emptyProc(): string {
   procCounter += 1;
   const proc = join(BASE, `proc-${procCounter}`);
-  mkdirSync(proc);
+  mkdirSync(join(proc, "net"), { recursive: true });
+  writeFileSync(join(proc, "net", "unix"), UNIX_TABLE_HEADER);
   return proc;
 }
+
+const UNIX_TABLE_HEADER = "Num       RefCount Protocol Flags    Type St Inode Path\n";
 
 /** A fake `/proc` with one process directory, `4242`, and nothing in it. */
 function procWithProcess(): string {
@@ -456,8 +459,7 @@ test("A11-348: a directory holding a bound unix socket is held, though no proces
   const root = fresh("aged-socket");
   const server = leftover(root, "qs-AbC123", { hoursOld: 99, files: 1 });
   const proc = emptyProc();
-  mkdirSync(join(proc, "net"));
-  writeFileSync(join(proc, "net", "unix"), `Num       RefCount Protocol Flags    Type St Inode Path\n0000: 00000002 00000000 00010000 0001 01 1234 ${join(server, "s")}\n0000: 00000002 00000000 00010000 0001 01 1235 @abstract\n`);
+  writeFileSync(join(proc, "net", "unix"), `${UNIX_TABLE_HEADER}0000: 00000002 00000000 00010000 0001 01 1234 ${join(server, "s")}\n0000: 00000002 00000000 00010000 0001 01 1235 @abstract\n`);
   const report = run(root, { families: ["aged"], procRoot: proc });
   assert.ok(existsSync(server));
   assert.match(report.refused[0].reason, /a running process holds this open/);
@@ -550,6 +552,40 @@ test("A11-348: a run stops walking when its wall-clock budget is spent, and the 
   assert.match(formatAppliedReport(stopped), /1 more classified path\(s\) were not looked at/);
   run(root, { families: ["aged"] });
   assert.equal(existsSync(old), false);
+});
+
+test("A11-348: a socket table that cannot be read refuses every aged entry, however old, rather than reading as 'no socket is bound'", () => {
+  const root = fresh("aged-no-table");
+  const old = leftover(root, "qs-AbC123", { hoursOld: 99, files: 1 });
+  const noTable = emptyProc();
+  rmSync(join(noTable, "net"), { recursive: true });
+  assert.equal(processStrings(noTable), "unknown", "the table is part of what 'held' is read from");
+  const report = run(root, { families: ["aged"], procRoot: noTable });
+  assert.ok(existsSync(old));
+  assert.match(report.refused[0].reason, /\/proc could not be listed/);
+  assert.deepEqual(processStrings(emptyProc()), [], "the control: a readable, empty table is an empty answer");
+});
+
+test("A11-348: an activity marker that cannot be listed or read makes the age unknown, and the entry is refused", { skip: process.getuid?.() === 0 ? "root reads a mode-000 directory" : false }, () => {
+  const root = fresh("aged-unreadable");
+  const busy = leftover(root, "session", { hoursOld: 99, files: 1 });
+  const tasks = join(busy, "tasks");
+  mkdirSync(tasks);
+  writeFileSync(join(tasks, "t"), "x");
+  const old = new Date(NOW - 99 * HOUR_MS);
+  for (const path of [join(tasks, "t"), tasks, busy]) utimesSync(path, old, old);
+  chmodSync(tasks, 0o000);
+  try {
+    assert.equal(newestMtimeMs(busy), "unknown", "the top level reads three days old, but what is in tasks/ cannot be read");
+    const report = run(root, { families: ["aged"] });
+    assert.ok(existsSync(busy));
+    assert.match(report.refused[0].reason, /its newest write time could not be read/);
+  } finally {
+    chmodSync(tasks, 0o755);
+  }
+  assert.equal(newestMtimeMs(busy), old.getTime(), "the control: readable again, the same tree is three days cold");
+  run(root, { families: ["aged"] });
+  assert.equal(existsSync(busy), false);
 });
 
 test("A11-348: a symlink is unlinked, never followed, and a half-removed aged directory is renamed so the next run finishes it", () => {
