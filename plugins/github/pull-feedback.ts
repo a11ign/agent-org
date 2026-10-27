@@ -4,6 +4,7 @@
 // asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
 import type { FailingCheck, PullFeedback, PullQueue, QueueRemoval, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
+import { MERGE_BOT_FIELDS, MERGE_BOT_GATE, answerRunsMergeBot } from "./merge-flow.ts";
 
 export type { FailingCheck, PullFeedback };
 
@@ -16,7 +17,7 @@ export const MAX_FILE_PAGES = 10;
 /** How many of the pull request's newest removals from the merge queue, commits and force-pushes one read takes: the removals since the head last moved are the trailing run of them. */
 const QUEUE_WINDOW = 20;
 
-const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
+const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { ${MERGE_BOT_FIELDS} pullRequest(number: $number) {
   state
   body
   reviewDecision
@@ -92,32 +93,43 @@ const asCheckRuns = (contexts: readonly Check[]): Check[] => contexts.map((check
   : check));
 
 /**
+ * The names of the checks the pull request waits on, or null when nothing tells a gate from the rest and every check counts. They are the checks GitHub says are required (`isRequired`, from the base branch's rulesets and
+ * protection). Where it says none is, the checks the repository's flow requires (`flowRequires`: the merge bot's own condition, `gate`, for a merge-bot repository, A11-341) are the required ones: a private repository on GitHub Free has no ruleset to name it, and
+ * a red check that is not the merge condition holds nothing. A required `gate` that has no run on the head yet is named here and not in the rollup, as a required check of a ruleset is.
+ */
+function requiredNames(contexts: readonly Check[], flowRequires: readonly string[]): ReadonlySet<string> | null {
+  const required = new Set(contexts.filter((check) => check.isRequired === true).map(nameOf));
+  if (required.size > 0) return required;
+  return flowRequires.length > 0 ? new Set(flowRequires) : null;
+}
+
+/**
  * The names of the checks the pull request waits on that have not passed, newest per name: a check run with no conclusion yet or that was cancelled (a cancelled gate blocks the merge, and no newer run
- * replaced it) or went stale, and a commit status that is pending or expected. They are the required checks, or every check where none is required, as {@link failingChecks} counts them. A rerun that is
+ * replaced it) or went stale, and a commit status that is pending or expected. They are the required checks, or every check where none is required, as {@link requiredNames} says. A rerun that is
  * under way replaces the failure it re-runs. A required check that has no run on the head yet is not in the rollup and is not named.
  */
-function pendingRequired(contexts: readonly Check[], policy: CodeHostPolicy): string[] {
+function pendingRequired(contexts: readonly Check[], policy: CodeHostPolicy, flowRequires: readonly string[]): string[] {
   const newest = new Map<string, Check>();
   for (const run of asCheckRuns(contexts)) {
     const seen = newest.get(run.name ?? "");
     if (seen === undefined || policy.isAtLeastAsNew(run, seen)) newest.set(run.name ?? "", run);
   }
-  const anyRequired = contexts.some((check) => check.isRequired === true);
+  const required = requiredNames(contexts, flowRequires);
   const unpassed = (run: Check): boolean => (run.state !== undefined ? UNCONCLUDED_STATUSES.has(run.state) : run.conclusion == null || NOT_PASSED_CONCLUSIONS.has(run.conclusion));
-  return [...newest.values()].filter((run) => (!anyRequired || run.isRequired === true) && unpassed(run)).map(({ name }) => name ?? "");
+  return [...newest.values()].filter((run) => (required === null || required.has(run.name ?? "")) && unpassed(run)).map(({ name }) => name ?? "");
 }
 
 /**
  * Each check on the head commit, newest per name, that failed, as `red-pr.ts` decides it. `counted` says whether the board answers it: a pull request with required checks counts only
- * those, and one with none counts every check, because then nothing tells a gate from the rest, and the worker is told to leave every check passing. A check that is not counted
+ * those (in a merge-bot repository with none, `gate` alone, A11-341), and one with none counts every check, because then nothing tells a gate from the rest, and the worker is told to leave every check passing. A check that is not counted
  * is still listed, so a round can name the job behind a roll-up that failed. A commit status is read as a check run: its context is its name, its failure its conclusion, and
  * its time its completion.
  */
-export function failingChecks(contexts: readonly Check[], policy: CodeHostPolicy): { name: string; at: number | null; detailsUrl: string | null; counted: boolean }[] {
-  const required = new Set(contexts.filter((check) => check.isRequired === true).map(nameOf));
+export function failingChecks(contexts: readonly Check[], policy: CodeHostPolicy, flowRequires: readonly string[] = []): { name: string; at: number | null; detailsUrl: string | null; counted: boolean }[] {
+  const required = requiredNames(contexts, flowRequires);
   const asRuns = asCheckRuns(contexts);
   return policy.redChecksOf({ rollup: asRuns, labels: [] }).map(({ name, failedAt }) =>
-    ({ name, at: Number.isNaN(failedAt) ? null : failedAt, detailsUrl: detailsUrlOf(asRuns, name, policy), counted: required.size === 0 || required.has(name) }));
+    ({ name, at: Number.isNaN(failedAt) ? null : failedAt, detailsUrl: detailsUrlOf(asRuns, name, policy), counted: required === null || required.has(name) }));
 }
 
 /** The conclusions of a check run, and the states of a commit status, that are a pass: GitHub merges on them, and a skipped or neutral check does not hold a merge. */
@@ -166,11 +178,20 @@ export function readPullFeedback(url: string, self: string, run: (args: string[]
     const pr = answer?.data?.repository?.pullRequest;
     if (pr === null || typeof pr !== "object" || typeof pr.state !== "string") return null;
     const files = changedFiles(pull, pr.files, run);
-    return { ...feedbackOf(pr, self, alsoIgnore, policy), files: files.paths, filesComplete: files.complete };
+    return { ...feedbackOf(pr, self, alsoIgnore, policy, flowRequiresOf(answer?.data?.repository, pr)), files: files.paths, filesComplete: files.complete };
   } catch {
     // An answer of an unexpected shape is no reading either.
     return null;
   }
+}
+
+/**
+ * The checks the repository's flow requires where GitHub names none: `gate` in a merge-bot repository (A11-341), else none. A rollup of more than one page is not read in full, so `gate` could be on a page not read and
+ * every check past it would stop counting: it is read as one without the flow, which counts the checks seen, as `reviews.ts` does.
+ */
+function flowRequiresOf(repository: unknown, pr: Record<string, any>): string[] {
+  const cut = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.pageInfo?.hasNextPage === true;
+  return answerRunsMergeBot(repository) && !cut ? [MERGE_BOT_GATE] : [];
 }
 
 /** A page of changed files as GitHub gives it: its paths, and whether another page follows. Any other shape is not a page. */
@@ -239,7 +260,7 @@ const queueFeedback = (pr: Record<string, any>): { queue?: PullQueue } => {
 };
 
 /** The feedback in one pull request as the query returns it, its files aside. Throws on an answer of another shape, which the caller reads as no reading. */
-function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly string[], policy: CodeHostPolicy): Omit<PullFeedback, "files" | "filesComplete"> {
+function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly string[], policy: CodeHostPolicy, flowRequires: readonly string[]): Omit<PullFeedback, "files" | "filesComplete"> {
   const others = (author: Login) => author?.login !== undefined && author.login !== self && !alsoIgnore.includes(author.login);
   const items: { at: number | null; author: string }[] = [
     ...(pr.reviews?.nodes ?? []).filter((r: { state: string; author: Login }) => FEEDBACK_REVIEWS.has(r.state) && others(r.author))
@@ -254,7 +275,7 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
   const contexts: Check[] = rollup?.nodes ?? [];
   // A rollup cut at 100 may hide a red or running required run: nothing is said to be only cancelled then.
   const rollupCut = rollup?.pageInfo?.hasNextPage === true;
-  const red = failingChecks(contexts, policy);
+  const red = failingChecks(contexts, policy, flowRequires);
   const failing = red.filter(({ counted }) => counted);
   const newest = (times: (number | null)[]): number | null => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);
   return {
@@ -278,7 +299,7 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
     ...(pr.reviewDecision === null || Object.hasOwn(REVIEW_DECISIONS, String(pr.reviewDecision)) ? { reviewDecision: pr.reviewDecision === null ? null : REVIEW_DECISIONS[String(pr.reviewDecision)] } : {}),
     // The reviewer's own verdict counts for readiness, which is why this leaves out the workers' account alone.
     verdictAtHead: head === null ? null : verdictAt(pr.reviews?.nodes ?? [], head, (author) => author?.login !== undefined && author.login !== self),
-    pendingRequired: pendingRequired(contexts, policy),
+    pendingRequired: pendingRequired(contexts, policy, flowRequires),
     body: typeof pr.body === "string" ? pr.body : "",
     ...queueFeedback(pr),
   };

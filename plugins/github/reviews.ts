@@ -6,6 +6,7 @@
 import type { Review, ReviewState } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 import type { Gh } from "./gh.ts";
+import { MERGE_BOT_GATE, readMergeFlow, runsMergeBot } from "./merge-flow.ts";
 
 /**
  * The named `fields` (a `--json` list) of pull request `number` of `repo`, or null when they could not be had: a refused `gh`, or an answer that does not parse. Absence is not proof, so a
@@ -51,6 +52,18 @@ function readRequiredChecks(pull: { repository: string; number: number }, gh: Gh
   }
 }
 
+/**
+ * The checks the pull request waits on: those its base requires, or, where it requires none and the repository's flow is the merge bot (A11-341), the bot's own condition, `gate`. A private repository on
+ * GitHub Free has no ruleset to require anything, so every check would hold the review, and a red one that is not the merge condition would hold it for good. Null when GitHub did not say what is required;
+ * a repository whose flow could not be read is read as one without the bot, which counts every check as before.
+ */
+function readWaitedOnChecks(pull: { repository: string; number: number }, gh: Gh): string[] | null {
+  const required = readRequiredChecks(pull, gh);
+  if (required === null || required.length > 0) return required;
+  const flow = readMergeFlow(pull.repository, gh);
+  return flow !== null && runsMergeBot(flow) ? [MERGE_BOT_GATE] : required;
+}
+
 /** The pull request's repository (`owner/name`) and number, or null for a url that is none. */
 export function pullOf(url: string): { repository: string; number: number } | null {
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9][0-9]*)(?:[/?#].*)?$/.exec(url);
@@ -59,7 +72,7 @@ export function pullOf(url: string): { repository: string; number: number } | nu
 
 /**
  * The pull request's state as the reviewer sees it: its head, whether its author is the org's own (`INSIDE`), its reviews, and whether its REQUIRED checks have settled green (A11-175). A rollup
- * that is all green is settled and asks nothing more; otherwise GitHub is asked which checks are required (`readRequiredChecks`), and a failing check that is not required is named in `unrequiredRed`
+ * that is all green is settled and asks nothing more; otherwise GitHub is asked which checks are required (`readWaitedOnChecks`: the base's required checks, or the merge bot's `gate` where it requires none), and a failing check that is not required is named in `unrequiredRed`
  * and holds nothing. An answer that cannot be had counts every check. Null when GitHub does not say, which the caller reads as no reading rather than as a verdict. THROWS the gate's refusal when the
  * gate does not load.
  */
@@ -75,7 +88,7 @@ export function readReviewState(url: string, gh: Gh, policy: CodeHostPolicy): Re
       at: Date.parse(String(r.submittedAt ?? "")) || 0,
     }));
     const allGreen = judge.settledOf(pr);
-    const required = allGreen ? undefined : readRequiredChecks(pull, gh);
+    const required = allGreen ? undefined : readWaitedOnChecks(pull, gh);
     const settled = allGreen || judge.settledOf(pr, required);
     const unrequiredRed = judge.unrequiredRedOf(pr, required);
     return { head: pr.headRefOid, trust: judge.trustOf(pr), reviews, settled, ...(unrequiredRed.length === 0 ? {} : { unrequiredRed }), view: { ...pr, number: pull.number } };
