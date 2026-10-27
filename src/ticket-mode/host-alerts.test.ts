@@ -6,7 +6,7 @@ import { poolFixture } from "./pool-fixture.ts";
 import { chmodSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { firstLogTime, hangDifference, HOST_ALERTS_EVERY_MS, prefixOf, softLockupInJournal, TMP_ENTRY_LIMIT, TMP_WRITERS_NAMED, TMP_WRITERS_WINDOW_MS, tmpWritersIn, topPrefixes, withinMs, type HostAlertReads, type TmpWriter } from "./host-alerts.ts";
+import { firstLogTime, hangDifference, HOST_ALERTS_EVERY_MS, prefixOf, softLockupInJournal, TMP_ENTRY_LIMIT, TMP_PRUNING_JOB, TMP_WRITERS_NAMED, TMP_WRITERS_WINDOW_MS, tmpWritersIn, topPrefixes, withinMs, type HostAlertReads, type TmpWriter } from "./host-alerts.ts";
 import type { HostReads } from "../hang-settings.ts";
 import type { ServeCheck } from "../install/service.ts";
 
@@ -41,6 +41,16 @@ test("A11-279: a /tmp over the limit is an alert with its count, and /tmp at the
   assert.equal(alert.id, "tmp-entries");
   assert.match(alert.sentence, /^\/tmp holds 19,960 entries, over the 1,000 it should stay under\./);
   assert.equal(alert.since, T0 + HOST_ALERTS_EVERY_MS, "it began when the board first saw it");
+});
+
+test("A11-348: the /tmp alert names the pruning job, and says what it removes, and stops when the count is back under the limit", async () => {
+  const run = watched({ tmp: 1_738 });
+  await run.advance(0);
+  assert.match(run.pool.hostAlerts()[0].sentence, / a11ign-tmp-prune\.timer removes the entries of the agent user that nothing has written for 24 hours and no running process holds;/);
+  assert.equal(TMP_PRUNING_JOB, "a11ign-tmp-prune.timer", "the name is the timer host/tmp-prune.timer.in ships under the a11ign- prefix");
+  run.host.tmp = TMP_ENTRY_LIMIT - 1;
+  await run.advance(HOST_ALERTS_EVERY_MS);
+  assert.deepEqual(run.pool.hostAlerts(), [], "back under 1,000, the note stops");
 });
 
 test("A11-279: an alert keeps the time it began while its condition holds, and clears with it; a later return begins again", async () => {
@@ -188,6 +198,7 @@ test("A11-303: a /tmp over the limit names the prefixes of the entries modified 
   await run.advance(0);
   assert.deepEqual(run.host.writersSince, [T0 - TMP_WRITERS_WINDOW_MS], "the hour is the board's clock, not the machine's");
   assert.equal(run.pool.hostAlerts()[0].sentence, "/tmp holds 10,689 entries, over the 1,000 it should stay under. Listing a directory that size stalled the host's kernel on 2026-10-25."
+    + " a11ign-tmp-prune.timer removes the entries of the agent user that nothing has written for 24 hours and no running process holds; if the count stays up, read `journalctl --user -u a11ign-tmp-prune.service`."
     + " Entries modified in the last hour start with ae-pw-* (212), tmp.* (130), a11-* (1,040).", "named in the order the read gave them, with the count of each");
 });
 
@@ -204,7 +215,7 @@ test("A11-303: a read of the writers that fails leaves the alert it had, without
   const run = watched({ tmp: 10_689, writers: [{ prefix: "ae-*", count: 5 }] });
   run.host.failing.add("writers");
   await run.advance(0);
-  assert.equal(run.pool.hostAlerts()[0].sentence, "/tmp holds 10,689 entries, over the 1,000 it should stay under. Listing a directory that size stalled the host's kernel on 2026-10-25.");
+  assert.equal(run.pool.hostAlerts()[0].sentence, "/tmp holds 10,689 entries, over the 1,000 it should stay under. Listing a directory that size stalled the host's kernel on 2026-10-25. a11ign-tmp-prune.timer removes the entries of the agent user that nothing has written for 24 hours and no running process holds; if the count stays up, read `journalctl --user -u a11ign-tmp-prune.service`.");
   run.host.failing.delete("writers");
   await run.advance(HOST_ALERTS_EVERY_MS);
   assert.match(run.pool.hostAlerts()[0].sentence, / start with ae-\* \(5\)\.$/, "and names them the next time it can");

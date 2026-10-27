@@ -486,7 +486,8 @@ test("the CLI defaults to the listing, and only --apply removes -- the argv path
   const dead = scratchpad(root, DEAD_SESSION);
   const open = leftover(root, "rv-2049-y");
   for (const path of [dead, open]) age(path, 100);
-  const env = { ...process.env, PATH: `${fakeGh(root, '[{"number":2049}]')}:${process.env.PATH}` };
+  // The fake `gh` lives in a root of its own: a `bin` directory in the walked root would be an entry the aged family (A11-348) counts.
+  const env = { ...process.env, PATH: `${fakeGh(makeRoot(), '[{"number":2049}]')}:${process.env.PATH}` };
 
   const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);

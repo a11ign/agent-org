@@ -1,5 +1,5 @@
 [Unit]
-Description=a11ign: run the /tmp fixture janitor every minute (#3849)
+Description=a11ign: run the /tmp janitor (test fixtures and day-old entries of the agent user) every minute (#3849, A11-348)
 
 # `enable --now` RUNS ONE PASS AT INSTALL TIME BECAUSE OF THIS LINE, the contract @@prefix@@worktree-prune.timer measures. Wanted here: the first
 # pass is the first batch of the clear.
