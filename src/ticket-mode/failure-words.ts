@@ -33,3 +33,12 @@ const DENIED = /\b(?:not|isn'?t|aren'?t|wasn'?t|n't) (?:an? |the |really |just )
 
 /** Whether a worker's reply says the failure is not its change's. PURE. */
 export const saysUnrelated = (text: string): boolean => UNRELATED.test(text) && !DENIED.test(text);
+
+/** The words of a ticket's Decision that call a failure another change's, not this pull request's to fix (A11-343): "does not fix", "is not fixed by". */
+const NOT_FIXED_HERE = /\bdo(?:es)?(?:n'?t| not) fix\b|\bnot fixed by\b|\bwill not be fixed\b|\bis fixed (?:by|in) (?!this)/i;
+
+/** Whether a line of the ticket's Decisions calls the check `name` unrelated to the change (A11-343): it names the check, and says so in the words of {@link saysUnrelated} or "does not fix". PURE. */
+export function callsUnrelated(line: string, name: string): boolean {
+  const named = new RegExp(`(?<![\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i");
+  return named.test(line) && (saysUnrelated(line) || NOT_FIXED_HERE.test(line));
+}

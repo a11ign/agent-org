@@ -147,6 +147,12 @@ function mergeWait(entry: ViewEntry): string | null {
   return entry.phase === "finished" && entry.outcome?.kind === "reviewed" && runStatus(entry) === "awaiting-review" ? mergeWaitLine(entry) : null;
 }
 
+/** What a finished run the planner marked as waiting on another ticket reads (A11-343): `Waiting on A11-341: <why>`, and that a round starts when that ticket's pull request merges. Null for any other run. PURE. */
+export function waitingLine(entry: ViewEntry): string | null {
+  const wait = entry.waitingOnTicket;
+  return entry.phase !== "finished" || wait === undefined ? null : `Waiting on ${wait.key}: ${wait.reason.trim()}; the board starts a round when its pull request merges`;
+}
+
 /**
  * The reason line a run's card shows, and the question it keeps one click away. A needs-human run whose pull requests answered it says "Answered: awaiting
  * review" or "Approved" from them, or "the blocker cleared: the requested changes on … were lifted" (A11-258), and keeps what it asked as `question`; one whose pull requests merged says "the blocker cleared: … merged" (A11-258). A text the card already shows as the rebase, retarget or verdict note is not said a
@@ -155,6 +161,9 @@ function mergeWait(entry: ViewEntry): string | null {
 export function reasonOf(entry: ViewEntry, now?: number): Readonly<{ line: string | null; question: string | null }> {
   const shown = [rebaseNote(entry), retargetNote(entry), verdictNote(entry), checkNote(entry), queueNote(entry)];
   const once = (text: string | null): string | null => (text === null || shown.includes(text) ? null : text);
+  // A run the planner marked as waiting on another ticket says on what, and why, ahead of every other note: nothing is asked of a person (A11-343).
+  const waiting = waitingLine(entry);
+  if (waiting !== null) return { line: waiting, question: null };
   const asked = once(askedReason(entry, now));
   // A reviewer herdr would not start twice is what the card says first, and the worker's question, if it asked one, stays one click away (A11-241).
   if (entry.reviewerRefused !== undefined && runStatus(entry) === "needs-you") return { line: entry.reviewerRefused, question: asked };

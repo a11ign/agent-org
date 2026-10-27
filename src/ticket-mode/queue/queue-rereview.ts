@@ -6,6 +6,8 @@
 import { find, replace, type Queue } from "./queue-entries-and-outcomes.ts";
 import { logEvent, shortReason } from "./run-log.ts";
 import { MAX_FEEDBACK_ROUNDS } from "./queue-transitions.ts";
+import { capPlannerRound, type RoundOptions } from "./queue-cap.ts";
+import { isWatched } from "../board-view/pull-status-and-notes.ts";
 
 /**
  * A re-review of a finished run's blocked head was started: it counts as one of the board's own rounds (`rounds` goes up by one), and no worker is queued, since the worker already answered. The caller
@@ -21,9 +23,11 @@ export function countRereview(queue: Queue, key: string, now?: number, answered?
  * A re-review is due and the finished run has no round left: the run is handed to a person, as a capped feedback round does, naming `answered`, the block that was answered; the caller starts no reviewer.
  * A run that is already handed back is left as it is, so a sweep that finds the same answer again says nothing more. PURE.
  */
-export function handBackRereview(queue: Queue, key: string, answered: string, now?: number): Queue {
+export function handBackRereview(queue: Queue, key: string, answered: string, now?: number, options: RoundOptions = {}): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || entry.handedBack !== undefined) return queue;
+  // The cap is not on the escalation list: on a machine with a planner a watched run goes to it, and not to a person (A11-343).
+  if (options.planner === true && now !== undefined && isWatched(entry)) return capPlannerRound(queue, entry, answered, now);
   const handedBack = `The pull requests keep getting feedback: the board answered ${entry.rounds ?? MAX_FEEDBACK_ROUNDS} rounds on its own and stopped. Respond to review starts another. The latest: ${answered}`;
   const handed = replace(queue, key, (held) => ({ ...held, handedBack }));
   return logEvent(handed, key, now, { kind: "needs-you", reason: shortReason(handedBack) ?? handedBack });

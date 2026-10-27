@@ -8,6 +8,10 @@ import { closedWorkOf } from "./closed-work-account.ts";
 import { findingsOf, planFiles } from "./pool-ticket-text.ts";
 import { bodyHash } from "./standoff-body-hash.ts";
 import { standoffPlanBriefText } from "./standoff-brief.ts";
+import { capPlanBriefText } from "./cap-brief.ts";
+import { CAP_DECISION_FILE, CAP_PLANNER_FILE } from "./cap-files.ts";
+import { isCapPlanner } from "./queue/queue-cap.ts";
+import { logOf } from "./queue/run-log.ts";
 import { STANDOFF_DECISION_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE } from "./standoff-files.ts";
 import { ticketReadOf, type TicketRead } from "./ticket-read.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
@@ -115,7 +119,12 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   const connectors = settings.connectors;
   // A run the board stopped resumes its own Claude session, whatever kind of run it was: on the new version after an update (A11-169), or once the tickets its worker waited on are done (A11-272).
   let resume: string | undefined = resumesStoppedSession(entry) ? sessionToResume(ctx, entry) : undefined;
-  if (entry.review !== undefined && isStandoffPlanner(entry)) {
+  if (entry.review !== undefined && isCapPlanner(entry)) {
+    // The planner's round for a run at the board's round cap is a planner and not the worker resumed (A11-343).
+    resume = undefined;
+    await writeCapPlanBrief(ctx, entry, { ticket, folder, dir, read, notes, connectors });
+    writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
+  } else if (entry.review !== undefined && isStandoffPlanner(entry)) {
     // The planner's round for a stand-off is a planner and not the worker resumed: it starts a session of its own (A11-290).
     resume = undefined;
     await writeStandoffPlanBrief(ctx, entry, { ticket, folder, dir, read, notes, connectors });
@@ -170,7 +179,7 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
   // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207). So do the paths it listed
   // other tickets as holding, and the retry made for a folder claim (A11-212). So does the count of After-merge refusals sent back to its planner (A11-288).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, SENT_BACK_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, STANDOFF_DECISION_FILE, DECISIONS_ROUND_FILE]) {
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, SENT_BACK_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, STANDOFF_DECISION_FILE, CAP_PLANNER_FILE, CAP_DECISION_FILE, DECISIONS_ROUND_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
 }
@@ -200,13 +209,35 @@ function planNamesIn(ctx: PoolContext, pathsDir: string): string[] {
  * said and the brief goes on with the files it already had.
  */
 async function writeStandoffPlanBrief(ctx: PoolContext, entry: Entry, { ticket, folder, dir, read, notes, connectors }: Readonly<{ ticket: Ticket; folder: string; dir: string; read: TicketRead; notes: string | undefined; connectors: readonly string[] }>): Promise<void> {
+  await planDownloadedAgain(ctx, ticket, "stand-off");
+  const pathsDir = join(dir, "paths");
+  writeFileSync(join(dir, BRIEF_FILE), standoffPlanBriefText({ ticket, folder, ticketDir: dir, planDir: emptyPlanDir(dir), pathsDir, planNames: planNamesIn(ctx, pathsDir), prs: entry.review ?? [], feedback: entry.feedback ?? "", notes, connectors, read }));
+}
+
+/** The plan's files, downloaded again so a planner's round reads the plan as the tracker holds it. A download the tracker refuses is said and the round goes on with the files it already had. */
+async function planDownloadedAgain(ctx: PoolContext, ticket: Ticket, round: string): Promise<void> {
   try {
     await planFiles(ctx, ticket);
   } catch (err) {
-    process.stderr.write(`ticket:serve: ${ticket.key}: the plan could not be downloaded again for its stand-off round (${String((err as Error)?.message ?? err).split("\n")[0]}); the planner reads the files it had\n`);
+    process.stderr.write(`ticket:serve: ${ticket.key}: the plan could not be downloaded again for its ${round} round (${String((err as Error)?.message ?? err).split("\n")[0]}); the planner reads the files it had\n`);
   }
+}
+
+/**
+ * The brief of the planner's round for a run at the board's round cap (A11-343): the plan is downloaded again first, its own plan folder is made empty for the amended files it may write, and the brief names the run's earlier rounds and its open blockers as the board holds them.
+ */
+async function writeCapPlanBrief(ctx: PoolContext, entry: Entry, { ticket, folder, dir, read, notes, connectors }: Readonly<{ ticket: Ticket; folder: string; dir: string; read: TicketRead; notes: string | undefined; connectors: readonly string[] }>): Promise<void> {
+  await planDownloadedAgain(ctx, ticket, "round-cap");
   const pathsDir = join(dir, "paths");
-  writeFileSync(join(dir, BRIEF_FILE), standoffPlanBriefText({ ticket, folder, ticketDir: dir, planDir: emptyPlanDir(dir), pathsDir, planNames: planNamesIn(ctx, pathsDir), prs: entry.review ?? [], feedback: entry.feedback ?? "", notes, connectors, read }));
+  const rounds = logOf(ctx.store.get(), ticket.key).flatMap((event) => (event.kind === "round" ? [`${event.cause}${event.reason === null ? "" : `: ${event.reason}`}`] : []));
+  const blockers = (entry.blockers ?? []).filter(({ state }) => state !== "completed" && state !== "canceled").map(({ key, state }) => `${key} (${state})`);
+  writeFileSync(join(dir, BRIEF_FILE), capPlanBriefText({ ticket, folder, ticketDir: dir, planDir: emptyPlanDir(dir), pathsDir, planNames: planNamesIn(ctx, pathsDir), prs: entry.review ?? [], feedback: entry.capRound?.latest ?? entry.feedback ?? "", facts: { rounds, blockers, asked: entry.capPlans ?? 1 }, notes, connectors, read }));
+}
+
+/** The mark the planner's round at the round cap is given beside its outcome file (A11-343), which no worker writes; any other run has none (`clearRunDir` removed the earlier run's). */
+function writeCapMark(entry: Entry, dir: string): void {
+  rmSync(join(dir, CAP_PLANNER_FILE), { force: true });
+  if (isCapPlanner(entry)) writeFileSync(join(dir, CAP_PLANNER_FILE), "\n");
 }
 
 /**
@@ -247,13 +278,14 @@ function recordPluginCopies(ctx: PoolContext, keys: readonly string[], folder: s
  */
 export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, dir: string): void {
   const { hook, settings } = ctx;
-  writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(ctx, entry) || isStandoffPlanner(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
+  writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(ctx, entry) || isStandoffPlanner(entry) || isCapPlanner(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
   writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
   writeFileSync(join(dir, PROTECTED_FILE), `${JSON.stringify(protectedPaths(settings.binDir))}\n`);
   // A talk session has a person in its terminal, so its stop is not held to the escalation list (A11-257); no other run is.
   if (entry.talk === true) writeFileSync(join(dir, TALK_FILE), "\n");
   else rmSync(join(dir, TALK_FILE), { force: true });
   writeStandoffMarks(ctx, entry, dir);
+  writeCapMark(entry, dir);
   // A fresh ticket run on a machine with `tickets.drafts: false` may open its pull request ready; no other run, and no machine that keeps drafts, may.
   if (!settings.drafts && entry.review === undefined && !isPlanning(ctx, entry)) writeFileSync(join(dir, READY_FILE), "\n");
   else rmSync(join(dir, READY_FILE), { force: true });

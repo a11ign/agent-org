@@ -6,7 +6,8 @@ import { rerunOn5xx } from "../ci-rerun-on-5xx.ts";
 import { isRollUpCheck } from "../newest-check-run.ts";
 import type { FailingCheck, PullFeedback, UpdateBranchResult } from "../plugins/contracts/code-host.ts";
 import type { Flake } from "./flakes.ts";
-import { failedTestOf, saysUnrelated } from "./failure-words.ts";
+import { callsUnrelated, failedTestOf, saysUnrelated } from "./failure-words.ts";
+import { decisionsOf } from "./ticket-decisions.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
 import type { FlakeCandidate, RerunRecord } from "./board-view/check-rerun-record.ts";
@@ -46,6 +47,8 @@ export type CheckAnswer = Readonly<{
   heads: Readonly<Record<string, CheckHead>>;
   /** The same without the answers that are a round: what is recorded when no round is queued, so a rerun already made is not made again. */
   withoutRound: Readonly<Record<string, CheckHead>>;
+  /** Whether every round this pass starts answers only checks that count toward no cap (A11-343): the ticket's Decisions call them unrelated, or a rerun already found them red again. False when no round starts. */
+  uncounted: boolean;
 }>;
 
 /** The lines of a job log that say the check refused (A11-179), without the colour codes and the runner's timestamps, the last {@link QUOTED_LINES}. PURE. */
@@ -402,7 +405,7 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
   const checks = answered.filter(({ name }) => !reds.names.has(name)).map((check) => readCheck(ctx, check));
   const own = checks.filter((check) => check.infrastructure === null);
   const infrastructure = checks.filter((check) => check.infrastructure !== null);
-  if (own.length > 0) return answerOwn(ctx, entry, pull, { own, infrastructure, outside }, reran ? known : undefined);
+  if (own.length > 0) return answerOwn(ctx, entry, pull, { own, infrastructure, outside }, reran ? known : undefined, known);
   // The rerun of the code's own checks is still under way, and what is red now is neither the code's own nor an infrastructure failure: its record is kept, not replaced by a hold or an infrastructure rerun that would forget what to record if it passes (A11-300).
   if (infrastructure.length === 0 && isUnsettledRerun(known, read.head)) return none;
   if (infrastructure.length === 0 && outside.length > 0) return { lines: [], answer: notOursAnswer(ctx, entry, pull, outside, known, reds) };
@@ -412,9 +415,9 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
 /**
  * What the board does about the code's own red checks at a head (A11-300): rerun them once, before any worker is asked; a round for them when they are red again after the rerun, or the rerun could not be made; and, when the rerun
  * was made because a worker's reply said the failure is not its change's, a person decides, since the worker has been asked once and the checks have been rerun once. The round names the infrastructure failures and the checks red elsewhere that it
- * is not about. `reran` is the head's record when the board has rerun its checks already (an infrastructure rerun, or one of the code's own), and undefined when it has not.
+ * is not about. `reran` is the head's record when the board has rerun its checks already (an infrastructure rerun, or one of the code's own), and undefined when it has not. `previous` is the pull request's record as the board last left it, which says what a rerun found red again (A11-343).
  */
-function answerOwn(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[]; outside: readonly FailingCheck[] }>, reran: CheckHead | undefined): { lines: string[]; answer: CheckHead | null } {
+function answerOwn(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, checks: Readonly<{ own: readonly ReadCheck[]; infrastructure: readonly ReadCheck[]; outside: readonly FailingCheck[] }>, reran: CheckHead | undefined, previous?: CheckHead): { lines: string[]; answer: CheckHead | null } {
   const { url, read } = pull;
   const { own, infrastructure, outside } = checks;
   const head = read.head!;
@@ -425,11 +428,26 @@ function answerOwn(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string;
   if (reran?.rerun?.for === "reply") {
     const note = `${names(own)} failed again on ${short(head)} after a rerun the worker's reply asked for: a person decides`;
     log(`${entry.ticket.key}: ${note}`);
-    return { lines: [], answer: { head, step: "named", note } };
+    return { lines: [], answer: { head, step: "named", note, redAgain: own.map(({ name }) => name) } };
   }
   const others = outside.length > 0 ? [foreignLine(url, outside.map(({ name }) => name))] : [];
-  return { lines: [...ownLines(url, own), ...infrastructure.map((check) => infrastructureLine(url, check)), unrelatedAdvice(url), ...others], answer: { head, step: "round" } };
+  const uncounted = own.every(({ name }) => isUncounted(entry, name, previous));
+  return { lines: [...ownLines(url, own), ...infrastructure.map((check) => infrastructureLine(url, check)), unrelatedAdvice(url), ...others], answer: { head, step: "round", ...(uncounted ? { uncounted: true as const } : {}) } };
 }
+
+/**
+ * Whether a round that answers the red check `name` counts toward no cap (A11-343): the ticket's Decisions call it unrelated to the change (a line of them names it and says so), or the board reran it for a worker's "not mine" and it was red again, which the
+ * record of this pull request keeps (`redAgain`) from head to head. The round is still asked: a worker may meet the check after all. It is the cap that does not count it, so the board's rounds are not used up on a failure that is no one's to fix here. PURE.
+ */
+function isUncounted(entry: Entry, name: string, record: CheckHead | undefined): boolean {
+  if (record?.redAgain?.includes(name) === true) return true;
+  const decisions = decisionsOf(entry.ticket.description);
+  return decisions !== null && decisions.split("\n").some((line) => callsUnrelated(line, name));
+}
+
+/** The checks a rerun found red again, carried onto the record of the next answer for the pull request (A11-343), so a later head's round still knows them. */
+const withRedAgain = (answer: CheckHead | null, known: CheckHead | undefined): CheckHead | null =>
+  (answer === null || known?.redAgain === undefined || answer.redAgain !== undefined ? answer : { ...answer, redAgain: known.redAgain });
 
 /**
  * Whether the record of a pull request's checks is kept as it is: there is one, it is not one of checks red elsewhere (made again from each watch's reads, A11-179), and the head has not moved. The record of an update
@@ -453,13 +471,16 @@ export function answerChecks(ctx: PoolContext, entry: Entry, open: readonly Read
   const lines: string[] = [];
   let heads: Record<string, CheckHead> = {};
   let withoutRound: Record<string, CheckHead> = {};
+  const rounds: CheckHead[] = [];
   for (const pull of open) {
     const known = entry.checkHeads?.[pull.url];
     const stays = isKept(known, pull.read) ? { [pull.url]: keptRecord(known, pull.read) } : {};
-    const { lines: found, answer } = answerPull(ctx, entry, pull, known, foreign);
+    const { lines: found, answer: answered } = answerPull(ctx, entry, pull, known, foreign);
+    const answer = withRedAgain(answered, known);
     lines.push(...found);
+    if (answer?.step === "round") rounds.push(answer);
     heads = { ...heads, ...stays, ...(answer === null ? {} : { [pull.url]: answer }) };
     withoutRound = { ...withoutRound, ...stays, ...(answer === null || answer.step === "round" ? {} : { [pull.url]: answer }) };
   }
-  return { feedback: lines.length === 0 ? null : lines.join("\n"), heads, withoutRound };
+  return { feedback: lines.length === 0 ? null : lines.join("\n"), heads, withoutRound, uncounted: rounds.length > 0 && rounds.every(({ uncounted }) => uncounted === true) };
 }

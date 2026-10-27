@@ -50,7 +50,7 @@ function world(over: { entries?: (entries: Record<"bottom" | "next", Entry>) => 
   const entries = { bottom: bottomRun(), next: stackedRun("A11-2", NEXT, { key: "A11-1", branch: BOTTOM_BRANCH }, over.next) };
   let queue: Queue = { entries: over.entries?.(entries) ?? [entries.bottom, entries.next] } as unknown as Queue;
   const ctx = {
-    codeHost: over.codeHost?.(host) ?? host, store: { get: () => queue, set: (next: Queue) => { queue = next; } }, now: () => 1_000_000, stackMergeAsked: new Map(), restacked: new Map(), restackSaid: new Set<string>(), rebasing: new Set<string>(),
+    settings: { planner: null }, codeHost: over.codeHost?.(host) ?? host, store: { get: () => queue, set: (next: Queue) => { queue = next; } }, now: () => 1_000_000, stackMergeAsked: new Map(), restacked: new Map(), restackSaid: new Set<string>(), rebasing: new Set<string>(),
   } as unknown as PoolContext;
   const run = (key = "A11-2"): Entry => queue.entries.find((e) => e.ticket.key === key)!;
   const updates = () => host.branchUpdates.asked.map(({ url, expectedHead }) => `${url} ${expectedHead}`);
