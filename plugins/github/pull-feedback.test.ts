@@ -233,7 +233,7 @@ test("A11-342: a rollup cut at 100 entries says nothing is only cancelled, since
 });
 
 /** The feedback read of a pull request in a repository that is `private` and holds the merge bot or not: the repository's own fields beside the pull request, as the query asks them. */
-const readInRepository = (repository: { isPrivate?: boolean; bot?: unknown }, checks: unknown[], hasNextPage = false) => {
+const readInRepository = (repository: { isPrivate?: boolean; bot?: unknown; headBot?: unknown }, checks: unknown[], hasNextPage = false) => {
   const pull = pullWith({ checks });
   pull.commits.nodes[0].commit.statusCheckRollup.contexts = { pageInfo: { hasNextPage }, nodes: checks } as never;
   const run = (_args: string[]) => JSON.stringify({ data: { repository: { ...repository, pullRequest: pull } } });
@@ -270,4 +270,25 @@ test("A11-341: a rollup of more than one page is not read in full, so `gate` is 
   const checks = [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20)];
   assert.deepEqual(readInRepository(MERGE_BOT, checks, true)?.failing, ["capture"]);
   assert.deepEqual(readInRepository(MERGE_BOT, checks, false)?.failing, []);
+});
+
+test("A11-344: the pull request that adds the merge bot waits on `gate` alone: the default branch has none, its head holds it", () => {
+  const checks = [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20)];
+  const adding = readInRepository({ isPrivate: true, bot: null, headBot: { __typename: "Blob" } }, checks);
+  assert.deepEqual([adding?.failing, adding?.failedAt, adding?.pendingRequired], [[], null, []], "gate is green: capture opens no feedback round");
+  assert.deepEqual(adding?.failures.map(({ name }) => name), ["capture"], "it is still listed");
+  assert.deepEqual(readInRepository({ isPrivate: true, bot: null, headBot: { __typename: "Blob" } }, [check("gate", "FAILURE", 10), check("capture", "FAILURE", 20)])?.failing, ["gate"], "a red gate reads red");
+});
+
+test("A11-344: a private repository with the bot on neither its default branch nor its head, and a public one whose head holds it, count every check as before", () => {
+  const checks = [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20)];
+  for (const repository of [{ isPrivate: true, bot: null, headBot: null }, { isPrivate: false, bot: null, headBot: { __typename: "Blob" } }]) {
+    assert.deepEqual(readInRepository(repository, checks)?.failing, ["capture"], JSON.stringify(repository));
+  }
+});
+
+test("A11-344: the query asks the head by the pull request's own ref", () => {
+  const asked: string[] = [];
+  read(URL, "me", (args) => { asked.push(args.join(" ")); return "{}"; }, corePolicy());
+  assert.ok(asked[0]?.includes(`refs/pull/${URL.split("/").pop()}/head:.github/workflows/merge-bot.yml`));
 });

@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GhFailure } from "./gh.ts";
-import { ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH, readMergeFlow, readMergeFlows } from "./merge-flow.ts";
+import { ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH, readHeadHoldsMergeBot, readMergeFlow, readMergeFlows, runsMergeBot } from "./merge-flow.ts";
 
 /** What GitHub answers for one repository: the setting, whether it is private, the default branch, and `arm` and `bot`, which are null where the head holds no such workflow. */
 const repository = ({ autoMerge = true, isPrivate = false, arm = true, bot = false, branch = "main" } = {}) => ({
@@ -68,4 +68,20 @@ test("A11-291: a read that cannot be made is null, never 'no flow': a failed cal
   assert.equal(stray.calls.length, 0, "a name that is not owner/name is not put in a query");
   const crashed = (): never => { throw new Error("spawn gh ENOENT"); };
   assert.equal(readMergeFlow("a11ign/plugin", crashed), null, "a gh that cannot start");
+});
+
+test("A11-344: a pull request head holds the merge bot when GitHub finds the file at its own ref, and a head GitHub cannot read holds none", () => {
+  const { run, calls } = answering({ r0: { headBot: { __typename: "Blob" } } });
+  assert.equal(readHeadHoldsMergeBot("a11ign/auth-capture-check", 20, run), true);
+  const query = calls[0].find((arg) => arg.startsWith("query=")) ?? "";
+  assert.match(query, /repository\(owner: "a11ign", name: "auth-capture-check"\) \{ headBot: object\(expression: "refs\/pull\/20\/head:\.github\/workflows\/merge-bot\.yml"\)/);
+  assert.equal(readHeadHoldsMergeBot("a11ign/auth-capture-check", 20, answering({ r0: { headBot: null } }).run), false, "a head without the file (or one that deletes it)");
+  assert.equal(readHeadHoldsMergeBot("a11ign/auth-capture-check", 20, answering({ r0: null }, true).run), false, "a repository GitHub would not read");
+  assert.equal(readHeadHoldsMergeBot("not a repository", 20, run), false);
+  assert.equal(readHeadHoldsMergeBot("a11ign/auth-capture-check", 20, () => { throw new Error("boom"); }), false);
+});
+
+test("A11-344: the merge bot is the flow when the repository is private and either its default branch or the pull request's head holds it", () => {
+  assert.deepEqual([runsMergeBot({ private: true, mergeBot: false, headBot: true }), runsMergeBot({ private: true, mergeBot: true }), runsMergeBot({ private: true, mergeBot: false })], [true, true, false]);
+  assert.equal(runsMergeBot({ private: false, mergeBot: false, headBot: true }), false, "a public repository is not the merge bot's");
 });
