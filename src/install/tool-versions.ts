@@ -6,7 +6,7 @@
 // folder: a run's hooks and brief commands name that folder, and an update that moves `current` changes nothing under a run that started before it.
 //
 // A CHECKOUT INSTALL (`install.sh` before this, and the agents host's own clone) is not under `versions/`: its version is its `package.json`'s.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { agentOrgHome, TOOL_ROOT, type Env } from "./paths.ts";
 
@@ -17,6 +17,15 @@ export const versionsDir = (tool: string): string => join(tool, "versions");
 export const versionFolder = (tool: string, name: string): string => join(versionsDir(tool), name);
 /** The symlink to the newest version folder, which every unit and the launcher run through. */
 export const currentLink = (tool: string): string => join(tool, "current");
+
+/**
+ * The installed tool's `current` link when `tool` (the install directory) has one that holds a runnable `src/bin.ts`, else null: the release every unit and the launcher run, and the one an update
+ * installs the host's units and files from (A11-354). A machine that has it runs no checkout, so host.json's `tool` is no longer what runs.
+ */
+export function installedToolLink(tool: string): string | null {
+  const current = currentLink(tool);
+  return existsSync(join(current, "src", "bin.ts")) ? current : null;
+}
 
 /** The version folder's name (`v0.273.0`, or `main-1a2b3c4`) when `root` is a folder under a `versions/` directory, else null. */
 export function versionNameOf(root: string): string | null {

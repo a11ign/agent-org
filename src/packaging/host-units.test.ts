@@ -2309,7 +2309,9 @@ test("#2332: the leads list and the README each report DIVERGED too, and host:in
       ["gh:DIVERGED", "workspaces.txt:DIVERGED", "README.md:DIVERGED"]);
     hostIdentityInstall({ ...where, out: () => {} });
     assert.deepEqual(hostIdentityDrift(where), [], "the shared remedy clears every file finding it names");
-    assert.deepEqual(readdirSync(where.scriptDir), ["gh"], "the atomic write left no temp file behind");
+    const [gh, kept, ...left] = readdirSync(where.scriptDir).sort();
+    assert.deepEqual([gh, kept?.startsWith("gh.bak-"), left], ["gh", true, []], "the atomic write left no temp file behind, and the copy it replaced is the only other file (A11-354)");
+    assert.equal(readFileSync(join(where.scriptDir, kept), "utf8"), "stale\n", "and it holds the stale text");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -5,7 +5,7 @@
 // recording `run`), the services' state, the pinned pnpm (a function that makes `node_modules`), and the queue the prune and the drain read.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -40,9 +40,13 @@ export function releaseRemote() {
     git(["add", "-A"]);
     git(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", message]);
   };
-  /** Cut `version`: a summary starting `Breaking: ` marks it breaking, and `shipsUiBuild` declares that CI attaches a UI build to its Release (A11-191). */
-  const release = (version: string, summary = "a fix", { shipsUiBuild = false }: { shipsUiBuild?: boolean } = {}) => {
+  /** Cut `version`: a summary starting `Breaking: ` marks it breaking, `shipsUiBuild` declares that CI attaches a UI build to its Release (A11-191), and `files` are the other files it ships, by path (A11-354: the host's units). */
+  const release = (version: string, summary = "a fix", { shipsUiBuild = false, files = {} }: { shipsUiBuild?: boolean; files?: Readonly<Record<string, string>> } = {}) => {
     mkdirSync(join(work, "src"), { recursive: true });
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(work, path)), { recursive: true });
+      writeFileSync(join(work, path), text);
+    }
     writeFileSync(join(work, "src", "bin.ts"), `// agent-org ${version}\n`);
     writeFileSync(join(work, "package.json"), `${JSON.stringify({ name: "agent-org", version, dependencies: { "left-pad": "1.0.0" }, ...(shipsUiBuild ? { agentOrg: { shipsUiBuild: true } } : {}) })}\n`);
     changelog = changelog.replace("# agent-org\n", `# agent-org\n\n## ${version}\n\n### Minor Changes\n\n- 1a2b3c4: ${summary}\n`);
@@ -121,6 +125,7 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
     upkeep: () => [],
     conventions: () => ({ said: [], failed: [] }),
     herdr: () => ({ said: [], failed: [], newFailures: 0 }),
+    hostInstall: () => ({ said: [], failed: [] }),
     out: { log: (line: string) => { said.push(line); }, error: (line: string) => { errors.push(line); } },
     ...over,
   });
