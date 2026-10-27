@@ -18,16 +18,33 @@ export const MERGE_BOT_GATE = "gate";
 
 /** The query's selection of the merge bot's file on the default branch: null where the repository does not hold it. */
 const MERGE_BOT_FILE = `bot: object(expression: "HEAD:${MERGE_BOT_WORKFLOW_PATH}") { __typename }`;
-/** The fields that say whether a repository is private and holds the merge bot, as a query asks them; {@link answerRunsMergeBot} reads the answer. */
-export const MERGE_BOT_FIELDS = `isPrivate ${MERGE_BOT_FILE}`;
+/** The query's selection of the merge bot's file on pull request `number`'s head (`refs/pull/<n>/head`, which GitHub keeps for a fork's pull request too): null where the head does not hold it, as it does not when the pull request deletes it. */
+const headMergeBotFile = (number: number): string => `headBot: object(expression: "refs/pull/${number}/head:${MERGE_BOT_WORKFLOW_PATH}") { __typename }`;
+/** The fields that say whether a repository is private and holds the merge bot, on its default branch or on the head of pull request `number` (A11-344); a query asks them and {@link answerRunsMergeBot} reads the answer. */
+export const mergeBotFields = (number: number): string => `isPrivate ${MERGE_BOT_FILE} ${headMergeBotFile(number)}`;
 
 const holds = (file: unknown): boolean => file !== null && typeof file === "object";
 
-/** Whether a repository's merge flow is the merge bot: it is private, which GitHub Free offers no ruleset or merge queue, and its default branch holds the bot (A11-291). */
-export const runsMergeBot = (flow: Pick<MergeFlow, "private" | "mergeBot">): boolean => flow.private && flow.mergeBot;
+/**
+ * Whether a repository's merge flow is the merge bot, for a pull request: it is private, which GitHub Free offers no ruleset or merge queue, and the bot is on its default branch (A11-291) or on the pull request's head
+ * (`headBot`, A11-344). The pull request that adds the bot is the first one it covers: the default branch holds nothing until that pull request merges.
+ */
+export const runsMergeBot = (flow: Pick<MergeFlow, "private" | "mergeBot"> & { headBot?: boolean }): boolean => flow.private && (flow.mergeBot || flow.headBot === true);
 
-/** {@link runsMergeBot}, read off a GraphQL `repository` answer that asked for {@link MERGE_BOT_FIELDS}: false when the answer does not say. */
-export const answerRunsMergeBot = (repository: any): boolean => runsMergeBot({ private: repository?.isPrivate === true, mergeBot: holds(repository?.bot) });
+/** {@link runsMergeBot}, read off a GraphQL `repository` answer that asked for {@link mergeBotFields}: false when the answer does not say. */
+export const answerRunsMergeBot = (repository: any): boolean => runsMergeBot({ private: repository?.isPrivate === true, mergeBot: holds(repository?.bot), headBot: holds(repository?.headBot) });
+
+/** Whether pull request `number` of `repository` (`owner/name`) holds the merge bot on its head: false when it does not, and when GitHub does not say (which is read as a head without the bot, so every check counts as before). */
+export function readHeadHoldsMergeBot(repository: string, number: number, run: Gh): boolean {
+  const parsed = repositoryOf(repository);
+  if (parsed === null) return false;
+  try {
+    const data = dataOf(run, `query { r0: repository(owner: "${parsed.owner}", name: "${parsed.name}") { ${headMergeBotFile(number)} } }`);
+    return holds((data?.r0 as { headBot?: unknown } | null | undefined)?.headBot);
+  } catch {
+    return false;
+  }
+}
 
 /** The owner and name of a repository written `owner/name`, or null for any other text (which also keeps a quote out of the query). */
 function repositoryOf(repository: string): { owner: string; name: string } | null {

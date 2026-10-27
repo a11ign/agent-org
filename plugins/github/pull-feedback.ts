@@ -4,7 +4,7 @@
 // asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
 import type { FailingCheck, PullFeedback, PullQueue, QueueRemoval, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
-import { MERGE_BOT_FIELDS, MERGE_BOT_GATE, answerRunsMergeBot } from "./merge-flow.ts";
+import { MERGE_BOT_GATE, answerRunsMergeBot, mergeBotFields } from "./merge-flow.ts";
 
 export type { FailingCheck, PullFeedback };
 
@@ -17,7 +17,8 @@ export const MAX_FILE_PAGES = 10;
 /** How many of the pull request's newest removals from the merge queue, commits and force-pushes one read takes: the removals since the head last moved are the trailing run of them. */
 const QUEUE_WINDOW = 20;
 
-const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { ${MERGE_BOT_FIELDS} pullRequest(number: $number) {
+/** The query for pull request `number`: the number is also written into the selection of the merge bot on its head (a string in the query cannot read the variable). */
+const queryOf = (number: number): string => `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { ${mergeBotFields(number)} pullRequest(number: $number) {
   state
   body
   reviewDecision
@@ -42,7 +43,7 @@ const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repositor
   } } } } } }
 } } }`;
 
-/** The page of changed files after `cursor`, read the same way as the first page in `QUERY`. */
+/** The page of changed files after `cursor`, read the same way as the first page in `queryOf`. */
 const FILES_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
   files(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { path } }
 } } }`;
@@ -174,7 +175,7 @@ export function readPullFeedback(url: string, self: string, run: (args: string[]
   const pull = pullOf(url);
   if (pull === null) return null;
   try {
-    const answer = JSON.parse(run(["api", "graphql", "-f", `query=${QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
+    const answer = JSON.parse(run(["api", "graphql", "-f", `query=${queryOf(pull.number)}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
     const pr = answer?.data?.repository?.pullRequest;
     if (pr === null || typeof pr !== "object" || typeof pr.state !== "string") return null;
     const files = changedFiles(pull, pr.files, run);
@@ -186,7 +187,7 @@ export function readPullFeedback(url: string, self: string, run: (args: string[]
 }
 
 /**
- * The checks the repository's flow requires where GitHub names none: `gate` in a merge-bot repository (A11-341), else none. A rollup of more than one page is not read in full, so `gate` could be on a page not read and
+ * The checks the repository's flow requires where GitHub names none: `gate` in a merge-bot repository (A11-341), the pull request that adds the bot included (A11-344), else none. A rollup of more than one page is not read in full, so `gate` could be on a page not read and
  * every check past it would stop counting: it is read as one without the flow, which counts the checks seen, as `reviews.ts` does.
  */
 function flowRequiresOf(repository: unknown, pr: Record<string, any>): string[] {
