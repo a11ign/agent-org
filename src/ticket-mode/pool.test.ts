@@ -44,6 +44,10 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakePublisher } from "../plugins/fakes/publisher.ts";
 import { createFakeReviewer, reviewerOver } from "../plugins/fakes/reviewer.ts";
 import { corePolicy } from "../plugins/policy.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { createCodeHost as createGithubCodeHost } from "../../plugins/github/code-host.ts";
+import { fakePluginDeps } from "../plugins/fakes/deps.ts";
+import { settledGreenOf, unrequiredRedOf } from "../work-gate/pr-orders.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
 import { FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
@@ -3812,6 +3816,31 @@ test("A11-119: a new head after requested changes gets a reviewer, though its ru
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), ["h2"], "the new head is started");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "reviewing", "and the board shows the reviewer on it");
+});
+
+/**
+ * A code host whose review state is read by the GitHub plugin itself, off a scripted `gh pr view` of one pull request, so the judgement of "checks settled green" is the plugin's and the gate's, and not the world's.
+ * Everything else is the world's.
+ */
+function withPluginReviewState(world: World, pull: Record<string, unknown>): World {
+  const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf }));
+  const plugin = createGithubCodeHost(fakePluginDeps({ policy, exec: () => ({ status: 0, stdout: JSON.stringify(pull), stderr: "" }) }));
+  return { ...world, codeHost: { ...world.codeHost, readReviewState: (url) => plugin.readReviewState(url) } };
+}
+
+test("A11-340: a head pushed after changes were requested gets its reviewer once its checks settle green, with a cancelled duplicate run of a check beside the passing one", async () => {
+  const { port, starts } = reviewerWith();
+  await loadReviewerGate();
+  const run = (name: string, conclusion: string, runId: number, finished: number) =>
+    ({ name, status: "COMPLETED", conclusion, startedAt: at(finished - 50), completedAt: at(finished), detailsUrl: `https://github.com/${SWEPT_REPO}/actions/runs/${runId}/job/1` });
+  // A duplicate of each passing run at the same head, cancelled: by run id it is the newer, and it finished after the passing one.
+  const rollup = ["gate", "python", "middleware"].flatMap((name) => [run(name, "SUCCESS", 200, 100), run(name, "CANCELLED", 201, 120)]);
+  const blocked = { headRefOid: "h2", author: { login: "worker" }, statusCheckRollup: rollup, reviews: [{ author: { login: REVIEWER_LOGIN }, state: "CHANGES_REQUESTED", commit: { oid: "h1" }, submittedAt: at(200) }] };
+  const pulls = { 1: feedbackPull({ head: "h2", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")], reviewDecision: "changes-requested" }) };
+  const world = withPluginReviewState(ghFor(pulls), blocked);
+  const ctx = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], REVIEWING, { gh: world, reviewerPort: port, clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts.map((ref) => ref.head), ["h2"], "the new head, whose only review is on the head before, is started");
 });
 
 test("A11-119: a head with a posted review, or one ticket:review started, is not started by the sweep; the board says the verdict", async () => {
