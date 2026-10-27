@@ -53,16 +53,9 @@ export function reviewerBanner(reviewer: string | undefined): string | null {
   return reviewer === "off-required" ? REVIEWER_OFF_BANNER : null;
 }
 
-/** What a run that is Ready to merge says when its machine's publisher is installed and disabled (A11-161). */
+/** What a run that could be published says when its machine's publisher is installed and disabled (A11-161). */
 export const PUBLISHING_OFF_LINE = "publishing off";
 
-/**
- * The one line a run says about publishing: "publishing off" for a run that is Ready to merge on a machine whose publisher is installed and disabled (`off`). A machine with no publisher (`none`)
- * shows nothing extra, and one whose publisher is on has its Publish controls instead. `publisher` is `/api/config`'s `publisher` state.
- */
-export function publishingOffLine(status: string, publisher: string | undefined): string | null {
-  return publisher === "off" && status === "ready-to-merge" ? PUBLISHING_OFF_LINE : null;
-}
 
 /** The first eight characters of a commit, as the board shows one. */
 export const shortHead = (head: string): string => head.slice(0, 8);

@@ -377,11 +377,14 @@ function providerRow(settings: TicketSettings, block: ProviderBlock, wrapped: re
     return failed(name, `reviews are required and the reviewer is off: ${WITHOUT_PLUGIN[block]}`, enableReviewerCommand(settings.providers, catalog));
   }
   if (!enabled && provider !== "none") return ok(name, `disabled: ${WITHOUT_PLUGIN[block]}`);
-  const source = sourceWords(settings.providers, block);
+  const source = `${sourceWords(settings.providers, block)}${block === "publish" ? publishWhenWords(settings) : ""}`;
   const failing = wrapped.filter((check) => !check.ok);
   if (failing.length === 0) return ok(name, wrapped.length === 0 ? source : `${source}, and its checks pass`);
   return failed(name, `${source}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises");
 }
+
+/** What the publisher row adds when this machine publishes before review (`tickets.providers.publish.when`), so a person reading doctor sees that the channel hears of pull requests no reviewer has passed. */
+const publishWhenWords = (settings: TicketSettings): string => (settings.publishWhen === "awaiting-review" ? ", publishing a run once it awaits only its review (when: awaiting-review)" : "");
 
 const pluginFailed = (plugin: string, why: string, fix: string): Check => failed(`plugin ${plugin}`, why, fix);
 

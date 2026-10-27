@@ -25,6 +25,7 @@ import { CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugin
 import type { Catalog } from "../plugins/manifest.ts";
 import { blockSettings, defaultCatalog, isTrackerConnector, pluginNamed, pluginsOfConcern } from "../plugins/registry.ts";
 import { enableRefusal, onlyOneSentence, quoted } from "../plugins/rules.ts";
+import { PUBLISH_WHEN } from "./board-view/publish-when.ts";
 
 export { PROVIDER_BLOCKS, type ProviderBlock };
 
@@ -48,11 +49,12 @@ const PUBLISH_SETTINGS = ["run", "model", "effort", "connectors"] as const;
 
 /**
  * The settings of a block that are CORE'S, valid under any provider of its concern, `none` included: the concern's own, not a plugin's (A11-161). The reviewer block's `required` says whether
- * this machine's pull requests wait for the reviewer, and a machine with no reviewer plugin still holds it.
+ * this machine's pull requests wait for the reviewer, and a machine with no reviewer plugin still holds it. The publisher block's `when` says at which point this machine's runs can be published,
+ * which is how its people work and not how a plugin posts.
  */
-const CONCERN_SETTINGS: Readonly<Partial<Record<ProviderBlock, readonly string[]>>> = { reviewer: ["required"] };
+const CONCERN_SETTINGS: Readonly<Partial<Record<ProviderBlock, readonly string[]>>> = { reviewer: ["required"], publish: ["when"] };
 
-/** The settings of a block that are its concern's, valid under any plugin of it and under `none`: the reviewer's `required`. */
+/** The settings of a block that are its concern's, valid under any plugin of it and under `none`: the reviewer's `required` and the publisher's `when`. */
 export const concernSettingsOf = (block: ProviderBlock): readonly string[] => CONCERN_SETTINGS[block] ?? [];
 
 /** Where a block's settings came from: the block itself, an alias, or no key at all, which is the provider's default. */
@@ -256,17 +258,18 @@ function publishOf(block: unknown, tickets: Record<string, unknown>, read: Alias
   const alias = isObject(tickets.publish) ? tickets.publish : undefined;
   if (tickets.publish !== undefined && alias === undefined) throw new TicketSettingsRefusal("tickets.publish", PUBLISHER_SHAPE);
   const named = providerOf("publish", block, catalog);
+  const when = { when: whenOf(block) };
   if (named === undefined) {
-    if (alias === undefined) return reportOf(defaultNamed("publish"), {}, "default");
+    if (alias === undefined) return reportOf(defaultNamed("publish"), when, "default");
     read.push({ old: "tickets.publish", new: "tickets.providers.publish", stale: false });
-    return reportOf({ provider: "slack", enabled: true }, fieldsOf(alias, "tickets.publish"), "aliases");
+    return reportOf({ provider: "slack", enabled: true }, { ...fieldsOf(alias, "tickets.publish"), ...when }, "aliases");
   }
   const own = isObject(block) ? block : {};
   if (named.provider === "none") {
     const stray = PUBLISH_SETTINGS.find((name) => own[name] !== undefined);
     if (stray !== undefined) throw new TicketSettingsRefusal(`tickets.providers.publish.${stray}`, "does not apply under provider none, which publishes nothing");
     if (alias !== undefined) throw new TicketSettingsRefusal("tickets.publish", "is set, but tickets.providers.publish names provider none: remove one of them");
-    return reportOf(named, {}, sourceOf(block, read));
+    return reportOf(named, when, sourceOf(block, read));
   }
   const fromBlock = Object.fromEntries(PUBLISH_SETTINGS.filter((name) => own[name] !== undefined).map((name) => [name, own[name]]));
   if (alias !== undefined) {
@@ -277,7 +280,14 @@ function publishOf(block: unknown, tickets: Record<string, unknown>, read: Alias
     }
     read.push({ old: "tickets.publish", new: "tickets.providers.publish", stale: true });
   }
-  return reportOf(named, fieldsOf(own, "tickets.providers.publish"), sourceOf(block, read));
+  return reportOf(named, { ...fieldsOf(own, "tickets.providers.publish"), ...when }, sourceOf(block, read));
+}
+
+/** The publisher's `when`: one of {@link PUBLISH_WHEN} the block holds, or none. Refused by name for any other value. */
+function whenOf(block: unknown): Setting {
+  const when = ownOf(block, "publish", "when") ?? { value: undefined, at: "tickets.providers.publish.when" };
+  if (when.value !== undefined && !PUBLISH_WHEN.some((value) => value === when.value)) throw new TicketSettingsRefusal(when.at, `must be one of ${quoted(PUBLISH_WHEN)}, not ${JSON.stringify(when.value)}`);
+  return when;
 }
 
 /** The publish settings of an object, each at the key it was read from: `prefix` plus its name. */

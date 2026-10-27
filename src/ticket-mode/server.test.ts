@@ -510,6 +510,24 @@ test("A11-161: /api/config says whether the publisher is on, off (installed and 
   assert.deepEqual((await states({ providers: { reviewer: { provider: "none", required: true } } })).said, [false, "none", "off-required"]);
 });
 
+test("Publish follows the machine's tickets.providers.publish.when: a run awaiting only its review is queued where it is awaiting-review and refused by default, and /api/queue says which", async () => {
+  const publishing = { provider: "slack", run: "Post {prs}, then write {dir}/published.json" };
+  const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+  for (const [when, queued] of [[undefined, false], ["awaiting-review", true]] as const) {
+    const b = board(4747, { providers: { publish: { ...publishing, ...(when === undefined ? {} : { when }) } } });
+    await queueFinished(b, { kind: "reviewed", prs: [pr] });
+    b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, pullHeads: { [pr.url]: { head: "h1", approved: false, review: "none" as const, red: [], pending: [] } } })) });
+    const [, view] = await b.api("GET", "/api/queue", {}) as [number, { publishWhen: string }];
+    assert.equal(view.publishWhen, when ?? "ready-to-merge");
+    if (queued) {
+      await b.api("POST", "/api/publish", { keys: ["NBF-1"] });
+      assert.deepEqual(b.store.get().publish?.keys, ["NBF-1"]);
+    } else {
+      await assert.rejects(b.api("POST", "/api/publish", { keys: ["NBF-1"] }), /NBF-1 is not Ready to merge, so it cannot be published/);
+    }
+  }
+});
+
 test("the queue the page reads carries the running publish run's workspace and pane, so each run it posts can link its terminal", async () => {
   const b = board(4747, { publish: { run: "Post {prs}, then write {dir}/published.json" } });
   const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };

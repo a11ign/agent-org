@@ -597,6 +597,23 @@ test("A11-161: `required` is the reviewer concern's setting: `plugin config atom
   assert.equal(JSON.parse(host.text()).tickets.providers.reviewer.required, false, "nothing was written");
 });
 
+test("`when` is the publisher concern's setting: `plugin config slack when=awaiting-review` sets it, reads back, refuses a value that is not one, and an uninstall keeps it", async () => {
+  const host = scratch();
+  assert.equal(settingsOf(host.text()).publishWhen, "ready-to-merge", "absent, a machine publishes at Ready to merge");
+  const set = await host.run("config", "slack", "when=awaiting-review");
+  assert.equal(set.status, 0, set.err);
+  assert.equal(JSON.parse(host.text()).tickets.providers.publish.when, "awaiting-review");
+  assert.equal(settingsOf(host.text()).publishWhen, "awaiting-review");
+  assert.equal((await host.run("config", "slack", "when")).out, "tickets.providers.publish.when: \"awaiting-review\"");
+  const refused = await host.run("config", "slack", "when=always");
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /tickets\.providers\.publish\.when.*must be one of "ready-to-merge", "awaiting-review", not "always"/);
+  assert.equal(JSON.parse(host.text()).tickets.providers.publish.when, "awaiting-review", "nothing was written");
+  const gone = await host.run("uninstall", "slack");
+  assert.equal(gone.status, 0, gone.err);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.publish, { provider: "none", when: "awaiting-review" }, "the machine's setting outlives the plugin");
+});
+
 test("A11-161: uninstalling the reviewer keeps an explicit `required`: the block becomes none with it, since the setting is the concern's and not the plugin's", async () => {
   const host = scratch(WITH_REVIEWER.replace('"reviewer": { "provider": "atomic" }', '"reviewer": { "provider": "atomic", "required": false }'));
   const gone = await host.run("uninstall", "atomic");
