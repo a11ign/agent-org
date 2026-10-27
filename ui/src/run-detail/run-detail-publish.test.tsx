@@ -1,5 +1,5 @@
 import { fireEvent } from "@testing-library/react";
-import { detailAddress, detailOf, MESSAGE, PUBLISHER_REASON, REFUSAL, RUN_KEY, type Machine } from "../../test/publish/publish-stand.ts";
+import { detailAddress, detailAwaitingOf, detailOf, MESSAGE, PUBLISHER_REASON, REFUSAL, RUN_KEY, type Machine } from "../../test/publish/publish-stand.ts";
 import { headerButtons, pageFor, posts, screen, textOf, callout, waitFor, within } from "./run-detail-harness.tsx";
 
 type Board = Parameters<typeof detailOf>[0];
@@ -48,6 +48,24 @@ describe("Publish on a machine with a publisher", () => {
     expect(posts(fetchWith, "/api/publish")[0].body).toEqual({ keys: [RUN_KEY] });
     await waitFor(() => expect(reads()).toBeGreaterThan(before));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("Publish on a machine that publishes before review (tickets.providers.publish.when)", () => {
+  const openAwaiting = (machine: Parameters<typeof detailAwaitingOf>[0]) => pageFor("ready", detailAwaitingOf(machine), detailAddress);
+
+  it.each([undefined, "ready-to-merge"] as const)("draws no Publish button on a run awaiting its review when the machine publishes at Ready to merge (when: %s)", async (publishWhen) => {
+    await openAwaiting(publishWhen === undefined ? {} : { publishWhen });
+    expect(headerButtons()).not.toContain("Publish");
+  });
+
+  it("draws Publish on a run awaiting only its review, and posts that run's key alone to /api/publish", async () => {
+    const { fetchWith } = await openAwaiting({ publishWhen: "awaiting-review", post: () => ({ entries: [] }) });
+    const publish = screen.getByRole("button", { name: "Publish" });
+    expect(publish.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(publish);
+    await waitFor(() => expect(posts(fetchWith, "/api/publish")).toHaveLength(1));
+    expect(posts(fetchWith, "/api/publish")[0].body).toEqual({ keys: [RUN_KEY] });
   });
 });
 

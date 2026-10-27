@@ -3,7 +3,7 @@ A machine where people review publishes a run before its review: `tickets.provid
 Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/board-view/publish-when.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/server.test.ts src/plugins/cli.test.ts src/install/doctor.test.ts
-pnpm --dir ui exec rstest run --config rstest.config.ts src/runs/runs-publish.test.tsx
+pnpm --dir ui exec rstest run --config rstest.config.ts src/runs/runs-publish.test.tsx src/run-detail/run-detail-publish.test.tsx
 ```
 
 Mutation: eighteen changes were made in turn, each restored after, and each turned one or more of the new tests red. In `publishable`: `when` ignored; the review-only wait dropped; a running check, a red check or an unread head let through (`waitsOnlyOnReview`); `ready-pr` left out of, or `draft-pr` added to, the outcomes out of draft. A published `ready-pr` run read as Awaiting review again. Publishing not shown for a run awaiting review. `queuePublish`, the server's `/api/publish` and `/api/queue` each dropping the setting. The reader accepting any value, always reading the default, or not taking `when` as the concern's setting. Doctor's row not saying it. "publishing off" ignoring `when`. The Runs page's tick ignoring `queue.publishWhen`.

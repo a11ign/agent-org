@@ -68,6 +68,12 @@ export function detailOf(board: Exclude<Board, "select">, machine: Machine = {})
   return standOf(withPublish(detailQueue([{ ...READY_RUN, ...run }], { [RUN_KEY]: log }), publish), machine);
 }
 
+/** The Run detail stand of the same run A11-180 out of draft and awaiting only its review: read at its head with its checks green, and approved by no one. */
+export function detailAwaitingOf(machine: Machine = {}): Stand {
+  const unreviewed = Object.fromEntries(Object.entries(READY_RUN.pullHeads ?? {}).map(([url, head]) => [url, { ...head, approved: false, review: "none" as const }]));
+  return standOf(detailQueue([{ ...READY_RUN, pullHeads: unreviewed }], { [RUN_KEY]: runLogOf("ready")?.[RUN_KEY] ?? [] }), machine);
+}
+
 /** Run detail's address for the board. */
 export const detailAddress = `/runs/${RUN_KEY}`;
 
