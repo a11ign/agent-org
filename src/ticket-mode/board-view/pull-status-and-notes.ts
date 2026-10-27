@@ -1,13 +1,14 @@
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, pullsOf, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-types-and-filters.ts";
 import { pullAnswer } from "./pull-answer.ts";
 import { completedEarly, settledByPulls } from "./pull-settled.ts";
-import { isNotMerging, isReadyToMerge } from "./pull-readiness.ts";
+import { isNotMerging, isReadyToMerge, waitsOnlyOnReview } from "./pull-readiness.ts";
 import { overlapWait, type OverlapWait } from "./overlap-hold.ts";
 import { currentStepOf, currentStepPaths, stepNamed } from "./plan-steps.ts";
 import { parsePull } from "./pull-url.ts";
 import { isStoppedFor, sequencedBlockers, ticketWaitEnded } from "./waits-on.ts";
 import { clockOf } from "./update-banner.ts";
 import { deadlineOf } from "./wait-deadline.ts";
+import { DEFAULT_PUBLISH_WHEN, type PublishWhen } from "./publish-when.ts";
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
@@ -286,7 +287,8 @@ export function workStatus(entry: ViewEntry, entries: readonly ViewEntry[] = [])
   if (entry.handedBack !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";
   if (kind === "draft-pr") return "awaiting-review";
-  if (kind === "ready-pr") return awaitingReview(entry);
+  // A ready-pr run is never Ready to merge, but a machine that publishes before review posts it, and once posted it reads Published as a reviewed run does.
+  if (kind === "ready-pr") return entry.published ? "published" : awaitingReview(entry);
   // A reviewed outcome says the worker's feedback round ended, not that GitHub would merge: the pull requests have to be approved at their head and green there (A11-179).
   if (kind === "reviewed") return entry.published ? "published" : isReadyToMerge(entry) ? "ready-to-merge" : awaitingReview(entry);
   if (kind === "needs-human" && pullAnswer(entry) !== null) return awaitingReview(entry);
@@ -387,12 +389,12 @@ export function rebaseNote(entry: ViewEntry): string | null {
 }
 
 /**
- * The status the board shows for a run: its {@link runStatus}, except that a run Ready to merge is Publishing while the board's `publish` run is
- * posting it. The pool, and what a run offers or is watched for, go by `workStatus`, which still calls that run Ready to merge.
+ * The status the board shows for a run: its {@link runStatus}, except that a run Ready to merge, or Awaiting review out of draft (which a machine that publishes before review posts), is Publishing while the board's `publish` run is
+ * posting it. The pool, and what a run offers or is watched for, go by `workStatus`, which still calls that run what it was.
  */
 export function shownStatus(entry: ViewEntry, publish: ViewPublish | undefined, entries: readonly ViewEntry[] = []): RunStatus {
   const status = runStatus(entry, entries);
-  return status === "ready-to-merge" && isBeingPublished(entry, publish) ? "publishing" : status;
+  return (status === "ready-to-merge" || awaitsReviewOutOfDraft(entry, status)) && isBeingPublished(entry, publish) ? "publishing" : status;
 }
 
 /** How many runs have each status, as the board shows them. */
@@ -556,12 +558,29 @@ export const isPublishing = (publish: ViewPublish | undefined): boolean => publi
 export const isBeingPublished = (entry: ViewEntry, publish: ViewPublish | undefined): boolean =>
   isPublishing(publish) && publish?.keys.includes(entry.ticket.key) === true;
 
+/** The outcomes whose pull requests are out of draft: what a machine that publishes before review can publish while they await review. */
+const OUT_OF_DRAFT: ReadonlySet<string> = new Set(["reviewed", "ready-pr"]);
+
+/** Whether a run is awaiting review on pull requests out of draft: the runs besides Ready to merge that a machine publishing before review posts, and that {@link shownStatus} shows as Publishing meanwhile. */
+const awaitsReviewOutOfDraft = (entry: ViewEntry, status: RunStatus): boolean =>
+  (status === "awaiting-review" || status === "not-merging") && OUT_OF_DRAFT.has(entry.outcome?.kind ?? "");
+
 /**
- * A run can be ticked for Publish only once it is Ready to merge: a person approved its pull requests and they passed their review and checks.
- * A published run, a parked one, and one the publish run in progress holds are not.
+ * Whether a run's work reaches the point this machine publishes at: Ready to merge under either setting, and, under `awaiting-review`, a run out of draft (`reviewed` or `ready-pr`) whose open pull requests
+ * were all read and wait on their review and nothing else ({@link waitsOnlyOnReview}). A draft never does: nothing reaches the channel before a person approved it.
  */
-export const publishable = (entry: ViewEntry, publish?: ViewPublish): boolean =>
-  workStatus(entry) === "ready-to-merge" && !isParked(entry) && !isBeingPublished(entry, publish);
+function reachesPublish(entry: ViewEntry, when: PublishWhen): boolean {
+  const status = workStatus(entry);
+  if (status === "ready-to-merge") return true;
+  return when === "awaiting-review" && awaitsReviewOutOfDraft(entry, status) && openPulls(entry).length > 0 && waitsOnlyOnReview(entry);
+}
+
+/**
+ * Whether a run can be ticked for Publish: its work reaches the point this machine publishes at ({@link reachesPublish}), by default once it is Ready to merge. A published run, a parked one, and one the
+ * publish run in progress holds are not. `queuePublish` asks the same, so the board never offers what the server refuses.
+ */
+export const publishable = (entry: ViewEntry, publish?: ViewPublish, when: PublishWhen = DEFAULT_PUBLISH_WHEN): boolean =>
+  reachesPublish(entry, when) && !isParked(entry) && !isBeingPublished(entry, publish);
 
 /** The Publish button's words for `count` ticked runs. */
 export const publishLabel = (count: number): string => `Publish selected (${count})`;

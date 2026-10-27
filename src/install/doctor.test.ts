@@ -43,16 +43,22 @@ const KEY = "lin_api_SECRETSECRETSECRET";
 /** The `agent-org` command the doctor tests find on PATH: a file whose copy is the installed tool (A11-285). */
 const SHIM = "/home/me/.local/bin/agent-org";
 const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
+/** The repositories the organisation lists to the merge flow row (A11-274): the one the doctor tests' clone names. */
+const ORGANISATION = ["a11ign/nbl-ui-netbox"];
 type Answer = { status: number | null; stdout: string; stderr: string };
 /** The GitHub CLI as the doctor tests see it: the extension is `listing`, and a repository's stacks answer `stacks` (a function of the repository). */
 const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => ({ status: 0, stdout: "[]", stderr: "" }), mergeFlow: (repo: string) => { autoMerge: boolean; workflow: boolean } | null = () => ({ autoMerge: true, workflow: true })) =>
   (args: readonly string[]): Answer => {
     if (args[0] === "extension") return { status: 0, stdout: listing, stderr: "" };
-    // A11-291: the merge flow's one read, for every repository at once: the setting, the default branch and the arm workflow's file.
+    // A11-291, A11-274: the merge flow's one read, of the organisation's repositories: the setting, the default branch, the arm workflow's file and, with it, the merge queue ruleset requiring `gate`.
     if (args[1] === "graphql") {
-      const asked = [...(args.find((arg) => arg.startsWith("query=")) ?? "").matchAll(/repository\(owner: "([^"]+)", name: "([^"]+)"\)/g)].map(([, owner, name]) => `${owner}/${name}`);
-      const data = Object.fromEntries(asked.map((repo, n) => [`r${n}`, mergeFlow(repo) === null ? null : { autoMergeAllowed: mergeFlow(repo)!.autoMerge, isPrivate: false, defaultBranchRef: { name: "main" }, object: mergeFlow(repo)!.workflow ? { __typename: "Blob" } : null, bot: null }]));
-      return { status: 0, stdout: JSON.stringify({ data }), stderr: "" };
+      const owner = /organization\(login: "([^"]+)"\)/.exec(args.find((arg) => arg.startsWith("query=")) ?? "")?.[1];
+      const nodes = ORGANISATION.filter((repo) => repo.startsWith(`${owner}/`)).map((repo) => {
+        const flow = mergeFlow(repo);
+        return flow === null ? { name: repo.split("/")[1] } : { name: repo.split("/")[1], isArchived: false, autoMergeAllowed: flow.autoMerge, isPrivate: false, defaultBranchRef: { name: "main" }, object: flow.workflow ? { __typename: "Blob" } : null, bot: null,
+          rulesets: { nodes: flow.workflow ? [{ enforcement: "ACTIVE", rules: { nodes: [{ type: "MERGE_QUEUE" }, { type: "REQUIRED_STATUS_CHECKS", parameters: { requiredStatusChecks: [{ context: "gate" }] } }] } }] : [] } };
+      });
+      return { status: 0, stdout: JSON.stringify({ data: { organization: { repositories: { pageInfo: { hasNextPage: false }, nodes } } } }), stderr: "" };
     }
     return stacks(args[1].split("/").slice(1, 3).join("/"));
   };
@@ -740,18 +746,18 @@ test("A11-160: the plugin's rows come from the host's clones and the workers' ac
   await diagnose(deps({ readFile: () => WORKERS_HOST, exec }));
   const said = asked.map(({ args }) => args.join(" "));
   assert.deepEqual(said.slice(0, 2), ["extension list", "api repos/a11ign/nbl-ui-netbox/stacks"]);
-  // A11-291: and whether the repository has a merge flow, in one query for all the host's repositories.
+  // A11-291, A11-274: and whether each repository of the clone's organisation has a merge flow, in one query that lists them.
   assert.equal(said.length, 3);
-  assert.match(said[2], /^api graphql -f query=query \{ r0: repository\(owner: "a11ign", name: "nbl-ui-netbox"\) \{ autoMergeAllowed isPrivate defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
+  assert.match(said[2], /^api graphql -f query=query \{ organization\(login: "a11ign"\) \{ repositories\(first: 100\) \{ pageInfo \{ hasNextPage endCursor \} nodes \{ name isArchived autoMergeAllowed isPrivate defaultBranchRef \{ name \} object\(expression: "HEAD:\.github\/workflows\/auto-arm\.yml"\)/);
   assert.ok(asked.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: "/home/agent/workers/gh" })), "every call acts as the workers' account");
 });
 
 test("A11-291: doctor finds a repository with no merge flow: the merge flow row names it, says what to add, and fails the code host's row; with the flow it passes", async () => {
   const passing = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN }) })));
-  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox have a merge flow (auto-merge and .github/workflows/auto-arm.yml, or, for a private repository, .github/workflows/merge-bot.yml)"]);
+  assert.deepEqual([passing["merge flow"].ok, passing["merge flow"].detail], [true, "a11ign/nbl-ui-netbox have a merge flow (auto-merge, the merge queue ruleset requiring `gate` and .github/workflows/auto-arm.yml, or, for a private repository, .github/workflows/merge-bot.yml)"]);
   const noFlow = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN, gh: ghFake(GH_LISTING, undefined, () => ({ autoMerge: false, workflow: false })) }) })));
   const row = noFlow["merge flow"];
-  assert.deepEqual([row.ok, row.detail], [false, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch"]);
+  assert.deepEqual([row.ok, row.detail], [false, "1 of 1 repositories have no merge flow, so an approved pull request in one waits for a person: a11ign/nbl-ui-netbox: auto-merge is not allowed, no .github/workflows/auto-arm.yml on its default branch, no active ruleset with a merge queue, `gate` is not a required check"]);
   assert.match(row.fix ?? "", /^a11ign\/nbl-ui-netbox: add \.github\/workflows\/auto-arm\.yml with its `gate` check/);
   assert.match(row.fix ?? "", /turn on "Allow auto-merge"/);
   assert.equal(noFlow["code host (github)"].ok, false, "a failing plugin row fails the code host's row");
@@ -913,6 +919,13 @@ function assertRow(checks: Record<string, Check>, name: string, expected: Readon
   }
 }
 const fakeOf = (name: string, over: Partial<CatalogPlugin> = {}): CatalogPlugin => ({ ...(fakeAgentOrgPlugins().catalog().plugins.find((plugin) => plugin.name === name) as CatalogPlugin), ...over });
+
+test("the publisher row says when the machine publishes before review, and says nothing of `when` at the default", async () => {
+  const before = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: { ...PUBLISH, when: "awaiting-review" } }) })));
+  assertRow(before, "publisher (slack)", { ok: true, detail: "from tickets.providers.publish, publishing a run once it awaits only its review (when: awaiting-review), and its checks pass" });
+  const ready = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: { ...PUBLISH, when: "ready-to-merge" } }) })));
+  assertRow(ready, "publisher (slack)", { ok: true, detail: "from tickets.providers.publish, and its checks pass" });
+});
 
 test("A11-158: a disabled publisher is named as disabled, says what the board does without it, and is not a failure", async () => {
   const disabled = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: { ...PUBLISH, enabled: false } }) })));
@@ -1462,6 +1475,29 @@ test("A11-285: a development checkout host.json names as devTool passes when it 
   const named = await commandRow(dev, { readFile: () => JSON.stringify({ ...JSON.parse(HOST), devTool: "/home/me/src/agent-org" }) });
   assert.equal(named.ok, true, named.detail);
   assert.equal((await commandRow(dev)).ok, false);
+});
+
+// A11-355: every live repository of the organisation with no clone is listed, as a warning the board answers by cloning it
+test("A11-355: doctor lists every live organisation repository with no clone, as a warning that says the board clones them", async () => {
+  const asked: string[][] = [];
+  const checks = byName(await diagnose(deps({ unclonedRepositories: (clones) => { asked.push(Object.keys(clones)); return { uncloned: ["acme/corpus", "acme/.github"] }; } })));
+  const row = checks["organisation clones"];
+  assert.deepEqual([row.ok, row.warning], [true, true], "a warning: the board clones each one, so an install is not stopped");
+  assert.equal(row.detail, "2 live repositories of the organisation have no clone: acme/corpus, acme/.github");
+  assert.match(row.fix ?? "", /the board clones each one on its next sweep \(every few minutes\), and the moment a plan or a worker names it/);
+  assert.equal(asked.length, 1, "it is asked of the host file's own clones");
+});
+
+test("A11-355: doctor says one repository in the singular, passes when none lacks a clone, and says when the organisation cannot be listed", async () => {
+  const row = async (reading: ReturnType<NonNullable<DoctorDeps["unclonedRepositories"]>> | Error) => byName(await diagnose(deps({ unclonedRepositories: () => { if (reading instanceof Error) throw reading; return reading; } })))["organisation clones"];
+  assert.equal((await row({ uncloned: ["acme/corpus"] })).detail, "1 live repository of the organisation has no clone: acme/corpus");
+  const none = await row({ uncloned: [] });
+  assert.deepEqual([none.ok, none.warning, none.detail], [true, undefined, "every live repository of the organisation has a clone"]);
+  const unreadable = await row({ unreadable: "the repositories of acme could not be listed" });
+  assert.deepEqual([unreadable.ok, unreadable.warning], [true, true]);
+  assert.match(unreadable.detail, /could not be listed \(the repositories of acme could not be listed\), so doctor cannot say which have no clone/);
+  assert.match((await row(new Error("gh is not signed in\nsecond line"))).detail, /could not be listed \(gh is not signed in\)/, "a throw is said by its first line");
+  assert.equal(byName(await diagnose(deps()))["organisation clones"], undefined, "a doctor given no reading asks nothing of the organisation");
 });
 
 // A11-292: every repository the project declares must have a clone that a reviewer's label resolves to. A key the label cannot carry, or a clone the host lists under neither the key nor the name, is a repository nobody reviews.

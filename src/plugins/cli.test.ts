@@ -74,11 +74,11 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
     "exposure: tailscale (from tickets.providers.exposure)",
     "messaging: none (this machine declares no project, so messaging is not configured)",
   ]);
-  assert.match(out, /^ {2}fake-reviewer +available +contract 1\.10 +fake/m);
+  assert.match(out, /^ {2}fake-reviewer +available +contract 1\.11 +fake/m);
   for (const fake of ["fake-publisher", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.1 +fake`, "m"), fake);
   assert.match(out, /^ {2}fake-exposure +available +contract 1\.2 +fake/m, "the exposure's unserve names the caller's loopback port since A11-279");
   assert.match(out, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m, "the publisher is a bundled package since A11-161");
-  assert.match(out, /^ {2}atomic +available +contract 1\.10 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
+  assert.match(out, /^ {2}atomic +available +contract 1\.11 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
   assert.match(out, /^ {2}fake-tracker +available +contract 1\.7 +fake/m);
   assert.match(out, /^ {2}fake-codeHost +available +contract 1\.28 +fake/m);
   assert.match(out, /^ {2}linear +enabled +contract 1\.7 +plugins\/linear$/m);
@@ -536,7 +536,7 @@ test("A11-161: `plugin list` shows slack and atomic as bundled plugins, from the
   const host = scratch(WITH_REVIEWER);
   const { out } = await host.run("list");
   for (const line of [/^publisher: slack \(from tickets\.providers\.publish\)$/m, /^reviewer: atomic \(from tickets\.providers\.reviewer\)$/m, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m,
-    /^ {2}atomic +enabled +contract 1\.10 +plugins\/atomic-reviewer$/m]) assert.match(out, line);
+    /^ {2}atomic +enabled +contract 1\.11 +plugins\/atomic-reviewer$/m]) assert.match(out, line);
 });
 
 test("A11-161: the publisher is switched off and on, keeping its settings, and each change is read back from the file", async () => {
@@ -595,6 +595,23 @@ test("A11-161: `required` is the reviewer concern's setting: `plugin config atom
   assert.equal(refused.status, 1);
   assert.match(refused.err, /tickets\.providers\.reviewer\.required.*must be true or false/);
   assert.equal(JSON.parse(host.text()).tickets.providers.reviewer.required, false, "nothing was written");
+});
+
+test("`when` is the publisher concern's setting: `plugin config slack when=awaiting-review` sets it, reads back, refuses a value that is not one, and an uninstall keeps it", async () => {
+  const host = scratch();
+  assert.equal(settingsOf(host.text()).publishWhen, "ready-to-merge", "absent, a machine publishes at Ready to merge");
+  const set = await host.run("config", "slack", "when=awaiting-review");
+  assert.equal(set.status, 0, set.err);
+  assert.equal(JSON.parse(host.text()).tickets.providers.publish.when, "awaiting-review");
+  assert.equal(settingsOf(host.text()).publishWhen, "awaiting-review");
+  assert.equal((await host.run("config", "slack", "when")).out, "tickets.providers.publish.when: \"awaiting-review\"");
+  const refused = await host.run("config", "slack", "when=always");
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /tickets\.providers\.publish\.when.*must be one of "ready-to-merge", "awaiting-review", not "always"/);
+  assert.equal(JSON.parse(host.text()).tickets.providers.publish.when, "awaiting-review", "nothing was written");
+  const gone = await host.run("uninstall", "slack");
+  assert.equal(gone.status, 0, gone.err);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.publish, { provider: "none", when: "awaiting-review" }, "the machine's setting outlives the plugin");
 });
 
 test("A11-161: uninstalling the reviewer keeps an explicit `required`: the block becomes none with it, since the setting is the concern's and not the plugin's", async () => {

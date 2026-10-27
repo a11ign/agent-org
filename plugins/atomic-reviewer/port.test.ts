@@ -18,7 +18,7 @@ import { loadReviewerGate } from "../../src/ticket-mode/reviewer-port.ts";
 import { homeProjectDeclaration } from "../../src/project-config.ts";
 import { HOST_CONFIG_ENV, hostConfigPath } from "../../src/host-config.ts";
 import { CI_COST_RULE } from "./ci-rule.ts";
-import { DECISION_RULE, IMPOSSIBLE_BEFORE_MERGE_RULE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, unrequiredRedWords } from "./prompt.ts";
+import { closingWords, DECISION_RULE, IMPOSSIBLE_BEFORE_MERGE_RULE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, unrequiredRedWords } from "./prompt.ts";
 import { REVIEW_CAUSE, atomicReviewerPort as portOver, clonedSeatOf, type Seams, verdictFileIn as verdictFileOver } from "./port.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -603,6 +603,18 @@ test("A11-213: the ticket's decisions in the brief reach the prompt a reviewer i
   const again = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
   assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
   assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(decisions) && again.prompted().includes(DECISION_RULE), "the re-review carries them too");
+});
+
+test("A11-274: the word that names the ticket reaches the prompt a reviewer is started with and the re-review's", async () => {
+  await loadReviewerGate();
+  const closing = { key: "A11-253", word: "refs", open: ["https://github.com/a11ign/one/pull/4"], merged: [] } as const;
+  const { port, prompted } = startingPort();
+  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, closing }), { label: "reviewer-7" });
+  assert.ok(prompted().includes(closingWords(closing)), "the first review");
+  const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
+  const again = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
+  assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, closing, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(closingWords(closing)), "the re-review carries it too");
 });
 
 test("A11-235: a re-review brief whose description changed reaches the prompt with the changed lines, with or without a reply", async () => {

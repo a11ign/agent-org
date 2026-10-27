@@ -35,7 +35,7 @@ import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { countFix, interventionsView, type InterventionsView } from "./queue/interventions.ts";
-import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import { amend, childOrder, enqueue, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
@@ -57,6 +57,7 @@ import { LEGACY_TMP_ROOT } from "./legacy-tmp.ts";
 import { PRIORITIES } from "./writer.ts";
 import { sectionsNeeded } from "./open-decisions.ts";
 import { boardDependencySweep } from "./dependency-updates/board.ts";
+import { idleBlockerSweep } from "./idle-blockers.ts";
 import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
@@ -97,7 +98,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "held" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -366,7 +367,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
   }
   if (method === "POST" && path === "/api/publish") {
     if (settings.publish === null) throw new Error("this machine names no tickets.publish (or its publisher is disabled), so it publishes nothing");
-    store.set(queuePublish(store.get(), Array.isArray(body.keys) ? body.keys.map(String) : [], now()));
+    store.set(queuePublish(store.get(), Array.isArray(body.keys) ? body.keys.map(String) : [], now(), settings.publishWhen));
     wake();
     return [200, queueView(board)];
   }
@@ -514,7 +515,15 @@ async function queueActionRoute(board: Board, method: string, path: string, body
     if (verb === "amend") store.set(amend(store.get(), key, validChange(body, ["model", "effort"])));
     // The pool's, like Dismiss: a queued run's ticket is put back before the run leaves the queue.
     if (verb === "remove") await pool.remove(key);
-    if (verb === "retry") store.set(retry(store.get(), key, now()));
+    // The pool's, like Respond: a parked run's workspace is closed first, a `wrong-repo` naming the organisation's repository is queued there, and a run that cannot be retried is a 409 that says why, not a 200 (A11-355).
+    if (verb === "retry") {
+      if (pool.retry === undefined) throw new Error("this board takes no retry");
+      try {
+        await pool.retry(key);
+      } catch (error) {
+        return [409, { error: String((error as Error)?.message ?? error) }];
+      }
+    }
     if (verb === "approve") store.set(approve(store.get(), key, now()));
     // The pool's, like Close: a parked run's workspace is closed before its round is queued, and a refusal is named (A11-154).
     if (verb === "respond") pool.respond(key);
@@ -646,6 +655,18 @@ export function dependencyUpdatesOf(board: Pick<ReturnType<typeof createBoard>, 
 }
 
 /**
+ * The sweep over a ticket that holds queued runs back, is In Progress and has no run (A11-347), over a board made by {@link createBoard}: it completes the ticket whose pull requests all merged, one of them closing it, and queues
+ * any other on the saved choice. `serve` schedules it with the feedback sweeps (`startFeedbackSweeps`).
+ */
+export function idleBlockersOf(board: Pick<ReturnType<typeof createBoard>, "store" | "queueTickets">, deps: BoardDeps): () => Promise<void> {
+  const { settings, source } = deps;
+  return idleBlockerSweep({
+    source, store: board.store, queueTickets: board.queueTickets, takenStates: settings.takenStates, claimant: () => claimantOf(settings),
+    runChoice: () => { const { model, effort } = readChoice(deps.choicePath); return { model, effort }; }, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),
+  });
+}
+
+/**
  * The child's program (A11-84): activate the code host plugin (the wrapper is its), load the host module and run the start-up check of the routing wrapper. A process boundary keeps the gate's closure out of this instance, as
  * `work-gate.ts` does for `host:check`, and a host the module cannot load on (no declaration of its project) is one line on stderr, never a stack: the instance starts anyway.
  */
@@ -673,8 +694,8 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
  * The sweeps the server runs on the feedback cadence, each on its own timer (A11-106): one that throws is said, and the others still run on theirs. `every` is
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
-export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers">>,
-  every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void> } = {}): void {
+export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "cloneMissing">>,
+  every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void>; idleBlockers?: () => void | Promise<void> } = {}): void {
   const sweeps: { sweep: () => void | Promise<void>; failure: string; ms?: number }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
@@ -685,10 +706,14 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
     { sweep: () => pool.rebaseStacked(), failure: "the stacked branches could not be rebased" },
     // A reviewer on each new head of every open pull request, whatever its run is in (A11-119): not the watched runs' only.
     { sweep: () => pool.reviewNewHeads(), failure: "the reviewers of open pull requests could not be started" },
+    // A repository of the organisation this machine has no clone of is cloned (A11-355), so a plan or a worker that names one finds it. Asynchronous, so a failure is said when it settles.
+    ...(pool.cloneMissing === undefined ? [] : [{ sweep: () => pool.cloneMissing?.(), failure: "the organisation's repositories could not be cloned" }]),
     // The first review of a green head, on its own minute: the idle time between a green head and its review is its reviewer's start waiting for a sweep (A11-306).
     ...(pool.startGreenReviewers === undefined ? [] : [{ sweep: () => pool.startGreenReviewers?.(), failure: "the reviewers of green pull requests could not be started", ms: REVIEW_START_MS }]),
     // A Dependabot major, or a group whose gate stays red, is asked of the ticket writer once (A11-255). Asynchronous, so a failure is said when it settles.
     ...(board.dependencyUpdates === undefined ? [] : [{ sweep: board.dependencyUpdates, failure: "the dependency updates could not be turned into tickets" }]),
+    // A ticket In Progress with no run that holds queued runs back is completed or queued (A11-347). Asynchronous, so a failure is said when it settles.
+    ...(board.idleBlockers === undefined ? [] : [{ sweep: board.idleBlockers, failure: "the tickets that hold queued runs back with no run could not be completed or queued" }]),
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
   for (const { sweep, failure, ms = FEEDBACK_MS } of sweeps) {
@@ -762,7 +787,7 @@ async function serve(): Promise<void> {
   setInterval(() => { void board.pool.tick(); }, intervalMs(process.env, "TICK_MS", TICK_MS));
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, intervalMs(process.env, "TRACKER_MS", TRACKER_MS));
-  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, ms === REVIEW_START_MS ? "REVIEW_START_MS" : "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps) });
+  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, intervalMs(process.env, ms === REVIEW_START_MS ? "REVIEW_START_MS" : "FEEDBACK_MS", ms)); }, { dependencyUpdates: dependencyUpdatesOf(board, boardDeps), idleBlockers: idleBlockersOf(board, boardDeps) });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

@@ -49,6 +49,10 @@ const lastVerdict = (queue: Queue, key: string, url: string): Extract<RunEvent, 
 
 const sameVerdict = (last: Extract<RunEvent, { kind: "verdict" }> | undefined, head: string, review: string): boolean => last?.head === head && last.review === review;
 
+/** The board started a round for the pull requests' stale blocks at these heads (A11-352): it asks the worker once for each head. Kept across the rounds it starts. PURE. */
+export const recordBlockAsked = (queue: Queue, key: string, asked: Readonly<Record<string, string>>): Queue =>
+  replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, blockAsked: { ...entry.blockAsked, ...asked } } : entry));
+
 /**
  * The board's note on a finished run whose pull request has sat changes requested with no new push and no run (A11-213, {@link staleBlockNote}): it becomes the run's `handedBack`, which reads Needs you and which
  * Respond to review acts on, and a null note (a push, an approval, a round) clears a `handedBack` this wrote, recognised by its sentence form as a conflict's is. It never replaces another `handedBack`, and it

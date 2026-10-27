@@ -16,6 +16,10 @@
 // launcher and the host file's `tool` are rewritten once to run through `<tool>/current`, and the services restart on it. The checkout itself is left untouched: runs that started on it keep calling it.
 // Each run writes the status file `doctor` reads.
 //
+// EVERY RUN ENDS BY INSTALLING WHAT THE RELEASE SHIPS TO THE AGENTS HOST (A11-354, `host-install.ts`): the units, the launcher, the workers README and the reviewers' door, from `<tool>/current` and
+// never from a checkout. A person's `host:install` is refused inside a ticket run, and nothing else ran it, so a unit a release shipped sat uninstalled. The run that finds nothing newer does it too:
+// a file that was edited on the host, or a unit a failed run left, is put right within one ten-minute cycle.
+//
 // A RELEASE COUNTS AS RELEASED ONLY ONCE ITS UI BUILD IS ATTACHED (A11-284). The tag exists minutes before CI attaches `agent-org-ui-<tag>.tar.gz`, so following the newest release walks the tags newest first and skips
 // one that declares a UI build and answers 404 for its checksum: it is said in a line, `current` stays, nothing restarts, and the update exits 0. The walk stops at the installed version. A named version is not walked.
 import { execFileSync } from "node:child_process";
@@ -50,6 +54,7 @@ import type { StepResult } from "../plugins/manifest.ts";
 import { findBun } from "./bun.ts";
 import { gitRemoteTags, fetchHerdrNewest, herdrStatusPath, herdrUpkeep, readHerdrStatus, runHerdr, writeHerdrStatus, type HerdrNewest, type HerdrRun, type HerdrUpkeep } from "./herdr-upkeep.ts";
 import { herdrConfigDir } from "./terminal.ts";
+import { hostInstallUpkeep } from "./host-install.ts";
 
 export type Channel = "release" | "main";
 
@@ -102,6 +107,8 @@ export type UpdateDeps = Readonly<{
   conventions: () => ConventionsUpdate;
   /** herdr's side kept current (A11-184): its claude and codex integrations, and the herdr plugins agent-org installed, moved to their newest release tag. Never throws. */
   herdr: () => HerdrUpkeep;
+  /** What the release `current` names ships to the agents host, installed from that release (A11-354): the units, the launcher, the workers README, the reviewers' door. Run at every update, the one that finds nothing newer included. Never throws. */
+  hostInstall: () => ConventionsUpdate;
   out: Pick<Console, "log" | "error">;
 }>;
 
@@ -155,6 +162,7 @@ export function update(options: { version: string | undefined; channel: Channel;
   } finally {
     keepPlugins(deps);
     keepConventions(deps);
+    keepHost(deps);
     keepHerdr(deps);
   }
 }
@@ -186,6 +194,14 @@ function keepConventions(deps: UpdateDeps): void {
 function sayUpkeep(deps: UpdateDeps, { said, failed }: ConventionsUpdate): void {
   for (const line of said) deps.out.log(`agent-org update: ${line}`);
   for (const line of failed) deps.out.error(`agent-org update: ${line}`);
+}
+
+/**
+ * What the release ships to the agents host, installed from the release that is `current` after the move, or kept (A11-354). Whatever the move did, a refused or failed one included: the host runs
+ * what `current` names, and a unit that release ships is on the host or it is a finding. What it changed is said, and a step that failed is an error line that fails nothing.
+ */
+function keepHost(deps: UpdateDeps): void {
+  sayUpkeep(deps, deps.hostInstall());
 }
 
 /**
@@ -473,6 +489,7 @@ function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"], newestHerdr: HerdrNewes
     upkeep,
     ...conventionsWiring(settings, home),
     ...herdrWiring(newestHerdr, services),
+    hostInstall: () => hostInstallUpkeep(tool),
     out: console,
   };
 }

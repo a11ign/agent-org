@@ -30,8 +30,8 @@ import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
 import { finishCheckRun } from "./pool-check-runs.ts";
 import { isCheckRun, MIGRATION_LIMIT_MS, VERIFIER_LIMIT_MS } from "./after-merge/verify.ts";
 import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
-import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
-import { isStaleBlockNote, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
+import { moveOutcomeHeads, recordBlockAsked, recordOutcomeHeads, recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
+import { blockRoundLine, blocksToAnswer, isStaleBlockNote, type StaleBlock, staleBlockNote, stampedBlocks } from "./board-view/stale-block.ts";
 import { isReviewerDialogNote, reviewerDialogNote } from "./board-view/reviewer-dialog-note.ts";
 import { recordReviewerDialog } from "./queue/queue-reviewer-dialog.ts";
 import { observeWriter, writerResumed, writerWaiting } from "./queue.ts";
@@ -580,16 +580,20 @@ export function watchFeedback(ctx: PoolContext): void {
     const removals = answerQueue(ctx, entry, open);
     // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
     const reviewer = isWatched(entry) ? reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url)) : [];
+    // A review that has requested changes for longer than the stale-block limit with no push and no round is answered by a round of the board's own (A11-352), as Respond would: no person has to press it.
+    const blocks = blocksToAskNow(ctx, entry.ticket.key, reviewer);
+    const unanswered = blocks.map(blockRoundLine);
     // A pull request that conflicts or is behind has the base merged into it before a worker is asked (A11-286), unless a round starts in this pass for something else: its worker then finds the branch where it left it, and is told of the conflict.
-    if (!startsAnotherRound(entry, readable, [checks.feedback, removals.feedback, removals.conflict, ...reviewer])) mergeBaseOf(ctx, entry, open);
+    if (!startsAnotherRound(entry, readable, [checks.feedback, removals.feedback, removals.conflict, ...reviewer, ...unanswered])) mergeBaseOf(ctx, entry, open);
     if (isWatched(entry)) {
-      const lines = [feedbackSince(readable, entry.finishedAt ?? 0, ctx.baseMerges), checks.feedback, removals.feedback, removals.conflict, ...reviewer]
+      const lines = [feedbackSince(readable, entry.finishedAt ?? 0, ctx.baseMerges), checks.feedback, removals.feedback, removals.conflict, ...reviewer, ...unanswered]
         .filter((line): line is string => line !== null);
       // A re-review that stayed not convinced at an unchanged head is routed to the planner or the worker, once for each head (A11-290), when no other round is due: feedback of another kind is answered first, and the stand-off is still open when that round ends.
       if (lines.length === 0 && routeStandoff(ctx, entry.ticket.key)) queued = true;
       else if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
       else {
         recordQueueAnswer(ctx, entry, removals.heads);
+        if (blocks.length > 0) update(ctx, (queue) => recordBlockAsked(queue, entry.ticket.key, Object.fromEntries(blocks.map(({ url, head }) => [url, head]))));
         // A round that answers only checks which count toward no cap (A11-343) is not one of the board's own rounds, and a run that has used them goes to the planner and not to a person.
         update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads, checksRoundOptions(ctx, checks, lines)));
         queued = true;
@@ -605,6 +609,17 @@ export function watchFeedback(ctx: PoolContext): void {
     flagReviewerDialog(ctx, key);
   }
   if (queued) void tick(ctx);
+}
+
+/**
+ * The stale blocks of run `key` that the board starts a round for in this watch (A11-352, {@link blocksToAnswer}), read from the heads this watch has just recorded. A pull request the reviewer's own line in `asked` already names is answered
+ * by that round, and one whose head a re-review is under way for is left to the reviewer, whose verdict may lift the block or open a stand-off. PURE apart from the read of the queue.
+ */
+function blocksToAskNow(ctx: PoolContext, key: string, asked: readonly string[]): readonly StaleBlock[] {
+  const current = ctx.store.get().entries.find((each) => each.ticket.key === key);
+  if (current === undefined) return [];
+  const rereviewing = ({ url, head }: StaleBlock): boolean => ctx.pullReads.get(url)?.rereview === true && ctx.pullReads.get(url)?.head === head;
+  return blocksToAnswer(current, ctx.now()).filter((block) => !asked.some((line) => line.includes(block.url)) && !rereviewing(block));
 }
 
 /** Whether the round's only feedback is the red checks that count toward no cap (A11-343): nothing else (a review, a conflict, a removal) asks for it. PURE. */

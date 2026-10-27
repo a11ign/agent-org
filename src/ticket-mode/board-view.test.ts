@@ -11,6 +11,7 @@ import { isReadyToMerge, mergeWaitLine } from "./board-view/pull-readiness.ts";
 import type { PullHead } from "./board-view/view-types-and-filters.ts";
 import type { PullDeclared } from "./board-view/pull-declared.ts";
 import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
+import { publishingOffLine } from "./board-view/publishing-off.ts";
 import { clockOf } from "./board-view/update-banner.ts";
 import { BACKGROUND_WAIT_MS } from "./board-view/wait-deadline.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
@@ -18,7 +19,7 @@ import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { diffLines, learnsFrom, learnsLine, REPLANNING_LINE, STALE_PLAN_LINE, ticketChangeOf } from "./board-view/ticket-change.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls, afterMergeChecks, ticketChecks } from "./board-view.ts";
 import { closeCheck, decideFollowUp, emptyChecks, seedChecks, type ChecksFile } from "./after-merge/checks.ts";
-import { AWAITING_PERSON_LINE, claimWarning, publishingOffLine, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
+import { AWAITING_PERSON_LINE, claimWarning, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
 import { CHANGESET_SCAFFOLD, SCAFFOLD_DIRS } from "../scaffold-dirs.ts";
@@ -1537,10 +1538,14 @@ test("A11-161: the banner is the reviewer's only when reviews are required and i
   for (const state of ["on", "none", undefined]) assert.equal(reviewerBanner(state), null, String(state));
 });
 
-test("A11-161: a run says \"publishing off\" only when it is Ready to merge on a machine whose publisher is installed and switched off", () => {
-  assert.equal(publishingOffLine("ready-to-merge", "off"), "publishing off");
-  for (const status of ["published", "working", "needs-you", "awaiting-review", "publishing"]) assert.equal(publishingOffLine(status, "off"), null, status);
-  for (const publisher of ["on", "none", undefined]) assert.equal(publishingOffLine("ready-to-merge", publisher), null, String(publisher));
+test("A11-161: a run says \"publishing off\" only when it would be offered for Publish on a machine whose publisher is installed and switched off", () => {
+  const unreviewed = shipped({ pullHeads: { "https://github.com/x/a/pull/1": { ...GREEN_HEAD, approved: false, review: "none" } } });
+  assert.equal(publishingOffLine(shipped(), {}, "off"), "publishing off", "Ready to merge");
+  assert.equal(publishingOffLine(unreviewed, { publishWhen: "awaiting-review" }, "off"), "publishing off", "awaiting review on a machine that publishes before review");
+  for (const [why, entry] of [["published", shipped({ published: { link: null } })], ["awaiting review", unreviewed], ["a draft", shipped({ outcome: { kind: "draft-pr", prs: [] } })]] as const) {
+    assert.equal(publishingOffLine(entry, {}, "off"), null, why);
+  }
+  for (const publisher of ["on", "none", undefined]) assert.equal(publishingOffLine(shipped(), {}, publisher), null, String(publisher));
 });
 
 const STEP_PR = "https://github.com/a11ign/agent-org/pull/1811";

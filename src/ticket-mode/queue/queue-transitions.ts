@@ -1,6 +1,7 @@
 import { CONCLUDED, openPulls, type CheckHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { overlapWait } from "../board-view/overlap-hold.ts";
-import { isParked, isPublishing, isWatched, resumesOnConflict, runActions, runStatus, workStatus } from "../board-view/pull-status-and-notes.ts";
+import { isParked, isPublishing, isWatched, publishable, resumesOnConflict, runActions, runStatus, workStatus } from "../board-view/pull-status-and-notes.ts";
+import { DEFAULT_PUBLISH_WHEN, type PublishWhen } from "../board-view/publish-when.ts";
 import { settledByPulls } from "../board-view/pull-settled.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictLine, conflictsIn } from "../worker-files.ts";
@@ -163,19 +164,24 @@ export function conflictRound(queue: Queue, key: string, feedback: string, now: 
   return queueRound(queue, entry, feedback, now, "conflict");
 }
 
+/** Why a run cannot be published, by the machine's `when`. */
+const NOT_PUBLISHABLE: Readonly<Record<PublishWhen, string>> = {
+  "ready-to-merge": "is not Ready to merge",
+  "awaiting-review": "is not Ready to merge, nor awaiting only its review with its pull requests read and their checks green",
+};
+
 /**
- * A person ticked runs Ready to merge and pressed Publish: one publish run is queued for all of them, with their open pull requests. Refused,
- * naming why, while another publish run is under way, and for a run that is not on the queue or not Ready to merge.
+ * A person ticked runs and pressed Publish: one publish run is queued for all of them, with their open pull requests. Refused, naming why, while another publish run is under way, and for a run that is not on
+ * the queue or that the board would not offer for Publish (`publishable`, by the machine's `when`: Ready to merge by default).
  */
-export function queuePublish(queue: Queue, keys: readonly string[], now: number): Queue {
+export function queuePublish(queue: Queue, keys: readonly string[], now: number, when: PublishWhen = DEFAULT_PUBLISH_WHEN): Queue {
   if (isPublishing(queue.publish)) throw new Error("a publish run is under way: wait for it to finish");
   const ticked = [...new Set(keys)];
-  if (ticked.length === 0) throw new Error("tick at least one run Ready to merge");
+  if (ticked.length === 0) throw new Error("tick at least one run to publish");
   const entries = ticked.map((key) => {
     const entry = find(queue, key);
-    const cannotApprove = entry === undefined || entry.phase !== "finished" || workStatus(entry) !== "ready-to-merge" || isParked(entry);
-    if (cannotApprove) {
-      throw new Error(`${key} is not Ready to merge, so it cannot be published`);
+    if (entry === undefined || !publishable(entry, queue.publish, when)) {
+      throw new Error(`${key} ${NOT_PUBLISHABLE[when]}, so it cannot be published`);
     }
     return entry;
   });

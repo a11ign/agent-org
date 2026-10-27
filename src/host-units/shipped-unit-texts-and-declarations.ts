@@ -6,7 +6,7 @@ import { agentOrgCommand } from "../acceptance-commands/suite-and-checkout-comma
 import { COMMANDS, FIXED_ARGS } from "../commands.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, ProjectDeclarationRefusal } from "../project-config.ts";
 import { roleBriefPath } from "../project-roles.ts";
-import { currentLink, toolDir } from "../install/tool-versions.ts";
+import { installedToolLink, toolDir } from "../install/tool-versions.ts";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 
 /**
@@ -209,8 +209,7 @@ export function namesIn(dir: string, read: typeof readdirSync): string[] {
  */
 function withTool(host: HostConfig, values: Record<string, string>, env: NodeJS.ProcessEnv): Record<string, string> {
   if (host.tool === undefined) return values;
-  const current = currentLink(toolDir(env, host.home));
-  return { ...values, tool: existsSync(join(current, "src", "bin.ts")) ? current : host.tool };
+  return { ...values, tool: installedToolLink(toolDir(env, host.home)) ?? host.tool };
 }
 
 /**
@@ -378,7 +377,7 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
   ],
   // THE /TMP FIXTURE JANITOR (a11ign/a11ign#3849): run from the tool's checkout, like the prune above it.
   "tmp-prune.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m, "ExecStart=%h/.local/bin/node src/prune-tmp.ts --apply --fixtures-only"],
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/prune-tmp\.ts --apply --timer$/m, "ExecStart=%h/.local/bin/node src/prune-tmp.ts --apply --timer"],
   ],
   // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
   "trace-publish.service.in": [

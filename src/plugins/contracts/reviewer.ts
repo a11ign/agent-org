@@ -1,6 +1,8 @@
 // @ts-check
-// module: the reviewer contract, version 1.10 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 1.11 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
 //
+// 1.11 (A11-274): `ReviewBrief.closing`, OPTIONAL: the word the pull request names its ticket with, worked out from its plan step and the run's other pull requests, as the chairman decided it for A11-253: `refs` while it finishes a step
+// that is not the last or another pull request of the run is still open, else `closes`. The reviewer accepts `Refs` on every pull request but the last to merge, and asks for `Closes` only on that one. A reviewer of 1.10 ignores it and judges the word by itself.
 // 1.10 (A11-290): `ReviewBrief.rereview.planDecisions`, OPTIONAL: the lines of the plan's decisions that changed since the reviewer's last look at the head, for a re-review of a block that a planner's amendment of a decision answers (the replies and the description may then be none).
 // The reviewer is bound by the amendment, as it is by the plan's decisions in `planDecisions`, and still reviews the whole diff. A reviewer of 1.9 ignores it and re-reviews by the replies, the description and the ticket's Decisions. A re-review that the verdict door refuses for an equal patch is
 // recorded by the board from the verdict file the door keeps beside the reviewer's own (`refused-<file>`), which `verdictFileOf` finds.
@@ -37,7 +39,7 @@
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.10";
+export const REVIEWER_CONTRACT_VERSION = "1.11";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
@@ -59,14 +61,20 @@ export type ReviewBodyLine = Readonly<{ kind: "removed" | "added"; text: string 
  * `planDecisions` (contract 1.8, A11-257) is the decisions the ticket's plan records, as the plan words them, absent when it records none: they bind the reviewer like `decisions`, which win where they differ. `escalation` (contract 1.8) is the escalation
  * list, present whenever `planDecisions` is: a decision that falls on one of its items does not bind.
  * `closedWork` (contract 1.9, A11-249) is the work the ticket's earlier pull requests held when they were closed without merging, one line per commit and file, absent when there is none.
+ * `closing` (contract 1.11, A11-274) is the word the pull request names its ticket with, and the run's other pull requests that decide it; absent when no run holds the pull request, the run holds no other and the body names no step, or a sibling's state could not be read.
  * `rereview.planDecisions` (contract 1.10, A11-290) is the lines of the plan's decisions that changed since the reviewer's last look at the head, absent when they did not change.
  * `rereview.decisions` (contract 1.7, A11-250) is the lines of those decisions that changed since the reviewer's last look at the head, absent when they did not change; `rereview.unsupported` (contract 1.7) is each reply or new
  * description line that claims a person decided something and does not link the ticket's decisions, absent when none does.
  */
-export type ReviewBrief = Readonly<{ doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; closedWork?: string; step?: ReviewStep; rereview?: Readonly<{ replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decisions?: readonly ReviewBodyLine[]; planDecisions?: readonly ReviewBodyLine[]; unsupported?: readonly string[] }> }>;
+export type ReviewBrief = Readonly<{ doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; closedWork?: string; step?: ReviewStep; closing?: ReviewClosing; rereview?: Readonly<{ replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decisions?: readonly ReviewBodyLine[]; planDecisions?: readonly ReviewBodyLine[]; unsupported?: readonly string[] }> }>;
 
 /** The plan step a pull request finishes: step `step` of `of`, and the plan's text for it, or null when the pool found none. */
 export type ReviewStep = Readonly<{ step: number; of: number; section: string | null }>;
+
+/**
+ * The word a pull request names its ticket `key` with (contract 1.11, A11-274): `refs` while it is not the last to merge, `closes` when it is. `open` is the run's other pull requests still open, and `merged` the ones merged, by url.
+ */
+export type ReviewClosing = Readonly<{ key: string; word: "refs" | "closes"; open: readonly string[]; merged: readonly string[] }>;
 
 /**
  * The port: start a reviewer for a ready pull request at its head, or refuse naming why; say whether one is live for that head; close it once its

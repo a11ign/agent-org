@@ -43,6 +43,15 @@ export const isPullReadyToMerge = (entry: ViewEntry, url: string): boolean => cl
 export const isReadyToMerge = (entry: ViewEntry): boolean => openPulls(entry).every(({ url }) => isPullReadyToMerge(entry, url));
 
 /**
+ * Whether every open pull request of the run waits on its review and nothing else: read at its current head, with no required check red or running there. A pull request the watch has not read is not. What a
+ * machine whose people review (`tickets.providers.publish.when: "awaiting-review"`) publishes on, since the post is how a reviewer finds it. PURE.
+ */
+export const waitsOnlyOnReview = (entry: ViewEntry): boolean => openPulls(entry).every(({ url }) => {
+  const head = entry.pullHeads?.[url];
+  return isRead(head) && head.red.length === 0 && head.pending.length === 0;
+});
+
+/**
  * What a run waits on before it can be merged, or null when it waits on nothing: one clause for each thing, per open pull request, in the order review, red checks, checks not passed. With more than one
  * open pull request each is named by its address (`owner/repo #number: ...`), and they are told apart by " · ". PURE.
  */

@@ -9,10 +9,11 @@ import { claimantOf, parseTicketSettings } from "./settings.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { markPublishRunning, markPublishStarting, respond as respondQueued } from "./queue/queue-transitions.ts";
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
-import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
+import { dismiss as dismissRun, remove as removeQueued, retry as retryQueued } from "./queue/queue-entries-and-outcomes.ts";
+import { retryRefusal } from "./queue/queue-retry-refusal.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
-import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import { DEPENDENCY_PULL_AUTHOR } from "../plugins/contracts/code-host.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -40,6 +41,14 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     // The pool takes Respond, closing a parked run's workspace first: here only the queue's part, which can refuse.
     respond: (key: string) => { ticks.push(`respond ${key}`); made.store.set(respondQueued(made.store.get(), key, 7)); },
     stopWriterRun: (id: string) => { ticks.push(`stop-writer ${id}`); },
+    // The pool takes Retry (A11-355), and refuses, naming why, a run that cannot be retried: here the queue's part, which says why.
+    retry: async (key: string) => {
+      ticks.push(`retry ${key}`);
+      const run = made.store.get().entries.find((e) => e.ticket.key === key);
+      const refusal = run === undefined ? `${key} is not on the board` : retryRefusal(run);
+      if (refusal !== null) throw new Error(`${refusal}, so it was not retried`);
+      made.store.set(retryQueued(made.store.get(), key, 7));
+    },
     // The pool takes a queued run off, after putting its ticket back: here only the queue's part, which the board's store is asked for.
     remove: async (key: string) => { ticks.push(`remove ${key}`); made.store.set(removeQueued(made.store.get(), key)); },
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {},
@@ -510,6 +519,24 @@ test("A11-161: /api/config says whether the publisher is on, off (installed and 
   assert.deepEqual((await states({ providers: { reviewer: { provider: "none", required: true } } })).said, [false, "none", "off-required"]);
 });
 
+test("Publish follows the machine's tickets.providers.publish.when: a run awaiting only its review is queued where it is awaiting-review and refused by default, and /api/queue says which", async () => {
+  const publishing = { provider: "slack", run: "Post {prs}, then write {dir}/published.json" };
+  const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+  for (const [when, queued] of [[undefined, false], ["awaiting-review", true]] as const) {
+    const b = board(4747, { providers: { publish: { ...publishing, ...(when === undefined ? {} : { when }) } } });
+    await queueFinished(b, { kind: "reviewed", prs: [pr] });
+    b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, pullHeads: { [pr.url]: { head: "h1", approved: false, review: "none" as const, red: [], pending: [] } } })) });
+    const [, view] = await b.api("GET", "/api/queue", {}) as [number, { publishWhen: string }];
+    assert.equal(view.publishWhen, when ?? "ready-to-merge");
+    if (queued) {
+      await b.api("POST", "/api/publish", { keys: ["NBF-1"] });
+      assert.deepEqual(b.store.get().publish?.keys, ["NBF-1"]);
+    } else {
+      await assert.rejects(b.api("POST", "/api/publish", { keys: ["NBF-1"] }), /NBF-1 is not Ready to merge, so it cannot be published/);
+    }
+  }
+});
+
 test("the queue the page reads carries the running publish run's workspace and pane, so each run it posts can link its terminal", async () => {
   const b = board(4747, { publish: { run: "Post {prs}, then write {dir}/published.json" } });
   const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
@@ -521,6 +548,22 @@ test("the queue the page reads carries the running publish run's workspace and p
   b.store.set(markPublishRunning(markPublishStarting(b.store.get(), 8), "w9", "w9:p1"));
   const running = await read();
   assert.deepEqual([running.phase, running.workspace, running.pane], ["running", "w9", "w9:p1"]);
+});
+
+test("A11-355: Retry is the pool's: a run it retries answers 200 with the run queued, and one it cannot retry answers 409 saying why, not a 200 over an unchanged run", async () => {
+  const b = board();
+  // A run parked on a question: its agent may still be answered, so the pool refuses to retry it until Close has ended it.
+  await queueFinished(b, { kind: "needs-human", reason: "which colour?" });
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, workspace: "w1", pane: "w1:p1" })) });
+  const [refused, refusal] = await b.api("POST", "/api/queue/NBF-1/retry", {}) as [number, { error: string }];
+  assert.equal(refused, 409);
+  assert.equal(refusal.error, "NBF-1 still holds its workspace: close it first, so it was not retried");
+  assert.equal(b.store.get().entries[0].phase, "finished", "and the run is as it was");
+  const [absent, nobody] = await b.api("POST", "/api/queue/NBF-9/retry", {}) as [number, { error: string }];
+  assert.deepEqual([absent, nobody.error], [409, "NBF-9 is not on the board, so it was not retried"]);
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, workspace: undefined, pane: undefined })) });
+  const [ok, view] = await b.api("POST", "/api/queue/NBF-1/retry", {}) as [number, { entries: { phase: string }[] }];
+  assert.deepEqual([ok, view.entries[0].phase, b.ticks.filter((tick) => tick.startsWith("retry"))], [200, "queued", ["retry NBF-1", "retry NBF-9", "retry NBF-1"]]);
 });
 
 test("remove, stop, close, dismiss and max go through the board", async () => {
@@ -1357,7 +1400,7 @@ test("A11-161: the Settings page lists slack and atomic with their folders and s
   const b = pluginsBoard({ ...FRESH_BLOCKS, publish, reviewer: { provider: "atomic" } });
   const view = await readPlugins(b);
   assert.deepEqual(["slack", "atomic"].map((name) => { const e = entryOf(view, name); return [name, e.where, e.contract, e.state]; }),
-    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.10", "enabled"]]);
+    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.11", "enabled"]]);
   const hostBlock = (block: string) => JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers[block];
   const off = await saidBy(b, { action: "disable", name: "slack", base: view.bases["host.json"] });
   assert.match(off, /^disabled slack: the board publishes nothing, and its settings are kept for `enable`$/);
@@ -1466,24 +1509,34 @@ test("A11-261: /api/queue sends each run's CI as figures and where the ticket st
   assert.equal(over.entries[0]!.ci?.state, "held", "205 weighted minutes of a budget of 100");
 });
 
-test("A11-255: the dependency sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+/** The sweeps `startFeedbackSweeps` schedules over an idle pool and the board's own sweeps `board`, in order. */
+function scheduledWith(board: Parameters<typeof startFeedbackSweeps>[2]): { run: () => void; ms: number }[] {
   const pool = { watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {} };
   const scheduled: { run: () => void; ms: number }[] = [];
-  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
-  assert.equal(scheduled.length, 5, "without the board's sweep there are five, as before");
-  const calls: string[] = [];
-  scheduled.length = 0;
-  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); }, { dependencyUpdates: () => { calls.push("dependencyUpdates"); return Promise.reject(new Error("the code host is down")); } });
-  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS));
+  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); }, board);
+  return scheduled;
+}
+
+/** What the server writes to stderr while a scheduled sweep runs and settles. */
+async function saidWhileRunning(run: () => void): Promise<string[]> {
   const stderr = process.stderr.write;
   const said: string[] = [];
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
   try {
-    scheduled[5]!.run();
+    run();
     await new Promise((resolve) => setImmediate(resolve));
   } finally {
     process.stderr.write = stderr;
   }
+  return said;
+}
+
+test("A11-255: the dependency sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  assert.equal(scheduledWith({}).length, 5, "without the board's sweep there are five, as before");
+  const calls: string[] = [];
+  const scheduled = scheduledWith({ dependencyUpdates: () => { calls.push("dependencyUpdates"); return Promise.reject(new Error("the code host is down")); } });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS));
+  const said = await saidWhileRunning(scheduled[5]!.run);
   assert.deepEqual(calls, ["dependencyUpdates"]);
   assert.deepEqual(said, ["ticket:serve: the dependency updates could not be turned into tickets: the code host is down\n"]);
 });
@@ -1508,6 +1561,36 @@ test("A11-255: the board's dependency sweep asks the writer for a major, records
   await sweep();
   const [, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
   assert.deepEqual(queue.entries.map((entry: any) => [entry.ticket.key, entry.model, entry.effort]), [["NBF-101", "sonnet", "low"]], "queued like one a person adds, on the saved choice");
+});
+
+test("A11-347: the idle-blocker sweep is scheduled on the feedback cadence beside the others, and a failure of it is said when it settles, without stopping the rest", async () => {
+  assert.equal(scheduledWith({}).length, 5, "without the board's sweep there are five, as before");
+  const calls: string[] = [];
+  const scheduled = scheduledWith({ idleBlockers: () => { calls.push("idleBlockers"); return Promise.reject(new Error("the tracker is down")); } });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), Array(6).fill(FEEDBACK_MS), "on the feedback cadence, a sweep of its own");
+  const said = await saidWhileRunning(scheduled[5]!.run);
+  assert.deepEqual(calls, ["idleBlockers"]);
+  assert.deepEqual(said, ["ticket:serve: the tickets that hold queued runs back with no run could not be completed or queued: the tracker is down\n"]);
+});
+
+test("A11-347: the board's idle-blocker sweep queues a ticket this instance claimed, on the saved choice, and wakes the pool; the same ticket claimed by nobody is left", async () => {
+  const tracker = createFakeTracker([inProgress("NBF-9"), ticket("NBF-2")]);
+  const b = board(4747, {}, {}, tracker);
+  tracker.setClaimant("NBF-9", claimantOf(b.settings));
+  b.queueTickets([ticket("NBF-2")], { model: "sonnet", effort: "high" }, { plan: false });
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, blockers: [{ key: "NBF-9", state: "started", status: "In Progress", pulls: {} }] })) });
+  await b.api("POST", "/api/choice", { model: "sonnet", effort: "low" });
+  const sweep = idleBlockersOf(b, { settings: b.settings, source: tracker, key: KEY, queuePath: join(b.dir, "queue.json"), choicePath: join(b.dir, "choice.json"), codeHost: createFakeCodeHost(), now: () => 7 } as BoardDeps);
+  b.ticks.length = 0;
+  tracker.setClaimant("NBF-9", undefined);
+  await sweep();
+  assert.equal(b.store.get().entries.some((e) => e.ticket.key === "NBF-9"), false, "nobody claimed it: a person is on it");
+  tracker.setClaimant("NBF-9", claimantOf(b.settings));
+  await sweep();
+  await sweep();
+  const queued = b.store.get().entries.filter((e) => e.ticket.key === "NBF-9");
+  assert.deepEqual(queued.map((e) => [e.phase, e.model, e.effort]), [["queued", "sonnet", "low"]], "queued once, on the saved choice");
+  assert.ok(b.ticks.includes("tick"), "and the pool is woken");
 });
 
 test("A11-306: the first review of a green head is its own sweep, on a minute, beside the others on the feedback cadence", () => {

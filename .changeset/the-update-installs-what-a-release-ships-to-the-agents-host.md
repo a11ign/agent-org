@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`agent-org update` now ends every run by installing what the installed release ships to the agents host, from `<tool>/current` and never from a checkout (A11-354): the units, the launcher, the workers README, the `gh` and seat wrappers, the reviewers' door and the row-review skill. A release's changed unit (A11-348's `tmp-prune` pair sat on the host at its 2026-10-17 copy because `host:install` is refused in a ticket run and nothing else ran it) is on the host within one update cycle. It writes only what differs, restarts a changed timer that is running, starts a unit that was not installed before, and leaves to the person a timer that is installed and `disabled`, an orphan unit, and what needs root or a person's dotfile. A file it replaces is kept beside the new copy as `<file>.bak-<stamp>` (once per distinct content) and the changed lines go to the update's log; `host:install` keeps replaced files the same way. `host:check` no longer reports `host-install-pending` for host.json's `tool` checkout on a host that runs the installed tool, since nothing moves that checkout.

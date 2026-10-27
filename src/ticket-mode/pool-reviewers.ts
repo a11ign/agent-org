@@ -34,7 +34,8 @@ import { closedWorkLines, closedWorkOf } from "./closed-work-account.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { doneWhenOf } from "./done-when.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { partialStepOf } from "./board-view/plan-steps.ts";
+import { partialStepOf, type PlanStep } from "./board-view/plan-steps.ts";
+import { closingWordOf, type Sibling } from "./closing-word.ts";
 import { decisionsOf, hasDecisionsSection, unsupportedClaims } from "./ticket-decisions.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { isPlanUnreadable, planDecisions, planStepSection } from "./pool-ticket-text.ts";
@@ -43,7 +44,8 @@ import { escalationList } from "./escalation.ts";
 import { heldBy, recordRefusedRereview } from "./pool-standoff.ts";
 import { isRereviewComment } from "./standoff-words.ts";
 import type { Reply, Review } from "../plugins/contracts/code-host.ts";
-import type { ReviewBodyLine, ReviewBrief, ReviewerDialog, ReviewerRef, ReviewerReply } from "../plugins/contracts/reviewer.ts";
+import type { ReviewBodyLine, ReviewBrief, ReviewClosing, ReviewerDialog, ReviewerRef, ReviewerReply } from "../plugins/contracts/reviewer.ts";
+import type { PullState } from "./source.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -124,6 +126,7 @@ const bodyOf = (state: ReviewState): string => String(state.view.body ?? "");
  * What the pool tells a reviewer of the ticket behind `url` (A11-156): the Done-when of the run that holds the pull request, since the reviewer cannot read the tracker, and the ticket's explicit decisions (A11-213), which bind the reviewer ahead of its general rules. Null when no run holds
  * it (one a person opened, or a run since removed) or its ticket has no such section: the reviewer is then told the pull request is the only copy of the contract it has.
  * A pull request whose body says `Partial: step N of M` also carries the step (A11-175), with the plan's section for it when the run that holds the pull request has a plan file with one, else null.
+ * It carries the word it names its ticket with (`closing`, A11-274) when its run holds other pull requests or its body names a step.
  */
 export function briefOf(ctx: PoolContext, url: string, state: ReviewState): ReviewBrief {
   const held = heldBy(ctx, url);
@@ -133,13 +136,34 @@ export function briefOf(ctx: PoolContext, url: string, state: ReviewState): Revi
   const planned = held === undefined ? null : planDecisions(ctx, held.ticket.key);
   // What the ticket's earlier pull requests held when they were closed unmerged: the reviewer cannot read the ticket's folder, so it is handed the list (A11-249).
   const closedWork = held === undefined ? null : closedWorkLines(closedWorkOf(ticketDir(ctx.settings, held.ticket.key)));
+  const closing = held === undefined ? null : closingOf(ctx, url, held, step);
   return {
     doneWhen: doneWhenOf(held?.ticket.description),
     ...(decisions === null ? {} : { decisions }),
     ...(planned === null ? {} : { planDecisions: planned, escalation: escalationList() }),
     ...(closedWork === null ? {} : { closedWork }),
     ...(step === null ? {} : { step: { ...step, section: held === undefined ? null : planStepSection(ctx, held.ticket.key, step.step) } }),
+    ...(closing === null ? {} : { closing }),
   };
+}
+
+/** A pull request's state as the host says it now, in the run's words, or null when the host does not say. */
+function hostStateOf(ctx: PoolContext, url: string): PullState | null {
+  const state = ctx.codeHost.readPullState(url)?.toLowerCase();
+  return state === "open" || state === "merged" || state === "closed" ? state : null;
+}
+
+/**
+ * The word the pull request at `url` names its ticket with (A11-274), from its step and the run's other pull requests: one the run last read merged (`pullStates`) is merged, since that is final, and any other is read from the host now,
+ * since an open one may have merged and a closed one reopened since the run's read. Null when the run holds no other and the body names no step, so the reviewer judges the word as before, and when a sibling's state cannot be read:
+ * a word worked out from a guess would be told to the reviewer as a fact.
+ */
+function closingOf(ctx: PoolContext, url: string, held: Entry, step: PlanStep | null): ReviewClosing | null {
+  const others = pullsOf(held).filter((pull) => pull.url !== url);
+  if (others.length === 0 && step === null) return null;
+  const siblings = others.map((pull) => ({ url: pull.url, state: held.pullStates?.[pull.url] === "merged" ? "merged" as const : hostStateOf(ctx, pull.url) }));
+  const known = siblings.filter((sibling): sibling is Sibling => sibling.state !== null);
+  return known.length < siblings.length ? null : closingWordOf({ key: held.ticket.key, step, siblings: known });
 }
 
 /** How many refusals in a row, for the same reason, ask a person (A11-241): the first is said on the pull request's own line, the second is Needs you. */
