@@ -4,6 +4,7 @@
 // ON 2026-10-25 EVERY TICKET OF A REPOSITORY WAITED 30 HOURS on the files of a pull request that had merged, and nothing on the board said a wait was long. A queued run is held by a ticket that blocks it or by the files of
 // a run that holds them. The pool records which ticket and since when (`waitSince`, `recordWaits` in `queue/queue-long-waits.ts`); a wait on the same ticket for more than {@link LONG_WAIT_MS} is listed on the board's
 // Runs page and by `doctor`, with the state of the ticket waited on and whether it can move by itself. Like the rest of `board-view/`, it is sent to the browser as one script with its relative imports dropped.
+import { idleBlockerOf, idleWords } from "./idle-blocker.ts";
 import { overlapWait } from "./overlap-hold.ts";
 import { waitsOn, workStatus } from "./pull-status-and-notes.ts";
 import { RUN_STATUSES, type RunStatus, type ViewEntry } from "./view-types-and-filters.ts";
@@ -32,11 +33,14 @@ export type HolderMove = Readonly<{ moves: boolean; words: string }>;
 /** The label the board shows for a status. */
 const labelOf = (status: RunStatus): string => RUN_STATUSES.find((each) => each.status === status)?.label ?? status;
 
-/** Where the ticket `on` stands on the board and whether it can move: a ticket with no run is worked by nobody; a Blocked one waits on another ticket itself. PURE. */
+/** Where the ticket `on` stands on the board and whether it can move: a ticket with no run is worked by nobody, so the sentence says what the board does about it (A11-347); a Blocked one waits on another ticket itself. PURE. */
 export function holderMove(on: string, entries: readonly ViewEntry[]): HolderMove {
   const runs = entries.filter(({ ticket }) => ticket.key === on);
   const run = runs.find(({ phase }) => phase !== "finished") ?? runs[0];
-  if (run === undefined) return { moves: false, words: `${on} has no run on the board, so nothing is working on it` };
+  if (run === undefined) {
+    const idle = idleBlockerOf(on, entries);
+    return { moves: idle !== null, words: idleWords(on, idle) };
+  }
   const status = workStatus(run, entries);
   const itself = waitTarget(run, entries);
   const behind = itself === null ? "" : `, waiting on ${itself.key}${itself.kind === "files" ? "'s files" : ""}`;
