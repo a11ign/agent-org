@@ -83,14 +83,26 @@ async function pushOnce(git: Git, worktree: string, branch: string): Promise<str
 /** The checkouts of the run the board can push from: the repositories under its folder that hold a git worktree. */
 export const checkoutsOf = (ctx: PoolContext, entry: Entry): readonly string[] => worktreesIn(runPlace(ctx, entry).folder);
 
+/** The branch a checkout is on, or git's error when it cannot be read (a broken repository, a missing `.git` target). */
+async function branchOf(git: Git, worktree: string): Promise<{ branch: string } | { error: string }> {
+  try {
+    return { branch: (await git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"])).trim() };
+  } catch (err) {
+    return { error: gitErrorText(err) };
+  }
+}
+
 /**
  * Push the run's branch from each of its checkouts that is on it (a checkout left on another branch or detached holds none of the ticket's work), with the dry run first and one retry of the pair ({@link PUSH_TRIES}). Every checkout must work for the check to pass; the first that fails twice ends it with git's error, named by repository.
  * Pushing the run's own unpushed commits to its own branch is what the worker does, so a push that works leaves the branch as the worker would have.
  */
 export async function checkPush(ctx: PoolContext, entry: Entry, repos: readonly string[]): Promise<PushCheck> {
   const { folder } = runPlace(ctx, entry);
-  const onBranch = await Promise.all(repos.map(async (repo) => (await ctx.git(join(folder, repo), ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim() === entry.ticket.branch));
-  const pushable = repos.filter((_, at) => onBranch[at]);
+  const heads = await Promise.all(repos.map((repo) => branchOf(ctx.git, join(folder, repo))));
+  // A checkout whose branch cannot be read is not skipped: the board cannot tell whether it holds the worker's work, so the check fails with git's words and the card stays.
+  const unreadable = heads.findIndex((head) => "error" in head);
+  if (unreadable !== -1) return { ok: false, error: `${repos[unreadable]}: could not read its branch: ${(heads[unreadable] as { error: string }).error}` };
+  const pushable = repos.filter((_, at) => (heads[at] as { branch: string }).branch === entry.ticket.branch);
   if (pushable.length === 0) return { unchecked: true };
   for (const repo of pushable) {
     let error: string | null = null;

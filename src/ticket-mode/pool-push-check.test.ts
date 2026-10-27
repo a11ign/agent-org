@@ -26,10 +26,13 @@ function pushingGit(push: (n: number) => string | undefined = () => undefined) {
   const calls: { cwd: string; args: string[] }[] = [];
   let pushes = 0;
   /** The branch every checkout is on, as `git rev-parse --abbrev-ref HEAD` says; set to the ticket's once the run exists. */
-  const head = { branch: "" };
+  const head: { branch: string; broken?: string } = { branch: "" };
   const git: Git = async (cwd, args) => {
     calls.push({ cwd, args });
-    if (args[0] === "rev-parse") return `${head.branch}\n`;
+    if (args[0] === "rev-parse") {
+      if (head.broken !== undefined) throw Object.assign(new Error("Command failed: git rev-parse"), { stderr: head.broken });
+      return `${head.branch}\n`;
+    }
     if (args[0] !== "push") return "";
     pushes += 1;
     const refusal = push(pushes);
@@ -40,11 +43,12 @@ function pushingGit(push: (n: number) => string | undefined = () => undefined) {
 }
 
 /** NBF-1's run with a checkout of `REPO`, whose worker ends `needs-human` on `outcome`, over a git that pushes as `push` says. */
-async function handedBack(push?: (n: number) => string | undefined, outcome: Record<string, unknown> = CLAIM, { checkout = true, branch }: { checkout?: boolean; branch?: string } = {}) {
+async function handedBack(push?: (n: number) => string | undefined, outcome: Record<string, unknown> = CLAIM, { checkout = true, branch, broken }: { checkout?: boolean; branch?: string; broken?: string } = {}) {
   const made = poolFixture({ keys: [KEY], max: 1 });
   const fake = pushingGit(push);
   const pool = made.restart({ git: fake.git });
   fake.head.branch = branch ?? made.entry(KEY).ticket.branch;
+  fake.head.broken = broken;
   await pool.tick();
   made.status.set(herdrName(KEY), "working");
   await pool.tick();
@@ -113,6 +117,19 @@ test("a checkout left on another branch holds none of the ticket's work: nothing
   assert.equal(run.fake.pushes().length, 0);
   assert.equal(run.entry(KEY).phase, "finished");
   assert.equal(run.log().some((event) => event.kind === "push-check"), false);
+});
+
+test("a checkout whose branch cannot be read is not skipped: the check fails with git's words, the card stays with them, and the log holds them", async () => {
+  const BROKEN = "fatal: not a git repository: /elsewhere";
+  const run = await handedBack(undefined, CLAIM, { broken: BROKEN });
+  const outcome = run.entry(KEY).outcome as Extract<Outcome, { kind: "needs-human" }>;
+  assert.deepEqual([run.entry(KEY).phase, outcome.kind, outcome.escalation], ["finished", "needs-human", "access"]);
+  assert.ok(outcome.reason.includes(`${REPO}: could not read its branch: ${BROKEN}`));
+  const checks = run.log().flatMap((event) => (event.kind === "push-check" ? [event] : []));
+  assert.deepEqual(checks.map(({ step }) => step), ["failed"]);
+  assert.ok(checks[0].detail.includes(BROKEN));
+  assert.equal(run.fake.pushes().length, 0, "nothing was pushed");
+  assert.equal(run.prompts().length, 0);
 });
 
 test("a hand-back that only mentions a credential or permission in passing is not read as a refused push", () => {
