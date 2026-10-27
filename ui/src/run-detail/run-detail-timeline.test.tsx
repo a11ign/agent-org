@@ -32,6 +32,27 @@ describe("the Timeline's rows", () => {
     ]);
   });
 
+  it("word what the board did at the round cap (A11-343): the planner's round, its Decision, the wait on a ticket, and the round that follows", () => {
+    const rows = rowsOf([
+      { at: NOW - 6 * MINUTE, kind: "round", cause: "cap-planner", reason: "capture is red" },
+      { at: NOW - 5 * MINUTE, kind: "cap", step: "decided", detail: "answer the comment and say capture is A11-61's" },
+      { at: NOW - 4 * MINUTE, kind: "round", cause: "cap-round", reason: "capture is red" },
+      { at: NOW - 3 * MINUTE, kind: "cap", step: "waiting", detail: "A11-341: capture stays red until its Auth0 fix merges" },
+      { at: NOW - 2 * MINUTE, kind: "cap", step: "resumed", detail: "A11-341 merged its pull request" },
+      { at: NOW - 1 * MINUTE, kind: "round", cause: "wait-ended", reason: "A11-341 merged its pull request" },
+      { at: NOW - 30_000, kind: "cap", step: "planner", detail: null },
+    ]);
+    expect(rows.map(({ text, when, tone }) => [text, when, tone])).toEqual([
+      ["Sent to the planner at the round cap", "just now", "amber"],
+      ["Round after the ticket it waited on merged", "1 min ago · A11-341 merged its pull request", "amber"],
+      ["The ticket it waited on merged", "2 min ago · A11-341 merged its pull request", "green"],
+      ["Planner marked the run as waiting on a ticket", "3 min ago · A11-341: capture stays red until its Auth0 fix merges", "amber"],
+      ["One more round, with the planner's Decision", "4 min ago · capture is red", "amber"],
+      ["Planner recorded a Decision", "5 min ago · answer the comment and say capture is A11-61's", "amber"],
+      ["Planner deciding at the round cap", "6 min ago · capture is red", "amber"],
+    ]);
+  });
+
   it("word every other kind of event, and a failed run in red", () => {
     const rows = rowsOf([
       { at: NOW - 9 * MINUTE, kind: "round", cause: "checks", reason: "lint is red" },

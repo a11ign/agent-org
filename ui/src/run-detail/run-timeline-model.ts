@@ -74,7 +74,7 @@ function rowOf(event: TimelineEvent, { now, startedAt, newest, going, canceled, 
       : { text: `Changes requested at ${event.head.slice(0, SHORT_HEAD)}`, when: joined(pullLabel(event.url), ago), tone: "amber" };
     case "rereview": return { text: event.verdict === "not-convinced" ? "rereview: still not convinced" : "rereview: convinced, but the door refused it", when: joined(pullLabel(event.url), `at ${event.head.slice(0, SHORT_HEAD)}`, ago), tone: "amber" };
     case "standoff": return { text: STANDOFF_WORDS[event.step], when: joined(pullLabel(event.url), event.detail, ago), tone: event.step === "settled" ? "green" : "amber" };
-    case "cap": return { text: CAP_WORDS[event.step], when: joined(event.detail, ago), tone: event.step === "resumed" ? "green" : "amber" };
+    case "cap": return { text: CAP_WORDS[event.step], when: joined(ago, event.detail), tone: event.step === "resumed" ? "green" : "amber" };
     case "needs-you": return { text: "Waiting on a person", when: ago, tone: "amber" };
     case "answered": return { text: "Answered", when: joined(ago, ANSWER_WORDS[event.by]), tone: "grey" };
     case "published": return { text: "Published", when: joined(ago, note), tone: "violet" };
