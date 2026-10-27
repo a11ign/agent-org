@@ -31,6 +31,7 @@ import { messagingStateOfFile } from "../plugins/messaging-state.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import type { MessagingState } from "../plugins/view.ts";
 import { hostFactsOf, pluginName } from "./plugin-contract.ts";
+import { sayRowChanges } from "./plugin-row-changes.ts";
 import { pluginProblems, type PluginProblems, type ProblemOptions } from "./plugins.ts";
 import { PROVIDER_BLOCKS, type Providers, providersOfText, resolveProviders } from "./providers.ts";
 import { baseOf, type EditFile } from "./settings-edit.ts";
@@ -54,6 +55,8 @@ export type PluginsSeam = Readonly<{
   /** How long one plugin's checks may run (`CHECK_MS`), and the clock the checks' age is read on. A test's. */
   limitMs?: number;
   now?: () => number;
+  /** Where the board says a plugin row's change (A11-274): the board's log. A test's. */
+  log?: (line: string) => void;
 }>;
 
 /**
@@ -75,6 +78,9 @@ const KILL_GRACE_MS = 1_000;
 
 /** The last checks: what they found, when they finished, the host file's text they were run on, and how many times fresh checks had been asked for before they started. */
 type Held = Readonly<{ checked: Checked; at: number; text: string | null; asks: number }>;
+
+/** The board's log, where it says what it found (`ticket:serve: …` on its stderr, as the server's own lines are). */
+const boardLog = (line: string): void => { process.stderr.write(`ticket:serve: ${line}\n`); };
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -163,12 +169,17 @@ export function pluginsApi(options: Readonly<{ hostPath: string; settings: Ticke
     return outOfProcess === null ? checkPlugins(sources, await loadPlugins(sources)) : checkEnabled(sources, outOfProcess);
   }
 
-  /** Runs the checks on the host file as it is now, and keeps what they found. A run that fails keeps the last checks: the read that loads the plugins says why. */
+  /**
+   * Runs the checks on the host file as it is now, and keeps what they found. A run that fails keeps the last checks: the read that loads the plugins says why. Each row that starts failing, says something new, or
+   * passes again is said once on the board's log (A11-274).
+   */
   async function runChecks(): Promise<void> {
     const text = readText(hostPath);
     const started = asks;
     try {
-      held = { checked: await checksOn(text), at: now(), text, asks: started };
+      const checked = await checksOn(text);
+      held = { checked, at: now(), text, asks: started };
+      sayRowChanges(settings.stateDir, checked.checks, seam.log ?? boardLog);
     } catch {
       // Loading failed: every read fails on it too, with its reason.
     }

@@ -52,9 +52,12 @@ function repositoryOf(repository: string): { owner: string; name: string } | nul
   return match === null ? null : { owner: match[1], name: match[2] };
 }
 
-/** The query for the repositories: an alias `r<n>` each, with the setting, whether it is private, the default branch and whether its head holds the arm workflow (`object`) and the merge bot (`bot`), each null where the file is not. */
-const queryOf = (repositories: readonly { owner: string; name: string }[]): string => `query { ${repositories.map(({ owner, name }, n) =>
-  `r${n}: repository(owner: "${owner}", name: "${name}") { autoMergeAllowed isPrivate defaultBranchRef { name } object(expression: "HEAD:${ARM_WORKFLOW_PATH}") { __typename } ${MERGE_BOT_FILE} }`).join(" ")} }`;
+/** What {@link readMergeFlows} asks of each repository: the setting, whether it is private, the default branch and whether its head holds the arm workflow (`object`) and the merge bot (`bot`), each null where the file is not. */
+const FLOW_FIELDS = `autoMergeAllowed isPrivate defaultBranchRef { name } object(expression: "HEAD:${ARM_WORKFLOW_PATH}") { __typename } ${MERGE_BOT_FILE}`;
+
+/** The query for the repositories: an alias `r<n>` each, asked `fields`. */
+const queryOf = (repositories: readonly { owner: string; name: string }[], fields: string): string => `query { ${repositories.map(({ owner, name }, n) =>
+  `r${n}: repository(owner: "${owner}", name: "${name}") { ${fields} }`).join(" ")} }`;
 
 /** The answer's `data`, from the text `gh` printed: a repository GitHub could not read makes `gh` exit non-zero WITH the rest of the answer, so a failure that printed an answer is read too. Null when there is none. */
 function dataOf(run: Gh, query: string): Record<string, unknown> | null {
@@ -83,16 +86,22 @@ function flowOf(answer: any): MergeFlow | null {
  * WHETHER EACH OF `repositories` CAN MERGE A PULL REQUEST BY ITSELF: it allows auto-merge, and its default branch holds the arm workflow. A repository maps to null for "could not ask": a name that is not `owner/name`, a repository
  * GitHub would not read, and an answer without the setting. Null is never "it has no flow". One call is made for all of them.
  */
-export function readMergeFlows(repositories: readonly string[], run: Gh): Readonly<Record<string, MergeFlow | null>> {
+export const readMergeFlows = (repositories: readonly string[], run: Gh): Readonly<Record<string, MergeFlow | null>> => readAliased(repositories, FLOW_FIELDS, flowOf, run);
+
+/**
+ * Each of `repositories` asked `fields` in one call, an alias each, and its answer read by `read`. A repository maps to null for "could not ask": a name that is not `owner/name` (never put in a query), a repository
+ * GitHub would not read, an answer `read` refuses, and every one of them when the call fails.
+ */
+function readAliased<T>(repositories: readonly string[], fields: string, read: (answer: any) => T | null, run: Gh): Readonly<Record<string, T | null>> {
   const named = repositories.flatMap((repository) => {
     const parsed = repositoryOf(repository);
     return parsed === null ? [] : [{ repository, ...parsed }];
   });
-  const none = Object.fromEntries(repositories.map((repository) => [repository, null]));
+  const none: Record<string, T | null> = Object.fromEntries(repositories.map((repository) => [repository, null]));
   if (named.length === 0) return none;
   try {
-    const data = dataOf(run, queryOf(named));
-    return data === null ? none : { ...none, ...Object.fromEntries(named.map(({ repository }, n) => [repository, flowOf(data[`r${n}`])])) };
+    const data = dataOf(run, queryOf(named, fields));
+    return data === null ? none : { ...none, ...Object.fromEntries(named.map(({ repository }, n) => [repository, read(data[`r${n}`])])) };
   } catch {
     return none;
   }
@@ -100,3 +109,84 @@ export function readMergeFlows(repositories: readonly string[], run: Gh): Readon
 
 /** Whether one repository has a merge flow, as {@link readMergeFlows} reads it: null for "could not ask". */
 export const readMergeFlow = (repository: string, run: Gh): MergeFlow | null => readMergeFlows([repository], run)[repository] ?? null;
+
+/**
+ * A repository's merge flow as doctor's `merge flow` row reads it (A11-274): the contract's {@link MergeFlow}, and whether an active ruleset puts its default branch behind a merge queue (`mergeQueue`) and requires the
+ * `gate` check (`gateRequired`). The board's card does not ask for these; the row does, since auto-merge and the arm workflow arm nothing in a repository with no merge queue.
+ */
+export type RepositoryFlow = MergeFlow & Readonly<{ mergeQueue: boolean; gateRequired: boolean }>;
+
+/** One repository an organisation lists: its `owner/name`, whether it is archived, and its flow, or null where the answer does not say it. */
+export type ListedRepository = Readonly<{ repository: string; archived: boolean; flow: RepositoryFlow | null }>;
+
+/** The check every merge flow requires: the arm workflow's ruleset and the merge bot both merge on it. */
+const GATE = "gate";
+
+/** The most pages of an organisation's repositories one read asks for (100 each): doctor's plugin checks run under a time limit, so a larger organisation is not listed, and its cloned repositories are read by name. */
+const MAX_PAGES = 5;
+
+/** The query's selection of a repository's rulesets, with each rule's type and the checks a status-check rule requires. Rulesets the organisation applies to it are included, as GitHub enforces them too. GitHub charges a listing by these sizes (11 points a page at 10 and 20; 51 at 50 and 50). */
+const RULESETS = "rulesets(first: 10) { nodes { enforcement rules(first: 20) { nodes { type parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } } }";
+
+/** What the row asks of each repository: {@link FLOW_FIELDS}, its name and whether it is archived, and its rulesets. */
+const REPOSITORY_FIELDS = `name isArchived ${FLOW_FIELDS} ${RULESETS}`;
+
+/** The rules of a repository's ACTIVE rulesets (one in evaluate mode or disabled enforces nothing). */
+const activeRulesOf = (answer: any): any[] => (Array.isArray(answer?.rulesets?.nodes) ? answer.rulesets.nodes : [])
+  .filter((ruleset: any) => ruleset?.enforcement === "ACTIVE")
+  .flatMap((ruleset: any) => (Array.isArray(ruleset.rules?.nodes) ? ruleset.rules.nodes : []));
+
+/** Whether an active rule requires the `gate` check. */
+const requiresGate = (rules: readonly any[]): boolean => rules.some((rule) => rule?.type === "REQUIRED_STATUS_CHECKS"
+  && Array.isArray(rule.parameters?.requiredStatusChecks) && rule.parameters.requiredStatusChecks.some((check: any) => check?.context === GATE));
+
+/** One repository's answer as {@link REPOSITORY_FIELDS} asked it, or null when it says neither the setting nor whether it is private. An empty repository has no default branch, and is read with none, not as unread. */
+function repositoryFlowOf(answer: any): RepositoryFlow | null {
+  if (typeof answer?.autoMergeAllowed !== "boolean" || typeof answer.isPrivate !== "boolean") return null;
+  const rules = activeRulesOf(answer);
+  return {
+    autoMerge: answer.autoMergeAllowed, armWorkflow: holds(answer.object), defaultBranch: typeof answer.defaultBranchRef?.name === "string" ? answer.defaultBranchRef.name : "", private: answer.isPrivate,
+    mergeBot: holds(answer.bot), mergeQueue: rules.some((rule) => rule?.type === "MERGE_QUEUE"), gateRequired: requiresGate(rules),
+  };
+}
+
+/**
+ * EVERY REPOSITORY OF ORGANISATION `owner`, with its merge flow (A11-274), so a repository no clone and no list names is read too: a new one is listed the day it is made. One call per hundred repositories. "not an organisation"
+ * where GitHub finds no organisation by that login (a user's account), and null where the listing could not be read whole: a page that failed is never read as a shorter list.
+ */
+export function readOrganisationFlows(owner: string, run: Gh): readonly ListedRepository[] | "not an organisation" | null {
+  if (!/^[^/\s"\\]+$/.test(owner)) return null;
+  const listed: ListedRepository[] = [];
+  let after: string | null = null;
+  try {
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const cursor: string = after === null ? "" : `, after: ${JSON.stringify(after)}`;
+      const data = dataOf(run, `query { organization(login: "${owner}") { repositories(first: 100${cursor}) { pageInfo { hasNextPage endCursor } nodes { ${REPOSITORY_FIELDS} } } } }`);
+      if (data !== null && data.organization === null) return "not an organisation";
+      const repositories = (data?.organization as any)?.repositories;
+      if (!Array.isArray(repositories?.nodes)) return null;
+      for (const node of repositories.nodes) {
+        if (typeof node?.name !== "string") return null;
+        listed.push({ repository: `${owner}/${node.name}`, archived: node.isArchived === true, flow: repositoryFlowOf(node) });
+      }
+      if (repositories.pageInfo?.hasNextPage !== true) return listed;
+      after = typeof repositories.pageInfo.endCursor === "string" ? repositories.pageInfo.endCursor : null;
+      if (after === null) return null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/** {@link readOrganisationFlows}'s reading of each of `repositories` by name (`owner/name`), for an owner that is not an organisation: one call for all, and null for a repository that could not be read. */
+export function readRepositoryFlows(repositories: readonly string[], run: Gh): Readonly<Record<string, ListedRepository | null>> {
+  const read = readAliased(repositories, REPOSITORY_FIELDS, (answer) => {
+    const flow = repositoryFlowOf(answer);
+    return flow === null ? null : { archived: answer.isArchived === true, flow };
+  }, run);
+  return Object.fromEntries(repositories.map((repository) => {
+    const answer = read[repository] ?? null;
+    return [repository, answer === null ? null : { repository, ...answer }];
+  }));
+}

@@ -96,6 +96,21 @@ test("A11-201: attention counts an agent-org plugin whose doctor check fails tog
   assert.deepEqual([answer.concerns.flatMap(({ plugins }) => plugins).filter(({ checks }) => checks.some(({ ok }) => !ok)).map(({ name }) => name), answer.attention], [["linear"], 2]);
 });
 
+test("A11-274: the board says a failing plugin row once on its log, though the checks run again, and again when what it says changes", async () => {
+  const github = defaultCatalog().plugins.find(({ name }) => name === "github")!;
+  let detail = "1 of 17 repositories have no merge flow: a11ign/.github: auto-merge is not allowed";
+  const module = { doctorChecks: () => [{ name: "merge flow", ok: false, detail, fix: "turn on auto-merge" }] } as unknown as PluginModule;
+  const said: string[] = [];
+  const { api } = apiOver({}, {}, { load: async () => ({ loaded: [], unbuilt: [{ plugin: github, module }], refusals: [] }), log: (line) => { said.push(line); } });
+  await api.check();
+  await api.check();
+  assert.deepEqual(said, [`plugin github: merge flow fails: ${detail} (fix: turn on auto-merge)`]);
+  detail = "1 of 18 repositories have no merge flow: a11ign/new: auto-merge is not allowed";
+  await api.check();
+  assert.equal(said.length, 2);
+  assert.match(said[1], /a11ign\/new/);
+});
+
 test("A11-201: claudePluginsOf keeps a plugin without a readable contract, named by its entry", () => {
   const states = { readable: true, plugins: [{ plugin: "nbl-ui@applied-ai", installs: [], loads: false, why: "x", installPath: null }] };
   assert.deepEqual(claudePluginsOf({ states, unreachable: ["x"], rows: [], contracts: [] }), { readable: true, plugins: [{ entry: "nbl-ui@applied-ai", name: "nbl-ui", loads: false, why: "x", installs: [], contract: null, rows: [] }] });

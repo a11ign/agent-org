@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GhFailure } from "./gh.ts";
-import { ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH, readHeadHoldsMergeBot, readMergeFlow, readMergeFlows, runsMergeBot } from "./merge-flow.ts";
+import { ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH, readHeadHoldsMergeBot, readMergeFlow, readMergeFlows, readOrganisationFlows, readRepositoryFlows, runsMergeBot } from "./merge-flow.ts";
 
 /** What GitHub answers for one repository: the setting, whether it is private, the default branch, and `arm` and `bot`, which are null where the head holds no such workflow. */
 const repository = ({ autoMerge = true, isPrivate = false, arm = true, bot = false, branch = "main" } = {}) => ({
@@ -84,4 +84,65 @@ test("A11-344: a pull request head holds the merge bot when GitHub finds the fil
 test("A11-344: the merge bot is the flow when the repository is private and either its default branch or the pull request's head holds it", () => {
   assert.deepEqual([runsMergeBot({ private: true, mergeBot: false, headBot: true }), runsMergeBot({ private: true, mergeBot: true }), runsMergeBot({ private: true, mergeBot: false })], [true, true, false]);
   assert.equal(runsMergeBot({ private: false, mergeBot: false, headBot: true }), false, "a public repository is not the merge bot's");
+});
+
+/** A repository as an organisation's listing answers it, with its rulesets: `rules` are the rule types of one ruleset enforced as `enforcement`, `gate` adding the required `gate` check. */
+const listed = (name: string, { archived = false, rules = ["MERGE_QUEUE"], gate = true, enforcement = "ACTIVE", ...rest }: { archived?: boolean; rules?: string[]; gate?: boolean; enforcement?: string; autoMerge?: boolean; arm?: boolean } = {}) => ({
+  ...repository(rest), name, isArchived: archived,
+  rulesets: { nodes: [{ enforcement, rules: { nodes: [...rules.map((type) => ({ type, parameters: null })), ...(gate ? [{ type: "REQUIRED_STATUS_CHECKS", parameters: { requiredStatusChecks: [{ context: "ci" }, { context: "gate" }] } }] : [])] } }] },
+});
+
+/** A `run` that answers an organisation's pages in turn, and records each call. */
+function paging(pages: readonly unknown[][]) {
+  const calls: string[][] = [];
+  const run = (args: string[]): string => {
+    calls.push(args);
+    const n = calls.length - 1;
+    return JSON.stringify({ data: { organization: { repositories: { pageInfo: { hasNextPage: n < pages.length - 1, endCursor: `c${n}` }, nodes: pages[n] } } } });
+  };
+  return { calls, run };
+}
+
+test("A11-274: an organisation's listing reads every repository, page by page, with its archive state, merge queue and required `gate`", () => {
+  const { run, calls } = paging([[listed("lab"), listed("old", { archived: true })], [listed("a11ign.github.io", { autoMerge: false, arm: false, rules: [], gate: false })]]);
+  assert.deepEqual(readOrganisationFlows("a11ign", run), [
+    { repository: "a11ign/lab", archived: false, flow: { autoMerge: true, armWorkflow: true, defaultBranch: "main", private: false, mergeBot: false, mergeQueue: true, gateRequired: true } },
+    { repository: "a11ign/old", archived: true, flow: { autoMerge: true, armWorkflow: true, defaultBranch: "main", private: false, mergeBot: false, mergeQueue: true, gateRequired: true } },
+    { repository: "a11ign/a11ign.github.io", archived: false, flow: { autoMerge: false, armWorkflow: false, defaultBranch: "main", private: false, mergeBot: false, mergeQueue: false, gateRequired: false } },
+  ]);
+  assert.equal(calls.length, 2);
+  const [first, second] = calls.map((args) => args.find((arg) => arg.startsWith("query=")) ?? "");
+  assert.match(first, /organization\(login: "a11ign"\) \{ repositories\(first: 100\) \{ pageInfo \{ hasNextPage endCursor \} nodes \{ name isArchived autoMergeAllowed isPrivate/);
+  assert.match(first, /rulesets\(first: 10\) \{ nodes \{ enforcement rules\(first: 20\) \{ nodes \{ type parameters \{ \.\.\. on RequiredStatusChecksParameters \{ requiredStatusChecks \{ context \} \} \} \} \} \} \}/);
+  assert.match(second, /repositories\(first: 100, after: "c0"\)/);
+});
+
+test("A11-274: a ruleset that is not active gives no merge queue and requires nothing, and an empty repository is read with no default branch, not as unread", () => {
+  const firstFlow = (listing: ReturnType<typeof readOrganisationFlows>) => (Array.isArray(listing) ? listing[0].flow : listing);
+  assert.deepEqual(firstFlow(readOrganisationFlows("a11ign", paging([[listed("lab", { enforcement: "EVALUATE" })]]).run)), { autoMerge: true, armWorkflow: true, defaultBranch: "main", private: false, mergeBot: false, mergeQueue: false, gateRequired: false });
+  assert.deepEqual(firstFlow(readOrganisationFlows("a11ign", paging([[{ ...listed("zz", { rules: [], gate: false, arm: false, autoMerge: false }), defaultBranchRef: null }]]).run)), { autoMerge: false, armWorkflow: false, defaultBranch: "", private: false, mergeBot: false, mergeQueue: false, gateRequired: false });
+});
+
+test("A11-274: a login GitHub finds no organisation by is 'not an organisation', and a listing that fails on any page is null, never a shorter list", () => {
+  const person = (args: string[]): never => { throw new GhFailure(args, { status: 1, stdout: JSON.stringify({ data: { organization: null }, errors: [{ type: "NOT_FOUND" }] }), stderr: "gh: Could not resolve to an Organization" }); };
+  assert.equal(readOrganisationFlows("someone", person), "not an organisation");
+  assert.equal(readOrganisationFlows("a11ign", () => { throw new GhFailure([], { status: 1, stdout: "", stderr: "HTTP 502" }); }), null);
+  let calls = 0;
+  const secondFails = (args: string[]): string => {
+    calls += 1;
+    if (calls === 2) throw new GhFailure(args, { status: 1, stdout: "", stderr: "HTTP 502" });
+    return JSON.stringify({ data: { organization: { repositories: { pageInfo: { hasNextPage: true, endCursor: "c0" }, nodes: [listed("lab")] } } } });
+  };
+  assert.equal(readOrganisationFlows("a11ign", secondFails), null);
+  assert.equal(readOrganisationFlows("a11ign", () => JSON.stringify({ data: { organization: { repositories: { nodes: [{ isArchived: false }] } } } })), null, "a repository with no name");
+  assert.equal(readOrganisationFlows('a11"ign', () => { throw new Error("not asked"); }), null, "a login that is not one is not put in a query");
+});
+
+test("A11-274: repositories read by name answer as an organisation's listing does, and one that cannot be read is null", () => {
+  const { run, calls } = answering({ r0: listed("tool", { autoMerge: false, arm: false, rules: [], gate: false }), r1: null });
+  assert.deepEqual(readRepositoryFlows(["someone/tool", "someone/gone"], run), {
+    "someone/tool": { repository: "someone/tool", archived: false, flow: { autoMerge: false, armWorkflow: false, defaultBranch: "main", private: false, mergeBot: false, mergeQueue: false, gateRequired: false } }, "someone/gone": null,
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(readRepositoryFlows(["someone/tool"], () => { throw new Error("spawn gh ENOENT"); }), { "someone/tool": null });
 });
