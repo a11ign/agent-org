@@ -32,7 +32,7 @@ import { ensureTriageLabel } from "../ticket-port/outside-idle-writes.ts";
 import { boardFiledRow } from "../ticket-port/board-filed-row.ts";
 import { briefChairmanOnPull } from "../ticket-port/chairman-brief.ts";
 import { labelsOf, HOUR_MS } from "./vocabulary.ts";
-import { conflictStateOf, CONFLICT_STATE, reviewStateOf, checksSettledGreen, blockingChecks, REVIEW_STATE } from "./pr-state.ts";
+import { conflictStateOf, CONFLICT_STATE, reviewStateOf, checksSettledGreen, blockingChecks, conclusionOf, REVIEW_STATE } from "./pr-state.ts";
 import { reviewableHead, reviewWait, awaitingEvidence, AWAITING_EVIDENCE_LABEL, AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS } from "./causes/pr-reviews.ts";
 import { verdictAmong } from "../review-verdict.ts";
 import { CAUSE_OF_STALL, DEAD_OWNER_FALLBACK, DEPENDENCY_BOT_WORKER_CAUSES, DEPENDENCY_BOT_WORKER_SESSION, MS_PER_MINUTE, REVIEW_CAUSES, STALL_REASON, UNOWNED_PR_SESSION, approvedAtHead, failingChecksOrder, failingRunStartedAt, hungCheckOf, isChairmanAuthoredPr, ownerOfPr, ownershipOf, reviewGateOf, reviewerRoleFile, settledVerdictOrder, stallReasonOf, type ReviewHeads } from "./pr-orders/pr-gate-readings.ts";
@@ -367,8 +367,19 @@ export const REVIEW_PULL_FIELDS = "headRefOid,reviews,author,isCrossRepository,i
 /** The name a rollup entry goes by: a check run's `name`, a commit status's `context`. */
 const checkNameOf = (check: any): string => String(check?.name ?? check?.context ?? "");
 
-/** The rollup of a pull request narrowed to the newest run per name, which is the only narrowing a question about its checks may ask of (`checksSettledGreen`). */
-const newestChecksOf = (pr: any): any[] => newestPerName(Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : []);
+const isCancelled = (check: any): boolean => conclusionOf(check) === "CANCELLED";
+
+/**
+ * The rollup without the cancelled runs a name has another run for (A11-340): a run GitHub cancelled because a later one replaced it is a duplicate, not a failure, and whichever of the two finished last it must not hold a
+ * reviewer back from a head whose other run of that name passed. A name whose only run is cancelled keeps it, and so does not settle (a run is known by its `name`, as `newestPerName` knows it); a name's other run still running or failed decides it as before.
+ */
+function withoutSupersededRuns(rollup: any[]): any[] {
+  const answered = new Set(rollup.filter((check) => !isCancelled(check)).map((check) => check?.name));
+  return rollup.filter((check) => !isCancelled(check) || typeof check?.name !== "string" || !answered.has(check.name));
+}
+
+/** The rollup of a pull request narrowed to the newest run per name, which is the only narrowing a question about its checks may ask of (`checksSettledGreen`), after the cancelled duplicates are set aside ({@link withoutSupersededRuns}). */
+const newestChecksOf = (pr: any): any[] => newestPerName(withoutSupersededRuns(Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : []));
 
 /** The checks `required` names, or every check when it names none: a null list was not read or could not be, and an empty one is a branch that requires nothing, which counts every check as `pull-feedback.ts` does (A11-175). */
 const requiredNames = (required: readonly string[] | null): string[] | null => (required === null || required.length === 0 ? null : [...required]);

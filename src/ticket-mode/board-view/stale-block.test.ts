@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
 import { poolFixture } from "../pool-fixture.ts";
 import { finish } from "../queue/queue-transitions.ts";
+import { logOf } from "../queue/run-log.ts";
 import { recordPullHeads, recordStaleBlock } from "../queue/queue-pull-heads.ts";
 import { emptyQueue } from "../queue.ts";
 import { enqueue, type Entry, type Queue } from "../queue/queue-entries-and-outcomes.ts";
@@ -149,6 +150,26 @@ test("A11-213: the watch flags a pull request blocked for 31 minutes as Needs yo
   assert.equal(entry().handedBack, undefined, "a new head clears the flag");
   assert.equal(runStatus(entry()), "awaiting-review");
   assert.equal(entry().pullHeads?.[PR]?.blockedSince, undefined);
+});
+
+test("A11-340: a head nobody reviewed is not read, logged or flagged as changes requested because GitHub still holds the decision from the head before", () => {
+  const { clock, host, pool, entry, store } = blockedPool();
+  pool.watchFeedback();
+  const verdicts = () => logOf(store.get(), "A11-203").filter((event) => event.kind === "verdict");
+  assert.deepEqual(verdicts().map((event) => event.kind === "verdict" && [event.head, event.review]), [["abcd1234ef56", "changes-requested"]], "the head the reviewer blocked is logged once");
+  // The worker pushes: GitHub's decision stays CHANGES_REQUESTED, and no review sits at the new head.
+  const pull = host.pullAt(PR)!;
+  pull.head = "8b3d0ba9aaaa";
+  pull.feedback = { reviewDecision: "changes-requested", verdictAtHead: null };
+  pool.watchFeedback();
+  assert.equal(entry().pullHeads?.[PR]?.head, "8b3d0ba9aaaa");
+  assert.equal(entry().pullHeads?.[PR]?.review, "none", "no review at the head is no verdict, whatever the decision says");
+  assert.equal(entry().pullHeads?.[PR]?.blockedSince, undefined);
+  assert.equal(verdicts().length, 1, "no verdict is logged for the new head");
+  clock.now = NOW + 31 * MINUTE;
+  pool.watchFeedback();
+  assert.equal(entry().handedBack, undefined, "and no stale-block note blames it");
+  assert.equal(staleBlockNote(entry(), clock.now), null);
 });
 
 test("A11-213: the flag goes when the reviewer approves the same head, and a pull request blocked again counts its 30 minutes from when it was blocked again", () => {

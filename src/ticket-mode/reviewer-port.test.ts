@@ -271,3 +271,20 @@ test("A11-160: the gate judges a pull request for the code host plugin: the fiel
   assert.equal(judge.settledOf({ statusCheckRollup: [{ name: "gate", status: "IN_PROGRESS", conclusion: null }] }, null), false, "a pending check has not settled");
   assert.equal(judge.settledOf({ statusCheckRollup: [] }, null), false, "no check at all is not settled green");
 });
+
+test("A11-340: a cancelled run of a check is a duplicate while the check has another run, and decides nothing then; a check with only cancelled runs, or another run still going or red, is not settled", async () => {
+  await loadReviewerGate();
+  const judge = gateReviewJudge();
+  const run = (name: string, conclusion: string | null, runId: number, minute: number) =>
+    ({ name, status: conclusion === null ? "IN_PROGRESS" : "COMPLETED", conclusion, startedAt: `2026-10-27T02:${minute}:00Z`, completedAt: conclusion === null ? null : `2026-10-27T02:${minute}:30Z`, detailsUrl: `https://github.com/o/r/actions/runs/${runId}/job/1` });
+  const settled = (...rollup: unknown[]) => judge.settledOf({ statusCheckRollup: rollup }, null);
+  assert.equal(settled(run("gate", "SUCCESS", 200, 26), run("gate", "CANCELLED", 201, 27)), true, "a cancelled duplicate that is newer by run id and by time");
+  assert.equal(settled(run("gate", "CANCELLED", 201, 27), run("gate", "SUCCESS", 200, 26)), true, "whatever the order the rollup lists them in");
+  assert.equal(settled(run("gate", "SUCCESS", 200, 26), run("gate", "CANCELLED", 199, 27)), true, "and one from the superseded push");
+  assert.equal(settled(run("gate", "CANCELLED", 201, 27)), false, "a check whose only run was cancelled has not passed");
+  assert.equal(settled(run("gate", "CANCELLED", 199, 25), run("gate", null, 200, 26)), false, "the run that replaced the cancelled one is still going");
+  assert.equal(settled(run("gate", "CANCELLED", 199, 25), run("gate", "FAILURE", 200, 26)), false, "or it failed");
+  assert.equal(settled(run("gate", "SUCCESS", 200, 26), run("python", "CANCELLED", 201, 27)), false, "a cancelled run of one check is no pass for another");
+  assert.equal(settled(run("gate", "CANCELLED", 201, 27), { context: "gate", state: "SUCCESS" }), false, "a commit status is known by its context, and is no other run of a check run's name");
+  assert.equal(judge.settledOf({ statusCheckRollup: [run("gate", "SUCCESS", 200, 26), run("gate", "CANCELLED", 201, 27), run("python", "CANCELLED", 202, 27)] }, ["gate"]), true, "only the required checks count, with the duplicate set aside");
+});
