@@ -25,22 +25,26 @@ const settled = async () => { for (let i = 0; i < 5; i += 1) await new Promise((
 function pushingGit(push: (n: number) => string | undefined = () => undefined) {
   const calls: { cwd: string; args: string[] }[] = [];
   let pushes = 0;
+  /** The branch every checkout is on, as `git rev-parse --abbrev-ref HEAD` says; set to the ticket's once the run exists. */
+  const head = { branch: "" };
   const git: Git = async (cwd, args) => {
     calls.push({ cwd, args });
+    if (args[0] === "rev-parse") return `${head.branch}\n`;
     if (args[0] !== "push") return "";
     pushes += 1;
     const refusal = push(pushes);
     if (refusal !== undefined) throw Object.assign(new Error("Command failed: git push"), { stderr: refusal });
     return "";
   };
-  return { git, calls, pushes: () => calls.filter(({ args }) => args[0] === "push") };
+  return { git, head, calls, pushes: () => calls.filter(({ args }) => args[0] === "push") };
 }
 
 /** NBF-1's run with a checkout of `REPO`, whose worker ends `needs-human` on `outcome`, over a git that pushes as `push` says. */
-async function handedBack(push?: (n: number) => string | undefined, outcome: Record<string, unknown> = CLAIM, { checkout = true }: { checkout?: boolean } = {}) {
+async function handedBack(push?: (n: number) => string | undefined, outcome: Record<string, unknown> = CLAIM, { checkout = true, branch }: { checkout?: boolean; branch?: string } = {}) {
   const made = poolFixture({ keys: [KEY], max: 1 });
   const fake = pushingGit(push);
   const pool = made.restart({ git: fake.git });
+  fake.head.branch = branch ?? made.entry(KEY).ticket.branch;
   await pool.tick();
   made.status.set(herdrName(KEY), "working");
   await pool.tick();
@@ -102,6 +106,19 @@ test("a hand-back that is not about pushing, and one from a run with no checkout
   assert.equal(bare.fake.calls.length, 0);
   assert.equal(bare.entry(KEY).phase, "finished");
   assert.equal(bare.log().some((event) => event.kind === "push-check"), false);
+});
+
+test("a checkout left on another branch holds none of the ticket's work: nothing is pushed from it and the hand-back stands as it was", async () => {
+  const run = await handedBack(undefined, CLAIM, { branch: "somebody-elses-branch" });
+  assert.equal(run.fake.pushes().length, 0);
+  assert.equal(run.entry(KEY).phase, "finished");
+  assert.equal(run.log().some((event) => event.kind === "push-check"), false);
+});
+
+test("a hand-back that only mentions a credential or permission in passing is not read as a refused push", () => {
+  const access = (reason: string): Outcome => ({ kind: "needs-human", escalation: "access", reason });
+  assert.equal(claimsLostPush(access("I did not push because the commit holds a credential")), false);
+  assert.equal(claimsLostPush(access("needs permission to push to the protected branch")), false);
 });
 
 test("a worker told access is fine that hands back on it again gets its card: the board wakes it once", async () => {

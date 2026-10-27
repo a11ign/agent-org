@@ -42,7 +42,7 @@ import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
-import { checkoutsOf, checkPush, claimsLostPush, reasonWithGitError, wakeWorker } from "./pool-push-check.ts";
+import { checkoutsOf, checkPush, claimsLostPush, isWorkersOwnRun, reasonWithGitError, wakeWorker } from "./pool-push-check.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { type PoolContext } from "./pool-context.ts";
 import { recordPlannerDecision, recordWorkerRoundEnded, settlePlannerRound } from "./pool-standoff.ts";
@@ -101,7 +101,7 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   }
   // An edit is recorded with the ticket's text before the run ends, so a proposal without that text is read first; with it, the run settles.
   if ("edit" in outcome && outcome.edit !== undefined && outcome.edit.base === undefined) return void proposeEdit(ctx, entry, outcome, outcome.edit).catch(settleFailed(entry));
-  const checkouts = claimsLostPush(outcome) ? checkoutsOf(ctx, entry) : [];
+  const checkouts = claimsLostPush(outcome) && isWorkersOwnRun(ctx, entry) ? checkoutsOf(ctx, entry) : [];
   if (claimsLostPush(outcome) && checkouts.length > 0) return void settleLostPush(ctx, entry, outcome, checkouts).catch(settleFailed(entry));
   if (outcome.kind === "done") return void completeDone(ctx, entry, outcome).catch(settleFailed(entry));
   if (outcome.kind !== "planned") return end(ctx, entry, outcome);
@@ -190,8 +190,13 @@ async function settleLostPush(ctx: PoolContext, entry: Entry, outcome: Extract<O
   try {
     const checked = await checkPush(ctx, entry, checkouts);
     if (!sameRun(ctx, entry)) return;
-    update(ctx, (queue) => logEvent(queue, key, now(), checked.ok ? { kind: "push-check", step: "passed", detail: checked.repos.join(", ") } : { kind: "push-check", step: "failed", detail: checked.error }));
-    if (checked.ok && wakeWorker(ctx, entry, checked.repos)) return log(`${key}: the board's push of ${checked.repos.join(", ")} worked, so the worker is told access is fine and no card is raised`);
+    if ("unchecked" in checked) return end(ctx, entry, outcome);
+    const woken = checked.ok && wakeWorker(ctx, entry, checked.repos);
+    const logged = checked.ok
+      ? { kind: "push-check" as const, step: woken ? "passed" as const : "failed" as const, detail: woken ? checked.repos.join(", ") : `the push of ${checked.repos.join(", ")} worked, but herdr would not take the worker the message` }
+      : { kind: "push-check" as const, step: "failed" as const, detail: checked.error };
+    update(ctx, (queue) => logEvent(queue, key, now(), logged));
+    if (woken) return log(`${key}: the board's push worked, so the worker is told access is fine and no card is raised`);
     end(ctx, entry, checked.ok ? outcome : { ...outcome, reason: reasonWithGitError(outcome.reason, checked.error) });
   } finally {
     attaching.delete(name);

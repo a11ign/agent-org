@@ -78,7 +78,7 @@ export const SESSION_WAIT_SENTENCE = "An ask that only the person's session can 
  * called lost. The error is quoted whole, so the person who reads the card, or the board's own check, can tell a transient refusal from a lost right. The board also pushes the run's branch itself before such a card reaches a person.
  */
 export const ACCESS_EVIDENCE_SENTENCE = "Before you hand back for lost push access: `permissions.push` (from `gh api repos/<owner>/<repo>`) reads false for every repository under an App installation token, so it is not evidence of anything. "
-  + "Retry a failed push once, and quote the full `remote:` lines of its error in your reason, not a summary. The board pushes your branch itself before such a hand-back reaches a person, and a push that works ends it.";
+  + "Retry a failed push once, and quote the full `remote:` lines of its error in your reason, not a summary. When a run with a checkout hands back for lost push access, the board pushes its branch itself before the hand-back reaches a person, and a push that works ends it.";
 
 /**
  * What every agent that may stop is told to do with a question, quoted into the planner, worker and review-round briefs (A11-257): a stop is for an item of the list and names its id, and any other question is decided in line

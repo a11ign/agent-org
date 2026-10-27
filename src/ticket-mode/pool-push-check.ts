@@ -11,7 +11,9 @@
 import { type Git } from "./worktree.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { type Entry, type Outcome } from "./queue/queue-entries-and-outcomes.ts";
-import { runPlace } from "./pool-state.ts";
+import { isPlanning, runPlace } from "./pool-state.ts";
+import { isCapPlanner } from "./queue/queue-cap.ts";
+import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { worktreesIn } from "./pool-paths.ts";
 import { sendToAgent } from "./pool-resume.ts";
 import { markOutcomeStale } from "./pool-outcome.ts";
@@ -31,14 +33,21 @@ export const PUSH_ERROR_CHARS = 1500;
 
 /** The words of an access hand-back that is about pushing: a push, and a refusal of it or a claim about the right to it. PURE over the reason. */
 const PUSHING = /\bpush(?:ed|es|ing)?\b/i;
-const REFUSED = /\b403\b|denied|forbidden|permission|authenticat|credential|read-only|not allowed|unauthori[sz]ed|lost (?:the )?(?:write|push)/i;
+const REFUSED = /\b403\b|denied|forbidden|permissions\.push|read-only|unauthori[sz]ed|lost (?:the )?(?:write |push )?access|remote: /i;
 
 /** Whether `outcome` is an access hand-back whose reason says a push was refused or the right to push is gone. PURE. */
 export const claimsLostPush = (outcome: Outcome): outcome is Extract<Outcome, { kind: "needs-human" }> =>
   outcome.kind === "needs-human" && outcome.escalation === "access" && PUSHING.test(outcome.reason) && REFUSED.test(outcome.reason);
 
-/** What came of the board's own pushes: all of them worked, or the error of the last failure, in git's words. */
-export type PushCheck = Readonly<{ ok: true; repos: readonly string[] } | { ok: false; error: string }>;
+/** What came of the board's own pushes: all of them worked, the error of the last failure in git's words, or `unchecked` when no checkout of the run is on the ticket's branch, so there is nothing of the worker's to push. */
+export type PushCheck = Readonly<{ ok: true; repos: readonly string[] } | { ok: false; error: string } | { unchecked: true }>;
+
+/**
+ * Whether the board may test the hand-back of this run by pushing: the run is live (running, or parked with its pane open) and is a worker's own, not a planning run, a talk session or the planner of a round cap or a stand-off, whose
+ * hand-back is not about pushing a branch. A run that already finished with no pane is settled by `end` as it always was. PURE.
+ */
+export const isWorkersOwnRun = (ctx: PoolContext, entry: Entry): boolean =>
+  (entry.phase === "running" || isParked(entry)) && entry.talk !== true && !isPlanning(ctx, entry) && !isCapPlanner(entry) && entry.standoff?.stage !== "planner";
 
 /** The error of a failed git call as git said it: its stderr (the `remote:` lines among them), else its message, cut to {@link PUSH_ERROR_CHARS}. PURE. */
 export function gitErrorText(err: unknown): string {
@@ -75,12 +84,15 @@ async function pushOnce(git: Git, worktree: string, branch: string): Promise<str
 export const checkoutsOf = (ctx: PoolContext, entry: Entry): readonly string[] => worktreesIn(runPlace(ctx, entry).folder);
 
 /**
- * Push the run's branch from each of its checkouts, with the dry run first and one retry of the pair ({@link PUSH_TRIES}). Every checkout must work for the check to pass; the first that fails twice ends it with git's error, named by repository.
+ * Push the run's branch from each of its checkouts that is on it (a checkout left on another branch or detached holds none of the ticket's work), with the dry run first and one retry of the pair ({@link PUSH_TRIES}). Every checkout must work for the check to pass; the first that fails twice ends it with git's error, named by repository.
  * Pushing the run's own unpushed commits to its own branch is what the worker does, so a push that works leaves the branch as the worker would have.
  */
 export async function checkPush(ctx: PoolContext, entry: Entry, repos: readonly string[]): Promise<PushCheck> {
   const { folder } = runPlace(ctx, entry);
-  for (const repo of repos) {
+  const onBranch = await Promise.all(repos.map(async (repo) => (await ctx.git(join(folder, repo), ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim() === entry.ticket.branch));
+  const pushable = repos.filter((_, at) => onBranch[at]);
+  if (pushable.length === 0) return { unchecked: true };
+  for (const repo of pushable) {
     let error: string | null = null;
     for (let attempt = 0; attempt < PUSH_TRIES; attempt += 1) {
       error = await pushOnce(ctx.git, join(folder, repo), entry.ticket.branch);
@@ -88,7 +100,7 @@ export async function checkPush(ctx: PoolContext, entry: Entry, repos: readonly 
     }
     if (error !== null) return { ok: false, error: `${repo}: ${error}` };
   }
-  return { ok: true, repos };
+  return { ok: true, repos: pushable };
 }
 
 /** The worker's reason with the board's finding after it: the pushes were tried twice and git's words. PURE. */
