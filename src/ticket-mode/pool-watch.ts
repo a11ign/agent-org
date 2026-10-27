@@ -49,6 +49,7 @@ import { watchCiSpend } from "./ci-spend/watch.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readoptCrashed } from "./pool-readopt.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
+import type { RoundOptions } from "./queue/queue-cap.ts";
 import { answerQueue, type QueueAnswer } from "./pool-merge-queue.ts";
 import { recordQueueHeads } from "./queue/queue-merge-queue.ts";
 import { foreignRedsOf } from "./pool-foreign-checks.ts";
@@ -586,7 +587,8 @@ export function watchFeedback(ctx: PoolContext): void {
       else if (lines.length === 0) recordWithoutRound(ctx, entry, checks, removals);
       else {
         recordQueueAnswer(ctx, entry, removals.heads);
-        update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads));
+        // A round that answers only checks which count toward no cap (A11-343) is not one of the board's own rounds, and a run that has used them goes to the planner and not to a person.
+        update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads, checksRoundOptions(ctx, checks, lines)));
         queued = true;
       }
       continue;
@@ -601,6 +603,15 @@ export function watchFeedback(ctx: PoolContext): void {
   }
   if (queued) void tick(ctx);
 }
+
+/** Whether the round's only feedback is the red checks that count toward no cap (A11-343): nothing else (a review, a conflict, a removal) asks for it. PURE. */
+const answersOnlyUncounted = (checks: CheckAnswer, lines: readonly string[]): boolean => checks.uncounted && lines.length === 1 && lines[0] === checks.feedback;
+
+/** How a round at the cap is answered on this machine (A11-343): to the planner when it has one, and not counted when it answers only checks that count toward no cap. */
+const roundOptions = (ctx: PoolContext): RoundOptions => ({ planner: ctx.settings.planner !== null });
+
+/** The same, for a pass whose only feedback is `checks`' red checks that count toward no cap (A11-343): the round is the worker's and counts toward nothing. */
+const checksRoundOptions = (ctx: PoolContext, checks: CheckAnswer, lines: readonly string[]): RoundOptions => ({ ...roundOptions(ctx), uncounted: answersOnlyUncounted(checks, lines) });
 
 /** Route the stand-off the run holds now (A11-290), read afresh: the reviewer lines above may have just recorded it. Returns whether a round was queued. */
 function routeStandoff(ctx: PoolContext, key: string): boolean {
@@ -804,7 +815,7 @@ function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { ur
   if (!roundsLeft(entry)) {
     if (red.length > 0) {
       recordQueueAnswer(ctx, entry, removals.heads);
-      update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads));
+      update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads, roundOptions(ctx)));
     } else recordWithoutRound(ctx, entry, checks, removals);
     return false;
   }
@@ -816,7 +827,7 @@ function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { ur
     return false;
   }
   recordQueueAnswer(ctx, entry, removals.heads);
-  update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads));
+  update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads, checksRoundOptions(ctx, checks, lines)));
   return true;
 }
 
@@ -829,5 +840,5 @@ export function startStackConflictRound(ctx: PoolContext, key: string, feedback:
   const { now } = ctx;
   const entry = ctx.store.get().entries.find((e) => e.ticket.key === key);
   if (entry === undefined) return;
-  update(ctx, (queue) => (isWatched(entry) ? feedbackRound(queue, key, feedback, now()) : conflictRound(queue, key, feedback, now())));
+  update(ctx, (queue) => (isWatched(entry) ? feedbackRound(queue, key, feedback, now(), undefined, roundOptions(ctx)) : conflictRound(queue, key, feedback, now())));
 }

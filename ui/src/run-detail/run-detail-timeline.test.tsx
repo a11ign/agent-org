@@ -85,6 +85,29 @@ const BOARD_ROWS: Readonly<Record<Exclude<State, "loading" | "missing">, readonl
   awaiting: ["Pull request opened", "Started"], ready: ["Approved at 1f6009d", "Started"], done: ["Pull request merged", "Started"], failed: ["Run failed", "Started"], cancelled: ["Ticket canceled in the tracker", "Started"],
 };
 
+describe("the Timeline's round-cap rows", () => {
+  it("word what the board did at the round cap (A11-343): the planner's round, its Decision, the wait on a ticket, and the round that follows", () => {
+    const rows = rowsOf([
+      { at: NOW - 6 * MINUTE, kind: "round", cause: "cap-planner", reason: "capture is red" },
+      { at: NOW - 5 * MINUTE, kind: "cap", step: "decided", detail: "answer the comment and say capture is A11-61's" },
+      { at: NOW - 4 * MINUTE, kind: "round", cause: "cap-round", reason: "capture is red" },
+      { at: NOW - 3 * MINUTE, kind: "cap", step: "waiting", detail: "A11-341: capture stays red until its Auth0 fix merges" },
+      { at: NOW - 2 * MINUTE, kind: "cap", step: "resumed", detail: "A11-341 merged its pull request" },
+      { at: NOW - 1 * MINUTE, kind: "round", cause: "wait-ended", reason: "A11-341 merged its pull request" },
+      { at: NOW - 30_000, kind: "cap", step: "planner", detail: null },
+    ]);
+    expect(rows.map(({ text, when, tone }) => [text, when, tone])).toEqual([
+      ["Sent to the planner at the round cap", "just now", "amber"],
+      ["Round after the ticket it waited on merged", "1 min ago · A11-341 merged its pull request", "amber"],
+      ["The ticket it waited on merged", "2 min ago · A11-341 merged its pull request", "green"],
+      ["Planner marked the run as waiting on a ticket", "3 min ago · A11-341: capture stays red until its Auth0 fix merges", "amber"],
+      ["One more round, with the planner's Decision", "4 min ago · capture is red", "amber"],
+      ["Planner recorded a Decision", "5 min ago · answer the comment and say capture is A11-61's", "amber"],
+      ["Planner deciding at the round cap", "6 min ago · capture is red", "amber"],
+    ]);
+  });
+});
+
 describe("the Timeline's base-merge rows", () => {
   it("word each base-merge step of a pull request the board brings up to date, and the step queued again after its conflict round (A11-286)", () => {
     const rows = rowsOf([

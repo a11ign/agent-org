@@ -24,9 +24,9 @@ export const REREVIEW_REASONS_MAX = 2000;
 /**
  * Why a round was started: new feedback, red checks, a conflict, a person's Respond (`asked`), a person's approval of draft pull requests, a talk session, or the reviewer's second look at a blocked head after the block was
  * answered without a commit (`rereview`), which the board counts as one of its own rounds though it queues no worker. A round the board started because the ticket's Decisions changed is `decisions`: it counts toward no cap either, since a person wrote the change (A11-305). A round the board held its run for, when the ticket's CI passed twice its budget, is `ci-budget`: it counts toward no cap, since
- * the cap is for review findings (A11-261). The two rounds of a stand-off (A11-290), the planner's and the worker's, count toward no cap either: a stand-off is routed once for each head, so it cannot repeat.
+ * the cap is for review findings (A11-261). The two rounds of a stand-off (A11-290), the planner's and the worker's, count toward no cap either: a stand-off is routed once for each head, so it cannot repeat. So do the rounds at the cap (A11-343): the planner's (`cap-planner`), the worker's that follows its Decision (`cap-round`), and the one a run takes when the ticket it waited on merged (`wait-ended`).
  */
-export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "decisions" | "approved" | "talk" | "rereview" | "ci-budget" | "standoff-planner" | "standoff-worker";
+export type RoundCause = "feedback" | "checks" | "conflict" | "asked" | "decisions" | "approved" | "talk" | "rereview" | "ci-budget" | "standoff-planner" | "standoff-worker" | "cap-planner" | "cap-round" | "wait-ended";
 
 /**
  * Why a ticket was queued again: a person's retry, the next plan step after a merge, a stop for an update, a plan written again, a stop behind a ticket its worker waits on (A11-272), a hold for its ticket's CI spend (A11-261), or the step
@@ -67,6 +67,8 @@ type EventBody =
   | Readonly<{ kind: "rereview"; url: string; head: string; verdict: "convinced" | "not-convinced"; reasons: string }>
   /** What the board did with a stand-off (A11-290): routed it to the `planner` or the `worker`, or the planner `decided` it (`detail` says how), or it was `settled` with no person: the head moved on or was approved after it. */
   | Readonly<{ kind: "standoff"; url: string; head: string; step: "planner" | "worker" | "decided" | "settled"; detail: string | null }>
+  /** What the board did at the round cap (A11-343): routed the run to the `planner`, the planner `decided` to start one more round (`detail` is its Decision), marked the run `waiting` on a ticket, or the wait `resumed` as that ticket's pull request merged. */
+  | Readonly<{ kind: "cap"; step: "planner" | "decided" | "waiting" | "resumed"; detail: string | null }>
   | Readonly<{ kind: "needs-you"; reason: string }>
   | Readonly<{ kind: "answered"; by: AnsweredBy }>
   | Readonly<{ kind: "published"; link: string | null }>

@@ -364,7 +364,7 @@ function planChangeSince(ctx: PoolContext, look: Look | undefined, held: Entry |
 }
 
 /** Whether a run that holds the pull request may be asked for a re-review now: its round has ended, and it has not been handed back for want of a round (A11-235). */
-const awaitsRereview = (held: Entry): boolean => held.phase === "finished" && (held.handedBack === undefined || roundsLeft(held));
+const awaitsRereview = (held: Entry): boolean => held.phase === "finished" && held.waitingOnTicket === undefined && (held.handedBack === undefined || roundsLeft(held));
 
 /**
  * The description lines that changed, as an answer to `block`: for a pull request a run holds, only when the run's last round ended after the block was posted. A description edited while the reviewer was still
@@ -392,8 +392,8 @@ function rereviewable(ctx: PoolContext, reviewer: ReviewerPort, url: string, sta
 /** Hands the run that holds a block it has no round left to answer to a person (once), instead of starting the reviewer (A11-235). */
 function handBackUnreviewed(ctx: PoolContext, held: Entry, answered: string): void {
   if (held.handedBack !== undefined) return;
-  log(`${held.ticket.key}: ${answered}; it has no round left, so it is handed to a person`);
-  update(ctx, (queue) => handBackRereview(queue, held.ticket.key, answered, ctx.now()));
+  log(`${held.ticket.key}: ${answered}; it has no round left`);
+  update(ctx, (queue) => handBackRereview(queue, held.ticket.key, answered, ctx.now(), { planner: ctx.settings.planner !== null }));
 }
 
 /** What answered a block, as a re-review's brief carries it: the replies quoted, and the lines of the description and of the ticket's Decisions that changed. */

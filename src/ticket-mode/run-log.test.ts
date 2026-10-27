@@ -8,7 +8,7 @@ import { poolFixture } from "./pool-fixture.ts";
 import { OUTCOME_FILE } from "./worker-files.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { dismiss, enqueue, remove, retry, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
-import { batchPlanDone, feedbackRound, finish, markRunning, markStarting, observe, planDone, publishDone, recordPullStates, respond, MAX_FEEDBACK_ROUNDS } from "./queue/queue-transitions.ts";
+import { batchPlanDone, checkRound, feedbackRound, finish, markRunning, markStarting, observe, planDone, publishDone, recordPullStates, respond, MAX_FEEDBACK_ROUNDS } from "./queue/queue-transitions.ts";
 import { queueNextStep } from "./queue/queue-next-step.ts";
 import { requeueForUpdate } from "./queue/queue-pins.ts";
 import { recordPullHeads, recordStaleBlock } from "./queue/queue-pull-heads.ts";
@@ -184,6 +184,25 @@ test("the board's hand-back at its cap of rounds logs that a person is needed, a
   const noted = recordStaleBlock(finishedA(), "A", "changes requested at h1 for 90 minutes with no push", 9);
   assert.deepEqual(bodies(noted).slice(-1), [{ kind: "needs-you", reason: "changes requested at h1 for 90 minutes with no push" }]);
   assert.equal(logOf(recordStaleBlock(noted, "A", "changes requested at h1 for 90 minutes with no push", 10), "A").length, logOf(noted, "A").length);
+});
+
+test("A11-343: at its cap a watched run goes to the planner when the machine has one: a planner round is logged and no person is needed; a run the board does not watch, or a machine with no planner, still hands back", () => {
+  const capped = (outcome?: Outcome): Queue => {
+    const queue = finishedA(outcome);
+    return { ...queue, entries: queue.entries.map((entry) => ({ ...entry, rounds: MAX_FEEDBACK_ROUNDS })) };
+  };
+  const routed = feedbackRound(capped(), "A", "still red", 9, undefined, { planner: true });
+  assert.deepEqual(bodies(routed).slice(-1), [{ kind: "round", cause: "cap-planner", reason: "still red" }]);
+  assert.equal(kinds(routed).includes("needs-you"), false);
+  const round = routed.entries.find((entry) => entry.ticket.key === "A");
+  assert.deepEqual([round?.phase, round?.rounds, round?.handedBack, round?.capRound], ["queued", MAX_FEEDBACK_ROUNDS, undefined, { latest: "still red" }]);
+  assert.deepEqual(kinds(feedbackRound(capped(), "A", "still red", 9)).slice(-1), ["needs-you"], "CONTROL: no planner");
+  const asking = capped({ kind: "needs-human", reason: "which?" });
+  const open = { ...asking, entries: asking.entries.map((entry) => ({ ...entry, review: PRS, pullStates: { [PRS[0].url]: "open" as const } })) };
+  const parked = checkRound(open, "A", "test failed", 9, {}, { planner: true });
+  assert.match(parked.entries.find((entry) => entry.ticket.key === "A")?.handedBack ?? "", /keep getting feedback/, "a run parked on a question is not routed to the planner: it already asks a person");
+  const uncounted = feedbackRound(capped(), "A", "capture is red", 9, undefined, { planner: true, uncounted: true });
+  assert.deepEqual([uncounted.entries.find((entry) => entry.ticket.key === "A")?.rounds, uncounted.entries.find((entry) => entry.ticket.key === "A")?.capRound], [MAX_FEEDBACK_ROUNDS, undefined], "an uncounted round is the worker's, and counts nothing");
 });
 
 test("a talk session and a publish are logged, and a talk session taken off the queue is not a removed run", () => {

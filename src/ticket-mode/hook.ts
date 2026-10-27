@@ -70,9 +70,12 @@ import { bodyHash } from "./standoff-body-hash.ts";
 import { decisionsStop } from "./decisions-stop.ts";
 import { DECISIONS_ROUND_FILE } from "./decisions-files.ts";
 import { STANDOFF_DECISION_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE } from "./standoff-files.ts";
+import { CAP_DECISION_FILE, CAP_PLANNER_FILE } from "./cap-files.ts";
+import { parseCapDecision } from "./cap-decision.ts";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { findingsMiss, parseFindingsGiven, retryAsk } from "./blocker-findings-check.ts";
 import { type Order, parseOrder } from "./batch-order.ts";
 import { boardKeyPath } from "./board-key.ts";
@@ -132,7 +135,7 @@ function readyRefusal(approved: readonly string[]): Refusal {
  * its one automatic retry are the board's (A11-207): a planner that wrote the first could lift its own check, and one that wrote the second could skip the retry. The same goes for the list of paths other
  * tickets hold and the mark of the retry made for a folder claim (A11-212).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, DECISIONS_ROUND_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, TALK_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, CAP_PLANNER_FILE, DECISIONS_ROUND_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -702,6 +705,7 @@ function offListQuestion(checked: OffListQuestions): Judgment | null {
 function standoffStop(ticketDir: string, { text }: OutcomeRead, io: StopIo): Judgment | null {
   const checked = checkOutcome(text);
   if ("problem" in checked || checked.outcome.kind !== "reviewed") return null;
+  if (io.exists(join(ticketDir, CAP_PLANNER_FILE))) return capDecisionStop(ticketDir, io);
   if (io.exists(join(ticketDir, STANDOFF_PLANNER_FILE))) return plannerDecisionStop(ticketDir, io);
   const round = join(ticketDir, STANDOFF_ROUND_FILE);
   return io.exists(round) ? unchangedStop(round, io) : null;
@@ -719,20 +723,42 @@ function decisionsRoundStop(ticketDir: string, { text }: OutcomeRead, io: StopIo
   return "ask" in judged ? judged : { verdict: { code: 0, say: [judged.say] } };
 }
 
-/** The refusal of a stand-off planner's `reviewed` that has no usable decision, or null when it has one. */
-function plannerDecisionStop(ticketDir: string, io: StopIo): Judgment | null {
-  const file = join(ticketDir, STANDOFF_DECISION_FILE);
+/**
+ * The refusal of a planner's `reviewed` that has no usable decision file, or null when it has one: `missing` says why the file is wanted, `hint` how to write it, and `judge` answers the words that refuse the file's text, or null when it will do.
+ */
+function decisionFileStop(file: string, io: StopIo, { missing, hint, judge }: Readonly<{ missing: string; hint: string; judge: (text: string) => string | null }>): Judgment | null {
   const stuck = `without a usable ${file}, so this one is allowed and the board hands the run to a person`;
-  const ask = (why: string): Judgment => ({ ask: `${why}. Write ${file} as \`{ "decision": "amended" | "upheld", "reason": "<one or two sentences>" }\` before you write reviewed again.`, stuck });
-  if (!io.exists(file)) return ask(`this is the planner's round for a stand-off, and ${file} is not there`);
+  const ask = (why: string): Judgment => ({ ask: `${why}. Write ${file} as ${hint} before you write reviewed again.`, stuck });
+  if (!io.exists(file)) return ask(`${missing}, and ${file} is not there`);
   try {
-    const { decision, reason } = JSON.parse(io.read(file)) as { decision?: unknown; reason?: unknown };
-    if (decision !== "amended" && decision !== "upheld") return ask(`${file} needs decision: "amended" or "upheld"`);
-    if (typeof reason !== "string" || reason.trim() === "") return ask(`${file} needs a reason, in words`);
-    return decision === "amended" && io.planNames(join(ticketDir, PLAN_DIR)).length === 0 ? ask(`${file} says amended, but the plan folder ${join(ticketDir, PLAN_DIR)} holds no amended plan file`) : null;
+    const refusal = judge(io.read(file));
+    return refusal === null ? null : ask(refusal);
   } catch (err) {
     return ask(`${file} cannot be read (${firstLine(err)})`);
   }
+}
+
+/** The refusal of a stand-off planner's `reviewed` that has no usable decision, or null when it has one. */
+function plannerDecisionStop(ticketDir: string, io: StopIo): Judgment | null {
+  const file = join(ticketDir, STANDOFF_DECISION_FILE);
+  const judge = (text: string): string | null => {
+    const { decision, reason } = JSON.parse(text) as { decision?: unknown; reason?: unknown };
+    if (decision !== "amended" && decision !== "upheld") return `${file} needs decision: "amended" or "upheld"`;
+    if (typeof reason !== "string" || reason.trim() === "") return `${file} needs a reason, in words`;
+    return decision === "amended" && io.planNames(join(ticketDir, PLAN_DIR)).length === 0 ? `${file} says amended, but the plan folder ${join(ticketDir, PLAN_DIR)} holds no amended plan file` : null;
+  };
+  return decisionFileStop(file, io, { missing: "this is the planner's round for a stand-off", hint: '`{ "decision": "amended" | "upheld", "reason": "<one or two sentences>" }`', judge });
+}
+
+/** The refusal of the round-cap planner's `reviewed` that has no usable decision (A11-343), or null when it has one. */
+function capDecisionStop(ticketDir: string, io: StopIo): Judgment | null {
+  const file = join(ticketDir, CAP_DECISION_FILE);
+  const hint = '`{ "decision": "round", "reason": "<the Decision, in words>" }` or `{ "decision": "waiting", "ticket": "<KEY>", "reason": "<what it waits on>" }` (to escalate, write a `needs-human` outcome that names an item of the escalation list instead)';
+  const judge = (text: string): string | null => {
+    const read = parseCapDecision(text, file);
+    return typeof read === "string" ? read : null;
+  };
+  return decisionFileStop(file, io, { missing: "this is the planner's round for a run at the board's round cap", hint, judge });
 }
 
 /** The refusal of a stand-off worker's `reviewed` that changed no pull request's head or description since the round began, or null when something changed or could not be told. */

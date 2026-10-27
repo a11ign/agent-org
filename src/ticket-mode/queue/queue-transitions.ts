@@ -8,6 +8,7 @@ import { conflictingPulls } from "../board-view/pull-conflict.ts";
 import type { RunWorker } from "./queue-run-detail.ts";
 import { loggedPersonRound } from "./queue-person-round.ts";
 import { respondRefusal } from "./queue-respond-refusal.ts";
+import { capPlannerRound, type RoundOptions } from "./queue-cap.ts";
 import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
 import { declaredMark, repeatOf, undeclaredMark } from "../wait-on/wait-note.ts";
 import type { Judged } from "../wait-on/wait-verdict.ts";
@@ -83,14 +84,15 @@ export const MAX_FEEDBACK_ROUNDS = 3;
  * a pull request conflicts with its base (`feedback` names it as a conflict): the ticket goes back on the queue, at
  * the end, as a review round that answers it, resuming the same worker. `heads` is what the board has answered the red checks at, which the round records
  * (A11-154). After {@link MAX_FEEDBACK_ROUNDS} such rounds since a person last
- * approved, the next trigger hands the run to a person instead, who approves again to let the board carry on. A run the board does not watch
+ * approved, the next trigger goes to the planner (A11-343) when `options.planner` says this machine has one, else it hands the run to a person, who approves again to let the board carry on. A run the board does not watch
  * ({@link isWatched}) is left alone.
  */
-export function feedbackRound(queue: Queue, key: string, feedback: string, now: number, heads?: CheckHeads): Queue {
+export function feedbackRound(queue: Queue, key: string, feedback: string, now: number, heads?: CheckHeads, options?: RoundOptions): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || !isWatched(entry)) return queue;
-  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now, "feedback");
+  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now, "feedback", options);
 }
+
 
 /** What the board has answered the red checks of a run's pull requests at, by URL (A11-154). */
 type CheckHeads = Readonly<Record<string, CheckHead>>;
@@ -102,9 +104,13 @@ const withHeads = (entry: Entry, heads: CheckHeads | undefined): Entry => (heads
  * A round for `entry` that answers `feedback`, for `cause`, or, once the board has started {@link MAX_FEEDBACK_ROUNDS} of its own, the run handed to a person with the latest feedback named, which logs that it needs them
  * when the words of the hand-back are new (A11-219).
  */
-function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue {
+function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause, { planner = false, uncounted = false }: RoundOptions = {}): Queue {
   const rounds = entry.rounds ?? 0;
+  // Bounded: the board starts at most MAX_FEEDBACK_ROUNDS of them, so a check that is red for a reason of the worker's own cannot be asked for ever (A11-343).
+  if (uncounted && (entry.freeRounds ?? 0) < MAX_FEEDBACK_ROUNDS) return queueUncountedRound(queue, entry, feedback, now, cause);
   if (rounds < MAX_FEEDBACK_ROUNDS) return queueRound(queue, entry, feedback, now, cause);
+  // The cap is not on the escalation list: the planner reads the rounds and decides, and a person is asked only by an item of the list (A11-343).
+  if (planner && isWatched(entry)) return capPlannerRound(queue, entry, feedback, now);
   const handedBack = `The pull requests keep getting feedback: the board answered ${rounds} rounds on its own and stopped. Respond to review starts another. The latest: ${feedback}`;
   const handed = replace(queue, entry.ticket.key, (e) => ({ ...e, handedBack, ...(entry.checkHeads === undefined ? {} : { checkHeads: entry.checkHeads }) }));
   return entry.handedBack === handedBack ? handed : logEvent(handed, entry.ticket.key, now, { kind: "needs-you", reason: shortReason(handedBack) ?? handedBack });
@@ -116,10 +122,10 @@ function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: numb
  * {@link feedbackRound} does. At the cap on the board's own rounds the run is handed to a person whatever its outcome was, who answers with Respond to review.
  * `heads` is recorded with the round, or with the hand-back, so the head is not answered twice.
  */
-export function checkRound(queue: Queue, key: string, feedback: string, now: number, heads: CheckHeads): Queue {
+export function checkRound(queue: Queue, key: string, feedback: string, now: number, heads: CheckHeads, options?: RoundOptions): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || !resumesOnConflict(entry)) return queue;
-  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now, "checks");
+  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now, "checks", options);
 }
 
 /** Record what the board did about the red checks of a finished run's pull requests, when it started no round for it: a rerun, or checks named for a person (A11-154). */
@@ -131,10 +137,18 @@ export function recordCheckHeads(queue: Queue, key: string, heads: CheckHeads): 
 export const roundsLeft = (entry: Entry): boolean => (entry.rounds ?? 0) < MAX_FEEDBACK_ROUNDS;
 
 /** `entry` goes back on the queue, at the end, as a review round that answers `feedback`, for `cause`, and counts as one of the board's own rounds. */
-function queueRound(queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue {
-  const round: Entry = { ...reviewRound(entry, openPulls(entry), now), feedback, rounds: (entry.rounds ?? 0) + 1 };
+const queueRound = (queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue =>
+  queuedFor(queue, entry, { feedback, rounds: (entry.rounds ?? 0) + 1 }, now, cause);
+
+/** The same round, counted toward no cap (A11-343): it answers only checks that count toward none, and the run's `freeRounds` counts it, so there are at most {@link MAX_FEEDBACK_ROUNDS} of them. */
+const queueUncountedRound = (queue: Queue, entry: Entry, feedback: string, now: number, cause: RoundCause): Queue =>
+  queuedFor(queue, entry, { feedback, rounds: entry.rounds ?? 0, freeRounds: (entry.freeRounds ?? 0) + 1 }, now, cause);
+
+/** `entry` goes back on the queue, at the end, as a review round with `fields`, and the log says why. */
+function queuedFor(queue: Queue, entry: Entry, fields: Pick<Entry, "feedback" | "rounds" | "freeRounds">, now: number, cause: RoundCause): Queue {
+  const round: Entry = { ...reviewRound(entry, openPulls(entry), now), ...fields };
   const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== entry.ticket.key), round] };
-  return logEvent(queued, entry.ticket.key, now, { kind: "round", cause, reason: shortReason(feedback) });
+  return logEvent(queued, entry.ticket.key, now, { kind: "round", cause, reason: shortReason(fields.feedback ?? "") });
 }
 
 /**

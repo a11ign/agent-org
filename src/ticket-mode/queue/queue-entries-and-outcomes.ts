@@ -15,6 +15,7 @@ import type { TicketRead } from "../ticket-read.ts";
 import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
 import { logEvent, type RunEvent } from "./run-log.ts";
 import type { Standoff } from "./standoff-types.ts";
+import type { CapRound, TicketWait } from "./queue-cap.ts";
 import type { CiHold, TicketCi } from "../ci-spend/store.ts";
 import type { Interventions } from "./interventions.ts";
 
@@ -424,6 +425,13 @@ export type Entry = Readonly<{
   resume?: ResumeNote;
   /** Set while a re-review at an unchanged head stays not convinced (A11-290): see {@link Standoff}. Carried through every round, and dropped when the pull request's head moves on. */
   standoff?: Standoff;
+  /** Set on the review round that starts as the planner for a run at the board's round cap (A11-343): see {@link CapRound}. Dropped when the planner's round is decided. */
+  capRound?: CapRound;
+  /** How many times the board has asked the planner about this run at its round cap (A11-343), and how many rounds it started that counted toward no cap. Both are bounded ({@link MAX_CAP_PLANS}, `MAX_FEEDBACK_ROUNDS`), so a dispute cannot go on for ever. Carried through every round. */
+  capPlans?: number;
+  freeRounds?: number;
+  /** Set on a finished run the planner marked as waiting on another ticket (A11-343): see {@link TicketWait}. The run reads Waiting, and is dropped from the wait when that ticket's pull request merges. */
+  waitingOnTicket?: TicketWait;
 }>;
 
 /**
@@ -719,12 +727,12 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}), ...(decisions ? { decisions } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff, capPlans, freeRounds }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
@@ -768,10 +776,11 @@ export function talkRound(entry: Entry, now: number): Entry {
 /**
  * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration and what its pull requests declared, merged plan steps, the plan's step count, the After-merge lines listed and posted, the heads its red checks and the merge queue's removals were answered at, when its CI count began and what its next round is told of the ticket's CI spend (A11-261), and the next step a conflict round holds back (A11-286): only those the run has set. PURE.
  */
-const carriedFields = ({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith }: Pick<Entry, "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
+const carriedFields = ({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith, capPlans, freeRounds }: Pick<Entry, "capPlans" | "freeRounds" | "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
   ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
   ...(partial !== undefined ? { partial } : {}), ...(declared ? { declared } : {}), ...(partialOverruled ? { partialOverruled } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}), ...(queueHeads ? { queueHeads } : {}),
   ...(ciSince !== undefined ? { ciSince } : {}), ...(ciTold ? { ciTold } : {}), ...(afterRound ? { afterRound } : {}), ...(standoff ? { standoff } : {}), ...(plannedWith ? { plannedWith } : {}),
+  ...(capPlans !== undefined ? { capPlans } : {}), ...(freeRounds !== undefined ? { freeRounds } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */

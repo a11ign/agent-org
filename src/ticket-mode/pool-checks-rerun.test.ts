@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { answerChecks, type ReadCheck } from "./pool-checks.ts";
-import { failedTestOf, saysUnrelated } from "./failure-words.ts";
+import { callsUnrelated, failedTestOf, saysUnrelated } from "./failure-words.ts";
 import { type Flake, flakesView } from "./flakes.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
@@ -29,7 +29,7 @@ const feedback = (failing: readonly string[], over: Partial<PullFeedback> = {}):
 const RED = feedback(["suite (2)"]);
 const GREEN = feedback([]);
 
-function world() {
+function world(description = "") {
   const host = createFakeCodeHost();
   host.checksAndClaims.logs.set(SUITE_JOB, SANDBOX);
   host.seedPull("a11ign/agent-org", 1946, { head: HEAD });
@@ -37,7 +37,7 @@ function world() {
   const clock = { at: NOW };
   const ctx = { codeHost: host, now: () => clock.at, flakes: { record: (found: readonly Flake[]) => void recorded.push(...found), view: () => flakesView(recorded, clock.at) }, repliesRead: new Set<string>(), ownLogin: { value: WORKERS } } as unknown as PoolContext;
   const entry = (checkHeads?: Readonly<Record<string, CheckHead>>): Entry =>
-    ({ ticket: { key: "A11-294" }, paths: [], phase: "finished", startedAt: NOW - 30 * MINUTE, outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: URL_1 }] }, pullStates: { [URL_1]: "open" }, ...(checkHeads === undefined ? {} : { checkHeads }) }) as unknown as Entry;
+    ({ ticket: { key: "A11-294", description }, paths: [], phase: "finished", startedAt: NOW - 30 * MINUTE, outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: URL_1 }] }, pullStates: { [URL_1]: "open" }, ...(checkHeads === undefined ? {} : { checkHeads }) }) as unknown as Entry;
   /** One watch of the pull request: the answer, and the record the next watch starts from. */
   const watch = (read: PullFeedback, known?: Readonly<Record<string, CheckHead>>) => {
     const answer = answerChecks(ctx, entry(known), [{ url: URL_1, read }]);
@@ -140,6 +140,14 @@ const ROUND: Readonly<Record<string, CheckHead>> = { [URL_1]: { head: HEAD, step
 const reply = (host: ReturnType<typeof world>["host"], text: string, over: Partial<{ author: string; at: number }> = {}) =>
   host.pullAt(URL_1)!.replies = [{ author: WORKERS, at: NOW - 5 * MINUTE, url: `${URL_1}#issuecomment-1`, text, ...over }];
 
+/** A round that ended with no push, a reply that says the failure is unrelated, the rerun it asks for, and the check red again ten minutes later: the rerun's record and the answer to the second look. */
+function redAgainAfterReply({ watch, clock, host }: Pick<ReturnType<typeof world>, "watch" | "clock" | "host">) {
+  reply(host, "This failure is unrelated to my change.");
+  const rerun = watch(RED, ROUND);
+  clock.at += 10 * MINUTE;
+  return { rerun, again: watch(feedback(["suite (2)"], { failedAt: clock.at - MINUTE }), rerun.record) };
+}
+
 test("A11-300: a round that ends with no push and a reply that says the failure is unrelated ends in one rerun of the failed jobs", () => {
   const { host, watch, recorded, clock } = world();
   reply(host, "No change: SandboxNotRemovedError in region-paths-checkout.test.ts is the runner's, unrelated to this pull request.");
@@ -156,10 +164,7 @@ test("A11-300: a round that ends with no push and a reply that says the failure 
 
 test("A11-300: red again after the rerun a reply asked for, a person decides: no second round and no second rerun", () => {
   const { host, watch, clock } = world();
-  reply(host, "This failure is unrelated to my change.");
-  const rerun = watch(RED, ROUND);
-  clock.at += 10 * MINUTE;
-  const again = watch(feedback(["suite (2)"], { failedAt: clock.at - MINUTE }), rerun.record);
+  const { again } = redAgainAfterReply({ watch, clock, host });
   assert.deepEqual([again.feedback, again.heads[URL_1]?.step, host.checksAndClaims.reruns.length], [null, "named", 1]);
   assert.match(again.heads[URL_1]?.note ?? "", /^suite \(2\) failed again on fc707690 after a rerun the worker's reply asked for: a person decides$/);
 });
@@ -247,4 +252,43 @@ test("A11-300: an infrastructure failure after a rerun of the code's own check i
   clock.at += 10 * MINUTE;
   const again = watch(feedback(["suite (2)"], { failedAt: clock.at - MINUTE }), lost.record);
   assert.deepEqual([again.heads[URL_1]?.step, host.checksAndClaims.reruns.length], ["named", 2]);
+});
+
+// THE ROUND CAP (A11-343): a round that answers only checks which count toward no cap says so on its record.
+const UNRELATED_DECISION = "Do the work.\n\n## Decisions\n\n- `suite (2)` is red on main and unrelated to this change: this pull request does not fix it.\n";
+const OTHER_HEAD = "b".repeat(40);
+
+test("A11-343: a round for a check the ticket's Decisions call unrelated is uncounted; a round for any other check, or with no such Decision, is one of the board's own", () => {
+  const unrelated = (description: string) => {
+    const { watch, clock } = world(description);
+    const first = watch(RED);
+    clock.at += 10 * MINUTE;
+    return watch(feedback(["suite (2)"], { failedAt: clock.at - MINUTE }), first.record);
+  };
+  const round = unrelated(UNRELATED_DECISION);
+  assert.deepEqual([round.heads[URL_1]?.step, round.uncounted], ["round", true]);
+  const plain = unrelated("Do the work.");
+  assert.deepEqual([plain.heads[URL_1]?.step, plain.uncounted], ["round", false], "CONTROL: no Decision, so the round counts");
+  const otherCheck = unrelated("Do the work.\n\n## Decisions\n\n- `lint` is red on main and unrelated to this change.\n");
+  assert.deepEqual([otherCheck.heads[URL_1]?.step, otherCheck.uncounted], ["round", false], "CONTROL: a Decision about another check does not exempt this one");
+});
+
+test("A11-343: a check a rerun found red again stays uncounted at the next head, so the board's rounds are not used up on a failure no one fixes here", () => {
+  const { watch, clock, host } = world();
+  const { again } = redAgainAfterReply({ watch, clock, host });
+  assert.deepEqual(again.heads[URL_1]?.redAgain, ["suite (2)"], "the record names what the rerun found red again");
+  const next = feedback(["suite (2)"], { head: OTHER_HEAD });
+  const reranAtNewHead = watch(next, again.record);
+  assert.deepEqual([reranAtNewHead.heads[URL_1]?.step, reranAtNewHead.heads[URL_1]?.redAgain], ["rerun", ["suite (2)"]], "the new head's rerun carries it");
+  clock.at += 10 * MINUTE;
+  const round = watch(feedback(["suite (2)"], { head: OTHER_HEAD, failedAt: clock.at - MINUTE }), reranAtNewHead.record);
+  assert.deepEqual([round.heads[URL_1]?.step, round.uncounted], ["round", true]);
+});
+
+test("A11-343: a Decision exempts a check by its whole name, not by a piece of another name or of a word", () => {
+  assert.equal(callsUnrelated("- `build` is red on main and unrelated to this change.", "ui"), false, "ui is no piece of build");
+  assert.equal(callsUnrelated("- `e2e-ui` is unrelated to this change.", "e2e"), false, "e2e is no piece of e2e-ui");
+  assert.equal(callsUnrelated("- `suite (2)` is unrelated to this change.", "suite (2)"), true, "a name with brackets is matched as written");
+  assert.equal(callsUnrelated("- `capture` is red because this pull request does not fix it.", "capture"), true);
+  assert.equal(callsUnrelated("- `capture` must pass before merge.", "capture"), false, "naming a check is not calling it unrelated");
 });
