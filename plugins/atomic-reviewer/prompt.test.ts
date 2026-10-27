@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CI_COST_RULE } from "./ci-rule.ts";
-import { closedWorkWords, DECISION_RULE, decisionWords, IMPOSSIBLE_BEFORE_MERGE_RULE, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
+import { closedWorkWords, closingWords, DECISION_RULE, decisionWords, IMPOSSIBLE_BEFORE_MERGE_RULE, NO_SECTION_LINE, NO_TICKET_LINE, PLAN_DECISION_RULE, planDecisionWords, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, UNSUPPORTED_RULE, unrequiredRedWords } from "./prompt.ts";
 
 const GATE = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
 const DONE_WHEN = "## Done-when\n\n### Before merge\n\n- a test\n\n### After merge (who runs it)\n\n- the chairman, after 0.9.0";
@@ -261,4 +261,35 @@ test("A11-290: a planner's amendment of a decision is an answer: the re-review i
   assert.match(words, /The plan's decisions changed since your review, by the planner's amendment \("-" is a line it no longer has, "\+" a line it now has\)\. You are bound by the amended decision/);
   assert.match(words, /- - The bundle stays under 200 KB\.\n\+ - The bundle stays under 400 KB\./);
   assert.ok(words.indexOf("by the planner's amendment") < words.indexOf("The plan's decisions, as the board read them"), "the change is told before the decisions themselves");
+});
+
+// A11-274: the word that names the ticket, as the board worked it out from the run's other pull requests, so eight siblings approved with `Refs` and the ninth blocked for it cannot happen again.
+const OPEN_SIBLING = "https://github.com/a11ign/one/pull/4";
+const MERGED_SIBLING = "https://github.com/a11ign/two/pull/5";
+const REFS = { key: "A11-253", word: "refs", open: [OPEN_SIBLING], merged: [MERGED_SIBLING] } as const;
+const CLOSES = { key: "A11-253", word: "closes", open: [], merged: [OPEN_SIBLING, MERGED_SIBLING] } as const;
+const REFS_SENTENCE = `Other pull requests of this ticket are still open: ${OPEN_SIBLING}. This one is not the last to merge, so \`Refs A11-253\` with a \`Partial:\` line is right. Do not ask for \`Closes A11-253\`.`;
+const CLOSES_SENTENCE = `Every other pull request of this ticket has merged (${OPEN_SIBLING}, ${MERGED_SIBLING}), and this is the last step. It names the ticket \`Closes A11-253\`, with no \`Partial:\` line. \`Refs A11-253\` here is a finding.`;
+
+test("A11-274: each word's sentence is in the first review's prompt and in the re-review's, after the Done-when and before the CI cost rule", () => {
+  for (const [closing, sentence] of [[REFS, REFS_SENTENCE], [CLOSES, CLOSES_SENTENCE]] as const) {
+    const first = reviewWords(GATE, { doneWhen: DONE_WHEN, closing });
+    const again = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies: [], body: [{ kind: "added", text: "Closes A11-253" }], doneWhen: DONE_WHEN, closing });
+    for (const words of [first, again]) {
+      assert.ok(words.includes(sentence), closing.word);
+      assert.ok(words.indexOf(DONE_WHEN) < words.indexOf(sentence) && words.indexOf(sentence) < words.indexOf(CI_COST_RULE), `${closing.word}: in its place`);
+    }
+  }
+});
+
+test("A11-274: a Refs with no sibling open is for a step that is not the plan's last, and a Closes with none merged says no other is open", () => {
+  assert.equal(closingWords({ key: "A11-1", word: "refs", open: [], merged: [] }), "This pull request finishes a step that is not the plan's last, so `Refs A11-1` with a `Partial:` line is right. Do not ask for `Closes A11-1`.");
+  assert.equal(closingWords({ key: "A11-1", word: "closes", open: [], merged: [] }), "No other pull request of this ticket is open, and this is the last step. It names the ticket `Closes A11-1`, with no `Partial:` line. `Refs A11-1` here is a finding.");
+});
+
+test("A11-274: a brief with no word reads as it did", () => {
+  assert.equal(closingWords(undefined), "");
+  const words = reviewWords(GATE, { doneWhen: DONE_WHEN });
+  assert.ok(!words.includes("Do not ask for `Closes") && !words.includes("here is a finding."), "no word is said");
+  assert.equal(words.indexOf(DONE_WHEN) + DONE_WHEN.length + 2, words.indexOf(CI_COST_RULE), "the Done-when is followed by the CI cost rule, as before");
 });

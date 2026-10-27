@@ -13,9 +13,12 @@
 // THE PLAN'S DECISIONS BIND THE REVIEWER TOO (A11-257), in the same three prompts: it keeps an order of authority (the ticket's Decisions, the plan's decisions, the plan's text, its own rules), does not request changes on a point a decision
 // settled, and writes a note where it disagrees. A decision on an item of the escalation list does not bind.
 //
+// THE SAME THREE PROMPTS SAY WHICH WORD NAMES THE TICKET, `Refs` OR `Closes` (A11-274), when the board worked it out from the plan step and the run's other pull requests: the reviewer cannot see the siblings, and judged the
+// word by the pull request alone, approving eight siblings with `Refs A11-253` and blocking the last for it. A brief with no word leaves the prompt as it was.
+//
 // THE SAME GOES FOR THE DECISION RULE (A11-213): the first review, the reprompt and the re-review all carry the ticket's decisions and the rule that they come before a general direction. A reviewer that held
 // "permissions only shrink" against the chairman's written decision to widen one blocked a pull request the ticket asked for, and a re-review that did not see the decision could not correct it.
-import type { ReviewBodyLine, ReviewBrief, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
+import type { ReviewBodyLine, ReviewBrief, ReviewClosing, ReviewerReply, ReviewStep } from "../../src/plugins/contracts/reviewer.ts";
 import { CI_COST_RULE } from "./ci-rule.ts";
 
 /** What the reviewer is told about a Done-when line the ticket puts under "After merge". */
@@ -115,6 +118,21 @@ function contractWords({ doneWhen, step }: Pick<ReviewBrief, "doneWhen" | "step"
   return `${stepWords(step)}\n\n${forLast}`;
 }
 
+/**
+ * Which word the pull request names its ticket with (A11-274), as the board worked it out: `Refs` on each pull request that is not the last to merge, and `Closes` on the last, as the chairman decided it for A11-253. Nothing when the
+ * board gave no word, so the reviewer judges the word as before.
+ */
+export function closingWords(closing: ReviewClosing | undefined): string {
+  if (closing === undefined) return "";
+  const { key, word, open, merged } = closing;
+  if (word === "refs") {
+    const why = open.length > 0 ? `Other pull requests of this ticket are still open: ${open.join(", ")}. This one is not the last to merge` : "This pull request finishes a step that is not the plan's last";
+    return `${why}, so \`Refs ${key}\` with a \`Partial:\` line is right. Do not ask for \`Closes ${key}\`.`;
+  }
+  const why = merged.length > 0 ? `Every other pull request of this ticket has merged (${merged.join(", ")}), and this is the last step` : "No other pull request of this ticket is open, and this is the last step";
+  return `${why}. It names the ticket \`Closes ${key}\`, with no \`Partial:\` line. \`Refs ${key}\` here is a finding.`;
+}
+
 /** The most of the closed-work list the prompt quotes: a longer one is cut, and says so. */
 const CLOSED_WORK_LIMIT = 16000;
 
@@ -127,22 +145,22 @@ export const closedWorkWords = (closedWork: string | undefined): string => (clos
     + "The pull request body's `## Work from closed pull requests` section must say, for each commit and file, carried over (where) or dropped (why). Check each claim against the diff. "
     + "Each item the section leaves out, and each `carried over` the diff does not show, is a finding.");
 
-/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract and the CI cost rule (A11-261). */
-const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "decisions" | "planDecisions" | "escalation" | "step">, unrequiredRed: readonly string[] | undefined): string =>
-  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief), CI_COST_RULE].filter((words) => words !== "").join("\n\n");
+/** The words that follow the gate's prompt in a first review and in a reprompt, or a re-review: what was left red, the ticket's decisions and the rule that they come first, then the contract, the word that names the ticket (A11-274) and the CI cost rule (A11-261). */
+const afterGateWords = (brief: Pick<ReviewBrief, "doneWhen" | "decisions" | "planDecisions" | "escalation" | "step" | "closing">, unrequiredRed: readonly string[] | undefined): string =>
+  [unrequiredRedWords(unrequiredRed), decisionWords(brief.decisions), planDecisionWords(brief.planDecisions, brief.escalation), contractWords(brief), closingWords(brief.closing), CI_COST_RULE].filter((words) => words !== "").join("\n\n");
 
 /** What a first review and a reprompt are sent after the gate's own prompt: the checks left red, the contract (or the step), the CI cost rule (A11-261), then the closed work of the ticket's earlier pull requests and the rule that the body accounts for it (A11-249), the rule for a Before-merge line no branch can meet (A11-275) and the post-merge rule. */
 export function reviewWords(gateWords: string, brief: ReviewBrief | undefined, unrequiredRed?: readonly string[]): string {
   const closed = closedWorkWords(brief?.closedWork);
-  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.planDecisions === undefined ? {} : { planDecisions: brief.planDecisions }), ...(brief?.escalation === undefined ? {} : { escalation: brief.escalation }), ...(brief?.step === undefined ? {} : { step: brief.step }) }, unrequiredRed)}\n\n${closed === "" ? "" : `${closed}\n\n`}${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`;
+  return `${gateWords}\n\n${afterGateWords({ doneWhen: brief?.doneWhen ?? null, ...(brief?.decisions === undefined ? {} : { decisions: brief.decisions }), ...(brief?.planDecisions === undefined ? {} : { planDecisions: brief.planDecisions }), ...(brief?.escalation === undefined ? {} : { escalation: brief.escalation }), ...(brief?.step === undefined ? {} : { step: brief.step }), ...(brief?.closing === undefined ? {} : { closing: brief.closing }) }, unrequiredRed)}\n\n${closed === "" ? "" : `${closed}\n\n`}${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`;
 }
 
 /**
  * The prompt of a re-review of a head that has this reviewer's `not convinced` review and no new commit (A11-156, A11-235), in this order: what this is and what changed since the review (the description, the ticket's Decisions, a reply, or any of them) with the
- * instruction to review the whole diff again, the description's changed lines, the lines of the ticket's Decisions that changed (A11-250), the replies since the review, the claims of a person's decision the ticket does not record, the ticket's decisions and the rule that they come first (A11-213), the plan's decisions and the order of authority (A11-257), the ticket's Done-when (or the plan step), the CI cost rule (A11-261), the rule for a Before-merge line no branch can meet (A11-275),
+ * instruction to review the whole diff again, the description's changed lines, the lines of the ticket's Decisions that changed (A11-250), the replies since the review, the claims of a person's decision the ticket does not record, the ticket's decisions and the rule that they come first (A11-213), the plan's decisions and the order of authority (A11-257), the ticket's Done-when (or the plan step), the word that names the ticket (A11-274), the CI cost rule (A11-261), the rule for a Before-merge line no branch can meet (A11-275),
  * the post-merge rule, and how the verdict posts. The verdict door refuses a second review at an equal patch except an approval that names the standing block on a line after the verdict line (agent-org#514), so a `not convinced` verdict is the expected end and not a failure; the door keeps the refused verdict file, and the board records it (A11-290).
  */
-export function rereviewWords({ number, head, pr, roleFile, replies, body, decided, planChanged, unsupported, doneWhen, decisions, planDecisions, escalation, step, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decided?: readonly ReviewBodyLine[]; planChanged?: readonly ReviewBodyLine[]; unsupported?: readonly string[]; doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; step?: ReviewStep; unrequiredRed?: readonly string[] }): string {
+export function rereviewWords({ number, head, pr, roleFile, replies, body, decided, planChanged, unsupported, doneWhen, decisions, planDecisions, escalation, step, closing, unrequiredRed }: { number: number; head: string; pr: string; roleFile: string; replies: readonly ReviewerReply[]; body?: readonly ReviewBodyLine[]; decided?: readonly ReviewBodyLine[]; planChanged?: readonly ReviewBodyLine[]; unsupported?: readonly string[]; doneWhen: string | null; decisions?: string; planDecisions?: string; escalation?: string; step?: ReviewStep; closing?: ReviewClosing; unrequiredRed?: readonly string[] }): string {
   const head8 = head.slice(0, 8);
   // The verdict door finds the standing review by this spelling, with the backtick before the commit (`names_review` in pr-review-verdict.sh): without it the approval is refused.
   const standing = `Review of #${number} at \`${head8}\``;
@@ -159,7 +177,7 @@ export function rereviewWords({ number, head, pr, roleFile, replies, body, decid
     ...(planAmended ? [`The plan's decisions changed since your review, by the planner's amendment ("-" is a line it no longer has, "+" a line it now has). You are bound by the amended decision, as by any decision of the plan:\n\n${bodyLines(planChanged)}`] : []),
     ...(replies.length > 0 ? [`The replies posted since that review:\n\n${replies.map(replyLine).join("\n")}`] : []),
     ...(unsupportedWords(unsupported) === "" ? [] : [unsupportedWords(unsupported)]),
-    afterGateWords({ doneWhen, ...(decisions === undefined ? {} : { decisions }), ...(planDecisions === undefined ? {} : { planDecisions }), ...(escalation === undefined ? {} : { escalation }), ...(step === undefined ? {} : { step }) }, unrequiredRed),
+    afterGateWords({ doneWhen, ...(decisions === undefined ? {} : { decisions }), ...(planDecisions === undefined ? {} : { planDecisions }), ...(escalation === undefined ? {} : { escalation }), ...(step === undefined ? {} : { step }), ...(closing === undefined ? {} : { closing }) }, unrequiredRed),
     IMPOSSIBLE_BEFORE_MERGE_RULE,
     POST_MERGE_RULE,
     `Review it per ${roleFile} and post the verdict as it says, with this difference. A \`convinced\` verdict is an approval whose body names the standing review on a line after the verdict line: `
