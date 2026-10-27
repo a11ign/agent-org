@@ -162,12 +162,22 @@ test("a key that shares only a name with another repository is not a clone of it
   assert.deepEqual(ownersOf({ a: checkout(join(root, "x", "a"), "p/a"), b: checkout(join(root, "x", "b"), "q/b") }, host), ["p", "q"], "no owner has more than one clone: all are kept");
 });
 
-test("a clone that stalls is given up on after the time it is given, and leaves no staging folder to be taken for a clone", async () => {
-  const { clones, host, hostFile, root } = machine();
-  const stalled: Git = async (_cwd, args) => { checkout(args[args.length - 1], "acme/corpus"); return new Promise<string>(() => undefined); };
-  await assert.rejects(ensureCloned({ name: "corpus", fullName: "acme/corpus" }, { clones, hostFile, codeHost: host, git: stalled, timeoutMs: 20 }), /the clone of acme\/corpus took more than 20 ms/);
-  assert.ok(!existsSync(join(root, "repos", ".corpus.cloning")) && !existsSync(join(root, "repos", "corpus")));
+test("a clone that stalls is given up on after the time it is given, but its folder stays taken until git ends: a second clone is refused meanwhile, and the abandoned folder is cleared when git ends", async () => {
+  const { clones, host, hostFile, git, calls, root } = machine();
+  const staging = join(root, "repos", ".corpus.cloning");
+  const ends: { stop: () => void } = { stop: () => undefined };
+  const stalled: Git = async (_cwd, args) => { checkout(args[args.length - 1], "acme/corpus"); return new Promise<string>((resolve) => { ends.stop = () => { resolve(""); }; }); };
+  const repository = { name: "corpus", fullName: "acme/corpus" };
+  await assert.rejects(ensureCloned(repository, { clones, hostFile, codeHost: host, git: stalled, timeoutMs: 20 }), /the clone of acme\/corpus took more than 20 ms/);
   assert.equal(clones.corpus, undefined);
+  assert.ok(existsSync(staging), "git is still writing there, so nothing is removed under it");
+  await assert.rejects(ensureCloned(repository, { clones, hostFile, codeHost: host, git, timeoutMs: 20 }), /an earlier clone of it is still running/);
+  assert.deepEqual(calls, [], "no second git was started beside the first");
+  ends.stop();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(!existsSync(staging), "the abandoned clone is cleared once git has ended");
+  assert.equal(await ensureCloned(repository, { clones, hostFile, codeHost: host, git }), "corpus", "and the folder is free for a clone again");
+  assert.equal(calls.length, 1);
 });
 
 test("a staging folder an earlier clone left is never taken for a clone: it is cleared, and the clone is made again", async () => {

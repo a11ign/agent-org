@@ -138,11 +138,38 @@ const spanWords = (ms: number): string => (ms >= MS_PER_SECOND ? `${Math.round(m
 /** How long one clone may run before the board stops waiting for it: a stalled network must not hold a run, a Retry and the sweep for ever. */
 export const CLONE_TIMEOUT_MS = 600_000;
 
-/** `work`, or a rejection once `ms` have passed. The work is not stopped: its folder is the clone's staging folder, which nothing reads. */
+/** The staging folders a `git clone` is still writing to, until that git process has ended: a clone the board stopped waiting for is still running, and a second clone must not start in its folder. */
+const cloningNow = new Set<string>();
+
+/** `work`, or a rejection once `ms` have passed. The work is not stopped: see {@link cloneIntoStaging}. */
 function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const limit = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { reject(new Error(`${what} took more than ${spanWords(ms)}`)); }, ms); });
   return Promise.race([work, limit]).finally(() => { clearTimeout(timer); });
+}
+
+/**
+ * Clones `repository` into `staging` and renames it to `path` once git is done. The board stops WAITING for a clone after `timeoutMs`, but cannot stop git, so the folder stays taken ({@link cloningNow}) until the git process itself ends, and
+ * a clone abandoned that way is cleared then, never under the process. A second clone of the same repository meanwhile is refused, not started beside the first. THROWS with the reason.
+ */
+async function cloneIntoStaging(repository: HostRepository, { root, staging, path, git, timeoutMs }: Readonly<{ root: string; staging: string; path: string; git: Git; timeoutMs: number }>): Promise<void> {
+  if (cloningNow.has(staging)) throw new Error(`${repository.fullName} cannot be cloned: an earlier clone of it is still running`);
+  cloningNow.add(staging);
+  rmSync(staging, { recursive: true, force: true });
+  let abandoned = false;
+  const work = git(root, ["clone", "--quiet", remoteOf(repository), staging]);
+  // Cleared before the folder is released, so a clone started the moment it is released finds it empty.
+  void work.then(() => undefined, () => undefined).then(() => {
+    if (abandoned) rmSync(staging, { recursive: true, force: true });
+    cloningNow.delete(staging);
+  });
+  try {
+    await within(work, timeoutMs, `the clone of ${repository.fullName}`);
+    renameSync(staging, path);
+  } catch (err) {
+    abandoned = true;
+    throw err;
+  }
 }
 
 /**
@@ -164,15 +191,7 @@ export async function ensureCloned(repository: HostRepository, { clones, hostFil
     const origin = originOf(path, codeHost);
     if (origin === null || !same(origin.fullName, repository.fullName)) throw new Error(`${repository.fullName} cannot be cloned: ${path} exists and is not a clone of it`);
   } else {
-    const staging = join(root, `.${folder}.cloning`);
-    rmSync(staging, { recursive: true, force: true });
-    try {
-      await within(git(root, ["clone", "--quiet", remoteOf(repository), staging]), timeoutMs, `the clone of ${repository.fullName}`);
-      renameSync(staging, path);
-    } catch (err) {
-      rmSync(staging, { recursive: true, force: true });
-      throw err;
-    }
+    await cloneIntoStaging(repository, { root, staging: join(root, `.${folder}.cloning`), path, git, timeoutMs });
   }
   addCloneToHostFile(hostFile, repository.name, path);
   clones[repository.name] = path;
