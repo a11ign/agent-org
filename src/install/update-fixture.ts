@@ -126,6 +126,7 @@ export function updateFixture(options: { states?: Partial<Record<ServiceName, Se
     conventions: () => ({ said: [], failed: [] }),
     herdr: () => ({ said: [], failed: [], newFailures: 0 }),
     hostInstall: () => ({ said: [], failed: [] }),
+    watchdog: () => ({ said: [], failed: [] }),
     out: { log: (line: string) => { said.push(line); }, error: (line: string) => { errors.push(line); } },
     ...over,
   });

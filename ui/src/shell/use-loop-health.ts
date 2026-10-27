@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import type { HealthFigures } from "../../../src/ticket-mode/health-figures.ts";
 import type { LoopReading } from "../../../src/ticket-mode/loop-delay.ts";
+import type { WatchdogView } from "../../../src/ticket-mode/watchdog-record.ts";
 import { send, type Fetch } from "../api/request.ts";
 import type { ViewConnection } from "../api/types.ts";
 import type { LoopHealth } from "./loop-line.ts";
@@ -8,7 +10,7 @@ import type { LoopHealth } from "./loop-line.ts";
 export const LOOP_POLL_MS = 10_000;
 
 /** What the instance's `/api/health` and the page service's root one answer, as far as the line reads them. */
-type HealthAnswer = Readonly<{ loop?: Readonly<{ requests?: LoopReading; board?: LoopReading; page?: LoopReading }> }>;
+type HealthAnswer = Readonly<{ loop?: Readonly<{ requests?: LoopReading; board?: LoopReading; page?: LoopReading }>; figures?: HealthFigures | null; watchdog?: WatchdogView | null }>;
 
 /**
  * The loop readings of the connection shown and of the page's own service (A11-282), read now and every LOOP_POLL_MS. A read that fails, or a service from
@@ -30,7 +32,9 @@ export function useLoopHealth(connection: ViewConnection | null, fetch: Fetch): 
       if (reading.signal.aborted) return;
       const loop = instance.ok ? instance.data.loop : undefined;
       const pageLoop = page.ok ? page.data.loop?.page : undefined;
-      setHealth({ ...(loop?.requests ? { requests: loop.requests } : {}), ...(loop?.board ? { board: loop.board } : {}), ...(pageLoop ? { page: pageLoop } : {}) });
+      const figures = instance.ok ? instance.data.figures : undefined;
+      const watchdog = instance.ok ? instance.data.watchdog : undefined;
+      setHealth({ ...(loop?.requests ? { requests: loop.requests } : {}), ...(loop?.board ? { board: loop.board } : {}), ...(pageLoop ? { page: pageLoop } : {}), ...(figures ? { figures } : {}), ...(watchdog ? { watchdog } : {}) });
     };
     void read();
     const timer = setInterval(() => void read(), LOOP_POLL_MS);

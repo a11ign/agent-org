@@ -109,6 +109,7 @@ import { watchKeptPulls } from "./pool-base-merge.ts";
 import { reconcile } from "./pool-readopt.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
 import { hostAlertsSettled } from "./host-alerts.ts";
+import { noteStopping, poolFigures } from "./pool-figures.ts";
 import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads, startGreenReviewers } from "./pool-reviewers.ts";
 import { newPoolContext, type PoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
 import { log } from "./pool-state.ts";
@@ -178,6 +179,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     hostAlertsSettled: () => hostAlertsSettled(ctx),
     /** Why runs are held: the `tickets.preflight` command that failed and what it said, or null while none has. */
     held: () => ctx.gate.held(),
+    /** The runs and `fill()` passes as `/api/health` serves them (A11-363): the latest start, the startable entries, the free slots, and when a pass last completed. */
+    figures: () => poolFigures(ctx),
+    /** The instance is stopping (A11-363): no run starts from now on, so the runs still starting are the last. */
+    endStarts: () => noteStopping(ctx),
   };
 }
 

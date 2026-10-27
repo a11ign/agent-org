@@ -10,6 +10,7 @@
 // names, the board thread routes on them, and the answer carries back what the route left for those tickets.
 import type { BlockingSite } from "./blocking-ledger.ts";
 import type { Json } from "./local-http.ts";
+import type { HealthFigures } from "./health-figures.ts";
 import type { LoopReading } from "./loop-delay.ts";
 import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
 import type { ReadPaths, UpdateView } from "./read-routes.ts";
@@ -32,6 +33,8 @@ export type BoardSnapshot = Readonly<{
   update: UpdateView;
   loop: LoopReading;
   blocking: readonly BlockingSite[];
+  /** The rolling health figures (A11-363), worked out on the board thread; null from a board thread that keeps none. */
+  figures: HealthFigures | null;
   at: number;
 }>;
 

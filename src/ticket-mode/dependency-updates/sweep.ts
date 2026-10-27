@@ -56,6 +56,7 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
     if (deps.store.get().paused) sayOnce(ctx, "dependency updates: the queue is paused, so no dependency ticket is asked for until it is resumed");
     full = deps.store.get().paused || !requestTicket(ctx, request, team);
   };
+  askOwnRequests(ctx, ask);
   const self = deps.codeHost.readOwnLogin() ?? "";
   const repositories = repositoriesOf(ctx);
   for (const repository of repositories) {
@@ -63,6 +64,11 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
     if (pulls === null) sayOnce(ctx, `dependency updates: ${repository}'s pull requests could not be listed, so the next sweep asks again`);
     else sweepRepository(ctx, ask, { repository, pulls, self });
   }
+}
+
+/** The requests the board makes of its own accord (the watchdog's defect hours): each key that has no entry yet, or whose failed entry is due again, is asked for. */
+function askOwnRequests({ deps, state }: SweepContext, ask: (request: TicketRequest) => void): void {
+  for (const request of deps.requests?.() ?? []) if (due(state.tickets[request.key], deps.now())) ask(request);
 }
 
 /**

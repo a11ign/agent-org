@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { herdrWiring, runUpdate, STARTING_POLL_MS, STARTING_WAIT_MS, update, UpdateRefusal } from "./update.ts";
+import { herdrWiring, runUpdate, STARTING_POLL_MS, STARTING_WAIT_MS, update, UpdateRefusal, watchdogWiring } from "./update.ts";
 import { readLiveRuns, readStartingRuns } from "./instance-queue.ts";
 import { currentVersionName } from "./tool-install.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
@@ -663,4 +663,38 @@ test("A11-191: the main channel has no Release, so it asks for nothing and says 
   assert.equal(currentVersionName(f.tool), f.mainName());
   assert.deepEqual(server.requests(), []);
   assert.ok(f.said.some((line) => /^agent-org update: main-[0-9a-f]{8} is not a release, so it has no UI build to fetch/.test(line)), f.said.join("\n"));
+});
+
+// A11-363: every board with an instance service is watched without a person remembering to start the watchdog.
+test("the update registers the watchdog service on a machine that runs the instance and has none, and says so", () => {
+  const f = updateFixture();
+  f.release("0.1.0");
+  const stub = stubServices(f.home);
+  const calls: string[] = [];
+  stub.files.set(unitFor("instance", stub.services).path, "the instance's unit");
+  const services = { ...stub.services, run: (file: string, args: string[]): RunResult => { calls.push([file, ...args].join(" ")); return { status: 0, stdout: args[1] === "is-active" ? "active\n" : "", stderr: "" }; } };
+  update({ version: undefined, channel: "release" }, f.deps({ ...watchdogWiring(services) }));
+  assert.ok(f.said.includes("agent-org update: registered the watchdog service, which restarts the instance when it stalls: `agent-org stop watchdog` turns it off"), f.said.join("\n"));
+  assert.ok(stub.files.has(unitFor("watchdog", services).path), "the timer is written");
+  assert.ok(calls.includes("systemctl --user enable agent-org-watchdog.timer") && calls.includes("systemctl --user restart agent-org-watchdog.timer"), calls.join("\n"));
+});
+
+test("the update leaves the watchdog alone where it is registered (a person's stop of it stays a stop), and where there is no instance service to watch", () => {
+  const registered = stubServices(tmpDir("watchdog-wiring-"));
+  registered.files.set(unitFor("instance", registered.services).path, "x");
+  registered.files.set(unitFor("watchdog", registered.services).path, "x");
+  assert.deepEqual(watchdogWiring(registered.services).watchdog(), { said: [], failed: [] });
+  assert.deepEqual(registered.calls.filter((call) => /enable|restart/.test(call)), [], "a registered watchdog is not enabled or restarted");
+  const alone = stubServices(tmpDir("watchdog-wiring-"));
+  assert.deepEqual(watchdogWiring(alone.services).watchdog(), { said: [], failed: [] });
+  assert.equal(alone.files.has(unitFor("watchdog", alone.services).path), false, "a machine with no instance service gets no watchdog");
+});
+
+test("a watchdog that cannot be registered is said as an error with the command that does it, and fails nothing", () => {
+  const stub = stubServices(tmpDir("watchdog-wiring-"));
+  stub.files.set(unitFor("instance", stub.services).path, "x");
+  const refusing = { ...stub.services, run: (): RunResult => ({ status: 1, stdout: "", stderr: "Failed to connect to bus" }) };
+  const { said, failed } = watchdogWiring(refusing).watchdog();
+  assert.deepEqual(said, []);
+  assert.match(failed[0]!, /^the watchdog service could not be registered: .*Failed to connect to bus\. Run `agent-org start watchdog`$/);
 });

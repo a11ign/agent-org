@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { main, reapplyServes, reloadService, runWithin, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
+import { activeForMs, main, reapplyServes, registerService, reloadService, runWithin, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
 import { TAILSCALE_UNDER_TESTS } from "../plugins/real-seams.ts";
 import { TAILSCALE_MISSING } from "../../plugins/tailscale/tailnet.ts";
 
@@ -308,6 +308,46 @@ test("auto-update follows main when the update-channel file says so, and on laun
   assert.doesNotMatch(plist.text, /KeepAlive|--channel/);
   files.set(plist.path, plist.text);
   assert.equal(serviceState("auto-update", d), "running", "a loaded interval job is between runs, not stopped");
+});
+
+// WATCHDOG (A11-363): `agent-org ticket:watchdog` every minute, which restarts the instance when it is stalled.
+test("the watchdog on systemd is a timer that fires every minute, on the minute, and not a catch-up; its oneshot service runs ticket:watchdog and is ended by systemd if it hangs", async () => {
+  const { deps: d, files, home, calls } = deps("linux");
+  const unit = await startService("watchdog", d);
+  assert.equal(unit.id, "agent-org-watchdog.timer");
+  for (const line of [/^OnCalendar=minutely$/m, /^Persistent=false$/m, /^Unit=agent-org-watchdog\.service$/m]) assert.match(unit.text, line);
+  assert.deepEqual(calls, ["systemctl --user daemon-reload", "systemctl --user enable agent-org-watchdog.timer", "systemctl --user restart agent-org-watchdog.timer"]);
+  const service = files.get(join(home, ".config", "systemd", "user", "agent-org-watchdog.service")) ?? "";
+  const wanted = [/^Type=oneshot$/m, /^TimeoutStartSec=90$/m, /^ExecStart="\/opt\/node\/bin\/node" "\/opt\/agent-org\/src\/bin\.ts" "ticket:watchdog"$/m, /^Environment="AGENT_ORG_HOST=/m];
+  for (const line of wanted) assert.match(service, line);
+});
+
+test("the watchdog on launchd is an interval job of 60 s that does not run at load, and the auto-update timer is unchanged by it", () => {
+  const { deps: d } = deps("darwin");
+  assert.match(unitFor("watchdog", d).text, /<key>StartInterval<\/key>\n {2}<integer>60<\/integer>\n {2}<key>RunAtLoad<\/key>\n {2}<false\/>/);
+  const linux = deps("linux").deps;
+  assert.match(unitFor("auto-update", linux).text, /^OnCalendar=\*:0\/10$/m);
+  assert.doesNotMatch(unitFor("auto-update", linux).companion?.text ?? "", /TimeoutStartSec/);
+});
+
+test("a version without the watchdog's command refuses the service by name, and registerService writes both units, enables and restarts the timer without any exposure", () => {
+  const commands = { ...COMMANDS } as Record<string, string>;
+  delete commands["ticket:watchdog"];
+  assert.throws(() => unitFor("watchdog", deps("linux", {}, { commands }).deps), /runs `agent-org ticket:watchdog`, which this version of agent-org does not have/);
+  const { deps: d, files, calls, home } = deps("linux");
+  registerService("watchdog", d);
+  assert.ok(files.has(join(home, ".config", "systemd", "user", "agent-org-watchdog.timer")) && files.has(join(home, ".config", "systemd", "user", "agent-org-watchdog.service")));
+  assert.deepEqual(calls, ["systemctl --user daemon-reload", "systemctl --user enable agent-org-watchdog.timer", "systemctl --user restart agent-org-watchdog.timer"]);
+});
+
+test("activeForMs is how long the instance's unit has been active against the machine's uptime, and null for a unit that is not running", () => {
+  const running = deps("linux", { "systemctl --user": (args) => (args[1] === "is-active" ? done("active\n") : done("3000000000\n")) });
+  running.files.set(unitFor("instance", running.deps).path, "x");
+  assert.equal(activeForMs("instance", running.deps, 3_090_000), 90_000, "active since 3000 s of uptime, now 3090 s: 90 s");
+  const stopped = deps("linux", { "systemctl --user": () => done("inactive\n") });
+  stopped.files.set(unitFor("instance", stopped.deps).path, "x");
+  assert.equal(activeForMs("instance", stopped.deps, 3_090_000), null);
+  assert.equal(activeForMs("instance", deps("linux").deps, 3_090_000), null, "not registered");
 });
 
 // A11-67: a unit systemd loads as bad-setting is said, with the line it refused, and start is the fix.

@@ -39,6 +39,9 @@ import { readReviewerMemory, reviewerMemoryPath, splitHeadKey } from "../ticket-
 import { type FlakesView, flakesPath, flakesViewOf } from "../ticket-mode/flakes.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
+import type { HealthFigures } from "../ticket-mode/health-figures.ts";
+import { CALL_FAILURES_WARN_PER_100, healthFlags, type HealthFlag } from "../ticket-mode/health-flags.ts";
+import { readRecordOrEmpty, watchdogPath, watchdogView, type WatchdogView } from "../ticket-mode/watchdog-record.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -138,6 +141,10 @@ export type DoctorDeps = Readonly<{
   runs: () => readonly RunVersion[] | null;
   /** The queued runs that have waited more than two hours on the same ticket, read from the queue now, or null when the queue cannot be read (A11-298). */
   longWaits: () => readonly LongWait[] | null;
+  /** The rolling health figures the instance on `port` serves at `/api/health` (A11-363), or null when it does not answer or is a version from before them. */
+  boardFigures: (port: number) => Promise<HealthFigures | null>;
+  /** The watchdog's record in `stateDir`, as `/api/health` serves it (A11-363): null when it has restarted nothing. */
+  watchdog: (stateDir: string) => WatchdogView | null;
   /** The board UI's build, read now (A11-191). */
   uiBuild: () => UiBuildReading;
   /** The version this instance runs: its version folder's name, else its package's. */
@@ -571,6 +578,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...pluginChecks(settings, plugins),
     ...await preflightChecks(settings, deps),
     ...instance,
+    ...await boardHealthChecks(settings, instanceState, deps),
     ...herdrScopeChecks(settings, instanceState, deps),
     ...readCacheGuardChecks(deps),
     ...ui,
@@ -580,6 +588,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...sections,
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every ten minutes"),
+    watchdogCheck(deps),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
     ...drainChecks(deps),
     ...longWaitChecks(deps),
@@ -699,6 +708,31 @@ function longWaitFix({ kind, on, holder }: LongWait): string {
   const ends = kind === "files" ? `remove the run holding the files` : `remove the blocker relation in the tracker`;
   if (!holder.moves) return `${on} cannot move by itself: finish it, or ${ends}`;
   return kind === "files" ? `it ends when ${on} lets go of the files; press Start anyway on the run's card to run it beside ${on}` : `it ends when ${on} is done; if it should not block, ${ends}`;
+}
+
+/** The watchdog service is registered, or a warning that a stalled board will wait for a person: the update registers it, and `--no-auto-update` or a ui-only machine leaves it to `agent-org start watchdog` (A11-363). */
+function watchdogCheck(deps: DoctorDeps): Check {
+  const registered = registeredCheck("watchdog", deps, "it restarts the instance when it stalls, checking every minute");
+  if (registered.ok) return registered;
+  return registered.detail.includes("not registered") ? warned("watchdog service", "the watchdog service is not registered, so a stalled board waits for a person to restart it", "run `agent-org start watchdog`") : registered;
+}
+
+/**
+ * The board's health figures and the watchdog's record (A11-363): one WARN row for each thing `healthFlags` flags, or one `ok` row that says the figures read well. Asked only of a running instance, and nothing is said when it
+ * serves no figures (a version from before them): the instance's own rows say it does not answer.
+ */
+async function boardHealthChecks(settings: TicketSettings | null, state: ServiceState, deps: DoctorDeps): Promise<Check[]> {
+  const watchdog = settings === null ? null : deps.watchdog(settings.stateDir);
+  const figures = state === "running" ? await deps.boardFigures(settings?.port ?? 4747) : null;
+  if (figures === null && watchdog === null) return [];
+  const flags = healthFlags(figures, watchdog);
+  if (flags.length === 0) return [ok("board health", figures === null ? "the watchdog has restarted nothing" : `loop p99 ${figures.loop.lastMinute.p99Ms} ms over the last minute and ${figures.loop.lastHour.p99Ms} ms over the last hour, and no call failure rate over ${CALL_FAILURES_WARN_PER_100}%`)];
+  const fixes: Readonly<Record<HealthFlag["figure"], string>> = {
+    loop: "`GET /api/health` names the calls that held the loop (`blocking`); a synchronous `gh` or `git` on the board's thread is the usual one",
+    calls: "a service that fails one call in a hundred is sick or unreachable from this machine; `ticket:serve` says each failure in its log",
+    watchdog: "the watchdog's record is `tickets/watchdog.json` in the state directory; each restart is a line of the watchdog's log (`journalctl --user -u agent-org-watchdog` on Linux, `~/.agent-org/logs/watchdog.log` on macOS) with the figure that tripped it",
+  };
+  return flags.map((flag) => warned(`board ${flag.figure}`, flag.text, fixes[flag.figure]));
 }
 
 /** The versions of agent-org the live and parked runs started on, beside the instance's (A11-169): one row each, or one line when they all agree. Nothing when no run holds a workspace. */
@@ -954,6 +988,17 @@ function answers(port: number, path = "/", { healthy = false }: { healthy?: bool
   });
 }
 
+/** The figures the instance on `port` serves at `/api/health`, or null when it does not answer in time or serves none. */
+async function boardFiguresOf(port: number): Promise<HealthFigures | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS) });
+    if (!response.ok) return null;
+    return ((await response.json()) as { figures?: HealthFigures | null }).figures ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * `doctor --fix` (A11-144): moves the host file's old keys into the provider blocks, with a backup beside it. `--dry-run` says what it would move and
  * writes nothing. Returns the lines to print, and whether the run was refused, so the caller sets the exit code.
@@ -1025,6 +1070,11 @@ export function defaultDoctorDeps(): DoctorDeps {
     longWaits: () => {
       const queue = readQueue();
       return queue === null ? null : longWaits(queue.entries, Date.now());
+    },
+    boardFigures: boardFiguresOf,
+    watchdog: (stateDir) => {
+      const record = readRecordOrEmpty(watchdogPath(stateDir));
+      return record.count === 0 ? null : watchdogView(record, Date.now());
     },
     uiBuild: () => ({ found: findBuild(buildCandidates()), declared: declaresUiBuild(TOOL_ROOT), looked: join(TOOL_ROOT, UI_BUILD_DIR), version: versionNameOf(TOOL_ROOT) }),
     instanceVersion: () => runningToolVersion(),

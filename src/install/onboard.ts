@@ -332,9 +332,9 @@ async function askRepositories(deps: Session): Promise<string[]> {
   return repos;
 }
 
-/** The services onboard starts: herdr first, since the instance and the terminal start after it, then the instance and the ui always, the terminal when it is set up and auto-update unless opted out. */
+/** The services onboard starts: herdr first, since the instance and the terminal start after it, then the instance and the ui always, the terminal when it is set up, auto-update unless opted out, and the watchdog, which restarts a stalled instance (A11-363). */
 export function onboardServices({ terminal, autoUpdate }: { terminal: boolean; autoUpdate: boolean; }): ServiceName[] {
-  return ["herdr", "instance", "ui", ...(terminal ? ["terminal" as const] : []), ...(autoUpdate ? ["auto-update" as const] : [])];
+  return ["herdr", "instance", "ui", ...(terminal ? ["terminal" as const] : []), ...(autoUpdate ? ["auto-update" as const] : []), "watchdog"];
 }
 
 /** The services onboard REQUIRES: one of these refusing to start fails onboard, and any other is said and passed over. */
@@ -365,7 +365,7 @@ export async function startServices(names: readonly ServiceName[], start: (name:
 }
 
 /** What a person calls each service. */
-const SERVICE_WORDS: Readonly<Record<ServiceName, string>> = { herdr: "herdr", instance: "queue", ui: "board", terminal: "worker terminal", "auto-update": "auto-update" };
+const SERVICE_WORDS: Readonly<Record<ServiceName, string>> = { herdr: "herdr", instance: "queue", ui: "board", terminal: "worker terminal", "auto-update": "auto-update", watchdog: "watchdog" };
 
 /** Says the services that run in one ✓ line, and each that does not in a ✗ line with what the service said. */
 function sayServices(outcomes: readonly ServiceOutcome[], say: OnboardOutput): void {

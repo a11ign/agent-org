@@ -7,6 +7,8 @@ import { reviewedRepositoriesOf } from "../reviewer-port.ts";
 import type { TicketSettings } from "../settings.ts";
 import type { Ticket, TicketSource } from "../source.ts";
 import { dependencyUpdateSweep } from "./sweep.ts";
+import { defectRequests } from "../watchdog-defect.ts";
+import { readRecordOrEmpty, watchdogPath } from "../watchdog-record.ts";
 
 /** The file the sweep keeps what it asked for in: beside the queue, in the board's tickets directory. */
 export const DEPENDENCY_TICKETS_FILE = "dependency-tickets.json";
@@ -36,5 +38,7 @@ export function boardDependencySweep(board: BoardDependencies): () => Promise<vo
     writer: () => (settings.writer === null ? null : { model: choice().writerModel ?? settings.writer.model, effort: choice().writerEffort ?? settings.writer.effort }),
     runChoice: () => ({ model: choice().model, effort: choice().effort }),
     queueTickets: board.queueTickets, wake: board.wake, now: board.now, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),
+    // The watchdog's record is read at every sweep: an hour with more than two restarts is asked for once (A11-363).
+    requests: () => defectRequests(readRecordOrEmpty(watchdogPath(settings.stateDir)), board.now()),
   });
 }

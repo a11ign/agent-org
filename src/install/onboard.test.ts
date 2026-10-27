@@ -200,7 +200,7 @@ test("onboard writes clones and the key source from flags, keeps the host file's
       },
     },
   });
-  assert.deepEqual(started, ["herdr", "instance", "ui", "terminal", "auto-update"]);
+  assert.deepEqual(started, ["herdr", "instance", "ui", "terminal", "auto-update", "watchdog"]);
   assert.ok(printed.includes("  ✓ Linear key works: signed in as Casey Chairman"), printed.join("\n"));
 });
 
@@ -361,8 +361,8 @@ test("onboard's start starts the instance and the ui service, in that order", as
 });
 
 test("onboard starts the terminal only once it is set up and auto-update unless opted out; a refused optional service is said, a refused instance fails", async () => {
-  assert.deepEqual(onboardServices({ terminal: true, autoUpdate: true }), ["herdr", "instance", "ui", "terminal", "auto-update"], "herdr first: the instance and the terminal start after it");
-  assert.deepEqual(onboardServices({ terminal: false, autoUpdate: false }), ["herdr", "instance", "ui"]);
+  assert.deepEqual(onboardServices({ terminal: true, autoUpdate: true }), ["herdr", "instance", "ui", "terminal", "auto-update", "watchdog"], "herdr first: the instance and the terminal start after it");
+  assert.deepEqual(onboardServices({ terminal: false, autoUpdate: false }), ["herdr", "instance", "ui", "watchdog"]);
   const unit = (name: string) => ({ manager: "systemd" as const, id: name, path: name, text: "", log: null, companion: null, interval: false, address: null });
   const lines = await startServices(["instance", "terminal"], async (name) => {
     if (name === "terminal") throw new ServiceRefusal("no bun");
@@ -411,11 +411,11 @@ test("a terminal that cannot be set up is said, writes no terminal address and s
   assert.ok(failing.printed.includes("  ✗ Worker terminal not set up"));
   assert.ok(trimmed(failing.printed).some((line) => line.startsWith("`herdr plugin install devswha/herdr-web-ui --ref v0.4.13 --yes` failed: herdr: no network. The board shows no terminal link until it is")));
   assert.equal(hostOf(failing.home).tickets.providers.exposure.terminal, undefined);
-  assert.deepEqual(failing.started, ["herdr", "instance", "ui", "auto-update"]);
+  assert.deepEqual(failing.started, ["herdr", "instance", "ui", "auto-update", "watchdog"]);
   const off = deps({ ensureBun: async () => { throw new Error("must not be asked"); } });
   await onboard(options({ repos: [off.repo], terminal: false, autoUpdate: false }), off.deps);
   assert.ok(!off.ran.some((line) => line.startsWith("herdr plugin")));
-  assert.deepEqual(off.started, ["herdr", "instance", "ui"]);
+  assert.deepEqual(off.started, ["herdr", "instance", "ui", "watchdog"]);
 });
 
 // A11-71: Linear's MCP for the workers, authenticated by the key, which is never printed.
@@ -576,7 +576,7 @@ function greenDoctor(home: string): DoctorDeps {
     herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }),
     herdrIntegrations: () => ({ status: 0, stdout: "claude: current (v10)\ncodex: current (v8)\n", stderr: "" }), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/t/ui-build", declared: true, looked: "/t/ui-build", version: "v0.280.0" }),
-    drain: () => ({ kind: "none" }), runs: () => [], longWaits: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
+    drain: () => ({ kind: "none" }), runs: () => [], longWaits: () => [], boardFigures: async () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
     shellCommand: () => installedShell(home),
@@ -1182,7 +1182,7 @@ test("A11-223: with no herdr on PATH, onboard installs the pinned herdr, says on
   assert.deepEqual(w.calls, ["install", "path /h/.local/bin"]);
   assert.equal(w.printed.filter((line) => line.includes("herdr v")).length, 1);
   assert.ok(w.printed.includes("  ✓ Installed herdr v0.9.3"), w.printed.join("\n"));
-  assert.deepEqual(w.started, ["herdr", "instance", "ui", "terminal", "auto-update"], "herdr is the first service, started after it was installed");
+  assert.deepEqual(w.started, ["herdr", "instance", "ui", "terminal", "auto-update", "watchdog"], "herdr is the first service, started after it was installed");
   assert.ok(w.printed.indexOf("  ✓ Installed herdr v0.9.3") < w.printed.findIndex((line) => line.includes("Worker terminal")), "before the steps that call herdr");
 });
 
@@ -1201,7 +1201,7 @@ test("A11-223: a herdr that is already on PATH is not installed again, at any ve
   const w = deps();
   await onboard(options({ repos: [w.repo] }), w.deps);
   assert.ok(!w.printed.some((line) => line.includes("Installed herdr")));
-  assert.deepEqual(w.started, ["herdr", "instance", "ui", "terminal", "auto-update"]);
+  assert.deepEqual(w.started, ["herdr", "instance", "ui", "terminal", "auto-update", "watchdog"]);
 });
 
 test("A11-223: a failed install stops onboard at that step with ✗ and the command to run by hand, and writes, runs and starts nothing", async () => {
