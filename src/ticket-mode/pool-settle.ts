@@ -101,7 +101,8 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   }
   // An edit is recorded with the ticket's text before the run ends, so a proposal without that text is read first; with it, the run settles.
   if ("edit" in outcome && outcome.edit !== undefined && outcome.edit.base === undefined) return void proposeEdit(ctx, entry, outcome, outcome.edit).catch(settleFailed(entry));
-  if (claimsLostPush(outcome) && checkoutsOf(ctx, entry).length > 0) return void settleLostPush(ctx, entry, outcome).catch(settleFailed(entry));
+  const checkouts = claimsLostPush(outcome) ? checkoutsOf(ctx, entry) : [];
+  if (claimsLostPush(outcome) && checkouts.length > 0) return void settleLostPush(ctx, entry, outcome, checkouts).catch(settleFailed(entry));
   if (outcome.kind === "done") return void completeDone(ctx, entry, outcome).catch(settleFailed(entry));
   if (outcome.kind !== "planned") return end(ctx, entry, outcome);
   if (!isPlanning(ctx, entry)) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
@@ -178,7 +179,7 @@ async function readPlanBack(ctx: PoolContext, entry: Entry, planDir: string): Pr
  * A worker handed back on lost push access (A11-346): the board pushes the run's branch itself before a person is asked. A push that works is logged and the worker is woken with "access is fine", so no card is raised; one that fails twice keeps the
  * card, with git's error after the worker's reason and in the log. A worker that herdr cannot reach is not told, and the card stands. Nothing is done while the run's last check is still under way.
  */
-async function settleLostPush(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "needs-human" }>): Promise<void> {
+async function settleLostPush(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "needs-human" }>, checkouts: readonly string[]): Promise<void> {
   const { attaching, now } = ctx;
   const key = entry.ticket.key;
   const { name } = runPlace(ctx, entry);
@@ -187,7 +188,7 @@ async function settleLostPush(ctx: PoolContext, entry: Entry, outcome: Extract<O
   if (logHas(ctx.store.get(), key, (event) => event.kind === "push-check" && event.step === "passed")) return end(ctx, entry, outcome);
   attaching.add(name);
   try {
-    const checked = await checkPush(ctx, entry, checkoutsOf(ctx, entry));
+    const checked = await checkPush(ctx, entry, checkouts);
     if (!sameRun(ctx, entry)) return;
     update(ctx, (queue) => logEvent(queue, key, now(), checked.ok ? { kind: "push-check", step: "passed", detail: checked.repos.join(", ") } : { kind: "push-check", step: "failed", detail: checked.error }));
     if (checked.ok && wakeWorker(ctx, entry, checked.repos)) return log(`${key}: the board's push of ${checked.repos.join(", ")} worked, so the worker is told access is fine and no card is raised`);
