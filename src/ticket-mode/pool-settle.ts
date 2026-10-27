@@ -26,7 +26,7 @@ import { doneComment, outcomeWritten, PLAN_FILE_BYTES, QUESTION_CHARS } from "./
 import { writtenStep } from "./outcome.ts";
 import { escalationItem, escalationReason, questionEscalation, questionText } from "./escalation.ts";
 import { isRetryableWrite, WRITE_GIVE_UP_MS, WRITE_RETRY_NOTE, writeWait } from "./result-write-retry.ts";
-import { logEvent, shortReason, type TrackerWriteStep } from "./queue/run-log.ts";
+import { logEvent, logHas, shortReason, type TrackerWriteStep } from "./queue/run-log.ts";
 import { recordCurrentStep } from "./queue/queue-run-detail.ts";
 import { recordOutcomeBlocks, recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { clearPartial } from "./queue/queue-next-step.ts";
@@ -42,6 +42,7 @@ import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
+import { checkoutsOf, checkPush, claimsLostPush, isWorkersOwnRun, reasonWithGitError, wakeWorker } from "./pool-push-check.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { type PoolContext } from "./pool-context.ts";
 import { recordPlannerDecision, recordWorkerRoundEnded, settlePlannerRound } from "./pool-standoff.ts";
@@ -100,6 +101,8 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   }
   // An edit is recorded with the ticket's text before the run ends, so a proposal without that text is read first; with it, the run settles.
   if ("edit" in outcome && outcome.edit !== undefined && outcome.edit.base === undefined) return void proposeEdit(ctx, entry, outcome, outcome.edit).catch(settleFailed(entry));
+  const checkouts = claimsLostPush(outcome) && isWorkersOwnRun(ctx, entry) ? checkoutsOf(ctx, entry) : [];
+  if (claimsLostPush(outcome) && checkouts.length > 0) return void settleLostPush(ctx, entry, outcome, checkouts).catch(settleFailed(entry));
   if (outcome.kind === "done") return void completeDone(ctx, entry, outcome).catch(settleFailed(entry));
   if (outcome.kind !== "planned") return end(ctx, entry, outcome);
   if (!isPlanning(ctx, entry)) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
@@ -169,6 +172,34 @@ async function readPlanBack(ctx: PoolContext, entry: Entry, planDir: string): Pr
     const pathsDir = join(ticketDir(ctx.settings, key), "paths");
     mkdirSync(pathsDir, { recursive: true });
     for (const name of readdirSync(planDir)) copyFileSync(join(planDir, name), join(pathsDir, name));
+  }
+}
+
+/**
+ * A worker handed back on lost push access (A11-346): the board pushes the run's branch itself before a person is asked. A push that works is logged and the worker is woken with "access is fine", so no card is raised; one that fails twice keeps the
+ * card, with git's error after the worker's reason and in the log. A worker that herdr cannot reach is not told, and the card stands. Nothing is done while the run's last check is still under way.
+ */
+async function settleLostPush(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "needs-human" }>, checkouts: readonly string[]): Promise<void> {
+  const { attaching, now } = ctx;
+  const key = entry.ticket.key;
+  const { name } = runPlace(ctx, entry);
+  if (attaching.has(name)) return;
+  // A worker told once that access is fine and still handing back on it has more than a push to say: its card stands, so the board does not wake it again and again.
+  if (logHas(ctx.store.get(), key, (event) => event.kind === "push-check" && event.step === "passed")) return end(ctx, entry, outcome);
+  attaching.add(name);
+  try {
+    const checked = await checkPush(ctx, entry, checkouts);
+    if (!sameRun(ctx, entry)) return;
+    if ("unchecked" in checked) return end(ctx, entry, outcome);
+    const woken = checked.ok && wakeWorker(ctx, entry, checked.repos);
+    const logged = checked.ok
+      ? { kind: "push-check" as const, step: woken ? "passed" as const : "failed" as const, detail: woken ? checked.repos.join(", ") : `the push of ${checked.repos.join(", ")} worked, but herdr would not take the worker the message` }
+      : { kind: "push-check" as const, step: "failed" as const, detail: checked.error };
+    update(ctx, (queue) => logEvent(queue, key, now(), logged));
+    if (woken) return log(`${key}: the board's push worked, so the worker is told access is fine and no card is raised`);
+    end(ctx, entry, checked.ok ? outcome : { ...outcome, reason: reasonWithGitError(outcome.reason, checked.error) });
+  } finally {
+    attaching.delete(name);
   }
 }
 
