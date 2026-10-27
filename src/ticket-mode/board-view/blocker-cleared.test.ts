@@ -53,6 +53,16 @@ test("A11-258: a parked needs-human run is released once every pull request it h
   assert.equal(isReleasable({ ...merged, outcome: { kind: "crashed", reason: "x" } }), false);
 });
 
+test("A11-274: a parked run that stopped without an outcome is released once every pull request it holds merged and the merged bodies are read, and its card does not say a blocker cleared", () => {
+  const stopped = run({ outcome: { kind: "no-outcome" }, review: [{ repo: "agent-org", url: PR }], pullStates: { [PR]: "merged" }, declared: { kind: "closes", urls: [PR] } });
+  assert.equal(isReleasable(stopped), true);
+  assert.equal(isReleasable({ ...stopped, pullStates: { [PR]: "open" } }), false, "its pull request is still open");
+  assert.equal(isReleasable({ ...stopped, review: [{ repo: "agent-org", url: PR }, { repo: "lab", url: OTHER }], pullStates: { [PR]: "merged", [OTHER]: "open" } }), false, "every pull request it holds");
+  assert.equal(isReleasable({ ...stopped, declared: undefined }), false, "the bodies are read first");
+  assert.equal(isReleasable({ ...stopped, phase: "running" }), false);
+  assert.equal(blockerClearedLine(stopped) ?? "none", "none", "it asked nothing, so nothing cleared");
+});
+
 test("A11-258: the card line of a merged needs-human run names the merged pull requests, and a run that is not one has none", () => {
   const merged = run({ review: [{ repo: "agent-org", url: PR }, { repo: "lab", url: OTHER }], pullStates: { [PR]: "merged", [OTHER]: "merged" } });
   assert.equal(blockerClearedLine(merged), "the blocker cleared: a11ign/agent-org #1885, a11ign/lab #150 merged");

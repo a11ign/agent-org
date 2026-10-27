@@ -1,5 +1,5 @@
 // @ts-check
-// module: a needs-human run whose blocker merged lets go of its workspace, so the merge acts on it as on any finished run (A11-258)
+// module: a needs-human run whose blocker merged lets go of its workspace, so the merge acts on it as on any finished run (A11-258); so does a run that stopped without an outcome (A11-274)
 //
 // A run that ends `needs-human` is parked, and the next-step and plan-count sweeps skip a parked run (`queue/queue-next-step.ts`), so a `Partial:` merge was never followed by the next step, and a `Closes` merge left
 // the workspace open under the old question. The tracker refresh calls {@link adoptNamedBlockers} right after it reads the pull requests' states, and {@link releaseMergedBlockers} once the merged bodies are read
@@ -33,18 +33,19 @@ export function adoptNamedBlockers(ctx: PoolContext, read: ReadonlyMap<string, R
 }
 
 /**
- * Close the workspace of each parked `needs-human` run whose pull requests all merged (`isReleasable`), so the sweeps after this one queue its next step or complete its ticket. Herdr refusing the close is logged and
- * leaves the run parked, and the next sweep asks again.
+ * Close the workspace of each parked `needs-human` run, or run that stopped without an outcome (A11-274), whose pull requests all merged (`isReleasable`), so the sweeps after this one queue its next step or complete its ticket.
+ * Herdr refusing the close is logged and leaves the run parked, and the next sweep asks again.
  */
 export function releaseMergedBlockers(ctx: PoolContext): void {
   for (const entry of ctx.store.get().entries.filter(isReleasable)) {
     const key = entry.ticket.key;
-    const merged = mergedPullUrls(entry).map(pullLabel).join(", ");
+    // A run that stopped without an outcome asked nothing, so no blocker cleared: its pull requests merged.
+    const merged = `${entry.outcome?.kind === "needs-human" ? "the blocker cleared: " : ""}${mergedPullUrls(entry).map(pullLabel).join(", ")} merged`;
     try {
       close(ctx, key);
-      log(`${key}: the blocker cleared: ${merged} merged; its workspace was closed`);
+      log(`${key}: ${merged}; its workspace was closed`);
     } catch (err) {
-      log(`${key}: the blocker cleared: ${merged} merged, but its workspace could not be closed, and is tried again at the next refresh: ${messageOf(err)}`);
+      log(`${key}: ${merged}, but its workspace could not be closed, and is tried again at the next refresh: ${messageOf(err)}`);
     }
   }
 }

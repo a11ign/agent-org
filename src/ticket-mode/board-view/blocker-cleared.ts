@@ -1,5 +1,5 @@
 // @ts-check
-// module: a needs-human run whose pull requests merged -- which pull requests it is about, when the board lets it go, and what its card says (A11-258) -- PURE
+// module: a needs-human run whose pull requests merged -- which pull requests it is about, when the board lets it go, and what its card says (A11-258); a run that stopped without an outcome is let go the same way (A11-274) -- PURE
 //
 // A run that ends `needs-human` keeps its herdr workspace (parked), and the merge machinery skips a parked run: its next plan step was never queued, and a `Closes` merge left it parked under the old
 // question. When every pull request the run is about has merged, the blocker it asked about is gone, so the pool's sweep (`pool-blocker-cleared.ts`) closes the workspace and the merge machinery acts on it as on
@@ -60,11 +60,18 @@ export const isMergedBlocker = (entry: ViewEntry): boolean =>
   entry.phase === "finished" && entry.outcome?.kind === "needs-human" && settledByPulls(entry) === "completed";
 
 /**
- * Whether the board lets a run's parked workspace go (A11-258): it is parked (and no talk session, a person at its terminal), ended `needs-human`, its pull requests merged, and their bodies are read, so the
- * `Closes` or `Partial:` that decides what the merge means (A11-181) is known before the next step is queued or the ticket completed. PURE.
+ * Whether a finished run stopped without writing an outcome and every pull request it holds has merged or closed with one merged (A11-274): nothing is left for a person to answer, so it is let go as a merged blocker is.
+ * Its card still says what completed it, not that a blocker cleared: it asked nothing. PURE.
+ */
+const isMergedStop = (entry: ViewEntry): boolean =>
+  entry.phase === "finished" && entry.outcome?.kind === "no-outcome" && settledByPulls(entry) === "completed";
+
+/**
+ * Whether the board lets a run's parked workspace go (A11-258): it is parked (and no talk session, a person at its terminal), ended `needs-human` or stopped without an outcome (A11-274), its pull requests merged, and their
+ * bodies are read, so the `Closes` or `Partial:` that decides what the merge means (A11-181) is known before the next step is queued or the ticket completed. PURE.
  */
 export const isReleasable = (entry: ViewEntry): boolean =>
-  isMergedBlocker(entry) && entry.workspace !== undefined && entry.talk !== true && entry.declared !== undefined;
+  (isMergedBlocker(entry) || isMergedStop(entry)) && entry.workspace !== undefined && entry.talk !== true && entry.declared !== undefined;
 
 /** The merged pull requests of a run, as a card names them. */
 const mergedNames = (entry: ViewEntry): string => pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] === "merged").map(({ url }) => pullLabel(url)).join(", ");
