@@ -725,7 +725,7 @@ export function pullFilesOf(open: readonly { url: string; read: PullFeedback }[]
  * What a read says of a head's review for readiness (A11-179), or undefined when the code host did not say: `approved` when the newest verdict on the head approves it and GitHub's review decision
  * is approved or needs none, `changes-requested` when either asks for changes, and `none` otherwise, which is also a branch whose decision still asks for a review. PURE.
  */
-function reviewAtHead(read: PullFeedback): PullHead["review"] {
+export function reviewAtHead(read: PullFeedback): PullHead["review"] {
   if (read.verdictAtHead === undefined || read.reviewDecision === undefined) return undefined;
   if (read.reviewDecision === "changes-requested" || read.verdictAtHead === "changes-requested") return "changes-requested";
   return read.verdictAtHead === "approved" && (read.reviewDecision === "approved" || read.reviewDecision === null) ? "approved" : "none";

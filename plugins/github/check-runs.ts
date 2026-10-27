@@ -30,7 +30,7 @@ export function readCheckLog(detailsUrl: string, gh: Gh, log: (line: string) => 
 }
 
 /** The workflow runs `detailsUrls` name, each once, as (repository, run id) pairs: a run's failed jobs are rerun together. */
-function runsOf(detailsUrls: readonly string[]): { repo: string; runId: number }[] {
+export function runsOf(detailsUrls: readonly string[]): { repo: string; runId: number }[] {
   const seen = new Map<string, { repo: string; runId: number }>();
   for (const url of detailsUrls) {
     const job = jobOfDetails(url);

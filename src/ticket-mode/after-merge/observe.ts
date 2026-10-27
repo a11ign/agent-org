@@ -91,7 +91,7 @@ export const OBSERVE_FORMS = [
 /** Every kind of event a run's log holds: a record, so a kind added to the log fails the typecheck here until `run-log` can name it. */
 const RUN_EVENT_KIND_SET: Readonly<Record<RunEventKind, true>> = {
   queued: true, planned: true, started: true, round: true, "pr-opened": true, verdict: true, rereview: true, standoff: true, "needs-you": true, answered: true, published: true, merged: true,
-  "base-merge": true, "tracker-write": true, finished: true, dismissed: true, removed: true, requeued: true,
+  "base-merge": true, "cancelled-rerun": true, "tracker-write": true, finished: true, dismissed: true, removed: true, requeued: true,
 };
 
 /** The kinds of event a run's log holds, which `run-log` names. */

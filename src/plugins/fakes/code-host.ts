@@ -148,6 +148,8 @@ function verdictAtHead(pull: FakePull, self: string): "approved" | "changes-requ
 export type FakeChecksAndClaims = {
   logs: Map<string, string>;
   reruns: string[][];
+  /** The whole runs `rerunRuns` was asked to rerun (contract 1.28), as the addresses it was given. */
+  runReruns: string[][];
   rerunRefusal: string | null;
   claims: Map<string, ReviewClaimEntry[]>;
   now: () => number;
@@ -157,19 +159,22 @@ export type FakeChecksAndClaims = {
 };
 
 /** The reads and writes of checks and review claims over what a test seeded. */
-function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<CodeHost, "readCheckLog" | "rerunFailedChecks" | "readReviewClaims" | "writeReviewClaim"> {
+function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<CodeHost, "readCheckLog" | "rerunFailedChecks" | "rerunRuns" | "readReviewClaims" | "writeReviewClaim"> {
   const keyOf = (repository: string, head: string): string => `${repository}@${head}`;
+  /** A rerun of the runs the addresses name: refused with `rerunRefusal` when a test set it, and recorded in `record` otherwise. */
+  const rerunning = (name: string, record: string[][]) => (detailsUrls: readonly string[]): string | null => {
+    calls.push(name);
+    if (state.rerunRefusal !== null) return state.rerunRefusal;
+    record.push([...detailsUrls]);
+    return null;
+  };
   return {
     readCheckLog(detailsUrl) {
       calls.push(`readCheckLog ${detailsUrl}`);
       return state.logs.get(detailsUrl) ?? null;
     },
-    rerunFailedChecks(detailsUrls) {
-      calls.push("rerunFailedChecks");
-      if (state.rerunRefusal !== null) return state.rerunRefusal;
-      state.reruns.push([...detailsUrls]);
-      return null;
-    },
+    rerunFailedChecks: rerunning("rerunFailedChecks", state.reruns),
+    rerunRuns: rerunning("rerunRuns", state.runReruns),
     readReviewClaims(repository, head) {
       calls.push(`readReviewClaims ${repository} ${head}`);
       return state.claimReadRefusal === null ? { entries: [...(state.claims.get(keyOf(repository, head)) ?? [])] } : { unreadable: state.claimReadRefusal };
@@ -457,7 +462,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const retargets: { url: string; base: string }[] = [];
   const wrapperState: FakeWrapperState = { refusal: null, mintFailures: {} };
   const repositoriesWorld: FakeRepositories = { owners: login === null ? null : [{ login, kind: "account" }], byOwner: new Map(), cloneFailures: new Map(), cloned: [] };
-  const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
+  const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], runReruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const branchUpdates: FakeBranchUpdates = { answers: new Map(), asked: [] };
   const closes: FakeCloses = { refusals: new Map(), closed: [] };
   const comments: FakeComments = { refusals: new Map(), posted: [] };

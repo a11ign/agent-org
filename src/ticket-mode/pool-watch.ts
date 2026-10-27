@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mergeBaseInto } from "./pool-base-merge.ts";
+import { rerunCancelledGate } from "./pool-cancelled-gate.ts";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, mergesBase, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, type Queue, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
@@ -527,7 +528,7 @@ function noteWaits({ now, store }: PoolContext): void {
  * red at a head the board has not answered, once for each head, with the failing checks and their log lines (A11-154, {@link answerChecks}). A watched run gets all of
  * that. Any other run {@link resumesOnConflict} names, such as one parked on a question, one that ended needs-human, and one that crashed, gets its conflict and its red
  * checks alone (A11-89): its workspace is closed, then a round is queued, so a question it parked on is not answered by a new comment. A check that failed for an
- * infrastructure reason is rerun first, and named, and no worker gets it. Every finished run's read records the files its open pull requests change, which is its
+ * infrastructure reason is rerun first, and named, and no worker gets it. An approved, armed pull request that is BLOCKED behind a cancelled run of its required check has the cancelled run rerun, once for the head ({@link rerunCancelledGate}, A11-342). Every finished run's read records the files its open pull requests change, which is its
  * footprint while it is held (a draft too). A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
  */
 export function watchFeedback(ctx: PoolContext): void {
@@ -563,6 +564,9 @@ export function watchFeedback(ctx: PoolContext): void {
     recordHeads(ctx, entry, readable);
     recorded.push(entry.ticket.key);
     clearResolvedConflict(ctx, entry, open);
+    // An approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check has the run rerun, once for the head (A11-342): no worker is asked, and the run's log says so. A run a person stopped, one the tracker settled and one that
+    // ended with nothing more to do are left alone, as the base merge leaves them (`mergesBase`).
+    if (mergesBase(entry)) for (const pull of open) rerunCancelledGate(ctx, entry, pull);
     if (!resumesOnConflict(entry)) {
       // A run no worker is woken for, such as one handed to a person, still has the base merged into its pull requests (A11-293): the free update, and the record of a real conflict for its card and its Respond.
       if (mergesBase(entry)) mergeBaseOf(ctx, entry, open);

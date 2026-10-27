@@ -5,6 +5,7 @@ import { rerunFailedJobsOf } from "../../src/ticket-port/ci-reads.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { create } from "./index.ts";
 import { jobOfDetails, readCheckLog, rerunFailedChecks } from "./check-runs.ts";
+import { rerunRuns } from "./rerun-runs.ts";
 import { GhFailure } from "./gh.ts";
 
 const JOB = "https://github.com/a11ign/agent-org/actions/runs/38391781529/job/112233";
@@ -62,4 +63,12 @@ test("the plugin's rerun is one spelling with core's `rerunFailedJobsOf`, which 
   rerunFailedChecks([JOB], (args) => { plugin.push(args); return ""; });
   assert.equal(core.length, 1, "POSITIVE CONTROL: core's helper made its call");
   assert.deepEqual(plugin, core);
+});
+
+test("A11-342: rerunRuns reruns the whole run each address names, once, with no --failed, and answers why GitHub refused", () => {
+  const calls: string[][] = [];
+  assert.equal(rerunRuns([JOB, OTHER_JOB_SAME_RUN, OTHER_RUN, "https://github.com/a11ign/agent-org/pull/1"], (args) => { calls.push(args); return ""; }), null);
+  assert.deepEqual(calls.map((args) => args.join(" ")), ["run rerun 38391781529 -R a11ign/agent-org", "run rerun 7 -R a11ign/other"], "each run once, whole, and an address that names no run is left out");
+  assert.equal(rerunRuns([], () => { throw new Error("no call is made for no runs"); }), null);
+  assert.equal(rerunRuns([JOB], () => { throw new Error("run 38391781529 cannot be rerun\nmore"); }), "run 38391781529 cannot be rerun");
 });
