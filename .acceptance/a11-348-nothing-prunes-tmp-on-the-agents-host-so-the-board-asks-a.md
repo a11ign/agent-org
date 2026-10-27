@@ -2,7 +2,9 @@ The `/tmp` janitor (`a11ign-tmp-prune.timer`, every minute) now removes any entr
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/prune-tmp-janitor.test.ts src/packaging/prune-tmp.test.ts src/ticket-mode/host-alerts.test.ts src/packaging/host-units.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/host-alerts.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/packaging/prune-tmp.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/prune-tmp-janitor.test.ts
 ```
 
 Consumer-declaration: none -- no host file changes meaning. The installed unit's `ExecStart` argument changes from `--fixtures-only` to `--timer`; `host:install` rewrites the unit from the shipped template.
