@@ -7,8 +7,11 @@
 // plugin through `deps.reviewing` (`src/plugins/reviewing-helpers.ts`); the pool's own memory of its reviewers (`readReviewerMemory`, `writeReviewerMemory`); and the readers of a reviewer's
 // reviews, which the pool and the board's lines use. The reviewer posts as `a11ign-reviewer`, and its verdict is what the pool reads back to decide whether the worker goes round again.
 
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { repositoryOfClone } from "../declared-clone.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import type { ReviewWord } from "./board-view/pull-review-state.ts";
 import type { Review, ReviewState } from "../plugins/contracts/code-host.ts";
 import type { ReviewJudge } from "../plugins/manifest.ts";
@@ -132,15 +135,47 @@ export function earlierReviewWord(reviews: readonly Review[], head: string): Rea
   return reviewWordOf(reviews, (r) => r.commit !== head);
 }
 
-/**
- * The repositories whose open pull requests the pool reviews (A11-119): the primary's, the project's declared ones, and the host's clones under the
- * primary's owner. These are the repositories the reviewer plugin gives a seat to, so a pull request of any other is one no reviewer could start for.
- */
-export function reviewedRepositoriesOf(clones: Clones): string[] {
+/** How long one clone's `origin` is read for, so a clone on a stalled mount holds the board's loop for no longer. */
+const ORIGIN_TIMEOUT_MS = 3000;
+/** How long a read origin is kept: the sweeps ask every few minutes, and a clone's remote does not change under them. */
+const ORIGIN_KEPT_MS = 300_000;
+const origins = new Map<string, { at: number; url: string | undefined }>();
+
+/** The `origin` URL of the clone at `path`, or undefined when it has none or is not a clone. */
+export function originOf(path: string, now: () => number = Date.now): string | undefined {
+  const held = origins.get(path);
+  if (held !== undefined && now() - held.at < ORIGIN_KEPT_MS) return held.url;
+  let url: string | undefined;
+  try {
+    url = execFileSync("git", ["-C", path, "remote", "get-url", "origin"], { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "ignore"], timeout: ORIGIN_TIMEOUT_MS }).trim();
+  } catch (err) {
+    void err; // no origin, no clone at that path, or no answer in time: it names no repository, and the caller takes the key for a name
+  }
+  origins.set(path, { at: now(), url });
+  return url;
+}
+
+/** Each clone of `clones` with the repository it is the checkout of: the declaration's, else its remote's, else its key taken as a name under the primary's owner (A11-360). */
+function repositoriesOfClones(clones: Clones, remote: (path: string) => string | undefined): { key: string; repository: string }[] {
   const { config, identity } = reviewerGate();
   const owner = identity.REPO.split("/")[0];
-  const declared = config.homeProjectDeclaration().code.map((code) => code.repo);
-  return [...new Set([identity.REPO, ...declared, ...Object.keys(clones).map((name) => `${owner}/${name}`)])];
+  const code = config.homeProjectDeclaration().code;
+  return Object.entries(clones).map(([key, path]) => ({ key, repository: repositoryOfClone(key, path, { code, remote }) ?? `${owner}/${key}` }));
+}
+
+/** The key under which `clones` lists the clone of `repository` (`owner/name`), or undefined when it lists none: a writer places a ticket by this key. */
+export function cloneKeyOf(clones: Clones, repository: string, remote: (path: string) => string | undefined = originOf): string | undefined {
+  return repositoriesOfClones(clones, remote).find((cloned) => cloned.repository === repository)?.key;
+}
+
+/**
+ * The repositories whose open pull requests the pool reviews (A11-119): the primary's, the project's declared ones, and the repositories the host's clones are checkouts of. These are the repositories the reviewer plugin
+ * gives a seat to, so a pull request of any other is one no reviewer could start for. A clone's repository is found from the declaration or its git remote, never from its key (A11-360: the key `github` of the clone
+ * of `.github` listed `a11ign/github`). A clone whose remote cannot be read is listed under its key as a name, as `clones` lists a clone (`doctor` fails a key that is no repository).
+ */
+export function reviewedRepositoriesOf(clones: Clones, remote: (path: string) => string | undefined = originOf): string[] {
+  const { config, identity } = reviewerGate();
+  return [...new Set([identity.REPO, ...config.homeProjectDeclaration().code.map((declared) => declared.repo), ...repositoriesOfClones(clones, remote).map(({ repository }) => repository)])];
 }
 
 /** Where a pool keeps what it remembers of its reviewers: `tickets/reviewers.json` under the state directory. */

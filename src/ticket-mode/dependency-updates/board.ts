@@ -3,7 +3,7 @@
 import { dirname, join } from "node:path";
 import type { CodeHost } from "../../plugins/contracts/code-host.ts";
 import type { Queue, RunChoice } from "../queue/queue-entries-and-outcomes.ts";
-import { reviewedRepositoriesOf } from "../reviewer-port.ts";
+import { cloneKeyOf, reviewedRepositoriesOf } from "../reviewer-port.ts";
 import type { TicketSettings } from "../settings.ts";
 import type { Ticket, TicketSource } from "../source.ts";
 import { dependencyUpdateSweep } from "./sweep.ts";
@@ -27,12 +27,22 @@ export type BoardDependencies = Readonly<{
   repositories?: () => readonly string[];
 }>;
 
+/** The key the clone of `repository` is listed under, or undefined when the reviewer gate is not loaded: the form then names the repository's own name, as it did before the gate was asked (A11-360). */
+function gateCloneKeyOf(clones: Readonly<Record<string, string>>, repository: string): string | undefined {
+  try {
+    return cloneKeyOf(clones, repository);
+  } catch (err) {
+    void err; // a host that cannot load the gate is told so by the sweep's own read of the repositories
+    return undefined;
+  }
+}
+
 /** The sweep over the board's own collaborators. Its writer is `tickets.writer` on the model and effort the Settings page chose for it, and a ticket it queues runs on the saved choice. */
 export function boardDependencySweep(board: BoardDependencies): () => Promise<void> {
   const { settings, choice } = board;
   return dependencyUpdateSweep({
     codeHost: board.codeHost, source: board.source, store: board.store, statePath: join(dirname(board.queuePath), DEPENDENCY_TICKETS_FILE),
-    repositories: board.repositories ?? (() => reviewedRepositoriesOf(settings.clones)), clones: settings.clones,
+    repositories: board.repositories ?? (() => reviewedRepositoriesOf(settings.clones)), clones: settings.clones, cloneKeyOf: (repository) => gateCloneKeyOf(settings.clones, repository),
     writer: () => (settings.writer === null ? null : { model: choice().writerModel ?? settings.writer.model, effort: choice().writerEffort ?? settings.writer.effort }),
     runChoice: () => ({ model: choice().model, effort: choice().effort }),
     queueTickets: board.queueTickets, wake: board.wake, now: board.now, log: (line) => process.stderr.write(`ticket:serve: ${line}\n`),

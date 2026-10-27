@@ -35,7 +35,7 @@ import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
-import { readReviewerMemory, reviewerMemoryPath, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
+import { readReviewerMemory, reviewerMemoryPath, originOf, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
 import { type FlakesView, flakesPath, flakesViewOf } from "../ticket-mode/flakes.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
@@ -73,7 +73,7 @@ import { coreRowsHelpers, realExec, realPlace, realProbe } from "../plugins/acti
 import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
 import { loadedCodeHost } from "../plugins/code-host-slot.ts";
 import { readOrganisation, unclonedOf } from "../ticket-mode/org-repos.ts";
-import { cloneOfDeclared, type DeclaredRepository } from "../declared-clone.ts";
+import { cloneOfDeclared, repositoryOfClone, type DeclaredRepository } from "../declared-clone.ts";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -160,6 +160,8 @@ export type DoctorDeps = Readonly<{
    * The default asks the code host, as the account doctor runs as.
    */
   unclonedRepositories?: (clones: Readonly<Record<string, string>>) => Readonly<{ uncloned: readonly string[] }> | Readonly<{ unreadable: string }>;
+  /** The `origin` URL of the clone at a path, or undefined (A11-360). When it is given, a `clones` entry that names no real repository is a failing row; a test that does not give it is not asked. */
+  cloneRemote?: (path: string) => string | undefined;
   /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
   reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
   /** The tests the flake log in `stateDir` lists as needing a fix (A11-300): flaked three times in seven days. A test injects them, so no file is read. */
@@ -524,6 +526,19 @@ async function repositoryCloneChecks(settings: TicketSettings | null, deps: Doct
   return code.filter(({ key }) => key !== "").map((declared) => cloneCheckOf(declared, code, settings.clones));
 }
 
+/**
+ * One FAIL row for each `clones` entry whose key is no repository (A11-360): not a declared repository's key or name, and its git remote names none. Such an alias is read as a repository name by whatever lists the clone's
+ * pull requests, and a name that is no repository is a listing that always fails. A host whose declaration cannot be read is told by {@link repositoryCloneChecks}, so it has none here.
+ */
+async function cloneKeyChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
+  const { cloneRemote } = deps;
+  if (settings === null || cloneRemote === undefined) return [];
+  const code = await deps.declaredRepositories().catch(() => null);
+  if (code === null) return [];
+  return Object.entries(settings.clones).filter(([key, path]) => repositoryOfClone(key, path, { code, remote: cloneRemote }) === undefined).map(([key, path]) =>
+    failed(`clone ${key}`, `\`${key}\` in \`clones\` is no repository: it is no declared key or name, and the origin of ${path} names none`, `remove \`${key}\` from \`clones\` in the host file, or list the clone under its repository's name`));
+}
+
 /** The row for one declared repository: its key must read back from the reviewer's label, and a clone must be listed under the key or the repository's name. */
 function cloneCheckOf({ key, repo }: DeclaredRepository, code: readonly DeclaredRepository[], clones: TicketSettings["clones"]): Check {
   const name = `clone of ${repo}`;
@@ -592,6 +607,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...aliasChecks(settings),
     ...(noProject ? [] : await repositoryCloneChecks(settings, deps)),
     ...organisationCloneCheck(settings, deps),
+    ...(noProject ? [] : await cloneKeyChecks(settings, deps)),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", `run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, or by hand: \`${handInstallCommand(deps.platform, deps.arch, deps.env)}\``) : ok("herdr", herdr),
     ...(herdr === null ? [] : herdrUpkeepChecks(deps)),
     writerCheck(settings, plugins),
@@ -1065,6 +1081,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       return "unreadable" in organisation ? organisation : { uncloned: unclonedOf(organisation.repositories, clones, codeHost).map(({ fullName }) => fullName) };
     },
     declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code,
+    cloneRemote: originOf,
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
     flakes: (stateDir) => flakesViewOf(flakesPath(stateDir), Date.now()),
     chromium: () => chromiumReport(),

@@ -1,9 +1,11 @@
 // no-token: none -- herdr, git and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { reviewerOver } from "../plugins/fakes/reviewer.ts";
@@ -12,7 +14,7 @@ import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/pull-status-and-notes.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, reviewWordAt, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, cloneKeyOf, originOf, reviewedRepositoriesOf, reviewWordAt, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";
 import { enqueue, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -287,4 +289,33 @@ test("A11-340: a cancelled run of a check is a duplicate while the check has ano
   assert.equal(settled(run("gate", "SUCCESS", 200, 26), run("python", "CANCELLED", 201, 27)), false, "a cancelled run of one check is no pass for another");
   assert.equal(settled(run("gate", "CANCELLED", 201, 27), { context: "gate", state: "SUCCESS" }), false, "a commit status is known by its context, and is no other run of a check run's name");
   assert.equal(judge.settledOf({ statusCheckRollup: [run("gate", "SUCCESS", 200, 26), run("gate", "CANCELLED", 201, 27), run("python", "CANCELLED", 202, 27)] }, ["gate"]), true, "only the required checks count, with the duplicate set aside");
+});
+
+test("A11-360: the repositories the pool sweeps are the clones' real repositories, so a clone behind an alias key sweeps `.github` and never `a11ign/github`", async () => {
+  await loadReviewerGate();
+  const remotes: Record<string, string> = { "/c/dotgithub": "https://github.com/a11ign/.github.git", "/c/site": "git@github.com:a11ign/a11ign.github.io.git" };
+  const listed = reviewedRepositoriesOf({ lab: "/c/lab", github: "/c/dotgithub", site: "/c/site", gone: "/c/gone" }, (path) => remotes[path]);
+  assert.ok(listed.includes("a11ign/.github"), "the alias's clone is swept under its remote's repository");
+  assert.ok(listed.includes("a11ign/a11ign.github.io"), "a dotted name behind a plain alias too");
+  assert.ok(listed.includes("a11ign/lab"), "a declared key keeps its declared repository");
+  assert.deepEqual(listed.filter((repository) => ["a11ign/github", "a11ign/site"].includes(repository)), [], "no repository is made from an alias key whose clone says what it is");
+  assert.ok(listed.includes("a11ign/gone"), "a clone whose remote cannot be read is listed under its key, as a repository name");
+});
+
+test("A11-360: cloneKeyOf names the key a repository's clone is listed under, and originOf keeps a read origin for a while and says nothing for a path that is no clone", async () => {
+  await loadReviewerGate();
+  const remotes: Record<string, string> = { "/c/dotgithub": "https://github.com/a11ign/.github.git" };
+  assert.equal(cloneKeyOf({ lab: "/c/lab", github: "/c/dotgithub" }, "a11ign/.github", (path) => remotes[path]), "github");
+  assert.equal(cloneKeyOf({ lab: "/c/lab", github: "/c/dotgithub" }, "a11ign/missing", (path) => remotes[path]), undefined);
+  const clone = tmpDir("origin-of-");
+  const git = (...args: string[]) => execFileSync("git", ["-C", clone, ...args], { encoding: "utf8", env: sandboxGitEnv() });
+  git("init", "-q");
+  git("remote", "add", "origin", "git@github.com:a11ign/.github.git");
+  let clock = 1_000;
+  assert.equal(originOf(clone, () => clock), "git@github.com:a11ign/.github.git", "a clone's origin is read");
+  git("remote", "set-url", "origin", "git@github.com:a11ign/lab.git");
+  assert.equal(originOf(clone, () => clock), "git@github.com:a11ign/.github.git", "the answer is kept, so the sweeps do not spawn git every time");
+  clock += 400_000;
+  assert.equal(originOf(clone, () => clock), "git@github.com:a11ign/lab.git", "and read again once it is old");
+  assert.equal(originOf(join(clone, "no-such-clone"), () => clock), undefined, "a path that is no clone has no origin");
 });
