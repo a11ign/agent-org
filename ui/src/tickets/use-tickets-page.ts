@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { clearedRow } from "../../../src/ticket-mode/label-filters.ts";
-import { inProject, planChoiceOf, prioritiesOf, type PlanChoice } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
+import { planChoiceOf, prioritiesOf, type PlanChoice } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { showsOwner } from "../../../src/ticket-mode/assignee-filter.ts";
 import type { TicketView } from "../api/types.ts";
 import { useShell } from "../shell/ShellProvider.tsx";
+import { ofPicked } from "../shell/shell-model.ts";
 import type { SegmentSource } from "./tickets-model.ts";
 import {
   ALL_ITEM, groupOfMenu, labelMenus, planMenu, planPatternOf, priorityMenu, sectionsOf, shownTickets, type Filters, type Menu, type Section,
@@ -51,7 +52,7 @@ export function useList(state: FilterState): ListView {
   const { config, allTickets, projectTickets, scope, project } = shell;
   const inScope = shell.tickets.data ?? [];
   const kept = shownTickets(projectTickets, inScope, state.filters, planPatternOf(config));
-  const projectOfAll = project === null ? allTickets : inProject(allTickets, project);
+  const projectOfAll = project === null ? allTickets : ofPicked(allTickets, project);
   const source: SegmentSource | null = config === null ? null : { ofProject: projectOfAll, all: allTickets, scope, config, held: shell.held, scopesRead: shell.scopesRead };
   return {
     sections: sectionsOf(projectTickets, kept, shell.contextParents), source,

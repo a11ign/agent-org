@@ -128,6 +128,18 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     const page = await source.scoped?.("anyone", null);
     expect(isObject(page) && Array.isArray(page.tickets) && (page.next === null || isString(page.next)), "scoped() must resolve { tickets, next }, with next null at the end");
   }),
+  "projects lists the open projects by id and name": optional("projects", async ({ source }) => {
+    const listed = await source.projects?.();
+    expect(Array.isArray(listed) && listed.every((project) => isObject(project) && isString(project.id) && isString(project.name)), "projects() must resolve [{ id, name }]");
+  }),
+  "projectPage pages a project's tickets": optional("projectPage", async ({ source }) => {
+    const page = await source.projectPage?.("no-such-project", null);
+    expect(isObject(page) && Array.isArray(page.tickets) && (page.next === null || isString(page.next)), "projectPage() must resolve { tickets, next }, with next null at the end");
+  }),
+  "search of no words finds nothing": optional("search", async ({ source }) => {
+    const found = await source.search?.("  ");
+    expect(Array.isArray(found) && found.length === 0, "search() of no words must resolve [] without asking the tracker for everything");
+  }),
   "stateTypes answers a Map of the keys it knows": optional("stateTypes", async ({ source, probe }) => {
     const types = await expectMap(source.stateTypes!([probe.known, probe.missing]), "stateTypes()");
     expect(isString(types.get(probe.known)), `stateTypes() must name the state type of ${probe.known}`);

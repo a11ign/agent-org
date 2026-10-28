@@ -1137,13 +1137,15 @@ test("on demand: /api/people answers who holds the tickets, read once and kept f
   assert.equal(asked, 1, "one read serves the asks that come while it runs and after it");
 });
 
+/** The status, keys and next cursor of the first page of `/api/tickets?<list>`, and the keys and next cursor of the page after `c1`. */
+async function twoPages(b: ReturnType<typeof board>, list: string): Promise<unknown[]> {
+  const [status, page] = await b.api("GET", "/api/tickets", {}, new URLSearchParams(list)) as [number, any];
+  const [, after] = await b.api("GET", "/api/tickets", {}, new URLSearchParams(`${list}&after=c1`)) as [number, any];
+  return [status, page.tickets.map((t: any) => t.key), page.next, after.tickets.map((t: any) => t.key), after.next];
+}
+
 test("on demand: /api/tickets?assignee= answers a page of that scope with the next cursor, and the tickets join those the parents are read for", async () => {
-  const b = board(4747, {}, {}, onDemand());
-  const [status, page] = await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana")) as [number, any];
-  assert.equal(status, 200);
-  assert.deepEqual([page.tickets.map((t: any) => t.key), page.next], [["ana-first"], "c1"]);
-  const [, after] = await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana&after=c1")) as [number, any];
-  assert.deepEqual([after.tickets.map((t: any) => t.key), after.next], [["ana-c1"], null]);
+  assert.deepEqual(await twoPages(board(4747, {}, {}, onDemand()), "assignee=ana"), [200, ["ana-first"], "c1", ["ana-c1"], null]);
 });
 
 test("on demand: an instance that lists everything at once answers neither /api/people nor a scope, and /api/tickets without a scope is the list as before", async () => {
@@ -1160,6 +1162,42 @@ test("on demand: the parents of a scope's tickets are read, as those of the firs
   await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana"));
   const [, parents] = await b.api("GET", "/api/parents", {}) as [number, any[]];
   assert.deepEqual([read, parents.map((t) => t.key)], [["NBF-8"], ["NBF-8"]]);
+});
+
+/** A source that reads a project at a time and searches (A11-378), beside the scopes it could read too. */
+const byProject = (over: Partial<TicketSource> = {}): TicketSource => onDemand({
+  projects: async () => [{ id: "p-web", name: "web" }],
+  projectPage: async (project, after) => ({ tickets: [ticket(`${project}-${after ?? "first"}`)], next: after === null ? "c1" : null }),
+  search: async (text) => [ticket(`found-${text}`)],
+  ...over,
+});
+
+test("A11-378: a source that reads a project at a time is offered no whole-workspace scope: the config says projects and search, and neither /api/people nor a scope is answered", async () => {
+  const b = board(4747, {}, {}, byProject());
+  const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual([config.projects, config.search, config.scopes], [true, true, false]);
+  assert.equal((await b.api("GET", "/api/people", {}))[0], 404);
+  assert.equal((await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=anyone")))[0], 404);
+  const [, team] = await board(4747, { pick: { team: "A11" } }, {}, byProject()).api("GET", "/api/config", {}) as [number, any];
+  assert.equal(team.projects, false, "a team's list holds every ticket of it already");
+});
+
+test("A11-378: /api/projects lists the tracker's projects, and /api/tickets?project= answers a page of one with the next cursor", async () => {
+  const b = board(4747, {}, {}, byProject());
+  assert.deepEqual(await b.api("GET", "/api/projects", {}), [200, [{ id: "p-web", name: "web" }]]);
+  assert.deepEqual(await twoPages(b, "project=web"), [200, ["web-first"], "c1", ["web-c1"], null]);
+  const older = board(4747, {}, {}, onDemand());
+  assert.equal((await older.api("GET", "/api/projects", {}))[0], 404);
+  assert.equal((await older.api("GET", "/api/tickets", {}, new URLSearchParams("project=web")))[0], 404);
+});
+
+test("A11-378: /api/search answers the tracker's matches, and a match can be queued as a listed ticket can", async () => {
+  const b = board(4747, {}, {}, byProject());
+  const [status, found] = await b.api("GET", "/api/search", {}, new URLSearchParams("q=VE-9")) as [number, any[]];
+  assert.deepEqual([status, found.map((t) => t.key)], [200, ["found-VE-9"]]);
+  const [queued] = await b.api("POST", "/api/queue", { keys: ["found-VE-9"], model: "opus", effort: "high" }) as [number, any];
+  assert.equal(queued, 200);
+  assert.equal((await board(4747, {}, {}, onDemand()).api("GET", "/api/search", {}, new URLSearchParams("q=x")))[0], 404, "a tracker that cannot search is not asked");
 });
 
 test("preflight: the queue the page reads says why runs are held, in every answer that carries the queue, and null while none is", async () => {
@@ -1355,7 +1393,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.7", "enabled"], ["github", "v1.2.3", "2.1", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.8", "enabled"], ["github", "v1.2.3", "2.1", "enabled"], ["tailscale", "v1.2.3", "1.2", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);

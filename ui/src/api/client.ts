@@ -2,7 +2,7 @@ import type { Answer } from "./answer.ts";
 import { mutate } from "./mutate.ts";
 import { send, type Fetch, type Target } from "./request.ts";
 import type {
-  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, PluginActionDone, PluginActionRequest, PluginsAnswer, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
+  Change, CheckAnswer, ChoiceView, CloseRequest, ConfigView, ConnectionsView, EditFile, FlakesView, InterventionsView, People, PickView, ProjectView, PluginActionDone, PluginActionRequest, PluginsAnswer, QueueChildrenView, QueueEntryView, QueueView, RunAction, RunChoice,
   SavedChoice, SettingsPreview, SettingsRestored, SettingsSaved, SettingsView, Ticket, TicketsPageView, TicketView, ViewConnection, WritersView,
 } from "./types.ts";
 
@@ -30,6 +30,9 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
   const read = <T>(path: string, at: Target = target): Read<T> => Object.assign((signal?: AbortSignal) => send<T>(at, { method: "GET", path, signal }), { path });
   const post = <T>(path: string, body?: unknown) => mutate<T>(target, path, body);
   const keyed = (key: string) => `/api/queue/${encodeURIComponent(key)}`;
+  /** One page of a list read on demand: a scope's (`?assignee=`) or a project's (`?project=`, A11-378), from the page `after` names or from the first. */
+  const paged = (which: "assignee" | "project", value: string, after: string | null, signal?: AbortSignal) =>
+    read<TicketsPageView>(`/api/tickets?${new URLSearchParams({ [which]: value, ...(after === null ? {} : { after }) })}`)(signal);
   // An After-merge check's id is `<KEY>#<n>`, which its routes name as `<KEY>/<n>` (A11-277).
   const checked = (id: string) => `/api/after-merge/${id.split("#").map(encodeURIComponent).join("/")}`;
   return {
@@ -38,8 +41,13 @@ export function createClient(connection: ViewConnection | null, { fetch: fetchWi
     config: read<ConfigView>("/api/config"),
     tickets: read<TicketView[]>("/api/tickets"),
     /** One page of the scope the Assignee row chose, from the page `after` names or from the first. */
-    ticketsPage: (assignee: string, after: string | null = null, signal?: AbortSignal) =>
-      read<TicketsPageView>(`/api/tickets?${new URLSearchParams({ assignee, ...(after === null ? {} : { after }) })}`)(signal),
+    ticketsPage: (assignee: string, after: string | null = null, signal?: AbortSignal) => paged("assignee", assignee, after, signal),
+    /** The tracker's open projects, for the project picker (A11-378). */
+    projects: read<ProjectView[]>("/api/projects"),
+    /** One page of the open tickets of the project the picker chose (A11-378). */
+    projectPage: (project: string, after: string | null = null, signal?: AbortSignal) => paged("project", project, after, signal),
+    /** The whole workspace's open tickets that match `text`, whoever holds them and whatever their project (A11-378). */
+    search: (text: string, signal?: AbortSignal) => read<TicketView[]>(`/api/search?${new URLSearchParams({ q: text })}`)(signal),
     people: read<People>("/api/people"),
     parents: read<Ticket[]>("/api/parents"),
     pick: read<PickView>("/api/pick"),

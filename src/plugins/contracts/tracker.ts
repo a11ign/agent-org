@@ -1,5 +1,5 @@
 // @ts-check
-// module: the tracker contract, version 1.7 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
+// module: the tracker contract, version 1.8 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
 // A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
 // implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
@@ -8,6 +8,10 @@
 // 1.1 (A11-159) ADDS `TrackerWriting`, which a tracker plugin declares in its manifest (`agentOrg.tooling.writer`): the tools a new-ticket run files with, what the hook refuses of
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
+//
+// 1.8 (A11-378) ADDS the optional `projects`, `projectPage` and `search`: the Pick view is narrowed to one project a person picks, and reads only that project's open tickets, a page at a time,
+// instead of the whole workspace's for Anyone; and a person finds any open ticket of the workspace by key or by words, whoever holds it and whatever its project. All three are optional, so a
+// 1.7 tracker still passes: its Pick view lists as it did, with no project picker and no search beyond the list.
 //
 // 1.7 (A11-216) ADDS a documented property of the error `attachPlan` throws: its `status`, the HTTP status the tracker answered with. The board tries a plan attach again, with a wait, when it failed on the network (`fetch`'s own
 // `TypeError("fetch failed")`, a timeout, a reset) or the tracker answered 5xx, and hands a person any other failure at once. Nothing in a type changes and the property is optional, so a 1.6 tracker still passes: its 5xx reads
@@ -32,7 +36,7 @@
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.7";
+export const TRACKER_CONTRACT_VERSION = "1.8";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -179,6 +183,9 @@ export type People = Readonly<{ people: readonly Readonly<{ id: string; name: st
 /** One page of a scope's tickets, and the cursor of the page after it, or `null` at the end. */
 export type ScopePage = Readonly<{ tickets: readonly Ticket[]; next: string | null }>;
 
+/** A project the Pick view can be narrowed to (1.8): the tracker's id for it, and the name a ticket carries as its `project`. */
+export type TrackerProject = Readonly<{ id: string; name: string }>;
+
 export interface TicketSource {
   /**
    * Every unfinished ticket the Pick view lists, each with its assignee: the key's own, or, where the host file's `tickets.pick` names a team or a
@@ -206,6 +213,21 @@ export interface TicketSource {
    * the page before it gave (`null` for the first). Paged because Anyone and Unassigned can hold thousands. Throws when the tracker cannot be asked.
    */
   scoped?(scope: string, after: string | null): Promise<ScopePage>;
+  /**
+   * The open projects, by name, for the Pick view's project picker (1.8, A11-378): none archived, completed or canceled. A source that has both this and `projectPage` is read one project at a
+   * time, and the Pick view never asks for every open ticket of the workspace. Throws when the tracker cannot be asked.
+   */
+  projects?(): Promise<readonly TrackerProject[]>;
+  /**
+   * One page of the open tickets of the project named `project`, as a ticket's `project` names it, starting after the cursor the page before it gave (`null` for the first) (1.8). Throws when the
+   * tracker cannot be asked.
+   */
+  projectPage?(project: string, after: string | null): Promise<ScopePage>;
+  /**
+   * The open tickets of the whole workspace that match `text`, by key or by words, whoever holds them and whatever their project, best first (1.8, A11-378). A bounded first page: a search is read,
+   * not paged through. Empty words find nothing. Throws when the tracker cannot be asked.
+   */
+  search?(text: string): Promise<readonly Ticket[]>;
   /** One ticket by key, or `null` when the tracker has none by that key. Throws when the tracker cannot be asked. */
   read(key: string): Promise<Ticket | null>;
   /**

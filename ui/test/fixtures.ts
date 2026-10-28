@@ -3,7 +3,7 @@
 // ONLY THE FIELDS THE SHELL READS ARE FILLED, so the fixtures are cast to the server's types: a field the shell starts to read that is missing here fails its check. Used by the
 // component checks (as the client's `fetch`) and by the page checks (answered through Playwright's `page.route`), so both see the same instance.
 import type { Fetch } from "../src/api/request.ts";
-import type { ConfigView, ConnectionsView, PickView, QueueView, People, Ticket, TicketCheck, TicketsPageView, TicketView, ViewConnection, WritersView } from "../src/api/types.ts";
+import type { ConfigView, ConnectionsView, PickView, ProjectView, QueueView, People, Ticket, TicketCheck, TicketsPageView, TicketView, ViewConnection, WritersView } from "../src/api/types.ts";
 
 export const HERE: ViewConnection = { name: "here", kind: "local" };
 export const PERSONAL: ViewConnection = { name: "personal", kind: "ssh" };
@@ -45,6 +45,10 @@ export type Request = Readonly<{ method: string; path: string; body?: unknown }>
 export type InstanceAnswers = Readonly<{
   config?: ConfigView; tickets?: readonly TicketView[]; queue?: QueueView; queueFails?: Failure; ticketsFail?: Failure; configFail?: Failure;
   parents?: readonly Ticket[]; people?: People; pagesFail?: Failure; pick?: PickView; writer?: WritersView; pages?: Readonly<Record<string, readonly TicketsPageView[]>>;
+  /** The tracker's projects (A11-378); a project's pages are `pages` under `project:<name>`. */
+  projects?: readonly ProjectView[];
+  /** What the whole-workspace search answers for the words asked (A11-378). */
+  search?: (text: string) => readonly TicketView[];
   post?: (path: string, body: unknown) => unknown | Failure;
   /** The After-merge checks of each ticket, as its own read (`GET /api/queue/<key>`) sends them (A11-302). */
   ticketChecks?: Readonly<Record<string, readonly TicketCheck[]>>;
@@ -95,10 +99,11 @@ function postAnswer(answers: InstanceAnswers, route: string, request: Readonly<{
   return isFailure(answer) ? json({ error: answer.error }, answer.status) : json(answer);
 }
 
-/** The pages of the scope an `/api/tickets?assignee=` names, from the cursor `after` names. */
+/** The pages of the scope an `/api/tickets?assignee=` names, or of the project a `?project=` names (under `project:<name>`), from the cursor `after` names. */
 function pageAnswer(answers: InstanceAnswers, query: URLSearchParams): { status: number; body: string } | null {
-  if (query.has("assignee") && answers.pagesFail !== undefined) return json({ error: answers.pagesFail.error }, answers.pagesFail.status);
-  const pages = answers.pages?.[query.get("assignee") ?? ""];
+  const listed = query.has("project") ? `project:${query.get("project") ?? ""}` : query.get("assignee");
+  if (listed !== null && answers.pagesFail !== undefined) return json({ error: answers.pagesFail.error }, answers.pagesFail.status);
+  const pages = answers.pages?.[listed ?? ""];
   if (pages === undefined) return null;
   const index = Number(query.get("after") ?? 0);
   return json({ ...pages[index], next: index + 1 < pages.length ? String(index + 1) : null });
@@ -126,6 +131,10 @@ export function answerFor(stand: Stand, path: string, request: Readonly<{ method
       return json(answers.parents ?? []);
     case "/api/people":
       return answers.people === undefined ? null : json(answers.people);
+    case "/api/projects":
+      return answers.projects === undefined ? null : json(answers.projects);
+    case "/api/search":
+      return answers.search === undefined ? null : json(answers.search(new URLSearchParams(path.split("?")[1] ?? "").get("q") ?? ""));
     case "/api/pick":
       return answers.pick === undefined ? null : json(answers.pick);
     case "/api/writer":

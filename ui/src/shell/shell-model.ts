@@ -3,6 +3,7 @@
 // THE RULES ARE TODAY'S (`ui.html`): which tickets show is the default Assignee scope (`assignee-filter.ts`), the projects are `projectCounts` over them, the chosen project is
 // `chosenProject`, and a goal is a label of the `Goal` group. They are used here, never restated.
 import { defaultScope, inScope } from "../../../src/ticket-mode/assignee-filter.ts";
+import { inProject } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import type { PollState, PollView } from "../api/use-poll.ts";
 import type { ConfigView, QueueView, Ticket, TicketView, ViewConnection } from "../api/types.ts";
 import { NO_UPDATE, type UpdateView } from "../updating/update-model.ts";
@@ -127,3 +128,37 @@ export function ticketsOfGoal(tickets: readonly TicketView[], goal: string): Tic
   if (goal === NO_GOAL_ID) return tickets.filter((ticket) => goalsOfTicket(ticket).length === 0);
   return tickets.filter((ticket) => goalsOfTicket(ticket).some((name) => namedGoalId(name) === goal));
 }
+
+// THE PROJECT PICKER (A11-378). An instance whose tracker lists its projects reads one project at a time: the sidebar's Projects are the tracker's, every one of them, and "My tickets, all projects"
+// first, which is the signed-in person's own list across every project. A project is read the first time it is picked, and the Assignee row then filters that project's tickets only, so no choice
+// on the page ever asks for every open ticket of the workspace.
+
+/** The Projects entry for the signed-in person's own tickets in every project: no project can be named this, so it is never mistaken for one. */
+export const MY_TICKETS = "\u0000my-tickets";
+export const MY_TICKETS_LABEL = "My tickets, all projects";
+
+/** What a project's read is called among the reads made on demand: not a scope, which is a word or a person's id. PURE. */
+export const projectRead = (name: string): string => `project:${name}`;
+
+/** The label a Projects entry shows. PURE. */
+export const projectLabel = (name: string): string => (name === MY_TICKETS ? MY_TICKETS_LABEL : name);
+
+/**
+ * The project shown on an instance that reads one at a time: the one remembered in this browser while the tracker lists it (or while the list is still being read), else My tickets, which is
+ * where a first visit opens. PURE.
+ */
+export function pickedProject(names: readonly string[] | null, remembered: string | null): string {
+  if (remembered === null) return MY_TICKETS;
+  return names === null || names.includes(remembered) ? remembered : MY_TICKETS;
+}
+
+/**
+ * The sidebar's Projects on an instance that reads one at a time: My tickets with how many of the person's own are listed, then each project the tracker lists, by name, with how many of its
+ * tickets are in the scope shown once it has been read, and no count before. PURE.
+ */
+export function pickerEntries(names: readonly string[], shown: readonly TicketView[], mine: number, read: ReadonlySet<string>): [string, number | null][] {
+  return [[MY_TICKETS, mine], ...names.map((name): [string, number | null] => [name, read.has(projectRead(name)) ? shown.filter((ticket) => ticket.project === name).length : null])];
+}
+
+/** The tickets of the project shown: every one for My tickets. PURE. */
+export const ofPicked = <T extends TicketView>(tickets: readonly T[], project: string | null): T[] => (project === MY_TICKETS ? [...tickets] : inProject(tickets, project));

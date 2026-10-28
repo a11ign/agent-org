@@ -4,7 +4,7 @@ export type { AfterMergeCheck, TicketCheck, ViewConnection } from "../../../src/
 export type { CheckResult, CloseRequest } from "../../../src/ticket-mode/after-merge/checks.ts";
 export type { CheckAnswer } from "../../../src/ticket-mode/after-merge/route.ts";
 export type { RunAction } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
-export type { ConfigView, ChoiceView, PickView, QueueChildrenView, QueueEntryView, QueueListEntry, QueueView, RunDetailEntry, SavedChoice, TicketsPageView, TicketView, WritersView } from "../../../src/ticket-mode/server.ts";
+export type { ConfigView, ChoiceView, PickView, QueueChildrenView, QueueEntryView, QueueListEntry, QueueView, RunDetailEntry, SavedChoice, TicketsPageView, TicketView, WritersView, ProjectView } from "../../../src/ticket-mode/server.ts";
 export type { ConnectionsView } from "../../../src/ticket-mode/ui-server.ts";
 export type { RunChoice } from "../../../src/ticket-mode/queue/queue-entries-and-outcomes.ts";
 export type { People, Ticket } from "../../../src/ticket-mode/source.ts";

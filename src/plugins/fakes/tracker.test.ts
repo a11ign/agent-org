@@ -17,6 +17,7 @@ test("the fake tracker passes the tracker contract suite, and the checks that ra
   assert.deepEqual(passed, [
     "shape", "assigned lists tickets", "read answers a ticket by its key", "read answers null for a key the tracker has none of", "download returns the paths it fetched",
     "viewer names the person whose key this is", "me names the person by id and name", "people counts who holds the open tickets", "scoped pages a scope's tickets",
+    "projects lists the open projects by id and name", "projectPage pages a project's tickets", "search of no words finds nothing",
     "stateTypes answers a Map of the keys it knows",
     "texts answers each key's description and updatedAt, as read gives the description, and leaves out a key with no ticket",
     "detachPlan of a title the ticket has no attachment under changes nothing and is no error", "pullStates answers a Map by key", "blockers answers a Map, leaving out a key with no ticket",
