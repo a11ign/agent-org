@@ -15,6 +15,7 @@ import { type BlockReport, DEFAULT_PROVIDER, type Providers } from "../ticket-mo
 import type { Catalog, CatalogPlugin, LoadedPlugin, PluginDeps, PluginModule, PluginSettings } from "./manifest.ts";
 import { blockSettings, pluginNamed } from "./registry.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
+import { callOutcomes, countedFetch, type CallLedger } from "../ticket-mode/call-outcomes.ts";
 
 /**
  * What loading found: the plugins that loaded, and one refusal for each that did not, naming it. A plugin whose module imported but whose `create` threw is a refusal and also
@@ -25,6 +26,15 @@ export type LoadResult = Readonly<{
   unbuilt: readonly Readonly<{ plugin: CatalogPlugin; module: PluginModule }>[];
   refusals: readonly Readonly<{ plugin: string; concern: Concern; why: string }>[];
 }>;
+
+/**
+ * The deps a plugin of `concern` is given: a tracker's `fetch` and `freshFetch` count every request it makes as the board's `linear` figure (A11-363), since core names no tracker's address; every other
+ * plugin gets `deps` as they are.
+ */
+export function depsFor(concern: Concern, deps: PluginDeps, ledger: CallLedger = callOutcomes): PluginDeps {
+  if (concern !== "tracker") return deps;
+  return { ...deps, fetch: countedFetch(deps.fetch, ledger, "linear"), ...(deps.freshFetch === undefined ? {} : { freshFetch: countedFetch(deps.freshFetch, ledger, "linear") }) };
+}
 
 /** Imports a module by its file URL: the default is `import()`, and a test passes its own. */
 export type ImportModule = (url: string) => Promise<unknown>;
@@ -91,7 +101,7 @@ export async function loadEnabled(providers: Providers, catalog: Catalog, deps: 
     let module: PluginModule | null = null;
     try {
       module = await importPlugin(plugin, importModule);
-      loaded.push({ plugin, implementation: module.create(settingsOfBlock(report), deps), module });
+      loaded.push({ plugin, implementation: module.create(settingsOfBlock(report), depsFor(plugin.concern, deps)), module });
     } catch (error) {
       refusals.push({ plugin: plugin.name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) });
       if (module !== null) unbuilt.push({ plugin, module });
@@ -115,7 +125,7 @@ export async function loadDefault(block: ProviderBlock, providers: Providers, ca
     const module = await importPlugin(plugin, importModule);
     const declared = new Set(blockSettings(plugin));
     const own = Object.fromEntries(Object.entries(settingsOfBlock(providers.blocks[block])).filter(([setting]) => declared.has(setting)));
-    return { loaded: { plugin, implementation: module.create(own, deps), module } };
+    return { loaded: { plugin, implementation: module.create(own, depsFor(plugin.concern, deps)), module } };
   } catch (error) {
     return { refusal: { plugin: name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) } };
   }

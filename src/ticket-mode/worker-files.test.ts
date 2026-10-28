@@ -899,7 +899,8 @@ test("A11-135: a writer's settings record each creation as it returns, and no ot
   const writer = workerSettings({ ...base, writer: FAKE_TRACKER_WRITING }) as any;
   assert.deepEqual(writer.hooks.PostToolUse, [{ matcher: "mcp__fake__create_ticket", hooks: [{ type: "command", command: "/usr/bin/node",
     args: ["/tool/src/bin.ts", "ticket:hook", "post-tool-use", "/d"], timeout: 30 }] }]);
-  assert.equal("PostToolUse" in (workerSettings(base) as any).hooks, false, "a build worker records nothing");
+  assert.deepEqual((workerSettings(base) as any).hooks.PostToolUse, [{ matcher: "Bash", hooks: [{ type: "command", command: "/usr/bin/node",
+    args: ["/tool/src/bin.ts", "ticket:hook", "post-tool-use", "/d"], timeout: 30 }] }], "a build worker records the pull request its Bash command opens (A11-358), and no ticket");
 });
 
 test("A11-257: a worker's unplanned choice appears in the pull request, not as a stop", () => {

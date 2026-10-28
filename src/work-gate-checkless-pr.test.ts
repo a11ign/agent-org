@@ -43,6 +43,14 @@ test("an open PR with an EMPTY rollup, quiet past the threshold, yields an order
   assert.match(order.prompt, /never offer it to a reviewer/i);
 });
 
+test("A11-370: the cause it gives for a retarget names a workflow filtered to one base, and no longer says every pull request on another branch gets no run", () => {
+  const { prompt } = ordersOf(prOf())[0];
+  const stated = [/a workflow filtered to one base gives a pull request opened on another branch no run/, /an `edited` event that may not start CI/];
+  const retired = [/gets no `pull_request` run for `main`/, /edited` event that does not start CI/];
+  stated.forEach((phrase) => assert.match(prompt, phrase));
+  retired.forEach((phrase) => assert.doesNotMatch(prompt, phrase, "ci.yml has no base filter now (A11-370), so a pull request on another branch does get a run"));
+});
+
 test("control: the SAME PR inside the threshold yields none -- CI may simply not have started", () => {
   assert.deepEqual(ordersOf(prOf({ updatedAt: quietFor(CHECKLESS_QUIET_MINUTES - 1) })), []);
   assert.equal(checkless(prOf({ updatedAt: quietFor(CHECKLESS_QUIET_MINUTES) })).length, 1, "the boundary itself is old enough");

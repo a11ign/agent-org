@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A run whose worker wrote `working` and waits on a pull request that is blocked now hears of it at once. While its agent is idle on a `working` note, the pull requests it waits on (`waitingOn` a pull request) and the ones it opened are read like a run's own: a review asking for changes at the head, a red required check or a conflict is told to the worker in one prompt, once for each head, and not at the wait's `until` (`pool-wait-pulls.ts`, `wait-on/wait-pulls.ts`). A pull request a run opens is recorded by the PostToolUse hook (`opened-record.ts`) and kept on the run (`Entry.opened`), so one opened in another repository is among the run's pull requests whatever its outcome lists. A changes-requested review that stands for an hour with the worker idle ends the run `needs-human`, naming the pull request and whether the worker was told, so it reads Needs you. On a machine with `tickets.drafts: false` the hook lets a worker open a ready pull request in a round that answers feedback too, and mark its own pull requests ready (`gh pr ready` with no argument, or with the URL of one it opened).

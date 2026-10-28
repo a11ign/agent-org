@@ -34,7 +34,7 @@ test("the board grants a new-ticket run Linear's create tool and its two attachm
   assert.deepEqual(writerTools(WRITING), ["mcp__linear__save_issue", "mcp__linear__prepare_attachment_upload", "mcp__linear__create_attachment_from_upload"]);
   const base = { model: "opus", ticketDir: "/d", readDirs: [], hook: { node: "/usr/bin/node", bin: "/tool/src/bin.ts" } };
   assert.equal((workerSettings({ ...base, writer: WRITING }) as { hooks: { PostToolUse: { matcher: string }[] } }).hooks.PostToolUse[0].matcher, "mcp__linear__save_issue");
-  assert.equal("PostToolUse" in (workerSettings(base) as { hooks: object }).hooks, false, "a build worker records nothing");
+  assert.equal((workerSettings(base) as { hooks: { PostToolUse: { matcher: string }[] } }).hooks.PostToolUse[0].matcher, "Bash", "a build worker records no ticket: its hook is matched on Bash, for the pull request a command opens (A11-358)");
 });
 
 test("a creation's key is read from the result Linear's MCP returned, in any of its shapes: `identifier`, else `id` when that is a key, under `issue` or not", () => {

@@ -18,16 +18,16 @@ test("a ledger counts each service's calls and failures over the last hour only"
   assert.deepEqual(ledger.figures().linear, { calls: 0, failures: 0, failuresPer100: 0 }, "past the hour, they are out");
 });
 
-test("a request to api.linear.app is Linear's and one to api.github.com GitHub's, and any other address is neither", () => {
-  assert.deepEqual([serviceOfUrl("https://api.linear.app/graphql"), serviceOfUrl(new URL("https://api.github.com/repos")), serviceOfUrl(new Request("https://api.linear.app/graphql")), serviceOfUrl("https://hooks.slack.com/x"), serviceOfUrl("not a url")],
-    ["linear", "github", "linear", null, null]);
+test("a request to api.github.com is GitHub's, and any other address is neither: the tracker's calls are counted by its own fetch", () => {
+  assert.deepEqual([serviceOfUrl("https://api.linear.app/graphql"), serviceOfUrl(new URL("https://api.github.com/repos")), serviceOfUrl(new Request("https://api.github.com/graphql")), serviceOfUrl("https://hooks.slack.com/x"), serviceOfUrl("not a url")],
+    [null, "github", "github", null, null]);
 });
 
 test("a 429 and a 5xx are the service failing the call, and a 404 or a 401 is it answering", () => {
   assert.deepEqual([200, 404, 401, 429, 500, 502].map(statusFailed), [false, false, false, true, true, true]);
 });
 
-test("a counted fetch counts a request to Linear as failed when it throws or answers 5xx, passes the answer or the throw on unchanged, and counts no other address", async () => {
+test("a fetch counted as the tracker counts every request, as failed when it throws or answers 5xx, passes the answer or the throw on unchanged, and counts no other address", async () => {
   const ledger = createCallLedger(() => 1_000);
   const answers = [new Response("ok", { status: 200 }), new Response("busy", { status: 503 }), "reset"] as const;
   let made = 0;
@@ -35,14 +35,17 @@ test("a counted fetch counts a request to Linear as failed when it throws or ans
     const answer = answers[made++]!;
     if (answer === "reset") throw new TypeError("fetch failed");
     return answer;
-  }) as typeof fetch, ledger);
+  }) as typeof fetch, ledger, "linear");
   assert.equal((await counted("https://api.linear.app/graphql")).status, 200);
   assert.equal((await counted("https://api.linear.app/graphql")).status, 503);
   await assert.rejects(counted("https://api.linear.app/graphql"), /fetch failed/);
   assert.deepEqual(ledger.figures().linear, { calls: 3, failures: 2, failuresPer100: 66.7 });
   const elsewhere = countedFetch((async () => new Response("", { status: 500 })) as typeof fetch, ledger);
   await elsewhere("https://example.org/x");
-  assert.equal(ledger.figures().linear.calls, 3, "an address that is neither service is not counted");
+  assert.equal(ledger.figures().linear.calls, 3, "a fetch not counted as the tracker counts no address but GitHub's API");
+  const byAddress = countedFetch((async () => new Response("", { status: 200 })) as typeof fetch, ledger);
+  await byAddress("https://api.linear.app/graphql");
+  assert.equal(ledger.figures().linear.calls, 3, "core reads no tracker's address: only the tracker's own fetch counts its calls");
 });
 
 test("a gh that could not start, was cut, or printed that the network or GitHub failed is a failed call, and one that exited non-zero for an answer is not", () => {

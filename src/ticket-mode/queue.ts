@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { overlapWait } from "./board-view/overlap-hold.ts";
 import { waitsOn } from "./board-view/pull-status-and-notes.ts";
+import { keysWithStackAbove } from "./board-view/stack-wait.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
 import { placementOf } from "./writer-placement.ts";
 import { isCheckRun } from "./after-merge/verify.ts";
@@ -30,20 +31,41 @@ export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace
  * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass.
  * A run whose blockers or plan paths are not known holds back like the rest, and takes no slot (A11-364): `startReadHold` says which (never read; or read longer ago than `BLOCKERS_MAX_AGE_MS` before `now`), so a run left unread never
  * takes a slot from one that can start. The pool gives `now`; without it nothing about what was read is judged, and a run is held back for the other reasons alone.
+ * A STACK IS A PRIORITY (A11-370): a queued run whose pull request has another stacked on it ({@link keysWithStackAbove}) starts before the other queued runs of its model, since that run is waiting for it. The queue order holds among the runs that are equal in this.
  */
 export function nextStarts(queue: Queue, load: number, cores: number, now?: number): Entry[] {
   if (queue.paused || load > cores) return [];
   const free = queue.max - slotsHeld(queue);
   const runs = new Set<string>();
   const started: Entry[] = [];
-  return queue.entries.filter((entry) => {
-    if (entry.phase !== "queued" || isHeldBack(entry, queue.entries, now)) return false;
-    if (!runs.has(runOf(entry)) && runs.size >= free) return false;
-    if (overlapWait(entry, [...queue.entries, ...started.map(asStarting)]) !== null) return false;
+  for (const entry of stackedFirst(queue.entries)) {
+    if (entry.phase !== "queued" || isHeldBack(entry, queue.entries, now)) continue;
+    if (!runs.has(runOf(entry)) && runs.size >= free) continue;
+    if (overlapWait(entry, [...queue.entries, ...started.map(asStarting)]) !== null) continue;
     runs.add(runOf(entry));
     started.push(entry);
-    return true;
+  }
+  // Chosen in the stack's order, returned in queue order: the caller starts a batch under its first member, and that is the queue's, not the stack's.
+  return queue.entries.filter((entry) => started.includes(entry));
+}
+
+/**
+ * The entries with the queued runs that have a stack above them moved ahead of the other queued runs of their model (A11-370): the queued runs of each model keep the places they hold in the queue, and are taken in the order stack first, then queue order. A run of
+ * another model, and a run that is not queued, keep their places. A run with no model of its own is of the model that no run names. PURE.
+ */
+function stackedFirst(entries: readonly Entry[]): readonly Entry[] {
+  const stacked = keysWithStackAbove(entries);
+  const places = new Map<string, number[]>();
+  entries.forEach((entry, index) => {
+    if (entry.phase === "queued") places.set(entry.model ?? "", [...(places.get(entry.model ?? "") ?? []), index]);
   });
+  const ordered = [...entries];
+  for (const indexes of places.values()) {
+    const taken = indexes.map((index) => entries[index]);
+    const promoted = (entry: Entry): boolean => stacked.has(entry.ticket.key);
+    [...taken.filter(promoted), ...taken.filter((entry) => !promoted(entry))].forEach((entry, at) => { ordered[indexes[at]] = entry; });
+  }
+  return ordered;
 }
 
 /** Whether a queued entry is held back for a reason of its own: its blockers or plan are not known (A11-364), its plan could not be downloaded, a session holds it, a blocker has not let go, or the board holds it for its ticket's CI spend (A11-261). PURE. */
