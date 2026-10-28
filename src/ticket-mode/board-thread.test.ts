@@ -17,7 +17,7 @@ import { copiesOf, type Known, LISTEN_FAILED, namedKeys, REQUEST_THREAD, type Re
 const KEY = "a".repeat(48);
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const inProgress = (key: string, title = key) => ({ ...ticket(key, title), status: "In Progress", statusType: "started" }) as Ticket;
-const HEALTH: HealthView = { loop: { board: { p50Ms: 1, p99Ms: 2_013, maxMs: 2_020, windowMs: 60_000, sinceStartMaxMs: 2_020, at: 7 } }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 3, totalMs: 6_000, maxMs: 2_010 }] };
+const HEALTH: HealthView = { loop: { board: { p50Ms: 1, p99Ms: 2_013, maxMs: 2_020, windowMs: 60_000, sinceStartMaxMs: 2_020, at: 7 } }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 3, totalMs: 6_000, maxMs: 2_010 }], githubCalls: null };
 const PLUGINS = { read: async () => { throw new Error("the Plugins section is not read here"); } };
 
 /** A board over a throwaway state folder and `tracker`, with a pool that holds a run and reads one pull request, as a live pool would answer. */
@@ -46,6 +46,13 @@ test("the request thread's reads over a snapshot answer what the board's own rou
   assert.deepEqual(queue.entries.map((entry) => entry.ticket.key), ["NBF-1"], "the queue is the snapshot's");
   assert.deepEqual([queue.held, queue.pulls, queue.claimWarning], [{ name: "npm run preflight", reason: "red", since: 5 }, { "https://github.com/a11ign/agent-org/pull/1": "Reviewer approved" }, "GitHub refuses the review claims"]);
   assert.deepEqual(queue.hostAlerts, [{ id: "tmp-entries", sentence: "/tmp holds 19,960 entries", since: 5 }], "the host's alerts cross to the request thread in the snapshot (A11-279)");
+});
+
+test("A11-365: the code host's count of its calls to GitHub crosses to the request thread in the snapshot, which /api/health serves", () => {
+  const { board } = boardOver();
+  const githubCalls = { since: "2026-10-28T00:00:00.000Z", total: 12, perMinute: 3, notModified: 2, byKind: { graphql: 4, rest: 7, cli: 1 }, currentSweep: null, lastSweep: { at: "2026-10-28T00:00:00.000Z", calls: 3 } };
+  assert.deepEqual(structuredClone(snapshotOf(board, null, { ...HEALTH, githubCalls }, 7)).githubCalls, githubCalls);
+  assert.equal(snapshotOf(board, null, HEALTH, 7).githubCalls, null, "a host that counts none says none");
 });
 
 test("a read that uses the terminal address asks the board thread to work it out again, and is answered from the snapshot without waiting", async () => {

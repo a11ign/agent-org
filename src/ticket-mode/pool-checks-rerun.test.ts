@@ -154,6 +154,8 @@ test("A11-300: a round that ends with no push and a reply that says the failure 
   const rerun = watch(RED, ROUND);
   assert.equal(rerun.feedback, null, "no second round");
   assert.deepEqual(host.checksAndClaims.reruns, [[SUITE_JOB]]);
+  const replyRead = host.calls.indexOf(`readReplies ${URL_1}`);
+  assert.ok(replyRead > 0 && host.calls[replyRead - 1] === `refreshPull ${URL_1}`, "A11-365: the round's replies are read afresh, once, so a reply posted just before the round ended is not missed for good");
   assert.deepEqual([rerun.heads[URL_1]?.step, rerun.heads[URL_1]?.rerun?.for], ["rerun", "reply"]);
   assert.match(rerun.heads[URL_1]?.note ?? "", /^Reran suite \(2\) on fc707690: the worker's reply says the failure is not from the change/);
   assert.deepEqual(rerun.withoutRound, rerun.heads, "recorded without a round");

@@ -2,9 +2,10 @@
 // squash-merges and its branch is not deleted, GitHub does not retarget the stacked one, so it stays aimed at a dead branch. The sweep here moves such a pull request
 // to the repository's default branch with `gh pr edit --base`, reads the base back, and never touches its head: no push, rebase or merge. A base with no merged
 // pull request behind it is not moved, since its work may never have landed: it is said as needing a retarget by hand. A base no pull request ever came from (a
-// long-lived branch) is nothing to say. Every call goes through the `gh` it is handed, which is the instance's, with the workers' account.
+// long-lived branch) is nothing to say. Every call goes through the `gh` it is handed, which is the instance's, with the workers' account, except the read of a pull request's base and state, which is the repository's snapshot's (`pull-snapshot.ts`, A11-365).
 import type { Gh } from "./gh.ts";
 import { pullOf } from "./pull-feedback.ts";
+import type { PullSnapshots } from "./pull-snapshot.ts";
 
 export type { Gh };
 
@@ -23,9 +24,10 @@ export function baseKindOf({ base, defaultBranch, heads, branchExists }: { base:
 
 const firstLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
 
-/** The pull request's base and state as GitHub gives them. Throws when GitHub does not name a base. */
-function readPull(url: string, gh: Gh): { base: string; state: string } {
-  const answer = JSON.parse(gh(["pr", "view", url, "--json", "baseRefName,state"]));
+/** The pull request's base and state as GitHub gives them, from the snapshot of its repository. Throws when GitHub does not name a base. */
+function readPull(url: string, snapshots: PullSnapshots): { base: string; state: string } {
+  const pull = pullOf(url);
+  const answer = pull === null ? undefined : snapshots.pull(`${pull.owner}/${pull.repo}`, pull.number)?.node;
   if (typeof answer?.baseRefName !== "string") throw new Error("its base could not be read");
   return { base: answer.baseRefName, state: String(answer.state) };
 }
@@ -55,10 +57,13 @@ function branchExists(repo: string, branch: string, gh: Gh): boolean {
 }
 
 /** Moves the pull request's base to `branch`, and reads it back. @returns the reason it did not move, or undefined when it did. */
-function retarget(url: string, branch: string, gh: Gh): string | undefined {
+function retarget(url: string, branch: string, gh: Gh, snapshots: PullSnapshots): string | undefined {
   try {
     gh(["pr", "edit", url, "--base", branch]);
-    const after = readPull(url, gh).base;
+    const pull = pullOf(url);
+    // The write changed the repository: what is read back is a fresh read of it.
+    if (pull !== null) snapshots.invalidate(`${pull.owner}/${pull.repo}`);
+    const after = readPull(url, snapshots).base;
     return after === branch ? undefined : `GitHub still says the base is ${after}`;
   } catch (err) {
     return firstLine(err);
@@ -73,6 +78,7 @@ export type RetargetSweep = Readonly<{
   /** The default branch of each repository, read once for the sweep (by `owner/repo`). */
   defaults: Map<string, string>;
   gh: Gh;
+  snapshots: PullSnapshots;
   log: (line: string) => void;
 }>;
 
@@ -81,14 +87,14 @@ export type RetargetSweep = Readonly<{
  * whose branch is gone is said. A pull request whose base is not one of `stacked` is none of the board's to move, and is left alone. A pull request that cannot be
  * read keeps the note it had (`previous`), and is asked again on the next sweep. A pull request with no note needs nothing said. Its head is never touched.
  */
-export function sweepRetargets({ urls, previous, stacked, defaults, gh, log }: RetargetSweep): Record<string, string> {
+export function sweepRetargets({ urls, previous, stacked, defaults, gh, snapshots, log }: RetargetSweep): Record<string, string> {
   const notes: Record<string, string> = {};
   for (const url of urls) {
     const pull = pullOf(url);
     if (pull === null) continue;
     const repo = `${pull.owner}/${pull.repo}`;
     try {
-      const current = readPull(url, gh);
+      const current = readPull(url, snapshots);
       if (current.state !== "OPEN" || !stacked.has(current.base)) continue;
       const defaultBranch = defaults.get(repo) ?? defaultBranchOf(repo, gh);
       defaults.set(repo, defaultBranch);
@@ -99,7 +105,7 @@ export function sweepRetargets({ urls, previous, stacked, defaults, gh, log }: R
         notes[url] = `Needs retarget: ${url} still targets ${current.base}, whose branch is gone: retarget it by hand`;
         continue;
       }
-      const failure = retarget(url, defaultBranch, gh);
+      const failure = retarget(url, defaultBranch, gh, snapshots);
       if (failure === undefined) {
         log(`${url}: its base ${current.base} merged, so it now targets ${defaultBranch}`);
         continue;

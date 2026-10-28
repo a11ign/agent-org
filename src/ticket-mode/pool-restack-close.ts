@@ -25,6 +25,8 @@ export type CloseInput = Readonly<{ url: string; below: RestackBelow; done: Rest
 export function closeEmptyMember(ctx: PoolContext, entry: Entry, { url, below, done, previousNote, read }: CloseInput): string | null {
   const { codeHost } = ctx;
   if (!isCandidate(previousNote) || !isOpenOnDefaultBranch(read) || done.ownChangesAt === read.head) return null;
+  // The two reads this needs must be two reads: the code host shares one read among a sweep's readers, and a sweep can follow the last one by less than that (A11-365).
+  codeHost.refreshPull?.(url);
   const feedback = codeHost.readPullFeedback(url, NO_ACCOUNT);
   if (feedback === null || feedback.state !== "open") return null;
   if (holdsOwnFile(feedback.files)) {

@@ -84,6 +84,8 @@ test("A11-248: an empty member is closed with a comment, the card says so, and a
   assert.deepEqual(host.closes.closed, [{ url: NEXT, comment: "Closed by agent-org: everything #2 held merged with #1, so it has no changes of its own left." }]);
   assert.equal(host.readPullState(NEXT), "CLOSED");
   assert.equal(next().retargets![NEXT], CLOSED);
+  const feedbackReads = host.calls.flatMap((call, at) => (call === `readPullFeedback ${NEXT}` ? [at] : []));
+  assert.ok(feedbackReads.length > 0 && feedbackReads.every((at) => host.calls[at - 1] === `refreshPull ${NEXT}`), "A11-365: each read of the member's files is a fresh one, since the close needs two reads and the code host shares one among a sweep's readers");
   pool.retargetStacked();
   assert.equal(closes(), 1, "one close in all");
   assert.equal(next().retargets![NEXT], CLOSED, "and the note stays while the pull request is listed");

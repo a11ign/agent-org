@@ -1,10 +1,11 @@
 // module: what a pull request closed without merging still held, as the code host reads it (contract 1.20, A11-249)
 //
-// Two reads through the plugin's `gh`: the pull request (its state, its base and branch names, and its head COMMIT), then the compare of the base with that commit. It compares against the SHA and not the branch, so the read still
+// Two reads: the pull request from its repository's snapshot (`pull-snapshot.ts`, A11-365: its state, its base and branch names, and its head COMMIT), then, through the plugin's `gh`, the compare of the base with that commit. It compares against the SHA and not the branch, so the read still
 // works after someone deleted the branch. GitHub's compare answers the commits ahead of the base, a page of up to 100 at a time, and the files they change in its first page only, up to 300: a list that reaches the cap is read in part, and says so.
 // Null is "could not ask": a refused `gh`, an answer that does not parse, a pull request that is not closed and a list of commits shorter than the compare's own total are all null, never "it held nothing".
 import type { ClosedCommit, ClosedWork } from "../../src/plugins/contracts/code-host.ts";
 import type { Gh } from "./gh.ts";
+import type { PullSnapshots } from "./pull-snapshot.ts";
 
 /** The most files GitHub's compare lists. A list this long may be cut short, so it is read in part. */
 export const COMPARE_FILE_CAP = 300;
@@ -37,7 +38,7 @@ function readCompare(text: string): { commits: ClosedCommit[]; files: string[]; 
 /** Whether `value` is non-empty text. */
 const isText = (value: unknown): value is string => typeof value === "string" && value !== "";
 
-/** The pull request as `gh pr view` printed it, when it is the closed pull request numbered `number` and names its base, its branch and its head commit. */
+/** The pull request as the snapshot holds it, when it is the closed pull request numbered `number` and names its base, its branch and its head commit. */
 const isClosedPull = (pull: Pull, number: string): pull is Pull & Record<"baseRefName" | "headRefName" | "headRefOid", string> =>
   pull.state === "CLOSED" && pull.number === Number(number) && isText(pull.baseRefName) && isText(pull.headRefName) && isText(pull.headRefOid);
 
@@ -45,12 +46,12 @@ const isClosedPull = (pull: Pull, number: string): pull is Pull & Record<"baseRe
  * WHAT THE CLOSED PULL REQUEST AT `url` STILL HELD, or `null` for "could not ask". A pull request that is open or merged is null, since what it holds is not final or is on its base. A pull request whose compare finds no commit ahead of its base is a
  * {@link ClosedWork} with none, which says "nothing is unique", and is never null. PURE over `gh`.
  */
-export function readClosedWork(url: string, gh: Gh): ClosedWork | null {
+export function readClosedWork(url: string, snapshots: PullSnapshots, gh: Gh): ClosedWork | null {
   try {
     const address = PULL_ADDRESS.exec(url);
     if (address === null) return null;
     const [, repository, number] = address;
-    const pull: Pull = JSON.parse(gh(["pr", "view", url, "--json", "number,state,baseRefName,headRefName,headRefOid"]));
+    const pull: Pull = snapshots.pull(repository, Number(number))?.node ?? {};
     if (!isClosedPull(pull, number)) return null;
     const { baseRefName: base, headRefName: branch, headRefOid: head } = pull;
     const compared = readCompare(gh(["api", "--paginate", `repos/${repository}/compare/${encodeURI(base)}...${head}?per_page=100`, "--jq", COMPARE_PAGE]));

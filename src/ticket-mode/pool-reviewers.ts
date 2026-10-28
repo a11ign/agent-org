@@ -85,6 +85,10 @@ function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, state: ReviewStat
   };
   if (repost.attempts >= MAX_REPOST_ATTEMPTS) return surfaced(repost.reason ?? "the verdict is not on the pull request");
   if (port.settled(ref) === "working") return null;
+  // The reviewer has ended: its review may have been posted since the sweep read the pull request (the code host shares one read among a sweep's readers), so it is read afresh before anything is posted again (A11-365).
+  ctx.codeHost.refreshPull?.(url);
+  const fresh = ctx.codeHost.readReviewState(url);
+  if (fresh !== null && fresh.head === head && reviewPostedAt(fresh.reviews, head)) return null;
   const file = port.verdictFileOf(ref);
   if (file === null) {
     // Nothing to post. The reviewer is prompted once, as a reviewer that has just started is; a second look with no file is the failure.

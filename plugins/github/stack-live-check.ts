@@ -4,6 +4,7 @@
 // read back as the scratch branch, and B's head must not move. Every branch and pull request it makes is removed afterwards, even when a step fails.
 // PURE over the `gh` it is handed: this file names no GitHub CLI command and spawns nothing (the port's rule). The command that runs it hands in the instance's
 // runner, and the workers' account is what it acts as.
+import { createPullSnapshots, type PullSnapshots } from "./pull-snapshot.ts";
 import { sweepRetargets, type Gh } from "./stack-retarget.ts";
 
 export type LiveCheckNames = Readonly<{ scratch: string; base: string; stacked: string }>;
@@ -47,7 +48,7 @@ function openPull(repo: string, base: string, head: string, gh: Gh): string {
  * The chain itself: the scratch branch, A on it, B stacked on A, A merged, the sweep, and B's base and head read back. Returns whether every fact held. The
  * branches and pull requests it opens are recorded in `branches` and `pulls` as it opens them, for the caller's cleanup.
  */
-function chain({ repo, names, gh, log, branches, pulls }: { repo: string; names: LiveCheckNames; gh: Gh; log: (line: string) => void; branches: string[]; pulls: string[] }): boolean {
+function chain({ repo, names, gh, snapshots, log, branches, pulls }: { repo: string; names: LiveCheckNames; gh: Gh; snapshots: PullSnapshots; log: (line: string) => void; branches: string[]; pulls: string[] }): boolean {
   const defaultBranch = gh(["api", `repos/${repo}`, "--jq", ".default_branch"]).trim();
   const mainSha = shaOf(repo, defaultBranch, gh);
   branches.push(names.scratch);
@@ -76,7 +77,7 @@ function chain({ repo, names, gh, log, branches, pulls }: { repo: string; names:
 
   const before = viewOf(stackedUrl, gh);
   if (before.base !== names.base) throw new Error(`${stackedUrl} starts on ${before.base}, not on ${names.base}`);
-  const notes = sweepRetargets({ urls: [stackedUrl], previous: {}, stacked: new Set([names.base]), defaults: new Map([[repo, names.scratch]]), gh, log });
+  const notes = sweepRetargets({ urls: [stackedUrl], previous: {}, stacked: new Set([names.base]), defaults: new Map([[repo, names.scratch]]), gh, snapshots, log });
   const after = viewOf(stackedUrl, gh);
   log(`${stackedUrl}: base ${before.base} -> ${after.base}; head ${before.headOid.slice(0, 7)} -> ${after.headOid.slice(0, 7)}`);
   const noteSaid = Object.keys(notes).length > 0;
@@ -115,13 +116,13 @@ function cleanUp({ repo, branches, pulls, gh, log }: { repo: string; branches: s
  * Runs the live check in `repo` as `runId`'s branches. Returns true only when the chain held and every branch and pull request was removed. Says each step, and
  * says the first thing that failed.
  */
-export function runLiveCheck({ repo, runId, gh, log }: { repo: string; runId: string; gh: Gh; log: (line: string) => void }): boolean {
+export function runLiveCheck({ repo, runId, gh, log, snapshots = createPullSnapshots({ gh, ttlMs: 0 }) }: { repo: string; runId: string; gh: Gh; log: (line: string) => void; snapshots?: PullSnapshots }): boolean {
   const names = liveCheckNames(runId);
   const branches: string[] = [];
   const pulls: string[] = [];
   let held = false;
   try {
-    held = chain({ repo, names, gh, log, branches, pulls });
+    held = chain({ repo, names, gh, snapshots, log, branches, pulls });
     log(held ? "PASS: the stacked pull request's base is the scratch branch after its base merged, and its head did not move" : "FAIL: the retarget did not leave the stacked pull request on the scratch branch with its head unmoved");
   } catch (err) {
     log(`FAIL: ${firstLine(err)}`);

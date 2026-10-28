@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addedSections, readMergedFindings, SECTION_CHARS } from "./merged-findings.ts";
+import { snapshotsHolding, snapshotsOf } from "./pull-snapshot-fixture.ts";
 
 const URL = "https://github.com/a11ign/announcement-emulator/pull/3";
 
@@ -56,29 +57,32 @@ test("addedSections takes a heading added inside a fence the diff only shows as 
   assert.deepEqual(addedSections(diff), [{ file: "docs/a.md", heading: "## Real", text: "found it" }, { file: "docs/a.md", heading: "## Also real", text: "more" }]);
 });
 
-/** A `run` that answers `gh pr view` with `view` and `gh pr diff` with `diff`, and records each call. */
-function answering(view: unknown, diff: string) {
+/** Snapshots that hold `view` as the pull request, and a `run` that answers the diff read with `diff` and records each call. */
+function answering(view: Record<string, unknown>, diff: string) {
   const calls: string[][] = [];
-  return { calls, run: (args: string[]) => { calls.push(args); return args[1] === "view" ? JSON.stringify(view) : diff; } };
+  return { calls, snapshots: snapshotsHolding({ number: 3, ...view }, {}, "a11ign/announcement-emulator"), run: (args: string[]) => { calls.push(args); return diff; } };
 }
 
 test("readMergedFindings returns the pull request's title, number, body and the sections its diff added", () => {
-  const { run, calls } = answering({ number: 3, title: "feat: scripted replay", body: "## What it found\n\nCookie dialogs drop pages.", state: "MERGED" }, DIFF);
-  const found = readMergedFindings(URL, run);
+  const { snapshots, run, calls } = answering({ number: 3, title: "feat: scripted replay", body: "## What it found\n\nCookie dialogs drop pages.", state: "MERGED" }, DIFF);
+  const found = readMergedFindings(URL, snapshots, run);
   assert.equal(found?.title, "feat: scripted replay");
   assert.equal(found?.number, 3);
   assert.equal(found?.body, "## What it found\n\nCookie dialogs drop pages.");
   assert.deepEqual(found?.sections.map(({ heading }) => heading), ["### Scripted replay", "## Limits"]);
-  assert.deepEqual(calls.map((args) => args.slice(0, 3)), [["pr", "view", URL], ["pr", "diff", URL]]);
+  assert.deepEqual(calls, [["api", "-H", "Accept: application/vnd.github.v3.diff", "repos/a11ign/announcement-emulator/pulls/3"]], "the diff is the REST read of the pull request, which is conditional; the pull request itself is the snapshot's");
 });
 
-test("readMergedFindings is null, never 'it found nothing', for a pull request that has not merged, a refused gh and an answer that does not parse", () => {
-  assert.equal(readMergedFindings(URL, answering({ number: 3, title: "t", body: "", state: "OPEN" }, DIFF).run), null, "an open pull request's findings are not final");
-  assert.equal(readMergedFindings(URL, () => { throw new Error("gh exited 1"); }), null, "a refused run");
-  assert.equal(readMergedFindings(URL, () => "not json"), null, "an answer that does not parse");
-  assert.equal(readMergedFindings(URL, (args) => { if (args[1] === "diff") throw new Error("diff too large"); return JSON.stringify({ number: 3, title: "t", body: "", state: "MERGED" }); }), null, "a diff that cannot be read");
+test("readMergedFindings is null, never 'it found nothing', for a pull request that has not merged, a repository that cannot be read and a diff that cannot be read", () => {
+  const open = answering({ number: 3, title: "t", body: "", state: "OPEN" }, DIFF);
+  assert.equal(readMergedFindings(URL, open.snapshots, open.run), null, "an open pull request's findings are not final");
+  assert.equal(open.calls.length, 0, "and its diff is not read");
+  assert.equal(readMergedFindings(URL, snapshotsOf({}), () => DIFF), null, "a repository the snapshots cannot read");
+  const merged = answering({ number: 3, title: "t", body: "", state: "MERGED" }, DIFF);
+  assert.equal(readMergedFindings(URL, merged.snapshots, () => { throw new Error("diff too large"); }), null, "a diff that cannot be read");
 });
 
 test("a merged pull request with no body is read with an empty one", () => {
-  assert.equal(readMergedFindings(URL, answering({ number: 3, title: "t", body: null, state: "MERGED" }, "").run)?.body, "");
+  const { snapshots, run } = answering({ number: 3, title: "t", body: null, state: "MERGED" }, "");
+  assert.equal(readMergedFindings(URL, snapshots, run)?.body, "");
 });

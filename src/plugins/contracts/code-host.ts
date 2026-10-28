@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.28 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.29 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.29 (A11-365): `readCallCounts`, OPTIONAL: how many calls the host has made to the place pull requests live (`GithubCallCounts`: in total, in the last minute, by kind, how many a conditional read answered as unchanged, and the current and last sweep), which `/api/health` serves so a day's rate can be read from the board; and `refreshPull`, OPTIONAL: drop what the host holds of the repository of a pull request, so the next read of it is a fresh one. A host may read a repository's pull requests ONCE per sweep and share the reading (the GitHub plugin does), so a read is as old as the sweep; a caller that records what it read to compare it later (the head and the description a stand-off round is given) refreshes first. A plugin of 1.28 is read as one that counts none and holds nothing back, and `/api/health` then says no counts.
 // 1.28 (A11-342): `PullFeedback.blocked` and `PullFeedback.cancelledRequired`, both OPTIONAL: whether the host says the pull request is BLOCKED from merging (GitHub's `mergeStateStatus: BLOCKED`), and the cancelled runs of its required checks on the head when every non-green run of a required check there is a cancelled one; and `rerunRuns`, OPTIONAL: rerun whole runs, which is how the board answers an approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check (a concurrency group cancelled one of two runs of one head, and the cancelled `gate` blocks the merge though the other run's `gate` is green). A plugin of 1.27 is read as one that says none of the three, and the board then reruns nothing.
 // 1.27 (A11-291): `MergeFlow.private` and `MergeFlow.mergeBot`, both required of a host that implements `readMergeFlow` (1.25): whether the repository is private, and whether its default branch holds the merge bot, `.github/workflows/merge-bot.yml`, which merges a pull request approved at its head with a green `gate` where the plan offers a private repository no ruleset or merge queue. A repository has a merge flow when it allows auto-merge and holds the arm workflow, or is private and holds the merge bot. A plugin of 1.26 or earlier says neither, and the board and doctor then read every repository by the first rule.
 // 1.26 (A11-290): `commentOnPull`, OPTIONAL: post a comment on a pull request as the workers' account, which is how the board records the result of a re-review that the verdict door refused (an equal patch) on the pull request itself. A plugin of 1.24 is read as one that cannot, and the board then keeps the result in the run's log alone and says so once.
@@ -55,12 +56,13 @@
 // 1.1 (A11-160): `readPullFeedback` takes the accounts whose feedback is not the worker's to answer besides its own (the reviewer's), which ticket mode filtered out of GitHub's
 // answer before the read moved into the plugin. A plugin of 1.0 is read as one that is given none.
 import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort } from "../../ticket-port/port.ts";
+import type { GithubCallCounts } from "./call-counts.ts";
 import type { CodeHostRows } from "./code-host-rows.ts";
 
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.28";
+export const CODE_HOST_CONTRACT_VERSION = "1.29";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -461,6 +463,15 @@ export interface CodeHost extends CodeHostPort {
    * A host without it is read as one that cannot, and the board then reruns nothing for a pull request blocked behind a cancelled run.
    */
   rerunRuns?(detailsUrls: readonly string[]): string | null;
+  /**
+   * How many calls the host has made to the place pull requests live since it started (contract 1.29): `/api/health` serves this. A host without it is read as one that counts none.
+   */
+  readCallCounts?(): GithubCallCounts;
+  /**
+   * Drops what the host holds of the repository of the pull request at `url`, so the next read of any of its pull requests is a fresh one (contract 1.29). A host reads a repository's pull requests once per sweep and shares the reading, so a read can be as old
+   * as the sweep; a caller that writes what it read down to compare it with the pull request later (a head, a description) calls this first. A host that holds nothing back has nothing to drop, and is read as one that has it.
+   */
+  refreshPull?(url: string): void;
   /** The claim entries on `head` of `repository`, read fresh (never from a cache another account's write would not have dropped), or why they could not be read (contract 1.5). */
   readReviewClaims(repository: string, head: string): ReviewClaimRead;
   /** Writes a claim as the reviewer role, and answers why the host refused (its own first line), or null once it is written (contract 1.5). */

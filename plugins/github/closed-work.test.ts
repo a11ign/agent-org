@@ -1,34 +1,37 @@
-// no-token: none -- `gh` is a stub that answers from a table and records each call: no network
+// no-token: none -- `gh` is a stub that answers from a table and records each call, and the pull request is the snapshot fixture's: no network
 // A11-249: what a pull request closed without merging still held, as the code host reads it
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COMPARE_FILE_CAP, readClosedWork } from "./closed-work.ts";
+import { COMPARE_FILE_CAP, readClosedWork as read } from "./closed-work.ts";
 import type { Gh } from "./gh.ts";
+import { snapshotsHolding } from "./pull-snapshot-fixture.ts";
 
 const URL = "https://github.com/o/r/pull/14";
 const HEAD = "b".repeat(40);
 const FIRST = "a".repeat(40);
-const pull = (over: Record<string, unknown> = {}) => JSON.stringify({ number: 14, state: "CLOSED", baseRefName: "main", headRefName: "admin/a11-229-x", headRefOid: HEAD, ...over });
+const pull = (over: Record<string, unknown> = {}) => ({ number: 14, state: "CLOSED", baseRefName: "main", headRefName: "admin/a11-229-x", headRefOid: HEAD, ...over });
 const commit = (sha: string, subject: string) => `C ${JSON.stringify({ sha, subject })}`;
 const file = (path: string) => `F ${JSON.stringify(path)}`;
 
-/** A `gh` that answers the pull request read with `view` and the compare with `compare`, and records each call. */
-function github(view: string, compare: string, calls: string[][] = []): Gh {
-  return (args) => {
+/** A `gh` that answers the compare with `compare` and records each call; `view` is the pull request the snapshots hold. */
+function github(view: Record<string, unknown>, compare: string, calls: string[][] = []): Gh & { view: Record<string, unknown> } {
+  const gh: Gh = (args) => {
     calls.push(args);
-    if (args[0] === "pr") return view;
     if (args[0] === "api") return compare;
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
+  return Object.assign(gh, { view });
 }
+
+/** The read of the pull request `gh.view` describes, the compare through `gh`. */
+const readClosedWork = (url: string, gh: Gh & { view?: Record<string, unknown> }) => read(url, snapshotsHolding(gh.view ?? {}, {}, "o/r"), gh);
 
 test("A11-249: a closed pull request's commits and files are read from the compare of its base with its head COMMIT, never its branch", () => {
   const calls: string[][] = [];
   const found = readClosedWork(URL, github(pull(), [`T 2`, commit(FIRST, "feat(check-report): refuse unknown options"), commit(HEAD, "test: a browser.newContext() suite"), file("src/check-report.ts"), file("test/context.test.ts"), ""].join("\n"), calls));
   assert.deepEqual(found, { number: 14, url: URL, base: "main", branch: "admin/a11-229-x", head: HEAD, filesComplete: true,
     commits: [{ sha: FIRST, subject: "feat(check-report): refuse unknown options" }, { sha: HEAD, subject: "test: a browser.newContext() suite" }], files: ["src/check-report.ts", "test/context.test.ts"] });
-  assert.deepEqual(calls[0], ["pr", "view", URL, "--json", "number,state,baseRefName,headRefName,headRefOid"]);
-  assert.deepEqual(calls[1]!.slice(0, 3), ["api", "--paginate", `repos/o/r/compare/main...${HEAD}?per_page=100`], "the head's SHA, so a deleted branch is still read");
+  assert.deepEqual(calls[0]!.slice(0, 3), ["api", "--paginate", `repos/o/r/compare/main...${HEAD}?per_page=100`], "the head's SHA, so a deleted branch is still read");
   assert.ok(!calls.flat().some((arg) => arg.includes("admin/a11-229-x")), "the branch's name is never asked about");
 });
 
@@ -42,7 +45,7 @@ test("A11-249: the pages of a long compare are joined, a commit or a file that t
   const calls: string[][] = [];
   const found = readClosedWork(URL, github(pull({ baseRefName: "release/1.x" }), ["T 2", commit(FIRST, "one"), file("a.ts"), "T 2", commit(second, "two"), file("a.ts"), file("b.ts")].join("\n"), calls));
   assert.deepEqual([found?.commits.map(({ sha }) => sha), found?.files], [[FIRST, second], ["a.ts", "b.ts"]]);
-  assert.equal(calls[1]![2], `repos/o/r/compare/release/1.x...${HEAD}?per_page=100`);
+  assert.equal(calls[0]![2], `repos/o/r/compare/release/1.x...${HEAD}?per_page=100`);
 });
 
 test("A11-249: a list of files that reaches GitHub's cap is read in part, and says so", () => {
@@ -60,10 +63,9 @@ test("A11-249: a pull request that is open or merged is null, since its work is 
   for (const state of ["OPEN", "MERGED"]) assert.equal(readClosedWork(URL, github(pull({ state }), "T 0\n")), null, state);
 });
 
-test("A11-249: a read that cannot be made is null, never an empty list: a refused gh, an answer that does not parse, a missing field, an address that is no pull request and a compare shorter than its own total", () => {
+test("A11-249: a read that cannot be made is null, never an empty list: a refused gh, a missing field, an address that is no pull request and a compare shorter than its own total", () => {
   const refuse: Gh = () => { throw new Error("HTTP 404"); };
   assert.equal(readClosedWork(URL, refuse), null, "a refused gh");
-  assert.equal(readClosedWork(URL, github("not json", "T 0")), null, "an answer that does not parse");
   assert.equal(readClosedWork(URL, github(pull({ headRefOid: null }), "T 0")), null, "no head");
   assert.equal(readClosedWork(URL, github(pull({ baseRefName: "" }), "T 0")), null, "no base");
   assert.equal(readClosedWork(URL, github(pull({ number: 15 }), "T 0")), null, "another pull request's answer");

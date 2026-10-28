@@ -252,6 +252,8 @@ function writeStandoffMarks(ctx: PoolContext, entry: Entry, dir: string): void {
   if (standoff === undefined || entry.review === undefined) return;
   if (standoff.stage === "planner") return void writeFileSync(join(dir, STANDOFF_PLANNER_FILE), "\n");
   if (standoff.stage !== "worker") return;
+  // What is written is compared with the pull request later: it is read afresh, not as the sweep read it.
+  for (const { url } of entry.review) ctx.codeHost.refreshPull?.(url);
   const state = entry.review.map(({ url }) => {
     const read = ctx.codeHost.readReviewState(url);
     return [url, { head: read?.head ?? standoff.head, body: typeof read?.view.body === "string" ? bodyHash(read.view.body) : null }] as const;

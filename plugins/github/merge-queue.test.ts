@@ -5,6 +5,7 @@ import { corePolicy } from "../../src/plugins/policy.ts";
 import { GhFailure } from "./gh.ts";
 import { HOLD_LABEL, holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
 import { readPullFeedback } from "./pull-feedback.ts";
+import { snapshotsHolding } from "./pull-snapshot-fixture.ts";
 
 const REPO = "a11ign/announcement-emulator";
 const URL = `https://github.com/${REPO}/pull/18`;
@@ -24,23 +25,19 @@ function read(nodes: unknown, entry: unknown = null) {
   const pr = { state: "OPEN", headRefOid: HEAD, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", baseRefName: "main", mergeQueueEntry: entry,
     ...(nodes === undefined ? {} : { timelineItems: { nodes } }), files: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } }, reviews: { nodes: [] }, comments: { nodes: [] },
     reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] } };
-  const calls: string[][] = [];
-  const feedback = readPullFeedback(URL, "worker-bot", (args) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pr } } }); }, corePolicy());
-  return { feedback, calls };
+  const snapshots = snapshotsHolding({ number: 18, ...pr }, {}, REPO);
+  const feedback = readPullFeedback(URL, "worker-bot", snapshots, corePolicy());
+  return { feedback, snapshots };
 }
 
-test("A11-264: the removals since the head last moved are read from the one query the watch makes, with their reason, actor and merge group", () => {
-  const { feedback, calls } = read(RECORDED);
+test("A11-264: the removals since the head last moved are read from the pull request the watch already has, with their reason, actor and merge group", () => {
+  const { feedback, snapshots } = read(RECORDED);
   assert.deepEqual(feedback?.queue, { queued: false, removals: [
     { at: Date.parse("2026-10-25T11:59:08Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[0] },
     { at: Date.parse("2026-10-25T12:19:35Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[1] },
     { at: Date.parse("2026-10-25T12:21:15Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[2] },
   ] });
-  assert.equal(calls.length, 1, "no call beyond the one the watch already made");
-  const query = calls[0].find((arg) => arg.startsWith("query="))!;
-  assert.match(query, /mergeQueueEntry \{ state \}/);
-  assert.match(query, /itemTypes: \[REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT\]/);
-  assert.match(query, /on RemovedFromMergeQueueEvent \{ createdAt reason actor \{ login \} beforeCommit \{ oid \} \}/);
+  assert.deepEqual(snapshots.reads.pulls.length, 1, "no read beyond the pull request the watch already has");
 });
 
 test("A11-264: a commit or a force-push ends the run of removals, so only the ones since the head last moved are listed", () => {

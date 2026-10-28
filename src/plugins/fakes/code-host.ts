@@ -40,8 +40,11 @@ type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
 function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<string, DefaultBranchRed>, login: string | null, calls: string[]):
-  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange"> {
+  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange" | "refreshPull"> {
   return {
+    refreshPull(url) {
+      calls.push(`refreshPull ${url}`);
+    },
     readOwnLogin() {
       calls.push("readOwnLogin");
       return login;

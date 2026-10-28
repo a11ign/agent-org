@@ -1,6 +1,7 @@
 // module: the GitHub code host -- the reads ticket mode makes of a pull request, the sweep that retargets a stacked one, the checks' logs and reruns, the review claim and the verdict door (A11-160)
 //
-// ONE `gh` RUNNER (`gh.ts`) serves every operation, so this file is the one place a call to GitHub is made on ticket mode's behalf. The reads answer `null` for "could not ask", never
+// ONE `gh` RUNNER (`gh.ts`) serves every operation, so this file is the one place a call to GitHub is made on ticket mode's behalf. EVERY PULL REQUEST IS READ FROM ONE SNAPSHOT PER REPOSITORY (`pull-snapshot.ts`, A11-365), shared by every reader and dropped by
+// every write; the REST reads that repeat are conditional (`conditional-reads.ts`); and every `gh` started is counted (`call-counter.ts`), which `readCallCounts` serves to `/api/health`. The reads answer `null` for "could not ask", never
 // for "there is none", as the contract says.
 //
 // THE CODE HOST PORT'S OPERATIONS ARE NOT ALL MADE YET, and say so rather than guess: nothing in ticket mode calls them. `readChange` answers `null` ("could not ask": a caller that
@@ -9,14 +10,19 @@
 import { fileURLToPath } from "node:url";
 import type { ChangeRef, CodeHost, VerdictDoor } from "../../src/plugins/contracts/code-host.ts";
 import type { PluginDeps } from "../../src/plugins/manifest.ts";
+import { createCallCounter, countingDeps } from "./call-counter.ts";
 import { readCiRun } from "./ci-run.ts";
+import { conditionalReads } from "./conditional-reads.ts";
+import { createPullSnapshots } from "./pull-snapshot.ts";
 import { readBranchCi } from "./ci-spend.ts";
-import { readCheckLog, rerunFailedChecks } from "./check-runs.ts";
+import { readCheckLog, rerunFailedChecks, runsOf } from "./check-runs.ts";
 import { readDefaultBranchRed } from "./default-branch-checks.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { ghRunner } from "./gh.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { createRepositories } from "./repositories.ts";
-import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { pullOf as pullAt, readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readClosedWork } from "./closed-work.ts";
 import { readMergeFlow } from "./merge-flow.ts";
 import { holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
@@ -74,38 +80,57 @@ function rowsRunners(deps: PluginDeps): RowsRunners {
 }
 
 /** The GitHub code host, reading and moving pull requests through the plugin's `gh`. `settle` is how `armMerge` waits for a pull request that may have settled (a test gives none to wait for). */
-export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): CodeHost {
+export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}): CodeHost {
+  const counter = createCallCounter({ log: rawDeps.log });
+  const deps = countingDeps(rawDeps, counter);
   const gh = ghRunner(deps);
+  const rest = conditionalReads(gh, counter);
+  const snapshots = createPullSnapshots({ gh });
+  /** The account `gh` acts as does not change while the board runs, so a login that was read is kept. */
+  let ownLogin: string | null = null;
+  /** The repository (`owner/name`) of the pull request at `url`, or none for an address that is no pull request. */
+  const repositoriesOf = (url: string): string[] => { const pull = pullAt(url); return pull === null ? [] : [`${pull.owner}/${pull.repo}`]; };
+  /** Runs a write, and drops what was read of the `repositories` it touched, however it ended: the next read of them is a fresh one. */
+  const writing = <T>(repositories: readonly string[], write: () => T): T => {
+    try {
+      return write();
+    } finally {
+      for (const repository of repositories) snapshots.invalidate(repository);
+    }
+  };
+  /** The repositories of the runs the addresses of failing checks name: a rerun changes the checks of the heads it reruns. */
+  const rerunRepositories = (detailsUrls: readonly string[]): string[] => runsOf(detailsUrls).map(({ repo }) => repo);
   return {
     repoViewArgs,
     repoCloneArgs,
-    readOwnLogin: () => readOwnLogin(gh),
-    readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, gh, deps.policy, alsoIgnore),
-    readQueueFailure: (url, groupCommit) => readQueueFailure(url, groupCommit, gh),
-    holdFromQueue: (url, on) => (on ? holdPullRequest(url, gh) : releasePullRequest(url, gh)),
+    readOwnLogin: () => (ownLogin ??= readOwnLogin(gh)),
+    readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, snapshots, deps.policy, alsoIgnore),
+    readQueueFailure: (url, groupCommit) => readQueueFailure(url, groupCommit, rest),
+    holdFromQueue: (url, on) => writing(repositoriesOf(url), () => (on ? holdPullRequest(url, gh) : releasePullRequest(url, gh))),
     readDefaultBranchRed: (repository) => readDefaultBranchRed(repository, gh, deps.policy),
     readMergeFlow: (repository) => readMergeFlow(repository, gh),
-    readReplies: (url, request) => readReplies(url, request, gh),
-    readReviewState: (url) => readReviewState(url, gh, deps.policy),
-    readPullState: (url) => readPullState(url, gh),
-    readMergedFindings: (url) => readMergedFindings(url, gh),
-    readClosedWork: (url) => readClosedWork(url, gh),
-    openPullUrlsOf: (repository) => openPullUrlsOf(repository, gh),
+    readReplies: (url, request) => readReplies(url, request, snapshots),
+    readReviewState: (url) => readReviewState(url, snapshots, deps.policy),
+    readPullState: (url) => readPullState(url, snapshots),
+    readMergedFindings: (url) => readMergedFindings(url, snapshots, rest),
+    readClosedWork: (url) => readClosedWork(url, snapshots, gh),
+    openPullUrlsOf: (repository) => openPullUrlsOf(repository, snapshots),
     pullsNaming: (key, repositories) => pullsNaming(key, repositories, gh),
-    openDependencyPulls: (repository) => openDependencyPulls(repository, gh),
-    sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh }),
-    stackMergeFactsOf: (url) => stackMergeFactsOf(url, gh),
-    requestStackMerge: (request) => requestStackMerge(request, gh),
+    openDependencyPulls: (repository) => openDependencyPulls(repository, snapshots),
+    sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh, snapshots }),
+    stackMergeFactsOf: (url) => stackMergeFactsOf(url, rest),
+    requestStackMerge: (request) => writing([request.repo], () => requestStackMerge(request, gh)),
     readCiRun: (repository, runId) => readCiRun(repository, runId, gh),
-    readBranchCi: (repository, branch, settled) => readBranchCi(repository, branch, settled, gh),
+    readBranchCi: (repository, branch, settled) => readBranchCi(repository, branch, settled, rest),
     readCheckLog: (detailsUrl) => readCheckLog(detailsUrl, gh, deps.log),
-    rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
-    rerunRuns: (detailsUrls) => rerunRuns(detailsUrls, gh),
-    updateBranch: (url, expectedHead) => updateBranch(url, expectedHead, gh),
-    closePull: (url, comment) => closePull(url, comment, gh),
-    commentOnPull: (url, comment) => commentOnPull(url, comment, gh),
+    rerunFailedChecks: (detailsUrls) => writing(rerunRepositories(detailsUrls), () => rerunFailedChecks(detailsUrls, gh)),
+    rerunRuns: (detailsUrls) => writing(rerunRepositories(detailsUrls), () => rerunRuns(detailsUrls, gh)),
+    updateBranch: (url, expectedHead) => writing(repositoriesOf(url), () => updateBranch(url, expectedHead, gh)),
+    closePull: (url, comment) => writing(repositoriesOf(url), () => closePull(url, comment, gh)),
+    commentOnPull: (url, comment) => writing(repositoriesOf(url), () => commentOnPull(url, comment, gh)),
     readReviewClaims: (repository, head) => readReviewClaims(repository, head, gh),
     // The claim is written as the reviewer role: the environment it is given (the account folder and token the reviewer acts with) is laid over this process's for the one call.
+    // The claim is a commit status the rollup lists, green and not required: it changes no check a reader judges, so the snapshot is kept.
     writeReviewClaim: (write) => writeReviewClaim(write, ghRunner(deps, write.environment)),
     verdictDoor: VERDICT_DOOR,
     readChange: () => null,
@@ -113,10 +138,14 @@ export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): Co
     // The arm, then the pull request read back: an arm that exited well is not "armed" (#1022), and a pull request that merged or was queued meanwhile has nothing left to arm and reads as armed.
     armMerge: (ref) => {
       const { repo, number } = pullOf(ref);
-      armMergeOf({ repo, number, run: gh }, settle);
-      return armedReasonOf({ repo, number, run: gh }) !== null;
+      return writing([repo], () => {
+        armMergeOf({ repo, number, run: gh }, settle);
+        return armedReasonOf({ repo, number, run: gh }) !== null;
+      });
     },
     subscribe: () => () => undefined,
+    readCallCounts: () => counter.read(),
+    refreshPull: (url) => writing(repositoriesOf(url), () => undefined),
     wrapper: createWrapper(deps),
     repositories: createRepositories(deps),
     rows: createRows(deps.rows, rowsRunners(deps)),

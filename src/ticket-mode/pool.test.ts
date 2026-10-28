@@ -3819,12 +3819,16 @@ test("A11-119: a new head after requested changes gets a reviewer, though its ru
 });
 
 /**
- * A code host whose review state is read by the GitHub plugin itself, off a scripted `gh pr view` of one pull request, so the judgement of "checks settled green" is the plugin's and the gate's, and not the world's.
+ * A code host whose review state is read by the GitHub plugin itself, off a scripted answer of the plugin's snapshot query holding the one pull request `pull` (number 1), so the judgement of "checks settled green" is the plugin's and the gate's, and not the world's.
  * Everything else is the world's.
  */
 function withPluginReviewState(world: World, pull: Record<string, unknown>): World {
   const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf }));
-  const plugin = createGithubCodeHost(fakePluginDeps({ policy, exec: () => ({ status: 0, stdout: JSON.stringify(pull), stderr: "" }) }));
+  const { headRefOid, author, statusCheckRollup, reviews } = pull as { headRefOid: string; author: unknown; statusCheckRollup: Record<string, unknown>[]; reviews: unknown[] };
+  const node = { number: 1, state: "OPEN", headRefOid, author, isCrossRepository: false, reviews: { nodes: reviews }, baseRef: null,
+    commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: statusCheckRollup.map((check) => ({ __typename: "CheckRun", ...check })) } } } }] } };
+  const listed = JSON.stringify({ data: { repository: { isPrivate: false, bot: null, pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [node] } } } });
+  const plugin = createGithubCodeHost(fakePluginDeps({ policy, exec: () => ({ status: 0, stdout: listed, stderr: "" }) }));
   return { ...world, codeHost: { ...world.codeHost, readReviewState: (url) => plugin.readReviewState(url) } };
 }
 
@@ -4299,7 +4303,8 @@ const NOT_POSTED = "verdict not posted";
 test("a reviewer that ended with its verdict file written and no review at its head has the file posted again, once, and nothing more once it is on the pull request", async () => {
   const reviews: unknown[] = [];
   const made = unpostedReviewer({ reposts: [{ posted: true }] });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }), REVIEWING, made.port);
+  const world = ghFor({ 1: feedbackPull({ reviews }) });
+  const ctx = await readyRun(world, REVIEWING, made.port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(made.starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started");
@@ -4307,6 +4312,7 @@ test("a reviewer that ended with its verdict file written and no review at its h
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(made.posts, [{ ref: { pr: approvedPr.url, head: "h1" }, file: "/work/verdict-1.md" }], "the verdict file is posted again");
+  assert.ok(world.host.calls.includes(`refreshPull ${approvedPr.url}`), "A11-365: before it is posted again the pull request is read afresh, since the review may have been posted after the sweep's read and a second post would be a duplicate");
   reviews.push(reviewOn(REVIEWER_LOGIN, "APPROVED", "h1"));
   ctx.pool.watchFeedback();
   await roundStarted();

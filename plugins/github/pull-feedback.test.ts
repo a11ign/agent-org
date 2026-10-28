@@ -3,18 +3,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { corePolicy } from "../../src/plugins/policy.ts";
 import { MAX_FILE_PAGES, pullOf, readOwnLogin, readPullFeedback as read } from "./pull-feedback.ts";
+import type { PullSnapshots } from "./pull-snapshot.ts";
+import { snapshotsHolding, snapshotsOf } from "./pull-snapshot-fixture.ts";
 
 /** The read, with core's own policy for which checks are red: what the plugin is given in a host. */
-const readPullFeedback = (url: string, self: string, run: (args: string[]) => string, alsoIgnore: readonly string[] = []) => read(url, self, run, corePolicy(), alsoIgnore);
+const readPullFeedback = (url: string, self: string, snapshots: PullSnapshots, alsoIgnore: readonly string[] = []) => read(url, self, snapshots, corePolicy(), alsoIgnore);
 
 const URL = "https://github.com/netboxlabs/nbl-ui-netbox/pull/806";
 const at = (minute: number) => `2026-10-16T12:${String(minute).padStart(2, "0")}:00Z`;
 const ms = (minute: number) => Date.parse(at(minute));
 
-/** A `run` that answers the feedback read with `pull` as the pull request, and records each call. */
-function answering(pull: unknown) {
-  const calls: string[][] = [];
-  return { calls, run: (args: string[]) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pull } } }); } };
+/** Snapshots that hold `pull` as the pull request (`null`: the repository has none), as `run`, which the read is handed. */
+function answering(pull: Record<string, unknown> | null) {
+  return { run: pull === null ? snapshotsOf({ "netboxlabs/nbl-ui-netbox": [] }) : snapshotsHolding(pull) };
 }
 
 const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
@@ -25,7 +26,7 @@ const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as 
 });
 
 test("the newest review, conversation comment or inline comment by anyone but the workers' account is the feedback, its authors newest first", () => {
-  const { run, calls } = answering(pullWith({
+  const { run } = answering(pullWith({
     reviews: [
       { state: "CHANGES_REQUESTED", submittedAt: at(5), author: { login: "a11ign-reviewer" } },
       { state: "APPROVED", submittedAt: at(40), author: { login: "alice" } },
@@ -38,8 +39,7 @@ test("the newest review, conversation comment or inline comment by anyone but th
   assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failures: [], failedAt: null, conflicting: false, behind: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true,
     verdictAtHead: null, pendingRequired: [], body: "", blocked: false, cancelledRequired: [] },
     "an approval and the workers' own comments are not feedback");
-  assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
-  assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
+  assert.deepEqual(run.reads.pulls, [["netboxlabs/nbl-ui-netbox", 806]], "the pull request is read once, from the snapshot of its repository");
 });
 
 test("the failing checks are the required ones, or every one where none is required, newest per name, and a cancelled run is not a failure", () => {
@@ -68,24 +68,16 @@ test("A11-82: a pull request that conflicts with its base is conflicting, whiche
   }
   const read = conflicting({ base: "release/2", files: ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"] });
   assert.deepEqual([read?.base, read?.files], ["release/2", ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"]], "the base and the files it changes are read");
-  const paged = (pages: Record<string, unknown>) => (args: string[]) => {
-    const cursor = args.find((arg) => arg.startsWith("cursor="))?.slice("cursor=".length);
-    if (cursor === undefined) return JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files: pages.first } } } });
-    if (cursor === "c1") return JSON.stringify({ data: { repository: { pullRequest: { files: pages.second } } } });
-    throw new Error("gh exited 1");
-  };
   const page = (paths: string[], hasNextPage: boolean, endCursor: string | null) => ({ nodes: paths.map((path) => ({ path })), pageInfo: { hasNextPage, endCursor } });
+  const paged = (pages: { first: unknown; second?: unknown }) => snapshotsHolding({ ...pullWith(), files: pages.first }, { files: pages.second === undefined ? {} : { c1: pages.second } });
   const paging = readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1"), second: page(["b.ts"], false, null) }));
   assert.deepEqual([paging?.files, paging?.filesComplete], [["a.ts", "b.ts"], true], "every page is read, and the list is then complete");
   let calls = 0;
-  const forever = () => {
-    calls += 1;
-    return JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files: page(["a.ts"], true, "c1") } } } });
-  };
+  const forever = snapshotsHolding({ ...pullWith(), files: page(["a.ts"], true, "c1") }, { files: () => { calls += 1; return page(["a.ts"], true, "c1"); } });
   const cut = readPullFeedback(URL, "me", forever);
-  assert.deepEqual([cut?.filesComplete, calls], [false, MAX_FILE_PAGES], "pages past the cap are not read, and the list says it is cut short");
+  assert.deepEqual([cut?.filesComplete, calls], [false, MAX_FILE_PAGES - 1], "pages past the cap are not read (the first page came with the pull request), and the list says it is cut short");
   assert.equal(readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1") })), null, "a page that cannot be read is no reading at all");
-  const answered = (files: unknown) => readPullFeedback(URL, "me", () => JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files } } } }));
+  const answered = (files: unknown) => readPullFeedback(URL, "me", snapshotsHolding({ ...pullWith(), files }));
   for (const [why, files] of [
     ["missing", undefined], ["null", null], ["not an object", "all of them"], ["without its nodes", { pageInfo: { hasNextPage: false, endCursor: null } }],
     ["without its pageInfo", { nodes: [{ path: "a.ts" }] }], ["with a pageInfo that does not say if more follow", { nodes: [], pageInfo: {} }],
@@ -99,10 +91,9 @@ test("A11-82: a pull request that conflicts with its base is conflicting, whiche
 });
 
 test("a pull request that cannot be read is null, never no feedback, and a merged or closed one says so", () => {
-  const refused = (_args: string[]): string => { throw new Error("gh exited 1"); };
-  assert.equal(readPullFeedback(URL, "me", refused), null);
+  assert.equal(readPullFeedback(URL, "me", snapshotsOf({})), null, "a repository the snapshots cannot read");
   assert.equal(readPullFeedback(URL, "me", answering(null).run), null, "no such pull request");
-  assert.equal(readPullFeedback(URL, "me", () => "not json"), null);
+  assert.equal(readPullFeedback(URL, "me", snapshotsHolding({ number: 806, state: undefined })), null, "an answer without a state");
   assert.equal(readPullFeedback("https://linear.app/x/issue/NBF-1", "me", answering(pullWith()).run), null, "not a pull request's address");
   assert.equal(readPullFeedback(URL, "me", answering(pullWith({ state: "MERGED" })).run)?.state, "merged");
   assert.equal(readPullFeedback(URL, "me", answering(pullWith({ state: "CLOSED" })).run)?.state, "closed");
@@ -197,9 +188,6 @@ test("A11-291: `armed` says whether auto-merge is on for the pull request, and i
   assert.equal(armedOf({ enabledAt: at(5) })?.armed, true, "auto-merge is enabled");
   assert.equal(armedOf(null)?.armed, false, "GitHub answers null for a pull request with auto-merge off");
   assert.equal(Object.hasOwn(armedOf(undefined) ?? {}, "armed"), false, "an answer without the field is the host not saying, which is not 'off'");
-  const { run, calls } = answering(pullWith({ autoMergeRequest: null }));
-  readPullFeedback(URL, "worker-bot", run);
-  assert.match(calls[0].join(" "), /autoMergeRequest \{ enabledAt \}/, "the query asks for it");
 });
 
 const RUN_URL = (run: number, job: number) => `https://github.com/a11ign/announcement-emulator/actions/runs/${run}/job/${job}`;
@@ -232,12 +220,12 @@ test("A11-342: a rollup cut at 100 entries says nothing is only cancelled, since
   assert.deepEqual(readPullFeedback(URL, "me", answering(cut(true)).run)?.cancelledRequired, []);
 });
 
-/** The feedback read of a pull request in a repository that is `private` and holds the merge bot or not: the repository's own fields beside the pull request, as the query asks them. */
+/** The feedback read of a pull request in a repository that is `private` and holds the merge bot on its default branch (`bot`) or on the pull request's head (`headBot`) or not; the snapshots it is read from are returned beside it. */
 const readInRepository = (repository: { isPrivate?: boolean; bot?: unknown; headBot?: unknown }, checks: unknown[], hasNextPage = false) => {
-  const pull = pullWith({ checks });
+  const pull = pullWith({ checks, head: "b".repeat(40) });
   pull.commits.nodes[0].commit.statusCheckRollup.contexts = { pageInfo: { hasNextPage }, nodes: checks } as never;
-  const run = (_args: string[]) => JSON.stringify({ data: { repository: { ...repository, pullRequest: pull } } });
-  return readPullFeedback(URL, "me", run);
+  const snapshots = snapshotsHolding(pull, { flow: { private: repository.isPrivate === true, mergeBot: repository.bot != null }, headBots: repository.headBot == null ? {} : { [`806@${"b".repeat(40)}`]: true } });
+  return Object.assign(readPullFeedback(URL, "me", snapshots) ?? {}, { snapshots }) as NonNullable<ReturnType<typeof readPullFeedback>> & { snapshots: typeof snapshots };
 };
 const check = (name: string, conclusion: string | null, minute: number, isRequired = false) => ({ __typename: "CheckRun", name, conclusion, completedAt: at(minute), isRequired });
 const MERGE_BOT = { isPrivate: true, bot: { __typename: "Blob" } };
@@ -287,8 +275,11 @@ test("A11-344: a private repository with the bot on neither its default branch n
   }
 });
 
-test("A11-344: the query asks the head by the pull request's own ref", () => {
-  const asked: string[] = [];
-  read(URL, "me", (args) => { asked.push(args.join(" ")); return "{}"; }, corePolicy());
-  assert.ok(asked[0]?.includes(`refs/pull/${URL.split("/").pop()}/head:.github/workflows/merge-bot.yml`));
+test("A11-344: the head's file is asked only for a private repository without the bot on its default branch, whose pull request has no required check, and once for that head", () => {
+  const checks = [check("gate", "SUCCESS", 10), check("capture", "FAILURE", 20)];
+  assert.deepEqual(readInRepository({ isPrivate: true, bot: null }, checks).snapshots.reads.heads, [`806@${"b".repeat(40)}`]);
+  assert.deepEqual(readInRepository(MERGE_BOT, checks).snapshots.reads.heads, [], "the default branch holds the bot: the head is not asked");
+  assert.deepEqual(readInRepository({ isPrivate: false, bot: null }, checks).snapshots.reads.heads, [], "a public repository has no merge bot flow");
+  assert.deepEqual(readInRepository({ isPrivate: true, bot: null }, [check("gate", "SUCCESS", 10, true)]).snapshots.reads.heads, [], "a required check decides: the head is not asked");
+  assert.deepEqual(readInRepository({ isPrivate: true, bot: null }, checks, true).snapshots.reads.heads, [], "a rollup cut at a page counts the checks seen: the head is not asked");
 });

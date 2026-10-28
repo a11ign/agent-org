@@ -76,7 +76,7 @@ async function respondAndRead({ fixture, pool, dir }: Pick<ReturnType<typeof fin
 const firstSection = (text: string): string => text.split("\n").find((line) => line.startsWith("## ")) ?? "";
 
 test("A11-305: a Decisions entry added to a ticket with an open pull request starts a round, with no one pressing Respond, and the round's brief opens with it", async () => {
-  const { fixture, pool, entry, url, dir } = finishedRun();
+  const { fixture, pool, entry, url, dir, host } = finishedRun();
   await pool.refreshTracker();
   const round = entry();
   assert.equal(round.phase, "queued", "the board queued a round");
@@ -98,6 +98,8 @@ test("A11-305: a Decisions entry added to a ticket with an open pull request sta
   assert.match(brief, /decisions round/);
   const mark = JSON.parse(readFileSync(join(dir, DECISIONS_ROUND_FILE), "utf8")) as { added: string[]; heads: Record<string, string> };
   assert.deepEqual(mark, { added: ["## Decisions (the chairman, 2026-10-26)", NEW_LINE], heads: { [url]: HEAD } }, "the Stop hook is left the new lines and the head the pull request had");
+  const asked = host.calls.filter((call) => call.endsWith(url));
+  assert.ok(asked.indexOf(`refreshPull ${url}`) !== -1 && asked.indexOf(`refreshPull ${url}`) < asked.lastIndexOf(`readReviewState ${url}`), "A11-365: the head is read afresh, since the Stop hook compares it with the pull request later and a read shared with the sweep can be as old as the sweep");
   assert.ok(fixture.herdr.calls.some((call) => call.some((arg) => arg.includes("This ticket's Decisions changed."))), "and the agent starts on a prompt that says why");
 });
 

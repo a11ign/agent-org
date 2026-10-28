@@ -39,6 +39,8 @@ export function writeDecisionsMark(ctx: PoolContext, entry: Entry, dir: string, 
   const { briefed, read } = text;
   const change = briefed === undefined ? null : decisionsChange(briefed.description, read.description);
   if (!asksForWork(change)) return;
+  // The heads are compared with the pull requests later by the Stop hook: they are read afresh, not as the sweep read them.
+  for (const { url } of openPulls(entry)) ctx.codeHost.refreshPull?.(url);
   const heads = Object.fromEntries(openPulls(entry).map(({ url }) => [url, ctx.codeHost.readReviewState(url)?.head ?? null]));
   writeFileSync(join(dir, DECISIONS_ROUND_FILE), `${JSON.stringify({ added: change.added, heads })}\n`);
 }

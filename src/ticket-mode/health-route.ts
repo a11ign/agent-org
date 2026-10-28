@@ -6,30 +6,34 @@
 // TWO THREADS, TWO LOOPS. The request thread answers every read, so its delay (`requests`) is how long a request waits. The board thread runs the pool and every sweep, so its delay
 // (`board`) is how long background work holds the board, and `blocking` names what held it. The board thread's reading comes in its snapshot, so `boardSnapshotAgeMs`, how long ago
 // the last one came, rises while the board thread is held. `requestThreadSyncCalls` counts the synchronous spawns on the request thread since it listened, which should be none.
+// `githubCalls` is how many calls the code host has made to GitHub (A11-365): in total, in the last minute, by kind, and how many a conditional read had answered as unchanged. It is the code host's own count (the board thread
+// holds the code host), and null for a host that counts none.
 import { startLoopMonitor, type LoopMonitor, type LoopReading } from "./loop-delay.ts";
 import { createBlockingLedger, type BlockingLedger, type BlockingSite } from "./blocking-ledger.ts";
+import type { GithubCallCounts } from "../plugins/contracts/call-counts.ts";
 import type { BoardSnapshot } from "./thread-messages.ts";
 
 /** How many call sites the health view names. */
 export const HEALTH_SITES = 10;
 
 /** The board thread's health: its loop's reading as `board`, and the call sites that held it the longest in total, the worst first. Its snapshot carries both. */
-export type HealthView = Readonly<{ loop: Readonly<{ board: LoopReading }>; blocking: readonly BlockingSite[] }>;
+export type HealthView = Readonly<{ loop: Readonly<{ board: LoopReading }>; blocking: readonly BlockingSite[]; githubCalls: GithubCallCounts | null }>;
 
-/** The health view of a monitor and a ledger. */
-export function healthView(monitor: Pick<LoopMonitor, "read">, ledger: Pick<BlockingLedger, "worst">): HealthView {
-  return { loop: { board: monitor.read() }, blocking: ledger.worst(HEALTH_SITES) };
+/** The health view of a monitor and a ledger, with the code host's call counts (`githubCalls`, absent for a host that counts none). */
+export function healthView(monitor: Pick<LoopMonitor, "read">, ledger: Pick<BlockingLedger, "worst">, githubCalls: () => GithubCallCounts | null = () => null): HealthView {
+  return { loop: { board: monitor.read() }, blocking: ledger.worst(HEALTH_SITES), githubCalls: githubCalls() };
 }
 
 /**
  * Starts measuring the board thread: the loop monitor, and the ledger installed on its `node:child_process`, so every synchronous spawn from here on is timed. Answers the
  * health view's reader, which the board thread's snapshot carries. Made once, at the start of `ticket:serve`.
  */
-export function startHealth(name: string): () => HealthView {
+export function startHealth(name: string): Readonly<{ view: () => HealthView; counting: (reader: () => GithubCallCounts | null) => void }> {
   const monitor = startLoopMonitor();
   const ledger = createBlockingLedger({ name });
   ledger.install();
-  return () => healthView(monitor, ledger);
+  let githubCalls: () => GithubCallCounts | null = () => null;
+  return { view: () => healthView(monitor, ledger, githubCalls), counting: (reader) => { githubCalls = reader; } };
 }
 
 /** What the instance's `/api/health` answers: both threads' loop readings, how old the board thread's snapshot is, the spawns that held the board thread, and the request thread's own. */
@@ -38,14 +42,15 @@ export type RequestHealthView = Readonly<{
   boardSnapshotAgeMs: number;
   blocking: readonly BlockingSite[];
   requestThreadSyncCalls: number;
+  githubCalls: GithubCallCounts | null;
 }>;
 
 /** The latest snapshot as the request thread holds it, and when it came, in ms since the epoch. */
-export type LatestSnapshot = Readonly<{ snapshot: Pick<BoardSnapshot, "loop" | "blocking">; receivedAt: number }>;
+export type LatestSnapshot = Readonly<{ snapshot: Pick<BoardSnapshot, "loop" | "blocking" | "githubCalls">; receivedAt: number }>;
 
 /** The health view of the request thread's reading, the latest snapshot at `now`, and the request thread's synchronous spawns since it listened. PURE. */
 export function requestHealthView(requests: LoopReading, latest: LatestSnapshot, now: number, syncCalls: number): RequestHealthView {
-  return { loop: { requests, board: latest.snapshot.loop }, boardSnapshotAgeMs: Math.max(0, now - latest.receivedAt), blocking: latest.snapshot.blocking, requestThreadSyncCalls: syncCalls };
+  return { loop: { requests, board: latest.snapshot.loop }, boardSnapshotAgeMs: Math.max(0, now - latest.receivedAt), blocking: latest.snapshot.blocking, requestThreadSyncCalls: syncCalls, githubCalls: latest.snapshot.githubCalls };
 }
 
 export type RequestHealthDeps = Readonly<{ latest: () => LatestSnapshot; now?: () => number; err?: (line: string) => void }>;
