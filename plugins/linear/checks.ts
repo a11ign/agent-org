@@ -64,12 +64,16 @@ export function mcpCheck(deps: PluginDeps): PluginCheck {
     : failed("linear mcp", line.trim(), "`claude mcp get linear` says why; a key that changed is fixed by `claude mcp remove linear --scope user`, then `agent-org onboard`");
 }
 
-/** Whether `err` is a file that is not there, as `readFileSync` and the deps' fakes say it. */
-const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException | null)?.code === "ENOENT" || /ENOENT/.test(String((err as Error | null)?.message ?? ""));
+/** What a person does when the calls count cannot be read: the board writes it afresh after its next call to Linear. */
+const UNKNOWN_FIX = `remove the file; the board writes ${CALLS_FILE} afresh with its next call to Linear, and the row reads the rate again`;
+
+/** Whether a read failed because the file is not there (ENOENT), as against a file that is there and could not be read. */
+const isMissing = (err: unknown): boolean =>
+  (err as { code?: unknown } | null)?.code === "ENOENT" || (err instanceof Error && /ENOENT/.test(err.message));
 
 /**
  * The board's calls to Linear over the last hour (A11-359): the count the board writes beside its state (`call-log.ts`), flagged when more than one call in a hundred failed. A board that has made no call in the hour, or has
- * never written the count, has nothing to flag. A count that is there and cannot be read, or is not a count, is not a healthy board: the row fails, so an unknown rate is never read as a good one.
+ * never written the count, has nothing to flag. A count that is there and cannot be read or parsed fails: the health it reports is unknown, not fine.
  */
 export function callsCheck(deps: Pick<PluginDeps, "readFile" | "stateDir">, now: number = Date.now()): PluginCheck {
   const name = "linear calls";
@@ -77,11 +81,12 @@ export function callsCheck(deps: Pick<PluginDeps, "readFile" | "stateDir">, now:
   try {
     text = deps.readFile(join(deps.stateDir, CALLS_FILE));
   } catch (err) {
+    // Only a file that is not there means "no call yet". One that is there and cannot be read leaves the board's Linear health unknown, which is not a pass.
     if (isMissing(err)) return ok(name, "the board has recorded no call to Linear yet");
-    return failed(name, `${CALLS_FILE} cannot be read (${(err as Error).message})`, `check the permissions of ${join(deps.stateDir, CALLS_FILE)}; the board writes it with its next call to Linear`);
+    return failed(name, `${CALLS_FILE} could not be read (${err instanceof Error ? err.message : String(err)}), so whether the board's calls to Linear fail is unknown`, UNKNOWN_FIX);
   }
   const counts = readCounts(text);
-  if (counts === null) return failed(name, `${CALLS_FILE} is not a count of calls, so the rate of failed calls is not known`, `remove ${join(deps.stateDir, CALLS_FILE)}; the board writes it again with its next call to Linear`);
+  if (counts === null) return failed(name, `${CALLS_FILE} is not a count of calls, so whether the board's calls to Linear fail is unknown`, UNKNOWN_FIX);
   if (now - counts.at >= counts.windowMs) return ok(name, "the board has made no call to Linear in the last hour");
   const said = describeCounts(counts);
   return isFlagged(counts)

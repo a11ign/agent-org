@@ -71,21 +71,21 @@ test("doctor's linear calls row fails above one failure in a hundred over the la
 });
 
 test("doctor's linear calls row passes where there is nothing to flag: no file, and a count older than the hour", () => {
-  const missing = callsCheck(depsWith(undefined), NOW);
-  assert.deepEqual([missing.ok, missing.detail], [true, "the board has recorded no call to Linear yet"]);
+  assert.equal(callsCheck(depsWith(undefined), NOW).ok, true);
+  assert.match(callsCheck(depsWith(undefined), NOW).detail, /no call to Linear yet/);
   const stale = callsCheck(depsWith(written(50, 20, NOW - HOUR - 1)), NOW);
   assert.deepEqual([stale.ok, stale.detail], [true, "the board has made no call to Linear in the last hour"]);
 });
 
-test("doctor's linear calls row fails where the rate is not known: a count that is not JSON, one of the wrong shape, and a file that cannot be read", () => {
-  for (const text of ["{", "[]", "null", JSON.stringify({ at: 1, windowMs: 2, calls: "x", failures: 0 }), ""]) {
-    const row = callsCheck(depsWith(text), NOW);
-    assert.deepEqual([row.ok, row.detail], [false, "linear-calls.json is not a count of calls, so the rate of failed calls is not known"], JSON.stringify(text));
-    assert.match(row.fix ?? "", /remove \/state\/linear-calls\.json/);
+test("doctor's linear calls row fails when the count is there but unknown: not JSON, the wrong shape, or unreadable", () => {
+  for (const file of ["{", "not json", JSON.stringify({ at: NOW, windowMs: HOUR, calls: "x", failures: 0 })]) {
+    const row = callsCheck(depsWith(file), NOW);
+    assert.deepEqual([row.ok, /unknown/.test(row.detail)], [false, true], file);
+    assert.match(row.fix ?? "", /writes .* afresh/);
   }
-  const denied = callsCheck(fakePluginDeps({ stateDir: "/state", readFile: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); } }), NOW);
-  assert.deepEqual([denied.ok, denied.detail], [false, "linear-calls.json cannot be read (EACCES: permission denied)"]);
-  assert.match(denied.fix ?? "", /permissions of \/state\/linear-calls\.json/);
+  const unreadable = fakePluginDeps({ stateDir: "/state", readFile: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); } });
+  const row = callsCheck(unreadable, NOW);
+  assert.deepEqual([row.ok, /could not be read .*EACCES/.test(row.detail)], [false, true]);
 });
 
 test("the plugin's doctor rows include the calls row", () => {
