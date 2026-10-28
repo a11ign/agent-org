@@ -93,7 +93,7 @@ const CODEX_HOME = tmpDirForFile("doctor-codex-");
 writeFileSync(join(CODEX_HOME, "config.toml"), '[projects."/src/netbox"]\ntrust_level = "trusted"\n');
 
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
-  return {
+  return withoutCallsCount({
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json", HOME: "/home/me", CODEX_HOME }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
     readFile: () => HOST, exec: execOf(), mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
@@ -109,7 +109,16 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
     ...over,
-  };
+  });
+}
+
+/**
+ * The Linear plugin's calls count (A11-359) is absent on these installs, as on a board that has not called Linear yet: a fake `readFile` that answers every path
+ * with one text would hand the doctor a host file as the count, which it rightly fails as unknown.
+ */
+function withoutCallsCount(made: DoctorDeps): DoctorDeps {
+  const read = made.readFile;
+  return { ...made, readFile: (path) => { if (path.endsWith("/linear-calls.json")) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" }); return read(path); } };
 }
 
 const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntries(checks.map((check) => [check.name, check]));

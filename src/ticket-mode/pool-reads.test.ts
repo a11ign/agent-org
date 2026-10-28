@@ -168,3 +168,25 @@ test("A11-359: a queued run whose blockers are not read takes no slot from a run
   assert.deepEqual(starts.map((e) => e.ticket.key), ["NBF-2"], "the one slot goes to the run that can start");
   void pool;
 });
+
+test("A11-359: fill() starts no run queued while the pass read the blockers, whose blockers are still unread, and starts the read one beside it", async () => {
+  // The guard is fill()'s own (`nextStarts`' ready predicate): a run queued during the read has no blockers and no recorded failure, so nothing else holds it.
+  let late: ReturnType<ReturnType<typeof poolFixture>["entry"]> | undefined;
+  let fixture: ReturnType<typeof poolFixture> | undefined;
+  const source: TicketSource = { ...base, blockers: async (keys) => {
+    // NBF-2 is queued while this pass reads NBF-1's blockers, as a batch's ticket whose order was just recorded is.
+    const store = fixture!.store;
+    if (late !== undefined && !store.get().entries.some((e) => e.ticket.key === "NBF-2")) store.set({ ...store.get(), entries: [...store.get().entries, late] });
+    return none(keys);
+  } };
+  fixture = poolFixture({ keys: ["NBF-1", "NBF-2"], max: 10, source });
+  const pool = fixture.restart({ readMs: 40 });
+  late = { ...fixture.entry("NBF-2"), blockers: undefined };
+  fixture.store.set({ ...fixture.store.get(), entries: fixture.store.get().entries.filter((e) => e.ticket.key !== "NBF-2") });
+  await pool.tick();
+  const now = (key: string) => fixture!.store.get().entries.find((e) => e.ticket.key === key)!;
+  assert.equal(now("NBF-1").phase, "running", "the run whose blockers were read starts");
+  assert.deepEqual([now("NBF-2").phase, now("NBF-2").blockers, now("NBF-2").blockersFailure], ["queued", undefined, undefined], "the run queued mid-pass waits for the next pass to read its blockers");
+  await pool.tick();
+  assert.equal(now("NBF-2").phase, "running", "read on the next pass, it starts");
+});

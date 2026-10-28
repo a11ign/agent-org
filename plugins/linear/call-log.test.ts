@@ -70,12 +70,22 @@ test("doctor's linear calls row fails above one failure in a hundred over the la
   assert.deepEqual([fine.ok, fine.detail], [true, "2 of 400 calls failed in the last hour (0.5%)"]);
 });
 
-test("doctor's linear calls row passes where there is nothing to flag: no file, a file that is not a count, and a count older than the hour", () => {
+test("doctor's linear calls row passes where there is nothing to flag: no file, and a count older than the hour", () => {
   assert.equal(callsCheck(depsWith(undefined), NOW).ok, true);
   assert.match(callsCheck(depsWith(undefined), NOW).detail, /no call to Linear yet/);
-  assert.equal(callsCheck(depsWith("{"), NOW).ok, true);
   const stale = callsCheck(depsWith(written(50, 20, NOW - HOUR - 1)), NOW);
   assert.deepEqual([stale.ok, stale.detail], [true, "the board has made no call to Linear in the last hour"]);
+});
+
+test("doctor's linear calls row fails when the count is there but unknown: not JSON, the wrong shape, or unreadable", () => {
+  for (const file of ["{", "not json", JSON.stringify({ at: NOW, windowMs: HOUR, calls: "x", failures: 0 })]) {
+    const row = callsCheck(depsWith(file), NOW);
+    assert.deepEqual([row.ok, /unknown/.test(row.detail)], [false, true], file);
+    assert.match(row.fix ?? "", /writes .* afresh/);
+  }
+  const unreadable = fakePluginDeps({ stateDir: "/state", readFile: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); } });
+  const row = callsCheck(unreadable, NOW);
+  assert.deepEqual([row.ok, /could not be read .*EACCES/.test(row.detail)], [false, true]);
 });
 
 test("the plugin's doctor rows include the calls row", () => {
