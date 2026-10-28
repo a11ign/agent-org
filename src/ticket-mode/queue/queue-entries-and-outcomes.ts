@@ -1,6 +1,6 @@
 import type { Wait, Woke } from "../wait-on/wait-types.ts";
 import type { QueueHead } from "../board-view/queue-head.ts";
-import { CONCLUDED, openPulls, RESULT_KINDS, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { openPulls, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "../board-view/plan-steps.ts";
 import type { PlannedStep } from "../plan-step-sections.ts";
@@ -14,6 +14,7 @@ import type { StoppedForBlocker } from "./queue-blocker-wait.ts";
 import type { TicketRead } from "../ticket-read.ts";
 import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
 import { logEvent, type RequeueWhy, type RunEvent } from "./run-log.ts";
+import { retryRefusal } from "./queue-retry-refusal.ts";
 import type { CrashRetry } from "../crash-retry.ts";
 import type { Standoff } from "./standoff-types.ts";
 import type { CapRound, TicketWait } from "./queue-cap.ts";
@@ -730,8 +731,7 @@ export function dismiss(queue: Queue, key: string, now?: number): Queue {
  */
 export function retry(queue: Queue, key: string, now: number, why: RequeueWhy = "retry"): Queue {
   const entry = find(queue, key);
-  const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
-  if (isConcludedEntry) return queue;
+  if (entry === undefined || retryRefusal(entry) !== null) return queue;
   const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
@@ -744,9 +744,6 @@ export function retry(queue: Queue, key: string, now: number, why: RequeueWhy = 
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
   return logEvent({ ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] }, key, now, { kind: "requeued", why });
 }
-
-/** A run whose outcome is its result, pull requests to show for it: retried, they would only be made again. */
-const isResult = (entry: Entry): boolean => RESULT_KINDS.has(entry.outcome?.kind ?? "");
 
 /** A finished run a person can start a review round of: it holds no workspace, the tracker has not settled it, and a pull request is open. */
 export const reviewable = (entry: Entry): boolean =>

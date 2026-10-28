@@ -35,7 +35,7 @@ import { runningToolVersion, toolDir } from "../install/tool-versions.ts";
 import { nextVersion, toolFolderReads } from "./update-next.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { countFix, interventionsView, type InterventionsView } from "./queue/interventions.ts";
-import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
+import { amend, childOrder, enqueue, type PlanFirst, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import { WRITER_REQUEST_CHARS } from "./writer-limits.ts";
 import { type Placement, placementOf } from "./writer-placement.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
@@ -100,7 +100,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "held" | "figures" | "endStarts" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "figures" | "endStarts" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -517,7 +517,15 @@ async function queueActionRoute(board: Board, method: string, path: string, body
     if (verb === "amend") store.set(amend(store.get(), key, validChange(body, ["model", "effort"])));
     // The pool's, like Dismiss: a queued run's ticket is put back before the run leaves the queue.
     if (verb === "remove") await pool.remove(key);
-    if (verb === "retry") store.set(retry(store.get(), key, now()));
+    // The pool's, like Respond: a parked run's workspace is closed first, a `wrong-repo` naming the organisation's repository is queued there, and a run that cannot be retried is a 409 that says why, not a 200 (A11-355).
+    if (verb === "retry") {
+      if (pool.retry === undefined) throw new Error("this board takes no retry");
+      try {
+        await pool.retry(key);
+      } catch (error) {
+        return [409, { error: String((error as Error)?.message ?? error) }];
+      }
+    }
     if (verb === "approve") store.set(approve(store.get(), key, now()));
     // The pool's, like Close: a parked run's workspace is closed before its round is queued, and a refusal is named (A11-154).
     if (verb === "respond") pool.respond(key);
@@ -688,7 +696,7 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
  * The sweeps the server runs on the feedback cadence, each on its own timer (A11-106): one that throws is said, and the others still run on theirs. `every` is
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
-export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers">>,
+export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "cloneMissing">>,
   every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void>; idleBlockers?: () => void | Promise<void> } = {}): void {
   const sweeps: { sweep: () => void | Promise<void>; failure: string; ms?: number }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
@@ -700,6 +708,8 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
     { sweep: () => pool.rebaseStacked(), failure: "the stacked branches could not be rebased" },
     // A reviewer on each new head of every open pull request, whatever its run is in (A11-119): not the watched runs' only.
     { sweep: () => pool.reviewNewHeads(), failure: "the reviewers of open pull requests could not be started" },
+    // A repository of the organisation this machine has no clone of is cloned (A11-355), so a plan or a worker that names one finds it. Asynchronous, so a failure is said when it settles.
+    ...(pool.cloneMissing === undefined ? [] : [{ sweep: () => pool.cloneMissing?.(), failure: "the organisation's repositories could not be cloned" }]),
     // The first review of a green head, on its own minute: the idle time between a green head and its review is its reviewer's start waiting for a sweep (A11-306).
     ...(pool.startGreenReviewers === undefined ? [] : [{ sweep: () => pool.startGreenReviewers?.(), failure: "the reviewers of green pull requests could not be started", ms: REVIEW_START_MS }]),
     // A Dependabot major, or a group whose gate stays red, is asked of the ticket writer once (A11-255). Asynchronous, so a failure is said when it settles.

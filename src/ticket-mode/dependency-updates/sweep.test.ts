@@ -23,7 +23,7 @@ const GROUP_BRANCH = "dependabot/npm_and_yarn/minor-and-patch-0123456789abcdef";
 const JOB_URL = "https://github.com/o/r/actions/runs/5/job/6";
 const CHANGELOG = "https://github.com/x/y/releases/tag/v2.0.0";
 
-type Overrides = Partial<{ repositories: () => readonly string[]; writer: { model: string; effort: string } | null; clones: Record<string, string>; queueRefuses: boolean; sourceHas: boolean;
+type Overrides = Partial<{ repositories: () => readonly string[]; writer: { model: string; effort: string } | null; clones: Record<string, string>; cloneKeyOf: (repository: string) => string | undefined; queueRefuses: boolean; sourceHas: boolean;
   /** What the tracker answers for the epic the requests' team is read from: its ticket (the default, in team A11), none, or a failed read. */
   epic: Ticket | null | "throws" }>;
 
@@ -43,7 +43,7 @@ function board(over: Overrides = {}) {
     return epic === "throws" ? Promise.reject(new Error("the tracker is down\nat somewhere")) : Promise.resolve(epic);
   };
   const make = () => dependencyUpdateSweep({
-    codeHost: host, source: { read }, store, statePath, repositories: over.repositories ?? (() => [REPO]), clones: over.clones ?? {},
+    codeHost: host, source: { read }, store, statePath, repositories: over.repositories ?? (() => [REPO]), clones: over.clones ?? {}, ...(over.cloneKeyOf === undefined ? {} : { cloneKeyOf: over.cloneKeyOf }),
     writer: () => (over.writer === undefined ? { model: "opus", effort: "high" } : over.writer), runChoice: () => ({ model: "sonnet", effort: "medium" }),
     queueTickets: (tickets, choice, options) => {
       if (over.queueRefuses === true) throw new Error("A11-300 is a parent");
@@ -358,6 +358,17 @@ test("A11-255: a sweep that is still running is not started again, and a request
   assert.equal(b.writers().length, 1);
   assert.deepEqual(b.writers()[0]!.form, { repo: "r" });
   assert.equal(b.writers()[0]!.placement, "manual");
+});
+
+test("A11-360: a request names the clone by the key the host lists it under, which is not the repository's name when the clone is behind an alias", async () => {
+  const b = board({ clones: { alias: "/work/r" }, cloneKeyOf: (repository) => (repository === REPO ? "alias" : undefined) });
+  b.major();
+  await b.sweep();
+  assert.deepEqual(b.writers()[0]!.form, { repo: "alias" }, "the writer places the ticket by the key `clones` has, not by `r`");
+  const bare = board({ clones: { other: "/work/o" }, cloneKeyOf: () => undefined });
+  bare.major();
+  await bare.sweep();
+  assert.deepEqual(bare.writers()[0]!.form, {}, "a host with no clone for the repository gives none");
 });
 
 test("A11-255: a paused queue asks for nothing, so no agent session starts for a sweep nobody asked for, and the sweep asks once it is resumed", async () => {
