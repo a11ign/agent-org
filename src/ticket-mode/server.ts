@@ -74,7 +74,7 @@ import { servedFigures } from "./reliability/served.ts";
 
 // The reads moved to `read-routes.ts` (A11-282); the UI's client and the tests name them here.
 export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
-export { holdsKey, type ConfigView, type PickView, type SavedChoice, type TicketsPageView, type TicketView, type WritersView } from "./read-routes.ts";
+export { holdsKey, type ConfigView, type PickView, type ProjectView, type SavedChoice, type TicketsPageView, type TicketView, type WritersView } from "./read-routes.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");

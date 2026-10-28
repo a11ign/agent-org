@@ -12,6 +12,9 @@
 // 1.8 ADDS the optional `readComments`: every comment on a ticket, with its author and time, so a planner and a worker plan from the ticket's discussion and not its description alone. A comment can
 // correct or supersede the description, and a worker briefed without them re-raised a theory a later comment had ruled out. It is optional, so a 1.7 tracker still passes: the brief then says the board
 // could not give the comments, and points at the ticket.
+// 1.9 (A11-378) ADDS the optional `projects`, `projectPage` and `search`: the Pick view is narrowed to one project a person picks, and reads only that project's open tickets, a page at a time,
+// instead of the whole workspace's for Anyone; and a person finds any open ticket of the workspace by key or by words, whoever holds it and whatever its project. All three are optional, so a
+// 1.8 tracker still passes: its Pick view lists as it did, with no project picker and no search beyond the list.
 //
 // 1.7 (A11-216) ADDS a documented property of the error `attachPlan` throws: its `status`, the HTTP status the tracker answered with. The board tries a plan attach again, with a wait, when it failed on the network (`fetch`'s own
 // `TypeError("fetch failed")`, a timeout, a reset) or the tracker answered 5xx, and hands a person any other failure at once. Nothing in a type changes and the property is optional, so a 1.6 tracker still passes: its 5xx reads
@@ -36,7 +39,7 @@
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.8";
+export const TRACKER_CONTRACT_VERSION = "1.9";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -189,6 +192,9 @@ export type People = Readonly<{ people: readonly Readonly<{ id: string; name: st
 /** One page of a scope's tickets, and the cursor of the page after it, or `null` at the end. */
 export type ScopePage = Readonly<{ tickets: readonly Ticket[]; next: string | null }>;
 
+/** A project the Pick view can be narrowed to (1.8): the tracker's id for it, and the name a ticket carries as its `project`. */
+export type TrackerProject = Readonly<{ id: string; name: string }>;
+
 export interface TicketSource {
   /**
    * Every unfinished ticket the Pick view lists, each with its assignee: the key's own, or, where the host file's `tickets.pick` names a team or a
@@ -216,6 +222,21 @@ export interface TicketSource {
    * the page before it gave (`null` for the first). Paged because Anyone and Unassigned can hold thousands. Throws when the tracker cannot be asked.
    */
   scoped?(scope: string, after: string | null): Promise<ScopePage>;
+  /**
+   * The open projects, by name, for the Pick view's project picker (1.8, A11-378): none archived, completed or canceled. A source that has both this and `projectPage` is read one project at a
+   * time, and the Pick view never asks for every open ticket of the workspace. Throws when the tracker cannot be asked.
+   */
+  projects?(): Promise<readonly TrackerProject[]>;
+  /**
+   * One page of the open tickets of the project named `project`, as a ticket's `project` names it, starting after the cursor the page before it gave (`null` for the first) (1.8). Throws when the
+   * tracker cannot be asked.
+   */
+  projectPage?(project: string, after: string | null): Promise<ScopePage>;
+  /**
+   * The open tickets of the whole workspace that match `text`, by key or by words, whoever holds them and whatever their project, best first (1.8, A11-378). A bounded first page: a search is read,
+   * not paged through. Empty words find nothing. Throws when the tracker cannot be asked.
+   */
+  search?(text: string): Promise<readonly Ticket[]>;
   /** One ticket by key, or `null` when the tracker has none by that key. Throws when the tracker cannot be asked. */
   read(key: string): Promise<Ticket | null>;
   /**

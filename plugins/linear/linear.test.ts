@@ -915,6 +915,43 @@ test("A11-359: a plan's download is tried again as a query is, so a plan read in
   assert.deepEqual(files.map((file) => readFileSync(file, "utf8")), ["# plan"]);
 });
 
+test("A11-378: projects() lists the open projects by name across every page, leaving out a completed or canceled one, and reads only the id and the name", async () => {
+  const { fetch, requests } = linear([
+    { data: { projects: { nodes: [{ id: "p2", name: "web", completedAt: null, canceledAt: null }, { id: "p3", name: "old", completedAt: "2026-01-01T00:00:00.000Z", canceledAt: null }], pageInfo: { hasNextPage: true, endCursor: "c1" } } } },
+    { data: { projects: { nodes: [{ id: "p1", name: "api", completedAt: null, canceledAt: null }, { id: "p4", name: "gone", completedAt: null, canceledAt: "2026-02-01T00:00:00.000Z" }], pageInfo: { hasNextPage: false, endCursor: null } } } },
+  ]);
+  assert.deepEqual(await linearSource({ key: "k", fetch }).projects!(), [{ id: "p1", name: "api" }, { id: "p2", name: "web" }]);
+  assert.equal(requests.length, 2);
+  assert.ok(!queried(requests).query.includes("issues"), "a project's tickets are not read with the list of projects");
+});
+
+test("A11-378: projectPage() reads one page of a project's open tickets, the project a variable and never in the text", async () => {
+  const { fetch, requests } = linear([{ data: { issues: { nodes: [node("NBF-1", { project: { name: "web", summary: null } })], pageInfo: { hasNextPage: true, endCursor: "c1" } } } }]);
+  const page = await linearSource({ key: "k", fetch }).projectPage!("web \" }", null);
+  assert.deepEqual([page.tickets.map((t) => t.key), page.next], [["NBF-1"], "c1"]);
+  const { query, variables } = queried(requests);
+  assert.equal(variables.project, "web \" }");
+  assert.ok(query.includes("project: { name: { eq: $project } }") && !query.includes(String(variables.project)), "the name goes as a variable");
+});
+
+test("A11-378: search() asks Linear's search for open tickets with the words as a variable, and empty words ask nothing", async () => {
+  const { fetch, requests } = linear([{ data: { searchIssues: { nodes: [node("NBF-4"), node("NBF-9")] } } }]);
+  const source = linearSource({ key: "k", fetch });
+  assert.deepEqual(await source.search!("   "), []);
+  assert.equal(requests.length, 0);
+  assert.deepEqual((await source.search!(" queue the ticket ")).map((t) => t.key), ["NBF-4", "NBF-9"]);
+  const { query, variables } = queried(requests);
+  assert.equal(variables.term, "queue the ticket");
+  assert.ok(query.includes("searchIssues(term: $term") && query.includes('state: { type: { nin: ["completed", "canceled", "duplicate"] } }'), "only open tickets are searched");
+});
+
+test("A11-378: a search for a key puts the open ticket of that key first, once, and leaves a closed one out", async () => {
+  const open = linear([{ data: { searchIssues: { nodes: [node("NBF-9"), node("NBF-12")] } } }, { data: { issues: { nodes: [node("NBF-12")] } } }]);
+  assert.deepEqual((await linearSource({ key: "k", fetch: open.fetch }).search!("nbf-12")).map((t) => t.key), ["NBF-12", "NBF-9"]);
+  const closed = linear([{ data: { searchIssues: { nodes: [node("NBF-9")] } } }, { data: { issues: { nodes: [node("NBF-12", { state: { name: "Done", position: 5, type: "completed" } })] } } }]);
+  assert.deepEqual((await linearSource({ key: "k", fetch: closed.fetch }).search!("NBF-12")).map((t) => t.key), ["NBF-9"]);
+});
+
 /** One comment as Linear answers it, written by a person of the workspace unless `who` says otherwise. */
 const linearComment = (body: string, createdAt: string, who: Record<string, unknown> = { user: { name: "Sam Reviewer" } }) => ({ body, createdAt, user: null, externalUser: null, botActor: null, ...who });
 const commentPage = (nodes: unknown[], next: string | null) => ({ nodes, pageInfo: { hasNextPage: next !== null, endCursor: next } });

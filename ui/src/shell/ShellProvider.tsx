@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { People } from "../api/types.ts";
 import { chosenConnection } from "../../../src/ticket-mode/board-view.ts";
-import { chosenProject, inProject, projectCounts } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
+import { ANYONE, YOU } from "../../../src/ticket-mode/assignee-filter.ts";
+import { chosenProject, projectCounts } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import { queueIsEmpty } from "../api/emptiness.ts";
 import { createClient, type Client } from "../api/client.ts";
 import type { Fetch } from "../api/request.ts";
@@ -10,7 +11,10 @@ import type { ConfigView, ConnectionsView, QueueView, TicketView, ViewConnection
 import { POLL_MS } from "../api/poll-schedule.ts";
 import { usePoll, type PollView } from "../api/use-poll.ts";
 import type { LifecycleView } from "../lifecycle/Lifecycle.tsx";
-import { ALL_GOALS_ID, contextParentsOf, goalEntries, goalShown, mergedTickets, runningCount, scopeOf, ticketsView, isLive, unreachableOf, type GoalEntry } from "./shell-model.ts";
+import {
+  ALL_GOALS_ID, MY_TICKETS, contextParentsOf, goalEntries, goalShown, mergedTickets, ofPicked, pickedProject, pickerEntries, projectRead, runningCount, scopeOf, ticketsInScope, ticketsView, isLive, unreachableOf,
+  type GoalEntry,
+} from "./shell-model.ts";
 import { useReachability } from "./use-reachability.ts";
 import { useScopeReads } from "./use-scope-reads.ts";
 import { NO_UPDATE, type UpdateView } from "../updating/update-model.ts";
@@ -63,7 +67,8 @@ export type ShellValue = Readonly<{
   runningRuns: number | null;
   /** The chosen project's tickets, which the Tickets nav item counts; null while the tickets load. */
   ticketCount: number | null;
-  projects: readonly (readonly [string, number])[];
+  /** The sidebar's Projects, each with its count: null for a project the tracker lists that has not been read yet (A11-378). */
+  projects: readonly (readonly [string, number | null])[];
   project: string | null;
   chooseProject: (name: string) => void;
   goals: readonly GoalEntry[];
@@ -160,12 +165,22 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
   // What is read beside the tickets waits for a read that answered: the last known data an unreachable connection shows is not a reason to ask for more of it, and the reads would not be made again on recovery.
   // Nor are the tickets and the config the tab kept (A11-270): the instance works the parents out from the tickets it last listed, so they are asked once it has listed them again.
   const fresh = (read: PollView<unknown>): boolean => isLive(read.state) && !read.cached;
-  const reads = useScopeReads(client, { listed: fresh(ticketsRead), onDemand: fresh(config) && config.data?.scopes === true });
+  // A11-378: an instance that reads a project at a time offers the tracker's projects, and opens on the one this browser picked last, else on the person's own tickets.
+  const projectsOn = config.data?.projects === true;
+  const reads = useScopeReads(client, { listed: fresh(ticketsRead), onDemand: fresh(config) && config.data?.scopes === true, projects: fresh(config) && projectsOn });
+  const picked = projectsOn ? pickedProject(reads.projectNames, rememberedProject) : null;
+  const inAProject = picked !== null && picked !== MY_TICKETS;
   const [scopeChoice, setScopeChoice] = useState<string | null>(null);
-  const scope = scopeOf(config.data, scopeChoice);
+  // A project's list starts on Anyone, so it holds the project's tickets whoever has them; My tickets is the person's own.
+  const scope = scopeOf(config.data, scopeChoice ?? (inAProject ? ANYONE : null));
+  const { readProject } = reads;
+  useEffect(() => {
+    if (inAProject) readProject(picked);
+  }, [inAProject, picked, readProject]);
+  const refused = reads.refusal !== null && (reads.refusal.scope === scope || (inAProject && reads.refusal.scope === projectRead(picked)));
 
   const tickets = {
-    ...ticketsView(ticketsRead, config, { scope: scopeChoice, extra: reads.extra, reading: reads.reading, refusal: reads.refusal?.scope === scope ? reads.refusal.sentence : null }),
+    ...ticketsView(ticketsRead, config, { scope, extra: reads.extra, reading: reads.reading, refusal: refused ? reads.refusal?.sentence ?? null : null }),
     refresh: () => {
       ticketsRead.refresh();
       config.refresh();
@@ -179,9 +194,10 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
     for (const read of [config, ticketsRead]) if (!isLive(read.state)) read.refresh();
   };
   const allTickets = mergedTickets(ticketsRead.data ?? [], reads.extra);
-  const projects = projectCounts(tickets.data ?? []);
-  const project = chosenProject(projects, rememberedProject);
-  const projectTickets = inProject(tickets.data ?? [], project);
+  const counted = projectCounts(tickets.data ?? []);
+  const projects = picked === null ? counted : pickerEntries(reads.projectNames ?? [], tickets.data ?? [], ticketsInScope(ticketsRead.data ?? [], config.data, YOU).length, reads.read);
+  const project = picked ?? chosenProject(counted, rememberedProject);
+  const projectTickets = ofPicked(tickets.data ?? [], project);
   const goals = goalEntries(projectTickets);
   const value: ShellValue = {
     connectionsReady: true, client, fetch: fetchWith ?? browserFetch, connections: listing.connections, connection, connectionsRefusal: listing.refusal, switchConnection, retryConnections,
@@ -195,6 +211,8 @@ function ConnectionReads({ listing, connection, switchConnection, retryConnectio
     chooseProject: (name) => {
       setRememberedProject(name);
       remembered(storage, PROJECT_MEMORY, name);
+      // Each project opens on its own first scope: Anyone in a project, the person's own in My tickets.
+      if (projectsOn) setScopeChoice(null);
     },
     goals, goal: goalShown(goals, goalChoice), chooseGoal: setGoalChoice, projectTickets,
   };

@@ -25,7 +25,7 @@ import { type Queue, type RunChoice, type WriterRun, writerStatus } from "./queu
 import { isTicketWriter, type TicketWriterRun } from "./queue/writer-modes.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { hostFilePath, type TicketSettings } from "./settings.ts";
-import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
+import type { Assignee, People, ScopePage, Ticket, TicketSource, TrackerProject } from "./source.ts";
 import { type TerminalRun, terminalRunOf } from "./terminal-pair.ts";
 import { PRIORITIES } from "./writer.ts";
 
@@ -117,8 +117,11 @@ export async function answerKeyed(request: IncomingMessage, response: ServerResp
   }
 }
 
-/** What the tracker is asked for beyond the lists: whose key this is, who holds the open tickets, and whether the Assignee row reads scopes one at a time. */
-export type TrackerReads = Readonly<{ whoAmI: () => Promise<Assignee | null>; whoHolds: () => Promise<People>; scopesOnDemand: () => boolean }>;
+/**
+ * What the tracker is asked for beyond the lists: whose key this is, who holds the open tickets, whether the Assignee row reads scopes one at a time, whether the Pick view is narrowed to
+ * a project it reads on demand (A11-378), and whether a person can search the whole workspace's open tickets.
+ */
+export type TrackerReads = Readonly<{ whoAmI: () => Promise<Assignee | null>; whoHolds: () => Promise<People>; scopesOnDemand: () => boolean; projectsOnDemand: () => boolean; searchable: () => boolean }>;
 
 /** The tracker's other reads over `source`, each kept as long as it stands. Made once per board. */
 export function trackerReads(source: TicketSource, settings: Pick<TicketSettings, "pick">): TrackerReads {
@@ -140,10 +143,21 @@ export function trackerReads(source: TicketSource, settings: Pick<TicketSettings
       peopleReading ??= source.people!().then((value) => { people = { at: Date.now(), value }; return value; }).finally(() => { peopleReading = null; });
       return peopleReading;
     },
-    /** Whether the Assignee row can reach tickets beyond the key's own, one scope at a time: the default list is the key's own, and the source can read the rest. */
-    scopesOnDemand: () => settings.pick === "assigned" && source.people !== undefined && source.scoped !== undefined,
+    /**
+     * Whether the Assignee row can reach tickets beyond the key's own, one scope at a time: the default list is the key's own, and the source can read the rest. Never where the Pick view
+     * reads a project at a time instead (A11-378): a scope such as Anyone is every open ticket of the workspace, and the project picker is what widens the list there.
+     */
+    scopesOnDemand: () => settings.pick === "assigned" && source.people !== undefined && source.scoped !== undefined && !projectsOnDemand(source, settings),
+    /** Whether the Pick view offers the tracker's projects and reads the one picked, a page at a time (A11-378): the default list is the key's own, and the source can list and read projects. */
+    projectsOnDemand: () => projectsOnDemand(source, settings),
+    /** Whether the Pick view's search reaches the whole workspace's open tickets (A11-378). */
+    searchable: () => source.search !== undefined,
   };
 }
+
+/** Whether the Pick view reads a project at a time (A11-378): the list is the key's own, and the source lists its projects and reads one. */
+const projectsOnDemand = (source: TicketSource, settings: Pick<TicketSettings, "pick">): boolean =>
+  settings.pick === "assigned" && source.projects !== undefined && source.projectPage !== undefined;
 
 /** Whether a board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
 export const plansOf = (settings: Pick<TicketSettings, "planner" | "plan">, source: Pick<TicketSource, "attachPlan">): boolean =>
@@ -175,6 +189,9 @@ function ticketView(board: Pick<ReadBoard, "settings" | "store" | "known" | "cla
 /** One page of a scope's tickets as `/api/tickets?assignee=` answers it: each ticket as `/api/tickets` shows it, and the cursor of the next page or null. */
 export type TicketsPageView = Readonly<{ tickets: readonly TicketView[]; next: string | null }>;
 
+/** One of the tracker's projects as `/api/projects` answers it (A11-378). */
+export type ProjectView = TrackerProject;
+
 /** What `/api/pick` answers: the words an empty Pick list says. */
 export type PickView = Readonly<{ empty: ReturnType<typeof pickEmptyText> }>;
 
@@ -193,6 +210,13 @@ async function readClaims(board: Pick<ReadBoard, "settings" | "source" | "store"
   } catch (err) {
     process.stderr.write(`ticket:serve: the tracker could not say who claimed the in-work tickets, so none is shown as taken: ${String((err as Error)?.message ?? err)}\n`);
   }
+}
+
+/** A page of tickets as the page is sent it: each is known to the board, as a listed ticket is, so it can be queued, and the claim of an in-work one is read. */
+async function pageView(board: Pick<ReadBoard, "settings" | "source" | "store" | "known" | "claimant">, page: ScopePage): Promise<TicketsPageView> {
+  for (const ticket of page.tickets) board.known.tickets.set(ticket.key, ticket);
+  await readClaims(board, page.tickets);
+  return { ...page, tickets: page.tickets.map((ticket) => ticketView(board, ticket)) };
 }
 
 /** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
@@ -218,7 +242,7 @@ async function configView(board: ReadBoard) {
   // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
   return { models: MODELS, efforts: EFFORTS, choice: readChoice(paths.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
     publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
-    pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
+    pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(), projects: board.projectsOnDemand(), search: board.searchable(),
     writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
     writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: update.version, updateNote: update.note };
 }
@@ -250,11 +274,23 @@ export async function readRoute(board: ReadBoard, method: string, path: string, 
   if (method === "GET" && path === "/api/tickets" && query.has("assignee")) {
     // One page of the scope the Assignee row chose, with the cursor of the next: Anyone and Unassigned can hold thousands of tickets, past what one answer carries.
     if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so a scope is not read on its own" }];
-    const page = await source.scoped!(query.get("assignee") ?? "", query.get("after"));
-    for (const ticket of page.tickets) known.tickets.set(ticket.key, ticket);
-    await readClaims(board, page.tickets);
-    const view: TicketsPageView = { ...page, tickets: page.tickets.map((ticket) => ticketView(board, ticket)) };
-    return [200, view];
+    return [200, await pageView(board, await source.scoped!(query.get("assignee") ?? "", query.get("after")))];
+  }
+  if (method === "GET" && path === "/api/projects") {
+    if (!board.projectsOnDemand()) return [404, { error: "this instance does not read a project at a time: its list is tickets.pick's, or its tracker cannot list projects" }];
+    const projects: readonly ProjectView[] = await source.projects!();
+    return [200, projects];
+  }
+  if (method === "GET" && path === "/api/tickets" && query.has("project")) {
+    // One page of the project the picker chose (A11-378), with the cursor of the next.
+    if (!board.projectsOnDemand()) return [404, { error: "this instance does not read a project at a time: its list is tickets.pick's, or its tracker cannot list projects" }];
+    return [200, await pageView(board, await source.projectPage!(query.get("project") ?? "", query.get("after")))];
+  }
+  if (method === "GET" && path === "/api/search") {
+    // The whole workspace's open tickets that match, whoever holds them and whatever their project (A11-378). They are known to the board as a listed ticket is, so one can be queued.
+    if (!board.searchable()) return [404, { error: "this instance's tracker cannot search, so the Pick view filters only the tickets it lists" }];
+    const found = await source.search!(query.get("q") ?? "");
+    return [200, (await pageView(board, { tickets: found, next: null })).tickets];
   }
   if (method === "GET" && path === "/api/tickets") {
     const tickets = await source.assigned();

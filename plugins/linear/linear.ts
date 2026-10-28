@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { PickScope } from "../../src/ticket-mode/settings.ts";
 import { callLog, describeCounts, type CallLog } from "./call-log.ts";
-import type { Assignee, AutomaticCompletionUndo, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketComment, TicketComments, TicketLabel, TicketSource, TicketText } from "../../src/plugins/contracts/tracker.ts";
+import type { Assignee, AutomaticCompletionUndo, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText, TrackerProject, TicketComment, TicketComments } from "../../src/plugins/contracts/tracker.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /**
@@ -639,11 +639,61 @@ async function peopleOf(client: Client): Promise<People> {
   return { people: [...held.values()], unassigned, total };
 }
 
+/** A page of tickets as the board reads it: the tickets, and the cursor of the next page or null. */
+const pageOf = (issues: Connection): ScopePage => ({ tickets: issues.nodes.map(toTicket), next: issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null });
+
 /** One page of a scope's tickets, with the cursor of the next. */
 async function scopedPage(client: Client, scope: string, after: string | null): Promise<ScopePage> {
   const list = scopedQuery(scope);
-  const { issues } = await query<{ issues: Connection }>(client, list.text, { ...list.variables, after });
-  return { tickets: issues.nodes.map(toTicket), next: issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null };
+  return pageOf((await query<{ issues: Connection }>(client, list.text, { ...list.variables, after })).issues);
+}
+
+/** One page of the open tickets of the project named `project` (A11-378): the query `tickets.pick` reads a project with, the name passed as a variable. */
+async function projectPageOf(client: Client, project: string, after: string | null): Promise<ScopePage> {
+  const list = pickQuery({ project });
+  return pageOf(list.page(await query<unknown>(client, list.text, { ...list.variables, after })));
+}
+
+/** Pages of the projects read, which carry only the id and the name, so a page can be large. */
+const PROJECT_PAGE = 100;
+
+/** A project as Linear answers it: a completed or canceled one has the time it ended. */
+type ProjectNode = { id: string; name: string; completedAt: string | null; canceledAt: string | null };
+
+/** The open projects, by name (A11-378): Linear leaves archived ones out of `projects`, and a completed or canceled one is left out here. Read a page at a time. */
+async function projectsOf(client: Client): Promise<TrackerProject[]> {
+  const text = `query($after: String) { projects(first: ${PROJECT_PAGE}, after: $after) { nodes { id name completedAt canceledAt } pageInfo { hasNextPage endCursor } } }`;
+  const projects: TrackerProject[] = [];
+  let after: string | null = null;
+  do {
+    const answer: { projects: { nodes: ProjectNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } = await query(client, text, { after });
+    for (const { id, name, completedAt, canceledAt } of answer.projects.nodes) if (completedAt === null && canceledAt === null) projects.push({ id, name });
+    after = answer.projects.pageInfo.hasNextPage ? answer.projects.pageInfo.endCursor : null;
+  } while (after !== null);
+  return projects.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** How many tickets a search answers: the first page of Linear's ranking, which is what a person reads. */
+export const SEARCH_RESULTS = 25;
+
+/** The search of the whole workspace's open tickets by words (A11-378): Linear's `searchIssues`, the words passed as a variable. PURE. */
+export const searchQuery = (): string => `query($term: String!) { searchIssues(term: $term, first: ${SEARCH_RESULTS}, filter: { ${OPEN} }) { nodes { ${ISSUE_FIELDS} } } }`;
+
+/** The state types of a ticket that is not open, as {@link OPEN} leaves them out. */
+const NOT_OPEN = ["completed", "canceled", "duplicate"];
+
+/**
+ * The open tickets of the whole workspace that match `text`, whoever holds them and whatever their project (A11-378). A key (`A11-12`) is also read by key, so the ticket it names comes first
+ * even where Linear's ranking puts it lower; a closed ticket by that key is left out, as the search leaves closed ones out. Empty words find nothing.
+ */
+async function searchOf(client: Client, text: string): Promise<Ticket[]> {
+  const term = text.trim();
+  if (term === "") return [];
+  const found = (await query<{ searchIssues: { nodes: IssueNode[] } }>(client, searchQuery(), { term })).searchIssues.nodes.map(toTicket);
+  if (!TICKET_KEY.test(term)) return found;
+  const named = await issue<IssueNode>(client, term, ISSUE_FIELDS);
+  if (named === null || NOT_OPEN.includes(named.state.type)) return found;
+  return [toTicket(named), ...found.filter(({ key }) => key !== named.identifier)];
 }
 
 /**
@@ -663,6 +713,9 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned", s
     people: () => peopleOf(client),
 
     scoped: (scope, after) => scopedPage(client, scope, after),
+
+    // The project picker and the search (contract 1.9, A11-378).
+    projects: () => projectsOf(client), projectPage: (project, after) => projectPageOf(client, project, after), search: (text) => searchOf(client, text),
 
     async viewer() {
       return (await me(client)).name;

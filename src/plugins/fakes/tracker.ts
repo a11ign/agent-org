@@ -65,6 +65,19 @@ function completeBy(entry: Held, by: Completion["by"]): void {
   setStatus(entry, "Done", "completed");
 }
 
+/** The project picker's reads (contract 1.9): the projects the open tickets are in, a project's open tickets as one page, and a search of the open tickets by key or by words of the title. */
+function projectReadsOf(held: Tickets): Pick<TicketSource, "projects" | "projectPage" | "search"> {
+  const open = (): Ticket[] => [...held.values()].filter(isOpen).map(({ ticket }) => ticket);
+  return {
+    projects: async () => [...new Set(open().flatMap(({ project }) => (project === null ? [] : [project])))].sort().map((name) => ({ id: `project-${name}`, name })),
+    projectPage: async (project, after) => ({ tickets: after === null ? open().filter((ticket) => ticket.project === project) : [], next: null }),
+    async search(text) {
+      const term = text.trim().toLowerCase();
+      return term === "" ? [] : open().filter(({ key, title }) => key.toLowerCase() === term || title.toLowerCase().includes(term));
+    },
+  };
+}
+
 /** The reads: what the board lists, looks up and asks of the tracker. */
 function readsOf(held: Tickets, calls: string[], comments: readonly { key: string; text: string }[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "texts" | "readComments" | "pullStates" | "blockers" | "projectSummaries" | "claims"> {
   return {
@@ -187,7 +200,7 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
   const claimed: { key: string; claimant: string }[] = [];
   const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, titles: {}, files: [], discussion: [] });
   seed.forEach(hold);
-  const source: TicketSource = { ...readsOf(held, calls, comments), ...writesOf(held, comments, claimed), keywords: DEFAULT_KEYWORDS };
+  const source: TicketSource = { ...readsOf(held, calls, comments), ...projectReadsOf(held), ...writesOf(held, comments, claimed), keywords: DEFAULT_KEYWORDS };
   return Object.assign(source, {
     /** Add a ticket, or replace the one with its key. */
     seed: hold,

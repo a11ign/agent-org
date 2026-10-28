@@ -6,8 +6,10 @@ import { HeldBanner, PausedBanner, StatusBanner } from "./Banners.tsx";
 import { EmptyPanelView } from "./EmptyPanelView.tsx";
 import { FailureBanner } from "./FailureBanner.tsx";
 import { FilterRow } from "./FilterRow.tsx";
+import { SearchResults } from "./SearchResults.tsx";
 import { QueueBar } from "./QueueBar.tsx";
-import { Sections } from "./Sections.tsx";
+import { Sections, type SectionsContext } from "./Sections.tsx";
+import { mergedTickets } from "../shell/shell-model.ts";
 import { TicketsHeader } from "./TicketsHeader.tsx";
 import { TicketsUnreachable } from "./TicketsUnreachable.tsx";
 import { TicketsSkeleton } from "./TicketsSkeleton.tsx";
@@ -17,6 +19,7 @@ import { useQueueNow } from "./use-queue-now.ts";
 import { useBatch, useSelection } from "./use-queue-state.ts";
 import { useTicketActions } from "./use-ticket-actions.ts";
 import { useFilters, useList } from "./use-tickets-page.ts";
+import { useWorkspaceSearch } from "./use-workspace-search.ts";
 
 const NO_OPTIONS: QueueOptions = { planOffered: false, batch: { model: "", effort: "", plan: false }, custom: false, customLabel: "" };
 
@@ -24,14 +27,16 @@ const NO_OPTIONS: QueueOptions = { planOffered: false, batch: { model: "", effor
 function usePage(shell: ShellValue) {
   const filters = useFilters(shell.goal);
   const list = useList(filters);
+  const search = useWorkspaceSearch(shell.client, shell.config?.search === true ? filters.filters.search : null);
   const folding = useFolding(list);
   const selection = useSelection();
   const batch = useBatch();
-  const selected = shell.allTickets.filter(({ key }) => selection.selected.has(key));
+  // A match the search found outside the list can be picked and queued as a listed ticket can (A11-378).
+  const selected = mergedTickets(shell.allTickets, search.results).filter(({ key }) => selection.selected.has(key));
   const options = shell.config === null ? NO_OPTIONS : queueOptionsOf(shell.config, selected, batch);
   const { queue, learn } = useQueueNow();
   const actions = useTicketActions({ selection, batch, options, learn });
-  return { filters, list, folding, selection, batch, options, actions, queue };
+  return { filters, list, search, folding, selection, batch, options, actions, queue };
 }
 
 type Page = ReturnType<typeof usePage>;
@@ -42,12 +47,12 @@ function grillReasonOf(shell: ShellValue): string | null {
   return shell.config.writerGrill ? null : "Grill needs a terminal: name tickets.terminal in the host file";
 }
 
-/** The sections, and the queue bar while tickets are selected. */
-function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
-  const { list, folding, selection, actions, batch, options } = page;
+/** What every row needs of the page: the listed ones and the search's matches outside the list alike. */
+function contextOf(page: Page, shell: ShellValue): SectionsContext {
+  const { list, folding, selection, actions } = page;
   // While the tickets or the queue drawn are the tab's kept copy (A11-270), Queue, Queue children and Grill wait for the instance's own answer.
   const held = shell.tickets.cached || shell.queue.cached;
-  const context = {
+  return {
     open: folding.open, toggleSection: folding.toggleSection, queue: page.queue,
     row: {
       queue: page.queue, selected: selection.selected, openParents: folding.openParents, showsOwner: list.showsOwner, grillReason: grillReasonOf(shell),
@@ -55,9 +60,17 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
       pick: selection.pick, unpick: selection.unpick, toggleParent: folding.toggleParent, queueChildren: actions.queueChildren, grill: actions.grill, paused: shell.unreachable !== null, held,
     },
   };
+}
+
+/** The sections, the search's matches outside them, and the queue bar while tickets are selected. */
+function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
+  const { list, selection, actions, batch, options } = page;
+  const held = shell.tickets.cached || shell.queue.cached;
+  const context = contextOf(page, shell);
   return (
     <>
       <Sections sections={list.sections} context={context} />
+      <SearchResults search={page.search} listed={shell.projectTickets} context={context} />
       {selection.selected.size > 0 && shell.config !== null ? (
         <QueueBar config={shell.config} count={selection.selected.size} options={options} batch={batch} busy={actions.busy || held} paused={shell.unreachable !== null} onClear={() => { selection.clear(); batch.reset(); }} onQueue={actions.queueSelected} />
       ) : null}

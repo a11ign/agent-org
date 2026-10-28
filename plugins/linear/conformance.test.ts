@@ -32,6 +32,8 @@ function workspace(...identifiers: string[]) {
     if (text.startsWith("mutation")) return mutate(text, variables);
     if (text === "query { viewer { id name email } }") return { viewer: { id: "u-1", name: "Dan Beck", email: "dan@example.invalid" } };
     if (text.includes("viewer { assignedIssues")) return { viewer: { assignedIssues: page(open()) } };
+    if (text.includes("projects(first:")) return { projects: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+    if (text.includes("searchIssues(")) return { searchIssues: { nodes: open().map(node) } };
     if (text.includes("nodes { assignee { id name } } pageInfo")) return { issues: { nodes: open().map(() => ({ assignee: { id: "u-1", name: "Dan Beck" } })), pageInfo: { hasNextPage: false, endCursor: null } } };
     if (text.includes("$after: String")) return { issues: page(open()) };
     if (text.includes("$team: String!, $number: Float!")) {
@@ -90,6 +92,7 @@ test("the Linear plugin passes the tracker contract suite, every check of it tha
   assert.ok(result.passed.includes("detachPlan of a title the ticket has no attachment under changes nothing and is no error"));
   assert.ok(result.passed.includes("readComments answers each comment's author, ISO time and body, and is refused for a key the tracker has none of"));
   assert.ok(result.passed.includes("addBlockers records a relation once, and again without error"));
+  assert.ok(["projects lists the open projects by id and name", "projectPage pages a project's tickets", "search of no words finds nothing"].every((check) => result.passed.includes(check)), "the project picker's reads pass (A11-378)");
   assert.ok(result.passed.includes("claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing"));
   assert.deepEqual(world.held.get("TST-1")?.comments.map(({ body }) => body).filter((body) => body.startsWith("agent-org: claimed")), ["agent-org: claimed by conformance.a", "agent-org: claimed by conformance.b"], "the repeated claim wrote no comment");
   assert.equal(world.held.get("TST-1")?.state, "Done", "the suite's complete moved the ticket in the recorded workspace");

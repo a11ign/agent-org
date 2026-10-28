@@ -5,6 +5,7 @@
 // offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
 // write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
 //
+// CONTRACT 1.9 (A11-378) adds the optional `projects`, `projectPage` and `search`: the suite checks their shapes, that a project page reads one project, and that a search of no words finds nothing.
 // CONTRACT 1.8 adds the optional `readComments`: the suite checks each comment's shape, and that a ticket the tracker has none of is refused.
 // CONTRACT 1.5 (A11-178) adds the optional `undoAutomaticCompletion` and the optional `closingWords` of the keywords: the suite checks that `undoAutomaticCompletion` answers who completed the ticket in the shape the board reads, undoes only the integration's completion, and is refused for a ticket the tracker has none of; and that any `closingWords` are words and include the closing keyword.
 // CONTRACT 1.4 (A11-173) adds the optional `comment`: one call posts one comment on a ticket in any state, and the suite checks that it is no error on the known ticket and refused for a ticket the tracker has none of.
@@ -128,6 +129,18 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "scoped pages a scope's tickets": optional("scoped", async ({ source }) => {
     const page = await source.scoped?.("anyone", null);
     expect(isObject(page) && Array.isArray(page.tickets) && (page.next === null || isString(page.next)), "scoped() must resolve { tickets, next }, with next null at the end");
+  }),
+  "projects lists the open projects by id and name": optional("projects", async ({ source }) => {
+    const listed = await source.projects?.();
+    expect(Array.isArray(listed) && listed.every((project) => isObject(project) && isString(project.id) && isString(project.name)), "projects() must resolve [{ id, name }]");
+  }),
+  "projectPage pages a project's tickets": optional("projectPage", async ({ source }) => {
+    const page = await source.projectPage?.("no-such-project", null);
+    expect(isObject(page) && Array.isArray(page.tickets) && (page.next === null || isString(page.next)), "projectPage() must resolve { tickets, next }, with next null at the end");
+  }),
+  "search of no words finds nothing": optional("search", async ({ source }) => {
+    const found = await source.search?.("  ");
+    expect(Array.isArray(found) && found.length === 0, "search() of no words must resolve [] without asking the tracker for everything");
   }),
   "stateTypes answers a Map of the keys it knows": optional("stateTypes", async ({ source, probe }) => {
     const types = await expectMap(source.stateTypes!([probe.known, probe.missing]), "stateTypes()");

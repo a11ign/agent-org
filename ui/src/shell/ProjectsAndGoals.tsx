@@ -1,12 +1,13 @@
 import { SidebarSkeleton } from "../lifecycle/Skeleton.tsx";
 import { useShell } from "./ShellProvider.tsx";
+import { projectLabel } from "./shell-model.ts";
 
-/** One row of the Projects or the Goals list: a button pressed when it is the one shown, with its count. */
-function FilterButton({ label, count, pressed, onPress }: Readonly<{ label: string; count: number; pressed: boolean; onPress: () => void }>) {
+/** One row of the Projects or the Goals list: a button pressed when it is the one shown, with its count, or none for a project not read yet. */
+function FilterButton({ label, count, pressed, onPress }: Readonly<{ label: string; count: number | null; pressed: boolean; onPress: () => void }>) {
   return (
     <button type="button" className="filter-button" aria-pressed={pressed} onClick={onPress}>
       <span className="filter-label">{label}</span>
-      <span className="filter-count">{count}</span>
+      {count === null ? null : <span className="filter-count">{count}</span>}
     </button>
   );
 }
@@ -25,7 +26,7 @@ export function ProjectsAndGoals() {
       <div className="sidebar-section filter-group filter-group-projects">
         <div className="section-label">Projects</div>
         {projects.map(([name, count]) => (
-          <FilterButton key={name} label={name} count={count} pressed={name === project} onPress={() => chooseProject(name)} />
+          <FilterButton key={name} label={projectLabel(name)} count={count} pressed={name === project} onPress={() => chooseProject(name)} />
         ))}
       </div>
       <div className="sidebar-section filter-group">
