@@ -49,9 +49,9 @@ jobs:
       # The install is `suite`'s, version for version (ci.yml carries the reasons for the exact toolchain pin and for the binding).
       - name: Install the tool's dependencies
         run: |
-          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0"
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.14.0"
           BINDING=$(node -p "require('./node_modules/@rspack/binding/package.json').version")
-          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0" "@rspack/binding-linux-x64-gnu@$BINDING"
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.14.0" "@rspack/binding-linux-x64-gnu@$BINDING"
       # ONE RUN AFTER ANOTHER: rstest's build cache is on in CI and a second run beside the first aborts on it (`Transaction already in progress by process ...`, rspack, run
       # 40394900750). 30 runs of two small files are under two minutes.
       - name: The sandbox's two test files, 30 runs

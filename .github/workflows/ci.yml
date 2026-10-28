@@ -100,9 +100,9 @@ jobs:
       # So the binding is named at the version the first install resolved. It is a second install of the whole set, not an install of the binding alone: an install that names only the binding prunes the rest.
       - name: Install the tool's dependencies
         run: |
-          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0"
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.14.0"
           BINDING=$(node -p "require('./node_modules/@rspack/binding/package.json').version")
-          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.11.0" "@rspack/binding-linux-x64-gnu@$BINDING"
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.14.0" "@rspack/binding-linux-x64-gnu@$BINDING"
       # WHAT THE BODY DECLARES MUST MATCH WHAT GITHUB WILL CLOSE, FOR THIS REPOSITORY'S OWN PULL REQUESTS (a11ign/agent-org#863). The check ran only in a11ign/a11ign's `ci.yml`, whose
       # `prRepo` defaults to a11ign/a11ign, so an agent-org pull request was never put to it: a11ign/a11ign#4904 and #4906 were both agent-org pull requests (#782, #770) closed on merge and not
       # on outcome, and the refusal agent-org#838 builds could not have reached them. It is a step of `suite` and not a job of its own because `gate` already needs `suite` (a skipped or failed
@@ -192,7 +192,7 @@ jobs:
           node-version: 24.21.0
       - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml)
         # The toolchain is named EXACT beside `package.json`'s range for the same reason as in `suite` (a11ign/a11ign#4308): a range once resolved 0.1.6, which has no `dist/`.
-        run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.11.0"
+        run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.14.0"
       - name: tsc --noEmit over tsconfig.json
         run: npm run typecheck
       # THE LAYOUT CHECK (a11ign/a11ign#4211, ADR 0043 Decision 7; the check is a11ign/a11ign#4210, published in `@a11ign/toolchain`). This repository is the standard's model -- one package at the root, one
