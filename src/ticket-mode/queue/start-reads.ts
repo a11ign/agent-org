@@ -39,16 +39,16 @@ const MAX_AGE_WORDS = `${BLOCKERS_MAX_AGE_MS / 60_000} minutes`;
 export const blockersStale = (entry: ReadState, now: number): boolean =>
   entry.blockers !== undefined && (entry.blockersReadAt === undefined || now - entry.blockersReadAt > BLOCKERS_MAX_AGE_MS);
 
-/** The words after a failed read: what the tracker said, and when the board asks again. */
-const failedWords = ({ error, retryAt }: NonNullable<ReadState["blockersFailure"]>): string => `${error}, retrying at ${retryTime(retryAt)}`;
+/** The words after a failed read: what the tracker said, and, unless `withRetry` is false, when the board asks again. */
+const failedWords = ({ error, retryAt }: NonNullable<ReadState["blockersFailure"]>, withRetry: boolean): string => (withRetry ? `${error}, retrying at ${retryTime(retryAt)}` : error);
 
 /** The reason a queued run's blockers keep it from starting, or null: they were never read, or are too old and not read again yet. Without `now` age is not judged. PURE. */
-export function blockersHold(entry: ReadState, now?: number): string | null {
+export function blockersHold(entry: ReadState, now?: number, withRetry = true): string | null {
   const failure = entry.blockersFailure;
-  if (entry.blockers === undefined) return `blockers unread: ${failure === undefined ? "not read yet" : failedWords(failure)}`;
+  if (entry.blockers === undefined) return `blockers unread: ${failure === undefined ? "not read yet" : failedWords(failure, withRetry)}`;
   if (now === undefined || !blockersStale(entry, now)) return null;
   const read = entry.blockersReadAt === undefined ? "at a time not recorded" : `at ${retryTime(entry.blockersReadAt)}`;
-  return `blockers last read ${read}, older than ${MAX_AGE_WORDS}: ${failure === undefined ? "reading them again" : failedWords(failure)}`;
+  return `blockers last read ${read}, older than ${MAX_AGE_WORDS}: ${failure === undefined ? "reading them again" : failedWords(failure, withRetry)}`;
 }
 
 /**
@@ -59,11 +59,11 @@ export const blockersFailureNote = (entry: ReadState): string | null =>
   entry.phase === "queued" && entry.blockersFailure !== undefined ? blockersHold(entry, entry.blockersFailure.retryAt) : null;
 
 /** The reason a queued run's plan keeps it from starting, or null: its paths were never read. A plan that failed says why and when the board asks again. PURE. */
-export function pathsHold(entry: ReadState): string | null {
-  if (entry.pathsFailure !== undefined) return `plan unread: ${entry.pathsFailure}${entry.pathsRetryAt === undefined ? "" : `, retrying at ${retryTime(entry.pathsRetryAt)}`}`;
+export function pathsHold(entry: ReadState, withRetry = true): string | null {
+  if (entry.pathsFailure !== undefined) return `plan unread: ${entry.pathsFailure}${entry.pathsRetryAt === undefined || !withRetry ? "" : `, retrying at ${retryTime(entry.pathsRetryAt)}`}`;
   return pathsUnread(entry) ? "plan unread: not read yet" : null;
 }
 
-/** The reason the last known state of a queued run's blockers and plan does not let it start, or null when it does. PURE. */
-export const startReadHold = (entry: ReadState, now?: number): string | null =>
-  entry.phase !== "queued" ? null : blockersHold(entry, now) ?? pathsHold(entry);
+/** The reason the last known state of a queued run's blockers and plan does not let it start, or null when it does. `withRetry` false leaves out the time the read is asked again, for a reason that is said in the log once. PURE. */
+export const startReadHold = (entry: ReadState, now?: number, withRetry = true): string | null =>
+  entry.phase !== "queued" ? null : blockersHold(entry, now, withRetry) ?? pathsHold(entry, withRetry);

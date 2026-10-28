@@ -50,7 +50,7 @@ function world(keys: readonly string[], read: (asked: readonly string[]) => Prom
   const store: QueueStore = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const herdr = fakeHerdr(new Map());
   const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
-    transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), readTimeoutMs: 30 });
+    transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), readMs: 30 });
   made.push(pool);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   const started = () => queue.entries.filter((e) => e.phase !== "queued").map((e) => e.ticket.key);
@@ -76,7 +76,7 @@ test("a hung blockers() read does not delay the start of a ticket whose blockers
   assert.deepEqual(run.started(), ["NBF-1"], "NBF-1 started in the pass, though the tracker never answered about NBF-2");
   assert.deepEqual(run.asked, [["NBF-2"]], "and only NBF-2 was asked about");
   assert.equal(run.entry("NBF-2").phase, "queued");
-  assert.deepEqual(run.pool.fillReport()?.held, [{ key: "NBF-2", reason: "blockers unread: not read yet" }], "held, and the board says for what");
+  assert.deepEqual(run.pool.figures().fill.held, [{ key: "NBF-2", reason: "blockers unread: not read yet" }], "held, and the board says for what");
 });
 
 test("a read that never answers is cut off at its timeout, and holds only the ticket it was for, with the reason and when it is asked again", async () => {
@@ -86,11 +86,11 @@ test("a read that never answers is cut off at its timeout, and holds only the ti
     await run.pool.startReadsSettled();
   });
   const failure = run.entry("NBF-2").blockersFailure;
-  assert.match(failure?.error ?? "", /did not answer within 0\.03 s/);
+  assert.match(failure?.error ?? "", /did not finish within 0\.03s/);
   assert.equal(failure?.retryAt, START + READ_RETRY_MS);
   assert.equal(waitNote(run.entry("NBF-2"), run.store.get().entries), `Waits: blockers unread: ${failure?.error}, retrying at 22:05Z`);
   assert.equal(run.entry("NBF-1").phase, "running", "the other ticket was never held");
-  assert.match(written, /NBF-2: the tracker could not say which tickets block it \(.*did not answer within 0\.03 s\); the board asks again at 22:05Z/);
+  assert.match(written, /NBF-2: the tracker could not say which tickets block it \(.*did not finish within 0\.03s\); the board asks again at 22:05Z/);
 });
 
 test("a failed read holds the tickets it was for and no other, and they take no slot from one that can start", async () => {
@@ -102,7 +102,7 @@ test("a failed read holds the tickets it was for and no other, and they take no 
   assert.deepEqual(run.started(), ["NBF-4"], "NBF-4 started; the three unread tickets came first in the queue and took no slot");
   for (const key of ["NBF-1", "NBF-2", "NBF-3"]) assert.equal(waitNote(run.entry(key), run.store.get().entries), "Waits: blockers unread: Linear answered 503, retrying at 22:05Z", key);
   assert.match(written, /NBF-1, NBF-2, NBF-3: the tracker could not say which tickets block them \(Linear answered 503\)/, "a pass with a failed read logs it");
-  assert.match(written, /fill: .* -- held: NBF-1: blockers unread: Linear answered 503, retrying at 22:05Z/, "and so does the pass that held them");
+  assert.deepEqual(run.pool.figures().fill.held.map(({ key, reason }) => [key, reason]), ["NBF-1", "NBF-2", "NBF-3"].map((key) => [key, "blockers unread: Linear answered 503, retrying at 22:05Z"]), "the figures /api/health serves name the held runs and why");
 });
 
 test("a ticket whose read failed is asked again at its retry time and starts when the tracker answers", async () => {
@@ -147,16 +147,15 @@ test("a stale read that succeeds is stamped and the ticket starts on it", async 
   assert.deepEqual([run.entry("NBF-1").phase, run.entry("NBF-1").blockersReadAt], ["running", START + BLOCKERS_MAX_AGE_MS + 1], "the read woke a pass, which started it at once");
 });
 
-test("a pass that starts nothing says why, and keeps the reason for /api/health", async () => {
+test("a pass that starts nothing says why, once, and a run it started is in the health figures", async () => {
   const run = world(["NBF-1"], async (keys) => new Map(keys.map((key) => [key, []])), { known: ["NBF-1"] });
   run.store.set(pauseQueue(run.store.get()));
   const written = await logged(async () => { await run.pool.tick(); await run.pool.tick(); });
-  assert.equal(run.pool.fillReport()?.decision, "the queue is paused: 1 queued");
-  assert.equal(written.match(/fill: the queue is paused: 1 queued/g)?.length, 1, "said once while it stands");
+  assert.equal(written.match(/fill: 1 queued, and the queue is paused/g)?.length, 1, "said once while it stands");
   run.store.set(resumeQueue(run.store.get()));
   const after = await logged(async () => { await run.pool.tick(); });
   assert.doesNotMatch(after, /fill:/, "a pass that starts a run has nothing to explain");
-  assert.deepEqual([run.pool.fillReport()?.decision, run.pool.fillReport()?.started], ["started NBF-1", ["NBF-1"]]);
+  assert.notEqual(run.pool.figures().runs.sinceLastStartMs, null, "the start is in the health figures' latest start");
 });
 
 test("a plan download that hangs holds its own ticket, and a ticket whose plan is read starts", async () => {
@@ -168,7 +167,7 @@ test("a plan download that hangs holds its own ticket, and a ticket whose plan i
   assert.deepEqual([run.entry("NBF-2").paths, run.entry("NBF-1").paths], [[], undefined], "NBF-2's plan is recorded as it ends, before NBF-1's is cut off");
   await logged(async () => { await run.pool.startReadsSettled(); });
   assert.deepEqual(run.started(), ["NBF-2"], "NBF-2's plan was read and it started; NBF-1's was cut off and it did not");
-  assert.match(run.entry("NBF-1").pathsFailure ?? "", /did not answer within 0\.03 s/);
+  assert.match(run.entry("NBF-1").pathsFailure ?? "", /did not finish within 0\.03s/);
   assert.equal(run.entry("NBF-1").pathsRetryAt, START + READ_RETRY_MS);
-  assert.match(waitNote(run.entry("NBF-1"), run.store.get().entries) ?? "", /^Waits: its plan could not be downloaded \(.*did not answer within 0\.03 s\); the board asks again at 22:05Z$/);
+  assert.match(waitNote(run.entry("NBF-1"), run.store.get().entries) ?? "", /^Waits: its plan could not be downloaded \(.*did not finish within 0\.03s\); the board asks again at 22:05Z$/);
 });

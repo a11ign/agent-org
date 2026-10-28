@@ -1,4 +1,5 @@
 // no-token: none -- every check's reading is injected: no `node`, PATH, Keychain, service manager or port is asked
+import type { HealthFigures } from "../ticket-mode/health-figures.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -93,7 +94,7 @@ const CODEX_HOME = tmpDirForFile("doctor-codex-");
 writeFileSync(join(CODEX_HOME, "config.toml"), '[projects."/src/netbox"]\ntrust_level = "trusted"\n');
 
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
-  return {
+  return withoutCallsCount({
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json", HOME: "/home/me", CODEX_HOME }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
     readFile: () => HOST, exec: execOf(), mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
@@ -104,12 +105,21 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     platform: "linux", arch: "x64", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
-    runs: () => [], longWaits: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
+    runs: () => [], longWaits: () => [], boardFigures: async () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
     ...over,
-  };
+  });
+}
+
+/**
+ * The Linear plugin's calls count (A11-359) is absent on these installs, as on a board that has not called Linear yet: a fake `readFile` that answers every path
+ * with one text would hand the doctor a host file as the count, which it rightly fails as unknown.
+ */
+function withoutCallsCount(made: DoctorDeps): DoctorDeps {
+  const read = made.readFile;
+  return { ...made, readFile: (path) => { if (path.endsWith("/linear-calls.json")) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" }); return read(path); } };
 }
 
 const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntries(checks.map((check) => [check.name, check]));
@@ -218,9 +228,9 @@ test("doctor passes every check on a working install, and never prints the key",
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["agent-org command", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
-    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
+    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["linear calls", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
-    ["auto-update service", true], ["update lag", true], ["flaky tests", true], ["chromium", true], ["chromium headless shell", true],
+    ["auto-update service", true], ["watchdog service", true], ["update lag", true], ["flaky tests", true], ["chromium", true], ["chromium headless shell", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
   assert.match(report(checks), /ok {4}ui answering: http:\/\/127\.0\.0\.1:4801 answers/);
@@ -300,7 +310,7 @@ test("doctor asks each service's state by its own name, and a running instance a
   const checks = byName(await diagnose(deps({
     serviceState: (name) => { asked.push(name); return name === "instance" ? "running" : "not-registered"; },
   })));
-  assert.deepEqual(asked, ["instance", "ui", "terminal", "herdr", "auto-update"]);
+  assert.deepEqual(asked, ["instance", "ui", "terminal", "herdr", "auto-update", "watchdog"]);
   assert.equal(checks["instance service"].ok, true);
   assert.equal(checks["instance answering"].ok, true);
 });
@@ -1101,7 +1111,8 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const tracker = lines.indexOf("tracker: linear (enabled, contract 1.7, plugins/linear)");
   assert.match(lines[tracker + 1], /^ {2}ok {4}tracker key: /, "the plugin's own checks are indented beneath its header");
   assert.match(lines[tracker + 2], /^ {2}ok {4}linear mcp: /);
-  assert.match(lines[tracker + 3], /^ {2}ok {4}tracker \(linear\): /, "and the concern's row that summarises them closes the section");
+  assert.match(lines[tracker + 3], /^ {2}ok {4}linear calls: /, "A11-359: the board's calls to Linear are the plugin's third row");
+  assert.match(lines[tracker + 4], /^ {2}ok {4}tracker \(linear\): /, "and the concern's row that summarises them closes the section");
   assert.match(lines[tracker - 1], /^ok {4}terminal answering: /, "the machine's checks stand outside the sections, before them");
   assert.deepEqual(lines.filter((line) => /^ok {4}(?:tracker key|tracker \(linear\))/.test(line)), [], "no plugin row is left outside its section");
 });
@@ -1574,4 +1585,48 @@ test("A11-298: doctor lists each wait of more than two hours as a warning, with 
 test("A11-298: doctor says nothing of waits when none is long, or the queue cannot be read", async () => {
   const longWaitRows = async (over: Parameters<typeof deps>[0]) => Object.keys(byName(await diagnose(deps(over)))).filter((name) => name.startsWith("long wait"));
   assert.deepEqual([await longWaitRows(undefined), await longWaitRows({ longWaits: () => null })], [[], []]);
+});
+
+// A11-363: the board's rolling health figures and the watchdog's record, flagged where they are over their limits.
+const FIGURES: HealthFigures = {
+  at: 0, uptimeMs: 3_600_000, loop: { lastMinute: { p50Ms: 1, p99Ms: 18 }, lastHour: { p50Ms: 2, p99Ms: 40 } }, syncHolds: { lastHour: 2, holdMs: 100 },
+  calls: { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 1_000, failures: 0, failuresPer100: 0 } },
+  runs: { sinceLastStartMs: 60_000, startable: 0, freeSlots: 1, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: 3_000, lastEarlyReturn: null, held: [] },
+};
+const boardRows = async (over: Partial<DoctorDeps>) => Object.entries(byName(await diagnose(deps(over)))).filter(([name]) => name.startsWith("board "));
+
+test("A11-363: doctor says one ok row when the board's figures are under their limits and the watchdog has restarted nothing", async () => {
+  const rows = await boardRows({ boardFigures: async () => FIGURES });
+  assert.deepEqual(rows.map(([name, check]) => [name, check.ok, check.warning]), [["board health", true, undefined]]);
+  assert.match(rows[0]![1].detail, /loop p99 18 ms over the last minute and 40 ms over the last hour, and no call failure rate over 1%/);
+});
+
+test("A11-363: doctor warns for a loop p99 over 100 ms, call failures over 1%, and any watchdog restart in the last day, one row each, with the numbers", async () => {
+  const sick: HealthFigures = { ...FIGURES, loop: { lastMinute: { p50Ms: 1, p99Ms: 1_200 }, lastHour: { p50Ms: 2, p99Ms: 40 } }, calls: { ...FIGURES.calls, linear: { calls: 100, failures: 4, failuresPer100: 4 } } };
+  const watchdog = { restartsLastHour: 1, restartsLastDay: 2, restartsTotal: 5, last: { at: 1, reason: "no-answer" as const, detail: "/api/health has not answered for 31 s (ECONNREFUSED)" } };
+  const rows = await boardRows({ boardFigures: async () => sick, watchdog: () => watchdog });
+  assert.deepEqual(rows.map(([name, check]) => [name, check.ok, check.warning]), [["board loop", true, true], ["board calls", true, true], ["board watchdog", true, true]], "warnings: the exit code is the same");
+  assert.deepEqual(rows.map(([, check]) => check.detail), [
+    "Event loop lag p99 is 1.2 s over the last minute, over 100 ms: background work is holding the board",
+    "Linear calls fail 4 in 100 (4 of 100 in the last hour), over 1",
+    "The watchdog restarted the board 2 times in the last day; the last was for no-answer: /api/health has not answered for 31 s (ECONNREFUSED)",
+  ]);
+});
+
+test("A11-363: a watchdog restart is flagged even when the instance is not running, and an instance that serves no figures says nothing of them", async () => {
+  const watchdog = { restartsLastHour: 1, restartsLastDay: 1, restartsTotal: 1, last: { at: 1, reason: "no-fill" as const, detail: "no fill() pass has completed for 5.2 min" } };
+  assert.deepEqual((await boardRows({ serviceState: (name) => (name === "instance" ? "stopped" : "running"), boardFigures: async () => { throw new Error("must not be asked"); }, watchdog: () => watchdog })).map(([name]) => name), ["board watchdog"]);
+  assert.deepEqual(await boardRows({ boardFigures: async () => null, watchdog: () => null }), []);
+});
+
+test("A11-363: a watchdog service that is not registered is a warning with the command that registers it, not a failure that exits 1 on every machine the update has not reached", async () => {
+  const off = byName(await diagnose(deps({ serviceState: (name) => (name === "watchdog" ? "not-registered" : "running") })))["watchdog service"];
+  assert.deepEqual([off.ok, off.warning, off.fix], [true, true, "run `agent-org start watchdog`"]);
+  assert.match(off.detail, /not registered, so a stalled board waits for a person to restart it/);
+  assert.match(byName(await diagnose(deps()))["watchdog service"].detail, /restarts the instance when it stalls/);
+});
+
+test("A11-363: doctor warns that the watchdog's record cannot be read, rather than showing no restarts", async () => {
+  const rows = await boardRows({ watchdog: () => ({ restartsLastHour: 0, restartsLastDay: 0, restartsTotal: 0, last: null, unreadable: "Unexpected token in JSON" }) });
+  assert.deepEqual(rows.map(([name, check]) => [name, check.warning, check.detail]), [["board watchdog", true, "The watchdog's record cannot be read (Unexpected token in JSON), so its restarts are not counted"]]);
 });

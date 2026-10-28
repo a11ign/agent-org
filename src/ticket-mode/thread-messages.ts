@@ -11,13 +11,13 @@
 import type { GithubCallCounts } from "../plugins/contracts/call-counts.ts";
 import type { BlockingSite } from "./blocking-ledger.ts";
 import type { Json } from "./local-http.ts";
+import type { HealthFigures } from "./health-figures.ts";
 import type { LoopReading } from "./loop-delay.ts";
 import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
 import type { ReadPaths, UpdateView } from "./read-routes.ts";
 import type { TicketSettings } from "./settings.ts";
 import type { Ticket } from "./source.ts";
 import type { Pool } from "./pool.ts";
-import type { FillReport } from "./pool-fill-report.ts";
 
 /**
  * Everything a read takes from the board thread, as of `at` (ms since the epoch): the queue, the pool's readings, the terminal address (worked out on the board thread, so the
@@ -34,8 +34,8 @@ export type BoardSnapshot = Readonly<{
   update: UpdateView;
   loop: LoopReading;
   blocking: readonly BlockingSite[];
-  /** What the last fill of the free slots decided and why (A11-364), or null before the first. */
-  starts?: FillReport | null;
+  /** The rolling health figures (A11-363), worked out on the board thread; null from a board thread that keeps none. */
+  figures: HealthFigures | null;
   /** The code host's count of its calls to GitHub (A11-365), null for a host that counts none. */
   githubCalls: GithubCallCounts | null;
   at: number;

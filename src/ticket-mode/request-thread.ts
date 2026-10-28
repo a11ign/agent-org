@@ -19,6 +19,7 @@ import { loadActive, realPluginDeps } from "../plugins/active.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { reviewerStateOf } from "./concern-states.ts";
 import { startRequestHealth } from "./health-route.ts";
+import { cachedWatchdogView, watchdogPath } from "./watchdog-record.ts";
 import { sendJson, type Json } from "./local-http.ts";
 import { pluginsApi } from "./plugins-api.ts";
 import type { ProblemOptions } from "./plugins.ts";
@@ -115,7 +116,7 @@ function apiOf(board: ReadBoard, port: BoardPort, onSnapshot: (snapshot: BoardSn
 /** Answers the instance's requests on `data.settings.port` until the thread ends. */
 export async function serveRequests(data: RequestThreadData, port: BoardPort): Promise<void> {
   let latest = { snapshot: data.snapshot, receivedAt: Date.now() };
-  const health = startRequestHealth({ latest: () => latest });
+  const health = startRequestHealth({ latest: () => latest, watchdog: cachedWatchdogView(watchdogPath(data.settings.stateDir)) });
   // The Plugins section's checks run here, in child processes, as they ran on the instance's one thread: the board thread starts none.
   const plugins = pluginsApi({ hostPath: data.paths.hostPath ?? hostFilePath(), settings: data.settings, seam: { version: data.toolVersion, claude: problemsOf(data) }, warm: true });
   const board = readBoardOf(data, { source: await trackerOf(data.settings), plugins, latest: () => latest.snapshot, health: health.view, terminalRead: () => port.postMessage({ kind: "terminal" }) });

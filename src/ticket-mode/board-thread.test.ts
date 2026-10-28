@@ -7,6 +7,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { answerCall, RESTART_WINDOW_MS, RESTARTS, restartBudget, SNAPSHOT_MS, snapshotOf, startBoardThread, type RequestThread } from "./board-thread.ts";
+import { measuredOver } from "./health-fixture.ts";
 import type { HealthView } from "./health-route.ts";
 import { localRoute, readBoardOf } from "./request-thread.ts";
 import { createBoard } from "./server.ts";
@@ -17,7 +18,8 @@ import { copiesOf, type Known, LISTEN_FAILED, namedKeys, REQUEST_THREAD, type Re
 const KEY = "a".repeat(48);
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const inProgress = (key: string, title = key) => ({ ...ticket(key, title), status: "In Progress", statusType: "started" }) as Ticket;
-const HEALTH: HealthView = { loop: { board: { p50Ms: 1, p99Ms: 2_013, maxMs: 2_020, windowMs: 60_000, sinceStartMaxMs: 2_020, at: 7 } }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 3, totalMs: 6_000, maxMs: 2_010 }], githubCalls: null };
+const BOARD_LOOP = { p50Ms: 1, p99Ms: 2_013, maxMs: 2_020, windowMs: 60_000, sinceStartMaxMs: 2_020, at: 7 };
+const HEALTH: HealthView = { loop: { board: BOARD_LOOP }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 3, totalMs: 6_000, maxMs: 2_010 }], measured: measuredOver(BOARD_LOOP), githubCalls: null };
 const PLUGINS = { read: async () => { throw new Error("the Plugins section is not read here"); } };
 
 /** A board over a throwaway state folder and `tracker`, with a pool that holds a run and reads one pull request, as a live pool would answer. */
@@ -237,4 +239,20 @@ test("A11-282: stop tells the request thread to stop and answers once it has exi
   await stopping;
   assert.equal(threads.length, 1, "the exit it asked for does not start another thread");
   assert.deepEqual(said.exits, []);
+});
+
+test("A11-363: the figures are worked out at most once a second though a snapshot follows every queue change, and a new second works them out again", async () => {
+  let worked = 0;
+  let clock = 5_000;
+  const { board } = boardOver();
+  const counting = { ...board, pool: { ...board.pool, figures: () => { worked += 1; return { runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] } }; } } };
+  const threads: StandIn[] = [];
+  const thread = startBoardThread({ board: counting, health: () => HEALTH, terminal: null, data: boardOver().data, now: () => clock, every: () => undefined, startedAt: 0,
+    start: () => { const standIn = new StandIn(); threads.push(standIn); return standIn as unknown as RequestThread; } });
+  const afterStart = worked;
+  for (let change = 0; change < 12; change += 1) thread.queueChanged();
+  assert.equal(worked, afterStart, "twelve queue changes in the same second work the figures out no more");
+  clock += SNAPSHOT_MS;
+  thread.queueChanged();
+  assert.equal(worked, afterStart + 1);
 });

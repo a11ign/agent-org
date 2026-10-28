@@ -62,6 +62,8 @@ import { afterMergeRoute } from "./after-merge/route.ts";
 import { sessionAnswerRoute } from "./session-answers.ts";
 import { sessionAsksRoute } from "./session-asks.ts";
 import { startHealth } from "./health-route.ts";
+import { STARTS_WAIT_MS, untilNoneStarting } from "./shutdown-wait.ts";
+import { startingRunCount } from "./queue/queue-readopt.ts";
 import { answerKeyed, holdsRun, plansOf, readChoice, type ReadBoard, readRoute, type SavedChoice, terminalRunFor, trackerReads, writersViewOf } from "./read-routes.ts";
 import { queueView, type QueueView } from "./queue-view.ts";
 import { startBoardThread } from "./board-thread.ts";
@@ -98,7 +100,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Sweeping<Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "fillReport" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>>;
+  pool?: Sweeping<Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "figures" | "endStarts" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -763,7 +765,7 @@ async function serve(): Promise<void> {
   const reviewerHeads = new Map<string, string>();
   const reviewerSeen = new Map<string, number>();
   const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads, seen: reviewerSeen, tmpBase: privateBase() });
-  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }));
+  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing, recordCalls: true }));
   activated(active);
   const source = active.tracker();
   const codeHost = active.codeHost();
@@ -780,8 +782,19 @@ async function serve(): Promise<void> {
     poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, hostAlertReads: liveHostAlertReads(), privateTmpBase: privateBase(), legacyTmp: { root: LEGACY_TMP_ROOT } } };
   const board = createBoard(boardDeps);
   // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
+  // The runs that are still starting are waited for first (A11-363): an instance that ends while a run's agent is not open yet leaves herdr nothing to list, and the next one queues the run again. No run starts
+  // meanwhile. A second signal is a person who will not wait, and stops at once.
+  let stopping = false;
+  const endNow = (signal: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => (thread?.stop() ?? Promise.resolve()).finally(() => process.exit(128 + constants.signals[signal]));
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(signal, () => { void (thread?.stop() ?? Promise.resolve()).finally(() => process.exit(128 + constants.signals[signal])); });
+    process.on(signal, () => {
+      if (stopping) return void endNow(signal);
+      stopping = true;
+      board.pool.endStarts?.();
+      void untilNoneStarting({ starting: () => startingRunCount(board.store.get()) })
+        .then((left) => { if (left > 0) process.stderr.write(`ticket:serve: ${left} run${left === 1 ? " was" : "s were"} still starting after ${STARTS_WAIT_MS / 1000} s, so the instance stops anyway\n`); })
+        .finally(() => endNow(signal));
+    });
   }
   await board.pool.ensureSession();
   board.pool.reconcile();

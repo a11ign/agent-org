@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, publisherSkills, readOutcomeFile, resolveWritePath, stopVerdict, toolVerdict, writerGrants } from "./hook.ts";
 import { buildCatalog, defaultCatalog } from "../plugins/registry.ts";
-import { FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, PROTECTED_FILE, QUESTION_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OPENED_FILE, PROTECTED_FILE, QUESTION_FILE, READY_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { lineForm } from "./blocker-findings-check.ts";
 import { outcomeWritten } from "./pool-outcome.ts";
 import { CREATED_FILE } from "./writer.ts";
@@ -505,9 +505,70 @@ test("a drafts-off run may open a ready pull request and a drafts-on run may not
   // A stacked run bases its pull request on its blocker's branch, which may have no pull request under it (A11-116): the base is not refused.
   assert.equal(ready("gh pr create --base nbf-1-fit --title t --body b"), 0, "a ready pull request based on a stacked branch is allowed");
   assert.equal(bash("gh pr create --base nbf-1-fit --draft --title t --body b"), 0, "and a draft one on a drafts-on machine");
-  assert.equal(ready("gh pr ready 12"), 2, "marking a pull request ready is still refused");
+  assert.equal(ready("gh pr ready 12"), 2, "a pull request named by number is none the hook can tie to the run, so it is still refused");
   assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/ready-run", content: "\n" }).code, 2, "no worker writes the ready mark with a file tool");
   assert.equal(bash("touch /state/tickets/NBF-1/ready-run"), 2, "no worker writes the ready mark with a command");
+});
+
+test("A11-358: a drafts-off run marks its own pull requests ready, and a drafts-on run still may not", () => {
+  const toolchain60 = "https://github.com/a11ign/toolchain/pull/60";
+  const onReady = (command: string, opened: readonly string[] = []) => toolVerdict("Bash", { command }, { ready: true, opened }).code;
+  assert.equal(bash("gh pr ready"), 2, "POSITIVE CONTROL: a drafts-on run is refused it, with no argument too");
+  assert.equal(onReady("gh pr ready"), 0, "the pull request of the run's branch, with no argument");
+  assert.equal(onReady("gh pr ready && echo marked"), 0, "no argument, followed by another command");
+  assert.equal(onReady(`gh pr ready ${toolchain60}`, [toolchain60]), 0, "a pull request the run opened, by the URL its creating command printed");
+  assert.equal(onReady(`gh pr ready ${toolchain60}`), 2, "a URL the run did not open");
+  assert.equal(onReady(`gh pr ready ${toolchain60}1`, [toolchain60]), 2, "a URL that only starts with one it opened");
+  const refused: readonly (readonly [string, string])[] = [
+    ["gh pr ready 60", "a number names a pull request in the repository the shell is in, which the hook cannot tie to the run"],
+    ["gh pr ready some-branch", "a branch name too"],
+    ["gh pr ready --undo", "turning one back into a draft is never the run's"],
+    [`gh pr ready ${toolchain60} --undo`, "nor an opened one"],
+  ];
+  for (const [command, why] of refused) assert.equal(onReady(command, [toolchain60]), 2, why);
+  assert.equal(toolVerdict("Bash", { command: `gh pr ready ${toolchain60}` }, { opened: [toolchain60] }).code, 2, "a drafts-on run is refused a pull request it opened: the mark decides, not the record");
+  assert.match(toolVerdict("Bash", { command: "gh pr ready 60" }, { ready: true }).say[0], /no argument, or with the URL of a pull request this run opened/);
+});
+
+test("A11-358: the hook records the pull request a creating command printed, once, and no worker writes the record", () => {
+  const dir = tmpDir("ticket-opened-");
+  const created = (command: string, stdout: string) => main(JSON.stringify({ tool_name: "Bash", tool_input: { command }, tool_response: { stdout } }), ["post-tool-use", dir]);
+  const recorded = () => (existsSync(join(dir, OPENED_FILE)) ? readFileSync(join(dir, OPENED_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+  assert.deepEqual(created("gh pr create --title t --body b", "Creating pull request for x into main in a11ign/toolchain\n\nhttps://github.com/a11ign/toolchain/pull/60\n"), { code: 0, say: [] });
+  assert.deepEqual(recorded(), [{ repo: "a11ign/toolchain", url: "https://github.com/a11ign/toolchain/pull/60" }]);
+  created("gh pr create --title t --body b", "https://github.com/a11ign/toolchain/pull/60\n");
+  assert.equal(recorded().length, 1, "the same address is not written twice");
+  created("pr:open create --title t --body-file b.md", "https://github.com/a11ign/lab/pull/159\n");
+  assert.deepEqual(recorded().map(({ repo }) => repo), ["a11ign/toolchain", "a11ign/lab"], "the tool's own create is recorded too");
+  created("grep -rn 'gh pr create' docs/", "docs/a.md:3: https://github.com/a11ign/toolchain/pull/70\n");
+  created("cd ../lab && gh pr create --title t", "https://github.com/a11ign/lab/pull/160\n");
+  assert.deepEqual(recorded().map(({ url }) => url).slice(-1), ["https://github.com/a11ign/lab/pull/160"], "a creating command after a cd is recorded; one that only names it in an argument is not");
+  assert.equal(recorded().length, 3);
+  writeFileSync(join(dir, OPENED_FILE), recorded().slice(0, 2).map((pull) => `${JSON.stringify(pull)}\n`).join(""));
+  created("gh pr view 60", "https://github.com/a11ign/toolchain/pull/61\n");
+  created("echo https://github.com/a11ign/toolchain/pull/62", "https://github.com/a11ign/toolchain/pull/62\n");
+  assert.equal(recorded().length, 2, "a command that does not create one records nothing, whatever it prints");
+  assert.equal(main(JSON.stringify({ tool_name: "Read", tool_input: {}, tool_response: "https://github.com/a11ign/toolchain/pull/63" }), ["post-tool-use", dir]).code, 0);
+  assert.equal(recorded().length, 2, "and a tool other than Bash records nothing");
+  assert.equal(toolVerdict("Write", { file_path: `/state/tickets/NBF-1/${OPENED_FILE}`, content: "{}" }).code, 2, "no worker writes the record with a file tool");
+  assert.equal(bash(`echo '{}' >> /state/tickets/NBF-1/${OPENED_FILE}`), 2, "no worker writes the record with a command");
+  const blocked = tmpDir("ticket-opened-").concat("/missing");
+  const refused = main(JSON.stringify({ tool_name: "Bash", tool_input: { command: "gh pr create" }, tool_response: { stdout: "https://github.com/a11ign/lab/pull/9\n" } }), ["post-tool-use", blocked]);
+  assert.equal(refused.code, 2, "a record that cannot be written is said out loud");
+  assert.match(refused.say[0], /https:\/\/github.com\/a11ign\/lab\/pull\/9 was opened, but opened-pulls.jsonl cannot be written/);
+});
+
+test("A11-358: a drafts-off run marks the pull request it opened ready by its URL, from the record the hook made", () => {
+  const dir = tmpDir("ticket-opened-");
+  const url = "https://github.com/a11ign/toolchain/pull/60";
+  writeFileSync(join(dir, READY_FILE), "\n");
+  const ready = (command: string) => main(JSON.stringify({ tool_name: "Bash", tool_input: { command } }), ["pre-tool-use", dir]).code;
+  assert.equal(ready(`gh pr ready ${url}`), 2, "before it opened one, the URL is none of its own");
+  main(JSON.stringify({ tool_name: "Bash", tool_input: { command: "gh pr create --title t" }, tool_response: { stdout: `${url}\n` } }), ["post-tool-use", dir]);
+  assert.equal(ready(`gh pr ready ${url}`), 0, "after the record, it is");
+  assert.equal(ready("gh pr ready"), 0, "and the pull request of its branch with no argument");
+  rmSync(join(dir, READY_FILE));
+  assert.equal(ready(`gh pr ready ${url}`), 2, "without the mark the record lifts nothing");
 });
 
 /** A transcript that starts a background shell and does not end it: the live work that wakes a worker whose `working` is let through (A11-85). */
@@ -932,4 +993,16 @@ test("A11-207: no worker may write the list its plan is checked against or the m
     assert.equal(toolVerdict("Write", { file_path: `/state/tickets/A11-1/${name}`, content: "[]" }).code, 2, `Write ${name}`);
     assert.equal(toolVerdict("Edit", { file_path: `/state/tickets/A11-1/${name}` }).code, 2, `Edit ${name}`);
   }
+});
+
+test("A11-358: the hook says when the record of the pull requests a run opened cannot be read whole, and marks nothing ready by an address it did not read", () => {
+  const dir = tmpDir("ticket-opened-");
+  const url = "https://github.com/a11ign/toolchain/pull/60";
+  writeFileSync(join(dir, READY_FILE), "\n");
+  writeFileSync(join(dir, OPENED_FILE), `{"repo":"a11ign/toolchain","url":"${url}"}\n{torn\n`);
+  const answer = main(JSON.stringify({ tool_name: "Bash", tool_input: { command: `gh pr ready ${url}` } }), ["pre-tool-use", dir]);
+  assert.equal(answer.code, 0, "the address it did read is the run's");
+  assert.match(answer.say.join("\n"), /ticket:hook: 1 of 2 lines of opened-pulls\.jsonl are not a pull request, so only the pull requests it did read may be marked ready by URL\./);
+  const other = main(JSON.stringify({ tool_name: "Bash", tool_input: { command: "gh pr ready https://github.com/a11ign/lab/pull/159" } }), ["pre-tool-use", dir]);
+  assert.equal(other.code, 2, "one it did not read is refused");
 });

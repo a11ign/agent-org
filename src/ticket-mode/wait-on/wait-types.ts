@@ -77,3 +77,10 @@ export function subjectOf(wait: Wait): string {
     case "session": return `the person's session: ${askCut(wait.ask)}`;
   }
 }
+
+/**
+ * What the board told an idle worker of one pull request it waits on or opened (A11-358), by URL: `sig` is the head and the kinds of trouble it was told of (a changes-requested review, red required checks, a conflict), `since` when the board first
+ * saw that trouble at that head, and `told` when it delivered the prompt (absent while herdr refuses it). Kept through the worker's newer `working` notes, so a worker that declares its wait again is not told of the same trouble again, and cleared
+ * when the pull request is clear of it. A changes-requested review that stands for an hour with the worker idle reads Needs you (`pool-wait-pulls.ts`).
+ */
+export type FedTrouble = Readonly<{ sig: string; since: number; told?: number; refusal?: string }>;

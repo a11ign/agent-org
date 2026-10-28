@@ -66,6 +66,7 @@ export const COMMANDS = {
   "ticket:serve": "ticket-mode/server.ts",
   "ticket:stack-live-check": "../plugins/github/stack-live-check-command.ts",
   "ticket:ui": "ticket-mode/ui-server.ts",
+  "ticket:watchdog": "ticket-mode/watchdog.ts",
   "ticket:worktree": "ticket-mode/worktree-command.ts",
   "trace": "trace/trace.ts",
   "tracker:comment": "tracker-comment.ts",

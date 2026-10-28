@@ -31,9 +31,10 @@ import type { ExposureState } from "./pool-exposure.ts";
 import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 import type { BaseMerge } from "./pool-outcome.ts";
 import type { WriteRetry } from "./result-write-retry.ts";
+import { type FillState, newFillState } from "./health-figures.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
-import { type FillState, newFillState } from "./pool-fill-report.ts";
 import type { StartReadsState } from "./pool-start-reads.ts";
+import { READ_TIMEOUT_MS } from "./queue/start-reads.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -106,10 +107,10 @@ export type PoolDeps = Readonly<{
   privateTmpBase?: string;
   /** The shared temporary directory whose legacy entries the sweep clears (A11-303, `legacy-tmp.ts`); the instance passes `/tmp`. Absent: nothing in it is touched, as in every test that does not give one. */
   legacyTmp?: LegacyTmp;
-  /** The longest one read for a start (the tracker's blockers and plans, a remote's branch heads) is waited for (A11-364, `READ_TIMEOUT_MS` when absent). A test gives a short one. */
-  readTimeoutMs?: number;
   /** The longest the files of a conflict are given to be listed before its round starts without them (A11-286); a minute when absent. A test gives a short one. */
   listingMs?: number;
+  /** The longest one read of the tracker, a remote or a plan, or the host's preflight, is waited for (A11-359, A11-364); `READ_TIMEOUT_MS` (20 s) when absent. A test gives a short one. */
+  readMs?: number;
 }>;
 
 /** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */
@@ -190,6 +191,8 @@ export type PoolContext = Readonly<{
   finishing: Set<string>;
   /** The tick's pass: whether one is under way, and whether another was asked for while it was. */
   tickState: { busy: boolean; again: boolean };
+  /** What the pool remembers of its `fill()` passes, for `/api/health` and the watchdog (A11-363). */
+  fillState: FillState;
   /** The head the board last asked the arm bot to stack-merge each pull request at, and when, by its url (A11-238). Kept in memory: a restart may ask once more, which is harmless, since the arm bot answers a pull request already queued with a done. */
   stackMergeAsked: Map<string, StackMergeAsk>;
   /** The member that merged below each pull request the board brought up to date with the default branch because of it, by the pull request's url (A11-248). Kept in memory and read back off the pull request's note after a restart, which at worst restacks once more: GitHub answers a branch that has its base with up-to-date. */
@@ -204,6 +207,10 @@ export type PoolContext = Readonly<{
   settledPulls: Set<string>;
   /** The longest the files of a conflict are given to be listed (A11-286). */
   listingMs: number;
+  /** The longest one read of the tracker, a remote or a plan, or the host's preflight, is waited for (A11-359, A11-364). */
+  readMs: number;
+  /** The reason `fill` last said it started nothing (A11-359), so the same one is said once and not on every pass. Kept in memory: a restart says it again. */
+  idleSaid: { reason: string | null };
   /** Whether a sweep of the kept pull requests is under way, and the one last started (A11-286): sweeps never overlap. */
   keptSweep: { busy: boolean; done: Promise<void> };
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
@@ -214,6 +221,12 @@ export type PoolContext = Readonly<{
   repliesRead: Set<string>;
   /** What the board last read of each run's declared wait, by herdr name (A11-245). Kept in memory: a restart reads afresh, and the note's own `woke` says the worker was already told. */
   waitPolls: WaitPolls;
+  /** When the pull requests an idle run waits on or opened were last read, by herdr name (A11-358). Kept in memory: a restart reads them at once, and the note's `fed` says what the worker was told. */
+  pullReadAt: Map<string, number>;
+  /** The problems with a run's record of the pull requests it opened that the log has said, as `KEY: problem` (A11-358): each is said once while it lasts. In memory, so a restart says it again. */
+  recordSaid: Set<string>;
+  /** The runs whose waited-on pull requests are being read now (A11-358): a read the host has not answered is not started again. */
+  waitReading: Set<string>;
   /** Whether this instance's first watch pass has read the restart record (A11-279): that first pass is itself a restart, and only it. */
   restart: { read: boolean };
   /** The panes that lack the run's environment and are to be started again, by herdr name (A11-279). Filled by the watch, emptied by `reseatRuns` in the same pass. */
@@ -232,8 +245,6 @@ export type PoolContext = Readonly<{
   legacySweep: LegacySweepState;
   /** The background reads of the queued runs' blockers, heads and plans, which a start is decided on (A11-364). */
   startReads: StartReadsState;
-  /** What the last fill of the free slots decided and why, kept for `/api/health` (A11-364). */
-  fillState: FillState;
   /** Asks for a pass now (A11-364): `createPool` sets it to its tick, and work that queues a run after the pass decided calls it (a plan attached, a run moved to the repository its worker named). Nothing until then, as in a context no pool made. */
   wake: { run: () => void };
 }>;
@@ -312,10 +323,10 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? READ_TIMEOUT_MS, idleSaid: { reason: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), pullReadAt: new Map<string, number>(), recordSaid: new Set<string>(), waitReading: new Set<string>(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
-    startReads: { pending: new Set<Promise<void>>(), reading: new Set<string>() }, fillState: newFillState(), wake: { run: () => {} },
+    startReads: { pending: new Set<Promise<void>>(), reading: new Set<string>() }, wake: { run: () => {} },
   };
 }
 

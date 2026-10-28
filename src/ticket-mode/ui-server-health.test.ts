@@ -9,6 +9,7 @@ import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { browserSessions, browserSessionsPath } from "./browser-sessions.ts";
 import { createConnections, type ConnectionsRead } from "./connections.ts";
+import { measuredOver } from "./health-fixture.ts";
 import type { HealthView } from "./health-route.ts";
 import type { LoopReading } from "./loop-delay.ts";
 import { passedOn } from "./remote-proxy.ts";
@@ -17,7 +18,8 @@ import { parseTicketSettings } from "./settings.ts";
 import { createUi } from "./ui-server.ts";
 
 const PAGE: LoopReading = { p50Ms: 0, p99Ms: 1.2, maxMs: 3, windowMs: 60_000, sinceStartMaxMs: 9, at: 1_761_400_000_000 };
-const BOARD: HealthView = { loop: { board: { ...PAGE, p99Ms: 2_013 } }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 4, totalMs: 8_040, maxMs: 2_016 }], githubCalls: null };
+const BOARD_LOOP: LoopReading = { ...PAGE, p99Ms: 2_013 };
+const BOARD: HealthView = { loop: { board: BOARD_LOOP }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 4, totalMs: 8_040, maxMs: 2_016 }], measured: measuredOver(BOARD_LOOP), githubCalls: null };
 
 /** A server for `handle` on a free port on 127.0.0.1: its base address, and what closes it. */
 async function listen(handle: (port: number) => (req: IncomingMessage, res: ServerResponse) => Promise<void>) {

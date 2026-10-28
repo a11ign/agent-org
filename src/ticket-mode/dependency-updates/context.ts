@@ -3,6 +3,7 @@
 import type { CodeHost } from "../../plugins/contracts/code-host.ts";
 import type { Queue, RunChoice } from "../queue/queue-entries-and-outcomes.ts";
 import type { Ticket, TicketSource } from "../source.ts";
+import type { TicketRequest } from "./request.ts";
 import type { DependencyState, Entry } from "./filed.ts";
 
 /** How long after a writer run made no ticket the same request is made again, and how many runs a request gets before a person is left to look. */
@@ -30,6 +31,8 @@ export type DependencySweepDeps = Readonly<{
   wake: () => void;
   now: () => number;
   log: (line: string) => void;
+  /** Requests that are not a pull request's (A11-363): the watchdog's defects. Each is asked for once by its key, as a pull request's are, and settled by the same sweep. Absent: none. */
+  requests?: () => readonly TicketRequest[];
 }>;
 
 /** What a sweep remembers between sweeps, in memory only: the lines it has said, and the count that keeps its run ids apart. */

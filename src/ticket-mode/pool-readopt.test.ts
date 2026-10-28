@@ -263,3 +263,30 @@ test("the card says what a restart did: each line for its case, and nothing for 
   assert.equal(readoptNote({ phase: "running", lostInRestart: { at: 100 } }), null, "once it runs again the line is gone");
   assert.equal(readoptNote(base), null);
 });
+
+test("A11-363: a restart keeps a RUNNING run running -- its agent is listed, so the board re-attaches to it and queues nothing, with no requeue in its log", async () => {
+  const made = poolFixture();
+  await made.pool.tick();
+  made.status.set(NAME, "working");
+  const before = made.entry("NBF-1");
+  assert.deepEqual([before.phase, before.workspace], ["running", "w1"]);
+  made.herdr.calls.length = 0;
+  const next = made.restart({});
+  next.reconcile();
+  await next.tick();
+  const after = made.entry("NBF-1");
+  assert.deepEqual([after.phase, after.workspace, after.pane, after.outcome, after.lostInRestart], ["running", "w1", "w1:p1", undefined, undefined], "still the same run in the same workspace, ended nothing");
+  assert.deepEqual(logOf(made.store.get(), "NBF-1").flatMap((event) => (event.kind === "requeued" ? [event.why] : [])), [], "no requeue of any kind, `why: restart` included");
+  assert.deepEqual(touched(made), [], "only listings and reads reach herdr: no key, no prompt, no second start, no close");
+  assert.equal(readoptNote(after), null, "and the card has nothing to say of a restart");
+});
+
+test("A11-363: every live run is kept by one restart, whatever the pool's other runs are doing: a working run and an idle one are both still running", async () => {
+  const made = poolFixture({ keys: ["NBF-1", "NBF-2"] });
+  await made.pool.tick();
+  made.status.set(herdrName("NBF-1"), "working");
+  made.status.set(herdrName("NBF-2"), "idle");
+  made.restart({}).reconcile();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => made.entry(key).phase), ["running", "running"]);
+  assert.deepEqual(["NBF-1", "NBF-2"].flatMap((key) => logOf(made.store.get(), key).filter((event) => event.kind === "requeued")), []);
+});

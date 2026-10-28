@@ -20,22 +20,36 @@ const blockersReading = (key: string): string => `blockers:${key}`;
 const planReading = (key: string): string => `plan:${key}`;
 
 /** The first line of what went wrong, as the board says it. */
-const whyOf = (err: unknown): string => messageOf(err).split("\n")[0];
+const firstLine = (text: string): string => text.split("\n")[0];
+const whyOf = (err: unknown): string => firstLine(messageOf(err));
 
 /**
- * Read the blockers of `keys`. A read that fails, or does not answer in time, records why on each of `keys`, with when the board asks again (from when it started, so the next pass asks), and says so in the log: those runs are held by it while their blockers are
- * unread or too old to start on, and no other run is. True when the blockers were read. Never throws.
+ * Read the blockers of `keys`. A read that fails, or does not answer in time, records why on each of `keys` it was for, with when the board asks again (from when it started, so the next pass asks), and says so in the log: those runs
+ * are held by it while their blockers are unread or too old to start on, and no other run is. Returns the keys whose blockers were read. Never throws.
  */
-export async function readBlockersRecorded(ctx: PoolContext, keys: readonly string[]): Promise<boolean> {
+export async function readBlockersRecorded(ctx: PoolContext, keys: readonly string[]): Promise<string[]> {
   const retryAt = ctx.now() + READ_RETRY_MS;
+  let failed: ReadonlyMap<string, string>;
   try {
-    await readBlockers(ctx, keys);
-    return true;
+    failed = await readBlockers(ctx, keys);
   } catch (err) {
-    log(`${keys.join(", ")}: the tracker could not say which tickets block ${keys.length === 1 ? "it" : "them"} (${whyOf(err)}); the board asks again at ${retryTime(retryAt)}`);
-    recordFailure(ctx, keys, whyOf(err), retryAt);
-    return false;
+    failed = new Map(keys.map((key) => [key, whyOf(err)]));
   }
+  const before = ctx.store.get().entries;
+  for (const [reason, failedKeys] of groupedByReason(failed)) {
+    // A failure that stands is said once: a tracker that stays down is not logged on every pass (A11-359). The retry is recorded each time.
+    const isNew = failedKeys.some((key) => before.find((entry) => entry.ticket.key === key)?.blockersFailure?.error !== reason);
+    if (isNew) log(`${failedKeys.join(", ")}: the tracker could not say which tickets block ${failedKeys.length === 1 ? "it" : "them"} (${reason}); the board asks again at ${retryTime(retryAt)}`);
+    recordFailure(ctx, failedKeys, reason, retryAt);
+  }
+  return keys.filter((key) => !failed.has(key));
+}
+
+/** The keys of `failed` that failed for the same reason (its first line), by reason. PURE. */
+function groupedByReason(failed: ReadonlyMap<string, string>): Map<string, string[]> {
+  const grouped = new Map<string, string[]>();
+  for (const [key, reason] of failed) grouped.set(firstLine(reason), [...grouped.get(firstLine(reason)) ?? [], key]);
+  return grouped;
 }
 
 /** Record why a read failed on the runs it was for. A queue that cannot be written is said, and the failure is not recorded: the read is asked again, as it would be. */
@@ -49,9 +63,9 @@ function recordFailure(ctx: PoolContext, keys: readonly string[], error: string,
 
 /** Read the blockers of `keys`, and then the heads of their stacked blockers' branches, which a stacked start decides on. Never throws. */
 async function readBlockersAndHeads(ctx: PoolContext, keys: readonly string[]): Promise<void> {
-  if (!await readBlockersRecorded(ctx, keys)) return;
+  const read = await readBlockersRecorded(ctx, keys);
   try {
-    if (headsToRead(ctx, keys)) await readHeads(ctx, keys);
+    if (headsToRead(ctx, read)) await readHeads(ctx, read);
   } catch (err) {
     log(`${keys.join(", ")}: the heads of the blockers' branches could not be read (${whyOf(err)})`);
   }

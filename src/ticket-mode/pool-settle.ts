@@ -889,7 +889,7 @@ async function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome
   const key = entry.ticket.key;
   const isDraftOrReady = outcome.kind === "draft-pr" || outcome.kind === "ready-pr";
   // Only a run that is asking (`needs-human`) is answered by a push, so no other kind pays for a read of its pull requests.
-  const pulls = isDraftOrReady || outcome.kind === "needs-human" ? pullsOf({ outcome, review: entry.review }) : [];
+  const pulls = isDraftOrReady || outcome.kind === "needs-human" ? pullsOf({ outcome, review: entry.review, opened: entry.opened }) : [];
   if (pulls.length === 0) return;
   ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ownLogin.value;

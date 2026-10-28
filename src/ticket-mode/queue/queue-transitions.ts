@@ -1,4 +1,5 @@
 import { CONCLUDED, openPulls, type CheckHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { listedOpenPulls } from "../board-view/listed-pulls.ts";
 import { overlapWait } from "../board-view/overlap-hold.ts";
 import { isParked, isPublishing, isWatched, publishable, resumesOnConflict, runActions, runStatus, workStatus } from "../board-view/pull-status-and-notes.ts";
 import { DEFAULT_PUBLISH_WHEN, type PublishWhen } from "../board-view/publish-when.ts";
@@ -26,7 +27,7 @@ import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, repla
 export function approve(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.outcome?.kind !== "draft-pr" || !reviewable(entry)) return queue;
-  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, openPulls(entry), now)] };
+  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, listedOpenPulls(entry), now)] };
   return loggedPersonRound(queued, entry, "approve", now, null);
 }
 
@@ -316,6 +317,7 @@ export function noteWorking(queue: Queue, key: string, reason: string, at: numbe
         reason, at, idleSince: now,
         ...(waitingOn === undefined ? {} : { waitingOn }), ...(waits === undefined ? {} : { waits }), ...(until === undefined ? {} : { until }),
         ...(entry.working?.resumed === true ? { resumed: true } : {}),
+        ...(entry.working?.fed === undefined ? {} : { fed: entry.working.fed }),
         ...repeatOf(entry.working, waits),
       },
     };
