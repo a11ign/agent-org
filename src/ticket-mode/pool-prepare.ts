@@ -15,6 +15,7 @@ import { isCapPlanner } from "./queue/queue-cap.ts";
 import { logOf } from "./queue/run-log.ts";
 import { STANDOFF_DECISION_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE } from "./standoff-files.ts";
 import { ticketReadOf, type TicketRead } from "./ticket-read.ts";
+import { readTicketComments } from "./ticket-comments.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
@@ -142,7 +143,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
     const claims = heldClaims(store.get().entries, [entry]);
     writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, uncloned: unclonedNames(ctx), run: settings.planner.run,
-      notes, connectors, read, blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}) }));
+      notes, connectors, read, comments: await readTicketComments(source, ticket.key), blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}) }));
     writeClaimsGiven(dir, claims);
     const urls = findings.map(({ url }) => url);
     writeFindingsGiven(dir, [{ key: ticket.key, planDir, urls }]);
@@ -153,7 +154,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
+      read, comments: await readTicketComments(source, ticket.key), findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
   await writeRunFiles(ctx, entry, folder, dir);
@@ -321,7 +322,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
     const ticket = await current(ctx, member.ticket);
     const own = ticketDir(settings, ticket.key);
     mkdirSync(own, { recursive: true });
-    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), blockers: member.blockers, findings: findingsOf(member), closed: closedWorkOf(own) });
+    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), comments: await readTicketComments(source, ticket.key), blockers: member.blockers, findings: findingsOf(member), closed: closedWorkOf(own) });
   }
   const planDir = emptyPlanDir(dir);
   const claims = heldClaims(store.get().entries, members);

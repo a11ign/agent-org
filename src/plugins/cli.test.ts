@@ -79,9 +79,9 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
   assert.match(out, /^ {2}fake-exposure +available +contract 1\.2 +fake/m, "the exposure's unserve names the caller's loopback port since A11-279");
   assert.match(out, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m, "the publisher is a bundled package since A11-161");
   assert.match(out, /^ {2}atomic +available +contract 1\.11 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
-  assert.match(out, /^ {2}fake-tracker +available +contract 1\.7 +fake/m);
+  assert.match(out, /^ {2}fake-tracker +available +contract 1\.8 +fake/m);
   assert.match(out, /^ {2}fake-codeHost +available +contract 2\.1 +fake/m);
-  assert.match(out, /^ {2}linear +enabled +contract 1\.7 +plugins\/linear$/m);
+  assert.match(out, /^ {2}linear +enabled +contract 1\.8 +plugins\/linear$/m);
   assert.match(out, /^ {2}github +enabled +contract 2\.1 +plugins\/github$/m, "the code host is the bundled github, enabled by the default");
   assert.match(out, /^ {2}local +available +contract 1\.1 +plugins\/local$/m, "local is a bundled plugin since A11-162");
   assert.match(out, /^ {2}tailscale +enabled +contract 1\.2 +plugins\/tailscale$/m);

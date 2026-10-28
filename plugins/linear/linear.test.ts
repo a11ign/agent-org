@@ -914,3 +914,40 @@ test("A11-359: a plan's download is tried again as a query is, so a plan read in
   assert.equal(gets, 2);
   assert.deepEqual(files.map((file) => readFileSync(file, "utf8")), ["# plan"]);
 });
+
+/** One comment as Linear answers it, written by a person of the workspace unless `who` says otherwise. */
+const linearComment = (body: string, createdAt: string, who: Record<string, unknown> = { user: { name: "Sam Reviewer" } }) => ({ body, createdAt, user: null, externalUser: null, botActor: null, ...who });
+const commentPage = (nodes: unknown[], next: string | null) => ({ nodes, pageInfo: { hasNextPage: next !== null, endCursor: next } });
+
+test("readComments() reads every page of a ticket's comments with their authors and times, and leaves out the board's claim records", async () => {
+  const { fetch, requests } = linear([
+    { data: { issues: { nodes: [{ id: "uuid-7", comments: commentPage([linearComment("The cause is the cache key.", "2026-10-20T12:00:00.000Z"), linearComment("agent-org: claimed by laptop.ab12cd34", "2026-10-20T13:00:00.000Z")], "c1") }] } } },
+    { data: { issue: { comments: commentPage([linearComment("Synced from chat.", "2026-10-21T08:00:00.000Z", { externalUser: { name: "Pat Outside" } }), linearComment("Linked a pull request.", "2026-10-21T09:00:00.000Z", { botActor: { name: "GitHub" } })], null) } } },
+  ]);
+  const read = await linearSource({ key: "k", fetch }).readComments!("ABC-7");
+  assert.deepEqual(read, { complete: true, comments: [
+    { author: "Sam Reviewer", createdAt: "2026-10-20T12:00:00.000Z", body: "The cause is the cache key." },
+    { author: "Pat Outside (outside the workspace)", createdAt: "2026-10-21T08:00:00.000Z", body: "Synced from chat." },
+    { author: "GitHub (integration)", createdAt: "2026-10-21T09:00:00.000Z", body: "Linked a pull request." },
+  ] });
+  const second = JSON.parse(String(requests[1].init.body));
+  assert.deepEqual(second.variables, { id: "uuid-7", after: "c1" }, "the next page starts where the first ended, on the ticket the first read found");
+});
+
+test("readComments() stops after ten pages and answers incomplete, and is refused for a ticket Linear has none of", async () => {
+  const pages = [{ data: { issues: { nodes: [{ id: "uuid-7", comments: commentPage([linearComment("page 1", "2026-10-01T00:00:00.000Z")], "c1") }] } } },
+    ...Array.from({ length: 9 }, (_, i) => ({ data: { issue: { comments: commentPage([linearComment(`page ${i + 2}`, "2026-10-01T00:00:00.000Z")], `c${i + 2}`) } } }))];
+  const { fetch, requests } = linear(pages);
+  const read = await linearSource({ key: "k", fetch }).readComments!("ABC-7");
+  assert.equal(requests.length, 10);
+  assert.deepEqual([read.comments.length, read.complete], [10, false]);
+  const missing = linear([{ data: { issues: { nodes: [] } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: missing.fetch }).readComments!("ABC-404"), /Linear matched no ticket for ABC-404/);
+});
+
+test("readComments() names an integration with no name as such, and says so when the ticket goes while its later pages are read", async () => {
+  const { fetch } = linear([{ data: { issues: { nodes: [{ id: "uuid-7", comments: commentPage([linearComment("Synced.", "2026-10-21T09:00:00.000Z", { botActor: { name: null } })], null) }] } } }]);
+  assert.equal((await linearSource({ key: "k", fetch }).readComments!("ABC-7")).comments[0].author, "an unnamed integration");
+  const gone = linear([{ data: { issues: { nodes: [{ id: "uuid-7", comments: commentPage([], "c1") }] } } }, { data: { issue: null } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: gone.fetch }).readComments!("ABC-7"), /ABC-7 was gone from Linear while its comments were read/);
+});

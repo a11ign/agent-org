@@ -135,7 +135,7 @@ async function noteAfterMerge(ctx: PoolContext): Promise<void> {
 }
 
 /** The comment that lists a merged run's After-merge checks on its ticket. PURE. */
-function afterMergeComment(entry: Entry): string {
+export function afterMergeComment(entry: Entry): string {
   const merged = pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] === "merged").map(({ url }) => pullLabel(url));
   const lines = (entry.afterMerge ?? []).map(({ line, owner }) => `- ${line} (${owner ?? "owner not named"})`);
   return [`After-merge checks for ${entry.ticket.key}, now that ${merged.join(", ")} merged:`, ...lines].join("\n");

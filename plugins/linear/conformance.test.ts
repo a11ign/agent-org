@@ -22,7 +22,7 @@ function workspace(...identifiers: string[]) {
     id: entry.id, identifier: entry.identifier, title: entry.title, description: entry.description, updatedAt: "2026-10-21T12:00:00.000Z", url: `https://linear.app/x/issue/${entry.identifier}`, branchName: entry.identifier.toLowerCase(), priority: 2,
     state: { name: entry.state, position: entry.state === "Done" ? 5 : 1, type: TYPE_OF[entry.state] }, team: { key: entry.identifier.split("-")[0], states: { nodes: STATES } },
     project: null, assignee: { id: "u-1", name: "Dan Beck" }, parent: null, children: { nodes: [] }, labels: { nodes: [] }, attachments: { nodes: [] },
-    comments: { nodes: entry.comments },
+    comments: { nodes: entry.comments.map((comment) => ({ ...comment, user: { name: "Dan Beck" }, externalUser: null, botActor: null })), pageInfo: { hasNextPage: false, endCursor: null } },
     inverseRelations: { nodes: entry.blockedBy.map((blocker) => ({ type: "blocks", issue: { identifier: blocker, branchName: blocker.toLowerCase(), state: { type: TYPE_OF[held.get(blocker)?.state ?? "Todo"], name: held.get(blocker)?.state ?? "Todo" }, attachments: { nodes: [] } } })) },
   });
   const open = () => [...held.values()].filter((entry) => TYPE_OF[entry.state] !== "completed");
@@ -88,6 +88,7 @@ test("the Linear plugin passes the tracker contract suite, every check of it tha
   assert.ok(result.passed.includes("complete finishes a ticket once and leaves a finished one alone"));
   assert.ok(result.passed.includes("texts answers each key's description and updatedAt, as read gives the description, and leaves out a key with no ticket"));
   assert.ok(result.passed.includes("detachPlan of a title the ticket has no attachment under changes nothing and is no error"));
+  assert.ok(result.passed.includes("readComments answers each comment's author, ISO time and body, and is refused for a key the tracker has none of"));
   assert.ok(result.passed.includes("addBlockers records a relation once, and again without error"));
   assert.ok(result.passed.includes("claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing"));
   assert.deepEqual(world.held.get("TST-1")?.comments.map(({ body }) => body).filter((body) => body.startsWith("agent-org: claimed")), ["agent-org: claimed by conformance.a", "agent-org: claimed by conformance.b"], "the repeated claim wrote no comment");
