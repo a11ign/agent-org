@@ -6,7 +6,7 @@
 //   1. The pull requests a run opened while it ran, which the hook records (`opened-record.ts`), are kept on the run (`Entry.opened`) and so are its pull requests, whatever its outcome lists.
 //   2. A run whose worker sits idle on a `working` note has the pull requests it waits on (`waitingOn` a pull request) and those it opened read as a run's own are, once a minute: a review asking for changes at the head, a red required check
 //      or a conflict is told to the worker at once with one prompt, for each head, and not at its `until`. A changes-requested review that stands for an hour with the worker idle ends the run `needs-human`, naming why, so it reads Needs you.
-import { readOpenedPulls } from "./opened-record.ts";
+import { readOpenedRecord } from "./opened-record.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { log, messageOf, runMembers, runPlace, updateEach } from "./pool-state.ts";
 import { sendToAgent, utcClock } from "./pool-resume.ts";
@@ -24,9 +24,18 @@ import type { FedTrouble } from "./wait-on/wait-types.ts";
 const MINUTE_MS = 60_000;
 const READ_EVERY_MS = MINUTE_MS;
 
+/** Say in the log, once for each run and problem, what is wrong with the record of the pull requests a run opened: until it reads whole, one it opened since may not be watched. Nothing recorded earlier is forgotten. */
+function sayOnce({ recordSaid }: PoolContext, entry: Entry, problem: string | null): void {
+  const said = `${entry.ticket.key}: ${problem}`;
+  if (problem === null || recordSaid.has(said)) return;
+  recordSaid.add(said);
+  log(`${entry.batch ?? entry.ticket.key}: ${problem}, so a pull request it opened since the last read may not be watched; the pull requests already recorded still are`);
+}
+
 /** Keep the pull requests a running run opened on the run (A11-358). Written only when the hook's record holds an address the run does not have. */
 export function recordOpenedPulls(ctx: PoolContext, entry: Entry): void {
-  const opened = readOpenedPulls(runPlace(ctx, entry).dir);
+  const { pulls: opened, problem } = readOpenedRecord(runPlace(ctx, entry).dir);
+  sayOnce(ctx, entry, problem);
   const held = new Set((entry.opened ?? []).map(({ url }) => url));
   if (opened.every(({ url }) => held.has(url))) return;
   updateEach(ctx, runMembers(ctx, entry), (queue, key) => recordOpened(queue, key, opened));

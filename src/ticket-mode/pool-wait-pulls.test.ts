@@ -247,3 +247,28 @@ test("A11-358: the pull requests a run opened are watched, but are not the ones 
   const running = { phase: "running", opened: [lab] } as unknown as Entry;
   assert.equal(requeuesOnLoss(running), true, "a run lost in a restart is queued again, as before it opened one: its brief lists the ticket's pull requests");
 });
+
+test("A11-358: a record of opened pull requests that cannot be read is said in the log, once, and nothing already recorded is forgotten", async () => {
+  const run = await waitingRun({ waits: [{ session: "nothing to do with the pull request" }], feedback: CHANGES });
+  const lab = { repo: "a11ign/lab", url: fakePullUrl("a11ign/lab", 159) };
+  run.host.seedPull("a11ign/lab", 159);
+  writeFileSync(join(run.dir, OPENED_FILE), `${JSON.stringify(lab)}\n`);
+  await run.pass();
+  assert.deepEqual(run.run().opened, [lab]);
+  writeFileSync(join(run.dir, OPENED_FILE), `${JSON.stringify(lab)}\n{torn`);
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    await run.passes(3);
+  } finally {
+    process.stderr.write = write;
+  }
+  const said = written.filter((text) => text.includes("1 of 2 lines of opened-pulls.jsonl are not a pull request"));
+  assert.equal(said.length, 1, "said once, however many reads it takes");
+  assert.match(said[0], /NBF-1: 1 of 2 lines of opened-pulls\.jsonl are not a pull request, so a pull request it opened since the last read may not be watched; the pull requests already recorded still are/);
+  assert.deepEqual(run.run().opened, [lab], "the pull request recorded before is still the run's");
+  writeFileSync(join(run.dir, OPENED_FILE), `${JSON.stringify(lab)}\n${JSON.stringify({ repo: TOOLCHAIN, url: run.url })}\n`);
+  await run.pass();
+  assert.deepEqual(run.run().opened?.map(({ url }) => url), [lab.url, run.url], "and once the record reads whole, the pull request it was missing is added");
+});

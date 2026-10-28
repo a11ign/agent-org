@@ -994,3 +994,15 @@ test("A11-207: no worker may write the list its plan is checked against or the m
     assert.equal(toolVerdict("Edit", { file_path: `/state/tickets/A11-1/${name}` }).code, 2, `Edit ${name}`);
   }
 });
+
+test("A11-358: the hook says when the record of the pull requests a run opened cannot be read whole, and marks nothing ready by an address it did not read", () => {
+  const dir = tmpDir("ticket-opened-");
+  const url = "https://github.com/a11ign/toolchain/pull/60";
+  writeFileSync(join(dir, READY_FILE), "\n");
+  writeFileSync(join(dir, OPENED_FILE), `{"repo":"a11ign/toolchain","url":"${url}"}\n{torn\n`);
+  const answer = main(JSON.stringify({ tool_name: "Bash", tool_input: { command: `gh pr ready ${url}` } }), ["pre-tool-use", dir]);
+  assert.equal(answer.code, 0, "the address it did read is the run's");
+  assert.match(answer.say.join("\n"), /ticket:hook: 1 of 2 lines of opened-pulls\.jsonl are not a pull request, so only the pull requests it did read may be marked ready by URL\./);
+  const other = main(JSON.stringify({ tool_name: "Bash", tool_input: { command: "gh pr ready https://github.com/a11ign/lab/pull/159" } }), ["pre-tool-use", dir]);
+  assert.equal(other.code, 2, "one it did not read is refused");
+});

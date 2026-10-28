@@ -89,7 +89,7 @@ import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, OPENED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
   ORDER_FILE, PLAN_DIR, QUESTION_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, TALK_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
-import { createdPullOf, readOpenedPulls, recordOpenedPull } from "./opened-record.ts";
+import { createdPullOf, readOpenedRecord, recordOpenedPull } from "./opened-record.ts";
 import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
@@ -1054,16 +1054,18 @@ export function main(stdin: string, argv: string[]): HookResult {
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
     const guarded = protectedFiles(ticketDir);
+    const record = readOpenedRecord(ticketDir);
     const resolved = typeof input.file_path === "string" ? { ...input, file_path: resolveWritePath(input.file_path) } : input;
     const verdict = toolVerdict(tool, resolved, {
       machine: refusals, connectors: allowed.connectors, approved: approvedPulls(ticketDir), publish: publishConnectors(ticketDir),
-      ready: existsSync(join(ticketDir, READY_FILE)), opened: readOpenedPulls(ticketDir).map(({ url }) => url), hostPrograms: guarded.paths, writer: existsSync(join(ticketDir, WRITER_FILE)),
+      ready: existsSync(join(ticketDir, READY_FILE)), opened: record.pulls.map(({ url }) => url), hostPrograms: guarded.paths, writer: existsSync(join(ticketDir, WRITER_FILE)),
       grants: writerGrants(ticketDir), created: readCreatedKeys(ticketDir),
     });
     const review = prReviewSetting(ticketDir);
     // A call the other refusals stopped is neither logged nor gated: it did not run.
     const gated = verdict.code === 0 ? prReviewVerdict(tool, resolved, ticketDir, review) : verdict;
-    const notes = [note, allowed.note, guarded.note].filter((n): n is string => n !== undefined);
+    const unreadable = record.problem === null ? undefined : `ticket:hook: ${record.problem}, so only the pull requests it did read may be marked ready by URL.`;
+    const notes = [note, allowed.note, guarded.note, unreadable].filter((n): n is string => n !== undefined);
     return notes.length === 0 ? gated : { ...gated, say: [...notes, ...gated.say] };
   } catch (err) {
     return { code: 0, say: [`ticket:hook: could not read the ${event} payload (${String((err as Error)?.message ?? err).split("\n")[0]}), so it is ALLOWED.`] };
