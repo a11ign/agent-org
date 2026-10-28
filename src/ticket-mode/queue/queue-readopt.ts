@@ -7,7 +7,7 @@
 //
 // A RUN THAT HAD NOT OPENED ITS AGENT YET LOST NOTHING (A11-294). One caught `starting`, or `running` with no workspace on record, that herdr does not list has no work to lose: it is put back on the queue as it was, round
 // and all (`requeueStarting`), and is neither ended `crashed` nor marked `lostInRestart`.
-import { openPulls } from "../board-view/view-types-and-filters.ts";
+import { listedOpenPulls } from "../board-view/listed-pulls.ts";
 import { find, replace, retry, type Entry, type Outcome, type Queue } from "./queue-entries-and-outcomes.ts";
 import { requeueStopped } from "./queue-pins.ts";
 import { finish, markRunning } from "./queue-transitions.ts";
@@ -20,7 +20,7 @@ export const LOST_IN_RESTART: Outcome = { kind: "crashed", reason: "lost in a re
  * A live run records its pull requests only when it ends, so one the worker opened before the restart is not seen here: the brief of the run queued again lists the ticket's pull requests (A11-240, step 2). PURE.
  */
 export const requeuesOnLoss = (entry: Entry): boolean =>
-  entry.review === undefined && entry.talk !== true && entry.lostInRestart === undefined && openPulls(entry).length === 0;
+  entry.review === undefined && entry.talk !== true && entry.lostInRestart === undefined && listedOpenPulls(entry).length === 0;
 
 /** A run caught `starting` by a restart, whose pane herdr lists: it is running in that workspace and pane, and the card says it was taken back. A run that is no longer starting is left alone. PURE. */
 export function adoptStarting(queue: Queue, key: string, workspace: string, pane: string, now: number): Queue {
