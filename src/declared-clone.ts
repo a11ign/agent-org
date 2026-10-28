@@ -27,3 +27,20 @@ export function cloneOfDeclared(clones: Readonly<Record<string, string>> | undef
   const found = tried.find((candidate) => clones !== undefined && Object.hasOwn(clones, candidate));
   return found === undefined ? { tried } : { clone: clones![found] };
 }
+
+/** `owner/name` of the GitHub repository a git remote URL (`https://github.com/o/n.git`, `git@github.com:o/n`) names, or undefined for another host's. */
+export function repositoryOfRemoteUrl(url: string): string | undefined {
+  return /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?\s*$/i.exec(url.trim())?.[1];
+}
+
+/**
+ * A11-360: THE REPOSITORY (`owner/name`) A CLONE IN `clones` IS THE CHECKOUT OF. A key is a repository's NAME, or an alias for it (`github` for `.github`): the declared repository whose key (or name) it is wins, then the
+ * repository the clone's own git remote names (`remote` reads it from the clone's path). Undefined when neither says: the caller may take the key for a name then (a clone whose remote cannot be read), but never before
+ * either was asked, since a name made from the alias is how `a11ign/github`, which is no repository, was swept.
+ */
+export function repositoryOfClone(key: string, path: string, { code, remote }: Readonly<{ code: readonly DeclaredRepository[]; remote: (path: string) => string | undefined }>): string | undefined {
+  const declared = code.find((repository) => repository.key === key) ?? code.find((repository) => nameOf(repository.repo) === key);
+  if (declared !== undefined) return declared.repo;
+  const url = remote(path);
+  return url === undefined ? undefined : repositoryOfRemoteUrl(url);
+}

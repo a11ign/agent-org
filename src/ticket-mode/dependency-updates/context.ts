@@ -19,6 +19,8 @@ export type DependencySweepDeps = Readonly<{
   repositories: () => readonly string[];
   /** The host's clones by name, so a request can name the repository's clone in its form. */
   clones: Readonly<Record<string, string>>;
+  /** The key `clones` lists the clone of a repository (`owner/name`) under, when the host knows better than the repository's name (A11-360: the clone of `a11ign/.github` listed as `github`). A test that names none is asked nothing. */
+  cloneKeyOf?: (repository: string) => string | undefined;
   /** The writer's model and effort, or null when the machine names no `tickets.writer`: then nothing is asked for. */
   writer: () => Readonly<{ model: string; effort: string }> | null;
   /** The model and effort a ticket the sweep queues runs with. */
