@@ -43,6 +43,8 @@ export type Watch = Readonly<{
   reopenedAt?: number;
   commented?: boolean;
   queued?: boolean;
+  /** The release this host ran when the board first saw a fix merged after the reopen (null when it could not read one). The new fix is installed only once a release other than this one is (A11-366 review): the files of the first fix's pull request are still in the tool folder, so they say nothing of the second. */
+  releaseAtFix?: string | null;
 }>;
 
 /** What one sweep knows of a watch: the clock, whether the tracker has the ticket completed (null when it could not say), whether its fix is installed, and the figure's reading with every figure then (null when the board served none). */
@@ -93,7 +95,10 @@ export function advance(watch: Watch, facts: Facts): Watch {
 }
 
 /** The watch with the ticket moved out of its completed state at `now`: reopened, with its comment and its place on the queue still to do. PURE. */
-export const reopened = (watch: Watch, now: number): Watch => ({ ...watch, state: "reopened", reopens: watch.reopens + 1, reopenedAt: now, commented: false, queued: false });
+export function reopened(watch: Watch, now: number): Watch {
+  const { releaseAtFix: _fix, ...rest } = watch;
+  return { ...rest, state: "reopened", reopens: watch.reopens + 1, reopenedAt: now, commented: false, queued: false };
+}
 
 /** The watch with a step of its reopen done. PURE. */
 export const reopenStepDone = (watch: Watch, step: "commented" | "queued"): Watch => ({ ...watch, [step]: true });

@@ -8,13 +8,15 @@
 // THE REOPEN IS THE BOARD'S, AND IT IS DONE ONCE. The breach is written to the file first, with the readings. The ticket is then moved out of its completed state (`restoreState`, which moves only a ticket still in the
 // state it names, so a person's move is never undone), commented with the readings, and queued on the saved default model and effort. Each step is recorded when it is done, so one that failed is tried again at the next
 // refresh and none is done twice. A ticket reopened and closed again is watched again from that close.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { withinTime } from "../../install/time-limit.ts";
 import { toolPinOf } from "../pool-pin.ts";
 import { log, messageOf, update } from "../pool-state.ts";
 import type { PoolContext } from "../pool-context.ts";
 import { dismiss, enqueue, find, type Queue } from "../queue/queue-entries-and-outcomes.ts";
 import type { Ticket } from "../source.ts";
-import { isInstalled, mergesIn } from "../after-merge/installed.ts";
+import { isInstalled, mergesIn, type Merge } from "../after-merge/installed.ts";
 import { BACKFILLED, figureOfDescription, readFigure, RELIABILITY_LABEL } from "./figures.ts";
 import { reopenComment, readingsOf } from "./text.ts";
 import { changeWatches, loadWatches, reliabilityWatchesPath, type WatchesFile } from "./store.ts";
@@ -75,12 +77,49 @@ async function completedAmong(ctx: PoolContext, keys: readonly string[]): Promis
   }
 }
 
+/** The release the tool folder holds: its `package.json` version, or null when there is no folder or it names none. */
+function releaseOf(toolRoot: string | undefined): string | null {
+  if (toolRoot === undefined) return null;
+  try {
+    const { version } = JSON.parse(readFileSync(join(toolRoot, "package.json"), "utf8")) as { version?: unknown };
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The merges of `watch`'s ticket that count for its window: after the board's last reopen, only the fixes merged since. */
+function fixMerges(ctx: PoolContext, watch: Watch): readonly Merge[] {
+  const merges = mergesIn(ctx.store.get().runLog?.[watch.key]);
+  return watch.reopenedAt === undefined ? merges : merges.filter(({ at }) => at > watch.reopenedAt!);
+}
+
+/** `watch` with the release this host runs noted, the first sweep that sees a fix merged after its reopen. */
+function notingFixRelease(ctx: PoolContext, watch: Watch): Watch {
+  if (watch.reopenedAt === undefined || watch.releaseAtFix !== undefined || fixMerges(ctx, watch).length === 0) return watch;
+  return { ...watch, releaseAtFix: releaseOf(toolPinOf(ctx).toolRoot) };
+}
+
+/**
+ * Whether `watch`'s fix is on this host. A ticket the board reopened counts only the fixes merged since, and those only once a release other than the one it ran when it first saw them is installed: the
+ * first fix's acceptance file is still in the tool folder, so `isInstalled` alone would begin the window before the second fix is released (A11-366 review).
+ */
+function fixInstalled(ctx: PoolContext, watch: Watch): boolean {
+  if (watch.origin === "backfill") return true;
+  const toolRoot = toolPinOf(ctx).toolRoot;
+  const merges = fixMerges(ctx, watch);
+  if (watch.reopenedAt === undefined) return isInstalled({ toolRoot, now: ctx.now, merges: () => merges }, watch.key);
+  if (merges.length === 0 || watch.releaseAtFix === undefined) return false;
+  const released = watch.releaseAtFix === null || releaseOf(toolRoot) !== watch.releaseAtFix;
+  return released && isInstalled({ toolRoot, now: ctx.now, merges: () => merges }, watch.key);
+}
+
 /** The facts of one sweep for `watch`: the clock, whether its ticket is completed and its fix installed, and the figure it names as `/api/health` serves it now. */
 function factsOf(ctx: PoolContext, watch: Watch, completed: ReadonlyMap<string, boolean> | null): Facts {
   const now = ctx.now();
   const figures = ctx.deps.healthFigures?.() ?? null;
   const value = watch.spec === null || figures === null ? null : readFigure(watch.spec.figure, figures);
-  const installed = watch.origin === "backfill" || isInstalled({ toolRoot: toolPinOf(ctx).toolRoot, now: ctx.now, merges: (key) => mergesIn(ctx.store.get().runLog?.[key]) }, watch.key);
+  const installed = fixInstalled(ctx, watch);
   return { now, completed: completed?.get(watch.key) ?? null, installed, read: figures === null || value === null ? null : { value, readings: readingsOf(figures, now) } };
 }
 
@@ -162,7 +201,10 @@ export async function syncReliabilityWatches(ctx: PoolContext): Promise<void> {
     const enrolment = changeWatches(path, (file) => enrolled(file, ctx.store.get(), ctx.now()));
     const completed = await completedAmong(ctx, Object.values(enrolment.watches).filter(({ state }) => state !== "held").map(({ key }) => key));
     changeWatches(path, (file) => {
-      const watches = Object.fromEntries(Object.entries(file.watches).map(([key, watch]) => [key, advance(watch, factsOf(ctx, watch, completed))]));
+      const watches = Object.fromEntries(Object.entries(file.watches).map(([key, was]) => {
+        const watch = notingFixRelease(ctx, was);
+        return [key, advance(watch, factsOf(ctx, watch, completed))];
+      }));
       return JSON.stringify(watches) === JSON.stringify(file.watches) ? file : { watches };
     });
     await reopenOwed(ctx, path);

@@ -1,5 +1,7 @@
 // no-token: none -- the tracker is the in-memory fake, the queue is in memory and the state directory is temporary
 // A11-366: a board-reliability ticket is watched on the figure it names once its fix is released, and reopened once, with the readings, and queued when the figure does not hold
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpDir } from "../../lib/tmp-fixture.ts";
@@ -16,7 +18,7 @@ const LABELLED = { description: DESCRIPTION, labels: [{ name: "board-reliability
 const figures = (holds: number, linear = { calls: 100, failures: 0, failuresPer100: 0 }): HealthFigures => ({
   at: 0, uptimeMs: 0, loop: { lastMinute: { p50Ms: 1, p99Ms: 9 }, lastHour: { p50Ms: 1, p99Ms: 40 } }, syncHolds: { lastHour: holds, holdMs: 100 },
   calls: { linear, github: { calls: 0, failures: 0, failuresPer100: 0 } },
-  runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null },
+  runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] },
 });
 
 /** A sweep over a temporary state directory, the fake tracker and a queue holding `keys`' tickets; `served` is the figures `/api/health` serves now, and the clock moves with `clock.at`. */
@@ -32,7 +34,7 @@ function world(keys: readonly string[] = ["A11-900"], over: Parameters<typeof fa
   const path = reliabilityWatchesPath(stateDir);
   /** The run of `key` ended, as the fix's run did before its ticket was closed. */
   const finishRun = (key: string) => store.set({ ...queue, entries: queue.entries.map((entry) => (entry.ticket.key === key ? { ...entry, phase: "finished" as const } : entry)) });
-  return { tracker, clock, served, ctx, path, finishRun, sweep: () => syncReliabilityWatches(ctx), queue: () => queue, watch: (key = keys[0]) => loadWatches(path).watches[key] };
+  return { tracker, clock, served, ctx, path, finishRun, store, sweep: () => syncReliabilityWatches(ctx), queue: () => queue, watch: (key = keys[0]) => loadWatches(path).watches[key] };
 }
 
 /** Finish A11-900's run, close it as a person would, and sweep a minute later: the first reading of its window. */
@@ -89,6 +91,38 @@ test("a tracker that cannot comment leaves the readings owed: the ticket is reop
   assert.deepEqual([w.watch().state, w.watch().reopens, w.watch().commented, w.watch().queued], ["reopened", 1, false, true]);
   assert.equal(w.tracker.comments.length, 0);
   assert.equal(find(w.queue(), "A11-900")?.phase, "queued");
+});
+
+/** A tool folder installed from agent-org at `version`, holding the acceptance file of A11-900's branch, as a release that carries its first fix does. */
+function toolFolder(version: string): { root: string; release: (next: string) => void } {
+  const root = tmpDir("reliability-tool-");
+  const release = (next: string) => writeFileSync(join(root, "package.json"), JSON.stringify({ version: next, repository: "https://github.com/a11ign/agent-org" }));
+  release(version);
+  mkdirSync(join(root, ".acceptance"));
+  writeFileSync(join(root, ".acceptance", "a11-900-the-fix.md"), "");
+  return { root, release };
+}
+
+test("a ticket the board reopened is watched again only from a release installed after its second fix merged, not from the first fix's files", async () => {
+  const w = world();
+  const tool = toolFolder("1.0.0");
+  (w.ctx as { hook: { bin: string } }).hook = { bin: join(tool.root, "src", "bin.ts") };
+  const merge = (at: number) => w.store.set({ ...w.queue(), runLog: { ...w.queue().runLog, "A11-900": [...(w.queue().runLog?.["A11-900"] ?? []), { kind: "merged", url: "https://github.com/a11ign/agent-org/pull/1", at }] } });
+  merge(1);
+  await breachAfterClose(w);
+  await w.sweep();
+  assert.deepEqual([w.watch().reopens, w.watch().commented, w.watch().queued], [1, true, true], "reopened once, with its readings, and queued");
+
+  w.served.figures = figures(0);
+  merge(w.clock.at + 1);
+  w.clock.at += 60_000;
+  await closeAndRead(w);
+  assert.deepEqual([w.watch().state, w.watch().began, w.watch().releaseAtFix], ["watching", undefined, "1.0.0"], "the release that ran when the second fix merged does not carry it");
+
+  tool.release("1.0.1");
+  w.clock.at += 60_000;
+  await w.sweep();
+  assert.equal(w.watch().began, w.clock.at, "the window begins once a later release is installed");
 });
 
 test("a figure that holds is never reopened, and the window closes held", async () => {
