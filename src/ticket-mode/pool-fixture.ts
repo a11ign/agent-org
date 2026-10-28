@@ -3,11 +3,12 @@
 //
 // IT IS `pool.test.ts`'s SETUP IN THE SMALL: a herdr that opens workspaces and reports the status a test sets, the tracker contract's in-memory fake, a queue held in memory, and a state folder of
 // its own. A test names the `hook` the pool is created with (the version folder its runs are started on), the clock, and the drain store, and gets back the pool, its fakes and the queue.
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
-import { createPool, type PoolDeps, type QueueStore } from "./pool.ts";
+import { type PoolDeps, type QueueStore } from "./pool.ts";
 import { enqueue, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { resumeQueue } from "./queue/queue-transitions.ts";
 import { emptyQueue } from "./queue.ts";
@@ -126,6 +127,6 @@ export function poolFixture({ keys = ["NBF-1"], max = 3, hook = { node: "/node",
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), restartReads, paneEnv: (pane) => herdr.envs.get(pane) ?? null,
     ...(privateTmpBase === undefined ? {} : { privateTmpBase }),
     ...(drain === undefined ? {} : { drain }), ...(startUpdate === undefined ? {} : { startUpdate }), ...over });
-  const pool = createPool(store, deps({}));
-  return { root, settings, store, status, herdr, pool, restart: (over: Partial<PoolDeps>) => createPool(store, deps(over)), entry: (key: string) => queue.entries.find((e) => e.ticket.key === key)! };
+  const pool = createSettledPool(store, deps({}));
+  return { root, settings, store, status, herdr, pool, restart: (over: Partial<PoolDeps>) => createSettledPool(store, deps(over)), entry: (key: string) => queue.entries.find((e) => e.ticket.key === key)! };
 }

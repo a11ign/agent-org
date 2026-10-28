@@ -620,6 +620,8 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
     if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
     forgetRun(ctx, name);
     update(ctx, (queue) => recordPlanBlockers(planDone(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, key, { now: ctx.now() }), key, blockers));
+    // The ticket is queued again after the pass that saw the outcome decided, so a pass is asked for: the run starts at once, not at the next interval (A11-364).
+    ctx.wake.run();
   } catch (err) {
     attachFailed(ctx, entry, { err, failed: "the plan could not be attached", files: `its files are in ${planDir}` });
   } finally {
@@ -688,6 +690,8 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
       const place = order.get(key);
       return batchPlanDone(queue, key, placed.get(key) ?? place?.repo ?? null, mergeWaits(place), now());
     });
+    // Only a ticket queued again is a start to decide: the ones handed to a person wait for them.
+    if (still.some(({ ticket: { key } }) => !handedBack.has(key) && !misplaced.has(key))) ctx.wake.run();
   } catch (err) {
     const [still] = members.filter((member) => sameRun(ctx, member));
     if (still !== undefined) attachFailed(ctx, still, { err, failed: "the plans could not be attached", files: `their files are in ${planDir}` });
@@ -820,6 +824,7 @@ function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending)
     const recorded = key === entry.ticket.key ? { ...record, tokens } : record;
     return movedTo === undefined ? (parks ? park : finish)(queue, key, outcome, now(), recorded) : reroute(queue, key, { outcome, repo: movedTo }, now(), recorded);
   });
+  if (movedTo !== undefined) ctx.wake.run();
   recordPullsAtEnd(ctx, entry, outcome);
   // A run that is not handed back gives its ticket back now. A parked one keeps it In Progress while a person may answer it.
   if (!HANDED_BACK.has(outcome.kind)) for (const member of runMembers(ctx, entry)) void restoreAndLog(ctx, member.ticket.key);

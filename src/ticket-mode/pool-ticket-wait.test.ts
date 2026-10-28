@@ -34,7 +34,13 @@ async function deadlock(source: TicketSource & Partial<ReturnType<typeof createF
     made.status.set(herdrName(key), "idle");
     await pass();
   };
-  const pass = async () => { clock += 60_000; await made.pool.tick(); await flush(); };
+  // A run the pass starts is listed working, as its agent is: the passes a start wakes would otherwise read it as gone from herdr.
+  const pass = async () => {
+    clock += 60_000;
+    for (const entry of made.store.get().entries) if (!made.status.has(herdrName(entry.ticket.key))) made.status.set(herdrName(entry.ticket.key), "working");
+    await made.pool.tick();
+    await flush();
+  };
   const starts = () => made.herdr.calls.filter((args) => args.includes("agent") && args.includes("start"));
   const closes = () => made.herdr.calls.filter((args) => args.includes("workspace") && args.includes("close"));
   const statusOf = (key: string) => runStatus(made.entry(key), made.store.get().entries);

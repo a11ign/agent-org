@@ -15,6 +15,7 @@ import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, typ
 import { placementOf } from "./writer-placement.ts";
 import { isCheckRun } from "./after-merge/verify.ts";
 import { isCiHeld } from "./ci-spend/hold.ts";
+import { startReadHold } from "./queue/start-reads.ts";
 import { runOf, slotsHeld } from "./queue/queue-transitions.ts";
 import type { ToolPin } from "./queue/queue-pins.ts";
 
@@ -27,14 +28,16 @@ export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace
  * ({@link overlapWait}), is passed over, and holds no slot. So is one whose plan could not be downloaded (`pathsFailure`): it takes no slot another
  * run could use (A11-125). And so is a review round or talk session that a working agent's session holds back (`sessionWait`, A11-154). A batch is one run, so its tickets take one slot between them, live or starting.
  * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass.
+ * A run whose blockers or plan paths are not known holds back like the rest, and takes no slot (A11-364): `startReadHold` says which (never read; or read longer ago than `BLOCKERS_MAX_AGE_MS` before `now`), so a run left unread never
+ * takes a slot from one that can start. The pool gives `now`; without it nothing about what was read is judged, and a run is held back for the other reasons alone.
  */
-export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
+export function nextStarts(queue: Queue, load: number, cores: number, now?: number): Entry[] {
   if (queue.paused || load > cores) return [];
   const free = queue.max - slotsHeld(queue);
   const runs = new Set<string>();
   const started: Entry[] = [];
   return queue.entries.filter((entry) => {
-    if (entry.phase !== "queued" || isHeldBack(entry, queue.entries)) return false;
+    if (entry.phase !== "queued" || isHeldBack(entry, queue.entries, now)) return false;
     if (!runs.has(runOf(entry)) && runs.size >= free) return false;
     if (overlapWait(entry, [...queue.entries, ...started.map(asStarting)]) !== null) return false;
     runs.add(runOf(entry));
@@ -43,9 +46,9 @@ export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
   });
 }
 
-/** Whether a queued entry is held back for a reason of its own: its plan could not be downloaded, a session holds it, a blocker has not let go, or the board holds it for its ticket's CI spend (A11-261). PURE. */
-const isHeldBack = (entry: Entry, entries: readonly Entry[]): boolean =>
-  entry.pathsFailure !== undefined || entry.sessionWait !== undefined || isCiHeld(entry) || waitsOn(entry, entries).length > 0;
+/** Whether a queued entry is held back for a reason of its own: its blockers or plan are not known (A11-364), its plan could not be downloaded, a session holds it, a blocker has not let go, or the board holds it for its ticket's CI spend (A11-261). PURE. */
+const isHeldBack = (entry: Entry, entries: readonly Entry[], now?: number): boolean =>
+  entry.pathsFailure !== undefined || (now !== undefined && startReadHold(entry, now) !== null) || entry.sessionWait !== undefined || isCiHeld(entry) || waitsOn(entry, entries).length > 0;
 
 /** The entry as it is once a start is recorded: starting, so it holds what a live run holds. */
 const asStarting = (entry: Entry): Entry => ({ ...entry, phase: "starting" });

@@ -98,7 +98,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "fillReport" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**

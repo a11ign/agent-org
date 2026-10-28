@@ -2,7 +2,8 @@
 // module: the tracker's view of the queue -- refreshing what it says, completing merged tickets, and retargeting stacked pull requests
 
 import { existsSync } from "node:fs";
-import { headsToRead, readBlockers, readHeads, undoEarlyCompletion } from "./pool-start.ts";
+import { headsToRead, readHeads, undoEarlyCompletion } from "./pool-start.ts";
+import { readBlockersRecorded } from "./pool-start-reads.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { earlyCompletions, nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
@@ -41,11 +42,8 @@ import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
  */
 export async function refreshTracker(ctx: PoolContext): Promise<void> {
   const { source, store } = ctx;
-  try {
-    await readBlockers(ctx, store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key));
-  } catch {
-    // the tracker could not be asked: the next refresh asks again
-  }
+  // A refused or hung read is recorded on the runs it was for and said in the log (A11-364); the next refresh asks again.
+  await readBlockersRecorded(ctx, store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key));
   const keys = unsettledKeys(store.get());
   if (keys.length > 0) {
     try {

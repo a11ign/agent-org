@@ -9,6 +9,7 @@
 import { startLoopMonitor, type LoopMonitor, type LoopReading } from "./loop-delay.ts";
 import { createBlockingLedger, type BlockingLedger, type BlockingSite } from "./blocking-ledger.ts";
 import type { BoardSnapshot } from "./thread-messages.ts";
+import type { FillReport } from "./pool-fill-report.ts";
 
 /** How many call sites the health view names. */
 export const HEALTH_SITES = 10;
@@ -32,20 +33,24 @@ export function startHealth(name: string): () => HealthView {
   return () => healthView(monitor, ledger);
 }
 
-/** What the instance's `/api/health` answers: both threads' loop readings, how old the board thread's snapshot is, the spawns that held the board thread, and the request thread's own. */
+/**
+ * What the instance's `/api/health` answers: both threads' loop readings, how old the board thread's snapshot is, the spawns that held the board thread, and the request thread's own. `starts` is what the
+ * last fill of the free slots decided and why (A11-364), with the queued runs it held for blockers or a plan it does not know: null before the board's first fill.
+ */
 export type RequestHealthView = Readonly<{
   loop: Readonly<{ requests: LoopReading; board: LoopReading }>;
   boardSnapshotAgeMs: number;
   blocking: readonly BlockingSite[];
   requestThreadSyncCalls: number;
+  starts: FillReport | null;
 }>;
 
 /** The latest snapshot as the request thread holds it, and when it came, in ms since the epoch. */
-export type LatestSnapshot = Readonly<{ snapshot: Pick<BoardSnapshot, "loop" | "blocking">; receivedAt: number }>;
+export type LatestSnapshot = Readonly<{ snapshot: Pick<BoardSnapshot, "loop" | "blocking" | "starts">; receivedAt: number }>;
 
 /** The health view of the request thread's reading, the latest snapshot at `now`, and the request thread's synchronous spawns since it listened. PURE. */
 export function requestHealthView(requests: LoopReading, latest: LatestSnapshot, now: number, syncCalls: number): RequestHealthView {
-  return { loop: { requests, board: latest.snapshot.loop }, boardSnapshotAgeMs: Math.max(0, now - latest.receivedAt), blocking: latest.snapshot.blocking, requestThreadSyncCalls: syncCalls };
+  return { loop: { requests, board: latest.snapshot.loop }, boardSnapshotAgeMs: Math.max(0, now - latest.receivedAt), blocking: latest.snapshot.blocking, requestThreadSyncCalls: syncCalls, starts: latest.snapshot.starts ?? null };
 }
 
 export type RequestHealthDeps = Readonly<{ latest: () => LatestSnapshot; now?: () => number; err?: (line: string) => void }>;
