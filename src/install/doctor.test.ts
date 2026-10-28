@@ -1116,14 +1116,14 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const lines = linesOf(checks);
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
-    "tracker: linear (enabled, contract 1.7, plugins/linear)",
+    "tracker: linear (enabled, contract 1.8, plugins/linear)",
     "code host: github (enabled, contract 2.1, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
     "messaging: none",
   ]);
-  const tracker = lines.indexOf("tracker: linear (enabled, contract 1.7, plugins/linear)");
+  const tracker = lines.indexOf("tracker: linear (enabled, contract 1.8, plugins/linear)");
   assert.match(lines[tracker + 1], /^ {2}ok {4}tracker key: /, "the plugin's own checks are indented beneath its header");
   assert.match(lines[tracker + 2], /^ {2}ok {4}linear mcp: /);
   assert.match(lines[tracker + 3], /^ {2}ok {4}linear calls: /, "A11-359: the board's calls to Linear are the plugin's third row");
@@ -1148,7 +1148,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   const plugins = fakeAgentOrgPlugins({ catalog: () => catalogWith([bundled]), load: async () => ({ loaded: [], unbuilt: [], refusals: [refusal] }) });
   const checks = await diagnose(deps({ readFile: () => hostWithProviders({ tracker: { provider: "fake-tracker" } }), agentOrgPlugins: plugins }));
   const lines = linesOf(checks);
-  const at = lines.indexOf("tracker: fake-tracker (failed, contract 1.7, plugins/fake-tracker)");
+  const at = lines.indexOf("tracker: fake-tracker (failed, contract 1.8, plugins/fake-tracker)");
   assert.notEqual(at, -1, `the header says failed: ${lines.filter((line) => /^tracker/.test(line)).join(" / ")}`);
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");

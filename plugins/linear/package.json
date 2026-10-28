@@ -6,7 +6,7 @@
   "type": "module",
   "agentOrg": {
     "concern": "tracker",
-    "contract": "1.7",
+    "contract": "1.8",
     "description": "Linear: where tickets are kept and read.",
     "setUp": "Linear connected as the tracker",
     "entry": "index.ts",

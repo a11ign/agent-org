@@ -5,6 +5,7 @@
 // offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
 // write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
 //
+// CONTRACT 1.8 adds the optional `readComments`: the suite checks each comment's shape, and that a ticket the tracker has none of is refused.
 // CONTRACT 1.5 (A11-178) adds the optional `undoAutomaticCompletion` and the optional `closingWords` of the keywords: the suite checks that `undoAutomaticCompletion` answers who completed the ticket in the shape the board reads, undoes only the integration's completion, and is refused for a ticket the tracker has none of; and that any `closingWords` are words and include the closing keyword.
 // CONTRACT 1.4 (A11-173) adds the optional `comment`: one call posts one comment on a ticket in any state, and the suite checks that it is no error on the known ticket and refused for a ticket the tracker has none of.
 // CONTRACT 1.3 (A11-167) adds the optional `texts` and `detachPlan`, and `updatedAt` of a ticket: `texts` answers the description a `read` gives with a time, and `detachPlan` of a title the ticket has no attachment under is no error.
@@ -139,6 +140,20 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     expect(isObject(text) && isString(text.description) && isString(text.updatedAt) && !Number.isNaN(Date.parse(text.updatedAt)), `texts() must give ${probe.known} as { description, updatedAt }, the time an ISO time`);
     expect(text.description === (await source.read(probe.known))?.description, `texts() must give the description read(${probe.known}) gives`);
     expect(!texts.has(probe.missing), `texts() must leave out ${probe.missing}, which the tracker has none of`);
+  }),
+  "readComments answers each comment's author, ISO time and body, and is refused for a key the tracker has none of": optional("readComments", async ({ source, probe }) => {
+    const read: unknown = await source.readComments!(probe.known);
+    expect(isObject(read) && Array.isArray(read.comments) && typeof read.complete === "boolean", "readComments() must resolve { comments, complete }");
+    for (const comment of read.comments as unknown[]) {
+      expect(isObject(comment) && isString(comment.author) && isString(comment.body) && isString(comment.createdAt) && !Number.isNaN(Date.parse(comment.createdAt)), "readComments() must give each comment as { author, createdAt, body }, the time an ISO time");
+    }
+    let refused = false;
+    try {
+      await source.readComments!(probe.missing);
+    } catch {
+      refused = true;
+    }
+    expect(refused, `readComments() must throw for ${probe.missing}, which the tracker has none of`);
   }),
   "detachPlan of a title the ticket has no attachment under changes nothing and is no error": optional("detachPlan", async ({ source, probe }) => {
     const before = await source.read(probe.known);
