@@ -5,6 +5,7 @@ import { corePolicy } from "../../src/plugins/policy.ts";
 import { GhFailure } from "./gh.ts";
 import { HOLD_LABEL, holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
 import { readPullFeedback } from "./pull-feedback.ts";
+import { snapshotsHolding } from "./pull-snapshot-fixture.ts";
 
 const REPO = "a11ign/announcement-emulator";
 const URL = `https://github.com/${REPO}/pull/18`;
@@ -24,23 +25,19 @@ async function read(nodes: unknown, entry: unknown = null) {
   const pr = { state: "OPEN", headRefOid: HEAD, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", baseRefName: "main", mergeQueueEntry: entry,
     ...(nodes === undefined ? {} : { timelineItems: { nodes } }), files: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } }, reviews: { nodes: [] }, comments: { nodes: [] },
     reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] } };
-  const calls: string[][] = [];
-  const feedback = await readPullFeedback(URL, "worker-bot", async (args) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pr } } }); }, corePolicy());
-  return { feedback, calls };
+  const snapshots = snapshotsHolding({ number: 18, ...pr }, {}, REPO);
+  const feedback = await readPullFeedback(URL, "worker-bot", snapshots, corePolicy());
+  return { feedback, snapshots };
 }
 
-test("A11-264: the removals since the head last moved are read from the one query the watch makes, with their reason, actor and merge group", async () => {
-  const { feedback, calls } = await read(RECORDED);
+test("A11-264: the removals since the head last moved are read from the pull request the watch already has, with their reason, actor and merge group", async () => {
+  const { feedback, snapshots } = await read(RECORDED);
   assert.deepEqual(feedback?.queue, { queued: false, removals: [
     { at: Date.parse("2026-10-25T11:59:08Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[0] },
     { at: Date.parse("2026-10-25T12:19:35Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[1] },
     { at: Date.parse("2026-10-25T12:21:15Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[2] },
   ] });
-  assert.equal(calls.length, 1, "no call beyond the one the watch already made");
-  const query = calls[0].find((arg) => arg.startsWith("query="))!;
-  assert.match(query, /mergeQueueEntry \{ state \}/);
-  assert.match(query, /itemTypes: \[REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT\]/);
-  assert.match(query, /on RemovedFromMergeQueueEvent \{ createdAt reason actor \{ login \} beforeCommit \{ oid \} \}/);
+  assert.deepEqual(snapshots.reads.pulls.length, 1, "no read beyond the pull request the watch already has");
 });
 
 test("A11-264: a commit or a force-push ends the run of removals, so only the ones since the head last moved are listed", async () => {
@@ -79,7 +76,7 @@ function ghAnswering(runs: unknown = RUNS, jobs: unknown = JOBS) {
   return { calls, gh: (args: string[]) => { calls.push(args); return JSON.stringify(args[1].includes("/jobs") ? jobs : runs); } };
 }
 
-test("A11-264: the failing run is found by the merge group's commit, and every job of it that failed is listed with its first failing step", () => {
+test("A11-264: the failing run is found by the merge group's commit, and every job of it that failed is listed with its first failing step", async () => {
   const { gh, calls } = ghAnswering();
   assert.deepEqual(readQueueFailure(URL, GROUPS[2], gh), { runId: LAST_RUN, runUrl: `https://github.com/${REPO}/actions/runs/${LAST_RUN}`, jobs: [
     { name: "middleware", step: "The Dependabot config is what the toolchain generates", detailsUrl: `https://github.com/${REPO}/actions/runs/${LAST_RUN}/job/121166812239` },
@@ -88,7 +85,7 @@ test("A11-264: the failing run is found by the merge group's commit, and every j
   assert.deepEqual(calls, [["api", `repos/${REPO}/actions/runs?event=merge_group&head_sha=${GROUPS[2]}&per_page=100`], ["api", `repos/${REPO}/actions/runs/${LAST_RUN}/jobs?filter=latest&per_page=100`]]);
 });
 
-test("A11-264: a run that cannot be found, a commit that is no commit, an address that is no pull request and a refused read are null, never no failing job", () => {
+test("A11-264: a run that cannot be found, a commit that is no commit, an address that is no pull request and a refused read are null, never no failing job", async () => {
   assert.equal(readQueueFailure(URL, GROUPS[0], ghAnswering({ workflow_runs: [] }).gh), null, "no run for that merge group");
   assert.equal(readQueueFailure(URL, GROUPS[2], ghAnswering({ message: "Not Found" }).gh), null, "an answer of another shape");
   assert.equal(readQueueFailure(URL, GROUPS[2], ghAnswering(RUNS, { message: "Not Found" }).gh), null, "jobs of another shape");
@@ -99,7 +96,7 @@ test("A11-264: a run that cannot be found, a commit that is no commit, an addres
   assert.equal(readQueueFailure(URL, GROUPS[2], (args) => { throw new GhFailure(args, { status: 1, stdout: "", stderr: "gh: HTTP 403\n" }); }), null);
 });
 
-test("A11-264: a run that did not fail has no failing job, and a job that timed out is one", () => {
+test("A11-264: a run that did not fail has no failing job, and a job that timed out is one", async () => {
   const passed = { workflow_runs: [{ ...RUNS.workflow_runs[0], conclusion: "success" }] };
   assert.deepEqual(readQueueFailure(URL, GROUPS[2], ghAnswering(passed).gh)?.jobs, [], "the removal came from a run that did not fail: nothing is named");
   const timedOut = { jobs: [{ id: 5, name: "suite", conclusion: "timed_out", steps: [{ name: "Run pnpm test", number: 3, conclusion: "cancelled" }] }, { id: 6, name: "lint", conclusion: "cancelled", steps: [] }] };
@@ -121,7 +118,7 @@ function labelling(over: { refuse?: (args: string[]) => string | null } = {}) {
   return { gh, calls, labels };
 }
 
-test("A11-264: the hold makes the label first, puts it on the pull request, and reads the labels back", () => {
+test("A11-264: the hold makes the label first, puts it on the pull request, and reads the labels back", async () => {
   const { gh, calls, labels } = labelling();
   assert.equal(holdPullRequest(URL, gh), true);
   assert.deepEqual(calls, [
@@ -133,7 +130,7 @@ test("A11-264: the hold makes the label first, puts it on the pull request, and 
   assert.deepEqual(labels, ["hold:board"]);
 });
 
-test("A11-264: lifting the hold deletes the label from the pull request, reads back, and counts a label that is not there as done", () => {
+test("A11-264: lifting the hold deletes the label from the pull request, reads back, and counts a label that is not there as done", async () => {
   const { gh, calls } = labelling();
   holdPullRequest(URL, gh);
   calls.length = 0;
@@ -143,7 +140,7 @@ test("A11-264: lifting the hold deletes the label from the pull request, reads b
   assert.equal(releasePullRequest(URL, gone.gh), true, "a label that was never on is off");
 });
 
-test("A11-264: a hold GitHub refuses throws in GitHub's first line, and a label that is not as asked on read-back is false", () => {
+test("A11-264: a hold GitHub refuses throws in GitHub's first line, and a label that is not as asked on read-back is false", async () => {
   const refused = labelling({ refuse: (args) => (args.includes("POST") ? "gh: Resource not accessible by integration (HTTP 403)\nsecond line\n" : null) });
   assert.throws(() => holdPullRequest(URL, refused.gh), { message: "gh: Resource not accessible by integration (HTTP 403)" });
   const stuck = labelling({ refuse: (args) => (args.includes("DELETE") ? "gh: Server Error (HTTP 500)\n" : null) });

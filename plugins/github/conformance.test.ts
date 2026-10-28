@@ -96,6 +96,27 @@ function branchCalls(args: readonly string[]): Answer | null {
   return null;
 }
 
+/** An open pull request as the snapshot's query answers it: GraphQL's shape, with the fields the plugin reads. */
+const openPull = (number: number, over: Record<string, unknown> = {}) => ({
+  number, state: "OPEN", url: `https://github.com/${REPOSITORY}/pull/${number}`, title: "feat: x", body: "", isDraft: false, isCrossRepository: false, headRefName: "admin/x", headRefOid: HEAD, baseRefName: "main",
+  author: { login: "worker-bot", __typename: "User" }, reviewDecision: null, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", mergeQueueEntry: null, autoMergeRequest: null,
+  files: { nodes: [{ path: "src/a.ts" }], pageInfo: { hasNextPage: false, endCursor: null } },
+  reviews: { nodes: [] }, comments: { nodes: [] }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [] } } } }] }, ...over,
+});
+
+/** The open pull requests of `owner/repo`: pull request 7, the dependency bot's (contract 1.19), and a person's with a bot-like title beside it, as a plain list has them: the suite holds the plugin to the author check of its own. */
+const OPEN_PULLS = [
+  openPull(7),
+  openPull(11, { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", body: "Release notes", author: { login: "dependabot", __typename: "Bot" } }),
+  openPull(12, { title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", author: { login: "someone", __typename: "User" } }),
+];
+
+/** The pull requests that are not open, which the snapshot's list leaves out and a read by number gives: the merged one (contract 1.4) and the one closed with work still on it (contract 1.20). */
+const CLOSED_PULLS = [
+  openPull(8, { state: "MERGED", title: "feat: replay", body: "What it found" }),
+  openPull(13, { state: "CLOSED", headRefName: "admin/a11-229-x", headRefOid: CLOSED_HEAD }),
+];
+
 /** The gh calls the plugin makes, answered from pull request 7: its feedback, its fields, its state and the list it is in. */
 function github(calls: string[][] = []) {
   /** The statuses on the claim head, as GitHub keeps them: a POST adds one, and the listing prints one tab-separated line for each. */
@@ -125,40 +146,21 @@ function github(calls: string[][] = []) {
     }
     if (args[0] === "workflow" && args[1] === "run") return args.includes(REPOSITORY) ? ok("") : REFUSED;
     if (args[0] === "api" && args[1] === "graphql") {
-      const found = args.includes("number=7");
-      return ok(JSON.stringify({ data: { repository: { pullRequest: found ? {
-        state: "OPEN", headRefOid: HEAD, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", baseRefName: "main",
-        files: { nodes: [{ path: "src/a.ts" }], pageInfo: { hasNextPage: false, endCursor: null } },
-        reviews: { nodes: [] }, comments: { nodes: [] }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] },
-      } : null } } }));
+      // The snapshot's query (A11-365): every open pull request of the repository in one answer; or the same selection for the one pull request by number, which is how a merged or closed one is read.
+      if (!args.includes(`owner=owner`) || !args.includes(`repo=repo`)) return REFUSED;
+      const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+      const number = Number(args.find((arg) => arg.startsWith("number="))?.slice("number=".length));
+      if (query.includes("pullRequests(states: OPEN")) return ok(JSON.stringify({ data: { repository: { isPrivate: false, bot: null, pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: OPEN_PULLS } } } }));
+      const found = [...OPEN_PULLS, ...CLOSED_PULLS].find((pull) => pull.number === number);
+      return ok(JSON.stringify({ data: { repository: { isPrivate: false, bot: null, pullRequest: found ?? null } } }));
     }
-    // A closed pull request's read (contract 1.20): the pull request, then the compare of its base with its head commit, one line per commit and file as the plugin's jq prints them.
+    // A closed pull request's read (contract 1.20): the pull request (above), then the compare of its base with its head commit, one line per commit and file as the plugin's jq prints them.
     if (args[0] === "pr" && args[1] === "view" && args[2] === CLOSED) return ok(JSON.stringify({ number: 13, state: "CLOSED", baseRefName: "main", headRefName: "admin/a11-229-x", headRefOid: CLOSED_HEAD }));
     if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/compare/main...${CLOSED_HEAD}?per_page=100`)) {
       return ok([`T ${CLOSED_COMMITS.length}`, ...CLOSED_COMMITS.map((commit) => `C ${JSON.stringify(commit)}`), `F ${JSON.stringify("src/check-report.ts")}`, ""].join("\n"));
     }
-    if (args[0] === "pr" && args[1] === "view" && args[2] === MERGED) return ok(JSON.stringify({ number: 8, title: "feat: replay", body: "What it found", state: "MERGED" }));
-    if (args[0] === "pr" && args[1] === "diff" && args[2] === MERGED) return ok("diff --git a/docs/spike.md b/docs/spike.md\n--- a/docs/spike.md\n+++ b/docs/spike.md\n@@ -1 +1,3 @@\n+### Scripted replay\n+Cookie dialogs drop pages.\n");
-    const reviewed = { state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, baseRefName: "main" };
-    if (args[0] === "pr" && args[1] === "view") {
-      if (args[2] !== "7" && args[2] !== PULL) return REFUSED;
-      return ok(JSON.stringify(reviewed));
-    }
-    // The open pull requests of a repository with the fields of a review, which the plugin reads in one list for all of them: pull request 7 is the only one open.
-    const listed = (args[args.indexOf("--json") + 1] ?? "").split(",");
-    const isReviewList = args[0] === "pr" && args[1] === "list";
-    if (isReviewList && listed.every((field) => field === "number" || field in reviewed)) {
-      if (!args.includes(REPOSITORY)) return REFUSED;
-      return ok(JSON.stringify([{ number: 7, ...reviewed }].map((pull) => Object.fromEntries(Object.entries(pull).filter(([field]) => listed.includes(field))))));
-    }
-    if (args.slice(0, 2).join(" ") === "pr list" && /headRefOid/.test(args.join(" "))) {
-      if (!args.includes(REPOSITORY)) return REFUSED;
-      // A person's pull request is listed beside the bot's, as a plain list does: the suite holds the plugin to the author check of its own.
-      return ok(JSON.stringify([
-        { number: 11, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/x/y-2.0.0", headRefOid: HEAD, url: DEPENDENCY_PULLS.bot, body: "Release notes", author: { login: "app/dependabot", is_bot: true } },
-        { number: 12, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", headRefOid: HEAD, url: DEPENDENCY_PULLS.foreign, body: "", author: { login: "someone", is_bot: false } },
-      ]));
-    }
+    // A merged pull request's diff (contract 1.4): the REST read of the pull request, asked for a diff.
+    if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/pulls/8`)) return ok("diff --git a/docs/spike.md b/docs/spike.md\n--- a/docs/spike.md\n+++ b/docs/spike.md\n@@ -1 +1,3 @@\n+### Scripted replay\n+Cookie dialogs drop pages.\n");
     if (args[0] === "pr" && args[1] === "list") return ok(JSON.stringify([{ number: 7, body: "" }]));
     if (text === `api repos/${REPOSITORY}/actions/jobs/32/logs --allow-escape-sequences`) return ok(`2026-10-22T10:00:00Z ${CHECK_LOG}\n`);
     if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/commits/${CLAIM_HEAD}/statuses?per_page=100`)) {
@@ -173,14 +175,14 @@ function github(calls: string[][] = []) {
   };
 }
 
-/** Plugin deps whose `gh` is the emulator, run either way. */
-const emulating = (exec: ReturnType<typeof github>, over: Partial<PluginDeps> = {}) => fakePluginDeps({ ...over, exec, execAsync: (file, args) => Promise.resolve(exec(file, args)) });
-
 /** What the wrapper is asked about: a host whose tool is installed outside any temporary directory, with the workers' role an App. */
 export const WRAPPER_INPUTS: WrapperInputs = {
   place: { binDir: "/opt/host/bin", tool: "/opt/agent-org", checkout: "/opt/project", stateEntry: (name) => `/opt/state/${name}` }, accounts: { workers: "/opt/workers", leads: "/opt/leads" },
   identity: { scheduler: { mode: "user-accounts" }, workers: { mode: "github-apps", appId: "1", keyPath: "/opt/workers.pem" }, managers: { mode: "user-accounts" }, reviewer: { mode: "user-accounts" } },
 };
+
+/** Plugin deps whose `gh` is the emulator, run either way. */
+const emulating = (exec: ReturnType<typeof github>, over: Partial<PluginDeps> = {}) => fakePluginDeps({ ...over, exec, execAsync: (file, args) => Promise.resolve(exec(file, args)) });
 
 /** The policy a host with a loaded reviewer gate gives: the author is the org's own, and the checks have settled. */
 const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRepository", trustOf: () => "inside", settledOf: () => true, unrequiredRedOf: () => [] }));

@@ -889,6 +889,8 @@ async function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome
   ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ownLogin.value;
   if (self === null) return;
+  // What is recorded is the head and files the run ended with, compared with the pull request later: read afresh, not as the sweep read them (A11-365).
+  for (const { url } of pulls) codeHost.refreshPull?.(url);
   const reads = await readEach(pulls, async ({ url }) => ({ url, read: await codeHost.readPullFeedback(url, self, feedbackIgnores) }));
   const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
   if (readable.length < reads.length) {

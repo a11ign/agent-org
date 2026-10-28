@@ -1,53 +1,15 @@
 // The feedback on one pull request that ticket mode's board answers on its own: the newest review, conversation comment and inline comment
-// from anyone but the board's own account, and its failing checks. Read through an injected `run` (the plugin's `gh`), so this file spawns nothing. It moved here from
+// from anyone but the board's own account, and its failing checks. Read from the repository's snapshot (`pull-snapshot.ts`, A11-365), so this file asks GitHub for no pull request of its own; `readOwnLogin` is handed the plugin's `gh`. It moved here from
 // `src/ticket-port/` with the rest of ticket mode's GitHub reads (A11-160). Which checks are red is core's to decide (`red-pr.ts`, #2956, which row mode shares), so this file
 // asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
 import type { FailingCheck, PullFeedback, PullQueue, QueueRemoval, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 import type { AsyncGh } from "./gh.ts";
-import { MERGE_BOT_GATE, answerRunsMergeBot, mergeBotFields } from "./merge-flow.ts";
+import { flowGateOf, MAX_FILE_PAGES, rollupOf, type PullSnapshots, type RepoFlow } from "./pull-snapshot.ts";
 
 export type { FailingCheck, PullFeedback };
 
-/** How much of each list one read takes, newest last. Only the newest item of each counts, so a long history is not read. */
-const LAST = 50;
-
-/** The most pages of changed files one read takes: a pull request beyond this many files is read in part, and says so. */
-export const MAX_FILE_PAGES = 10;
-
-/** How many of the pull request's newest removals from the merge queue, commits and force-pushes one read takes: the removals since the head last moved are the trailing run of them. */
-const QUEUE_WINDOW = 20;
-
-/** The query for pull request `number`: the number is also written into the selection of the merge bot on its head (a string in the query cannot read the variable). */
-const queryOf = (number: number): string => `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { ${mergeBotFields(number)} pullRequest(number: $number) {
-  state
-  body
-  reviewDecision
-  headRefOid
-  mergeable
-  mergeStateStatus
-  baseRefName
-  mergeQueueEntry { state }
-  autoMergeRequest { enabledAt }
-  timelineItems(last: ${QUEUE_WINDOW}, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) { nodes {
-    __typename
-    ... on RemovedFromMergeQueueEvent { createdAt reason actor { login } beforeCommit { oid } }
-  } }
-  files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
-  reviews(last: ${LAST}) { nodes { state submittedAt author { login } commit { oid } } }
-  comments(last: ${LAST}) { nodes { createdAt author { login } } }
-  reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt author { login } } } } }
-  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes {
-    __typename
-    ... on CheckRun { name conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: $number) }
-    ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
-  } } } } } }
-} } }`;
-
-/** The page of changed files after `cursor`, read the same way as the first page in `queryOf`. */
-const FILES_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
-  files(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { path } }
-} } }`;
+export { MAX_FILE_PAGES };
 
 /** A review is feedback when it asks for something: an approval or a dismissed review is not. */
 const FEEDBACK_REVIEWS: ReadonlySet<string> = new Set(["COMMENTED", "CHANGES_REQUESTED"]);
@@ -72,20 +34,20 @@ export function pullOf(url: string): { owner: string; repo: string; number: numb
   return match === null ? null : { owner: match[1], repo: match[2], number: Number(match[3]) };
 }
 
-/** The login of the account `run` acts as, which is the board's workers' own, or null when it cannot be read. */
-export function readOwnLogin(run: (args: string[]) => string): string | null {
+/** {@link readOwnLogin} without holding the process still (A11-356). */
+export async function readOwnLoginAsync(run: AsyncGh): Promise<string | null> {
   try {
-    const login = run(["api", "user", "--jq", ".login"]).trim();
+    const login = (await run(["api", "user", "--jq", ".login"])).trim();
     return login === "" ? null : login;
   } catch {
     return null;
   }
 }
 
-/** {@link readOwnLogin} without holding the process still (A11-356). */
-export async function readOwnLoginAsync(run: AsyncGh): Promise<string | null> {
+/** The login of the account `run` acts as, which is the board's workers' own, or null when it cannot be read. */
+export function readOwnLogin(run: (args: string[]) => string): string | null {
   try {
-    const login = (await run(["api", "user", "--jq", ".login"])).trim();
+    const login = run(["api", "user", "--jq", ".login"]).trim();
     return login === "" ? null : login;
   } catch {
     return null;
@@ -180,17 +142,18 @@ function detailsUrlOf(runs: readonly Check[], name: string, policy: CodeHostPoli
 
 /**
  * THE FEEDBACK ON THE PULL REQUEST AT `url`, leaving out what `self` wrote and what `alsoIgnore` wrote, or null for "could not ask": an address that is not a GitHub pull
- * request, a refused `run`, and an answer without the pull request. Null is never "no feedback".
+ * request, a repository `snapshots` cannot read, and an answer without the pull request. Null is never "no feedback". The pull request is the repository's snapshot's, shared with every other reader (A11-365).
  */
-export async function readPullFeedback(url: string, self: string, run: AsyncGh, policy: CodeHostPolicy, alsoIgnore: readonly string[] = []): Promise<PullFeedback | null> {
+export async function readPullFeedback(url: string, self: string, snapshots: PullSnapshots, policy: CodeHostPolicy, alsoIgnore: readonly string[] = []): Promise<PullFeedback | null> {
   const pull = pullOf(url);
   if (pull === null) return null;
+  const repository = `${pull.owner}/${pull.repo}`;
   try {
-    const answer = JSON.parse(await run(["api", "graphql", "-f", `query=${queryOf(pull.number)}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
-    const pr = answer?.data?.repository?.pullRequest;
-    if (pr === null || typeof pr !== "object" || typeof pr.state !== "string") return null;
-    const files = await changedFiles(pull, pr.files, run);
-    return { ...feedbackOf(pr, self, alsoIgnore, policy, flowRequiresOf(answer?.data?.repository, pr)), files: files.paths, filesComplete: files.complete };
+    const read = await snapshots.pull(repository, pull.number);
+    const pr = read?.node;
+    if (read === null || pr === undefined || typeof pr.state !== "string") return null;
+    const files = await changedFiles(pull, pr.files, snapshots);
+    return { ...feedbackOf(pr, self, alsoIgnore, policy, await flowRequiresOf(snapshots, repository, pr, read.flow)), files: files.paths, filesComplete: files.complete };
   } catch {
     // An answer of an unexpected shape is no reading either.
     return null;
@@ -199,11 +162,11 @@ export async function readPullFeedback(url: string, self: string, run: AsyncGh, 
 
 /**
  * The checks the repository's flow requires where GitHub names none: `gate` in a merge-bot repository (A11-341), the pull request that adds the bot included (A11-344), else none. A rollup of more than one page is not read in full, so `gate` could be on a page not read and
- * every check past it would stop counting: it is read as one without the flow, which counts the checks seen, as `reviews.ts` does.
+ * every check past it would stop counting: it is read as one without the flow, which counts the checks seen, as `reviews.ts` does. Where GitHub names a required check the flow is not asked at all: the required checks decide, and the head's file is not read.
  */
-function flowRequiresOf(repository: unknown, pr: Record<string, any>): string[] {
-  const cut = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.pageInfo?.hasNextPage === true;
-  return answerRunsMergeBot(repository) && !cut ? [MERGE_BOT_GATE] : [];
+async function flowRequiresOf(snapshots: PullSnapshots, repository: string, pr: Record<string, any>, flow: RepoFlow): Promise<string[]> {
+  const { checks, cut } = rollupOf(pr);
+  return cut || checks.some((check: Check | null) => check?.isRequired === true) ? [] : await flowGateOf(snapshots, repository, pr, flow);
 }
 
 /** A page of changed files as GitHub gives it: its paths, and whether another page follows. Any other shape is not a page. */
@@ -217,9 +180,9 @@ const isFilesPage = (page: any): page is FilesPage =>
  * Every file the pull request changes: the page the first read returned, then the pages after it, one read each, up to {@link MAX_FILE_PAGES}.
  * `complete` is true only when the last page read says no page follows. A page that is missing or of another shape, the first included, and pages
  * left past the cap, leave it false with the paths read so far: files not seen are unknown, never none. A page that cannot be read throws, so the
- * read is no reading at all.
+ * read is no reading at all. The pages after the first are read through the snapshots (`pull-snapshot.ts`).
  */
-async function changedFiles(pull: { owner: string; repo: string; number: number }, first: unknown, run: AsyncGh):
+async function changedFiles(pull: { owner: string; repo: string; number: number }, first: unknown, snapshots: PullSnapshots):
   Promise<{ paths: string[]; complete: boolean }> {
   const paths: string[] = [];
   let page = first;
@@ -228,9 +191,7 @@ async function changedFiles(pull: { owner: string; repo: string; number: number 
     paths.push(...page.nodes.map((file) => file.path));
     if (!page.pageInfo.hasNextPage) return { paths, complete: true };
     if (pages >= MAX_FILE_PAGES || typeof page.pageInfo.endCursor !== "string") return { paths, complete: false };
-    const answer = JSON.parse(await run(["api", "graphql", "-f", `query=${FILES_QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`,
-      "-F", `number=${pull.number}`, "-f", `cursor=${page.pageInfo.endCursor}`]));
-    page = answer?.data?.repository?.pullRequest?.files;
+    page = await snapshots.moreFiles(`${pull.owner}/${pull.repo}`, pull.number, page.pageInfo.endCursor);
     if (page === null || typeof page !== "object") throw new Error("a page of the changed files did not answer");
   }
 }
@@ -283,10 +244,8 @@ function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly 
   ];
   // The branch's own head, which a review's commit is compared with: the commits connection can lag the ref by a few seconds after a push.
   const head = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
-  const contexts: Check[] = rollup?.nodes ?? [];
+  const { checks: contexts, cut: rollupCut } = rollupOf(pr) as { checks: Check[]; cut: boolean };
   // A rollup cut at 100 may hide a red or running required run: nothing is said to be only cancelled then.
-  const rollupCut = rollup?.pageInfo?.hasNextPage === true;
   const red = failingChecks(contexts, policy, flowRequires);
   const failing = red.filter(({ counted }) => counted);
   const newest = (times: (number | null)[]): number | null => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);

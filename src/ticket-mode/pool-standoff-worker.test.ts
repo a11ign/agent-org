@@ -32,8 +32,9 @@ async function workerRound({ start = true }: { start?: boolean } = {}) {
 }
 
 test("A11-290: the worker's round carries the re-reviewer's reasons, says a reply with no change is refused, and leaves the Stop hook the head and the description as they were", async () => {
-  const { dir, entry, url } = await workerRound();
+  const { dir, entry, url, host } = await workerRound();
   assert.equal(entry().phase, "running");
+  assert.ok(host.calls.includes(`readReviewState ${url} fresh`), "A11-365: the head and the description are read afresh, since the Stop hook compares them with the pull request later and a read shared with the sweep can be as old as the sweep");
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.match(brief, /stand-off round/);
   assert.ok(brief.includes("is still not convinced") && brief.includes("340 KB"), "the reasons are in the brief");

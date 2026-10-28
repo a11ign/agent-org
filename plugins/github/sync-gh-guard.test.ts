@@ -82,14 +82,15 @@ test("A11-356: the reads the board's sweeps make run gh through deps.execAsync, 
   const sync: string[][] = [];
   const asynchronous: string[][] = [];
   const refused: ExecResult = { status: 1, stdout: "", stderr: "gh: stand-in" };
-  const host = createCodeHost(fakePluginDeps({
+  // A host of its own for each read: the code host does not ask a repository that just refused again for a few seconds (A11-365), and each read is to be seen asking.
+  const hostOf = () => createCodeHost(fakePluginDeps({
     policy: corePolicy(() => ({ fields: "headRefOid,reviews", trustOf: () => "inside", settledOf: () => true, unrequiredRedOf: () => [] })),
     exec: (file, args) => { sync.push([file, ...args]); return refused; },
     execAsync: (file, args) => { asynchronous.push([file, ...args]); return Promise.resolve(refused); },
   }));
   for (const [name, read] of Object.entries(ASYNCHRONOUS_READS)) {
     const before = asynchronous.length;
-    await read(host);
+    await read(hostOf());
     assert.ok(asynchronous.length > before, `${name} asks GitHub through deps.execAsync`);
   }
   assert.deepEqual(sync, [], "none of them ran a program through deps.exec, which holds the process still");
