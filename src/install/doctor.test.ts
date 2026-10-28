@@ -218,7 +218,7 @@ test("doctor passes every check on a working install, and never prints the key",
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["agent-org command", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
-    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
+    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["linear calls", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["flaky tests", true], ["chromium", true], ["chromium headless shell", true],
   ]);
@@ -1101,7 +1101,8 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const tracker = lines.indexOf("tracker: linear (enabled, contract 1.7, plugins/linear)");
   assert.match(lines[tracker + 1], /^ {2}ok {4}tracker key: /, "the plugin's own checks are indented beneath its header");
   assert.match(lines[tracker + 2], /^ {2}ok {4}linear mcp: /);
-  assert.match(lines[tracker + 3], /^ {2}ok {4}tracker \(linear\): /, "and the concern's row that summarises them closes the section");
+  assert.match(lines[tracker + 3], /^ {2}ok {4}linear calls: /, "A11-359: the board's calls to Linear are the plugin's third row");
+  assert.match(lines[tracker + 4], /^ {2}ok {4}tracker \(linear\): /, "and the concern's row that summarises them closes the section");
   assert.match(lines[tracker - 1], /^ok {4}terminal answering: /, "the machine's checks stand outside the sections, before them");
   assert.deepEqual(lines.filter((line) => /^ok {4}(?:tracker key|tracker \(linear\))/.test(line)), [], "no plugin row is left outside its section");
 });

@@ -556,11 +556,13 @@ export function recordRetargets(queue: Queue, key: string, notes: Readonly<Recor
   });
 }
 
-/** Record the tickets that block each queued run, for each run the tracker was asked about. A run that has started keeps what it started with. */
+/** Record the tickets that block each queued run, for each run the tracker was asked about, and clear why they could not be read (`blockersFailure`). A run that has started keeps what it started with. */
 export function recordBlockers(queue: Queue, blockers: ReadonlyMap<string, readonly Blocker[]>): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
     const found = blockers.get(entry.ticket.key);
-    return entry.phase === "queued" && found !== undefined ? { ...entry, blockers: found } : entry;
+    if (entry.phase !== "queued" || found === undefined) return entry;
+    const { blockersFailure: _read, ...rest } = entry;
+    return { ...rest, blockers: found };
   }) };
 }
 

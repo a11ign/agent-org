@@ -7,6 +7,7 @@
 //   - row mode asks it (`loadedCodeHost`), and when nothing is there it loads the host file's code host by `require` (`activate-host-sync.ts`) with deps that name no reviewer helpers;
 //   - core registers what it owns of row mode (`registerRowsHelpers`, called by `rows.ts`), and the code host's deps ask for it when an operation needs it (`coreRowsHelpers`).
 import { readFileSync } from "node:fs";
+import { freshFetch } from "../fresh-fetch.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import { loadCodeHostSync } from "./activate-host-sync.ts";
@@ -108,8 +109,8 @@ const NO_REVIEWER_HELPERS = new Proxy({}, {
 }) as ReviewerHelpers;
 
 /** Every dep a plugin is given except the reviewer's helpers, which are the gate's and so are `active.ts`'s to give. */
-export function lightPluginDeps({ env, stateDir, pick, clones = {}, review }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"] }>): Omit<PluginDeps, "reviewing"> {
-  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), exec: realExec, execAsync: realExecAsync, readFile: (path) => readFileSync(path, "utf8"), mode: realMode,
+export function lightPluginDeps({ env, stateDir, pick, clones = {}, review, recordCalls }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"]; recordCalls?: boolean }>): Omit<PluginDeps, "reviewing"> {
+  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), freshFetch, ...(recordCalls === true ? { recordCalls } : {}), exec: realExec, execAsync: realExecAsync, readFile: (path) => readFileSync(path, "utf8"), mode: realMode,
     probe: realProbe, messaging: messagingHelpers(), publishing: publishingHelpers(), rows: coreRowsHelpers, place: realPlace };
 }
 

@@ -1,9 +1,11 @@
 // @ts-check
-// module: the Linear plugin's doctor checks -- the key is readable, and Linear's MCP is connected for Claude Code (A11-159)
+// module: the Linear plugin's doctor checks -- the key is readable, Linear's MCP is connected for Claude Code (A11-159), and the board's calls to Linear mostly succeed (A11-359)
 //
 // Moved out of `install/doctor.ts` with the rows' names and words unchanged: `tracker key` and `linear mcp`. The key is read to prove it is there, and never printed.
 // Linear's MCP is read from `claude mcp list`, which connects to each server, so "connected" is a real answer.
 import type { PluginCheck, PluginDeps, PluginSettings } from "../../src/plugins/manifest.ts";
+import { join } from "node:path";
+import { CALLS_FILE, describeCounts, isFlagged, readCounts } from "./call-log.ts";
 import { describeSource, keySource, readLinearKey, type KeySource } from "./key.ts";
 
 const ok = (name: string, detail: string): PluginCheck => ({ name, ok: true, detail, fix: null });
@@ -60,4 +62,25 @@ export function mcpCheck(deps: PluginDeps): PluginCheck {
   if (line === undefined) return failed("linear mcp", "Claude Code has no `linear` MCP, so workers cannot read their tickets", add);
   return /Connected/.test(line) ? ok("linear mcp", line.trim())
     : failed("linear mcp", line.trim(), "`claude mcp get linear` says why; a key that changed is fixed by `claude mcp remove linear --scope user`, then `agent-org onboard`");
+}
+
+/**
+ * The board's calls to Linear over the last hour (A11-359): the count the board writes beside its state (`call-log.ts`), flagged when more than one call in a hundred failed. A board that has made no call in the hour, or has
+ * never written the count, has nothing to flag.
+ */
+export function callsCheck(deps: Pick<PluginDeps, "readFile" | "stateDir">, now: number = Date.now()): PluginCheck {
+  const name = "linear calls";
+  let text: string;
+  try {
+    text = deps.readFile(join(deps.stateDir, CALLS_FILE));
+  } catch {
+    return ok(name, "the board has recorded no call to Linear yet");
+  }
+  const counts = readCounts(text);
+  if (counts === null) return ok(name, `${CALLS_FILE} is not a count of calls, so the board rewrites it with its next call`);
+  if (now - counts.at >= counts.windowMs) return ok(name, "the board has made no call to Linear in the last hour");
+  const said = describeCounts(counts);
+  return isFlagged(counts)
+    ? failed(name, said, "the board's connections to Linear are failing: read its journal for the `Linear: a call failed` lines and their reasons (`ECONNRESET`, `UND_ERR_SOCKET`, a timeout)")
+    : ok(name, said);
 }
