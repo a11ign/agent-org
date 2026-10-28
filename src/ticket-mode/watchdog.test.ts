@@ -100,23 +100,26 @@ test("a restart waits while a run is still starting (its agent is not open yet),
 
 test("the probe reads the figures and the snapshot's age from /api/health, and says why when it gets none", async () => {
   const figs = figures();
-  const ok = await probeHealth(4747, 1_000, (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: 2_500, figures: figs }), { status: 200 })) as typeof fetch);
+  const ok = await probeHealth(4747, 1_000, { fetchImpl: (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: 2_500, figures: figs }), { status: 200 })) as typeof fetch });
   assert.deepEqual(ok, { kind: "answered", health: { boardSnapshotAgeMs: 2_500, figures: figs } satisfies HealthAnswer });
-  const older = await probeHealth(4747, 1_000, (async () => new Response(JSON.stringify({ loop: {} }), { status: 200 })) as typeof fetch);
+  const older = await probeHealth(4747, 1_000, { fetchImpl: (async () => new Response(JSON.stringify({ loop: {} }), { status: 200 })) as typeof fetch });
   assert.deepEqual(older, { kind: "answered", health: { boardSnapshotAgeMs: 0, figures: null } }, "an instance from before the figures answers, with none");
-  assert.deepEqual(await probeHealth(4747, 1_000, (async () => new Response("", { status: 503 })) as typeof fetch), { kind: "unanswered", why: "it answered 503" });
+  assert.deepEqual(await probeHealth(4747, 1_000, { fetchImpl: (async () => new Response("", { status: 503 })) as typeof fetch }), { kind: "unanswered", why: "it answered 503" });
+  for (const status of [401, 403]) {
+    assert.deepEqual(await probeHealth(4747, 1_000, { fetchImpl: (async () => new Response("", { status })) as typeof fetch }), { kind: "refused", why: `it answered ${status}` }, "a refusal is an answer");
+  }
   for (const bad of [{}, { ...figs, runs: { ...figs.runs, startable: "2" } }, { ...figs, fill: null }, { ...figs, uptimeMs: Number.NaN }]) {
-    const answer = await probeHealth(4747, 1_000, (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: 0, figures: bad }), { status: 200 })) as typeof fetch);
+    const answer = await probeHealth(4747, 1_000, { fetchImpl: (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: 0, figures: bad }), { status: 200 })) as typeof fetch });
     assert.deepEqual(answer, { kind: "unanswered", why: "it answered with figures the watchdog cannot read" }, `figures that are not figures are no answer: ${JSON.stringify(bad)}`);
   }
   for (const age of [undefined, "2500", null, -Infinity]) {
-    const answer = await probeHealth(4747, 1_000, (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: age, figures: figs }), { status: 200 })) as typeof fetch);
+    const answer = await probeHealth(4747, 1_000, { fetchImpl: (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: age, figures: figs }), { status: 200 })) as typeof fetch });
     assert.deepEqual(answer, { kind: "unanswered", why: "it answered figures without a readable snapshot age" }, `figures of no readable age are no answer: ${String(age)}`);
   }
   const refused = (async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); }) as typeof fetch;
-  assert.deepEqual(await probeHealth(4747, 1_000, refused), { kind: "unanswered", why: "ECONNREFUSED" });
+  assert.deepEqual(await probeHealth(4747, 1_000, { fetchImpl: refused }), { kind: "unanswered", why: "ECONNREFUSED" });
   const slow = ((_url: unknown, init?: RequestInit) => new Promise((_done, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)); })) as typeof fetch;
-  assert.deepEqual(await probeHealth(4747, 20, slow), { kind: "unanswered", why: "no answer within 0 s" });
+  assert.deepEqual(await probeHealth(4747, 20, { fetchImpl: slow }), { kind: "unanswered", why: "no answer within 0 s" });
 });
 
 /** A watchdog run over a throwaway record: the probe answers `probes` in turn, the clock is `clock.now`, and every restart and log line is kept. */
@@ -196,4 +199,18 @@ test("a record that cannot be read is set aside, not written over: it is said as
 
 test("the record's path is in the board's tickets folder", () => {
   assert.equal(watchdogPath("/state"), join("/state", "tickets", "watchdog.json"));
+});
+
+test("the watchdog asks /api/health with the board's key, and a live instance that refuses it is not restarted (A11-377)", async () => {
+  let sent: string | null = null;
+  const reading = (async (_url: string, init?: RequestInit) => {
+    sent = new Headers(init?.headers).get("x-ticket-token");
+    return new Response(JSON.stringify({ boardSnapshotAgeMs: 0, figures: null }), { status: 200 });
+  }) as typeof fetch;
+  await probeHealth(4747, 1_000, { fetchImpl: reading, key: "k3y" });
+  assert.equal(sent, "k3y");
+  const refused: Probe = { kind: "refused", why: "it answered 401" };
+  const verdict = decide(seen(refused, { unansweredSince: NOON - 10 * MINUTE }));
+  assert.equal(verdict.act, "none", "a refusal, however long, is no restart");
+  assert.match(verdict.act === "none" ? verdict.note : "", /refused the watchdog \(it answered 401\)/);
 });

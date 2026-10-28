@@ -81,6 +81,7 @@ test("the call site is the first frame outside Node, the ledger and the seams th
     "spawnSync (node:child_process:870:11)",
     `realExec (${CHECKOUT}/src/plugins/real-seams.ts:30:10)`,
     `run (file://${CHECKOUT}/plugins/github/gh.ts:50:3)`,
+    `exec (file://${CHECKOUT}/plugins/github/call-counter.ts:99:14)`,
     `readFeedback (file://${CHECKOUT}/plugins/github/pull-feedback.ts:74:12)`,
     `sweep (${CHECKOUT}/src/ticket-mode/pool.ts:12:1)`,
   );

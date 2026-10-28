@@ -36,7 +36,8 @@ export const PROBE_MS = NO_ANSWER_MS;
 /** What `/api/health` answered, as far as the watchdog reads it. */
 export type HealthAnswer = Readonly<{ boardSnapshotAgeMs: number; figures: HealthFigures | null }>;
 
-export type Probe = Readonly<{ kind: "answered"; health: HealthAnswer }> | Readonly<{ kind: "unanswered"; why: string }>;
+/** `refused` is an instance that answered and would not let the watchdog in (a 401 or 403): it is alive, so it is never restarted for it (A11-377). */
+export type Probe = Readonly<{ kind: "answered"; health: HealthAnswer }> | Readonly<{ kind: "unanswered"; why: string }> | Readonly<{ kind: "refused"; why: string }>;
 
 /** What the watchdog saw this minute. `activeForMs` is how long the instance's unit has been active, null when it is not running. */
 export type Observation = Readonly<{ probe: Probe; probedAt: number; now: number; unansweredSince: number | null; activeForMs: number | null }>;
@@ -74,6 +75,8 @@ function judgeFigures(health: HealthAnswer & { figures: HealthFigures }): Verdic
 /** What to do about what was seen. PURE. */
 export function decide({ probe, probedAt, now, unansweredSince, activeForMs }: Observation): Verdict {
   if (activeForMs === null) return leave("the instance is not running, so there is nothing to restart");
+  // A refusal is an answer: restarting a live instance for it restarted the board every four minutes from 14:22 on 2026-10-28, when the watchdog sent no key (A11-377).
+  if (probe.kind === "refused") return leave(`the instance answered but refused the watchdog (${probe.why}), so it is alive and is not restarted; its figures cannot be read until the watchdog is let in`);
   if (probe.kind === "unanswered") {
     if (activeForMs < ACTIVE_GRACE_MS) return leave(`the instance became active ${seconds(activeForMs)} ago and is still starting (${probe.why})`);
     const since = unansweredSince ?? probedAt;
@@ -155,10 +158,14 @@ export function isHealthFigures(value: unknown): value is HealthFigures {
   return isNumberOrNull(runs.sinceLastStartMs) && isNumber(runs.startable) && isNumber(runs.freeSlots) && isNumber(runs.starting) && isNumberOrNull(runs.oldestStartingMs);
 }
 
-/** `/api/health` of the instance on `port`, waiting at most `timeoutMs`. Never throws. */
-export async function probeHealth(port: number, timeoutMs: number = PROBE_MS, fetchImpl: typeof fetch = fetch): Promise<Probe> {
+/** The answers of an instance that is up and will not let the asker in: unauthorised and forbidden. */
+const REFUSALS: ReadonlySet<number> = new Set([401, 403]);
+
+/** `/api/health` of the instance on `port`, waiting at most `timeoutMs`, asked with the board's `key` (the route answers only to it). Never throws. */
+export async function probeHealth(port: number, timeoutMs: number = PROBE_MS, { fetchImpl = fetch, key = null }: Readonly<{ fetchImpl?: typeof fetch; key?: string | null }> = {}): Promise<Probe> {
   try {
-    const response = await fetchImpl(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs), ...(key === null ? {} : { headers: { "x-ticket-token": key } }) });
+    if (REFUSALS.has(response.status)) return { kind: "refused", why: `it answered ${response.status}` };
     if (!response.ok) return { kind: "unanswered", why: `it answered ${response.status}` };
     const body = await response.json() as { boardSnapshotAgeMs?: unknown; figures?: unknown } | null;
     const figures = body?.figures ?? null;
@@ -174,18 +181,29 @@ export async function probeHealth(port: number, timeoutMs: number = PROBE_MS, fe
   }
 }
 
+/** The board's key, or null when it cannot be read (said as an error): the watchdog still asks, and a refusal is not a restart. */
+function keyOf(read: () => string, log: (line: string) => void): string | null {
+  try {
+    return read();
+  } catch (err) {
+    log(`ERROR watchdog: the board's key cannot be read, so /api/health will refuse it: ${String((err as Error)?.message ?? err).split("\n")[0]}`);
+    return null;
+  }
+}
+
 /** The command: `agent-org ticket:watchdog`. @returns the exit code */
 export async function main(argv: string[]): Promise<number> {
   if (argv.length > 0) {
     process.stderr.write("usage: agent-org ticket:watchdog\n");
     return 2;
   }
-  const [{ readTicketSettings }, service] = await Promise.all([import("./settings.ts"), import("../install/service.ts")]);
+  const [{ readTicketSettings }, service, { boardKeyPath, readBoardKey }] = await Promise.all([import("./settings.ts"), import("../install/service.ts"), import("./board-key.ts")]);
   const settings = readTicketSettings();
   const deps = service.defaultServiceDeps();
   const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
+  const key = keyOf(() => readBoardKey(boardKeyPath(settings.stateDir)), log);
   try {
-    await runWatchdog({ now: Date.now, probe: () => probeHealth(settings.port), activeForMs: () => service.activeForMs("instance", deps, uptime() * 1000), restart: () => service.restartService("instance", deps),
+    await runWatchdog({ now: Date.now, probe: () => probeHealth(settings.port, PROBE_MS, { key }), activeForMs: () => service.activeForMs("instance", deps, uptime() * 1000), restart: () => service.restartService("instance", deps),
       recordPath: watchdogPath(settings.stateDir), log });
     return 0;
   } catch {
