@@ -254,7 +254,8 @@ async function writeStandoffMarks(ctx: PoolContext, entry: Entry, dir: string): 
   if (standoff.stage === "planner") return void writeFileSync(join(dir, STANDOFF_PLANNER_FILE), "\n");
   if (standoff.stage !== "worker") return;
   const state = await Promise.all(entry.review.map(async ({ url }) => {
-    const read = await ctx.codeHost.readReviewState(url);
+    // What is written is compared with the pull request later: it is read afresh, not as the sweep read it (A11-365).
+    const read = await ctx.codeHost.readReviewState(url, { fresh: true });
     return [url, { head: read?.head ?? standoff.head, body: typeof read?.view.body === "string" ? bodyHash(read.view.body) : null }] as const;
   }));
   writeFileSync(join(dir, STANDOFF_ROUND_FILE), `${JSON.stringify(Object.fromEntries(state))}\n`);

@@ -3844,7 +3844,11 @@ test("A11-119: a new head after requested changes gets a reviewer, though its ru
  */
 function withPluginReviewState(world: World, pull: Record<string, unknown>): World {
   const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf }));
-  const exec = () => ({ status: 0, stdout: JSON.stringify(pull), stderr: "" });
+  const { headRefOid, author, statusCheckRollup, reviews } = pull as { headRefOid: string; author: unknown; statusCheckRollup: Record<string, unknown>[]; reviews: unknown[] };
+  const node = { number: 1, state: "OPEN", headRefOid, author, isCrossRepository: false, reviews: { nodes: reviews }, baseRef: null,
+    commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: statusCheckRollup.map((check) => ({ __typename: "CheckRun", ...check })) } } } }] } };
+  const listed = JSON.stringify({ data: { repository: { isPrivate: false, bot: null, pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [node] } } } });
+  const exec = () => ({ status: 0, stdout: listed, stderr: "" });
   const plugin = createGithubCodeHost(fakePluginDeps({ policy, exec, execAsync: () => Promise.resolve(exec()) }));
   return { ...world, codeHost: { ...world.codeHost, readReviewState: (url) => plugin.readReviewState(url) } };
 }

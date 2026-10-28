@@ -44,8 +44,11 @@ const reviewStateOf = (pull: FakePull | undefined): ReviewState | null => (pull 
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
 function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<string, DefaultBranchRed>, login: string | null, calls: string[]):
-  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "peekReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange"> {
+  Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readDefaultBranchRed" | "readReplies" | "readReviewState" | "peekReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "pullsNaming" | "openDependencyPulls" | "readChange" | "refreshPull"> {
   return {
+    refreshPull(url) {
+      calls.push(`refreshPull ${url}`);
+    },
     async readOwnLogin() {
       calls.push("readOwnLogin");
       return login;
@@ -71,8 +74,8 @@ function readsOf(pulls: Pulls, repositories: Set<string>, defaultBranches: Map<s
       // Only the accounts the caller names, and only what was posted after the time: the contract's own filter, so a test seeds every reply and the fake keeps the right ones.
       return pull === undefined ? null : pull.replies.filter((reply) => reply.at > since && authors.includes(reply.author)).sort((a, b) => a.at - b.at);
     },
-    async readReviewState(url) {
-      calls.push(`readReviewState ${url}`);
+    async readReviewState(url, options) {
+      calls.push(options?.fresh === true ? `readReviewState ${url} fresh` : `readReviewState ${url}`);
       return reviewStateOf(pulls.get(url));
     },
     // What the host holds now, with no read recorded: a fake has no read to remember, and the reviewer's start asks for the state it was just handed.

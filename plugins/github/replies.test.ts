@@ -1,6 +1,7 @@
-// no-token: gh -- `readReplies` is handed a stub `run`; nothing here spawns `gh` or needs a token.
+// no-token: gh -- `readReplies` is handed snapshots that answer from a table; nothing here spawns `gh` or needs a token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { snapshotsHolding, snapshotsOf } from "./pull-snapshot-fixture.ts";
 import { readReplies } from "./replies.ts";
 
 const URL = "https://github.com/netboxlabs/nbl-ui-netbox/pull/806";
@@ -9,10 +10,9 @@ const ms = (minute: number) => Date.parse(at(minute));
 const WORKER = "worker-bot";
 const request = { since: ms(10), authors: [WORKER, "chairman"] };
 
-/** A `run` that answers with `pull` as the pull request, and records each call. */
-function answering(pull: unknown) {
-  const calls: string[][] = [];
-  return { calls, run: async (args: string[]) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pull } } }); } };
+/** Snapshots that hold `pull` as the pull request, as `run`, which the read is handed. */
+function answering(pull: Record<string, unknown>) {
+  return { run: snapshotsHolding(pull) };
 }
 const node = (login: string, minute: number, body: string, extra: Record<string, unknown> = {}) =>
   ({ author: { login }, createdAt: at(minute), submittedAt: at(minute), body, url: `${URL}#note-${minute}`, ...extra });
@@ -20,7 +20,7 @@ const pullOf = ({ reviews = [] as unknown[], comments = [] as unknown[], threads
   ({ reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) } });
 
 test("a conversation comment, a review that is only a comment and a review-thread comment, each posted after the time by a named account, are the replies, oldest first", async () => {
-  const { run, calls } = answering(pullOf({
+  const { run } = answering(pullOf({
     reviews: [node(WORKER, 30, "from a review", { state: "COMMENTED" })],
     comments: [node(WORKER, 20, "from the conversation"), node("chairman", 40, "from the chairman")],
     threads: [node(WORKER, 25, "from a thread")],
@@ -31,8 +31,7 @@ test("a conversation comment, a review that is only a comment and a review-threa
     { author: WORKER, at: ms(30), url: `${URL}#note-30`, text: "from a review" },
     { author: "chairman", at: ms(40), url: `${URL}#note-40`, text: "from the chairman" },
   ]);
-  assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
-  assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
+  assert.deepEqual(run.reads.pulls, [["netboxlabs/nbl-ui-netbox", 806]], "the pull request is read once, from the snapshot of its repository");
 });
 
 test("a reply posted at or before the time, by an account not named, with no text, or a review that is a verdict is not a reply", async () => {
@@ -45,11 +44,9 @@ test("a reply posted at or before the time, by an account not named, with no tex
 });
 
 test("a read GitHub does not answer is null, never no replies", async () => {
-  const refuse = async (): Promise<string> => { throw new Error("gh exited 1"); };
-  assert.equal(await readReplies(URL, request, refuse), null, "a refused run");
-  assert.equal(await readReplies("https://example.com/not-a-pull", request, refuse), null, "an address that is not a pull request");
-  assert.equal(await readReplies(URL, request, async () => JSON.stringify({ data: { repository: { pullRequest: null } } })), null, "an answer without the pull request");
-  assert.equal(await readReplies(URL, request, async () => "not json"), null, "an answer that does not parse");
+  assert.equal(await readReplies(URL, request, snapshotsOf({})), null, "a repository the snapshots cannot read");
+  assert.equal(await readReplies("https://example.com/not-a-pull", request, snapshotsHolding(pullOf())), null, "an address that is not a pull request");
+  assert.equal(await readReplies(URL, request, snapshotsOf({ "netboxlabs/nbl-ui-netbox": [] })), null, "a pull request the repository does not have");
 });
 
 test("A11-156: logins are compared as GitHub does, without regard to case", async () => {
