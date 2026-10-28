@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A stall release of a claimed row in a second declared tracker lands (a11ign/agent-org#834, split out of #747). `ReleaseRequest` carries the row's tracker key (absent means the home tracker), which `claim-stall-tick.ts` fills from the scope the row was read from, and `performRelease` does the whole release THERE: `stillHolds` reads the holder's `session:` label on that tracker's repository, the release comment is posted to it, `row-claim decline` carries `--tracker=<key>`, and the tree is read and the launch worktree made in the host's clone of it. Before, the order for `agent-org#476` read home #476, found no `session:` label and was refused as stale on every tick. A tracker that cannot be read is `null` (retried next tick), never "no longer held", and a key the project does not declare or a clone the host does not give is refused before anything is read or written. The kept-tree ledger is keyed by the home tracker's row number, so a keyed release neither writes nor deletes under it. The withholding #747 put in (`RELEASE_WAITS_ON`) is removed, so a second tracker's stalled claim is nudged, then released.
