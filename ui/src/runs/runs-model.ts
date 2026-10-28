@@ -15,6 +15,7 @@ import { cycleNote } from "../../../src/ticket-mode/board-view/wait-cycles.ts";
 import {
   isParked, overrideNote, rebaseNote, retargetNote, runsShown, shownStatus, stackedOn, stackNote, statusCounts, verdictNote, waitNote, waitsOn, workingNote,
 } from "../../../src/ticket-mode/board-view/pull-status-and-notes.ts";
+import { stackedOnItNote, stackWaitNote } from "../../../src/ticket-mode/board-view/stack-wait.ts";
 import { publishingOffLine } from "../../../src/ticket-mode/board-view/publishing-off.ts";
 import { RUN_STATUSES, type RunStatus } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
 import type { ConfigView, QueueView } from "../api/types.ts";
@@ -210,6 +211,8 @@ function linesOf(entry: RunEntry, { queue, publisher, now }: NoteContext, ci?: s
     sharedRunNote(entry, entries),
     waits.length > 0 ? `Waits on ${waits.map((blocker) => `${blocker.key} (${blocker.status})`).join(", ")}` : null,
     stacked.length > 0 ? stackNote(stacked) : null,
+    stackWaitNote(entry, entries),
+    stackedOnItNote(entry, entries),
     rebaseNote(entry),
     waitNote(entry, entries),
     cycleNote(entry, entries),

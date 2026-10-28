@@ -21,8 +21,10 @@ name: ci
 # an exclusion is a test that does not run, so a defect in what it guards would have gone unseen.
 
 on:
+  # NO `branches:` FILTER ON `pull_request`, SO A STACKED PULL REQUEST HAS CHECKS (A11-370). `branches` filters on the pull request's BASE, and a pull request stacked on another branch has that branch as its base: with `[main]` it got no run at all, the
+  # reviewer never started (it starts when the checks are green), and the board said nothing of why (agent-org#1984 on #1982, 2026-10-28). `main` stays protected by the merge queue, whose `merge_group` run below is the merge condition: a stacked
+  # pull request is retargeted to `main` when the one below it merges (A11-106) and enters the queue like any other.
   pull_request:
-    branches: [main]
     # `edited`: the `no-release:` line that excuses a change with no changeset is added by editing the pull request body, and the `changeset` job must re-read it.
     types: [opened, synchronize, reopened, edited]
   # A merge queue tests the queue's merge commit and waits for a check reporting on THIS event; without it a queued pull request never merges.
