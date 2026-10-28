@@ -1,12 +1,13 @@
 // no-token: gh -- the board is a real `createBoard` with the tracker, the code host and the pool injected; the monitor and the ledger are fakes, but for the request thread's, under which this Node runs `sh -c true` twice
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import childProcess from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
+import type { GithubCallCounts } from "../plugins/contracts/call-counts.ts";
 import type { BlockingSite } from "./blocking-ledger.ts";
 import { measuredOver } from "./health-fixture.ts";
 import { figuresOf, snapshotOf } from "./board-thread.ts";
@@ -19,6 +20,9 @@ import { parseTicketSettings } from "./settings.ts";
 const READING: LoopReading = { p50Ms: 1.5, p99Ms: 2_013, maxMs: 2_020, windowMs: 60_000, sinceStartMaxMs: 6_680, at: 1_761_400_000_000 };
 const SITES: BlockingSite[] = Array.from({ length: 12 }, (_, made) => ({ site: `plugins/github/pull-feedback.ts:${made + 1}`, program: "gh", count: 1, totalMs: 100 - made, maxMs: 100 - made }));
 
+const GH_CALLS: GithubCallCounts = { since: "2026-10-28T00:00:00.000Z", total: 41, perMinute: 7, notModified: 5, byKind: { graphql: 12, rest: 25, cli: 4 },
+  currentSweep: { at: "2026-10-28T00:10:30.000Z", calls: 3 }, lastSweep: { at: "2026-10-28T00:10:00.000Z", calls: 4 } };
+
 test("the health view is the loop's reading as board's, and the ten sites that held it the longest", () => {
   const asked: number[] = [];
   const hour = { p50Ms: 1, p99Ms: 90, maxMs: 2_020, windowMs: 3_600_000 };
@@ -26,7 +30,8 @@ test("the health view is the loop's reading as board's, and the ten sites that h
   const view = healthView({ read: () => READING, readHour: () => hour }, { worst: (count) => { asked.push(count); return SITES.slice(0, count); } }, { holds: { total: () => 12 }, calls: { figures: () => calls } });
   assert.deepEqual(asked, [HEALTH_SITES]);
   assert.equal(HEALTH_SITES, 10);
-  assert.deepEqual(view, { loop: { board: READING }, blocking: SITES.slice(0, 10), measured: { loop: READING, hour, holds: 12, calls } });
+  assert.deepEqual(view, { loop: { board: READING }, blocking: SITES.slice(0, 10), measured: { loop: READING, hour, holds: 12, calls }, githubCalls: null });
+  assert.deepEqual(healthView({ read: () => READING, readHour: () => hour }, { worst: () => [] }, { holds: { total: () => 0 }, calls: { figures: () => calls } }, () => GH_CALLS).githubCalls, GH_CALLS, "the code host's count of its calls to GitHub is in the view (A11-365)");
 });
 
 /** A board over a throwaway state folder, with `health` when one is given. */
@@ -40,7 +45,7 @@ function boardWith(health?: () => HealthView) {
 
 test("GET /api/health answers the instance's health view, read fresh on every request", async () => {
   let reads = 0;
-  const viewAt = (p99Ms: number): HealthView => ({ loop: { board: { ...READING, p99Ms } }, blocking: SITES.slice(0, 3), measured: measuredOver({ ...READING, p99Ms }) });
+  const viewAt = (p99Ms: number): HealthView => ({ loop: { board: { ...READING, p99Ms } }, blocking: SITES.slice(0, 3), measured: measuredOver({ ...READING, p99Ms }), githubCalls: GH_CALLS });
   const board = boardWith(() => { reads += 1; return viewAt(reads); });
   assert.deepEqual(await board.api("GET", "/api/health", {}), [200, viewAt(1)]);
   const [, again] = await board.api("GET", "/api/health", {});
@@ -59,14 +64,14 @@ test("an interval override is a whole number of ms above 0 in AGENT_ORG_<name>, 
 
 test("the request thread's health is both loops, how old the board thread's snapshot is, the board thread's spawns, and the request thread's own count", () => {
   const requests = { ...READING, p99Ms: 4 };
-  const latest = { snapshot: { loop: READING, blocking: SITES.slice(0, 2) }, receivedAt: 1_000 };
-  assert.deepEqual(requestHealthView(requests, latest, 3_500, 0), { loop: { requests, board: READING }, boardSnapshotAgeMs: 2_500, blocking: SITES.slice(0, 2), requestThreadSyncCalls: 0, figures: null, watchdog: null });
+  const latest = { snapshot: { loop: READING, blocking: SITES.slice(0, 2), githubCalls: GH_CALLS }, receivedAt: 1_000 };
+  assert.deepEqual(requestHealthView(requests, latest, 3_500, 0), { loop: { requests, board: READING }, boardSnapshotAgeMs: 2_500, blocking: SITES.slice(0, 2), requestThreadSyncCalls: 0, figures: null, watchdog: null, githubCalls: GH_CALLS });
   assert.equal(requestHealthView(requests, latest, 900, 0).boardSnapshotAgeMs, 0, "a clock that steps back never reads a negative age");
 });
 
 test("the request thread counts and says each synchronous spawn after it listens, and none before", () => {
   const said: string[] = [];
-  const health = startRequestHealth({ latest: () => ({ snapshot: { loop: READING, blocking: [] }, receivedAt: 0 }), now: () => 0, err: (line) => said.push(line) });
+  const health = startRequestHealth({ latest: () => ({ snapshot: { loop: READING, blocking: [], githubCalls: null }, receivedAt: 0 }), now: () => 0, err: (line) => said.push(line) });
   // Through the module object, as the wrappers are put on it: a named import of this test file's bundle keeps the original.
   childProcess.spawnSync("sh", ["-c", "true"]);
   assert.equal(health.view().requestThreadSyncCalls, 0, "a spawn before it listens is its start's");
@@ -86,7 +91,7 @@ const POOL = {
 
 test("the board thread's snapshot carries the figures: the loop over a minute and an hour, the holds and calls of the hour, the pool's runs and passes, and the instance's age", () => {
   const hour = { p50Ms: 2, p99Ms: 80, maxMs: 900, windowMs: 3_600_000 };
-  const health: HealthView = { loop: { board: READING }, blocking: [], measured: { loop: READING, hour, holds: 7, calls: CALLS } };
+  const health: HealthView = { loop: { board: READING }, blocking: [], measured: { loop: READING, hour, holds: 7, calls: CALLS }, githubCalls: null };
   const board = { store: { get: () => ({ entries: [], max: 3, paused: false }) }, update: () => null, pool: { figures: () => POOL } } as unknown as Parameters<typeof snapshotOf>[0];
   const snapshot = snapshotOf(board, null, health, 1_761_400_100_000, figuresOf(board, health, 1_761_400_100_000, 1_761_400_000_000));
   assert.deepEqual(snapshot.figures, {
@@ -98,7 +103,7 @@ test("the board thread's snapshot carries the figures: the loop over a minute an
 });
 
 test("/api/health serves the figures as the latest snapshot holds them, with the snapshot's age, and the watchdog's record when it has restarted anything", () => {
-  const figures = figuresOf({ pool: { figures: () => POOL } } as unknown as Parameters<typeof figuresOf>[0], { loop: { board: READING }, blocking: [], measured: measuredOver(READING) }, 1_000, 0);
+  const figures = figuresOf({ pool: { figures: () => POOL } } as unknown as Parameters<typeof figuresOf>[0], { loop: { board: READING }, blocking: [], measured: measuredOver(READING), githubCalls: null }, 1_000, 0);
   const watchdog = { restartsLastHour: 1, restartsLastDay: 1, restartsTotal: 1, last: { at: 1, reason: "no-fill" as const, detail: "no fill() pass has completed for 5.2 min" } };
   const view = requestHealthView(READING, { snapshot: { loop: READING, blocking: [], figures }, receivedAt: 1_000 }, 4_000, 0, watchdog);
   assert.deepEqual([view.figures, view.boardSnapshotAgeMs, view.watchdog], [figures, 3_000, watchdog]);
@@ -130,4 +135,21 @@ test("the last hour's reading is kept for a few seconds, because the snapshot th
   assert.deepEqual([hour(), hour()], [1, 1], "a second read inside the time is the first's");
   clock += 5_000;
   assert.equal(hour(), 2, "and it is worked out again when the time is up");
+});
+
+test("A11-365: startHealth serves the code host's count once the instance has a code host to ask, and none before", () => {
+  // In a process of its own: `startHealth` puts its ledger on the process's `node:child_process`, as the instance does once.
+  const dir = tmpDir("health-counting-");
+  const probe = join(dir, "probe.mjs");
+  writeFileSync(probe, [
+    `const { startHealth } = await import(${JSON.stringify(new URL("./health-route.ts", import.meta.url).href)});`,
+    "const health = startHealth(\"probe\");",
+    "const before = health.view().githubCalls;",
+    "health.counting(() => ({ total: 7 }));",
+    "process.stdout.write(JSON.stringify({ before, after: health.view().githubCalls }));",
+    "",
+  ].join("\n"));
+  const run = spawnSync(process.execPath, [probe], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { before: null, after: { total: 7 } });
 });

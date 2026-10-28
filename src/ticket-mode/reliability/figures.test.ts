@@ -8,7 +8,7 @@ import { BACKFILLED, breaches, DEFAULT_WINDOW_MS, figureOfDescription, MIN_CALLS
 const figures = (over: Partial<HealthFigures> = {}): HealthFigures => ({
   at: 0, uptimeMs: 0, loop: { lastMinute: { p50Ms: 1, p99Ms: 9 }, lastHour: { p50Ms: 1, p99Ms: 40 } }, syncHolds: { lastHour: 12, holdMs: 100 },
   calls: { linear: { calls: 200, failures: 6, failuresPer100: 3 }, github: { calls: 5, failures: 5, failuresPer100: 100 } },
-  runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null }, ...over,
+  runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] }, ...over,
 });
 
 test("the three examples of the ticket parse to a figure and a threshold, with the epic's 7 days when no window is named", () => {

@@ -1,5 +1,6 @@
 // no-token: gh -- herdr, the tracker and the clock are all injected; nothing is spawned
 // A11-288: a plan whose `## After-merge checks` section the board refuses goes back to its planner, twice, and then to the person's session, never to the chairman
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
@@ -7,7 +8,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
-import { batchDir, createPool, herdrName, type QueueStore } from "./pool.ts";
+import { batchDir, herdrName, type QueueStore } from "./pool.ts";
 import { fakeHerdr } from "./pool-fixture.ts";
 import { MAX_ASK_CHARS } from "./wait-on/wait-parse.ts";
 import { AFTER_MERGE_CHECKS_FORMAT, AFTER_MERGE_CHECKS_HEADING } from "./after-merge/plan-section.ts";
@@ -53,7 +54,7 @@ async function planning({ batch = false }: { batch?: boolean } = {}) {
     return herdr.run(args);
   };
   const clock = { now: START };
-  const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
+  const pool = createSettledPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost() });
   await pool.tick();
   store.set(pauseQueue(store.get()));

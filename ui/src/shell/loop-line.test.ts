@@ -45,7 +45,7 @@ const FIGURES: HealthFigures = {
   syncHolds: { lastHour: 3, holdMs: 100 },
   calls: { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 1_000, failures: 0, failuresPer100: 0 } },
   runs: { sinceLastStartMs: 180_000, startable: 2, freeSlots: 1, starting: 0, oldestStartingMs: null, holding: null },
-  fill: { sinceLastCompletedMs: 4_000, lastEarlyReturn: null },
+  fill: { sinceLastCompletedMs: 4_000, lastEarlyReturn: null, held: [] },
 };
 
 describe("ageText", () => {
@@ -64,7 +64,7 @@ describe("the figures under the loop line (A11-363)", () => {
   });
 
   it("says why the last fill pass returned early, and that nothing has started or filled yet", () => {
-    const stuck: HealthFigures = { ...FIGURES, runs: { ...FIGURES.runs, sinceLastStartMs: null, startable: 1 }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: { reason: "a read of the tracker or the code host failed: fetch failed", agoMs: 3_000 } } };
+    const stuck: HealthFigures = { ...FIGURES, runs: { ...FIGURES.runs, sinceLastStartMs: null, startable: 1 }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: { reason: "a read of the tracker or the code host failed: fetch failed", agoMs: 3_000 }, held: [] } };
     expect(figureDetails(stuck)[2]).toBe("Last run start never; 1 startable run, 1 free slot; last fill not yet; its last pass returned early: a read of the tracker or the code host failed: fetch failed");
   });
 

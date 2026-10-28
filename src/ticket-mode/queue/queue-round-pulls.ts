@@ -52,7 +52,7 @@ const settle = (queue: Queue, key: string, left: readonly string[], states: Read
 function drop(queue: Queue, entry: Entry, states: Readonly<Record<string, PullState>>, now: number): Queue {
   const review = entry.review ?? [];
   // What holds a queued round back, and since when, is not the finished run's.
-  const { waitSince: _waiting, sessionWait: _session, stoppedForBlocker: _behind, ciHold: _held, pathsFailure: _plan, blockersFailure: _unread, ...round } = entry;
+  const { waitSince: _waiting, sessionWait: _session, stoppedForBlocker: _behind, ciHold: _held, pathsFailure: _plan, pathsRetryAt: _again, ...round } = entry;
   const ended = finish(replace(queue, entry.ticket.key, () => round), entry.ticket.key, { kind: "reviewed", prs: review }, now);
   const read = review.flatMap(({ url }) => (states[url] === undefined ? [] : [[url, states[url]] as const]));
   return recordPullStates(ended, new Map([[entry.ticket.key, Object.fromEntries(read)]]), now);

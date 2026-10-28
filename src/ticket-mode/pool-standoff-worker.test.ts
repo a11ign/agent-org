@@ -32,8 +32,9 @@ async function workerRound({ start = true }: { start?: boolean } = {}) {
 }
 
 test("A11-290: the worker's round carries the re-reviewer's reasons, says a reply with no change is refused, and leaves the Stop hook the head and the description as they were", async () => {
-  const { dir, entry, url } = await workerRound();
+  const { dir, entry, url, host } = await workerRound();
   assert.equal(entry().phase, "running");
+  assert.ok(host.calls.includes(`readReviewState ${url} fresh`), "A11-365: the head and the description are read afresh, since the Stop hook compares them with the pull request later and a read shared with the sweep can be as old as the sweep");
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.match(brief, /stand-off round/);
   assert.ok(brief.includes("is still not convinced") && brief.includes("340 KB"), "the reasons are in the brief");
@@ -66,7 +67,7 @@ test("A11-290: a stand-off round that ends reviewed is the end of both routes; t
 
 test("A11-290: the flag does not fire while the stand-off has a route to go, however long the block has stood", async () => {
   const run = await workerRound({ start: false });
-  assert.equal(run.entry().phase, "queued", "the worker's round is queued: no flag for a run with a round");
+  assert.ok(["queued", "starting"].includes(run.entry().phase), "the worker's round is queued (and, nothing holding it, starting): no flag for a run with a round");
   assert.ok(!existsSync(join(run.dir, STANDOFF_ROUND_FILE)), "and it has not started");
   clock.ms += 3 * 60 * MINUTE;
   await run.pool.watchFeedback();

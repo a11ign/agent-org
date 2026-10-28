@@ -283,6 +283,8 @@ async function rerunOnUnrelatedReply(ctx: PoolContext, entry: Entry, pull: Reado
   // Without the round's start there is no telling which replies are the round's.
   if (self === null || entry.startedAt === undefined) return null;
   if (ctx.repliesRead.has(asked) || typeof ctx.codeHost.readReplies !== "function") return null;
+  // A round's replies are read once, at the round's end: afresh, since a reply the worker posted just before it ended must not be missed for good (A11-365).
+  ctx.codeHost.refreshPull?.(url);
   const replies = await ctx.codeHost.readReplies(url, { since: entry.startedAt, authors: [self] });
   if (replies === null) return null;
   ctx.repliesRead.add(asked);

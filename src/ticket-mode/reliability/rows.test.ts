@@ -9,7 +9,7 @@ import { advance, newWatch, type Facts, type Watch } from "./watch.ts";
 const figures = (holds: number): HealthFigures => ({
   at: 0, uptimeMs: 0, loop: { lastMinute: { p50Ms: 1, p99Ms: 9 }, lastHour: { p50Ms: 1, p99Ms: 40 } }, syncHolds: { lastHour: holds, holdMs: 100 },
   calls: { linear: { calls: 100, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 } },
-  runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null },
+  runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] },
 });
 const spec = { figure: "sync-holds", threshold: 10, windowMs: 86_400_000 } as const;
 const open = (key: string): Watch => newWatch({ key, title: `Title ${key}`, url: null, origin: "ticket" }, spec);

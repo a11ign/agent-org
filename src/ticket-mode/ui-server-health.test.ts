@@ -19,7 +19,7 @@ import { createUi } from "./ui-server.ts";
 
 const PAGE: LoopReading = { p50Ms: 0, p99Ms: 1.2, maxMs: 3, windowMs: 60_000, sinceStartMaxMs: 9, at: 1_761_400_000_000 };
 const BOARD_LOOP: LoopReading = { ...PAGE, p99Ms: 2_013 };
-const BOARD: HealthView = { loop: { board: BOARD_LOOP }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 4, totalMs: 8_040, maxMs: 2_016 }], measured: measuredOver(BOARD_LOOP) };
+const BOARD: HealthView = { loop: { board: BOARD_LOOP }, blocking: [{ site: "plugins/github/pull-feedback.ts:74", program: "gh", count: 4, totalMs: 8_040, maxMs: 2_016 }], measured: measuredOver(BOARD_LOOP), githubCalls: null };
 
 /** A server for `handle` on a free port on 127.0.0.1: its base address, and what closes it. */
 async function listen(handle: (port: number) => (req: IncomingMessage, res: ServerResponse) => Promise<void>) {

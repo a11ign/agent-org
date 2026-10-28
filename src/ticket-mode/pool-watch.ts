@@ -8,6 +8,7 @@ import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, recordWrittenStep,
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { checkRound, conflictRound, feedbackRound, markResumed, observe, observePublish, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
+import { refreshStartReads } from "./pool-start-reads.ts";
 import { declineSafetyPrompt, readPrompt, retellDeclined, untoldDecline } from "./pool-decline.ts";
 import { join } from "node:path";
 import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
@@ -17,6 +18,7 @@ import { rerunCancelledGate } from "./pool-cancelled-gate.ts";
 import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, mergesBase, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, proposedEdit, type Queue, replace, SETTLED, type WorkingNote, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { deadlineOf, wakeRefused } from "./wait-on/wait-note.ts";
 import { wakePrompt } from "./wait-on/wait-prompt.ts";
 import { reseatMoved, resumeAfterRestart, sendToAgent, watchIdle } from "./pool-resume.ts";
@@ -517,6 +519,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
       ageCiHolds(ctx);
       // A run that crashed on a transient network error is queued again once its back-off has passed, so this pass's fill may start it (A11-345).
       retryCrashed(ctx);
+      // What a start is decided on is read beside the pass, and a read that ends wakes it (A11-364): the fill below awaits none, and decides from what was last recorded.
+      refreshStartReads(ctx, () => tick(ctx));
       await fill(ctx);
       // After the fill, which decides who starts: what each queued run waits on, and since when, so a wait on the same ticket for hours is listed (A11-298). Written only when a wait began, changed or ended.
       noteWaits(ctx);

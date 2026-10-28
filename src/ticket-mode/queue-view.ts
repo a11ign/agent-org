@@ -20,7 +20,7 @@ import type { Ticket } from "./source.ts";
  * name a run by this list, so a page that reads a field left out fails its `tsc`.
  */
 export const LIST_FIELDS = [
-  "ticket", "phase", "outcome", "waiting", "prompt", "declined", "trackerState", "pullStates", "queuedAt", "startedAt", "finishedAt", "workspace", "pane", "blockers", "model", "effort", "pathsFailure", "blockersFailure", "toolVersion",
+  "ticket", "phase", "outcome", "waiting", "prompt", "declined", "trackerState", "pullStates", "queuedAt", "startedAt", "finishedAt", "workspace", "pane", "blockers", "model", "effort", "pathsFailure", "pathsRetryAt", "blockersReadAt", "blockersFailure", "toolVersion",
   "stoppedForUpdate", "stoppedForBlocker", "ciHold", "resume", "sessionWait", "sessionNote", "overlapOverride", "waitSince", "repos", "plan", "planned", "ticketChange", "ticketChanges", "learned", "review", "batch", "talkFrom",
   "blockersDeclared", "talk", "partial", "declared", "partialOverruled", "steps", "completedBy", "reopenFailure", "afterMerge", "planSteps", "plannedRepo", "projectRepo", "paths", "stepPaths", "pullFiles", "waitMerged",
   "published", "worker", "handedBack", "readopted", "lostInRestart", "working", "verdictNotPosted", "reviewerRefused", "retargets", "stackBase", "checkHeads", "queueHeads", "outcomeHeads", "outcomeBlocks", "pullHeads", "tokens", "waitingOnTicket", "opened",

@@ -4,10 +4,11 @@
 // A PASS THAT RETURNS EARLY IS NOT A COMPLETED PASS. `fill` says why it gave up (`noteFillEarly`) and when it ran to its end (`noteFillCompleted`), so "no pass has completed for five minutes" is a pass that is hung, or one that
 // gives up at every try, and the reason is on the board. A pass the board ends on purpose (an update draining, a failing preflight) says so in `holding`: nothing a restart would mend, so no start is waited for.
 import { availableParallelism, loadavg } from "node:os";
-import { fillFiguresOf, runFiguresOf, type PoolFigures } from "./health-figures.ts";
+import { fillFiguresOf, type HeldRun, runFiguresOf, type PoolFigures } from "./health-figures.ts";
 import type { PoolContext } from "./pool-context.ts";
 import { nextStarts } from "./queue.ts";
-import { pathsUnread } from "./queue/queue-transitions.ts";
+import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
+import { startReadHold } from "./queue/start-reads.ts";
 
 /** A pass ran to its end. */
 export function noteFillCompleted({ fillState, now }: Pick<PoolContext, "fillState" | "now">): void {
@@ -25,6 +26,19 @@ export function noteFillHolding({ fillState }: Pick<PoolContext, "fillState">, r
   fillState.holding = reason;
 }
 
+/** The queued runs the latest pass held for what is known of their blockers or plan, and why (A11-364). */
+export function noteFillHeld({ fillState }: Pick<PoolContext, "fillState">, held: readonly HeldRun[]): void {
+  fillState.held = held;
+}
+
+/** The queued runs whose blockers or plan are unread, or whose blockers are too old to start on at `now`, each with the reason its card shows. PURE. */
+export function heldRuns(queue: Queue, now: number): HeldRun[] {
+  return queue.entries.flatMap((entry) => {
+    const reason = startReadHold(entry, now);
+    return reason === null ? [] : [{ key: entry.ticket.key, reason }];
+  });
+}
+
 /** The instance is stopping: the pool starts nothing from now on. */
 export function noteStopping({ fillState }: Pick<PoolContext, "fillState">): void {
   fillState.stopping = true;
@@ -35,10 +49,10 @@ export function noteRunStarted({ fillState, now }: Pick<PoolContext, "fillState"
   fillState.lastStartAt = now();
 }
 
-/** The queued entries a pass would start now: the ones `fill` filters to, whose blockers and plan paths are read. */
-export function startableNow(ctx: Pick<PoolContext, "store" | "deps">): number {
+/** The queued entries a pass would start now: the ones `nextStarts` lets start, whose blockers and plan paths are known and not too old (A11-364). */
+export function startableNow(ctx: Pick<PoolContext, "store" | "deps" | "now">): number {
   const { load, cores } = (ctx.deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
-  return nextStarts(ctx.store.get(), load, cores).filter((entry) => entry.blockers !== undefined && !pathsUnread(entry)).length;
+  return nextStarts(ctx.store.get(), load, cores, ctx.now()).length;
 }
 
 /** The figures the pool gives `/api/health`: the runs (the latest start, who could start, the free slots) and the passes. */

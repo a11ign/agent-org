@@ -17,7 +17,7 @@ export const MERGE_BOT_WORKFLOW_PATH: typeof CONTRACT_MERGE_BOT_WORKFLOW_PATH = 
 export const MERGE_BOT_GATE = "gate";
 
 /** The query's selection of the merge bot's file on the default branch: null where the repository does not hold it. */
-const MERGE_BOT_FILE = `bot: object(expression: "HEAD:${MERGE_BOT_WORKFLOW_PATH}") { __typename }`;
+export const MERGE_BOT_FILE = `bot: object(expression: "HEAD:${MERGE_BOT_WORKFLOW_PATH}") { __typename }`;
 /** The query's selection of the merge bot's file on pull request `number`'s head (`refs/pull/<n>/head`, which GitHub keeps for a fork's pull request too): null where the head does not hold it, as it does not when the pull request deletes it. */
 const headMergeBotFile = (number: number): string => `headBot: object(expression: "refs/pull/${number}/head:${MERGE_BOT_WORKFLOW_PATH}") { __typename }`;
 /** The fields that say whether a repository is private and holds the merge bot, on its default branch or on the head of pull request `number` (A11-344); a query asks them and {@link answerRunsMergeBot} reads the answer. */

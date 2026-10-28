@@ -111,9 +111,10 @@ import { reconcile } from "./pool-readopt.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
 import { hostAlertsSettled } from "./host-alerts.ts";
 import { noteStopping, poolFigures } from "./pool-figures.ts";
+import { startReadsSettled } from "./pool-start-reads.ts";
 import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads, startGreenReviewers } from "./pool-reviewers.ts";
 import { newPoolContext, type PoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
-import { log } from "./pool-state.ts";
+import { log, messageOf } from "./pool-state.ts";
 
 export { MAX_REPOST_ATTEMPTS } from "./pool-reviewers.ts";
 export { AnswerNotDelivered, type Answered } from "./pool-answer.ts";
@@ -142,8 +143,20 @@ async function restackThenWatch(ctx: PoolContext): Promise<void> {
   ctx.keptSweep.done = watchKeptPulls(ctx).then((queued) => { if (queued) void tick(ctx); });
 }
 
+/**
+ * A pass asked for now, beside the caller (A11-364): the run that just became queued is decided on at once. It is held with the reads, so {@link startReadsSettled} waits for it too. A pass that is under way is asked to run once
+ * more after it, as any tick asked for during one is. Never rejects.
+ */
+function wakePass(ctx: PoolContext): void {
+  const { pending } = ctx.startReads;
+  const pass: Promise<void> = tick(ctx).catch((err) => log(`the pass after a run was queued failed: ${messageOf(err).split("\n")[0]}`)).finally(() => { pending.delete(pass); });
+  pending.add(pass);
+}
+
 export function createPool(store: QueueStore, deps: PoolDeps) {
   const ctx = newPoolContext(store, deps);
+  // Deferred one turn: the work that asks has its own bookkeeping to finish first.
+  ctx.wake.run = () => queueMicrotask(() => wakePass(ctx));
   return {
     tick: () => tick(ctx),
     stop: (key: string) => stop(ctx, key),
@@ -182,6 +195,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     hostAlerts: () => ctx.hostAlerts.alerts,
     /** Settles once the host read the last tick started has answered (A11-279). Never rejects. */
     hostAlertsSettled: () => hostAlertsSettled(ctx),
+    /** Settles once the reads a start is decided on (blockers, heads, plans) that the last passes began have ended, and the pass each woke has run (A11-364). Never rejects. */
+    startReadsSettled: () => startReadsSettled(ctx),
     /** Why runs are held: the `tickets.preflight` command that failed and what it said, or null while none has. */
     held: () => ctx.gate.held(),
     /** The runs and `fill()` passes as `/api/health` serves them (A11-363): the latest start, the startable entries, the free slots, and when a pass last completed. */

@@ -786,7 +786,7 @@ async function serve(): Promise<void> {
     poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, hostAlertReads: liveHostAlertReads(), privateTmpBase: privateBase(), legacyTmp: { root: LEGACY_TMP_ROOT },
       healthFigures: served.read, runChoice: savedChoice } };
   const board = createBoard(boardDeps);
-  served.pointAt(board, health, Date.now() - process.uptime() * 1000);
+  served.pointAt(board, health.view, Date.now() - process.uptime() * 1000);
   // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
   // The runs that are still starting are waited for first (A11-363): an instance that ends while a run's agent is not open yet leaves herdr nothing to list, and the next one queues the run again. No run starts
   // meanwhile. A second signal is a person who will not wait, and stops at once.
@@ -805,7 +805,8 @@ async function serve(): Promise<void> {
   await board.pool.ensureSession();
   board.pool.reconcile();
   // The HTTP server runs on the request thread (A11-282), so the pool's synchronous calls below hold no request. This thread stays the queue's one writer.
-  thread = startBoardThread({ board, health, terminal: settings.terminal,
+  health.counting(() => codeHost.readCallCounts?.() ?? null);
+  thread = startBoardThread({ board, health: health.view, terminal: settings.terminal,
     data: { role: REQUEST_THREAD, settings, key, claimant: claimantOf(settings), paths, toolVersion: toolVersionOf(), agentOrgVersion: agentOrgVersionDefault() },
     start: (workerData) => new Worker(new URL("./request-thread.ts", import.meta.url), { workerData }),
     listening: (port) => {

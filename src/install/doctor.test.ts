@@ -1102,7 +1102,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 2.0, plugins/github)",
+    "code host: github (enabled, contract 2.1, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1138,7 +1138,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 2.0, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 2.1, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });
@@ -1591,7 +1591,7 @@ test("A11-298: doctor says nothing of waits when none is long, or the queue cann
 const FIGURES: HealthFigures = {
   at: 0, uptimeMs: 3_600_000, loop: { lastMinute: { p50Ms: 1, p99Ms: 18 }, lastHour: { p50Ms: 2, p99Ms: 40 } }, syncHolds: { lastHour: 2, holdMs: 100 },
   calls: { linear: { calls: 400, failures: 2, failuresPer100: 0.5 }, github: { calls: 1_000, failures: 0, failuresPer100: 0 } },
-  runs: { sinceLastStartMs: 60_000, startable: 0, freeSlots: 1, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: 3_000, lastEarlyReturn: null },
+  runs: { sinceLastStartMs: 60_000, startable: 0, freeSlots: 1, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: 3_000, lastEarlyReturn: null, held: [] },
 };
 const boardRows = async (over: Partial<DoctorDeps>) => Object.entries(byName(await diagnose(deps(over)))).filter(([name]) => name.startsWith("board "));
 

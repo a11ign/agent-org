@@ -12,6 +12,7 @@ import { loggedPersonRound } from "./queue-person-round.ts";
 import { respondRefusal } from "./queue-respond-refusal.ts";
 import { capPlannerRound, type RoundOptions } from "./queue-cap.ts";
 import { logEvent, logHas, shortReason, type RoundCause } from "./run-log.ts";
+import { pathsUnread } from "./start-reads.ts";
 import { declaredMark, repeatOf, undeclaredMark } from "../wait-on/wait-note.ts";
 import type { Judged } from "../wait-on/wait-verdict.ts";
 import type { Wait } from "../wait-on/wait-types.ts";
@@ -508,29 +509,24 @@ export function recordPaths(queue: Queue, paths: ReadonlyMap<string, readonly st
   return { ...queue, entries: queue.entries.map((entry) => {
     const found = paths.get(entry.ticket.key);
     if (entry.phase !== "queued" || found === undefined) return entry;
-    const { pathsFailure: _read, stepPaths: _earlier, ...rest } = entry;
+    const { pathsFailure: _read, pathsRetryAt: _again, stepPaths: _earlier, ...rest } = entry;
     const ofSteps = stepPaths.get(entry.ticket.key);
     return { ...rest, paths: found, ...(ofSteps === undefined || Object.keys(ofSteps).length === 0 ? {} : { stepPaths: ofSteps }) };
   }) };
 }
 
 /**
- * Record why each queued run's plan could not be downloaded (A11-125), so the board says why it waits. A run whose plan is read keeps its paths, and
- * is not held by this; the run is asked again on the next pass, as its paths are still unread.
+ * Record why each queued run's plan could not be downloaded (A11-125), and when the board asks again (`retryAt`, A11-364), so the board says why it waits. A run whose plan is read keeps its paths, and
+ * is not held by this; the run is asked again once `retryAt` has passed, as its paths are still unread.
  */
-export function recordPathsFailure(queue: Queue, failures: ReadonlyMap<string, string>): Queue {
+export function recordPathsFailure(queue: Queue, failures: ReadonlyMap<string, string>, retryAt?: number): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
     const reason = failures.get(entry.ticket.key);
-    return entry.phase === "queued" && reason !== undefined ? { ...entry, pathsFailure: reason } : entry;
+    return entry.phase === "queued" && reason !== undefined ? { ...entry, pathsFailure: reason, ...(retryAt === undefined ? {} : { pathsRetryAt: retryAt }) } : entry;
   }) };
 }
 
-/**
- * Whether a queued run's plan paths are still to be read: a run that is not planning or reviewing, and has not been read yet. A planning run is
- * never held by a path, and a review round keeps the paths of the run it continues.
- */
-export const pathsUnread = (entry: Entry): boolean =>
-  entry.phase === "queued" && entry.paths === undefined && entry.plan === undefined && entry.review === undefined;
+export { pathsUnread };
 
 /** The queued runs whose plan paths have not been read yet. */
 export const unreadPaths = (queue: Queue): Entry[] => queue.entries.filter(pathsUnread);
@@ -558,13 +554,16 @@ export function recordRetargets(queue: Queue, key: string, notes: Readonly<Recor
   });
 }
 
-/** Record the tickets that block each queued run, for each run the tracker was asked about, and clear why they could not be read (`blockersFailure`). A run that has started keeps what it started with. */
-export function recordBlockers(queue: Queue, blockers: ReadonlyMap<string, readonly Blocker[]>): Queue {
+/**
+ * Record the tickets that block each queued run, for each run the tracker was asked about, and when they were read (`readAt`, A11-364): the age of what a start is decided on. A read clears the failure
+ * an earlier one left. A run that has started keeps what it started with.
+ */
+export function recordBlockers(queue: Queue, blockers: ReadonlyMap<string, readonly Blocker[]>, readAt?: number): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
     const found = blockers.get(entry.ticket.key);
     if (entry.phase !== "queued" || found === undefined) return entry;
-    const { blockersFailure: _read, ...rest } = entry;
-    return { ...rest, blockers: found };
+    const { blockersFailure: _failed, blockersReadAt: _earlier, ...rest } = entry;
+    return { ...rest, blockers: found.map((blocker) => withKnownHead(blocker, entry.blockers)), ...(readAt === undefined ? {} : { blockersReadAt: readAt }) };
   }) };
 }
 
@@ -595,6 +594,12 @@ export function recordHeads(queue: Queue, heads: ReadonlyMap<string, ReadonlyMap
     return { ...entry, blockers: entry.blockers.map((blocker) => withHead(blocker, found.get(blocker.key))) };
   }) };
 }
+
+/** The blocker read now, with the head last read for the same ticket on the same branch (A11-364): a read of blockers does not drop what a start decides a stack on until the heads are read again. PURE. */
+const withKnownHead = (blocker: Blocker, earlier: readonly Blocker[] | undefined): Blocker => {
+  const known = earlier?.find((each) => each.key === blocker.key && each.branch === blocker.branch)?.head;
+  return known === undefined || blocker.head !== undefined ? blocker : { ...blocker, head: known };
+};
 
 /** A blocker with the head given, or with none when `head` is undefined. PURE. */
 const withHead = (blocker: Blocker, head: string | undefined): Blocker => {

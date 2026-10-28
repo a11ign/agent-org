@@ -8,6 +8,7 @@
 // THE PAGE'S COPIES TRAVEL WITH A WRITE. A queue route queues "the page's copy of a ticket, else the tracker's" and keeps what the tracker said of a ticket it read again. Both threads
 // keep copies (`known`), and the request thread's are the page's, since it answers the lists. So a forwarded request carries the request thread's copies of the tickets its body
 // names, the board thread routes on them, and the answer carries back what the route left for those tickets.
+import type { GithubCallCounts } from "../plugins/contracts/call-counts.ts";
 import type { BlockingSite } from "./blocking-ledger.ts";
 import type { Json } from "./local-http.ts";
 import type { HealthFigures } from "./health-figures.ts";
@@ -35,6 +36,8 @@ export type BoardSnapshot = Readonly<{
   blocking: readonly BlockingSite[];
   /** The rolling health figures (A11-363), worked out on the board thread; null from a board thread that keeps none. */
   figures: HealthFigures | null;
+  /** The code host's count of its calls to GitHub (A11-365), null for a host that counts none. */
+  githubCalls: GithubCallCounts | null;
   at: number;
 }>;
 
