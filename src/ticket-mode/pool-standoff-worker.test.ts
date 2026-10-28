@@ -17,9 +17,11 @@ const BLOCKED = { verdictAtHead: "changes-requested", reviewDecision: "changes-r
 async function workerRound({ start = true }: { start?: boolean } = {}) {
   const run = await standoffRun();
   run.pull.feedback = { ...BLOCKED };
-  run.startRereview("Fixed in the description: the measurement is redone, 340 KB.");
-  run.refuseRereview();
-  run.pool.watchFeedback();
+  await run.startRereview("Fixed in the description: the measurement is redone, 340 KB.");
+  await run.refuseRereview();
+  // The watch starts the tick it queued a round for, and awaiting the watch lets that tick start the round: a paused queue starts nothing, so a round that is not to start stays queued for the test to read.
+  if (!start) run.fixture.store.set({ ...run.fixture.store.get(), paused: true });
+  await run.pool.watchFeedback();
   if (start) {
     clock.ms += MINUTE;
     await run.pool.tick();
@@ -50,10 +52,10 @@ test("A11-290: a stand-off round that ends reviewed is the end of both routes; t
   await settled();
   assert.equal(entry().phase, "finished");
   assert.equal(entry().standoff?.stage, "done", "the worker's route has ended too");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined, "the block was first read just now: the flag counts from it");
   clock.ms += (STALE_BLOCK_MINUTES + 1) * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   const note = entry().handedBack ?? "";
   assert.ok(isStaleBlockNote(note), note);
   assert.match(note, /The reviewer last said: The 200 KB limit is still exceeded/);
@@ -67,7 +69,7 @@ test("A11-290: the flag does not fire while the stand-off has a route to go, how
   assert.ok(["queued", "starting"].includes(run.entry().phase), "the worker's round is queued (and, nothing holding it, starting): no flag for a run with a round");
   assert.ok(!existsSync(join(run.dir, STANDOFF_ROUND_FILE)), "and it has not started");
   clock.ms += 3 * 60 * MINUTE;
-  run.pool.watchFeedback();
+  await run.pool.watchFeedback();
   assert.equal(run.entry().handedBack, undefined);
   await settled();
 });

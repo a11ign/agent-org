@@ -276,14 +276,14 @@ const stillTheRerunFailure = (known: CheckHead | undefined, read: PullFeedback, 
  * request says the failure is not its change's: the failed jobs are rerun once, rather than leaving the pull request red and unreviewed. A round's replies are read once. Null when no reply says so, they could not be read, or this
  * is not the round's end; a host that refuses the rerun names the checks for a person.
  */
-function rerunOnUnrelatedReply(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, foreign: ForeignReds): CheckHead | null {
+async function rerunOnUnrelatedReply(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, foreign: ForeignReds): Promise<CheckHead | null> {
   const { url, read } = pull;
   const self = ctx.ownLogin.value;
   const asked = `${url}@${read.head}`;
   // Without the round's start there is no telling which replies are the round's.
   if (self === null || entry.startedAt === undefined) return null;
   if (ctx.repliesRead.has(asked) || typeof ctx.codeHost.readReplies !== "function") return null;
-  const replies = ctx.codeHost.readReplies(url, { since: entry.startedAt, authors: [self] });
+  const replies = await ctx.codeHost.readReplies(url, { since: entry.startedAt, authors: [self] });
   if (replies === null) return null;
   ctx.repliesRead.add(asked);
   if (!replies.some(({ text }) => saysUnrelated(text))) return null;
@@ -380,7 +380,7 @@ function updateHeld(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
  * A check that is red where the run's files are not (`foreign`, A11-179) is the run's no more than an infrastructure failure is a fault in its change: it starts no round and is not rerun, and it is
  * looked at again on every watch, which is why it is the one record that does not end the answer for its head. A pull request held as red on main whose checks main now passes is brought up to date with main instead ({@link updateHeld}).
  */
-function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, foreign: ForeignReds): { lines: string[]; answer: CheckHead | null } {
+async function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string; read: PullFeedback }>, known: CheckHead | undefined, foreign: ForeignReds): Promise<{ lines: string[]; answer: CheckHead | null }> {
   const { url, read } = pull;
   const none = { lines: [], answer: null };
   if (read.head === null) return none;
@@ -391,7 +391,7 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Readonly<{ url: string
   const looked = known?.head === read.head && known.step === "not-ours";
   if (known?.head === read.head && !reran && !looked) {
     // A round that ended with the head where it was and the checks still red: its worker's reply may say the failure is not the change's, which the board answers with a rerun (A11-300).
-    const answer = known.step === "round" ? rerunOnUnrelatedReply(ctx, entry, pull, foreign) : null;
+    const answer = known.step === "round" ? await rerunOnUnrelatedReply(ctx, entry, pull, foreign) : null;
     return answer === null ? none : { lines: [], answer };
   }
   if (reran && stillTheRerunFailure(known, read, ctx.now())) return none;
@@ -467,7 +467,7 @@ function keptRecord(known: CheckHead, read: PullFeedback): CheckHead {
  * requests that are no longer open, and the heads a pull request has moved off, are dropped from the record. The effects are the rerun of a check that is red at a head, the flakes written when a rerun passes, the reads of the replies of a round that ended with its checks red, and the reads of the
  * logs of the checks that failed; the record is returned, for the caller to write with the round it queues. `foreign` says which checks fail where the run's files are not (A11-179).
  */
-export function answerChecks(ctx: PoolContext, entry: Entry, open: readonly Readonly<{ url: string; read: PullFeedback }>[], foreign: ForeignReds = NO_FOREIGN_REDS): CheckAnswer {
+export async function answerChecks(ctx: PoolContext, entry: Entry, open: readonly Readonly<{ url: string; read: PullFeedback }>[], foreign: ForeignReds = NO_FOREIGN_REDS): Promise<CheckAnswer> {
   const lines: string[] = [];
   let heads: Record<string, CheckHead> = {};
   let withoutRound: Record<string, CheckHead> = {};
@@ -475,7 +475,7 @@ export function answerChecks(ctx: PoolContext, entry: Entry, open: readonly Read
   for (const pull of open) {
     const known = entry.checkHeads?.[pull.url];
     const stays = isKept(known, pull.read) ? { [pull.url]: keptRecord(known, pull.read) } : {};
-    const { lines: found, answer: answered } = answerPull(ctx, entry, pull, known, foreign);
+    const { lines: found, answer: answered } = await answerPull(ctx, entry, pull, known, foreign);
     const answer = withRedAgain(answered, known);
     lines.push(...found);
     if (answer?.step === "round") rounds.push(answer);

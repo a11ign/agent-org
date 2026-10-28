@@ -5,7 +5,7 @@
 // scheduler installation has spent it before (`src/packaging/no-search-reads.test.ts`). Null is "could not ask": a refused `gh`, an answer that does not parse, a pull request this cannot read and a list at the limit are all
 // null, never "there are none".
 import type { DependencyPull } from "../../src/plugins/contracts/code-host.ts";
-import type { Gh } from "./gh.ts";
+import type { AsyncGh } from "./gh.ts";
 
 /** The most one read returns. A list AT this length may be cut short, so it is no reading (`null`). */
 export const DEPENDENCY_PULLS_LIMIT = 200;
@@ -37,9 +37,9 @@ function dependencyPullOf(listed: Listed): DependencyPull | null {
 /**
  * THE OPEN PULL REQUESTS OF `repo` THE DEPENDENCY BOT OPENED, or `null` for "could not ask". A pull request by anyone else is left out, and one the bot opened that this cannot read fails the whole read: it is no reading of what is there.
  */
-export function openDependencyPulls(repo: string, gh: Gh): readonly DependencyPull[] | null {
+export async function openDependencyPulls(repo: string, gh: AsyncGh): Promise<readonly DependencyPull[] | null> {
   try {
-    const listed: Listed[] = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "open", "--limit", String(DEPENDENCY_PULLS_LIMIT), "--json", DEPENDENCY_PULLS_FIELDS]));
+    const listed: Listed[] = JSON.parse(await gh(["pr", "list", "--repo", repo, "--state", "open", "--limit", String(DEPENDENCY_PULLS_LIMIT), "--json", DEPENDENCY_PULLS_FIELDS]));
     if (!Array.isArray(listed) || listed.length >= DEPENDENCY_PULLS_LIMIT) return null;
     const pulls = listed.filter(byTheBot).map(dependencyPullOf);
     return pulls.includes(null) ? null : (pulls as DependencyPull[]);

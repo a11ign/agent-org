@@ -48,6 +48,7 @@ import { settleQueuedRounds } from "./pool-round-pulls.ts";
 import { recordWaits } from "./queue/queue-long-waits.ts";
 import { ageHolds } from "./ci-spend/hold.ts";
 import { watchCiSpend } from "./ci-spend/watch.ts";
+import { joinRunning, readEach } from "./pool-reads.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readoptCrashed } from "./pool-readopt.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
@@ -530,6 +531,31 @@ function noteWaits({ now, store }: PoolContext): void {
   if (next !== queue) store.set(next);
 }
 
+/** Says which of the open pull requests change more files than were read. */
+function sayPartialFiles(entry: Entry, open: readonly { url: string; read: PullFeedback }[]): void {
+  const partial = open.filter(({ read }) => !read.filesComplete).map(({ url }) => url);
+  if (partial.length > 0) log(`${entry.ticket.key}: ${partial.join(", ")} changes more than the 100 files read, so the files past those read are unknown and hold nothing`);
+}
+
+/** The run `entry` is, as the queue holds it now, or undefined when it is no longer a finished run. */
+const finishedNow = (ctx: PoolContext, entry: Entry): Entry | undefined => {
+  const current = ctx.store.get().entries.find((each) => each.ticket.key === entry.ticket.key);
+  return current?.phase === "finished" ? current : undefined;
+};
+
+/**
+ * The feedback on every open pull request of the `finished` runs, read a few at a time (A11-356). The reads take time, and a run that stopped, was dismissed or was handed a round meanwhile is not acted on with what was read before it: it is left
+ * out, and the others are returned as the queue holds them now.
+ */
+async function readFeedback(ctx: PoolContext, finished: readonly Entry[], self: string): Promise<{ entry: Entry; reads: { url: string; read: PullFeedback | null }[] }[]> {
+  const pulls = finished.flatMap((entry) => openPulls(entry).map(({ url }) => ({ entry, url })));
+  const answers = await readEach(pulls, ({ url }) => ctx.codeHost.readPullFeedback(url, self, ctx.feedbackIgnores));
+  return finished.flatMap((entry) => {
+    const current = finishedNow(ctx, entry);
+    return current === undefined ? [] : [{ entry: current, reads: pulls.flatMap(({ entry: owner, url }, at) => (owner === entry ? [{ url, read: answers[at] }] : [])) }];
+  });
+}
+
 /**
  * Read the open pull requests of each finished run, and queue a review round for each run whose pull requests got new feedback since its last
  * round ended: a review, a comment or an inline comment by anyone but the workers' account, or a pull request that conflicts with its base; or a check that is
@@ -539,24 +565,35 @@ function noteWaits({ now, store }: PoolContext): void {
  * infrastructure reason is rerun first, and named, and no worker gets it. An approved, armed pull request that is BLOCKED behind a cancelled run of its required check has the cancelled run rerun, once for the head ({@link rerunCancelledGate}, A11-342). Every finished run's read records the files its open pull requests change, which is its
  * footprint while it is held (a draft too). A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
  */
-export function watchFeedback(ctx: PoolContext): void {
+export function watchFeedback(ctx: PoolContext): Promise<void> {
+  return joinRunning(WATCHING, ctx, () => watchEach(ctx));
+}
+
+const WATCHING = new WeakMap<object, Promise<void>>();
+
+/** {@link watchFeedback}, one pass. */
+async function watchEach(ctx: PoolContext): Promise<void> {
   const { codeHost, feedbackIgnores, now, store } = ctx;
   // What each ticket's pushes cost in CI is read on the same cadence, whether or not a pull request is finished: a live worker's pushes are the ones that cost (A11-261). It never throws and the watch does not wait for it.
   void watchCiSpend(ctx);
   clearOverStaleBlocks(ctx);
   // A queued round holds the files of the pull requests it names until one is read merged or closed, and no sweep of a finished run reads a queued one (A11-298): before the finished runs, which may return early.
-  settleQueuedRounds(ctx);
+  await settleQueuedRounds(ctx);
   const finished = store.get().entries.filter((entry) => entry.phase === "finished" && openPulls(entry).length > 0);
   if (finished.length === 0) return;
-  ctx.ownLogin.value ??= codeHost.readOwnLogin();
+  ctx.ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   if (self === null) return log("the GitHub account the workers use could not be read, so no pull request's feedback was read");
   // Every finished run's pull requests are read before any is answered: a red check that another run's pull request fails too is not this run's (A11-179), and that is known only once they are all read.
-  const reads = finished.map((entry) => ({ entry, reads: openPulls(entry).map((pr) => ({ url: pr.url, read: codeHost.readPullFeedback(pr.url, self, feedbackIgnores) })) }));
+  const reads = await readFeedback(ctx, finished, self);
   const foreign = foreignRedsOf(ctx, reads.map(({ entry, reads: pulls }) => ({ entry, open: pulls.filter((pull): pull is { url: string; read: PullFeedback } => pull.read?.state === "open") })));
   let queued = false;
   const recorded: string[] = [];
-  for (const { entry, reads: pulls } of reads) {
+  for (const { entry: read, reads: pulls } of reads) {
+    // Each run is looked at as the queue holds it when its turn comes, and again after the reads that take time below: a run that was stopped, dismissed or handed a round meanwhile is not acted on from the copy this watch began with (A11-356).
+    const first = finishedNow(ctx, read);
+    if (first === undefined) continue;
+    let entry: Entry = first;
     const unread = pulls.filter(({ read }) => read === null).map(({ url }) => url);
     if (unread.length > 0) {
       log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
@@ -564,8 +601,7 @@ export function watchFeedback(ctx: PoolContext): void {
     }
     const readable = pulls.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
     const open = readable.filter(({ read }) => read.state === "open");
-    const partial = open.filter(({ read }) => !read.filesComplete).map(({ url }) => url);
-    if (partial.length > 0) log(`${entry.ticket.key}: ${partial.join(", ")} changes more than the 100 files read, so the files past those read are unknown and hold nothing`);
+    sayPartialFiles(entry, open);
     const files = pullFilesOf(open);
     // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
     if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
@@ -580,10 +616,16 @@ export function watchFeedback(ctx: PoolContext): void {
       if (mergesBase(entry)) mergeBaseOf(ctx, entry, open);
       continue;
     }
-    const checks = answerChecks(ctx, entry, open, foreign);
+    const checks = await answerChecks(ctx, entry, open, foreign);
+    const afterChecks = finishedNow(ctx, entry);
+    if (afterChecks === undefined) continue;
+    entry = afterChecks;
     const removals = answerQueue(ctx, entry, open);
     // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
-    const reviewer = isWatched(entry) ? reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url)) : [];
+    const reviewer = isWatched(entry) ? await reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url)) : [];
+    const afterReviewer = finishedNow(ctx, entry);
+    if (afterReviewer === undefined) continue;
+    entry = afterReviewer;
     // A review that has requested changes for longer than the stale-block limit with no push and no round is answered by a round of the board's own (A11-352), as Respond would: no person has to press it.
     const blocks = blocksToAskNow(ctx, entry.ticket.key, reviewer);
     const unanswered = blocks.map(blockRoundLine);

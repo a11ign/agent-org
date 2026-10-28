@@ -28,7 +28,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   const url = process.argv[2] ?? "";
   const settings = readTicketSettings({ [HOST_FILE_ENV]: process.env[TICKET_ENV.host] ?? process.env[HOST_FILE_ENV] });
   const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones }), undefined, ["codeHost"]);
-  const read = PULL_URL.test(url) ? active.codeHost().readPullFeedback(url, "", []) : null;
+  const read = PULL_URL.test(url) ? await active.codeHost().readPullFeedback(url, "", []) : null;
   const { code, out } = pullNowOf(url, read);
   (code === 0 ? process.stdout : process.stderr).write(`${out}\n`);
   process.exit(code);

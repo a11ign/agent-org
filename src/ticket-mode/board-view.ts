@@ -175,16 +175,17 @@ export function afterMergeChecks(file: ChecksFile): AfterMergeCheck[] {
  * One of a ticket's After-merge checks as its Run detail shows it (A11-302): the line, who runs it (the board, a verifier run or a person), where it stands, the evidence or reason it closed with and who closed it, what the board
  * watches for and until when, why the board handed it to an agent, and how a failure was followed up (the writer request, or null for none; absent while undecided).
  */
-export type TicketCheck = Pick<CheckRecord, "id" | "line" | "runner" | "state" | "result" | "closedBy" | "closedAt" | "listedAt" | "handedOff" | "followUp"> & Readonly<{ watching: string | null; windowEnds: number | null }>;
+export type TicketCheck = Pick<CheckRecord, "id" | "line" | "runner" | "state" | "result" | "closedBy" | "closedAt" | "listedAt" | "handedOff" | "followUp" | "dueAt"> & Readonly<{ watching: string | null; windowEnds: number | null; needs?: Readonly<{ capability: string; request?: string | null; routedTo?: string }> }>;
 
 /** Every After-merge check of the ticket `key`, any runner and any state, oldest first: what its Run detail lists. PURE. */
 export function ticketChecks(file: ChecksFile, key: string): TicketCheck[] {
   return Object.values(file.checks).filter((check) => check.key === key).sort((a, b) => a.listedAt - b.listedAt).map((check) => {
-    const { id, line, runner, state, result, closedBy, closedAt, listedAt, handedOff, followUp } = check;
+    const { id, line, runner, state, result, closedBy, closedAt, listedAt, handedOff, followUp, dueAt, needs } = check;
     const spec = check.observe?.spec;
     const end = check.observe === undefined ? Number.POSITIVE_INFINITY : windowEnd(check.observe);
     return { id, line, runner, state, listedAt, ...(result === undefined ? {} : { result }), ...(closedBy === undefined ? {} : { closedBy }), ...(closedAt === undefined ? {} : { closedAt }),
-      ...(handedOff === undefined ? {} : { handedOff }), ...(followUp === undefined ? {} : { followUp }),
+      ...(handedOff === undefined ? {} : { handedOff }), ...(followUp === undefined ? {} : { followUp }), ...(dueAt === undefined ? {} : { dueAt }),
+      ...(needs === undefined ? {} : { needs: { capability: needs.capability, ...(needs.request === undefined ? {} : { request: needs.request }), ...(needs.routedTo === undefined ? {} : { routedTo: needs.routedTo }) } }),
       watching: spec === undefined ? null : describeObserve(spec), windowEnds: Number.isFinite(end) && check.observe?.began !== undefined ? end : null };
   });
 }

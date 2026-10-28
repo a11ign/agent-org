@@ -21,7 +21,7 @@ export const create = (_settings: PluginSettings, deps: PluginDeps): CodeHost =>
  * The rows doctor shows for the plugin: the installed `gh` wrapper, the roles it routes to Apps and each App's token, then the stacking extension for the workers' account and whether GitHub makes
  * stacked pull requests available, then whether every repository of the host has a merge flow (A11-291).
  */
-export const doctorChecks = async (settings: PluginSettings, deps: PluginDeps): Promise<readonly PluginCheck[]> => [...await wrapperChecks(settings, deps), ...stackChecks(settings, deps), ...mergeFlowChecks(settings, deps)];
+export const doctorChecks = async (settings: PluginSettings, deps: PluginDeps): Promise<readonly PluginCheck[]> => [...await wrapperChecks(settings, deps), ...await stackChecks(settings, deps), ...mergeFlowChecks(settings, deps)];
 
 export const onboardSteps = ONBOARD_STEPS;
 

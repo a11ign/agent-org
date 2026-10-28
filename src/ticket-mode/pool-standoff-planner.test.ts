@@ -21,9 +21,9 @@ async function plannerRound() {
   tracker.attachPlan = async (key, files, state) => { attached.push({ key, files }); return attachPlan(key, files, state); };
   const run = await standoffRun({ tickets: PLANNER, tracker, plan: OLD_PLAN });
   const dir = ticketDir(run.fixture.settings, "NBF-1");
-  run.startRereview("Plan cannot be met: the plan's own 200 KB limit is below the entry point's 300 KB.");
-  run.refuseRereview();
-  run.pool.watchFeedback();
+  await run.startRereview("Plan cannot be met: the plan's own 200 KB limit is below the entry point's 300 KB.");
+  await run.refuseRereview();
+  await run.pool.watchFeedback();
   clock.ms += MINUTE;
   await run.pool.tick();
   await settled();
@@ -61,7 +61,7 @@ test("A11-290: the planner UPHOLDS the decision: no plan is attached, the decisi
   assert.deepEqual({ ...entry().standoff }.stage, "planned");
   assert.deepEqual(entry().standoff?.planner, { decision: "upheld", reason: "The entry point can be split." });
   assert.deepEqual(attached, [], "a decision that stands changes no plan");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().standoff?.stage, "worker", "the worker acts next");
   assert.match(entry().feedback ?? "", /The planner decided this stand-off: it upheld the decision\. Its reason:\n\n> The entry point can be split\./);
   const events = logOf(fixture.store.get(), "NBF-1").flatMap((event) => (event.kind === "standoff" ? [`${event.step}${event.detail === null ? "" : `: ${event.detail}`}`] : []));
@@ -78,7 +78,7 @@ test("A11-290: the planner AMENDS the decision: the amended plan is attached, th
   assert.deepEqual(attached.map(({ key }) => key), ["NBF-1"], "the amended plan is attached to the ticket");
   assert.ok(readFileSync(join(dir, "paths", "NBF-1-0001-plan-first.md"), "utf8").includes("400 KB"), "and the reviewer's brief reads it");
   clock.ms += MINUTE;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, started + 1, "the reviewer re-reviews the same head");
   const brief = reviewer.briefs.at(-1);
   assert.ok(brief?.planDecisions?.includes("400 KB"), "bound by the amended decision");
@@ -109,13 +109,13 @@ test("A11-290: a plan the board cannot read now, or that records no decision now
   const paths = join(ticketDir(run.fixture.settings, "NBF-1"), "paths");
   rmSync(paths, { recursive: true, force: true });
   writeFileSync(paths, "not a folder\n");
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   rmSync(paths, { force: true });
   mkdirSync(paths, { recursive: true });
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   assert.equal(run.reviewer.started.length, started, "an unreadable plan and an empty one are no answer");
   writeFileSync(join(paths, "NBF-1-0001-plan-first.md"), NEW_PLAN);
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   assert.equal(run.reviewer.started.length, started + 1, "CONTROL: the amended decisions are");
   await settled();
 });

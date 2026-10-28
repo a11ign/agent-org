@@ -26,39 +26,39 @@ function machine({ listing = LISTING, stacks = ENABLED as Stacks, origin = null 
     const repo = args[1].split("/").slice(1, 3).join("/");
     return stacks(repo);
   };
-  return { asked, deps: fakePluginDeps({ exec, env, clones: { netbox: "/src/netbox" } }) };
+  return { asked, deps: fakePluginDeps({ exec, execAsync: (file, args, options) => Promise.resolve(exec(file, args, options)), env, clones: { netbox: "/src/netbox" } }) };
 }
 
-test("A11-106: doctor fails a missing gh stack with the install command for the workers' account, and passes when it is listed", () => {
-  const missing = stackChecks({ gh: WORKERS }, machine({ listing: "gh dash  dlvhdr/gh-dash  v4.0.0\n" }).deps)[0];
+test("A11-106: doctor fails a missing gh stack with the install command for the workers' account, and passes when it is listed", async () => {
+  const missing = (await stackChecks({ gh: WORKERS }, machine({ listing: "gh dash  dlvhdr/gh-dash  v4.0.0\n" }).deps))[0];
   assert.equal(missing.name, "gh stack");
   assert.equal(missing.ok, false);
   assert.equal(missing.detail, "`gh stack` is not installed, so a worker cannot link a stacked pull request");
   assert.equal(missing.fix, "GH_CONFIG_DIR=/home/agent/workers/gh gh extension install github/gh-stack, or run `agent-org onboard`");
-  const listed = stackChecks({ gh: WORKERS }, machine().deps)[0];
+  const listed = (await stackChecks({ gh: WORKERS }, machine().deps))[0];
   assert.deepEqual([listed.ok, listed.detail], [true, "github/gh-stack v0.2.1 (for GH_CONFIG_DIR=/home/agent/workers/gh)"]);
 });
 
-test("A11-106: the checks ask gh as the workers' account, and name the install command without one when no host file names it", () => {
+test("A11-106: the checks ask gh as the workers' account, and name the install command without one when no host file names it", async () => {
   const { asked, deps } = machine();
-  stackChecks({ gh: WORKERS }, deps);
+  (await stackChecks({ gh: WORKERS }, deps));
   assert.deepEqual(asked.filter(({ file }) => file === "gh").map(({ options }) => options?.env), [{ GH_CONFIG_DIR: "/home/agent/workers/gh" }]);
-  const bare = stackChecks({}, machine({ listing: "" }).deps)[0];
+  const bare = (await stackChecks({}, machine({ listing: "" }).deps))[0];
   assert.equal(bare.fix, "gh extension install github/gh-stack, or run `agent-org onboard`");
   const fromEnvironment = machine({ listing: "", env: { GH_CONFIG_DIR: "/home/me/gh" } });
-  assert.equal(stackChecks({}, fromEnvironment.deps)[0].fix, "GH_CONFIG_DIR=/home/me/gh gh extension install github/gh-stack, or run `agent-org onboard`", "the environment names the account when the host file does not");
+  assert.equal((await stackChecks({}, fromEnvironment.deps))[0].fix, "GH_CONFIG_DIR=/home/me/gh gh extension install github/gh-stack, or run `agent-org onboard`", "the environment names the account when the host file does not");
 });
 
-test("A11-106: the checks say gh could not list its extensions, rather than that the extension is missing", () => {
+test("A11-106: the checks say gh could not list its extensions, rather than that the extension is missing", async () => {
   const exec = (): ExecResult => ({ status: null, stdout: "", stderr: "spawn gh ENOENT" });
-  const [check] = stackChecks({}, fakePluginDeps({ exec }));
+  const [check] = (await stackChecks({}, fakePluginDeps({ exec, execAsync: () => Promise.resolve(exec()) })));
   assert.equal(check.ok, false);
   assert.match(check.detail, /could not list its extensions.*spawn gh ENOENT/);
   assert.equal(check.fix, "install the GitHub CLI and put `gh` on PATH, then run `agent-org onboard`");
 });
 
-test("A11-106: the checks name the repository GitHub refuses stacked pull requests for, with the preview requirement", () => {
-  const stacks = stackChecks({ gh: WORKERS }, machine({ origin: GITHUB_ORIGIN, stacks: NOT_ENABLED }).deps).find(({ name }) => name === "stacked pull requests");
+test("A11-106: the checks name the repository GitHub refuses stacked pull requests for, with the preview requirement", async () => {
+  const stacks = (await stackChecks({ gh: WORKERS }, machine({ origin: GITHUB_ORIGIN, stacks: NOT_ENABLED }).deps)).find(({ name }) => name === "stacked pull requests");
   assert.equal(stacks?.ok, false);
   assert.equal(stacks?.detail, "GitHub refuses stacked pull requests for a11ign/nbl-ui-netbox");
   assert.match(stacks?.fix ?? "", /GitHub preview that must be available to each repository/);
@@ -66,29 +66,29 @@ test("A11-106: the checks name the repository GitHub refuses stacked pull reques
   assert.match(stacks?.fix ?? "", /github\.github\.com\/gh-stack\//);
 });
 
-test("A11-106: the checks ask GitHub about each repository once, pass when GitHub enables it, and say what they could not read", () => {
+test("A11-106: the checks ask GitHub about each repository once, pass when GitHub enables it, and say what they could not read", async () => {
   const asked: string[] = [];
-  const enabled = stackChecks({ gh: WORKERS }, machine({ origin: GITHUB_ORIGIN, stacks: (repo: string) => { asked.push(repo); return { status: 0, stdout: "[]", stderr: "" }; } }).deps)
+  const enabled = (await stackChecks({ gh: WORKERS }, machine({ origin: GITHUB_ORIGIN, stacks: (repo: string) => { asked.push(repo); return { status: 0, stdout: "[]", stderr: "" }; } }).deps))
     .find(({ name }) => name === "stacked pull requests");
   assert.deepEqual([enabled?.ok, enabled?.detail, asked], [true, "available for a11ign/nbl-ui-netbox", ["a11ign/nbl-ui-netbox"]]);
-  const unread = stackChecks({ gh: WORKERS }, machine({ origin: GITHUB_ORIGIN, stacks: () => ({ status: 1, stdout: "", stderr: "gh: Bad credentials (HTTP 401)" }) }).deps)
+  const unread = (await stackChecks({ gh: WORKERS }, machine({ origin: GITHUB_ORIGIN, stacks: () => ({ status: 1, stdout: "", stderr: "gh: Bad credentials (HTTP 401)" }) }).deps))
     .find(({ name }) => name === "stacked pull requests");
   assert.equal(unread?.ok, false);
   assert.match(unread?.detail ?? "", /could not be read for a11ign\/nbl-ui-netbox: gh: Bad credentials/);
   assert.equal(unread?.fix, "run `gh api repos/<owner>/<repo>/stacks` with the workers' GH_CONFIG_DIR to see why");
 });
 
-test("A11-106: a host with no GitHub clone adds no stacked pull requests check, and a missing extension asks GitHub nothing", () => {
-  const none = stackChecks({ gh: WORKERS }, machine({ origin: "/srv/git/local.git" }).deps);
+test("A11-106: a host with no GitHub clone adds no stacked pull requests check, and a missing extension asks GitHub nothing", async () => {
+  const none = await stackChecks({ gh: WORKERS }, machine({ origin: "/srv/git/local.git" }).deps);
   assert.deepEqual(none.map(({ name }) => name), ["gh stack"]);
   let asked = false;
-  stackChecks({ gh: WORKERS }, machine({ listing: "", origin: GITHUB_ORIGIN, stacks: () => { asked = true; return { status: 0, stdout: "[]", stderr: "" }; } }).deps);
+  (await stackChecks({ gh: WORKERS }, machine({ listing: "", origin: GITHUB_ORIGIN, stacks: () => { asked = true; return { status: 0, stdout: "[]", stderr: "" }; } }).deps));
   assert.equal(asked, false, "nothing is asked of GitHub without the extension");
 });
 
-test("A11-145: a host that sets stack to false is asked nothing: no row, and gh is not run", () => {
+test("A11-145: a host that sets stack to false is asked nothing: no row, and gh is not run", async () => {
   const { asked, deps } = machine({ origin: GITHUB_ORIGIN });
-  assert.deepEqual(stackChecks({ stack: false, gh: WORKERS }, deps), []);
+  assert.deepEqual((await stackChecks({ stack: false, gh: WORKERS }, deps)), []);
   assert.deepEqual(asked, []);
-  assert.equal(stackChecks({ stack: true }, deps).length > 0, true, "CONTROL: true, and an absent setting, require it");
+  assert.equal((await stackChecks({ stack: true }, deps)).length > 0, true, "CONTROL: true, and an absent setting, require it");
 });

@@ -98,7 +98,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "fillReport" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>;
+  pool?: Sweeping<Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "retry" | "cloneMissing" | "startGreenReviewers" | "held" | "fillReport" | "hostAlerts" | "pullReviews" | "claimWarning" | "talk" | "reviewerState" | "answer">>>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -690,13 +690,16 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
   err(`ERROR gh wrapper: cannot be checked (${why.split("\n")[0]}), so the instance does not know its App identity is in place\n`);
 }
 
+/** The pool's sweeps answer a promise (A11-356: they wait on the code host's reads), and a stand-in that does the work at once answers none: the server waits for whichever it is given. */
+export type Sweeping<P> = { [K in keyof P]: K extends "watchFeedback" | "releaseReviewers" | "retargetStacked" | "reviewNewHeads" | "startGreenReviewers" ? (() => void | Promise<void>) | Extract<P[K], undefined> : P[K] };
+
 /**
  * The sweeps the server runs on the feedback cadence, each on its own timer (A11-106): one that throws is said, and the others still run on theirs. `every` is
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
-export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "cloneMissing">>,
+export function startFeedbackSweeps(pool: Sweeping<Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "startGreenReviewers" | "cloneMissing">>>,
   every: (run: () => void, ms: number) => unknown, board: { dependencyUpdates?: () => void | Promise<void>; idleBlockers?: () => void | Promise<void> } = {}): void {
-  const sweeps: { sweep: () => void | Promise<void>; failure: string; ms?: number }[] = [
+  const sweeps: { sweep: () => unknown; failure: string; ms?: number }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
     { sweep: () => pool.releaseReviewers(), failure: "the reviewers of merged or closed pull requests could not be released" },
@@ -717,10 +720,16 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
   for (const { sweep, failure, ms = FEEDBACK_MS } of sweeps) {
+    // A sweep waits on the code host's reads (A11-356), so one can still be running when its next turn comes: it is not started over itself, and the next turn after it settles runs it again.
+    let running = false;
     every(() => {
+      if (running) return;
       try {
         const done = sweep();
-        if (done instanceof Promise) done.catch((err: unknown) => said(failure, err));
+        if (done instanceof Promise) {
+          running = true;
+          done.catch((err: unknown) => said(failure, err)).finally(() => { running = false; });
+        }
       } catch (err) {
         said(failure, err);
       }

@@ -15,13 +15,13 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { ticketDir } from "./ticket-paths.ts";
 
-test("A11-161: where the gate does not load, a sweep with reviews required and the reviewer off says once that the pull requests cannot be listed, lists none, and keeps showing the runs' own", () => {
+test("A11-161: where the gate does not load, a sweep with reviews required and the reviewer off says once that the pull requests cannot be listed, lists none, and keeps showing the runs' own", async () => {
   const ctx = { reviewer: undefined, reviewerState: "off-required", codeHost: createFakeCodeHost(), offPulls: new Set<string>(), refusedHeads: new Set<string>(), settings: { clones: {} } } as unknown as PoolContext;
   const said: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
   try {
-    for (let sweep = 0; sweep < 3; sweep += 1) reviewNewHeads(ctx);
+    for (let sweep = 0; sweep < 3; sweep += 1) await reviewNewHeads(ctx);
   } finally {
     process.stderr.write = write;
   }
@@ -35,15 +35,15 @@ const DESCRIPTION = "## Problem\n\nThe policy must reach the second repository.\
 const holding = (description: string, url = HELD_PR): PoolContext => ({ settings: { plan: null, stateDir: tmpDir("brief-held-") }, store: { get: () => ({ entries: [{ ticket: { key: "A11-203", description }, review: [{ repo: "r", url }] } as unknown as Entry] }) } }) as unknown as PoolContext;
 const state = { view: { body: "" } } as unknown as ReviewState;
 
-test("A11-213: a brief carries the decisions of the ticket whose run holds the pull request, with its Done-when", () => {
-  const brief = briefOf(holding(DESCRIPTION), HELD_PR, state);
+test("A11-213: a brief carries the decisions of the ticket whose run holds the pull request, with its Done-when", async () => {
+  const brief = await briefOf(holding(DESCRIPTION), HELD_PR, state);
   assert.equal(brief.decisions, "This step widens the policy by the chairman's decision on 2026-10-24.");
   assert.match(brief.doneWhen ?? "", /^## Done-when/);
 });
 
-test("A11-213: a ticket with no decision, and a pull request no run holds, give a brief with none", () => {
-  assert.deepEqual(briefOf(holding("## Problem\n\nA problem."), HELD_PR, state), { doneWhen: null });
-  assert.deepEqual(briefOf(holding(DESCRIPTION), "https://github.com/o/r/pull/8", state), { doneWhen: null }, "one a person opened has no ticket to quote");
+test("A11-213: a ticket with no decision, and a pull request no run holds, give a brief with none", async () => {
+  assert.deepEqual(await briefOf(holding("## Problem\n\nA problem."), HELD_PR, state), { doneWhen: null });
+  assert.deepEqual(await briefOf(holding(DESCRIPTION), "https://github.com/o/r/pull/8", state), { doneWhen: null }, "one a person opened has no ticket to quote");
 });
 
 // A11-249: the work the ticket's earlier pull requests held when they were closed unmerged reaches the reviewer too, from the records the board kept in the ticket's folder.
@@ -60,14 +60,14 @@ function holdingWithClosedWork(): PoolContext {
   return ctx;
 }
 
-test("A11-249: a brief carries the closed work of the ticket's earlier pull requests, one line per commit and file, and leaves out a pull request that held nothing", () => {
-  const closedWork = briefOf(holdingWithClosedWork(), HELD_PR, state).closedWork ?? "";
+test("A11-249: a brief carries the closed work of the ticket's earlier pull requests, one line per commit and file, and leaves out a pull request that held nothing", async () => {
+  const closedWork = (await briefOf(holdingWithClosedWork(), HELD_PR, state)).closedWork ?? "";
   assert.ok(closedWork.includes(`- commit ${CLOSED_COMMIT} feat: refuse unknown options`) && closedWork.includes("- file src/check-report.ts") && closedWork.includes("work not on main"), closedWork);
   assert.ok(!closedWork.includes("#15"), "a record of kind none asks for no account");
 });
 
-test("A11-249: a ticket with no closed work gives a brief with no closedWork key", () => {
-  assert.equal("closedWork" in briefOf(holding(DESCRIPTION), HELD_PR, state), false);
+test("A11-249: a ticket with no closed work gives a brief with no closedWork key", async () => {
+  assert.equal("closedWork" in await briefOf(holding(DESCRIPTION), HELD_PR, state), false);
 });
 
 // A11-257: the plan's decisions reach the reviewer too, from the plan files the run holds, beside the ticket's own and with the escalation list.
@@ -82,29 +82,29 @@ function holdingWithPlan(description: string, plans: Record<string, string>): Po
   return { ...holding(description), settings } as unknown as PoolContext;
 }
 
-test("A11-257: a brief carries the decisions of the plan the run holds, with the escalation list, beside the ticket's own", () => {
-  const brief = briefOf(holdingWithPlan(DESCRIPTION, { "A11-203-0001-plan-x.md": PLAN }), HELD_PR, state);
+test("A11-257: a brief carries the decisions of the plan the run holds, with the escalation list, beside the ticket's own", async () => {
+  const brief = await briefOf(holdingWithPlan(DESCRIPTION, { "A11-203-0001-plan-x.md": PLAN }), HELD_PR, state);
   assert.equal(brief.planDecisions, "## Decisions made without a person\n\n- Product: the pill says Held. Reason: the board's word for it.");
   assert.equal(brief.escalation, escalationList());
   assert.equal(brief.decisions, "This step widens the policy by the chairman's decision on 2026-10-24.", "the ticket's decisions stay their own field, so the reviewer can rank them first");
 });
 
-test("A11-257: a plan that records no decision, no plan file, and a pull request no run holds, add nothing to the brief", () => {
+test("A11-257: a plan that records no decision, no plan file, and a pull request no run holds, add nothing to the brief", async () => {
   const bare = "# Plan\n\n## Approach\n\nDo it.\n";
-  assert.deepEqual(briefOf(holdingWithPlan("## Problem\n\nA problem.", { "A11-203-0001-plan-x.md": bare }), HELD_PR, state), { doneWhen: null });
-  assert.deepEqual(briefOf(holdingWithPlan("## Problem\n\nA problem.", {}), HELD_PR, state), { doneWhen: null });
-  assert.deepEqual(briefOf(holdingWithPlan("## Problem\n\nA problem.", { "A11-203-0001-plan-x.md": PLAN }), "https://github.com/o/r/pull/8", state), { doneWhen: null }, "one a person opened has no plan to quote");
+  assert.deepEqual(await briefOf(holdingWithPlan("## Problem\n\nA problem.", { "A11-203-0001-plan-x.md": bare }), HELD_PR, state), { doneWhen: null });
+  assert.deepEqual(await briefOf(holdingWithPlan("## Problem\n\nA problem.", {}), HELD_PR, state), { doneWhen: null });
+  assert.deepEqual(await briefOf(holdingWithPlan("## Problem\n\nA problem.", { "A11-203-0001-plan-x.md": PLAN }), "https://github.com/o/r/pull/8", state), { doneWhen: null }, "one a person opened has no plan to quote");
 });
 
-test("A11-257: a plan the board cannot read is not a plan with no decisions: the brief says so, and the reviewer is not left to re-raise what the plan may have decided", () => {
+test("A11-257: a plan the board cannot read is not a plan with no decisions: the brief says so, and the reviewer is not left to re-raise what the plan may have decided", async () => {
   const ctx = holdingWithPlan(DESCRIPTION, {});
   mkdirSync(join(ticketDir((ctx as unknown as { settings: never }).settings, "A11-203"), "paths", "A11-203-0001-plan-x.md"));
   const written: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((line: string) => { written.push(line); return true; }) as typeof process.stderr.write;
-  let brief: ReturnType<typeof briefOf>;
+  let brief: Awaited<ReturnType<typeof briefOf>>;
   try {
-    brief = briefOf(ctx, HELD_PR, state);
+    brief = await briefOf(ctx, HELD_PR, state);
   } finally {
     process.stderr.write = write;
   }

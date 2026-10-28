@@ -234,14 +234,24 @@ async function query<T>(client: Client, text: string, variables: Record<string, 
 }
 
 /**
- * One ticket's `fields`, or `null` for a string that is no key or a key Linear has no ticket for. It reads by team and number, so a missing
+ * What a by-key lookup that found nothing says (A11-360): the filter it asked with, so a lookup that is wrong shows as the lookup and is not told as a ticket that does not exist.
+ * Archived tickets are part of the filter: Linear leaves them out of `issues` unless asked, and a closed ticket is archived after a while.
+ */
+function noMatchFor(identifier: string): string {
+  const parts = TICKET_KEY.exec(identifier);
+  const filter = parts === null ? `${identifier} is not a ticket key` : `team key ${parts[1].toUpperCase()}, number ${Number(parts[2])}, archived tickets included`;
+  return `Linear matched no ticket for ${identifier} (filter: ${filter})`;
+}
+
+/**
+ * One ticket's `fields`, or `null` for a string that is no key or a key that matches no ticket, archived ones included. It reads by team and number, so a missing
  * ticket is an empty list: nothing hangs on the wording of an error.
  */
 async function issue<T>(client: Client, identifier: string, fields: string): Promise<T | null> {
   const parts = TICKET_KEY.exec(identifier);
   if (parts === null) return null;
   const data: { issues: { nodes: T[] } } = await query(client,
-    `query($team: String!, $number: Float!) { issues(first: 1, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${fields} } } }`,
+    `query($team: String!, $number: Float!) { issues(first: 1, includeArchived: true, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${fields} } } }`,
     { team: parts[1].toUpperCase(), number: Number(parts[2]) });
   return data.issues.nodes[0] ?? null;
 }
@@ -253,7 +263,7 @@ async function eachIssue<T>(client: Client, keys: readonly string[], fields: str
   for (let start = 0; start < parsed.length; start += STATE_BATCH) {
     const batch = parsed.slice(start, start + STATE_BATCH);
     const params = batch.map((_, i) => `$t${i}: String!, $n${i}: Float!`).join(", ");
-    const reads = batch.map((_, i) => `k${i}: issues(first: 1, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { ${fields} } }`).join(" ");
+    const reads = batch.map((_, i) => `k${i}: issues(first: 1, includeArchived: true, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { ${fields} } }`).join(" ");
     const variables = Object.fromEntries(batch.flatMap(([, parts], i) => [[`t${i}`, parts[1].toUpperCase()], [`n${i}`, Number(parts[2])]]));
     const data: Record<string, { nodes: T[] }> = await query(client, `query(${params}) { ${reads} }`, variables);
     batch.forEach(([key], i) => {
@@ -338,14 +348,14 @@ async function assignedTickets(client: Client, pick: PickScope): Promise<Ticket[
 async function addBlockersTo(client: Client, identifier: string, blockerKeys: readonly string[]): Promise<void> {
   type Blocked = { id: string; inverseRelations: { nodes: { type: string; issue: { identifier: string } }[] } };
   const found = await issue<Blocked>(client, identifier, "id inverseRelations { nodes { type issue { identifier } } }");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const already = new Set(found.inverseRelations.nodes.filter(({ type }) => type === "blocks").map(({ issue: blocker }) => blocker.identifier));
   const missing = [...new Set(blockerKeys)].filter((key) => !already.has(key));
   if (missing.length === 0) return;
   const ids = await eachIssue<{ id: string }>(client, missing, "id");
   for (const key of missing) {
     const blocker = ids.get(key);
-    if (blocker === undefined) throw new Error(`Linear has no ticket ${key}`);
+    if (blocker === undefined) throw new Error(noMatchFor(key));
     // "A blocks B" is stored on A, with B as the related issue: the same relation `blockers` reads back from B.
     const { issueRelationCreate }: { issueRelationCreate: { success: boolean } } = await query(client,
       "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
@@ -367,7 +377,7 @@ async function blockersOf(client: Client, keys: readonly string[]): Promise<Read
 
 async function attachPlanTo(client: Client, identifier: string, files: readonly string[], state: string | null): Promise<string | null> {
   const found = await issue<Planning>(client, identifier, `${STATEFUL} ${ATTACHMENTS}`);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const attached = new Set(uploadsIn(found).map(({ title }) => title));
   for (const path of files) {
     const title = basename(path);
@@ -388,7 +398,7 @@ async function textsOf(client: Client, keys: readonly string[]): Promise<Readonl
  */
 async function detachPlanOf(client: Client, identifier: string, titles: readonly string[]): Promise<void> {
   const found = await issue<{ attachments: { nodes: { id: string; url: string; title: string }[] } }>(client, identifier, "attachments(first: 50) { nodes { id url title } }");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const named = new Set(titles);
   for (const { id, url, title } of found.attachments.nodes) {
     if (!url.startsWith(UPLOAD_ORIGIN) || !named.has(title)) continue;
@@ -399,14 +409,14 @@ async function detachPlanOf(client: Client, identifier: string, titles: readonly
 
 async function moveWorking(client: Client, identifier: string, state: string): Promise<Readonly<{ moved: StateMove | null; note: string | null }>> {
   const found = await issue<Stateful>(client, identifier, STATEFUL);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   return moveTo(client, identifier, found, state, BEFORE_WORK);
 }
 
 async function restoreStateOf(client: Client, identifier: string, move: StateMove): Promise<string | null> {
   const found = await issue<Stateful>(client, identifier, STATEFUL);
   // A ticket Linear no longer has has nothing to put back, and must not hold its run on the board for ever.
-  if (found === null) return `Linear has no ticket ${identifier}, so nothing was put back to ${move.from}`;
+  if (found === null) return `${noMatchFor(identifier)}, so nothing was put back to ${move.from}`;
   // Only while the ticket is still where the board put it: a person who has moved it since has moved it on, and that is theirs to keep.
   if (found.state.name !== move.to) return null;
   const target = found.team.states.nodes.find(({ name }) => name === move.from);
@@ -437,7 +447,7 @@ export function completionOf(history: readonly HistoryMove[], stateId: string): 
 
 async function undoAutomaticCompletionOf(client: Client, identifier: string, comment: string): Promise<AutomaticCompletionUndo> {
   const found = await issue<Completed>(client, identifier, COMPLETED);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   if (found.state.type !== "completed") return { reopened: null, by: "none", note: null };
   const { by, from } = completionOf(found.history.nodes, found.state.id);
   if (by === "person") return { reopened: null, by, note: null };
@@ -453,7 +463,7 @@ async function undoAutomaticCompletionOf(client: Client, identifier: string, com
 
 async function updateTicketTextOf(client: Client, identifier: string, text: Readonly<{ title?: string; description?: string }>): Promise<void> {
   const found = await issue<{ id: string }>(client, identifier, "id");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(client,
     "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }", { id: found.id, input: text });
   if (!issueUpdate.success) throw new Error(`Linear did not update the text of ${identifier}`);
@@ -461,7 +471,7 @@ async function updateTicketTextOf(client: Client, identifier: string, text: Read
 
 async function completeTicket(client: Client, identifier: string, comment: string): Promise<string | null> {
   const found = await issue<Stateful>(client, identifier, STATEFUL);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   // A ticket already finished is left as it is, and gets no comment: whoever finished it has said what they meant.
   if (FINISHED_TYPES.has(found.state.type)) return null;
   // The completed state Linear lists first by position, when a team has more than one.
@@ -476,7 +486,7 @@ async function completeTicket(client: Client, identifier: string, comment: strin
 /** Post `body` on the ticket `identifier`, in whatever state it is in (A11-173). */
 async function commentOn(client: Client, identifier: string, body: string): Promise<void> {
   const found = await issue<{ id: string }>(client, identifier, "id");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   await postComment(client, identifier, found.id, body);
 }
 
@@ -497,7 +507,7 @@ export function latestClaimant({ comments }: Claims): string | undefined {
 /** Record that `claimant` holds the ticket, unless its latest claim already names them, so nine steps of one ticket make one comment. */
 async function claimTicket(client: Client, identifier: string, claimant: string): Promise<void> {
   const found = await issue<{ id: string } & Claims>(client, identifier, `id ${CLAIMS}`);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   if (latestClaimant(found) === claimant) return;
   await postComment(client, identifier, found.id, `${CLAIM_PREFIX}${claimant}`);
 }

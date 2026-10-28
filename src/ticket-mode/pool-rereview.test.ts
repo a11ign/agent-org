@@ -37,12 +37,12 @@ async function blockedRun({ held = true, rounds = 0, roundEnded = true }: { held
   const pool = fixture.restart({ codeHost: host, reviewer });
   const pull = host.pullAt(url)!;
   const ref = { pr: url, head: HEAD };
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1, "the first review of the head starts");
   reviewer.wrote(ref, null);
   clock.ms = 20 * MINUTE;
   pull.reviews = [{ author: REVIEWER_LOGIN, state: "CHANGES_REQUESTED", commit: HEAD, at: clock.ms }];
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.closed.length, 1, "and the reviewer closes once it has posted its block");
   clock.ms = 30 * MINUTE;
   const reply = (text: string, minute: number) => { pull.replies = [...pull.replies, { author: "worker-bot", at: minute * MINUTE, url: `${url}#c${minute}`, text }]; };
@@ -50,17 +50,17 @@ async function blockedRun({ held = true, rounds = 0, roundEnded = true }: { held
   /** The run's round that answers the block ends: the worker has edited and replied, and finished. */
   const endRound = () => fixture.store.set({ ...fixture.store.get(), entries: [{ ...entry(), phase: "finished", finishedAt: clock.ms }] });
   /** The reviewer of a re-review ends having posted nothing, as the door refuses a second `not convinced` at an equal patch. */
-  const settleRereview = () => { reviewer.wrote(ref, null); pool.reviewNewHeads(); };
+  const settleRereview = async () => { reviewer.wrote(ref, null); await pool.reviewNewHeads(); };
   if (roundEnded) endRound();
   return { fixture, host, reviewer, pool, pull, url, ref, reply, entry, endRound, settleRereview };
 }
 
 test("A11-235: a body-only fix starts a re-review on the same head, with the description's changed lines in its brief and no replies, and it counts as one of the run's rounds", async () => {
   const { reviewer, pool, pull, url, entry } = await blockedRun();
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1, "a block nobody answered starts nothing");
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual(reviewer.started, [{ pr: url, head: HEAD }, { pr: url, head: HEAD }], "the second start is for the same head: no commit");
   assert.deepEqual(reviewer.briefs[1]?.rereview, { replies: [], body: [{ kind: "added", text: "Outside-Region: src/a.ts — the type moved with it" }] }, "told what changed: the added line, and no reply");
   assert.equal(entry().rounds, 1, "counted in the round cap");
@@ -71,7 +71,7 @@ test("A11-235: a body fix that also removes lines tells the reviewer which lines
   const { reviewer, pool, pull, reply } = await blockedRun();
   pull.body = "Closes NBF-1\n\n## Outside-Region\n\nsrc/a.ts — the type moved with it\n";
   reply("Fixed in the description.", 25);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual(reviewer.briefs[1]?.rereview?.body, [{ kind: "removed", text: "none" }, { kind: "added", text: "src/a.ts — the type moved with it" }]);
   assert.deepEqual(reviewer.briefs[1]?.rereview?.replies.map(({ text }) => text), ["Fixed in the description."]);
 });
@@ -79,15 +79,15 @@ test("A11-235: a body fix that also removes lines tells the reviewer which lines
 test("A11-235: a reply with no change and no body edit starts one re-review and does not loop, before or after a restart", async () => {
   const { fixture, host, reviewer, pool, reply, entry, settleRereview } = await blockedRun();
   reply("This is not a defect in this diff.", 25);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 2, "the reply starts one re-review");
   assert.equal(reviewer.briefs[1]?.rereview?.body, undefined, "with no description lines to tell: the body did not change");
-  settleRereview();
+  await settleRereview();
   for (let sweep = 0; sweep < 3; sweep += 1) {
     clock.ms += 10 * MINUTE;
-    pool.reviewNewHeads();
+    await pool.reviewNewHeads();
   }
-  fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
+  await fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
   assert.equal(reviewer.started.length, 2, "the same reply, the same body and the standing block start nothing more");
   assert.equal(entry().rounds, 1, "and the run was charged for the one");
 });
@@ -95,7 +95,7 @@ test("A11-235: a reply with no change and no body edit starts one re-review and 
 test("A11-235: a description edit that only changes spacing is no answer", async () => {
   const { reviewer, pool, pull } = await blockedRun();
   pull.body = `${BODY}\n\n   \n`.replace("none", "none  ");
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1);
 });
 
@@ -103,15 +103,15 @@ test("A11-235: the cap holds: each re-review is a round, a run with none left is
   const { reviewer, pool, pull, entry, settleRereview } = await blockedRun({ rounds: MAX_FEEDBACK_ROUNDS - 2 });
   const edit = (n: number) => { pull.body = `${BODY}Outside-Region: edit ${n}\n`; clock.ms += 10 * MINUTE; };
   edit(1);
-  pool.reviewNewHeads();
-  settleRereview();
+  await pool.reviewNewHeads();
+  await settleRereview();
   edit(2);
-  pool.reviewNewHeads();
-  settleRereview();
+  await pool.reviewNewHeads();
+  await settleRereview();
   assert.deepEqual([reviewer.started.length, entry().rounds, entry().handedBack], [3, MAX_FEEDBACK_ROUNDS, undefined], "two answered edits are two re-reviews, and use the last round");
   edit(3);
-  pool.reviewNewHeads();
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 3, "a third edit starts no reviewer");
   assert.equal(entry().rounds, MAX_FEEDBACK_ROUNDS, "and counts no round");
   assert.match(entry().handedBack ?? "", /^The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped\. Respond to review starts another\. The latest: a11ign-reviewer's block on .*pull\/1 at h1 was answered by editing the description/);
@@ -121,14 +121,14 @@ test("A11-235: a run that is still in its round is not re-reviewed until the rou
   const mid = await blockedRun();
   mid.fixture.store.set({ ...mid.fixture.store.get(), entries: [{ ...mid.entry(), phase: "running" }] });
   mid.pull.body = FIXED;
-  mid.pool.reviewNewHeads();
+  await mid.pool.reviewNewHeads();
   assert.equal(mid.reviewer.started.length, 1, "the worker may still be editing the description");
   mid.fixture.store.set({ ...mid.fixture.store.get(), entries: [{ ...mid.entry(), phase: "finished" }] });
-  mid.pool.reviewNewHeads();
+  await mid.pool.reviewNewHeads();
   assert.equal(mid.reviewer.started.length, 2, "and the round's end releases it");
   const orphan = await blockedRun({ held: false, rounds: MAX_FEEDBACK_ROUNDS });
   orphan.pull.body = FIXED;
-  orphan.pool.reviewNewHeads();
+  await orphan.pool.reviewNewHeads();
   assert.equal(orphan.reviewer.started.length, 2, "a pull request a person opened is re-reviewed whatever rounds a run of the board has had");
   assert.equal(orphan.entry().handedBack, undefined);
 });
@@ -137,11 +137,11 @@ test("A11-235: a refused re-review start is asked again on the next sweep agains
   const { reviewer, pool, pull, entry } = await blockedRun();
   pull.body = FIXED;
   reviewer.refuseWith("another instance holds the review");
-  pool.reviewNewHeads();
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds ?? 0], [1, 0], "nothing started, nothing charged");
   reviewer.refuseWith(null);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds], [2, 1], "the description change was not forgotten by the refusal");
   assert.deepEqual(reviewer.briefs[1]?.rereview?.body, [{ kind: "added", text: "Outside-Region: src/a.ts — the type moved with it" }]);
 });
@@ -151,7 +151,7 @@ test("A11-235: the look survives a restart, so a body change is found by a pool 
   const path = reviewerMemoryPath(fixture.settings.stateDir);
   assert.equal(readReviewerMemory(path).memory.looks.get(`${url}@${HEAD}`)?.body, BODY, "the body the first review saw is on disk");
   pull.body = FIXED;
-  fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
+  await fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
   assert.equal(reviewer.started.length, 2);
   const legacy = await blockedRun();
   const legacyPath = reviewerMemoryPath(legacy.fixture.settings.stateDir);
@@ -161,7 +161,7 @@ test("A11-235: the look survives a restart, so a body change is found by a pool 
   writeReviewerMemory(legacyPath, { ...noReviewerMemory(), started: memory.started, rereviewed: memory.rereviewed });
   legacy.pull.body = FIXED;
   legacy.reply("a reply", 25);
-  legacy.fixture.restart({ codeHost: legacy.host, reviewer: legacy.reviewer }).reviewNewHeads();
+  await legacy.fixture.restart({ codeHost: legacy.host, reviewer: legacy.reviewer }).reviewNewHeads();
   assert.equal(legacy.reviewer.started.length, 1, "no look to compare with, and its one re-review by reply already spent");
 });
 
@@ -169,21 +169,21 @@ test("A11-235: a new head is a first review with no description lines in its bri
   const { fixture, reviewer, pool, pull } = await blockedRun();
   pull.head = "h2";
   pull.reviews = [];
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 2);
   assert.equal(reviewer.briefs[1]?.rereview, undefined, "a first review, not a re-review");
   pull.state = "merged";
-  pool.releaseReviewers();
+  await pool.releaseReviewers();
   assert.deepEqual([...readReviewerMemory(reviewerMemoryPath(fixture.settings.stateDir)).memory.looks.keys()], [], "the looks of the pull request are dropped with it");
 });
 
 test("A11-235: a description edited before the block was posted is not an answer to it, and the run's round that answers the block is what releases a body-only re-review", async () => {
   const { reviewer, pool, pull, endRound, entry } = await blockedRun({ roundEnded: false });
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds ?? 0], [1, 0], "the run last finished before the block, so its worker has not answered it: the block asks for the worker's round, not a second look");
   endRound();
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds], [2, 1], "and once the round that answers the block has ended, the description is its answer");
 });
 
@@ -196,21 +196,21 @@ test("A11-235: a refused re-review start of a head with no look is not remembere
   const pool = fixture.restart({ codeHost: host, reviewer });
   reviewer.refuseWith("another instance holds the review");
   clock.ms = 40 * MINUTE;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(readReviewerMemory(path).memory.looks.has(`${url}@${HEAD}`), false, "the refused start leaves no look on disk");
   reviewer.refuseWith(null);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 2, "and the reply, older than the refused attempt, still starts the re-review");
 });
 
 test("A11-235: a run handed back at the cap reads no replies on the sweeps that follow", async () => {
   const { host, pool, pull, url } = await blockedRun({ rounds: MAX_FEEDBACK_ROUNDS });
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   const reads = () => host.calls.filter((call) => call === `readReplies ${url}`).length;
   const before = reads();
-  pool.reviewNewHeads();
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reads(), before, "the hand-back stands, so nothing is asked of GitHub for it again");
 });
 
@@ -219,15 +219,15 @@ test("A11-219: a re-review is logged as a round of the run's own, with how the b
   // The fixture's own queueing is the first event: this test is about what follows it.
   const events = () => logOf(fixture.store.get(), "NBF-1").map(({ at: _at, ...event }) => event).slice(1);
   pull.body = FIXED;
-  pool.reviewNewHeads();
-  settleRereview();
+  await pool.reviewNewHeads();
+  await settleRereview();
   assert.deepEqual(events(), [{ kind: "round", cause: "rereview", reason: "the block was answered by editing the description" }]);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(events().length, 1, "the same answer read again is no new round");
   clock.ms += 10 * MINUTE;
   reply("done, the line is in the description", clock.ms / MINUTE);
-  pool.reviewNewHeads();
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   const logged = events();
   assert.deepEqual(logged.map((event) => event.kind), ["round", "needs-you"], "no round was left, so the run was handed to a person, once");
   assert.match(logged[1].kind === "needs-you" ? logged[1].reason : "", /^The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped/);

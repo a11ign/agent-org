@@ -87,8 +87,8 @@ const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFe
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
 
 const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
-  "readOwnLogin names the account or answers null": ({ host }) => {
-    const login = host.readOwnLogin();
+  "readOwnLogin names the account or answers null": async ({ host }) => {
+    const login = (await host.readOwnLogin());
     expect(login === null || (isString(login) && login !== ""), "readOwnLogin() must be a login, or null when it cannot be read");
   },
   "repoViewArgs and repoCloneArgs name the repository they are asked about": ({ host }) => {
@@ -97,8 +97,8 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     expect(Array.isArray(view) && view.every(isString) && view.includes("owner/repo"), "repoViewArgs must be a list of arguments that names the repository");
     expect(Array.isArray(clone) && clone.every(isString) && clone.includes("owner/repo") && clone.includes("/work/repo"), "repoCloneArgs must be a list of arguments that names the remote and the path");
   },
-  "readPullFeedback reads a pull request": ({ host, probe }) => {
-    const feedback = host.readPullFeedback(probe.pull, probe.self);
+  "readPullFeedback reads a pull request": async ({ host, probe }) => {
+    const feedback = (await host.readPullFeedback(probe.pull, probe.self));
     expect(isObject(feedback), `readPullFeedback(${probe.pull}) must read the pull request the host holds`);
     expect(["open", "merged", "closed"].includes(String(feedback.state)), "feedback.state must be open, merged or closed");
     expect(Array.isArray(feedback.failing) && Array.isArray(feedback.failures) && Array.isArray(feedback.authors) && Array.isArray(feedback.files), "feedback.failing, failures, authors and files must be lists");
@@ -112,28 +112,28 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
       && feedback.queue.removals.every((removal) => isString(removal.reason) && Number.isFinite(removal.at) && (removal.actor === null || isString(removal.actor)) && (removal.groupCommit === null || isString(removal.groupCommit)))),
     "feedback.queue, when the host says it, must be { queued, removals: [{ at, reason, actor, groupCommit }] } (contract 1.21)");
   },
-  "readPullFeedback answers null for a pull request it cannot read": ({ host, probe }) => {
-    expect(host.readPullFeedback(probe.missing, probe.self) === null, "readPullFeedback must answer null for what it cannot read: null is never 'no feedback'");
+  "readPullFeedback answers null for a pull request it cannot read": async ({ host, probe }) => {
+    expect((await host.readPullFeedback(probe.missing, probe.self)) === null, "readPullFeedback must answer null for what it cannot read: null is never 'no feedback'");
   },
-  "readReplies answers a list of replies, and null for a pull request it cannot read": ({ host, probe }) => {
-    const replies = host.readReplies(probe.pull, { since: 0, authors: [probe.self] });
+  "readReplies answers a list of replies, and null for a pull request it cannot read": async ({ host, probe }) => {
+    const replies = (await host.readReplies(probe.pull, { since: 0, authors: [probe.self] }));
     expect(Array.isArray(replies) && replies.every((reply) => isString(reply.author) && isString(reply.url) && isString(reply.text) && Number.isFinite(reply.at)), `readReplies(${probe.pull}) must be a list of { author, at, url, text }`);
     expect(replies.every((reply) => reply.author === probe.self), "readReplies must return only the accounts it is asked for");
-    expect(host.readReplies(probe.pull, { since: 0, authors: [] })?.length === 0, "readReplies of no accounts must be an empty list, never a reply of a stranger's");
-    expect(host.readReplies(probe.missing, { since: 0, authors: [probe.self] }) === null, "readReplies must answer null for what it cannot read: null is never 'no replies'");
+    expect((await host.readReplies(probe.pull, { since: 0, authors: [] }))?.length === 0, "readReplies of no accounts must be an empty list, never a reply of a stranger's");
+    expect((await host.readReplies(probe.missing, { since: 0, authors: [probe.self] })) === null, "readReplies must answer null for what it cannot read: null is never 'no replies'");
   },
-  "readPullState names the state or answers null": ({ host, probe }) => {
-    expect(PULL_STATES.includes(String(host.readPullState(probe.pull))), `readPullState(${probe.pull}) must be OPEN, MERGED or CLOSED`);
-    expect(host.readPullState(probe.missing) === null, "readPullState must answer null for a pull request it cannot read");
+  "readPullState names the state or answers null": async ({ host, probe }) => {
+    expect(PULL_STATES.includes(String((await host.readPullState(probe.pull)))), `readPullState(${probe.pull}) must be OPEN, MERGED or CLOSED`);
+    expect((await host.readPullState(probe.missing)) === null, "readPullState must answer null for a pull request it cannot read");
   },
-  "readReviewState reads the head, the reviews and whether the checks settled": ({ host, probe }) => {
-    const state = host.readReviewState(probe.pull);
+  "readReviewState reads the head, the reviews and whether the checks settled": async ({ host, probe }) => {
+    const state = (await host.readReviewState(probe.pull));
     expect(isObject(state) && isString(state.head) && Array.isArray(state.reviews) && typeof state.settled === "boolean", `readReviewState(${probe.pull}) must read { head, reviews, settled }`);
     expect(!isObject(state) || state.unrequiredRed === undefined || (Array.isArray(state.unrequiredRed) && state.unrequiredRed.every(isString)), `readReviewState(${probe.pull}) must name unrequiredRed, when it has any, as a list of check names`);
-    expect(host.readReviewState(probe.missing) === null, "readReviewState must answer null for a pull request it cannot read");
+    expect((await host.readReviewState(probe.missing)) === null, "readReviewState must answer null for a pull request it cannot read");
   },
-  "openPullUrlsOf lists a repository's open pull requests": ({ host, probe }) => {
-    const urls = host.openPullUrlsOf(probe.repository);
+  "openPullUrlsOf lists a repository's open pull requests": async ({ host, probe }) => {
+    const urls = (await host.openPullUrlsOf(probe.repository));
     expect(Array.isArray(urls) && urls.every(isString), `openPullUrlsOf(${probe.repository}) must be a list of addresses`);
     expect(urls.includes(probe.pull), `openPullUrlsOf(${probe.repository}) must list the open pull request ${probe.pull}`);
   },
@@ -470,11 +470,11 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged": {
     applies: ({ host }) => typeof host.readMergedFindings === "function",
     reason: "the code host has no readMergedFindings, which is optional (contract 1.4)",
-    run: ({ host, probe }) => {
-      expect(host.readMergedFindings!(probe.missing) === null, "readMergedFindings must answer null for what it cannot read: null is never 'it found nothing'");
-      expect(host.readMergedFindings!(probe.pull) === null, "readMergedFindings must answer null for a pull request that has not merged, whose findings are not final");
+    run: async ({ host, probe }) => {
+      expect((await host.readMergedFindings!(probe.missing)) === null, "readMergedFindings must answer null for what it cannot read: null is never 'it found nothing'");
+      expect((await host.readMergedFindings!(probe.pull)) === null, "readMergedFindings must answer null for a pull request that has not merged, whose findings are not final");
       if (probe.merged === undefined) return;
-      const found = host.readMergedFindings!(probe.merged);
+      const found = (await host.readMergedFindings!(probe.merged));
       expect(isObject(found) && isString(found.title) && Number.isInteger(found.number) && isString(found.body) && Array.isArray(found.sections), `readMergedFindings(${probe.merged}) must read { title, number, body, sections }`);
       expect(found.sections.every((section) => isString(section.file) && isString(section.heading) && isString(section.text)), "each section must be { file, heading, text }");
     },
@@ -592,14 +592,14 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "readBranchCi answers null for a repository it cannot read": {
     applies: ({ host }) => typeof host.readBranchCi === "function",
     reason: "the code host has no readBranchCi, which is optional (contract 1.22)",
-    run: ({ host }) => expect(host.readBranchCi!(MISSING_REPOSITORY, "main", new Set()) === null, "readBranchCi must answer null for a repository it cannot read: null is never 'the branch ran nothing'"),
+    run: async ({ host }) => expect((await host.readBranchCi!(MISSING_REPOSITORY, "main", new Set())) === null, "readBranchCi must answer null for a repository it cannot read: null is never 'the branch ran nothing'"),
   },
   "readBranchCi reads a branch's workflow runs with each job's runner labels and times": {
     applies: ({ host, probe }) => typeof host.readBranchCi === "function" && probe.branchCi !== undefined,
     reason: "the code host has no readBranchCi (optional, contract 1.22) or the probe names no branch with runs",
-    run: ({ host, probe }) => {
+    run: async ({ host, probe }) => {
       const { repository, branch } = probe.branchCi!;
-      const runs = host.readBranchCi!(repository, branch, new Set());
+      const runs = (await host.readBranchCi!(repository, branch, new Set()));
       expect(Array.isArray(runs) && runs.length > 0, `readBranchCi(${repository}, ${branch}) must read the runs on the branch`);
       const isTime = (value: unknown): boolean => value === null || (isString(value) && !Number.isNaN(Date.parse(value)));
       const runIsRead = (run: any): boolean => isObject(run) && Number.isInteger(run.id) && isString(run.headSha) && isString(run.createdAt) && CI_STATUSES.includes(run.status) && Array.isArray(run.jobs);
@@ -607,7 +607,7 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(runs!.every(runIsRead), "every run must read { id, headSha, createdAt, status: queued | in_progress | completed, jobs }");
       expect(runs!.every((run) => run.jobs.every(jobIsRead)), "every job must read { labels: strings, startedAt, completedAt }, each time an ISO time or null");
       expect(runs!.some((run) => run.jobs.length > 0), "an unsettled run lists its jobs");
-      const settled = host.readBranchCi!(repository, branch, new Set(runs!.map(({ id }) => id)));
+      const settled = await host.readBranchCi!(repository, branch, new Set(runs!.map(({ id }) => id)));
       expect(Array.isArray(settled) && settled.length === runs!.length && settled.every((run) => run.jobs.length === 0), "a run the caller holds as settled comes back with no jobs: the host reads each completed run's jobs once");
     },
   },
@@ -631,14 +631,14 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "openDependencyPulls answers null for a repository it cannot read": {
     applies: ({ host }) => typeof host.openDependencyPulls === "function",
     reason: "the code host has no openDependencyPulls, which is optional (contract 1.19)",
-    run: ({ host }) => expect(host.openDependencyPulls!(MISSING_REPOSITORY) === null, "openDependencyPulls must answer null for a repository it cannot read: null is never 'the bot opened none'"),
+    run: async ({ host }) => expect((await host.openDependencyPulls!(MISSING_REPOSITORY)) === null, "openDependencyPulls must answer null for a repository it cannot read: null is never 'the bot opened none'"),
   },
   "openDependencyPulls lists the pull requests the dependency bot opened, and no one else's": {
     applies: ({ host, probe }) => typeof host.openDependencyPulls === "function" && probe.dependency !== undefined,
     reason: "the code host has no openDependencyPulls (optional, contract 1.19) or the probe names no pull request the dependency bot opened",
-    run: ({ host, probe }) => {
+    run: async ({ host, probe }) => {
       const { repository, url, foreign } = probe.dependency!;
-      const found = host.openDependencyPulls!(repository);
+      const found = (await host.openDependencyPulls!(repository));
       expect(Array.isArray(found), `openDependencyPulls(${repository}) must read a list`);
       const pull = found!.find((candidate) => candidate.url === url);
       expect(isObject(pull) && isString(pull.title) && isString(pull.headRefName) && isString(pull.headSha) && pull.headSha !== "" && isString(pull.body) && Number.isInteger(pull.number) && pull.author === DEPENDENCY_PULL_AUTHOR,

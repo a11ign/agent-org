@@ -8,6 +8,9 @@ import { isAbsolute, join } from "node:path";
 export type Program = { status: number | null; stdout: string; stderr: string };
 /** Runs the GitHub CLI with `args`, and answers what it printed. */
 export type ProgramRunner = (args: string[]) => Program;
+
+/** {@link ProgramRunner} without holding the process still (A11-356). */
+export type AsyncProgramRunner = (args: string[]) => Promise<Program>;
 /** The account a runner acts as: its config directory, when the host names one (`GH_CONFIG_DIR`). */
 export type Account = Readonly<{ GH_CONFIG_DIR?: string }>;
 
@@ -68,8 +71,8 @@ export function ensureStackExtension(run: ProgramRunner): StackExtension {
 export type StacksReading = Readonly<{ kind: "enabled" }> | Readonly<{ kind: "refused" }> | Readonly<{ kind: "unknown"; reason: string }>;
 
 /** GitHub's answer for `repo`, read through `run`. */
-export function stacksOf(run: ProgramRunner, repo: string): StacksReading {
-  const answer = run(["api", `repos/${repo}/stacks`]);
+export async function stacksOf(run: AsyncProgramRunner, repo: string): Promise<StacksReading> {
+  const answer = await run(["api", `repos/${repo}/stacks`]);
   if (answer.status === 0) return { kind: "enabled" };
   return /HTTP 404/.test(answer.stderr) ? { kind: "refused" } : { kind: "unknown", reason: firstLine(answer) };
 }

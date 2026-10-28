@@ -4,6 +4,7 @@
 // asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
 import type { FailingCheck, PullFeedback, PullQueue, QueueRemoval, ReviewDecision } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
+import type { AsyncGh } from "./gh.ts";
 import { MERGE_BOT_GATE, answerRunsMergeBot, mergeBotFields } from "./merge-flow.ts";
 
 export type { FailingCheck, PullFeedback };
@@ -75,6 +76,16 @@ export function pullOf(url: string): { owner: string; repo: string; number: numb
 export function readOwnLogin(run: (args: string[]) => string): string | null {
   try {
     const login = run(["api", "user", "--jq", ".login"]).trim();
+    return login === "" ? null : login;
+  } catch {
+    return null;
+  }
+}
+
+/** {@link readOwnLogin} without holding the process still (A11-356). */
+export async function readOwnLoginAsync(run: AsyncGh): Promise<string | null> {
+  try {
+    const login = (await run(["api", "user", "--jq", ".login"])).trim();
     return login === "" ? null : login;
   } catch {
     return null;
@@ -171,14 +182,14 @@ function detailsUrlOf(runs: readonly Check[], name: string, policy: CodeHostPoli
  * THE FEEDBACK ON THE PULL REQUEST AT `url`, leaving out what `self` wrote and what `alsoIgnore` wrote, or null for "could not ask": an address that is not a GitHub pull
  * request, a refused `run`, and an answer without the pull request. Null is never "no feedback".
  */
-export function readPullFeedback(url: string, self: string, run: (args: string[]) => string, policy: CodeHostPolicy, alsoIgnore: readonly string[] = []): PullFeedback | null {
+export async function readPullFeedback(url: string, self: string, run: AsyncGh, policy: CodeHostPolicy, alsoIgnore: readonly string[] = []): Promise<PullFeedback | null> {
   const pull = pullOf(url);
   if (pull === null) return null;
   try {
-    const answer = JSON.parse(run(["api", "graphql", "-f", `query=${queryOf(pull.number)}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
+    const answer = JSON.parse(await run(["api", "graphql", "-f", `query=${queryOf(pull.number)}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
     const pr = answer?.data?.repository?.pullRequest;
     if (pr === null || typeof pr !== "object" || typeof pr.state !== "string") return null;
-    const files = changedFiles(pull, pr.files, run);
+    const files = await changedFiles(pull, pr.files, run);
     return { ...feedbackOf(pr, self, alsoIgnore, policy, flowRequiresOf(answer?.data?.repository, pr)), files: files.paths, filesComplete: files.complete };
   } catch {
     // An answer of an unexpected shape is no reading either.
@@ -208,8 +219,8 @@ const isFilesPage = (page: any): page is FilesPage =>
  * left past the cap, leave it false with the paths read so far: files not seen are unknown, never none. A page that cannot be read throws, so the
  * read is no reading at all.
  */
-function changedFiles(pull: { owner: string; repo: string; number: number }, first: unknown, run: (args: string[]) => string):
-  { paths: string[]; complete: boolean } {
+async function changedFiles(pull: { owner: string; repo: string; number: number }, first: unknown, run: AsyncGh):
+  Promise<{ paths: string[]; complete: boolean }> {
   const paths: string[] = [];
   let page = first;
   for (let pages = 1; ; pages += 1) {
@@ -217,7 +228,7 @@ function changedFiles(pull: { owner: string; repo: string; number: number }, fir
     paths.push(...page.nodes.map((file) => file.path));
     if (!page.pageInfo.hasNextPage) return { paths, complete: true };
     if (pages >= MAX_FILE_PAGES || typeof page.pageInfo.endCursor !== "string") return { paths, complete: false };
-    const answer = JSON.parse(run(["api", "graphql", "-f", `query=${FILES_QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`,
+    const answer = JSON.parse(await run(["api", "graphql", "-f", `query=${FILES_QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`,
       "-F", `number=${pull.number}`, "-f", `cursor=${page.pageInfo.endCursor}`]));
     page = answer?.data?.repository?.pullRequest?.files;
     if (page === null || typeof page !== "object") throw new Error("a page of the changed files did not answer");
