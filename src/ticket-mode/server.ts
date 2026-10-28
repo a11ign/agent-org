@@ -763,7 +763,7 @@ async function serve(): Promise<void> {
   const reviewerHeads = new Map<string, string>();
   const reviewerSeen = new Map<string, number>();
   const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads, seen: reviewerSeen, tmpBase: privateBase() });
-  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }));
+  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing, recordCalls: true }));
   activated(active);
   const source = active.tracker();
   const codeHost = active.codeHost();
