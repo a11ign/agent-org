@@ -99,12 +99,29 @@ export async function cloneOrNull(ctx: PoolContext, repository: HostRepository):
   }
 }
 
+/**
+ * How long the clone sweep believes the organisation's list (A11-377). Listing it is a `gh repo list` for each owner, synchronous as the code host's reads are, and the sweep runs every few minutes, so each sweep held the
+ * board's loop for a second or more. A repository made since is cloned within this long; a plan or a worker that names one reads the list fresh.
+ */
+export const ORGANISATION_SWEEP_MS = 15 * 60_000;
+
+const swept = new WeakMap<PoolContext, Readonly<{ at: number; repositories: readonly HostRepository[] }>>();
+
+/** The organisation's list for the clone sweep: the one read within {@link ORGANISATION_SWEEP_MS}, else read now. A list that could not be read is not kept, so the next sweep asks again. */
+function sweptOrganisation(ctx: PoolContext): OrgReading {
+  const held = swept.get(ctx);
+  if (held !== undefined && ctx.now() - held.at < ORGANISATION_SWEEP_MS) return { repositories: held.repositories };
+  const read = organisationOf(ctx);
+  if ("repositories" in read) swept.set(ctx, { at: ctx.now(), repositories: read.repositories });
+  return read;
+}
+
 /** Clones every live repository of the organisation this machine has no clone of, one at a time, and not while another sweep is cloning. A failure is said and the rest are still tried. Resolves with how many were cloned; never rejects. */
 export async function cloneMissing(ctx: PoolContext): Promise<number> {
   if (ctx.cloneSweep.busy) return 0;
   ctx.cloneSweep.busy = true;
   try {
-    const organisation = organisationOf(ctx);
+    const organisation = sweptOrganisation(ctx);
     if ("unreadable" in organisation) {
       log(`the organisation's repositories were not cloned: ${organisation.unreadable}`);
       return 0;
