@@ -28,6 +28,21 @@ describe("a ticket's After-merge check rows", () => {
     ]);
   });
 
+  it("say when a scheduled check is due, and what a check that cannot run here is parked on and where that stands", () => {
+    const rows = checkRowsOf([
+      check({ runner: "agent", dueAt: Date.UTC(2026, 10, 3, 21, 30) }),
+      check({ id: "A11-9#2", runner: "agent", needs: { capability: "chairman-mac" } }),
+      check({ id: "A11-9#3", runner: "agent", needs: { capability: "chairman-mac", request: "f1" } }),
+      check({ id: "A11-9#4", runner: "agent", needs: { capability: "chairman-mac", request: "f1", routedTo: "mac-runner" } }),
+    ], NOW);
+    expect(rows.map(({ id, state, detail }) => [id, state, detail])).toEqual([
+      ["A11-9#1", "Open", "due 2026-11-03 · listed 2 d ago"],
+      ["A11-9#2", "Open", "cannot run here: needs chairman-mac · listed 2 d ago"],
+      ["A11-9#3", "Open", "cannot run here: needs chairman-mac, ticket requested (f1) · listed 2 d ago"],
+      ["A11-9#4", "Open", "cannot run here: needs chairman-mac, routed to mac-runner · listed 2 d ago"],
+    ]);
+  });
+
   it("say what a closed check was closed with and by whom, and what became of a failure", () => {
     const rows = checkRowsOf([
       check({ state: "passed", result: "no lost run from 2026-10-24 to 2026-10-31", closedBy: "board" }),

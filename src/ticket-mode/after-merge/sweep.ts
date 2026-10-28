@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { diagnose, defaultDoctorDeps } from "../../install/doctor.ts";
 import { log, messageOf } from "../pool-state.ts";
 import { toolPinOf } from "../pool-pin.ts";
-import { fileFollowUps, queueCheckRuns } from "../pool-check-runs.ts";
+import { fileCapabilityRequests, fileFollowUps, queueCheckRuns } from "../pool-check-runs.ts";
 import type { BranchCiRun } from "../../plugins/contracts/code-host.ts";
 import type { PoolContext } from "../pool-context.ts";
 import { planTexts } from "../pool-ticket-text.ts";
@@ -36,6 +36,7 @@ export async function syncAfterMergeChecks(ctx: PoolContext): Promise<void> {
     changeChecks(path, (before) => markOverdue(markShownToPerson(before, now()), now()));
     queueCheckRuns(ctx, installedReader(ctx));
     fileFollowUps(ctx, followUpsSaid);
+    fileCapabilityRequests(ctx, capabilitiesSaid);
     await postCloses(ctx, path, unpostedChecks(loadChecks(path)).map(({ id }) => id));
   } catch (err) {
     log(`the After-merge checks in ${path} could not be swept: ${messageOf(err)}`);
@@ -44,6 +45,8 @@ export async function syncAfterMergeChecks(ctx: PoolContext): Promise<void> {
 
 /** The checks whose follow-up could not be filed, said once. */
 const followUpsSaid = new Set<string>();
+/** The capabilities whose ticket could not be filed, said once. */
+const capabilitiesSaid = new Set<string>();
 
 /** Whether ticket's change is in a release installed on this host, as the sweep reads it from the run log and the tool folder this instance runs from. */
 function installedReader(ctx: PoolContext): (check: CheckRecord) => boolean {

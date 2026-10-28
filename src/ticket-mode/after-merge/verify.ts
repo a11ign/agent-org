@@ -11,6 +11,7 @@ import { closeCheck, evidenceRefusal, isUnmigrated, type CheckRecord, type Check
 import { plannedFrom, PLANNED_EVIDENCE_CHARS, AFTER_MERGE_CHECKS_HEADING } from "./plan-section.ts";
 import { ESCALATION_IDS } from "../escalation.ts";
 import { OBSERVE_FORMS } from "./observe.ts";
+import { capabilityOf, CAPABILITY_CHARS } from "./capability.ts";
 
 /** The model and effort a verifier run, and the migration pass, run on: a short, bounded job. */
 export const VERIFIER_MODEL = "sonnet";
@@ -37,8 +38,16 @@ export const isCheckRun = (mode: string): boolean => CHECK_RUN_MODES.includes(mo
 
 // --- THE VERIFIER RUN ---
 
-/** What a verifier run ends on: it saw the line hold, saw it not hold, or found it no longer applies. */
-export type VerifyOutcome = Readonly<{ kind: "passed" | "failed" | "superseded"; evidence: string }>;
+/**
+ * What a verifier run ends on: it saw the line hold, saw it not hold, found it no longer applies, or found this host lacks something the check needs (A11-361, `cannot-run-here`, naming the capability in `needs`). The last is
+ * a routing problem: it closes nothing, fails nothing and files no ticket of its own.
+ */
+export type VerifyOutcome = Readonly<{ kind: "passed" | "failed" | "superseded"; evidence: string } | { kind: "cannot-run-here"; needs: string; evidence: string }>;
+
+const VERIFY_KINDS: readonly unknown[] = ["passed", "failed", "superseded", "cannot-run-here"] satisfies readonly VerifyOutcome["kind"][];
+
+/** Whether a verifier run's outcome kind is one of the four it may end on. */
+const isVerifyKind = (kind: unknown): kind is VerifyOutcome["kind"] => VERIFY_KINDS.includes(kind);
 
 /** The request a verifier run is queued with: the check's id and line, which is all a person sees of it. PURE. */
 export const verifierRequest = (check: Pick<CheckRecord, "id" | "line">): string => `Verify ${check.id}: ${check.line}`.slice(0, 400);
@@ -46,10 +55,13 @@ export const verifierRequest = (check: Pick<CheckRecord, "id" | "line">): string
 /** A verifier run's outcome read from its parsed file: its kind and one line of evidence (or the reason, for superseded), or why it is not one. PURE. */
 export function verifyOutcomeOf(outcome: Readonly<Record<string, unknown>>): VerifyOutcome | string {
   const { kind, evidence } = outcome;
-  if (kind !== "passed" && kind !== "failed" && kind !== "superseded") return `a verifier run ends on "passed", "failed" or "superseded", not ${JSON.stringify(kind)}`;
-  if (typeof evidence !== "string") return `its ${kind} outcome gives no evidence: one line saying what was seen, or why the check is superseded`;
+  if (!isVerifyKind(kind)) return `a verifier run ends on "passed", "failed", "superseded" or "cannot-run-here", not ${JSON.stringify(kind)}`;
+  if (typeof evidence !== "string") return `its ${kind} outcome gives no evidence: one line saying what was seen, why the check is superseded, or what this host lacks`;
   const refusal = evidenceRefusal(evidence);
-  return refusal === null ? { kind, evidence: evidence.trim() } : `its evidence is refused: ${refusal}`;
+  if (refusal !== null) return `its evidence is refused: ${refusal}`;
+  if (kind !== "cannot-run-here") return { kind, evidence: evidence.trim() };
+  const needs = capabilityOf(outcome.needs);
+  return needs === null ? `its cannot-run-here outcome names no \`needs\`: the one thing this host lacks, in lower case words joined by hyphens (at most ${CAPABILITY_CHARS} characters), such as "chairman-mac" or "board-key"` : { kind, needs, evidence: evidence.trim() };
 }
 
 /** The check a verifier run is for, as its brief quotes it: the ticket, the line, the plan's `Evidence:` and when the check was listed. PURE. */
@@ -67,17 +79,18 @@ You are a verifier run, started by the board. A ticket's change is in a release 
 
 > ${check.line.split("\n").join("\n> ")}
 
-- **What would close it (the plan's \`Evidence:\`):** ${spec}
+- **What would close it (the plan's \`Evidence:\`):** ${spec}${check.needs?.routedTo === undefined ? "" : `\n- **Routed to you:** an earlier run found this host lacks \`${check.needs.capability}\`; the board sent the check to ${check.needs.routedTo}, which has it.`}
 
 ## What to do
 
 Do what the line says, with the tools this machine gives you, and look at the real thing: run the command, read the log, open the page, read the file. You only look: change nothing, open no pull request, post nothing, and file no ticket (the board files the follow-up of a failure).
 Read the ticket (${check.key}) and its pull requests if the line refers to what they changed. A prediction is not evidence: say what you saw.
 
-Then end on one of three outcomes:
+Then end on one of four outcomes:
 
 - \`passed\`: you saw what the line says is true. The evidence is one line of at most 300 characters saying what you saw and where.
-- \`failed\`: you looked, and the line does not hold. The evidence is one line saying what you saw instead. If the check needs something you cannot do from here, that is a \`failed\`: say what is missing.
+- \`failed\`: you looked, and the line does not hold. The evidence is one line saying what you saw instead. Only a check you really ran can fail.
+- \`cannot-run-here\`: the check needs something this machine does not have (the chairman's Mac, a publishing machine, the board key, ...). Name it in \`needs\`: one thing, in lower case words joined by hyphens. The board routes the check to a runner that has it, or files one ticket for that missing thing; this is not a failure and files no ticket for this check.
 - \`superseded\`: the check no longer applies (a machine is retired or frozen, the thing it checks was replaced). The evidence is the reason, in one line.
 
 ## The outcome file
@@ -88,6 +101,7 @@ Write \`${dir}/outcome.json\` as the last thing you do, with exactly one of:
 { "kind": "passed", "evidence": "the status command shows one version on all machines (run at 14:02)" }
 { "kind": "failed", "evidence": "the doctor on the second host still reports 0.4.1, not the newest release" }
 { "kind": "superseded", "evidence": "that machine is no longer in use, so its onboarding is not run" }
+{ "kind": "cannot-run-here", "needs": "chairman-mac", "evidence": "the check opens the app on the chairman's Mac, and this host has no Mac" }
 \`\`\`
 
 The evidence is one line, with no line break.`;
@@ -144,7 +158,7 @@ export function migrationOf(outcome: Readonly<Record<string, unknown>>): Migrati
 function rewritten(check: CheckRecord, planned: PlannedCheck, now: number): CheckRecord {
   const { sentAt: _sent, overdueAt: _overdue, handedOff: _handed, observe: _watch, escalation: _item, ...kept } = check;
   return { ...kept, runner: planned.runner, ...(planned.escalation === undefined ? {} : { escalation: planned.escalation }), ...(planned.observe === undefined ? {} : { observe: { spec: planned.observe, from: now } }),
-    evidence: planned.evidence, migrated: { from: check.runner, at: now } };
+    ...(planned.window === undefined ? {} : { windowMs: planned.window }), evidence: planned.evidence, migrated: { from: check.runner, at: now } };
 }
 
 /** The file with each answered check of the pass rewritten or closed superseded (by the board, with the pass's reason). A check already closed, or already migrated, stays as it was. PURE. */
@@ -183,7 +197,7 @@ ${listed}
 ## What to decide for each
 
 - **\`board\`**, for a check the board can watch itself. It needs \`observe\` (one of ${OBSERVE_FORMS.map((form) => `\`${form}\``).join(", ")}), and for the windowed ones \`pass\` (\`absent\` or \`present\`) and \`window\` (\`30m\`, \`6h\`, \`7d\`). A week-long check ("for a week, no X happens") is \`board\` with \`pass: "absent"\` and \`window: "7d"\`: it passes when the window closes clean and fails on the first breach.
-- **\`agent\`**, for a check a short verifier run can do on the host once the change is installed: it reads the line and your \`evidence\`, does what it says, and records passed or failed. Make \`evidence\` say what to do and what to quote.
+- **\`agent\`**, for a check a short verifier run can do on the host once the change is installed: it reads the line and your \`evidence\`, does what it says, and records passed or failed. Make \`evidence\` say what to do and what to quote. A check that cannot be run until some time after release ("7 days after release") takes \`window\` (\`30m\`, \`6h\`, \`7d\`) and no \`observe\` or \`pass\`: the board starts its run only when the window has ended.
 - **\`person\`**, only for something only a person may do, with \`escalation\` set to an id of the escalation list (${ESCALATION_IDS.join(", ")}). Name, licence and a message to an outside organisation are the person's; a check the person would merely run is an \`agent\` check.
 - **\`superseded\`**, with a \`reason\`, when the check no longer applies: a machine is frozen by policy or no longer in use, the cutover plainly happened, the thing was replaced. Read the ticket and the code before you say so; do not supersede a check only because it is old.
 

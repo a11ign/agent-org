@@ -8,7 +8,7 @@ import { sectionsNeeded, settledDescription } from "./open-decisions.ts";
 import { type Ticket } from "./source.ts";
 import { inPickScope } from "./pick-scope.ts";
 import { joined } from "./queue.ts";
-import { forgetRun, messageOf, publishPlace, update, writerPlace, writerAgentRunning } from "./pool-state.ts";
+import { forgetRun, log, messageOf, publishPlace, update, writerPlace, writerAgentRunning } from "./pool-state.ts";
 import { writerEnded, writerWaiting } from "./queue.ts";
 import { QUESTION_CHARS } from "./pool-outcome.ts";
 import { closedNote } from "../herdr-agents.ts";
@@ -58,14 +58,37 @@ async function ticketsMade(ctx: PoolContext, place: RunPlace, named: readonly st
   return { tickets: checked.map(({ ticket }) => ticket), problems: [...unrecorded, ...checked.flatMap(({ problem }) => (problem === null ? [] : [problem]))] };
 }
 
-/** One ticket the run made, read back from the tracker, and the problem with it, if it has one. */
-async function madeTicket({ settings, source }: PoolContext, key: string): Promise<Readonly<{ ticket: WriterTicket; problem: string | null }>> {
+/** How long the read-back waits before each new try when the tracker cannot be read (A11-361): four reads in all, the last 20 seconds after the first. */
+export const READ_BACK_BACKOFF_MS: readonly number[] = [1_000, 4_000, 15_000];
+
+/**
+ * The ticket `key` read from the tracker, tried again after each of {@link READ_BACK_BACKOFF_MS} when the read throws (a fetch that failed says nothing about the ticket). Null when the tracker does not hold it. THROWS the last
+ * error when every try failed.
+ */
+async function readBack({ source, wait }: PoolContext, key: string): Promise<Ticket | null> {
+  for (const delay of READ_BACK_BACKOFF_MS) {
+    try {
+      return await source.read(key);
+    } catch {
+      await wait(delay);
+    }
+  }
+  return source.read(key);
+}
+
+/**
+ * One ticket the run made, read back from the tracker, and the problem with it, if it has one. A ticket the run filed is filed whether or not it can be read back (A11-359, A11-361): when every try of the read-back fails the ticket is shown by
+ * its key alone and is no problem, so its card reads Done naming the key the writer reported. A tracker that answers it holds no such ticket, or one with no plan, is a problem.
+ */
+async function madeTicket(ctx: PoolContext, key: string): Promise<Readonly<{ ticket: WriterTicket; problem: string | null }>> {
+  const { settings } = ctx;
   const unread: WriterTicket = { key, url: null, inPick: false };
   let found;
   try {
-    found = await source.read(key);
+    found = await readBack(ctx, key);
   } catch (err) {
-    return { ticket: unread, problem: `${key} could not be read from the tracker: ${messageOf(err).split("\n")[0]}` };
+    log(`${key}: the writer reported it filed, and it could not be read back from the tracker, so its card shows the key alone: ${messageOf(err).split("\n")[0]}`);
+    return { ticket: unread, problem: null };
   }
   if (found === null) return { ticket: unread, problem: `${key} is not in the tracker` };
   const ticket: WriterTicket = { key, url: found.url, inPick: inPickScope(settings.pick, found), title: found.title, priority: found.priority, project: found.project };
