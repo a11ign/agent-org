@@ -318,8 +318,8 @@ test("A11-116: a stacked run whose blocker has no pull request yet is told its b
   assert.ok(text.includes("`git ls-remote origin <branch>`"), "the branch is checked on the remote when there is no pull request");
   assert.ok(text.includes("`gh pr create --draft --base <branch>`"), "the pull request is based on the branch");
   const named = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "p", repo: "agent-org" });
-  assert.ok(named.includes("The ticket's project names `agent-org`, so its work lands there unless it belongs in another of these repositories"), "the project's repository is the default the worker is told");
-  assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "p" }).includes("project names"), false, "no project repository, no line");
+  assert.ok(named.includes("The ticket's plan, project or an earlier run names `agent-org`, so its work lands there unless it belongs in another of these repositories"), "the repository the ticket is placed in is the default the worker is told");
+  assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "p" }).includes("an earlier run names"), false, "no repository, no line");
   assert.equal(text.includes("has an open pull request"), false, "it never says the base has an open pull request");
   assert.equal(text.includes("gh stack link <its pull request url>"), true, "the link is named for when both pull requests exist");
   assert.ok(text.includes("Never rebase it, merge it in, or force-push"), "the worker never rebases the branch it builds on");
@@ -1148,4 +1148,26 @@ test("A11-219: a plan with numbered steps has its worker write the step it is on
   assert.equal(brief().includes("currentStep"), false);
   assert.match(brief(), /nothing will wake you\.\n\nA person may answer you here/, "the paragraphs around the working rule are as they were without steps");
   assert.match(brief(true), /nothing will wake you\.\n\nThe plan has numbered steps[^\n]*\n\nA person may answer you here/, "and with steps the new paragraph stands alone between them");
+});
+
+test("A11-355: a worker is told to name a repository of the organisation as owner/repo in a wrong-repo outcome, and that the board clones it and starts it again", () => {
+  const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "p" });
+  assert.ok(text.includes("When it belongs in another repository of the organisation, name it as `owner/repo`: the board clones it if this machine has not, and starts you again there, so nothing is asked of a person."));
+  assert.ok(text.includes("If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a `wrong-repo` outcome naming where it belongs."), "a repository outside the organisation is still a wrong-repo");
+});
+
+test("A11-355: a planner is offered the organisation's repositories with no clone beside the clones, and a project naming one of them is its default; with none offered the brief is as it was", () => {
+  const withProject = { ...ticket, project: "Backups", projectSummary: "Code: https://github.com/acme/corpus" };
+  const options = { ticket: withProject, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" };
+  const plain = planBriefText(options);
+  const offered = planBriefText({ ...options, uncloned: ["corpus", ".github"] });
+  assert.ok(offered.includes("These repositories of the organisation are not cloned on this machine yet."));
+  assert.ok(offered.includes("- `corpus`\n- `.github`"));
+  assert.ok(offered.includes("Its project, Backups, names the repository `corpus`: the plan's `repo` is `corpus`"), "the project's repository need not be cloned");
+  assert.ok(plain.includes("Its project, Backups, names no repository on this machine"), "without it, as before");
+  assert.equal(plain.includes("not cloned on this machine yet"), false);
+  const batch = (uncloned: readonly string[]) => batchPlanBriefText({ tickets: [{ ticket: withProject, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, uncloned, run: "plan {keys} into {dir}" });
+  assert.ok(batch(["corpus"]).includes("or one of the repositories of the organisation that are not cloned yet, which the board clones for you: `corpus`"));
+  assert.ok(batch(["corpus"]).includes("Its project, Backups, names the repository `corpus`"));
+  assert.equal(batch([]).includes("not cloned yet"), false);
 });

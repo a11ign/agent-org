@@ -9,7 +9,8 @@ import { claimantOf, parseTicketSettings } from "./settings.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { markPublishRunning, markPublishStarting, respond as respondQueued } from "./queue/queue-transitions.ts";
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
-import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
+import { dismiss as dismissRun, remove as removeQueued, retry as retryQueued } from "./queue/queue-entries-and-outcomes.ts";
+import { retryRefusal } from "./queue/queue-retry-refusal.ts";
 import { refusal } from "./local-http.ts";
 import { logEvent } from "./queue/run-log.ts";
 import { checkGhWrapperAtStart, createBoard, dependencyUpdatesOf, FEEDBACK_MS, holdsKey, idleBlockersOf, REVIEW_START_MS, startFeedbackSweeps, type BoardDeps } from "./server.ts";
@@ -40,6 +41,14 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     // The pool takes Respond, closing a parked run's workspace first: here only the queue's part, which can refuse.
     respond: (key: string) => { ticks.push(`respond ${key}`); made.store.set(respondQueued(made.store.get(), key, 7)); },
     stopWriterRun: (id: string) => { ticks.push(`stop-writer ${id}`); },
+    // The pool takes Retry (A11-355), and refuses, naming why, a run that cannot be retried: here the queue's part, which says why.
+    retry: async (key: string) => {
+      ticks.push(`retry ${key}`);
+      const run = made.store.get().entries.find((e) => e.ticket.key === key);
+      const refusal = run === undefined ? `${key} is not on the board` : retryRefusal(run);
+      if (refusal !== null) throw new Error(`${refusal}, so it was not retried`);
+      made.store.set(retryQueued(made.store.get(), key, 7));
+    },
     // The pool takes a queued run off, after putting its ticket back: here only the queue's part, which the board's store is asked for.
     remove: async (key: string) => { ticks.push(`remove ${key}`); made.store.set(removeQueued(made.store.get(), key)); },
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {},
@@ -539,6 +548,22 @@ test("the queue the page reads carries the running publish run's workspace and p
   b.store.set(markPublishRunning(markPublishStarting(b.store.get(), 8), "w9", "w9:p1"));
   const running = await read();
   assert.deepEqual([running.phase, running.workspace, running.pane], ["running", "w9", "w9:p1"]);
+});
+
+test("A11-355: Retry is the pool's: a run it retries answers 200 with the run queued, and one it cannot retry answers 409 saying why, not a 200 over an unchanged run", async () => {
+  const b = board();
+  // A run parked on a question: its agent may still be answered, so the pool refuses to retry it until Close has ended it.
+  await queueFinished(b, { kind: "needs-human", reason: "which colour?" });
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, workspace: "w1", pane: "w1:p1" })) });
+  const [refused, refusal] = await b.api("POST", "/api/queue/NBF-1/retry", {}) as [number, { error: string }];
+  assert.equal(refused, 409);
+  assert.equal(refusal.error, "NBF-1 still holds its workspace: close it first, so it was not retried");
+  assert.equal(b.store.get().entries[0].phase, "finished", "and the run is as it was");
+  const [absent, nobody] = await b.api("POST", "/api/queue/NBF-9/retry", {}) as [number, { error: string }];
+  assert.deepEqual([absent, nobody.error], [409, "NBF-9 is not on the board, so it was not retried"]);
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, workspace: undefined, pane: undefined })) });
+  const [ok, view] = await b.api("POST", "/api/queue/NBF-1/retry", {}) as [number, { entries: { phase: string }[] }];
+  assert.deepEqual([ok, view.entries[0].phase, b.ticks.filter((tick) => tick.startsWith("retry"))], [200, "queued", ["retry NBF-1", "retry NBF-9", "retry NBF-1"]]);
 });
 
 test("remove, stop, close, dismiss and max go through the board", async () => {

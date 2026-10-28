@@ -20,6 +20,7 @@ import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, OPENED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, TALK_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
+import { unclonedNames } from "./pool-org-repos.ts";
 import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
 import { heldClaims } from "./board-view/overlap-hold.ts";
 import { repoOf, stackedOn } from "./board-view/pull-status-and-notes.ts";
@@ -140,7 +141,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const planDir = emptyPlanDir(dir);
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
     const claims = heldClaims(store.get().entries, [entry]);
-    writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, run: settings.planner.run,
+    writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, uncloned: unclonedNames(ctx), run: settings.planner.run,
       notes, connectors, read, blockers: entry.blockers, findings, closed, claims, ...(replan ? { replan } : {}) }));
     writeClaimsGiven(dir, claims);
     const urls = findings.map(({ url }) => url);
@@ -323,7 +324,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
   }
   const planDir = emptyPlanDir(dir);
   const claims = heldClaims(store.get().entries, members);
-  writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir, clones: settings.clones, run: settings.planner.run,
+  writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir, clones: settings.clones, uncloned: unclonedNames(ctx), run: settings.planner.run,
     notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors, claims }));
   writeClaimsGiven(dir, claims);
   writeFindingsGiven(dir, tickets.map(({ ticket, findings = [] }) => ({ key: ticket.key, planDir: join(planDir, ticket.key), urls: findings.map(({ url }) => url) })));

@@ -15,6 +15,7 @@ import { kernelNotes } from "../host-kernel.ts";
 import { type AppIdentity, GITHUB_ROLES, type GithubRole, HostConfigRefusal, homeHostConfig, roleIdentity, stateEntryPath } from "../host-config.ts";
 import { compileCacheNotes, endedOnPurpose, hostIdentityNotes, ownedIdentityFiles, readToolVersionAgreement, requiredWrapper, seatWrapperNotes, type Finding, unitState, wrapperFile, wrapperOf } from "./host-drift-findings-and-notes.ts";
 import { shippedUnitNames, textOf, type HostConfig } from "./shipped-unit-texts-and-declarations.ts";
+import { changedLines, keepPrevious, textIfThere } from "./keep-previous.ts";
 
 /** The reading when no runner is behind: reported, never a failure, and never silent (an unreadable runner is named). @param {ReturnType<typeof readToolVersionAgreement>} reading @returns {Finding[]} */
 export function toolVersionNotes(reading: ReturnType<typeof readToolVersionAgreement>): Finding[] {
@@ -49,19 +50,33 @@ export function windowEndNotes(deps: Parameters<typeof unitState>[1] = {}): Find
  * @returns {string[]} the paths it wrote
  */
 export function hostIdentityInstall({ mkdir = mkdirSync, write = writeFileSync, chmod = chmodSync,
-  rename = renameSync, out = (l) => process.stdout.write(l), allowNoApps = false, ...where }: Parameters<typeof ownedIdentityFiles>[0] & {
+  rename = renameSync, out = (l) => process.stdout.write(l), allowNoApps = false, onlyChanged = false, ...where }: Parameters<typeof ownedIdentityFiles>[0] & {
         mkdir?: typeof mkdirSync; write?: typeof writeFileSync;
-        chmod?: typeof chmodSync; rename?: typeof renameSync; out?: (line: string) => void; allowNoApps?: boolean;
+        chmod?: typeof chmodSync; rename?: typeof renameSync; out?: (line: string) => void; allowNoApps?: boolean; onlyChanged?: boolean;
     } = {}): string[] {
   const wrapper = wrapperOf(where);
   const gh = wrapper === null ? null : wrapperFile(wrapper, where).target;
-  return ownedIdentityFiles(where).map(({ label, target, mode, expected }) => {
-    if (expected === null) throw new Error(`cannot install ${label}: the shipped copy could not be read`);
-    if (wrapper !== null && target === gh) writeGhWrapper({ target, mode, text: expected, host: where.host ?? homeHostConfig(), allowNoApps, mkdir, write, chmod, rename, read: where.read, wrapper });
-    else writeOwnedFile({ target, mode, text: expected, mkdir, write, chmod, rename });
-    out(`installed ${target}\n`);
-    return target;
+  const refused: string[] = [];
+  const written = ownedIdentityFiles(where).flatMap(({ label, target, mode, expected }) => {
+    try {
+      if (expected === null) throw new Error(`cannot install ${label}: the shipped copy could not be read`);
+      const previous = textIfThere(target, where.read);
+      if (onlyChanged && previous === expected) return [];
+      if (wrapper !== null && target === gh) writeGhWrapper({ target, mode, text: expected, host: where.host ?? homeHostConfig(), allowNoApps, mkdir, write, chmod, rename, read: where.read, wrapper });
+      else writeOwnedFile({ target, mode, text: expected, mkdir, write, chmod, rename });
+      // KEPT AFTER THE WRITE, so a `gh` wrapper that `writeGhWrapper` refuses leaves no copy beside a file that was not replaced (A11-354).
+      keepPrevious(target, { previous, next: expected }, { read: where.read, write, mode, out: (line) => out(`${line}\n`) });
+      out(`installed ${target}\n`);
+      return [target];
+    } catch (error) {
+      // A person's install stops at the first refusal, as it always did. The org's own pass goes on to the next file: a `gh` wrapper that is refused must not keep the launcher from being installed.
+      if (!onlyChanged) throw error;
+      refused.push(String((error as Error)?.message ?? error));
+      return [];
+    }
   });
+  if (refused.length > 0) throw new Error(refused.join("; "));
+  return written;
 }
 
 /** One file, ATOMICALLY: a temp file in the same directory, then a rename. `hostIdentityInstall` and `rerenderGhWrapper` write through this one, so there is one definition of "installed". */
@@ -396,14 +411,18 @@ export function reviewerDoorDrift(deps: Parameters<typeof reviewerDoorState>[0] 
 /**
  * Install the door by running the installer the repository ships, with the destination THIS file decided so the check and the install
  * cannot name two places. The installer reads the copy back and fails unless it is byte-identical, which is why this does not reimplement it.
- * @param {Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string, out?: (line: string) => void }} [deps]
- * @returns {string | null} the path it installed, or null when the code host ships no door
+ * `onlyChanged` leaves a door that is CURRENT alone (the org's own unattended pass, A11-354), and a door it replaces has its changed lines said before the installer keeps the previous copy.
+ * @param {Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string, out?: (line: string) => void, onlyChanged?: boolean, read?: typeof readFileSync }} [deps]
+ * @returns {string | null} the path it installed, or null when the code host ships no door or the door was already current and `onlyChanged` was given
  */
-export function reviewerDoorInstall(deps: Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string; out?: (line: string) => void; } = {}): string | null {
-  const { run = (file, args) => execFileSync("bash", [file, ...args], { encoding: "utf8" }), out = (l) => process.stdout.write(l) } = deps;
+export function reviewerDoorInstall(deps: Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string; out?: (line: string) => void; onlyChanged?: boolean; read?: typeof readFileSync; } = {}): string | null {
+  const { run = (file, args) => execFileSync("bash", [file, ...args], { encoding: "utf8" }), out = (l) => process.stdout.write(l), onlyChanged = false, read = readFileSync } = deps;
   const door = verdictDoor();
   if (door === undefined) return null;
   const target = reviewerDoorPath(deps);
+  const { state } = reviewerDoorState({ ...deps, read, source: door.source });
+  if (onlyChanged && state === "CURRENT") return null;
+  if (state === "DRIFTED") for (const line of changedLines(textIfThere(target, read) ?? "", textIfThere(door.source, read) ?? "")) out(`  ${target}: ${line}\n`);
   out(run(door.installer, [target]));
   return target;
 }

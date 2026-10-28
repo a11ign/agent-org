@@ -6,7 +6,7 @@ import { agentOrgCommand } from "../acceptance-commands/suite-and-checkout-comma
 import { COMMANDS, FIXED_ARGS } from "../commands.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, ProjectDeclarationRefusal } from "../project-config.ts";
 import { roleBriefPath } from "../project-roles.ts";
-import { currentLink, toolDir } from "../install/tool-versions.ts";
+import { installedToolLink, toolDir } from "../install/tool-versions.ts";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 
 /**
@@ -209,8 +209,7 @@ export function namesIn(dir: string, read: typeof readdirSync): string[] {
  */
 function withTool(host: HostConfig, values: Record<string, string>, env: NodeJS.ProcessEnv): Record<string, string> {
   if (host.tool === undefined) return values;
-  const current = currentLink(toolDir(env, host.home));
-  return { ...values, tool: existsSync(join(current, "src", "bin.ts")) ? current : host.tool };
+  return { ...values, tool: installedToolLink(toolDir(env, host.home)) ?? host.tool };
 }
 
 /**

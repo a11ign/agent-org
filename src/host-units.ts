@@ -33,12 +33,13 @@
 // command either way.
 import { reviewerDoorPath } from "./reviewer-door-path.ts";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync, writeFileSync, renameSync, chmodSync } from "node:fs";
+import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync, writeFileSync, renameSync, chmodSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { LATEST } from "./lib/release-tag.ts";
+import { installedToolLink, toolDir } from "./install/tool-versions.ts";
 import { installPendingFindings } from "./update-tool.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { pnpmDrift } from "./host-pnpm.ts";
@@ -53,6 +54,7 @@ import { TEMPLATE_SUFFIX, homeHostConfig, readUnitsDeclaration } from "./host-co
 import { activateCodeHost } from "./plugins/activate-host.ts";
 import { rows } from "./plugins/rows.ts";
 import { HOST_DATA_ENTRIES, HOST_VARIABLE, INSTALLED_DIR, PROJECT_UNITS_DIR, REPO_ROOT, SHIPPED_DIR, TOOL_ENTRIES, execCommands, isUnit, namesIn, packageScripts, programCandidates, shippedContext, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type ShippedDeps, type UnitsDeclaration, unitPrefix } from "./host-units/shipped-unit-texts-and-declarations.ts";
+import { keepPrevious, textIfThere, type KeepDeps } from "./host-units/keep-previous.ts";
 import { ROW_REVIEW_SKILL_FILES, ROW_REVIEW_SKILL_SOURCE, hostIdentityInstall, hostNotes, readSeats, readSessionModels, reviewerDoorDrift, reviewerDoorInstall, tickAppRoleSilent, tickRerenderGhWrapper, toolVersionNotes, type SeatDeps, type SessionModelDeps, writeOwnedFile } from "./host-units/gh-wrapper-and-notes.ts";
 import { codexTrustDrift, defaultGit, defaultSystemctl, endedOnPurpose, hostIdentityDrift, humanLoginOnHost, identityDrift, orphanedUnits, readToolVersionAgreement, remedy, supersededHostScripts, systemdUserAvailable, toolVersionFindings, type Finding, type InstalledCopyState, type WindowEnd, unitDrift, unitState } from "./host-units/host-drift-findings-and-notes.ts";
 
@@ -102,23 +104,27 @@ export function rowReviewSkillDrift(deps: Parameters<typeof rowReviewSkillState>
 
 /**
  * Install the skill: each file written ATOMICALLY (a temp file, then a rename, as every owned file is) into the directory THIS file decided, so the check and the
- * install cannot name two places. Refuses rather than writing an unreadable source. IDEMPOTENT: a file already equal is rewritten with the same bytes.
- * @param {Parameters<typeof rowReviewSkillState>[0] & { mkdir?: typeof mkdirSync, write?: typeof writeFileSync, chmod?: typeof chmodSync, rename?: typeof renameSync, out?: (line: string) => void }} [deps]
+ * install cannot name two places. Refuses rather than writing an unreadable source. IDEMPOTENT: a file already equal is rewritten with the same bytes, or left alone with `onlyChanged`
+ * (the org's own unattended pass, A11-354). A file it replaces is kept beside the new one as `<file>.bak-<stamp>`.
+ * @param {Parameters<typeof rowReviewSkillState>[0] & { mkdir?: typeof mkdirSync, write?: typeof writeFileSync, chmod?: typeof chmodSync, rename?: typeof renameSync, out?: (line: string) => void, onlyChanged?: boolean }} [deps]
  * @returns {string[]} the paths it wrote
  */
-export function rowReviewSkillInstall({ mkdir = mkdirSync, write = writeFileSync, chmod = chmodSync, rename = renameSync, out = (l) => process.stdout.write(l), ...where }: Parameters<typeof rowReviewSkillState>[0] & {
-  mkdir?: typeof mkdirSync; write?: typeof writeFileSync; chmod?: typeof chmodSync; rename?: typeof renameSync; out?: (line: string) => void;
+export function rowReviewSkillInstall({ mkdir = mkdirSync, write = writeFileSync, chmod = chmodSync, rename = renameSync, out = (l) => process.stdout.write(l), onlyChanged = false, ...where }: Parameters<typeof rowReviewSkillState>[0] & {
+  mkdir?: typeof mkdirSync; write?: typeof writeFileSync; chmod?: typeof chmodSync; rename?: typeof renameSync; out?: (line: string) => void; onlyChanged?: boolean;
 } = {}): string[] {
   const { read = readFileSync, source = ROW_REVIEW_SKILL_SOURCE } = where;
   const target = rowReviewSkillPath(where);
   const texts = ROW_REVIEW_SKILL_FILES.map((name) => ({ name, text: textOf(join(source, name), read) }));
   const unreadable = texts.filter((file) => file.text === null).map((file) => file.name);
   if (unreadable.length > 0) throw new Error(`cannot install the row-review skill: ${unreadable.join(", ")} of ${source} could not be read`);
-  return texts.map(({ name, text }) => {
+  return texts.flatMap(({ name, text }) => {
     const path = join(target, name);
+    const previous = textIfThere(path, read);
+    if (onlyChanged && previous === text) return [];
     writeOwnedFile({ target: path, mode: 0o644, text: text as string, mkdir, write, chmod, rename });
+    keepPrevious(path, { previous, next: text as string }, { read, write, mode: 0o644, out: (line) => out(`${line}\n`) });
     out(`installed ${path}\n`);
-    return path;
+    return [path];
   });
 }
 
@@ -187,6 +193,9 @@ export function missingUnitPrograms(deps: ShippedDeps & {
 export function hostInstallPending(deps: ShippedDeps & { installedDir?: string; run?: (args: string[]) => string } = {}): Finding[] {
   const host = deps.host ?? homeHostConfig();
   if (host.tool === undefined) return [];
+  // A HOST THAT RUNS THE INSTALLED TOOL HAS NO CHECKOUT TO HOLD (A11-354). Nothing moves host.json's `tool` there (it read v0.277.0 on 2026-10-27, and its `node_modules` held none of the
+  // release's dependencies), so the finding could never clear, and its remedy installed from that stale tree. The units and files are installed from `current` by every update.
+  if (installedToolLink(toolDir(deps.env ?? process.env, host.home)) !== null) return [];
   return installPendingFindings({ tool: host.tool, toolVersion: host.toolVersion ?? LATEST, binDir: host.binDir, prefix: unitPrefix(deps),
     installedDir: deps.installedDir ?? INSTALLED_DIR, read: deps.read, readDir: deps.readDir, run: deps.run });
 }
@@ -205,14 +214,18 @@ function installedCopyState(shippedText: string | null, installedText: string | 
   return shippedText === installedText ? "current" : "stale";
 }
 
+/** The name of a copy the install kept beside a file it replaced. */
+const KEPT_COPY = /\.bak-[^/]*$/;
+
 /**
  * Units the project's prefix says are ours. The host runs others; those are not ours to have an opinion about.
  * @param {string} dir @param {typeof readdirSync} readDir @param {string} prefix @returns {string[]}
  */
 function installedOrgUnits(dir: string, readDir: typeof readdirSync, prefix: string): string[] {
   try {
+    // A COPY THE INSTALL KEPT (`<unit>.bak-<stamp>`, A11-354) IS NOT AN INSTALLED UNIT: systemd ignores it, and read as one it was a finding no install could clear.
     return (readDir(dir) as string[])
-      .map(String).filter((n) => n.startsWith(prefix));
+      .map(String).filter((n) => n.startsWith(prefix) && !KEPT_COPY.test(n));
   } catch {
     // NOT AN AGENT HOST, or a directory this process cannot read. `hostUnitDrift`'s `systemdUserAvailable`
     // gate has already answered the first; returning [] here keeps the second from being reported as a
@@ -558,18 +571,26 @@ const TMPFILES_SUFFIX = `.tmpfiles.conf${TEMPLATE_SUFFIX}`;
  * @param {ShippedDeps & { tmpfilesDir?: string, write?: typeof writeFileSync, mkdir?: typeof mkdirSync, out?: (line: string) => void }} deps
  * @returns {string[]} the rule files it wrote
  */
-export function installTmpfiles(deps: ShippedDeps & { tmpfilesDir?: string; write?: typeof writeFileSync; mkdir?: typeof mkdirSync; out?: (line: string) => void; } = {}): string[] {
+export function installTmpfiles(deps: ShippedDeps & { tmpfilesDir?: string; write?: typeof writeFileSync; mkdir?: typeof mkdirSync; out?: (line: string) => void; onlyChanged?: boolean; } = {}): string[] {
   const { shippedDir = SHIPPED_DIR, readDir = readdirSync, tmpfilesDir = USER_TMPFILES_DIR, write = writeFileSync, mkdir = mkdirSync,
-    read = readFileSync, out = (l) => process.stdout.write(l) } = deps;
+    read = readFileSync, out = (l) => process.stdout.write(l), onlyChanged = false } = deps;
   const rules = namesIn(shippedDir, readDir).filter((name) => name.endsWith(TMPFILES_SUFFIX));
   if (rules.length > 0) mkdir(tmpfilesDir, { recursive: true });
-  return rules.map((rule) => {
+  return rules.flatMap((rule) => {
     const installed = `${rule.slice(0, -TMPFILES_SUFFIX.length)}.conf`;
-    write(join(tmpfilesDir, installed), read(join(shippedDir, rule), "utf8"));
+    const [target, text] = [join(tmpfilesDir, installed), read(join(shippedDir, rule), "utf8")];
+    const previous = textIfThere(target, read);
+    if (onlyChanged && previous === text) return [];
+    keepPrevious(target, { previous, next: text }, keepDeps(deps, out));
+    write(target, text);
     out(`installed ${installed} (user tmpfiles rule)\n`);
-    return installed;
+    return [installed];
   });
 }
+
+/** What {@link keepPrevious} needs of an install's own seams: it reads, lists and writes where the install does, and says its lines where the install says its own. */
+const keepDeps = (deps: { read?: typeof readFileSync; readDir?: typeof readdirSync; write?: typeof writeFileSync }, out: (line: string) => void): KeepDeps =>
+  ({ read: deps.read, readDir: deps.readDir, write: deps.write, out: (line) => out(`${line}\n`) });
 
 /**
  * WRITTEN, NOT COPIED (#2620): three of the units are rendered from templates, so there is no file to copy, and one path for every unit
@@ -577,15 +598,34 @@ export function installTmpfiles(deps: ShippedDeps & { tmpfilesDir?: string; writ
  * @param {string[]} units
  * @param {ShippedDeps & { installedDir?: string, write?: typeof writeFileSync, out?: (line: string) => void }} deps
  */
-function writeShippedUnits(units: string[], deps: ShippedDeps & { installedDir?: string; write?: typeof writeFileSync; out?: (line: string) => void; }) {
-  const { installedDir = INSTALLED_DIR, write = writeFileSync, out = (l) => process.stdout.write(l) } = deps;
+function writeShippedUnits(units: string[], deps: ShippedDeps & { installedDir?: string; write?: typeof writeFileSync; out?: (line: string) => void; onlyChanged?: boolean; }): UnitWrites {
+  const { installedDir = INSTALLED_DIR, write = writeFileSync, out = (l) => process.stdout.write(l), read = readFileSync, onlyChanged = false } = deps;
+  const writes: UnitWrites = { fresh: [], changed: [], before: new Map() };
   for (const unit of units) {
     const text = shippedUnitText(unit, deps);
     if (text === null) throw new Error(`cannot install ${unit}: the shipped copy could not be read`);
+    const previous = textIfThere(join(installedDir, unit), read);
+    if (onlyChanged && (previous === text || isLink(join(installedDir, unit)))) continue;
+    (previous === null ? writes.fresh : writes.changed).push(unit);
+    writes.before.set(unit, previous);
+    keepPrevious(join(installedDir, unit), { previous, next: text }, keepDeps(deps, out));
     write(join(installedDir, unit), text);
     out(`installed ${unit}\n`);
   }
+  return writes;
 }
+
+/** Whether `path` is a symlink: a unit that is `masked` is one to `/dev/null`, which is somebody's decision, and a write through it would reach the device. */
+function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** The units one pass wrote: `fresh` held no copy before, `changed` replaced a different one. */
+type UnitWrites = { fresh: string[]; changed: string[]; before: Map<string, string | null> };
 
 /**
  * Copy every shipped unit into place and start every timer AND every long-running service (#3025). IDEMPOTENT -- re-running it on a correct
@@ -594,30 +634,18 @@ function writeShippedUnits(units: string[], deps: ShippedDeps & { installedDir?:
  * `enable --now`, NEVER a bare `enable`: the bare form is what left `a11ign-corpus-snapshot.timer`
  * enabled and dead for nine days, and an installer that can reproduce the bug it exists to fix is not
  * an installer. For the listener the SERVICE is what is enabled: no timer starts it, so a bare `enable` would leave it dead until a reboot.
+ *
+ * A COPY IT REPLACES IS KEPT BESIDE THE NEW ONE as `<unit>.bak-<stamp>`, with the lines that changed said (A11-354).
  * @param {ShippedDeps & { installedDir?: string, systemctl?: (args: string[]) => string,
  *           write?: typeof writeFileSync, mkdir?: typeof mkdirSync, rm?: typeof rmSync,
  *           git?: (args: string[]) => string, out?: (line: string) => void }} [deps]
  * @returns {string[]} the units it installed
  */
-export function hostUnitsInstall(deps: ShippedDeps & {
-    installedDir?: string; systemctl?: (args: string[]) => string;
-    write?: typeof writeFileSync; mkdir?: typeof mkdirSync; rm?: typeof rmSync;
-    git?: (args: string[]) => string; out?: (line: string) => void;
-} = {}): string[] {
-  const { installedDir = INSTALLED_DIR, systemctl = defaultSystemctl, mkdir = mkdirSync, rm = rmSync,
-    out = (l) => process.stdout.write(l) } = deps;
+export function hostUnitsInstall(deps: UnitsInstallDeps = {}): string[] {
+  const { installedDir = INSTALLED_DIR, systemctl = defaultSystemctl, rm = rmSync, out = (l) => process.stdout.write(l) } = deps;
   const { shippedDir = SHIPPED_DIR, readDir = readdirSync, git = defaultGit } = deps;
   out(projectUnitsLine(projectUnitsDirOf(deps), { read: readDir }));
-  refuseUnclassified(deps);
-  refuseUnitsWithoutHostVariable(deps);
-  // `readDir` IS INJECTED THROUGH TO BOTH DISCOVERIES, and the first version of this hard-wired
-  // `readdirSync` into the `orphanedUnits` call below. A test could not reach the removal path at all,
-  // so deleting the ENTIRE removal loop killed zero tests -- it passed vacuously, which is the same
-  // defect this file's own `no-token` header was written to catch one level up. Found by mutating it.
-  const units = shippedUnitNames(deps);
-  mkdir(installedDir, { recursive: true });
-  writeShippedUnits(units, deps);
-  installTmpfiles(deps);
+  const { units } = writeAllShippedUnits(deps, { onlyChanged: false });
   // REMOVED BEFORE THE RELOAD, so systemd never re-reads a unit that is on its way out. `disable --now`
   // first because deleting the file leaves an enabled symlink in `timers.target.wants` behind, and a
   // dangling want is a warning on every subsequent `daemon-reload` -- noise that trains an operator to
@@ -631,16 +659,93 @@ export function hostUnitsInstall(deps: ShippedDeps & {
     out(`REMOVED ${unit} -- no longer shipped by this repository\n`);
   }
   systemctl(["daemon-reload"]);
+  startUnits(units, { ...deps, installedDir, systemctl });
+  return units;
+}
+
+/** What both installs of the units are given: the host, the shipped and installed directories, and the seams that touch them. */
+type UnitsInstallDeps = ShippedDeps & {
+  installedDir?: string; systemctl?: (args: string[]) => string;
+  write?: typeof writeFileSync; mkdir?: typeof mkdirSync; rm?: typeof rmSync;
+  git?: (args: string[]) => string; out?: (line: string) => void;
+};
+
+/**
+ * Refuse what may not be installed, then write the units and the tmpfiles rules: every one, or only those that differ. The step both installs share.
+ * `readDir` IS INJECTED THROUGH TO BOTH DISCOVERIES (the orphan lookup of `hostUnitsInstall` too): a hard-wired `readdirSync` once left the removal path unreachable by a test, so deleting
+ * the ENTIRE removal loop killed zero tests -- found by mutating it.
+ */
+function writeAllShippedUnits(deps: UnitsInstallDeps, { onlyChanged }: { onlyChanged: boolean }): { units: string[]; writes: UnitWrites } {
+  const { installedDir = INSTALLED_DIR, mkdir = mkdirSync } = deps;
+  refuseUnclassified(deps);
+  refuseUnitsWithoutHostVariable(deps);
+  const units = shippedUnitNames(deps);
+  mkdir(installedDir, { recursive: true });
+  const writes = writeShippedUnits(units, { ...deps, onlyChanged });
+  installTmpfiles({ ...deps, onlyChanged });
+  return { units, writes };
+}
+
+/**
+ * THE ORG RUNNING THE UNITS' INSTALL ITSELF AFTER AN UPDATE (A11-354), which does less than a person's `host:install`: it writes only the units that differ, starts only a unit that was not
+ * installed before (a unit that is installed and `disabled` was stopped by somebody, and stays so: `NOT ENABLED` is still its finding), restarts a changed timer that is running so that it
+ * runs the new schedule, and removes nothing (an orphan is still its finding). A pass that finds every unit current runs no `systemctl` at all, and one whose manager fails puts the files back.
+ * @param {ShippedDeps & { installedDir?: string, systemctl?: (args: string[]) => string, write?: typeof writeFileSync, mkdir?: typeof mkdirSync, rm?: typeof rmSync, out?: (line: string) => void }} [deps]
+ * @returns {string[]} the units the release ships
+ */
+export function hostUnitsUpkeep(deps: UnitsInstallDeps = {}): string[] {
+  const { installedDir = INSTALLED_DIR, systemctl = defaultSystemctl, rm = rmSync } = deps;
+  const { units, writes } = writeAllShippedUnits(deps, { onlyChanged: true });
+  return reloadAndStart(writes, units, { ...deps, installedDir, systemctl, write: deps.write ?? writeFileSync, rm });
+}
+
+/** `enable --now` each of `units` a timer or a long-running service, unless its window ended on purpose (#3484). */
+function startUnits(units: string[], deps: ShippedDeps & { installedDir: string; systemctl: (args: string[]) => string; out?: (line: string) => void; }): void {
+  const { out = (l) => process.stdout.write(l) } = deps;
   for (const started of units.filter((u) => startedByEnable(u, unitPrefix(deps)))) {
-    const ended = windowEndedOnPurpose(started, { ...deps, installedDir, systemctl });
+    const ended = windowEndedOnPurpose(started, deps);
     if (ended !== null) {
       out(`SKIPPED ${started} -- its window ended (${ended.cause}, ${ended.ticks} ticks, ${ended.at}); arm it with shadow-window.ts --arm\n`);
       continue;
     }
-    systemctl(["enable", "--now", started]);
+    deps.systemctl(["enable", "--now", started]);
     out(`enabled --now ${started}\n`);
   }
+}
+
+/**
+ * The end of an UNATTENDED pass (A11-354): the manager reads what was written, a unit that was not installed before is started, and a timer that was replaced while it ran is restarted
+ * (`try-restart` does nothing to one that is stopped), because a timer keeps the schedule it started with. A running long-running service keeps its process until it is restarted, as it does
+ * after a person's `host:install`, and is not restarted here: the update restarts the ones it moved the tool under.
+ */
+function reloadAndStart(writes: UnitWrites, units: string[], deps: ShippedDeps & { installedDir: string; systemctl: (args: string[]) => string; out?: (line: string) => void; write: typeof writeFileSync; rm: typeof rmSync; }): string[] {
+  const { out = (l) => process.stdout.write(l), systemctl } = deps;
+  const { fresh, changed } = writes;
+  if (fresh.length + changed.length === 0) return units;
+  try {
+    systemctl(["daemon-reload"]);
+    startUnits(fresh, deps);
+    for (const timer of changed.filter((unit) => unit.endsWith(".timer"))) {
+      systemctl(["try-restart", timer]);
+      out(`restarted ${timer} if it was running, so that it runs the schedule written above\n`);
+    }
+  } catch (error) {
+    undoWrites(writes, deps);
+    throw error;
+  }
   return units;
+}
+
+/**
+ * THE FILES ARE PUT BACK WHEN THE MANAGER FAILED AFTER THEM. A pass compares files and not the manager's state, so units that were written and never reloaded or started would look current
+ * on the next run, which would then do nothing for ever. Putting the previous text back (or removing a unit that was not there) makes the next run write them again and try again; the
+ * copy kept beside a replaced file stays. The error is the caller's.
+ */
+function undoWrites({ before }: UnitWrites, { installedDir, write, rm }: { installedDir: string; write: typeof writeFileSync; rm: typeof rmSync }): void {
+  for (const [unit, previous] of before) {
+    if (previous === null) rm(join(installedDir, unit), { force: true });
+    else write(join(installedDir, unit), previous);
+  }
 }
 
 /**
@@ -957,8 +1062,56 @@ function hostFindings() {
   return [...hostUnitDrift(), ...sessionModelDrift(), ...persistentSeatDrift(), ...kernelFindings({ crashSettings: systemdUserAvailable() })];
 }
 
+/** One step of the unattended install: the name its failure is said under, and what it does. */
+type UpkeepStep = Readonly<{ name: string; run: () => unknown }>;
+
+/**
+ * THE INSTALL THE ORG RUNS ITSELF AFTER AN UPDATE (A11-354). `host:install` was refused inside a ticket run and nothing else ran it, so a unit a release shipped (A11-348's `tmp-prune` pair,
+ * 2026-10-27) sat uninstalled on the host for as long as nobody typed the command. `update` now runs `host:install --unattended` from the INSTALLED release (`<tool>/current`, never a checkout)
+ * after every update, and this is what that runs: everything the release ships to the host, written only where it differs, each replaced file kept beside the new one, and nothing a person
+ * decides. A step that fails is said and does not stop the next, so a `gh` wrapper that is refused does not keep a unit from being installed; the failures are the return.
+ *
+ * WHAT IT LEAVES ALONE, because the finding stays the person's: a timer installed and `disabled` (somebody stopped it), an orphan (deleting is a person's), the kdump and pstore settings (root),
+ * and the Codex trust table (a person's dotfile). None of them is written, and none is reported installed.
+ * @param {{ steps?: UpkeepStep[], err?: (line: string) => void }} [deps] @returns {string[]} one line for each step that failed
+ */
+export function hostInstallUnattended({ steps = upkeepSteps(), err = (line: string) => process.stderr.write(`${line}\n`) }: { steps?: readonly UpkeepStep[]; err?: (line: string) => void; } = {}): string[] {
+  const failed: string[] = [];
+  for (const { name, run } of steps) {
+    try {
+      run();
+    } catch (error) {
+      const line = `COULD NOT INSTALL ${name}: ${String((error as Error)?.message ?? error)}`;
+      failed.push(line);
+      err(line);
+    }
+  }
+  return failed;
+}
+
+/** The files and units a release ships to the host, in the order the manual install writes them. */
+function upkeepSteps(): UpkeepStep[] {
+  return [
+    { name: "the units", run: () => hostUnitsUpkeep() },
+    { name: "the identity files, the launcher and the workers README", run: () => hostIdentityInstall({ onlyChanged: true }) },
+    { name: "the reviewers' door", run: () => reviewerDoorInstall({ onlyChanged: true }) },
+    { name: "the row-review skill", run: () => rowReviewSkillInstall({ onlyChanged: true }) },
+  ];
+}
+
+/** Whether this machine is an agents host the install is for: a systemd user manager, and a host declaration the tool can read. Said, on each run, when it is not: an update on any other machine installs nothing. */
+function agentsHostOrWhy(): string | null {
+  if (!systemdUserAvailable()) return "this machine runs no systemd user manager";
+  try {
+    homeHostConfig();
+    return null;
+  } catch (error) {
+    return `its host declaration is not an agents host's (${String((error as Error)?.message ?? error).split("\n")[0]})`;
+  }
+}
+
 async function main() {
-  refuseUnknownFlags(["--install", "--json", "--allow-no-apps"], { entry: import.meta.url, command: "pnpm run host:check" });
+  refuseUnknownFlags(["--install", "--json", "--allow-no-apps", "--unattended"], { entry: import.meta.url, command: "pnpm run host:check" });
   // The routing wrapper is the code host plugin's (A11-160): the plugin the host file names is activated once, and the checks below ask it for the wrapper's text and rules.
   await activateCodeHost();
   if (process.argv.slice(2).includes("--json")) {
@@ -966,6 +1119,13 @@ async function main() {
     return;
   }
   const asked = systemdUserAvailable();
+  if (process.argv.slice(2).includes("--unattended")) {
+    if (!process.argv.slice(2).includes("--install")) throw new Error("--unattended is a mode of the install: use `agent-org host:install --unattended`");
+    const why = agentsHostOrWhy();
+    if (why !== null) process.stdout.write(`host install: nothing installed, ${why}\n`);
+    else if (hostInstallUnattended().length > 0) process.exitCode = 1;
+    return;
+  }
   if (process.argv.slice(2).includes("--install")) {
     hostUnitsInstall();
     hostIdentityInstall({ allowNoApps: process.argv.slice(2).includes("--allow-no-apps") });
