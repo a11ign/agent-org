@@ -73,7 +73,7 @@ import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
 import { runVersions, type PluginCopy, type RunVersion } from "../ticket-mode/queue/queue-pins.ts";
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
-import { coreRowsHelpers, realExec, realPlace, realProbe } from "../plugins/active.ts";
+import { coreRowsHelpers, realExec, realExecAsync, realPlace, realProbe } from "../plugins/active.ts";
 import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
 import { loadedCodeHost } from "../plugins/code-host-slot.ts";
 import { readOrganisation, unclonedOf } from "../ticket-mode/org-repos.ts";
@@ -113,6 +113,8 @@ export type DoctorDeps = Readonly<{
   unitProblem: (name: ServiceName) => string | null;
   /** Runs a program for a plugin's checks (`security` for a key, `claude mcp list`): its exit status, and what it printed. */
   exec: PluginDeps["exec"];
+  /** Runs a program for a plugin's checks without holding the event loop (A11-376): the board reads the doctor's figures on its own thread, where a synchronous `gh` of half a second is a held loop. Absent, `exec` stands in for it (a test). */
+  execAsync?: PluginDeps["execAsync"];
   /** What `--version` the pinned pnpm prints, run as install and update run it, and the runner it went through: both null when no runner exists, the version null when the runner cannot start it. */
   pnpmVersion: () => { version: string | null; via: PnpmRunner | null };
   /** GETs `/` of a host and port for a plugin's checks (an exposure asks whether a served port answers): the status, or null when nothing answered. */
@@ -428,7 +430,7 @@ function hostText(deps: DoctorDeps): string | null {
  */
 async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps, place: HostPlaceReading): Promise<PluginHealth> {
   const { catalog, load, messaging, messagingChecks } = deps.agentOrgPlugins;
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, execAsync: (file, args, options) => Promise.resolve(deps.exec(file, args, options)), readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, execAsync: deps.execAsync ?? ((file, args, options) => Promise.resolve(deps.exec(file, args, options))), readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
     pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(undefined, settings === null ? [] : reviewClaimIdentities(settings)), publishing: publishingHelpers(), reviewing: deps.reviewing, rows: coreRowsHelpers, place: () => Promise.resolve(place) };
   return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
     version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });
@@ -1085,7 +1087,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       const result = spawnSync("node", ["--version"], { encoding: "utf8" });
       return result.status === 0 ? result.stdout.trim() : null;
     },
-    which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), exec: realExec,
+    which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), exec: realExec, execAsync: realExecAsync,
     mode: (path) => { try { return statSync(path).mode & 0o777; } catch { return null; } },
     serviceState: (name) => serviceState(name, services), answers: (port) => answers(port),
     healthy: (port) => answers(port, "/api/health", { healthy: true }),

@@ -16,6 +16,7 @@ import { noReviewerMemory, reviewerMemoryPath, writeReviewerMemory } from "../ti
 import { type Flake, flakesPath, recordFlakes } from "../ticket-mode/flakes.ts";
 import type { ChromiumReport } from "./chromium.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
+import { realExecAsync } from "../plugins/active.ts";
 import { loadEnabled } from "../plugins/loader.ts";
 import type { Catalog, CatalogPlugin, ReviewerHelpers } from "../plugins/manifest.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
@@ -129,6 +130,20 @@ const BROWSERS_READY: ChromiumReport = {
   builds: [{ build: "chromium", binary: "/cache/chromium-1243/chrome", missing: [] }, { build: "chromium-headless-shell", binary: "/cache/shell/chrome-headless-shell", missing: [] }],
   unchecked: null,
 };
+
+test("doctor hands the plugins its own execAsync, not a wrapped synchronous exec, so a plugin check run on the board thread does not hold its loop (A11-376)", async () => {
+  const handed: unknown[] = [];
+  const execAsync: NonNullable<DoctorDeps["execAsync"]> = async () => ({ status: 0, stdout: "", stderr: "" });
+  const seam = fakeAgentOrgPlugins();
+  await diagnose(deps({ execAsync, agentOrgPlugins: { ...seam, load: (providers, catalog, pluginDeps, blocks) => { handed.push(pluginDeps.execAsync); return seam.load(providers, catalog, pluginDeps, blocks); } } }));
+  assert.ok(handed.length > 0, "the doctor loaded the plugins");
+  assert.ok(handed.every((given) => given === execAsync), "every load was handed the doctor's execAsync");
+});
+
+test("the doctor's real deps run a plugin's programs without holding the event loop (A11-376)", () => {
+  const real = defaultDoctorDeps();
+  assert.equal(real.execAsync, realExecAsync);
+});
 
 test("doctor checks each Chromium build, and fails the one that lacks libraries with the install command", async () => {
   const lacking: ChromiumReport = { builds: [BROWSERS_READY.builds[0], { build: "chromium-headless-shell", binary: "/cache/shell", missing: ["libatk-1.0.so.0", "libcups.so.2"] }], unchecked: null };
