@@ -44,11 +44,11 @@ test("an open PR with an EMPTY rollup, quiet past the threshold, yields an order
 });
 
 test("A11-370: the cause it gives for a retarget names a workflow filtered to one base, and no longer says every pull request on another branch gets no run", () => {
-  const [order] = ordersOf(prOf());
-  assert.match(order.prompt, /a workflow filtered to one base gives a pull request opened on another branch no run/);
-  assert.match(order.prompt, /an `edited` event that may not start CI/);
-  assert.doesNotMatch(order.prompt, /gets no `pull_request` run for `main`/, "ci.yml has no base filter now (A11-370), so a pull request on another branch does get a run");
-  assert.doesNotMatch(order.prompt, /edited` event that does not start CI/);
+  const { prompt } = ordersOf(prOf())[0];
+  const stated = [/a workflow filtered to one base gives a pull request opened on another branch no run/, /an `edited` event that may not start CI/];
+  const retired = [/gets no `pull_request` run for `main`/, /edited` event that does not start CI/];
+  stated.forEach((phrase) => assert.match(prompt, phrase));
+  retired.forEach((phrase) => assert.doesNotMatch(prompt, phrase, "ci.yml has no base filter now (A11-370), so a pull request on another branch does get a run"));
 });
 
 test("control: the SAME PR inside the threshold yields none -- CI may simply not have started", () => {
