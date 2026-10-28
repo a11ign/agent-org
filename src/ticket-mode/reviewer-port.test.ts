@@ -1,4 +1,5 @@
 // no-token: none -- herdr, git and the clock are all injected; nothing is spawned
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -110,7 +111,7 @@ function setup(github: ReturnType<typeof ghFor>, port: ReviewerPort, tickets: Re
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const h = herdr(status);
-  const pool = createPool(store, { settings, source, codeHost: github.codeHost, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
+  const pool = createSettledPool(store, { settings, source, codeHost: github.codeHost, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
     pluginRecord: join(root, "no-plugin-record.json"), reviewer: reviewerOver(port) });
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   return { settings, pool, status, h, entry, root };

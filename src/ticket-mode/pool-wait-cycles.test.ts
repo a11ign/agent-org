@@ -27,7 +27,13 @@ async function incident({ paths = FILES, max = 3, source = createFakeTracker([fa
   await made.pool.tick();
   made.status.set(herdrName(WAITER), "working");
   await made.pool.tick();
-  const pass = async () => { clock += 60_000; await made.pool.tick(); await flush(); };
+  const pass = async () => {
+    clock += 60_000;
+    // A run the pass starts is listed working, as its agent is: the passes a start wakes would otherwise read it as gone from herdr.
+    for (const entry of made.store.get().entries) if (!made.status.has(herdrName(entry.ticket.key))) made.status.set(herdrName(entry.ticket.key), "working");
+    await made.pool.tick();
+    await flush();
+  };
   /** NBF-1's worker writes `outcome` and goes idle; the pool ticks once. */
   const write = async (key: string, outcome: Record<string, unknown>) => {
     const file = join(ticketDir(made.settings, key), "outcome.json");
@@ -138,7 +144,7 @@ function blockersOnly() {
   const source = createFakeTracker([fakeTicket(WAITER), fakeTicket(BLOCKER)]);
   const made = poolFixture({ keys: [WAITER, BLOCKER], source, max: 0 });
   const blocker = (key: string) => [{ key, state: "unstarted", status: "Todo", pulls: {} }];
-  const setBlockers = (on: boolean) => made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => ({ ...entry, blockers: on ? blocker(entry.ticket.key === WAITER ? BLOCKER : WAITER) : [] })) });
+  const setBlockers = (on: boolean) => made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => ({ ...entry, blockersReadAt: 100, blockers: on ? blocker(entry.ticket.key === WAITER ? BLOCKER : WAITER) : [] })) });
   const told = () => JSON.parse(readFileSync(join(made.settings.stateDir, "tickets", "wait-cycles.json"), "utf8")).told as Record<string, unknown>;
   return { ...made, source, setBlockers, told };
 }
@@ -167,7 +173,7 @@ test("A11-272: a tracker with no comment gets the board's log line only, and the
   const fake = createFakeTracker([fakeTicket(WAITER), fakeTicket(BLOCKER)]);
   const { comment: _none, ...source } = fake;
   const made = poolFixture({ keys: [WAITER, BLOCKER], source, max: 0 });
-  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => ({ ...entry, blockers: [{ key: entry.ticket.key === WAITER ? BLOCKER : WAITER, state: "unstarted", status: "Todo", pulls: {} }] })) });
+  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => ({ ...entry, blockersReadAt: 100, blockers: [{ key: entry.ticket.key === WAITER ? BLOCKER : WAITER, state: "unstarted", status: "Todo", pulls: {} }] })) });
   await made.pool.tick();
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(made.settings.stateDir, "tickets", "wait-cycles.json"), "utf8")).told), ["NBF-1,NBF-2"]);
   assert.equal(fake.comments.length, 0);
@@ -183,9 +189,9 @@ function roundCycle() {
   const made = poolFixture({ keys: ["NBF-1", "NBF-2", "NBF-3"], source, max: 3 });
   const blocker = (key: string) => [{ key, state: "started", status: "In Progress", pulls: {} }];
   made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => {
-    if (entry.ticket.key === "NBF-1") return { ...entry, paths: FILES };
-    if (entry.ticket.key === "NBF-2") return { ...entry, paths: [], blockers: blocker("NBF-1") };
-    return { ...entry, paths: [], review: [{ repo: "lab", url }], pullFiles: { [url]: ["middleware/README.md"] }, stoppedForBlocker: { at: T0, keys: ["NBF-2"], others: [] }, blockers: [] };
+    if (entry.ticket.key === "NBF-1") return { ...entry, paths: FILES, blockersReadAt: 100, blockers: [] };
+    if (entry.ticket.key === "NBF-2") return { ...entry, paths: [], blockersReadAt: 100, blockers: blocker("NBF-1") };
+    return { ...entry, paths: [], review: [{ repo: "lab", url }], pullFiles: { [url]: ["middleware/README.md"] }, stoppedForBlocker: { at: T0, keys: ["NBF-2"], others: [] }, blockersReadAt: 100, blockers: [] };
   }) });
   return { ...made, source };
 }

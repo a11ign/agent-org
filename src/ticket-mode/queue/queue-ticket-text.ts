@@ -78,7 +78,7 @@ export function recordFindingsGiven(queue: Queue, key: string, urls: readonly st
  * changed stays, so the run says why it plans again.
  */
 export function replan(queue: Queue, key: string, plan: RunChoice, previous: readonly string[], change: TicketChange | undefined, now?: number): Queue {
-  const planned = replace(queue, key, ({ paths: _paths, stepPaths: _stepPaths, pathsFailure: _failed, blockersFailure: _unread, plannedAgainst: _stamp, planned: _planned, ticketChange: _before, ...entry }) =>
+  const planned = replace(queue, key, ({ paths: _paths, stepPaths: _stepPaths, pathsFailure: _failed, pathsRetryAt: _again, plannedAgainst: _stamp, planned: _planned, ticketChange: _before, ...entry }) =>
     ({ ...entry, plan, previousPlan: previous, ...(change ? { ticketChange: change } : {}) }));
   return find(queue, key) === undefined ? planned : logEvent(planned, key, now, { kind: "requeued", why: "replan" });
 }

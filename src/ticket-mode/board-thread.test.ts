@@ -238,7 +238,7 @@ test("A11-363: the figures are worked out at most once a second though a snapsho
   let worked = 0;
   let clock = 5_000;
   const { board } = boardOver();
-  const counting = { ...board, pool: { ...board.pool, figures: () => { worked += 1; return { runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null } }; } } };
+  const counting = { ...board, pool: { ...board.pool, figures: () => { worked += 1; return { runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] } }; } } };
   const threads: StandIn[] = [];
   const thread = startBoardThread({ board: counting, health: () => HEALTH, terminal: null, data: boardOver().data, now: () => clock, every: () => undefined, startedAt: 0,
     start: () => { const standIn = new StandIn(); threads.push(standIn); return standIn as unknown as RequestThread; } });

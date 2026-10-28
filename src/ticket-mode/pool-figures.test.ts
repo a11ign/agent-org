@@ -20,33 +20,35 @@ function trackerWithBlockers(down: { on: boolean }): TicketSource {
 test("a pass that runs to its end is a completed pass, a run it starts is the latest start, and nothing is startable once everything has started", async () => {
   let clock = 1_000;
   const made = poolFixture({ keys: ["NBF-1", "NBF-2"], max: 3, now: () => clock });
-  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: null, lastEarlyReturn: null }, "no pass yet");
+  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] }, "no pass yet");
   await made.pool.tick();
   clock = 31_000;
   const figures = made.pool.figures();
-  assert.deepEqual(figures.fill, { sinceLastCompletedMs: 30_000, lastEarlyReturn: null });
+  assert.deepEqual(figures.fill, { sinceLastCompletedMs: 30_000, lastEarlyReturn: null, held: [] });
   assert.deepEqual([figures.runs.sinceLastStartMs, figures.runs.startable, figures.runs.freeSlots, figures.runs.starting], [30_000, 0, 1, 0], "both runs started at 1000; one slot of three is free");
 });
 
-test("a pass whose reads of the tracker fail returns early: it is not completed, nothing starts, and the reason is the first line of the failure; the next pass that reads clears it", async () => {
+test("a pass whose reads of the tracker fail is a completed pass that starts nothing unread and says which runs it held and why (A11-364); the next pass that has the read starts them", async () => {
   const down = { on: true };
   let clock = 5_000;
   const made = poolFixture({ keys: ["NBF-1", "NBF-2"], source: trackerWithBlockers(down), now: () => clock });
   await made.pool.tick();
   clock = 9_000;
-  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: null, lastEarlyReturn: { reason: "a read of the tracker or the code host failed: fetch failed", agoMs: 4_000 } });
-  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => made.entry(key).phase), ["queued", "queued"], "one failed read stopped every start");
+  const { fill } = made.pool.figures();
+  assert.deepEqual([fill.sinceLastCompletedMs, fill.lastEarlyReturn], [4_000, null], "the failed read does not end the pass: it completed");
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => made.entry(key).phase), ["queued", "queued"], "the runs whose blockers are unread wait");
+  assert.deepEqual(fill.held.map(({ key, reason }) => [key, reason.replace(/\d\d:\d\dZ/, "HH:MMZ")]), [["NBF-1", "blockers unread: fetch failed, retrying at HH:MMZ"], ["NBF-2", "blockers unread: fetch failed, retrying at HH:MMZ"]], "and the figures say why, first line only");
   assert.deepEqual([made.pool.figures().runs.startable, made.pool.figures().runs.sinceLastStartMs], [0, null], "entries whose blockers are unread are not startable");
   down.on = false;
-  clock = 12_000;
+  clock = 40_000;
   await made.pool.tick();
-  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: 0, lastEarlyReturn: null }, "completed, and the early return is cleared");
+  assert.deepEqual(made.pool.figures().fill.held, [], "read again, nothing is held");
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => made.entry(key).phase), ["running", "running"]);
 });
 
 test("queued entries whose blockers and paths are read are startable, and the free slots are the slots no live run holds", () => {
   const made = poolFixture({ keys: ["NBF-1", "NBF-2", "NBF-3"], max: 3, now: () => 100 });
-  const read = recordPaths(recordBlockers(made.store.get(), new Map([["NBF-1", []], ["NBF-2", []], ["NBF-3", []]])), new Map([["NBF-1", []], ["NBF-2", []], ["NBF-3", []]]));
+  const read = recordPaths(recordBlockers(made.store.get(), new Map([["NBF-1", []], ["NBF-2", []], ["NBF-3", []]]), 100), new Map([["NBF-1", []], ["NBF-2", []], ["NBF-3", []]]));
   made.store.set(replace(read, "NBF-3", (entry) => ({ ...entry, phase: "running", workspace: "w9", pane: "w9:p1", startedAt: 40 })));
   const { runs } = made.pool.figures();
   assert.deepEqual([runs.startable, runs.freeSlots, runs.sinceLastStartMs, runs.starting], [2, 2, 60, 0]);
@@ -80,7 +82,7 @@ test("the pure figures: the latest start is the later of the queue's and the one
   assert.equal(runFiguresOf(started, 1, null, null, 900).sinceLastStartMs, 700);
   assert.equal(runFiguresOf(queue, 1, null, null, 900).sinceLastStartMs, null, "none ever");
   assert.equal(runFiguresOf(started, 3, "a command of tickets.preflight fails, so no run starts", null, 900).startable, 0);
-  assert.deepEqual(fillFiguresOf({ ...newFillState(), completedAt: 100, early: { reason: "r", at: 150 } }, 400), { sinceLastCompletedMs: 300, lastEarlyReturn: { reason: "r", agoMs: 250 } });
+  assert.deepEqual(fillFiguresOf({ ...newFillState(), completedAt: 100, early: { reason: "r", at: 150 } }, 400), { sinceLastCompletedMs: 300, lastEarlyReturn: { reason: "r", agoMs: 250 }, held: [] });
 });
 
 test("only a run that is recorded as starting is a start: a pass that starts nothing leaves the last start where it was, even when the queue has dropped its record", async () => {

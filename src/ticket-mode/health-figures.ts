@@ -32,15 +32,22 @@ export type FillState = {
   lastStartAt: number | null;
   /** Whether the instance has been told to stop: it starts nothing while it waits for the runs that are starting. */
   stopping: boolean;
+  /** The queued runs the latest pass held for what the board knows of their blockers or plan, with the reason the board shows on their cards (A11-364). */
+  held: readonly HeldRun[];
 };
 
-export const newFillState = (): FillState => ({ completedAt: null, early: null, holding: null, lastStartAt: null, stopping: false });
+/** A queued run held for a read: its key, and why (`blockers unread: <error>, retrying at 22:05Z`). */
+export type HeldRun = Readonly<{ key: string; reason: string }>;
+
+export const newFillState = (): FillState => ({ completedAt: null, early: null, holding: null, lastStartAt: null, stopping: false, held: [] });
 
 export type FillFigures = Readonly<{
   /** Ms since the last completed pass, or null when none has completed since this instance started (`uptimeMs` is then how long it has gone without one). */
   sinceLastCompletedMs: number | null;
   /** The reason the latest pass returned early and how long ago, or null when it did not. */
   lastEarlyReturn: Readonly<{ reason: string; agoMs: number }> | null;
+  /** The queued runs the latest pass held because their blockers or plan are unread or too old, and why (A11-364): the runs a read holds, which no other run waits for. */
+  held: readonly HeldRun[];
 }>;
 
 export type RunFigures = Readonly<{
@@ -97,5 +104,5 @@ export function runFiguresOf(queue: Queue, startable: number, holding: string | 
 
 /** The fill figures of the pool's memory at `now`. PURE. */
 export function fillFiguresOf(state: FillState, now: number): FillFigures {
-  return { sinceLastCompletedMs: sinceOrNull(state.completedAt, now), lastEarlyReturn: state.early === null ? null : { reason: state.early.reason, agoMs: Math.max(0, now - state.early.at) } };
+  return { sinceLastCompletedMs: sinceOrNull(state.completedAt, now), lastEarlyReturn: state.early === null ? null : { reason: state.early.reason, agoMs: Math.max(0, now - state.early.at) }, held: state.held };
 }

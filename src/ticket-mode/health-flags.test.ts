@@ -9,7 +9,7 @@ const quiet: HealthFigures = {
   at: 0, uptimeMs: 0, loop: { lastMinute: { p50Ms: 1, p99Ms: 9 }, lastHour: { p50Ms: 1, p99Ms: 40 } }, syncHolds: { lastHour: 0, holdMs: 100 },
   calls: { linear: { calls: 100, failures: 1, failuresPer100: 1 }, github: { calls: 0, failures: 0, failuresPer100: 0 } },
   runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null },
-  fill: { sinceLastCompletedMs: null, lastEarlyReturn: null },
+  fill: { sinceLastCompletedMs: null, lastEarlyReturn: null, held: [] },
 };
 const withLoop = (lastMinute: number, lastHour: number): HealthFigures => ({ ...quiet, loop: { lastMinute: { p50Ms: 1, p99Ms: lastMinute }, lastHour: { p50Ms: 1, p99Ms: lastHour } } });
 

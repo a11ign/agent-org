@@ -3,7 +3,7 @@
 
 import { type Entry, leaveBatch, type Queue, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
 import type { TicketWriterMode } from "./queue/writer-modes.ts";
-import { type PlannedAgainst, recordPlannedAgainst } from "./queue/queue-ticket-text.ts";
+import { recordPlannedAgainst } from "./queue/queue-ticket-text.ts";
 import { earlyCompletionComment, recordCompletedByPerson, recordReopenFailure, recordReopened } from "./queue/queue-next-step.ts";
 import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";
 import { runEnvOf } from "./run-env.ts";
@@ -15,11 +15,12 @@ import { agentTarget } from "./pool-resume.ts";
 import { plannedStepsOf } from "./pool-plan-steps.ts";
 import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
 import { hostname } from "node:os";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal, herdrServiceOf } from "./pool-herdr.ts";
 import { defaultServiceDeps } from "../install/service.ts";
-import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, slotsHeld, unreadBlockerKeys, unreadPaths } from "./queue/queue-transitions.ts";
-import { recordBlockersFailure } from "./queue/queue-blockers-unread.ts";
+import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, slotsHeld } from "./queue/queue-transitions.ts";
+import { READ_RETRY_MS, retryTime, startReadHold } from "./queue/start-reads.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
@@ -42,12 +43,13 @@ import { markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, wri
 import { toolPinOf } from "./pool-pin.ts";
 import { recordPublishPin, recordToolPin } from "./queue/queue-pins.ts";
 import { isDraining } from "./pool-drain.ts";
-import { noteFillCompleted, noteFillEarly, noteFillHolding, noteRunStarted } from "./pool-figures.ts";
+import { heldRuns, noteFillCompleted, noteFillEarly, noteFillHeld, noteFillHolding, noteRunStarted } from "./pool-figures.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles, writeRunFiles } from "./pool-prepare.ts";
 import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { type PoolContext } from "./pool-context.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { trackerWritingOf } from "../plugins/registry.ts";
 import { checkRunBrief } from "./pool-check-runs.ts";
 import { isCheckRun, VERIFIER_EFFORT, VERIFIER_MODEL } from "./after-merge/verify.ts";
@@ -181,14 +183,15 @@ export async function settleStart(ctx: PoolContext, started: RunPlace): Promise<
  * Ask the tracker which tickets block each of `keys`, and which project each is in, and record both on each queued run: the project's repository is the
  * run's default (`project-repo.ts`), so it is read here too, from the summary the tracker holds now. Then the commit each stacked blocker's branch is at
  * is read (`readHeads`). A source that cannot say records none, so nothing waits; a key the tracker has no ticket for is recorded with none, so it starts
- * and fails on its own.
+ * and fails on its own. Each is stamped with when it was read (`blockersReadAt`, A11-364).
  *
- * NEVER THROWS, AND NEVER WAITS PAST `ctx.readMs` (A11-359). A run whose blockers have never been read is read on its own, so a ticket whose read fails or does not finish is held with the reason (`blockersFailure`) and the
- * runs beside it still start. The runs whose blockers were read before are asked in one batch, and a batch that fails changes nothing: their last good read stands, and the next refresh asks again.
+ * NEVER WAITS PAST `ctx.readMs`, AND NEVER THROWS FOR A FAILED OR LATE ANSWER (A11-359, A11-364). A run whose blockers have never been read is asked for on its own when the batch fails, so one ticket the tracker cannot read, or
+ * cannot read in time, is the one that fails and the runs beside it are read. The runs whose blockers were read before are asked in one batch, and a batch that fails changes nothing: their last good read stands. Returns why each
+ * key that could not be read could not, by key: the caller records it with when the board asks again (`pool-start-reads.ts`).
  */
-export async function readBlockers(ctx: PoolContext, keys: readonly string[]): Promise<void> {
+export async function readBlockers(ctx: PoolContext, keys: readonly string[]): Promise<ReadonlyMap<string, string>> {
   const { source, settings, store } = ctx;
-  if (keys.length === 0) return;
+  if (keys.length === 0) return new Map();
   // Started first, so the project read goes on beside the blocker reads: it holds no start, and a failure of it keeps the repository each run last had.
   const projects = source.projectSummaries === undefined ? undefined : summariesOf(ctx, keys);
   const entries = store.get().entries;
@@ -202,8 +205,8 @@ export async function readBlockers(ctx: PoolContext, keys: readonly string[]): P
   // Without the tracker's summaries a repository is decided from the summary the ticket was queued with, which only a run with none yet needs: the one it was given before stays.
   const repoKeys = summaries !== undefined || source.projectSummaries === undefined ? keys : keys.filter((key) => store.get().entries.find((e) => e.ticket.key === key)?.projectRepo === undefined);
   update(ctx, (queue) => recordProjectRepos(queue, projectRepos(store.get().entries, repoKeys, summaries, clones)));
-  update(ctx, (queue) => recordBlockersFailure(recordBlockers(queue, found), failed));
-  logBlockerFailures(ctx, failed, entries);
+  update(ctx, (queue) => recordBlockers(queue, found, ctx.now()));
+  return failed;
 }
 
 /** What one ask of the tracker for the blockers of `keys` came back with: the blockers it found, or the reason it failed. */
@@ -241,22 +244,6 @@ async function askEach(ctx: PoolContext, keys: readonly string[]): Promise<Block
   const together = await askBlockers(ctx, keys);
   if (keys.length < 2 || together.every((answer) => !("failure" in answer))) return together;
   return (await Promise.all(keys.map((key) => askBlockers(ctx, [key])))).flat();
-}
-
-/**
- * Say why the blockers of each of `failed` could not be read. A run held by it (no read of its own) is said once for each reason it is held by. The runs that have a read keep it, and a refresh that fails for them is said
- * once for the reason, in one line, until it changes or a refresh succeeds: a tracker that stays down is not logged on every pass.
- */
-function logBlockerFailures(ctx: PoolContext, failed: ReadonlyMap<string, string>, before: readonly Entry[]): void {
-  const kept: string[] = [];
-  for (const [key, reason] of failed) {
-    const entry = before.find((e) => e.ticket.key === key);
-    if (entry?.blockers !== undefined) kept.push(`${key}: ${reason}`);
-    else if (entry?.blockersFailure !== reason) log(`${key}: the tracker could not say which tickets block it (${reason}); it is held and asked again on the next pass, and the other runs go on`);
-  }
-  const refresh = kept.length === 0 ? null : kept.join("; ");
-  if (refresh !== ctx.idleSaid.refresh && refresh !== null) log(`the tracker could not refresh the blockers of ${kept.length} queued runs, so their last reads stand and the next refresh asks again (${refresh})`);
-  ctx.idleSaid.refresh = refresh;
 }
 
 /**
@@ -395,42 +382,31 @@ function pathsIn(files: readonly string[], plan: string | null): { paths: string
   return found;
 }
 
-/** What reading one queued run's plan came back with: its files and what they declare, or the first line of why it could not be read. */
-type PlanRead = Readonly<{ key: string; files: readonly string[]; declared: ReturnType<typeof pathsIn> }> | Readonly<{ key: string; failure: string }>;
-
 /**
- * Read the paths each queued run's plan declares, and record them on the runs. A plan the tracker refuses to give, or does not give within `ctx.readMs` (A11-359), is recorded as that run's failure,
- * and each other plan is read as it would be: one ticket's plan does not hold the others, since a run whose plan is unread is never started, so a
- * failing one is not started beside a run it may overlap (A11-125). The plans are read at once, so one that hangs costs the pass one wait. It is asked again on the next pass.
+ * Read the paths each of `entries`' plans declares, and record them on the runs, all at once and each as its own read ends, so a plan that is slow to download holds no other. A plan the tracker refuses to give, or does not give
+ * within `ctx.readMs` (A11-359, A11-364), or one the board cannot parse, is recorded as that run's failure, with when it is asked again, and said in the log; each other plan is read as it would be: one ticket's plan does not hold the
+ * others, since a run whose plan is unread is never started, so a failing one is not started beside a run it may overlap (A11-125). A download that outlives its timeout is not cancelled, and its late files are read by the next try.
  */
-async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<void> {
-  if (entries.length === 0) return;
-  const found = new Map<string, readonly string[]>();
-  const stepFound = new Map<string, Readonly<Record<string, readonly string[]>>>();
-  const stamps = new Map<string, PlannedAgainst | null>();
-  const failed = new Map<string, string>();
-  const reads = await Promise.all(entries.map(async ({ ticket }): Promise<PlanRead> => {
-    try {
-      const files = await withinTime(ctx.readMs, `the download of ${ticket.key}'s plan`, planFiles(ctx, ticket));
-      return { key: ticket.key, files, declared: pathsIn(files, ctx.settings.plan) };
-    } catch (err) {
-      return { key: ticket.key, failure: messageOf(err).split("\n")[0] };
-    }
-  }));
-  for (const read of reads) {
-    if ("failure" in read) {
-      failed.set(read.key, read.failure);
-      continue;
-    }
-    found.set(read.key, read.declared.paths);
-    stepFound.set(read.key, read.declared.stepPaths);
+export async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<void> {
+  const reading = entries.map(({ ticket }) => readPathsOf(ctx, ticket));
+  // A machine that names no plan has nothing to download: every read has ended already, so the paths are recorded in the pass that asks.
+  if (ctx.settings.plan !== null) await Promise.all(reading);
+}
+
+/** Read one ticket's plan and record its paths and stamp, or why it could not be read. Never throws. */
+async function readPathsOf(ctx: PoolContext, ticket: Ticket): Promise<void> {
+  const retryAt = ctx.now() + READ_RETRY_MS;
+  try {
+    const files = ctx.settings.plan === null ? [] : await withinTime(ctx.readMs, `the download of ${ticket.key}'s plan`, planFiles(ctx, ticket));
+    const declared = pathsIn(files, ctx.settings.plan);
     // The plan's stamp is read with its paths, from the same download: it says which text of the ticket the plan was written against (A11-167).
-    stamps.set(read.key, plannedAgainstIn(read.files, ctx.settings.plan));
+    const stamp = plannedAgainstIn(files, ctx.settings.plan);
+    update(ctx, (queue) => recordPlannedAgainst(recordPaths(queue, new Map([[ticket.key, declared.paths]]), new Map([[ticket.key, declared.stepPaths]])), new Map([[ticket.key, stamp]])));
+  } catch (err) {
+    const why = messageOf(err).split("\n")[0];
+    update(ctx, (queue) => recordPathsFailure(queue, new Map([[ticket.key, why]]), retryAt));
+    log(`${ticket.key}: its plan could not be read (${why}); the board asks again at ${retryTime(retryAt)}`);
   }
-  for (const [key, reason] of failed) {
-    if (entries.find(({ ticket }) => ticket.key === key)?.pathsFailure !== reason) log(`${key}: its plan could not be read (${reason}); it is held and asked again on the next pass, and the other runs go on`);
-  }
-  update(ctx, (queue) => recordPlannedAgainst(recordPathsFailure(recordPaths(queue, found, stepFound), failed), stamps));
 }
 
 /** Why a pass starts nothing on purpose (`holding` in the health figures): a restart does not mend either. */
@@ -451,9 +427,6 @@ async function preflightHold(ctx: PoolContext): Promise<string | null> {
   }
 }
 
-/** Say that reading `what` threw in a way nothing expected, which none of the reads does for a failed or late answer (they hold their own run): the pass goes on with what is known (A11-359). */
-const readFailed = (what: string, err: unknown): void => log(`fill: reading ${what} failed (${messageOf(err)}); the pass goes on with what is known`);
-
 /** Say why `fill` starts nothing, when it is not what it said last (`ctx.idleSaid`). `null` is a pass that has no reason to give, and makes the next reason new. */
 function saidWhyIdle(ctx: PoolContext, reason: string | null): void {
   if (ctx.idleSaid.reason === reason) return;
@@ -466,29 +439,27 @@ const WHY_LISTED = 8;
 
 /**
  * Why no queued run starts now, or null when there is nothing the pass can explain: no run is queued, or every slot is held (a full board starts nothing and says nothing). The queue is paused, the host is loaded past its
- * cores, or each queued run is held, with the reason the board shows on its card. PURE.
+ * cores, or each queued run is held, with the reason the board shows on its card (`now` is the pool's clock, which the age of what was read is judged by, A11-364). The reasons leave out the time a retry is at, so a read that
+ * keeps failing is said once. PURE.
  */
-export function whyNothingStarts(queue: Queue, load: number, cores: number): string | null {
+export function whyNothingStarts(queue: Queue, load: number, cores: number, now: number): string | null {
   const queued = queue.entries.filter((entry) => entry.phase === "queued");
   if (queued.length === 0 || queue.max - slotsHeld(queue) <= 0) return null;
   if (queue.paused) return `${queued.length} queued, and the queue is paused`;
   if (load > cores) return `${queued.length} queued, and the host's load is past its ${cores} cores`;
-  const held = queued.map((entry) => `${entry.ticket.key} (${heldNote(entry, queue.entries)})`);
+  const held = queued.map((entry) => `${entry.ticket.key} (${heldNote(entry, queue.entries, now)})`);
   return `${queued.length} queued with free slots, and none starts: ${held.slice(0, WHY_LISTED).join("; ")}${held.length > WHY_LISTED ? `; and ${held.length - WHY_LISTED} more` : ""}`;
 }
 
-/** What holds a queued run now, as the board says it: its blockers or plan not read, or the wait its card shows. PURE. */
-function heldNote(entry: Entry, entries: readonly Entry[]): string {
-  if (entry.blockers === undefined) return entry.blockersFailure === undefined ? "its blockers are not read yet" : `its blockers could not be read: ${entry.blockersFailure}`;
-  if (pathsUnread(entry)) return entry.pathsFailure === undefined ? "its plan is not read yet" : `its plan could not be read: ${entry.pathsFailure}`;
-  return waitNote(entry, entries) ?? "nothing holds it";
+/** What holds a queued run now, as the board says it: its blockers or plan not read (or read too long ago), or the wait its card shows. PURE. */
+function heldNote(entry: Entry, entries: readonly Entry[], now: number): string {
+  return startReadHold(entry, now, false) ?? waitNote(entry, entries) ?? "nothing holds it";
 }
 
 /**
- * Start what there is room for. A run whose blockers have not been read is read first, and a run whose blockers cannot be read does not start, because
- * starting a run before its blockers are known would start work that waits on another. Its plan paths are read the same way, so a run is not
- * started beside a run it overlaps before the overlap is known. Only that run is held: a read that fails or hangs never stops the runs whose reads are known (A11-359). Each start is recorded before it begins, so a second tick cannot start it again.
- * A pass that starts nothing says why, once for each reason.
+ * Start what there is room for, from what the board knows now (A11-364). It awaits no read of the tracker, the code host or a remote: those are made beside the pass (`pool-start-reads.ts`), and what they last recorded
+ * is what a start is decided on. A run whose blockers or plan have never been read, or whose blockers are too old to start on, is held with the reason on the board and takes no slot; every other run starts. Each start is
+ * recorded before it begins, so a second tick cannot start it again. A pass that starts nothing says why, once for each reason (A11-359), and keeps the runs it held and why for `/api/health` (A11-363's fill figures).
  */
 export async function fill(ctx: PoolContext): Promise<void> {
   const { batches, deps, removing, rebasing, store } = ctx;
@@ -499,32 +470,15 @@ export async function fill(ctx: PoolContext): Promise<void> {
     noteFillEarly(ctx, STOPPING);
     return;
   }
-  // Each read is given `ctx.readMs` and none throws for a failed or late answer, so a read that fails or hangs holds the run it belongs to (`blockersFailure`, `pathsFailure`) and no other, and the pass goes on to start what is known
-  // (A11-359). The three are awaited here, not in a function of their own: an extra turn here delays a start that waits on nothing, which a test that does not await its tick sees as a start after its folder is gone.
-  const unread = unreadBlockerKeys(store.get());
-  try {
-    await readBlockers(ctx, unread);
-  } catch (err) {
-    readFailed("the blockers", err);
-  }
-  try {
-    // Only when a head is to be read: a start decides on its stacked blockers' heads, so a run read now has them before it starts.
-    if (headsToRead(ctx, unread)) await readHeads(ctx, unread);
-  } catch (err) {
-    readFailed("the heads of the stacked blockers", err);
-  }
-  try {
-    // A paused queue starts nothing, so it reads no plan either: the plans are read when it is unpaused.
-    if (!store.get().paused) await readPaths(ctx, unreadPaths(store.get()));
-  } catch (err) {
-    readFailed("the plans' paths", err);
-  }
+  // One turn first: a pass asked for by code that is still running (a watch that queued a round and asked for a tick) decides after that code has finished, as it did when this awaited the reads.
+  await Promise.resolve();
   // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
   settleSessions(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
   if (!batches) updateEach(ctx, store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined && !e.talk), leaveBatch);
   const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
-  // A run queued again while this pass read the blockers or the paths, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
+  const at = ctx.now();
+  noteFillHeld(ctx, heldRuns(store.get(), at));
   // A breaking update that is draining (A11-169) starts nothing: no run, no round, no talk session, no publish run and no new-ticket run, until the update has applied and the record is gone.
   if (isDraining(ctx)) {
     // The pass did what a draining board does, which is start nothing: it is a completed pass that ended early on purpose, so a drain that lasts is not a stalled board (A11-363).
@@ -534,13 +488,13 @@ export async function fill(ctx: PoolContext): Promise<void> {
     return saidWhyIdle(ctx, "an update is draining, so nothing starts until it has applied");
   }
   noteFillHolding(ctx, null);
-  const starts = nextStarts(store.get(), load, cores, (entry) => entry.blockers !== undefined && !pathsUnread(entry));
+  const starts = nextStarts(store.get(), load, cores, at);
   const begun = new Set<string>();
   // A host's own condition for starting work (`tickets.preflight`): while one fails, no ticket run starts and every queued one stays Queued, with the reason on the board.
   // Publishing and the new-ticket writer need none of it, so they go on.
   const held = starts.length === 0 || ctx.settings.preflight.length === 0 ? null : await preflightHold(ctx);
   if (held !== null) noteFillHolding(ctx, PREFLIGHT_FAILING);
-  saidWhyIdle(ctx, starts.length === 0 ? whyNothingStarts(store.get(), load, cores) : held === null ? null : `${held}, so no ticket run starts`);
+  saidWhyIdle(ctx, starts.length === 0 ? whyNothingStarts(store.get(), load, cores, at) : held === null ? null : `${held}, so no ticket run starts`);
   for (const entry of held === null ? starts : []) {
     // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched. A batch's tickets share that session: one pane (A11-171).
     if (entry.talk) {

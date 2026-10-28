@@ -1,4 +1,5 @@
 // no-token: gh -- the tracker and herdr are injected; the one server listens on 127.0.0.1 for the length of a test
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
@@ -47,7 +48,7 @@ function parkedBoard(port: number, outcome: Outcome = { kind: "needs-human", rea
     releaseReviewers: noop, retargetStacked: noop, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: noop, stopWriterRun: noop, reviewNewHeads: noop,
     answer: (key: string, given: { answer: string; who?: string }) => lazy.pool!.answer(key, given) };
   const made = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
-  lazy.pool = createPool(made.store, { settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: run, now: () => new Date(2026, 9, 25, 12).getTime(), wait: async () => {}, transcriptsRoot: dir });
+  lazy.pool = createSettledPool(made.store, { settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: run, now: () => new Date(2026, 9, 25, 12).getTime(), wait: async () => {}, transcriptsRoot: dir });
   made.store.set({ ...enqueue(emptyQueue(1), [ticket("NBF-1", "Fix the toast.")], { model: "sonnet", effort: "high" }, 0),
     entries: [{ ...enqueue(emptyQueue(1), [ticket("NBF-1", "Fix the toast.")], { model: "sonnet", effort: "high" }, 0).entries[0], phase: "finished", workspace: "w1", pane: "w1:p1", outcome }] });
   const prompts = () => herdr.calls.filter((args) => args.includes("prompt"));

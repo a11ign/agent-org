@@ -279,6 +279,10 @@ export type Entry = Readonly<{
   reopenFailure?: string;
   /** The tickets that block this one, as last read while it is queued; unset until the tracker has been asked. */
   blockers?: readonly Blocker[];
+  /** When `blockers` was last read from the tracker (the pool's clock, A11-364): the age of what the board knows. A read older than `BLOCKERS_MAX_AGE_MS` is read again before the run starts. */
+  blockersReadAt?: number;
+  /** Why the last read of `blockers` failed, and when the board asks again (A11-364). Holds the run only while its blockers are unread or too old to start on; cleared by the next read. */
+  blockersFailure?: Readonly<{ error: string; retryAt: number }>;
   /**
    * The repository-prefixed paths its plan says its work touches (`repo:path`, `overlap.ts`), as last read while it is queued. Unset until the
    * plan has been read; empty when the plan declares none. A run's footprint, with the files of its open pull requests, is what a run waits on
@@ -295,11 +299,8 @@ export type Entry = Readonly<{
    * `recordPathsFailure`, and cleared once the plan is read.
    */
   pathsFailure?: string;
-  /**
-   * Why the tracker could not say which tickets block it on the last pass (A11-359): the ticket could not be read, or the read did not finish in time. A queued run whose blockers are unknown is never started, so it is held with this reason
-   * while the others start, and the board asks again on the next pass. Set by `recordBlockersFailure`, and cleared once its blockers are read.
-   */
-  blockersFailure?: string;
+  /** When the board asks for the plan again after `pathsFailure` (the pool's clock, A11-364). Set and cleared with it. */
+  pathsRetryAt?: number;
   /**
    * The files each of its open pull requests changes, by URL, as the last watch read them: the footprint of a run with a pull request open. An
    * empty name in a list marks a list cut short: the files past those listed are unknown and hold nothing (`footprintOf`).

@@ -3,7 +3,8 @@
 
 import { joinRunning } from "./pool-reads.ts";
 import { existsSync } from "node:fs";
-import { headsToRead, readBlockers, readHeads, undoEarlyCompletion } from "./pool-start.ts";
+import { headsToRead, readHeads, undoEarlyCompletion } from "./pool-start.ts";
+import { readBlockersRecorded } from "./pool-start-reads.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { earlyCompletions, nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
@@ -11,6 +12,7 @@ import { afterMergeDue, afterMergeUnposted, markAfterMergePosted, markAfterMerge
 import { moveOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { resumeTicketWaits } from "./pool-cap.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { startStackConflictRound } from "./pool-watch.ts";
@@ -42,11 +44,8 @@ import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
  */
 export async function refreshTracker(ctx: PoolContext): Promise<void> {
   const { source, store } = ctx;
-  try {
-    await readBlockers(ctx, store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key));
-  } catch {
-    // the tracker could not be asked: the next refresh asks again
-  }
+  // A refused or hung read is recorded on the runs it was for and said in the log (A11-364); the next refresh asks again.
+  await readBlockersRecorded(ctx, store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key));
   const keys = unsettledKeys(store.get());
   if (keys.length > 0) {
     try {
