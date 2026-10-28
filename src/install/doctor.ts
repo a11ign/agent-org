@@ -1080,8 +1080,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       const organisation = readOrganisation(clones, codeHost);
       return "unreadable" in organisation ? organisation : { uncloned: unclonedOf(organisation.repositories, clones, codeHost).map(({ fullName }) => fullName) };
     },
-    declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code,
-    cloneRemote: originOf,
+    declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code, cloneRemote: originOf,
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
     flakes: (stateDir) => flakesViewOf(flakesPath(stateDir), Date.now()),
     chromium: () => chromiumReport(),
