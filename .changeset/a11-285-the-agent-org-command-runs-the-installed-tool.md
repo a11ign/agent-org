@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-The `agent-org` a person types is checked against the installed tool (A11-285). `agent-org doctor` has an `agent-org command` row: it asks the login shell what `agent-org` is (an alias, a function or a file on `PATH`), and fails one that runs another copy, naming the file and line, that copy's version against the installed one, and the exact fix; a checkout host.json names as `devTool` passes while it is at least as new. `agent-org command:check [--fix] [--ask]` reads the same row and, with `--fix`, comments the alias or function out (or replaces the file on `PATH`) with the installed shim, keeping a backup of the file. `install.sh` and `agent-org onboard` end by running it and do not report success while the shell's `agent-org` would run another copy; unattended, they replace it and say so. `onboard` writes the shim itself. `agent-org update`, `host:install` and `start` refuse to run from a copy that is older than the installed tool (`--allow-older-copy` overrides, for development). An org host's `agent-org` launcher now runs `<agent-org home>/tool/current`, as its services do. See `docs/installing-and-updating.md`.
