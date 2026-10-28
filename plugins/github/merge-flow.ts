@@ -5,7 +5,7 @@
 // ONE GRAPHQL CALL ANSWERS FOR ANY NUMBER OF REPOSITORIES (an alias each), because doctor's plugin checks run under a time limit and thirteen repositories at two REST reads each do not fit it. Read through an injected `run`
 // (the plugin's `gh`), so this file spawns nothing.
 import type { ARM_WORKFLOW_PATH as CONTRACT_ARM_WORKFLOW_PATH, MERGE_BOT_WORKFLOW_PATH as CONTRACT_MERGE_BOT_WORKFLOW_PATH, MergeFlow } from "../../src/plugins/contracts/code-host.ts";
-import { GhFailure, type Gh } from "./gh.ts";
+import { type AsyncGh, GhFailure, type Gh } from "./gh.ts";
 
 /** The arm workflow's path the contract names (`ARM_WORKFLOW_PATH`); a plugin imports core's types only, so the type holds it to the contract's spelling. */
 export const ARM_WORKFLOW_PATH: typeof CONTRACT_ARM_WORKFLOW_PATH = ".github/workflows/auto-arm.yml";
@@ -34,13 +34,28 @@ export const runsMergeBot = (flow: Pick<MergeFlow, "private" | "mergeBot"> & { h
 /** {@link runsMergeBot}, read off a GraphQL `repository` answer that asked for {@link mergeBotFields}: false when the answer does not say. */
 export const answerRunsMergeBot = (repository: any): boolean => runsMergeBot({ private: repository?.isPrivate === true, mergeBot: holds(repository?.bot), headBot: holds(repository?.headBot) });
 
+/** The query that asks whether pull request `number` of `parsed` holds the merge bot on its head. */
+const headBotQuery = (parsed: { owner: string; name: string }, number: number): string => `query { r0: repository(owner: "${parsed.owner}", name: "${parsed.name}") { ${headMergeBotFile(number)} } }`;
+
+const headHoldsBot = (data: Record<string, unknown> | null): boolean => holds((data?.r0 as { headBot?: unknown } | null | undefined)?.headBot);
+
 /** Whether pull request `number` of `repository` (`owner/name`) holds the merge bot on its head: false when it does not, and when GitHub does not say (which is read as a head without the bot, so every check counts as before). */
 export function readHeadHoldsMergeBot(repository: string, number: number, run: Gh): boolean {
   const parsed = repositoryOf(repository);
   if (parsed === null) return false;
   try {
-    const data = dataOf(run, `query { r0: repository(owner: "${parsed.owner}", name: "${parsed.name}") { ${headMergeBotFile(number)} } }`);
-    return holds((data?.r0 as { headBot?: unknown } | null | undefined)?.headBot);
+    return headHoldsBot(dataOf(run, headBotQuery(parsed, number)));
+  } catch {
+    return false;
+  }
+}
+
+/** {@link readHeadHoldsMergeBot} without holding the process still (A11-356). */
+export async function readHeadHoldsMergeBotAsync(repository: string, number: number, run: AsyncGh): Promise<boolean> {
+  const parsed = repositoryOf(repository);
+  if (parsed === null) return false;
+  try {
+    return headHoldsBot(await dataOfAsync(run, headBotQuery(parsed, number)));
   } catch {
     return false;
   }
@@ -59,6 +74,16 @@ const FLOW_FIELDS = `autoMergeAllowed isPrivate defaultBranchRef { name } object
 const queryOf = (repositories: readonly { owner: string; name: string }[], fields: string): string => `query { ${repositories.map(({ owner, name }, n) =>
   `r${n}: repository(owner: "${owner}", name: "${name}") { ${fields} }`).join(" ")} }`;
 
+/** The answer's `data`, from the text `gh` printed, or null when it holds none. */
+function dataIn(text: string): Record<string, unknown> | null {
+  try {
+    const data: unknown = JSON.parse(text)?.data;
+    return data !== null && typeof data === "object" ? (data as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The answer's `data`, from the text `gh` printed: a repository GitHub could not read makes `gh` exit non-zero WITH the rest of the answer, so a failure that printed an answer is read too. Null when there is none. */
 function dataOf(run: Gh, query: string): Record<string, unknown> | null {
   let text: string;
@@ -68,12 +93,19 @@ function dataOf(run: Gh, query: string): Record<string, unknown> | null {
     if (!(error instanceof GhFailure)) throw error;
     text = error.stdout;
   }
+  return dataIn(text);
+}
+
+/** {@link dataOf} without holding the process still (A11-356). */
+async function dataOfAsync(run: AsyncGh, query: string): Promise<Record<string, unknown> | null> {
+  let text: string;
   try {
-    const data: unknown = JSON.parse(text)?.data;
-    return data !== null && typeof data === "object" ? (data as Record<string, unknown>) : null;
-  } catch {
-    return null;
+    text = await run(["api", "graphql", "-f", `query=${query}`]);
+  } catch (error) {
+    if (!(error instanceof GhFailure)) throw error;
+    text = error.stdout;
   }
+  return dataIn(text);
 }
 
 /** One repository's answer as a merge flow, or null when it says neither whether auto-merge is allowed nor a default branch (a repository GitHub could not read). */
@@ -93,22 +125,42 @@ export const readMergeFlows = (repositories: readonly string[], run: Gh): Readon
  * GitHub would not read, an answer `read` refuses, and every one of them when the call fails.
  */
 function readAliased<T>(repositories: readonly string[], fields: string, read: (answer: any) => T | null, run: Gh): Readonly<Record<string, T | null>> {
-  const named = repositories.flatMap((repository) => {
-    const parsed = repositoryOf(repository);
-    return parsed === null ? [] : [{ repository, ...parsed }];
-  });
-  const none: Record<string, T | null> = Object.fromEntries(repositories.map((repository) => [repository, null]));
+  const { named, none } = aliasesOf<T>(repositories);
   if (named.length === 0) return none;
   try {
-    const data = dataOf(run, queryOf(named, fields));
-    return data === null ? none : { ...none, ...Object.fromEntries(named.map(({ repository }, n) => [repository, read(data[`r${n}`])])) };
+    return answeredBy(named, none, dataOf(run, queryOf(named, fields)), read);
   } catch {
     return none;
   }
 }
 
+/** The repositories that are `owner/name`, with the parts, and the answer of each of `repositories` before any is read: null. */
+function aliasesOf<T>(repositories: readonly string[]): { named: { repository: string; owner: string; name: string }[]; none: Record<string, T | null> } {
+  const named = repositories.flatMap((repository) => {
+    const parsed = repositoryOf(repository);
+    return parsed === null ? [] : [{ repository, ...parsed }];
+  });
+  return { named, none: Object.fromEntries(repositories.map((repository): [string, T | null] => [repository, null])) };
+}
+
+/** Each named repository's alias in `data`, read by `read`; every repository is null where the call gave no `data`. */
+function answeredBy<T>(named: readonly { repository: string }[], none: Record<string, T | null>, data: Record<string, unknown> | null, read: (answer: any) => T | null): Readonly<Record<string, T | null>> {
+  return data === null ? none : { ...none, ...Object.fromEntries(named.map(({ repository }, n): [string, T | null] => [repository, read(data[`r${n}`])])) };
+}
+
 /** Whether one repository has a merge flow, as {@link readMergeFlows} reads it: null for "could not ask". */
 export const readMergeFlow = (repository: string, run: Gh): MergeFlow | null => readMergeFlows([repository], run)[repository] ?? null;
+
+/** {@link readMergeFlow} without holding the process still (A11-356). */
+export async function readMergeFlowAsync(repository: string, run: AsyncGh): Promise<MergeFlow | null> {
+  const { named, none } = aliasesOf<MergeFlow>([repository]);
+  if (named.length === 0) return null;
+  try {
+    return answeredBy(named, none, await dataOfAsync(run, queryOf(named, FLOW_FIELDS)), flowOf)[repository] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A repository's merge flow as doctor's `merge flow` row reads it (A11-274): the contract's {@link MergeFlow}, and whether an active ruleset puts its default branch behind a merge queue (`mergeQueue`) and requires the

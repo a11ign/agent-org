@@ -10,6 +10,7 @@ import { runCodeHostConformance } from "../../src/plugins/conformance/code-host.
 import { ContractError } from "../../src/plugins/conformance/suite.ts";
 import type { WrapperInputs } from "../../src/plugins/contracts/code-host.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
+import type { PluginDeps } from "../../src/plugins/manifest.ts";
 import { corePolicy } from "../../src/plugins/policy.ts";
 import "../../src/plugins/row-mode.ts"; // registers what core owns of row mode that reads the project, which the conformance of the rows asks for
 import { create } from "./index.ts";
@@ -138,9 +139,17 @@ function github(calls: string[][] = []) {
     }
     if (args[0] === "pr" && args[1] === "view" && args[2] === MERGED) return ok(JSON.stringify({ number: 8, title: "feat: replay", body: "What it found", state: "MERGED" }));
     if (args[0] === "pr" && args[1] === "diff" && args[2] === MERGED) return ok("diff --git a/docs/spike.md b/docs/spike.md\n--- a/docs/spike.md\n+++ b/docs/spike.md\n@@ -1 +1,3 @@\n+### Scripted replay\n+Cookie dialogs drop pages.\n");
+    const reviewed = { state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, baseRefName: "main" };
     if (args[0] === "pr" && args[1] === "view") {
       if (args[2] !== "7" && args[2] !== PULL) return REFUSED;
-      return ok(JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, baseRefName: "main" }));
+      return ok(JSON.stringify(reviewed));
+    }
+    // The open pull requests of a repository with the fields of a review, which the plugin reads in one list for all of them: pull request 7 is the only one open.
+    const listed = (args[args.indexOf("--json") + 1] ?? "").split(",");
+    const isReviewList = args[0] === "pr" && args[1] === "list";
+    if (isReviewList && listed.every((field) => field === "number" || field in reviewed)) {
+      if (!args.includes(REPOSITORY)) return REFUSED;
+      return ok(JSON.stringify([{ number: 7, ...reviewed }].map((pull) => Object.fromEntries(Object.entries(pull).filter(([field]) => listed.includes(field))))));
     }
     if (args.slice(0, 2).join(" ") === "pr list" && /headRefOid/.test(args.join(" "))) {
       if (!args.includes(REPOSITORY)) return REFUSED;
@@ -164,6 +173,9 @@ function github(calls: string[][] = []) {
   };
 }
 
+/** Plugin deps whose `gh` is the emulator, run either way. */
+const emulating = (exec: ReturnType<typeof github>, over: Partial<PluginDeps> = {}) => fakePluginDeps({ ...over, exec, execAsync: (file, args) => Promise.resolve(exec(file, args)) });
+
 /** What the wrapper is asked about: a host whose tool is installed outside any temporary directory, with the workers' role an App. */
 export const WRAPPER_INPUTS: WrapperInputs = {
   place: { binDir: "/opt/host/bin", tool: "/opt/agent-org", checkout: "/opt/project", stateEntry: (name) => `/opt/state/${name}` }, accounts: { workers: "/opt/workers", leads: "/opt/leads" },
@@ -174,7 +186,7 @@ export const WRAPPER_INPUTS: WrapperInputs = {
 const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRepository", trustOf: () => "inside", settledOf: () => true, unrequiredRedOf: () => [] }));
 
 test("the GitHub plugin passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
-  const host = create({}, fakePluginDeps({ exec: github(), policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));
+  const host = create({}, emulating(github(), { policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));
   const { passed, skipped } = await runCodeHostConformance(host, {
     pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED, closed: CLOSED, queueFailure: { groupCommit: QUEUE_GROUP, job: QUEUE_JOB },
     stackRefusal: { pull: STACKED, head: STACK_REFUSAL_HEAD, reason: STACK_REFUSAL_REASON }, stackRequestRefused: NO_ARM_BOT, ciRun: { repository: REPOSITORY, runId: CI_RUN_ID }, branchCi: { repository: REPOSITORY, branch: CI_BRANCH },
@@ -212,7 +224,7 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
 
 test("every call the plugin makes is to gh, and the contract's reads make no write", async () => {
   const calls: string[][] = [];
-  const host = create({}, fakePluginDeps({ exec: github(calls), policy }));
+  const host = create({}, emulating(github(calls), { policy }));
   await runCodeHostConformance(host, { pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot" });
   assert.ok(calls.length > 0, "POSITIVE CONTROL: the suite asked GitHub something");
   assert.deepEqual([...new Set(calls.map(([file]) => file))], ["gh"]);
@@ -226,7 +238,7 @@ test("every call the plugin makes is to gh, and the contract's reads make no wri
 // refusal is how a caller reads a comment never posted as posted.
 test("a rows whose refused read answers an empty list, or whose refused write is swallowed, fails the suite by name", async () => {
   const probe = { pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot" };
-  const host = create({}, fakePluginDeps({ exec: github(), policy }));
+  const host = create({}, emulating(github(), { policy }));
   const emptyForRefused = { ...host, rows: { ...host.rows!, openIncidentsOf: () => [] as never } };
   await assert.rejects(runCodeHostConformance(emptyForRefused, probe), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "a read the rows could not make answers null or throws, never an empty answer");
   const swallowed = { ...host, rows: { ...host.rows!, closeRowWithComment: () => undefined } };

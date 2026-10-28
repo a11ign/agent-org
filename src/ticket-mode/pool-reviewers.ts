@@ -73,7 +73,7 @@ const rememberReviewers = (ctx: PoolContext): void => {
  * there are: past them, and when the door refuses a repost for good, the failure is what the run says. Returns that line, or null while there is
  * nothing to say: the reviewer is still working, or an attempt is still to come. Nothing is attempted while the reviewer is working.
  */
-function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, state: ReviewState, url: string, key: string): string | null {
+async function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, state: ReviewState, url: string, key: string): Promise<string | null> {
   const { head } = state;
   const { reviewerReposts } = ctx;
   const ref = { pr: url, head };
@@ -90,7 +90,7 @@ function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, state: ReviewStat
     // Nothing to post. The reviewer is prompted once, as a reviewer that has just started is; a second look with no file is the failure.
     if (repost.attempts > 0) return surfaced(NO_VERDICT_FILE);
     recordRepost({ attempts: 1, reason: NO_VERDICT_FILE });
-    const prompted = port.reprompt(ref, briefOf(ctx, url, state));
+    const prompted = port.reprompt(ref, await briefOf(ctx, url, state));
     if ("refusal" in prompted) log(`${url}: ${prompted.refusal}`);
     return null;
   }
@@ -128,7 +128,7 @@ const bodyOf = (state: ReviewState): string => String(state.view.body ?? "");
  * A pull request whose body says `Partial: step N of M` also carries the step (A11-175), with the plan's section for it when the run that holds the pull request has a plan file with one, else null.
  * It carries the word it names its ticket with (`closing`, A11-274) when its run holds other pull requests or its body names a step.
  */
-export function briefOf(ctx: PoolContext, url: string, state: ReviewState): ReviewBrief {
+export async function briefOf(ctx: PoolContext, url: string, state: ReviewState): Promise<ReviewBrief> {
   const held = heldBy(ctx, url);
   const step = partialStepOf(bodyOf(state));
   const decisions = decisionsOf(held?.ticket.description);
@@ -136,7 +136,7 @@ export function briefOf(ctx: PoolContext, url: string, state: ReviewState): Revi
   const planned = held === undefined ? null : planDecisions(ctx, held.ticket.key);
   // What the ticket's earlier pull requests held when they were closed unmerged: the reviewer cannot read the ticket's folder, so it is handed the list (A11-249).
   const closedWork = held === undefined ? null : closedWorkLines(closedWorkOf(ticketDir(ctx.settings, held.ticket.key)));
-  const closing = held === undefined ? null : closingOf(ctx, url, held, step);
+  const closing = held === undefined ? null : await closingOf(ctx, url, held, step);
   return {
     doneWhen: doneWhenOf(held?.ticket.description),
     ...(decisions === null ? {} : { decisions }),
@@ -148,8 +148,8 @@ export function briefOf(ctx: PoolContext, url: string, state: ReviewState): Revi
 }
 
 /** A pull request's state as the host says it now, in the run's words, or null when the host does not say. */
-function hostStateOf(ctx: PoolContext, url: string): PullState | null {
-  const state = ctx.codeHost.readPullState(url)?.toLowerCase();
+async function hostStateOf(ctx: PoolContext, url: string): Promise<PullState | null> {
+  const state = (await ctx.codeHost.readPullState(url))?.toLowerCase();
   return state === "open" || state === "merged" || state === "closed" ? state : null;
 }
 
@@ -158,10 +158,10 @@ function hostStateOf(ctx: PoolContext, url: string): PullState | null {
  * since an open one may have merged and a closed one reopened since the run's read. Null when the run holds no other and the body names no step, so the reviewer judges the word as before, and when a sibling's state cannot be read:
  * a word worked out from a guess would be told to the reviewer as a fact.
  */
-function closingOf(ctx: PoolContext, url: string, held: Entry, step: PlanStep | null): ReviewClosing | null {
+async function closingOf(ctx: PoolContext, url: string, held: Entry, step: PlanStep | null): Promise<ReviewClosing | null> {
   const others = pullsOf(held).filter((pull) => pull.url !== url);
   if (others.length === 0 && step === null) return null;
-  const siblings = others.map((pull) => ({ url: pull.url, state: held.pullStates?.[pull.url] === "merged" ? "merged" as const : hostStateOf(ctx, pull.url) }));
+  const siblings = await Promise.all(others.map(async (pull) => ({ url: pull.url, state: held.pullStates?.[pull.url] === "merged" ? "merged" as const : await hostStateOf(ctx, pull.url) })));
   const known = siblings.filter((sibling): sibling is Sibling => sibling.state !== null);
   return known.length < siblings.length ? null : closingWordOf({ key: held.ticket.key, step, siblings: known });
 }
@@ -292,17 +292,17 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
 }
 
 /** The first review of a head (A11-119): recorded in `reviewerStarted`, under the key `reviewerDropped` has always held it by. */
-const firstReviewKind = (ctx: PoolContext, url: string, state: ReviewState): Omit<StartKind, "counts"> =>
-  ({ recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url, state), adopts: true, body: bodyOf(state) });
+const firstReviewKind = async (ctx: PoolContext, url: string, state: ReviewState): Promise<Omit<StartKind, "counts">> =>
+  ({ recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: await briefOf(ctx, url, state), adopts: true, body: bodyOf(state) });
 
 /** The first review of a head, whose refusals of herdr's count toward asking a person (A11-241). */
-function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer {
-  return startWith(ctx, reviewer, url, state.head, { ...firstReviewKind(ctx, url, state), counts: true });
+async function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): Promise<StartAnswer> {
+  return startWith(ctx, reviewer, url, state.head, { ...await firstReviewKind(ctx, url, state), counts: true });
 }
 
 /** The first review of a head, started by the early pass of green heads (A11-306): the same start, whose refusals count nothing, since the full sweep counts them. */
-function startEarlyFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer {
-  return startWith(ctx, reviewer, url, state.head, { ...firstReviewKind(ctx, url, state), counts: false });
+async function startEarlyFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): Promise<StartAnswer> {
+  return startWith(ctx, reviewer, url, state.head, { ...await firstReviewKind(ctx, url, state), counts: false });
 }
 
 /**
@@ -327,7 +327,7 @@ function unclaimedNoteOf(started: StartAnswer | null, rememberedWhileReviewing: 
  * The replies to the reviewer's block, posted after it by the board's own account or a person the org declares (`replyAuthorsOf`), or null when they could not be asked: the account the board acts
  * as cannot be read, or the code host does not answer. Null is never "no reply", so the head is asked about again on the next look; it is said once.
  */
-function repliesAfter(ctx: PoolContext, url: string, key: string, since: number): readonly Reply[] | null {
+async function repliesAfter(ctx: PoolContext, url: string, key: string, since: number): Promise<readonly Reply[] | null> {
   const { codeHost, ownLogin, refusedHeads } = ctx;
   const unasked = `${key}#replies`;
   const said = (why: string) => {
@@ -340,12 +340,12 @@ function repliesAfter(ctx: PoolContext, url: string, key: string, since: number)
     said("the code host does not read replies");
     return null;
   }
-  ownLogin.value ??= codeHost.readOwnLogin();
+  ownLogin.value ??= await codeHost.readOwnLogin();
   if (ownLogin.value === null) {
     said("the account the board acts as could not be read");
     return null;
   }
-  const replies = codeHost.readReplies(url, { since, authors: replyAuthorsOf(ownLogin.value) });
+  const replies = await codeHost.readReplies(url, { since, authors: replyAuthorsOf(ownLogin.value) });
   if (replies === null) said("its replies could not be read");
   else refusedHeads.delete(unasked);
   return replies;
@@ -434,7 +434,7 @@ function rereviewBrief(brief: ReviewBrief, held: Entry | undefined, { replies, c
  * For a pull request a run holds, the re-review waits only while the run's worker is working (`mayRereview`, A11-274), so the reviewer never reads a body the worker is still editing, and counts as one of the run's rounds
  * (`countRereview`): with none left the run is handed to a person and no reviewer starts. A pull request no run holds has no rounds and no cap. Returns the start's answer, or null when nothing was asked.
  */
-function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer | null {
+async function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): Promise<StartAnswer | null> {
   const { head } = state;
   const block = standingBlock(state.reviews, head);
   const look = ctx.reviewerMemory.looks.get(`${url}@${head}`);
@@ -445,18 +445,18 @@ function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, stat
   const decided = decisionsChangeSince(look, held);
   const amended = planChangeSince(ctx, look, held);
   // The board's own record of a refused re-review is a comment of its account, and answers nothing (A11-290).
-  const replies = repliesAfter(ctx, url, `${url}@${head}`, Math.max(block.at, look?.at ?? 0))?.filter(({ text }) => !isRereviewComment(text)) ?? null;
+  const replies = (await repliesAfter(ctx, url, `${url}@${head}`, Math.max(block.at, look?.at ?? 0)))?.filter(({ text }) => !isRereviewComment(text)) ?? null;
   if (replies === null) return null;
   const unanswered = [replies, changed, decided, amended].every((answer) => answer.length === 0);
   if (unanswered) return null;
-  if (ctx.codeHost.readPullState(url) !== "OPEN") return null;
+  if ((await ctx.codeHost.readPullState(url)) !== "OPEN") return null;
   const how = answeredHow({ edited: changed.length > 0, decided: decided.length > 0, amended: amended.length > 0 });
   if (held !== undefined && !roundsLeft(held)) {
     handBackUnreviewed(ctx, held, answeredWords(url, head, how));
     return null;
   }
   const quoted = replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text }));
-  const brief = rereviewBrief(briefOf(ctx, url, state), held, { replies: quoted, changed, decided, amended });
+  const brief = rereviewBrief(await briefOf(ctx, url, state), held, { replies: quoted, changed, decided, amended });
   const started = startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false, body: bodyOf(state), counts: true });
   if (held !== undefined && started.refusal === null) update(ctx, (queue) => countRereview(queue, held.ticket.key, ctx.now(), `the block was answered ${how}`));
   return started;
@@ -535,13 +535,51 @@ function sayOnce(ctx: PoolContext, key: string, line: string): void {
 }
 
 /**
+ * The state a look is made on: the one its caller read, else a read of the pull request. A reviewer that ended with no review on the pull request is about to have its verdict file posted again, so a state that shows no review is read afresh first (A11-356):
+ * the code host may answer from a read made a few seconds ago, before the reviewer posted, and a verdict must not be posted twice.
+ */
+async function readForLook(ctx: PoolContext, reviewer: ReviewerPort, url: string, given: ReviewState | undefined): Promise<ReviewState | null> {
+  const state = given ?? await ctx.codeHost.readReviewState(url);
+  if (state === null || !endedWithoutReview(ctx, reviewer, url, state)) return state;
+  return (await ctx.codeHost.readReviewState(url, { fresh: true })) ?? state;
+}
+
+/** Whether a reviewer was started for the head of `state`, has stopped working, and `state` shows no review on the head. */
+const endedWithoutReview = (ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): boolean =>
+  ctx.reviewerStarted.has(`${url}@${state.head}`) && reviewer.settled({ pr: url, head: state.head }) !== "working" && !reviewPostedAt(state.reviews, state.head);
+
+/**
  * One open pull request at its current head, as the pool looks at it (A11-119): a posted verdict is remembered, a reviewer that ended without one is looked
  * at (`unpostedVerdict`), a head whose checks have settled green gets its reviewer once (`startFor`), and a posted verdict closes its reviewer. What it
  * read is kept for the board (`pullReads`). Returns the state read and the verdict not posted, or null when GitHub did not say, which the caller says.
  */
-function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string, given: Readonly<{ state?: ReviewState; early?: boolean }> = {}): Readonly<{ state: ReviewState; unposted: string | null }> | null {
+function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string, given: Readonly<{ state?: ReviewState; early?: boolean }> = {}): Promise<Readonly<{ state: ReviewState; unposted: string | null }> | null> {
+  return oneLookAtATime(ctx, url, (waited) => lookAt(ctx, reviewer, url, waited ? { ...given, state: undefined } : given));
+}
+
+/** The looks under way, by pull request: a pull request is looked at by one sweep at a time (A11-356). */
+const LOOKING = new WeakMap<PoolContext, Map<string, Promise<unknown>>>();
+
+/**
+ * Runs `look` after the look under way at `url`, if there is one, and says whether it had to wait. A look reads the pull request, decides whether to start a reviewer and records the start, with reads between those steps, and the feedback sweep, the
+ * sweep of every open pull request and the early start of green heads each make it on a timer of their own: two at once would both pass the guards (a head with no reviewer, a block no re-review answered yet) and start a reviewer each, the second closing the first's workspace.
+ * A look that waited does not use the state its caller read before: it was read before the look it waited for.
+ */
+function oneLookAtATime<T>(ctx: PoolContext, url: string, look: (waited: boolean) => Promise<T>): Promise<T> {
+  const looking = LOOKING.get(ctx) ?? new Map<string, Promise<unknown>>();
+  LOOKING.set(ctx, looking);
+  const earlier = looking.get(url);
+  const mine = (earlier === undefined ? look(false) : earlier.then(() => look(true), () => look(true)));
+  looking.set(url, mine);
+  const done = () => { if (looking.get(url) === mine) looking.delete(url); };
+  mine.then(done, done);
+  return mine;
+}
+
+/** {@link reviewPull}, with no other look at the pull request under way. */
+async function lookAt(ctx: PoolContext, reviewer: ReviewerPort, url: string, given: Readonly<{ state?: ReviewState; early?: boolean }>): Promise<Readonly<{ state: ReviewState; unposted: string | null }> | null> {
   const { codeHost, pullReads, reviewerReposts, reviewerRereviewed, reviewerStarted } = ctx;
-  const state = given.state ?? codeHost.readReviewState(url);
+  const state = await readForLook(ctx, reviewer, url, given.state);
   if (state === null) return null;
   const { head } = state;
   const key = `${url}@${head}`;
@@ -554,7 +592,7 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string, given
   if (posted) {
     if (reviewerReposts.delete(key)) rememberReviewers(ctx);
   } else if (reviewerStarted.has(key)) {
-    unposted = unpostedVerdict(ctx, reviewer, state, url, key);
+    unposted = await unpostedVerdict(ctx, reviewer, state, url, key);
   }
   // A head whose checks have not settled green gets no reviewer yet: this look passes it by, and the next one asks again. Nor does a pull request GitHub
   // does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads it open must not start a
@@ -562,12 +600,12 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string, given
   const startable = state.settled && !posted && !reviewerStarted.has(key);
   if (startable) noteGreen(ctx, key);
   else forgetGreen(ctx, url, posted || !state.settled ? null : key);
-  const first = startable && codeHost.readPullState(url) === "OPEN" ? (given.early === true ? startEarlyFor : startFor)(ctx, reviewer, url, state) : null;
+  const first = startable && (await codeHost.readPullState(url)) === "OPEN" ? await (given.early === true ? startEarlyFor : startFor)(ctx, reviewer, url, state) : null;
   closeAnsweredReviewer(ctx, reviewer, url, state);
   // A re-review the verdict door refused leaves its result on the run and on the pull request (A11-290), before another look at the head is asked for.
-  recordRefusedRereview(ctx, reviewer, url, state, (since) => repliesAfter(ctx, url, key, since));
+  await recordRefusedRereview(ctx, reviewer, url, state, (since) => repliesAfter(ctx, url, key, since));
   // The reply to a block asks for one more look at the same head, once the first reviewer has gone.
-  const rereview = first === null ? rereviewFor(ctx, reviewer, url, state) : null;
+  const rereview = first === null ? await rereviewFor(ctx, reviewer, url, state) : null;
   const started = first ?? rereview;
   const tookOver = tookOverOf(started, pullReads.get(url), head);
   const reviewing = reviewer.live(ref);
@@ -594,13 +632,13 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string, given
  * A reviewer that ended without its verdict on the pull request is looked at first (`unpostedVerdict`), so a reviewer started in this watch is not judged
  * before it has begun. The run records what is still not posted (`verdictNotPosted`), and that is cleared once every pull request has its verdict.
  */
-export function reviewerLines(ctx: PoolContext, entry: Entry, urls: readonly string[]): string[] {
+export async function reviewerLines(ctx: PoolContext, entry: Entry, urls: readonly string[]): Promise<string[]> {
   const { reviewer, reviewerResumed } = ctx;
   if (reviewer === undefined) return [];
   const lines: string[] = [];
   const unposted: string[] = [];
   for (const url of urls) {
-    const pulled = reviewPull(ctx, reviewer, url);
+    const pulled = await reviewPull(ctx, reviewer, url);
     if (pulled === null) {
       log(`${url}: its reviewer could not be checked, the next watch asks again`);
       continue;
@@ -651,14 +689,14 @@ function adoptRememberedReviewers(ctx: PoolContext): void {
  * are all reviewed here. It queues no worker round, since a round is for a watched run. Runs only where there is a reviewer; what `ticket:review` started
  * is adopted first, so the two never start a second reviewer for one head.
  */
-export function reviewNewHeads(ctx: PoolContext): void {
+export async function reviewNewHeads(ctx: PoolContext): Promise<void> {
   const { codeHost, pullReads, reviewer, settings } = ctx;
   if (reviewer === undefined) return listWhileOff(ctx);
   adoptRememberedReviewers(ctx);
   const listed = new Set<string>();
   let unlisted = false;
   for (const repository of reviewedRepositoriesOf(settings.clones)) {
-    const urls = codeHost.openPullUrlsOf(repository);
+    const urls = await codeHost.openPullUrlsOf(repository);
     if (urls === null) {
       unlisted = true;
       log(`${repository}: its open pull requests could not be listed, so their reviewers are looked at on the next sweep`);
@@ -667,7 +705,7 @@ export function reviewNewHeads(ctx: PoolContext): void {
     for (const url of urls) {
       listed.add(url);
       const before = pullReads.get(url)?.unposted ?? null;
-      const pulled = reviewPull(ctx, reviewer, url);
+      const pulled = await reviewPull(ctx, reviewer, url);
       if (pulled === null) {
         log(`${url}: its reviewer could not be checked, the next sweep asks again`);
         continue;
@@ -688,17 +726,17 @@ export function reviewNewHeads(ctx: PoolContext): void {
  * counted per look, so it stays on the feedback cadence; this pass is on a minute and does one thing: it reads each open pull request's state, and looks at the ones whose head is green, has no review and has no reviewer started and no start refused, with the same
  * `reviewPull` and so the same start. A start it makes counts no refusal (`early`), and a head it left is looked at by `reviewNewHeads` as before, so the idle gap of a green head waiting for a sweep is at most this pass's cadence and nothing else changes.
  */
-export function startGreenReviewers(ctx: PoolContext): void {
+export async function startGreenReviewers(ctx: PoolContext): Promise<void> {
   const { codeHost, refusedHeads, reviewer, reviewerStarted, settings } = ctx;
   if (reviewer === undefined) return;
   adoptRememberedReviewers(ctx);
   for (const repository of reviewedRepositoriesOf(settings.clones)) {
-    for (const url of codeHost.openPullUrlsOf(repository) ?? []) {
-      const state = codeHost.readReviewState(url);
+    for (const url of (await codeHost.openPullUrlsOf(repository)) ?? []) {
+      const state = await codeHost.readReviewState(url);
       if (state === null) continue;
       const key = `${url}@${state.head}`;
       const due = state.settled && !reviewPostedAt(state.reviews, state.head) && !reviewerStarted.has(key) && !refusedHeads.has(key);
-      if (due) reviewPull(ctx, reviewer, url, { state, early: true });
+      if (due) await reviewPull(ctx, reviewer, url, { state, early: true });
     }
   }
 }
@@ -725,7 +763,7 @@ const UNLISTABLE = "unlistable";
  * reviewer (off)": it reads no review and starts nothing. It lists only what the gate names (`reviewedRepositoriesOf`): where the gate does not load (the reason a reviewer may be off) it says so
  * once, and the runs' own pull requests still show the line from the queue (`pullReviewsOf`). Does nothing when reviews are not required: nothing extra is shown anywhere.
  */
-function listWhileOff(ctx: PoolContext): void {
+async function listWhileOff(ctx: PoolContext): Promise<void> {
   const { codeHost, offPulls, settings } = ctx;
   if (ctx.reviewerState !== "off-required") return;
   let repositories: string[];
@@ -740,7 +778,7 @@ function listWhileOff(ctx: PoolContext): void {
   const listed = new Set<string>();
   let unlisted = false;
   for (const repository of repositories) {
-    const urls = codeHost.openPullUrlsOf(repository);
+    const urls = await codeHost.openPullUrlsOf(repository);
     if (urls === null) {
       unlisted = true;
       log(`${repository}: its open pull requests could not be listed, so the board looks again on the next sweep`);
@@ -798,7 +836,7 @@ function forgetPull(ctx: PoolContext, url: string): void {
  * remembers, and each the session lists, has its state read: a merged or closed one is retired (its workspaces, then its checkout, then what is
  * remembered of it), while an open one is left, and one whose state cannot be read is asked again next sweep.
  */
-export function releaseReviewers(ctx: PoolContext): void {
+export async function releaseReviewers(ctx: PoolContext): Promise<void> {
   const { closing, codeHost, reviewer, reviewerRereviewed, reviewerStarted } = ctx;
   if (reviewer === undefined) return;
   for (const [key, ref] of [...closing]) {
@@ -809,7 +847,7 @@ export function releaseReviewers(ctx: PoolContext): void {
   const pulls = new Set([...reviewerStarted, ...reviewerRereviewed].map((key) => key.slice(0, key.lastIndexOf("@"))));
   for (const url of reviewer.listedPulls()) pulls.add(url);
   for (const url of pulls) {
-    const state = codeHost.readPullState(url);
+    const state = await codeHost.readPullState(url);
     if (state === null) {
       log(`${url}: its state could not be read, so its reviewer is kept; the next sweep asks again`);
       continue;

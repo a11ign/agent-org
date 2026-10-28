@@ -13,10 +13,11 @@ import { readCiRun } from "./ci-run.ts";
 import { readBranchCi } from "./ci-spend.ts";
 import { readCheckLog, rerunFailedChecks } from "./check-runs.ts";
 import { readDefaultBranchRed } from "./default-branch-checks.ts";
-import { ghRunner } from "./gh.ts";
+import { asyncGhRunner, ghRunner } from "./gh.ts";
+import { sharedReads } from "./shared-reads.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { createRepositories } from "./repositories.ts";
-import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { readOwnLoginAsync, readPullFeedback } from "./pull-feedback.ts";
 import { readClosedWork } from "./closed-work.ts";
 import { readMergeFlow } from "./merge-flow.ts";
 import { holdPullRequest, readQueueFailure, releasePullRequest } from "./merge-queue.ts";
@@ -24,10 +25,10 @@ import { readMergedFindings } from "./merged-findings.ts";
 import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
 import { rerunRuns } from "./rerun-runs.ts";
 import { readReplies } from "./replies.ts";
+import { createReviewReads } from "./reviews.ts";
 import { pullsNaming } from "./ticket-pulls.ts";
 import { openDependencyPulls } from "./dependency-pulls.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
-import { readPullState, readReviewState } from "./reviews.ts";
 import { requestStackMerge, stackMergeFactsOf } from "./stack-merge.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
 import { updateBranch } from "./update-branch.ts";
@@ -73,31 +74,42 @@ function rowsRunners(deps: PluginDeps): RowsRunners {
   };
 }
 
-/** The GitHub code host, reading and moving pull requests through the plugin's `gh`. `settle` is how `armMerge` waits for a pull request that may have settled (a test gives none to wait for). */
-export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): CodeHost {
+/** How long the readers that ask GitHub about a pull request or a repository share one answer (A11-356): long enough that the sweeps of one pass read it once, short enough that a sweep reads what GitHub says now. */
+export const SHARED_READ_MS = 10_000;
+
+/**
+ * The GitHub code host, reading and moving pull requests through the plugin's `gh`. `settle` is how `armMerge` waits for a pull request that may have settled (a test gives none to wait for).
+ * THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP RUN THROUGH `deps.execAsync` (A11-356, contract 2.0), so the loop goes on while GitHub answers; `now` is the clock the shared answers are kept by.
+ */
+export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}, now: () => number = Date.now): CodeHost {
   const gh = ghRunner(deps);
+  const ghAsync = asyncGhRunner(deps);
+  const shared = sharedReads({ ttlMs: SHARED_READ_MS, now });
+  const reviews = createReviewReads({ gh: ghAsync, shared, now });
   return {
     repoViewArgs,
     repoCloneArgs,
-    readOwnLogin: () => readOwnLogin(gh),
-    readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, gh, deps.policy, alsoIgnore),
+    readOwnLogin: () => readOwnLoginAsync(ghAsync),
+    readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, ghAsync, deps.policy, alsoIgnore),
     readQueueFailure: (url, groupCommit) => readQueueFailure(url, groupCommit, gh),
     holdFromQueue: (url, on) => (on ? holdPullRequest(url, gh) : releasePullRequest(url, gh)),
     readDefaultBranchRed: (repository) => readDefaultBranchRed(repository, gh, deps.policy),
     readMergeFlow: (repository) => readMergeFlow(repository, gh),
-    readReplies: (url, request) => readReplies(url, request, gh),
-    readReviewState: (url) => readReviewState(url, gh, deps.policy),
-    readPullState: (url) => readPullState(url, gh),
-    readMergedFindings: (url) => readMergedFindings(url, gh),
+    readReplies: (url, request) => readReplies(url, request, ghAsync),
+    readReviewState: (url, options) => reviews.state(url, deps.policy, options),
+    peekReviewState: (url) => reviews.peek(url),
+    readPullState: (url) => reviews.pullState(url),
+    readMergedFindings: (url) => readMergedFindings(url, ghAsync),
     readClosedWork: (url) => readClosedWork(url, gh),
-    openPullUrlsOf: (repository) => openPullUrlsOf(repository, gh),
+    // The same list is asked by three sweeps of one pass; each gets its own copy of the one answer.
+    openPullUrlsOf: async (repository) => (await shared(`open ${repository}`, () => openPullUrlsOf(repository, ghAsync)))?.slice() ?? null,
     pullsNaming: (key, repositories) => pullsNaming(key, repositories, gh),
-    openDependencyPulls: (repository) => openDependencyPulls(repository, gh),
+    openDependencyPulls: (repository) => openDependencyPulls(repository, ghAsync),
     sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh }),
     stackMergeFactsOf: (url) => stackMergeFactsOf(url, gh),
     requestStackMerge: (request) => requestStackMerge(request, gh),
     readCiRun: (repository, runId) => readCiRun(repository, runId, gh),
-    readBranchCi: (repository, branch, settled) => readBranchCi(repository, branch, settled, gh),
+    readBranchCi: (repository, branch, settled) => readBranchCi(repository, branch, settled, ghAsync),
     readCheckLog: (detailsUrl) => readCheckLog(detailsUrl, gh, deps.log),
     rerunFailedChecks: (detailsUrls) => rerunFailedChecks(detailsUrls, gh),
     rerunRuns: (detailsUrls) => rerunRuns(detailsUrls, gh),

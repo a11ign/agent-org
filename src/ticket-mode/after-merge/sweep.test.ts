@@ -30,7 +30,7 @@ function world(entries: Entries, { comments = true, reviews = new Map<string, Re
     if (refuse.on) throw new Error("Linear is down");
     posted.push({ key, body });
   };
-  const codeHost: Pick<CodeHost, "readReviewState"> = { readReviewState: (url) => reviews.get(url) ?? null };
+  const codeHost: Pick<CodeHost, "readReviewState"> = { readReviewState: async (url) => reviews.get(url) ?? null };
   const clock = { at: 50_000 };
   const store = { get: () => queue as unknown as Queue, set: (next: Queue) => { Object.assign(queue, next); } };
   const ctx = { settings: { stateDir, plan: PLAN, writer: null }, store, source: comments ? { comment } : {}, codeHost, now: () => clock.at, hook: { bin: "/tool/src/bin.ts" } } as never;

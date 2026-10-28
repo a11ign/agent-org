@@ -135,6 +135,6 @@ export function substituteCodeHost(host: CodeHost | null): void {
  * judges a pull request, which only a process that loaded the gate can give (`corePolicy` says what the others do), and `reviewing` the reviewer's helpers with the board's collaborators
  * (a process that is not a board gives none, and a reviewer that asks for them is refused by name).
  */
-export function realPluginDeps({ env, stateDir, pick, clones = {}, review, reviewing }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"]; reviewing?: ReviewerHelpers }>): PluginDeps {
-  return { ...lightPluginDeps({ env, stateDir, pick, clones, ...(review === undefined ? {} : { review }) }), reviewing: reviewing ?? gateHelpers() };
+export function realPluginDeps({ env, stateDir, pick, clones = {}, review, reviewing, recordCalls }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"]; reviewing?: ReviewerHelpers; recordCalls?: boolean }>): PluginDeps {
+  return { ...lightPluginDeps({ env, stateDir, pick, clones, recordCalls, ...(review === undefined ? {} : { review }) }), reviewing: reviewing ?? gateHelpers() };
 }

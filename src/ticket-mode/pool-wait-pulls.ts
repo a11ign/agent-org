@@ -53,14 +53,14 @@ function watchedPulls(entry: Entry): ReadonlyMap<string, { reviewIsTheWait: bool
 type Troubles = Readonly<{ found: ReadonlyMap<string, PullTrouble>; unread: ReadonlySet<string> }>;
 
 /** The pull requests of a run read once. A pull request the host could not be asked about is said, and is not read as clear: the next watch asks again. */
-function troublesOf(ctx: PoolContext, entry: Entry, self: string): Troubles {
+async function troublesOf(ctx: PoolContext, entry: Entry, self: string): Promise<Troubles> {
   const { codeHost, feedbackIgnores } = ctx;
   const found = new Map<string, PullTrouble>();
   const unread = new Set<string>();
   for (const [url, wait] of watchedPulls(entry)) {
     let read: PullFeedback | null;
     try {
-      read = codeHost.readPullFeedback(url, self, feedbackIgnores);
+      read = await codeHost.readPullFeedback(url, self, feedbackIgnores);
     } catch (err) {
       read = null;
       log(`${entry.ticket.key}: ${url} could not be read for the wait (${messageOf(err).split("\n")[0]}); the next watch asks again`);
@@ -110,6 +110,9 @@ function tellWorker(ctx: PoolContext, entry: Entry, fresh: readonly (readonly [s
   return refusal;
 }
 
+/** Whether the pull requests of a run were read less than {@link READ_EVERY_MS} ago, `last` being when. */
+const readRecently = (last: number | undefined, at: number): boolean => last !== undefined && at - last < READ_EVERY_MS;
+
 /** Whether a run's agent sits at a prompt on a `working` note: the only run this watch reads for. */
 const idleOnWorkingNote = (entry: Entry, seen: string): boolean => entry.phase === "running" && entry.working !== undefined && (seen === "idle" || seen === "done");
 
@@ -119,16 +122,26 @@ const idleOnWorkingNote = (entry: Entry, seen: string): boolean => entry.phase =
  * the pull request and what was done, so it reads Needs you. A pull request that is clear of its trouble drops its record.
  */
 export function watchWaitedPulls(ctx: PoolContext, entry: Entry, seen: string): void {
-  const { codeHost, now, pullReadAt } = ctx;
+  const { now, pullReadAt, waitReading } = ctx;
   if (!idleOnWorkingNote(entry, seen)) return;
   const place = runPlace(ctx, entry);
   const last = pullReadAt.get(place.name);
-  if (watchedPulls(entry).size === 0 || (last !== undefined && now() - last < READ_EVERY_MS)) return;
+  if (waitReading.has(place.name) || watchedPulls(entry).size === 0 || readRecently(last, now())) return;
   pullReadAt.set(place.name, now());
-  ctx.ownLogin.value ??= codeHost.readOwnLogin();
+  waitReading.add(place.name);
+  // The host's reads answer a promise (A11-356): the pass does not hold for them, and a read still under way is not started again.
+  readAndTell(ctx, entry).catch((err) => log(`${entry.ticket.key}: the pull requests it waits on could not be watched (${messageOf(err).split("\n")[0]}); the next watch asks again`)).finally(() => waitReading.delete(place.name));
+}
+
+/** One read of the pull requests an idle run waits on, and what follows from it: the prompt, the record, and the hour's end. The run is read again from the store after the reads, since it may have moved on while the host answered. */
+async function readAndTell(ctx: PoolContext, started: Entry): Promise<void> {
+  const { codeHost, now } = ctx;
+  ctx.ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   if (self === null) return log("the GitHub account the workers use could not be read, so no pull request a run waits on was checked");
-  const troubles = troublesOf(ctx, entry, self);
+  const troubles = await troublesOf(ctx, started, self);
+  const entry = ctx.store.get().entries.find((each) => each.ticket.key === started.ticket.key);
+  if (entry === undefined || entry.working === undefined || entry.phase !== "running") return;
   const before = entry.working?.fed ?? {};
   const fresh = [...troubles.found].filter(([url, trouble]) => !wasTold(before[url], trouble));
   const refusal = tellWorker(ctx, entry, fresh);

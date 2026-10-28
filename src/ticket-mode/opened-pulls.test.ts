@@ -151,7 +151,7 @@ test("Respond on a run that ended on drafts with none open on record is refused 
 test("a code host whose read of a pull request throws does not stop the run starting: the brief just has no section", async () => {
   const made = poolFixture();
   const host = await hostWithOpenPull(made);
-  const throwing = { ...host, readPullFeedback: () => { throw new Error("rate limited"); } } as unknown as Host;
+  const throwing = { ...host, readPullFeedback: async () => { throw new Error("rate limited"); } } as unknown as Host;
   const brief = await started(made, throwing);
   assert.equal(brief.includes(SECTION), false);
   assert.equal(made.entry("NBF-1").phase, "running");

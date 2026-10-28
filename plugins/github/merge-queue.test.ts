@@ -20,17 +20,17 @@ const RECORDED = [{ __typename: "PullRequestCommit" }, { __typename: "PullReques
   removal("2026-10-25T11:59:08Z", GROUPS[0]), removal("2026-10-25T12:19:35Z", GROUPS[1]), removal("2026-10-25T12:21:15Z", GROUPS[2])];
 
 /** The feedback read of the pull request, over a timeline and a queue entry. */
-function read(nodes: unknown, entry: unknown = null) {
+async function read(nodes: unknown, entry: unknown = null) {
   const pr = { state: "OPEN", headRefOid: HEAD, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", baseRefName: "main", mergeQueueEntry: entry,
     ...(nodes === undefined ? {} : { timelineItems: { nodes } }), files: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } }, reviews: { nodes: [] }, comments: { nodes: [] },
     reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] } };
   const calls: string[][] = [];
-  const feedback = readPullFeedback(URL, "worker-bot", (args) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pr } } }); }, corePolicy());
+  const feedback = await readPullFeedback(URL, "worker-bot", async (args) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pr } } }); }, corePolicy());
   return { feedback, calls };
 }
 
-test("A11-264: the removals since the head last moved are read from the one query the watch makes, with their reason, actor and merge group", () => {
-  const { feedback, calls } = read(RECORDED);
+test("A11-264: the removals since the head last moved are read from the one query the watch makes, with their reason, actor and merge group", async () => {
+  const { feedback, calls } = await read(RECORDED);
   assert.deepEqual(feedback?.queue, { queued: false, removals: [
     { at: Date.parse("2026-10-25T11:59:08Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[0] },
     { at: Date.parse("2026-10-25T12:19:35Z"), reason: "failed_checks", actor: "github-merge-queue", groupCommit: GROUPS[1] },
@@ -43,23 +43,23 @@ test("A11-264: the removals since the head last moved are read from the one quer
   assert.match(query, /on RemovedFromMergeQueueEvent \{ createdAt reason actor \{ login \} beforeCommit \{ oid \} \}/);
 });
 
-test("A11-264: a commit or a force-push ends the run of removals, so only the ones since the head last moved are listed", () => {
-  const pushed = (type: string) => read([...RECORDED, { __typename: type }]).feedback?.queue;
-  assert.deepEqual(pushed("PullRequestCommit"), { queued: false, removals: [] }, "a commit after the removals");
-  assert.deepEqual(pushed("HeadRefForcePushedEvent"), { queued: false, removals: [] }, "a force-push after them");
-  const before = read([removal("2026-10-25T10:00:00Z", "f".repeat(40)), { __typename: "PullRequestCommit" }, ...RECORDED.slice(3)]).feedback?.queue;
+test("A11-264: a commit or a force-push ends the run of removals, so only the ones since the head last moved are listed", async () => {
+  const pushed = async (type: string) => (await read([...RECORDED, { __typename: type }])).feedback?.queue;
+  assert.deepEqual(await pushed("PullRequestCommit"), { queued: false, removals: [] }, "a commit after the removals");
+  assert.deepEqual(await pushed("HeadRefForcePushedEvent"), { queued: false, removals: [] }, "a force-push after them");
+  const before = (await read([removal("2026-10-25T10:00:00Z", "f".repeat(40)), { __typename: "PullRequestCommit" }, ...RECORDED.slice(3)])).feedback?.queue;
   assert.equal(before?.removals.length, 3, "a removal before the last commit is not counted");
 });
 
-test("A11-264: a pull request in the queue now is queued, and an answer with no timeline says nothing of the queue, which is not no removals", () => {
-  assert.equal(read(RECORDED, { state: "QUEUED" }).feedback?.queue?.queued, true);
-  assert.equal(read(RECORDED, null).feedback?.queue?.queued, false);
-  assert.equal(read(undefined).feedback?.queue, undefined, "no timeline: the host did not say");
-  assert.deepEqual(read([]).feedback?.queue, { queued: false, removals: [] }, "an empty timeline is a host that said there were none");
+test("A11-264: a pull request in the queue now is queued, and an answer with no timeline says nothing of the queue, which is not no removals", async () => {
+  assert.equal((await read(RECORDED, { state: "QUEUED" })).feedback?.queue?.queued, true);
+  assert.equal((await read(RECORDED, null)).feedback?.queue?.queued, false);
+  assert.equal((await read(undefined)).feedback?.queue, undefined, "no timeline: the host did not say");
+  assert.deepEqual((await read([])).feedback?.queue, { queued: false, removals: [] }, "an empty timeline is a host that said there were none");
 });
 
-test("A11-264: a removal keeps the host's own reason, a person's name as its actor, and no merge group when GitHub names none", () => {
-  const { feedback } = read([{ __typename: "RemovedFromMergeQueueEvent", createdAt: "2026-10-25T13:00:00Z", reason: "manual", actor: { login: "a-person" }, beforeCommit: null },
+test("A11-264: a removal keeps the host's own reason, a person's name as its actor, and no merge group when GitHub names none", async () => {
+  const { feedback } = await read([{ __typename: "RemovedFromMergeQueueEvent", createdAt: "2026-10-25T13:00:00Z", reason: "manual", actor: { login: "a-person" }, beforeCommit: null },
     { __typename: "RemovedFromMergeQueueEvent", createdAt: "2026-10-25T13:05:00Z", reason: "merge_conflict", actor: null, beforeCommit: { oid: GROUPS[0] } }]);
   assert.deepEqual(feedback?.queue?.removals.map(({ reason, actor, groupCommit }) => [reason, actor, groupCommit]), [["manual", "a-person", null], ["merge_conflict", null, GROUPS[0]]]);
 });

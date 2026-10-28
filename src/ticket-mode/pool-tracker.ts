@@ -1,6 +1,7 @@
 // @ts-check
 // module: the tracker's view of the queue -- refreshing what it says, completing merged tickets, and retargeting stacked pull requests
 
+import { joinRunning } from "./pool-reads.ts";
 import { existsSync } from "node:fs";
 import { headsToRead, readBlockers, readHeads, undoEarlyCompletion } from "./pool-start.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
@@ -66,7 +67,7 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   // A run the planner marked as waiting on another ticket starts again once that ticket's pull request merged (A11-343).
   await resumeTicketWaits(ctx);
   // What each merged pull request's body declares decides over the outcome's `partial`, so it is read before anything acts on the merge (A11-181).
-  readPullDeclarations(ctx);
+  await readPullDeclarations(ctx);
   // A ticket the tracker's integration completed on a partial merge is put back first, so the same sweep queues the next step (A11-178).
   for (const entry of earlyCompletions(store.get())) await undoEarlyCompletion(ctx, entry);
   // A parked needs-human run whose pull requests merged lets go of its workspace, which the next-step and plan-count sweeps below require (A11-258).
@@ -76,7 +77,7 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   await completeMerged(ctx);
   await noteAfterMerge(ctx);
   // What each queued run's blockers' merged pull requests found reaches its planner, and a change in a ticket's description reaches its stamped plan or its live worker (A11-167).
-  learnFromBlockers(ctx);
+  await learnFromBlockers(ctx);
   try {
     await followTicketTexts(ctx);
   } catch {
@@ -275,7 +276,14 @@ async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
  * records is one map: the stale bases first (`stack-retarget.ts`: a stacked pull request whose base merged is moved to the default branch, over a finished run stacked on a blocker's branch, and only its open pull requests whose base is one of those
  * branches), then the stack merge of every other open pull request ({@link sweepStackMerges}). The default branch of each repository is read once per sweep. The note is recorded when it changes.
  */
-export function retargetStacked(ctx: PoolContext): void {
+export function retargetStacked(ctx: PoolContext): Promise<void> {
+  return joinRunning(RETARGETING, ctx, () => retargetEach(ctx));
+}
+
+const RETARGETING = new WeakMap<object, Promise<void>>();
+
+/** {@link retargetStacked}, one pass. */
+async function retargetEach(ctx: PoolContext): Promise<void> {
   const { codeHost, store } = ctx;
   const defaults = new Map<string, string>();
   const told = { unsupported: false };
@@ -291,7 +299,7 @@ export function retargetStacked(ctx: PoolContext): void {
     const baseNotesBefore = Object.fromEntries(Object.entries(previous).filter(([, note]) => !isStackMergeNote(note) && !isRestackNote(note)));
     const bases = stacked.size === 0 ? {} : codeHost.sweepRetargets({ urls, previous: baseNotesBefore, stacked, defaults, log });
     const facts = new Map<string, StackMergeFacts | null>();
-    const restacks = sweepRestacks(ctx, entry, { urls, bases, facts, told });
+    const restacks = await sweepRestacks(ctx, entry, { urls, bases, facts, told });
     const merges = sweepStackMerges(ctx, entry, urls, { skip: new Set([...Object.keys(bases), ...restacks.moved]), facts });
     const notes = noteOf(urls, { bases, restacks: restacks.notes, merges });
     const next = Object.keys(notes).length === 0 ? undefined : notes;
@@ -377,7 +385,7 @@ const restackedOnly = (notes: Readonly<Record<string, string>>): Record<string, 
  * the conflict watch can read the conflict. The merge is the code host's `updateBranch`: no rebase and no force-push. Where the run resumes on a conflict and has rounds left, the conflicts of one sweep share one conflict round, whose feedback names the stack and the member that merged.
  * What a pull request needs said is its note. One the sweep cannot decide for keeps the restack note it had; one it will never decide for (no stack, no blocker pull request, a code host that cannot) keeps only the note that it was restacked.
  */
-function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, told }: { urls: readonly string[]; bases: Readonly<Record<string, string>>; facts: Map<string, StackMergeFacts | null>; told: { unsupported: boolean } }): RestackSweep {
+async function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, told }: { urls: readonly string[]; bases: Readonly<Record<string, string>>; facts: Map<string, StackMergeFacts | null>; told: { unsupported: boolean } }): Promise<RestackSweep> {
   const kept = restackNotesOf(entry, urls);
   const found = restackMembers(ctx, entry, bases);
   if (found === null || !canRestack(ctx, told)) return { notes: restackedOnly(kept), moved: new Set(), feedback: [] };
@@ -388,7 +396,7 @@ function sweepRestacks(ctx: PoolContext, entry: Entry, { urls, bases, facts, tol
   const moved = new Set<string>();
   const feedback: string[] = [];
   for (const { url } of members) {
-    const decided = restackMember(ctx, entry, { url, stack, candidates, facts, round });
+    const decided = await restackMember(ctx, entry, { url, stack, candidates, facts, round });
     if (decided === null) continue;
     if (decided.note === null) delete notes[url];
     else notes[url] = decided.note;
@@ -431,18 +439,18 @@ function canRestack(ctx: PoolContext, told: { unsupported: boolean }): boolean {
 }
 
 /** One open member of a stack: merge the default branch into it when the member below has merged and it has not been done, and say what happened. Null: nothing is decided for it, so its note stands. */
-function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates, facts, round }: {
+async function restackMember(ctx: PoolContext, entry: Entry, { url, stack, candidates, facts, round }: {
   url: string; stack: StackBaseRecord; candidates: readonly string[]; facts: Map<string, StackMergeFacts | null>; round: ConflictRound;
-}): MemberRestack | null {
+}): Promise<MemberRestack | null> {
   const key = entry.ticket.key;
   const previous = entry.retargets?.[url];
   const done = ctx.restacked.get(url) ?? doneFromNote(previous, url);
-  const below = belowOf(ctx, stack.key, candidates, done);
+  const below = await belowOf(ctx, stack.key, candidates, done);
   const read = below === null ? null : factsOf(ctx, url, facts);
   if (below === null || read === null) return null;
   const step = restackStep({ facts: read, below, done, previousNote: previous });
   if (!step.restack) {
-    const closing = done === undefined ? null : closeEmptyMember(ctx, entry, { url, below, done, read, previousNote: previous });
+    const closing = done === undefined ? null : await closeEmptyMember(ctx, entry, { url, below, done, read, previousNote: previous });
     const note = closing ?? step.note;
     // A member that is closed is not handed to the arm bot, on this sweep or the ones before the board lists it closed. One that is empty and could not be closed still is, as it was before.
     return { note, moved: note !== null && isClosedMemberNote(note), feedback: null };
@@ -463,8 +471,14 @@ function doneFromNote(note: string | undefined, url: string): { merged: string }
   return merged === null ? undefined : { merged };
 }
 
+/** The first of `urls` the code host says is merged, read in turn and no further than that one. */
+async function firstMerged(ctx: PoolContext, urls: readonly string[]): Promise<string | undefined> {
+  for (const url of urls) if ((await ctx.codeHost.readPullState(url)) === "MERGED") return url;
+  return undefined;
+}
+
 /** The member below that merged: the one the restack was made after, or else the first of the blocker's pull requests in the repository that the code host says is merged now, or null when none is. */
-function belowOf(ctx: PoolContext, blockerKey: string, candidates: readonly string[], done: Readonly<{ merged: string }> | undefined): RestackBelow | null {
-  const merged = done !== undefined && candidates.includes(done.merged) ? done.merged : candidates.find((url) => ctx.codeHost.readPullState(url) === "MERGED");
+async function belowOf(ctx: PoolContext, blockerKey: string, candidates: readonly string[], done: Readonly<{ merged: string }> | undefined): Promise<RestackBelow | null> {
+  const merged = done !== undefined && candidates.includes(done.merged) ? done.merged : await firstMerged(ctx, candidates);
   return merged === undefined ? null : { key: blockerKey, url: merged, state: "MERGED" };
 }

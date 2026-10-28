@@ -15,7 +15,7 @@ import { buildCatalog, defaultCatalog, type PackageFiles } from "./registry.ts";
 
 const ROOT = "/checkout";
 const checkout = (concerns: Readonly<Record<string, string>>): PackageFiles => {
-  const manifests = new Map(Object.entries(concerns).map(([name, concern]) => [`${ROOT}/plugins/${name}/package.json`, JSON.stringify({ agentOrg: { concern, contract: "1.1", description: `A ${concern}.`, entry: "index.ts" } })]));
+  const manifests = new Map(Object.entries(concerns).map(([name, concern]) => [`${ROOT}/plugins/${name}/package.json`, JSON.stringify({ agentOrg: { concern, contract: concern === "codeHost" ? "2.0" : "1.1", description: `A ${concern}.`, entry: "index.ts" } })]));
   return { directories: (path) => (path === `${ROOT}/plugins` ? Object.keys(concerns).sort() : []), text: (path) => manifests.get(path) ?? null, isFile: (path) => path.endsWith("/index.ts") };
 };
 const catalogOf = (concerns: Record<string, string>) => buildCatalog({ root: ROOT, files: checkout(concerns) });

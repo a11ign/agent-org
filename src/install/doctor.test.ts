@@ -93,7 +93,7 @@ const CODEX_HOME = tmpDirForFile("doctor-codex-");
 writeFileSync(join(CODEX_HOME, "config.toml"), '[projects."/src/netbox"]\ntrust_level = "trusted"\n');
 
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
-  return {
+  return withoutCallsCount({
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json", HOME: "/home/me", CODEX_HOME }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
     readFile: () => HOST, exec: execOf(), mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
@@ -109,7 +109,16 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
     ...over,
-  };
+  });
+}
+
+/**
+ * The Linear plugin's calls count (A11-359) is absent on these installs, as on a board that has not called Linear yet: a fake `readFile` that answers every path
+ * with one text would hand the doctor a host file as the count, which it rightly fails as unknown.
+ */
+function withoutCallsCount(made: DoctorDeps): DoctorDeps {
+  const read = made.readFile;
+  return { ...made, readFile: (path) => { if (path.endsWith("/linear-calls.json")) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" }); return read(path); } };
 }
 
 const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntries(checks.map((check) => [check.name, check]));
@@ -218,7 +227,7 @@ test("doctor passes every check on a working install, and never prints the key",
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["agent-org command", true], ["host file", true], ["herdr", true], ["herdr claude integration", true], ["herdr codex integration", true], ["herdr version", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["ui build", true], ["terminal address", true], ["terminal service", true],
-    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
+    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["linear calls", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["flaky tests", true], ["chromium", true], ["chromium headless shell", true],
   ]);
@@ -1092,7 +1101,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.7, plugins/linear)",
-    "code host: github (enabled, contract 1.28, plugins/github)",
+    "code host: github (enabled, contract 2.0, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1101,7 +1110,8 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const tracker = lines.indexOf("tracker: linear (enabled, contract 1.7, plugins/linear)");
   assert.match(lines[tracker + 1], /^ {2}ok {4}tracker key: /, "the plugin's own checks are indented beneath its header");
   assert.match(lines[tracker + 2], /^ {2}ok {4}linear mcp: /);
-  assert.match(lines[tracker + 3], /^ {2}ok {4}tracker \(linear\): /, "and the concern's row that summarises them closes the section");
+  assert.match(lines[tracker + 3], /^ {2}ok {4}linear calls: /, "A11-359: the board's calls to Linear are the plugin's third row");
+  assert.match(lines[tracker + 4], /^ {2}ok {4}tracker \(linear\): /, "and the concern's row that summarises them closes the section");
   assert.match(lines[tracker - 1], /^ok {4}terminal answering: /, "the machine's checks stand outside the sections, before them");
   assert.deepEqual(lines.filter((line) => /^ok {4}(?:tracker key|tracker \(linear\))/.test(line)), [], "no plugin row is left outside its section");
 });
@@ -1127,7 +1137,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.28, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 2.0, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });
@@ -1509,6 +1519,15 @@ test("A11-292: doctor passes a declared repository whose clone the host lists un
   const rows = cloneRows(await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org", ".github": "/c/github" }), declaredRepositories: DECLARED })));
   assert.deepEqual(rows.map((row) => [row.name, row.ok]), [["clone of a11ign/agent-org", true], ["clone of a11ign/.github", true]], "one row per keyed repository, and none for the primary");
   assert.equal(rows[1].detail, "/c/github, found from the reviewer label `reviewer-github-1`");
+});
+
+test("A11-360: doctor fails a `clones` entry that is no repository (not a declared key or name, and its origin names none), and passes one a remote or the declaration names", async () => {
+  const remotes: Record<string, string> = { "/c/stopgap": "https://github.com/a11ign/.github.git" };
+  const rows = (await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org", ".github": "/c/github", stopgap: "/c/stopgap", bogus: "/c/bogus" }), declaredRepositories: DECLARED, cloneRemote: (path) => remotes[path] }))).filter((check) => check.name.startsWith("clone ") && !check.name.startsWith("clone of "));
+  assert.deepEqual(rows.map((row) => row.name), ["clone bogus"], "only the entry that names no repository");
+  assert.match(rows[0].detail, /`bogus` in `clones` is no repository/);
+  const unasked = (await diagnose(deps({ readFile: () => withClones({ bogus: "/c/bogus" }), declaredRepositories: DECLARED }))).filter((check) => check.name === "clone bogus");
+  assert.deepEqual(unasked, [], "a doctor given no remote reader asks nothing");
 });
 
 test("A11-292: doctor fails a declared repository with no clone under its key or its name, and names both and the entry that fixes it", async () => {

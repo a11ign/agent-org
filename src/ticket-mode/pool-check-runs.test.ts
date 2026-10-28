@@ -130,12 +130,12 @@ test("A11-302: a verifier run that ends with no usable result is tried again, an
     const live = board.writers().find((one) => one.mode === "verify" && one.phase === "running")!;
     assert.equal(board.checks()["A11-310#1"].verifier?.tries, attempt);
     await board.answers(live.id, { kind: "perhaps", evidence: "x" });
-    assert.match(board.run(live.id).failure ?? "", /a verifier run ends on "passed", "failed" or "superseded", not "perhaps"/);
+    assert.match(board.run(live.id).failure ?? "", /a verifier run ends on "passed", "failed", "superseded" or "cannot-run-here", not "perhaps"/);
     await board.sweep();
   }
   const closed = board.checks()["A11-310#1"];
   assert.deepEqual([closed.state, closed.closedBy], ["failed", "board"]);
-  assert.match(closed.result ?? "", /^the verifier run ended without a result after 2 tries: a verifier run ends on "passed", "failed" or "superseded", not "perhaps"$/);
+  assert.match(closed.result ?? "", /^the verifier run ended without a result after 2 tries: a verifier run ends on "passed", "failed", "superseded" or "cannot-run-here", not "perhaps"$/);
   assert.equal(board.writers().filter((one) => one.mode === "verify").length, MAX_RUN_TRIES, "no third run");
 });
 

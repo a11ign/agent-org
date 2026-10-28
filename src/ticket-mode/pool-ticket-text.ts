@@ -184,12 +184,12 @@ function saveFindings(ctx: PoolContext, key: string, blocker: string, url: strin
 }
 
 /** Reads a merged pull request, at most once in a pass: the answer is kept, a `null` among them, and so is a refusal, which is thrown again to whoever asks next in the pass. */
-type PassReader = (url: string) => MergedFindings | null;
+type PassReader = (url: string) => Promise<MergedFindings | null>;
 
 /** A reader of merged pull requests for one pass, or null when the code host reads none. */
 function passReaderOf({ codeHost }: PoolContext): PassReader | null {
   if (codeHost.readMergedFindings === undefined) return null;
-  const read = new Map<string, () => MergedFindings | null>();
+  const read = new Map<string, () => Promise<MergedFindings | null>>();
   return (url) => {
     if (!read.has(url)) read.set(url, answerOf(() => codeHost.readMergedFindings!(url)));
     return read.get(url)!();
@@ -197,16 +197,12 @@ function passReaderOf({ codeHost }: PoolContext): PassReader | null {
 }
 
 /** The answer of `ask`, asked once: what it returned, or what it threw, again on each call. */
-function answerOf<T>(ask: () => T): () => T {
-  let answer: { found: T } | { refusal: unknown };
-  try {
-    answer = { found: ask() };
-  } catch (refusal) {
-    answer = { refusal };
-  }
-  return () => {
-    if ("refusal" in answer) throw answer.refusal;
-    return answer.found;
+function answerOf<T>(ask: () => Promise<T>): () => Promise<T> {
+  const answer = ask().then((found) => ({ found }), (refusal: unknown) => ({ refusal }));
+  return async () => {
+    const settled = await answer;
+    if ("refusal" in settled) throw settled.refusal;
+    return settled.found;
   };
 }
 
@@ -216,20 +212,20 @@ function answerOf<T>(ask: () => T): () => T {
  * session continues work that is done, and learns nothing. Every queued run, a round or a session too, also has what each merged pull request declared of its blocker's ticket recorded (A11-206), from
  * the same read, which {@link recordDeclarations} says.
  */
-export function learnFromBlockers(ctx: PoolContext): void {
+export async function learnFromBlockers(ctx: PoolContext): Promise<void> {
   const read = passReaderOf(ctx);
   for (const entry of ctx.store.get().entries) {
     if (entry.phase !== "queued") continue;
-    recordDeclarations(ctx, entry, read);
-    if (read !== null && entry.review === undefined && entry.talk !== true) learnFindings(ctx, entry, read);
+    await recordDeclarations(ctx, entry, read);
+    if (read !== null && entry.review === undefined && entry.talk !== true) await learnFindings(ctx, entry, read);
   }
 }
 
 /** Record the findings of the merged pull requests of a queued work run's blockers that it has not learned from yet. A read or a save that fails is said, and asked again on the next refresh. */
-function learnFindings(ctx: PoolContext, entry: Entry, read: PassReader): void {
+async function learnFindings(ctx: PoolContext, entry: Entry, read: PassReader): Promise<void> {
   for (const { url, blocker } of unlearned(entry)) {
     try {
-      const found = read(url);
+      const found = await read(url);
       if (found === null) continue;
       const learned: Learned = { key: blocker, number: found.number, title: found.title, file: saveFindings(ctx, entry.ticket.key, blocker, url, found) };
       update(ctx, (queue) => recordLearned(queue, entry.ticket.key, url, learned));
@@ -252,10 +248,10 @@ function undeclared(entry: Entry): { url: string; blocker: string; pullCount: nu
  * (`board-view/pull-status-and-notes.ts`). A pull request the code host cannot read (`null`, or a refusal) records nothing, so the run keeps waiting and the next refresh asks again. A code host that reads no bodies
  * (`read` is null) cannot say, so every merged pull request records `none`, and the run follows A11-154's rule on the pull requests' states alone.
  */
-function recordDeclarations(ctx: PoolContext, entry: Entry, read: PassReader | null): void {
+async function recordDeclarations(ctx: PoolContext, entry: Entry, read: PassReader | null): Promise<void> {
   const due = undeclared(entry);
   if (read === null) recordUnreadable(ctx, entry, due);
-  else for (const pull of due) recordDeclaration(ctx, entry, pull, read);
+  else for (const pull of due) await recordDeclaration(ctx, entry, pull, read);
 }
 
 /** A merged pull request of a blocker whose declaration a run has not recorded: its address, its blocker's key and how many pull requests that blocker links. */
@@ -269,9 +265,9 @@ function recordUnreadable(ctx: PoolContext, entry: Entry, due: readonly DueDecla
 }
 
 /** Record what one merged pull request of a blocker declared, read through `read`. A refusal is said, and asked again on the next refresh. */
-function recordDeclaration(ctx: PoolContext, entry: Entry, { url, blocker, pullCount }: DueDeclaration, read: PassReader): void {
+async function recordDeclaration(ctx: PoolContext, entry: Entry, { url, blocker, pullCount }: DueDeclaration, read: PassReader): Promise<void> {
   try {
-    const found = read(url);
+    const found = await read(url);
     if (found === null) return;
     const declared = declaredByBlockerPull(found.body, blocker, pullCount, ctx.source.keywords ?? DEFAULT_KEYWORDS);
     update(ctx, (queue) => recordBlockerDeclared(queue, entry.ticket.key, url, declared));

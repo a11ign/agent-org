@@ -30,7 +30,7 @@ async function cappedRun(over: { planner?: boolean } = {}) {
   const status = () => runStatus(run.entry());
   /** The watch finds the feedback at the cap, and the tick starts whatever it queued. */
   const reachCap = async () => {
-    run.pool.watchFeedback();
+    await run.pool.watchFeedback();
     await run.pool.tick();
     await settled();
   };
@@ -98,7 +98,7 @@ test("A11-343: the planner marks the run as waiting on a ticket: it reads Waitin
   assert.equal(entry().handedBack, undefined);
   // While it waits, new feedback on the pull request starts nothing: the planner already decided what the run waits for.
   host.pullAt(url)!.feedback = { feedbackAt: clock.ms + 5 * MINUTE, authors: ["a-human"] };
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().capRound], ["finished", undefined], "the wait holds the run");
   // The ticket it waits on opens its pull request: still waiting.
   tracker.linkPull(WAITED, "https://github.com/a11ign/x/pull/9", "open");
@@ -156,10 +156,10 @@ async function redCaptureRun(description: string) {
   const run = await standoffRun({ tickets: PLANNER, rounds: MAX_FEEDBACK_ROUNDS, tracker: trackerWith(description), descriptions: { "NBF-1": description } });
   run.host.checksAndClaims.logs.set(CAPTURE_JOB, "capture: the Auth0 sign-in was refused");
   run.pull.feedback = { failing: ["capture"], failures: [{ name: "capture", detailsUrl: CAPTURE_JOB }] };
-  const watch = () => { clock.ms += MINUTE; run.pool.watchFeedback(); };
-  watch();
+  const watch = async () => { clock.ms += MINUTE; await run.pool.watchFeedback(); };
+  await watch();
   assert.deepEqual([run.entry().phase, run.entry().checkHeads?.[run.url]?.step], ["finished", "rerun"], "the first watch reruns the red check and starts no round");
-  watch();
+  await watch();
   await settled();
   return run;
 }

@@ -60,12 +60,12 @@ export async function standoffRun({ plan, held = true, rounds = 0, descriptions 
   let pool = fixture.restart({ codeHost: host, reviewer });
   const pull = host.pullAt(url)!;
   const ref = { pr: url, head: HEAD };
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   reviewer.wrote(ref, null);
   clock.ms = 20 * MINUTE;
   pull.reviews = [{ author: REVIEWER_LOGIN, state: "CHANGES_REQUESTED", commit: HEAD, at: clock.ms }];
   pull.view = { reviews: [{ author: { login: REVIEWER_LOGIN }, state: "CHANGES_REQUESTED", body: "The bundle is over the plan's 200 KB limit." }] };
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   // The worker's first round answered this block (the watch asked for it), so the board does not ask for it again: a pool that restarted after that round remembers it.
   const memoryPath = reviewerMemoryPath(fixture.settings.stateDir);
   const { memory } = readReviewerMemory(memoryPath);
@@ -78,25 +78,25 @@ export async function standoffRun({ plan, held = true, rounds = 0, descriptions 
   const endRound = () => fixture.store.set({ ...fixture.store.get(), entries: [{ ...entry(), phase: "finished", finishedAt: clock.ms }] });
   endRound();
   /** The worker's reply starts the re-review of the same head. */
-  const startRereview = (text: string) => {
+  const startRereview = async (text: string) => {
     reply(text);
-    pool.reviewNewHeads();
+    await pool.reviewNewHeads();
     clock.ms += MINUTE;
   };
   /** The re-reviewer ended, having left `text` in a verdict file called `name` (by default the copy the door keeps of a verdict it refuses), or none when `text` is null. */
-  const refuseRereview = (text: string | null = refusedFile("not convinced"), name = "refused-verdict.md") => {
+  const refuseRereview = async (text: string | null = refusedFile("not convinced"), name = "refused-verdict.md") => {
     let file: string | null = null;
     if (text !== null) {
       file = join(tmpDir("standoff-verdict-"), name);
       writeFileSync(file, text);
     }
     reviewer.wrote(ref, file);
-    pool.reviewNewHeads();
+    await pool.reviewNewHeads();
   };
   /** The board writes a person's answer into the ticket's Decisions and the run's copy of the ticket moves on, as the answer route does; the sweep then re-reviews the head with the changed Decisions in its brief. */
-  const decide = (description: string) => {
+  const decide = async (description: string) => {
     fixture.store.set(recordAnswer(fixture.store.get(), "NBF-1", ticketReadOf({ description }, clock.ms)));
-    pool.reviewNewHeads();
+    await pool.reviewNewHeads();
     clock.ms += MINUTE;
   };
   return { fixture, host, reviewer, pool, pull, url, ref, reply, entry, endRound, startRereview, refuseRereview, decide };

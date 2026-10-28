@@ -229,7 +229,7 @@ test("A11-358: a read of the pull request that fails neither tells the worker ag
   const record = run.run().working?.fed?.[run.url];
   assert.equal(run.prompts().length, 1);
   const read = run.host.readPullFeedback;
-  run.host.readPullFeedback = () => null;
+  run.host.readPullFeedback = async () => null;
   await run.passes(3);
   assert.deepEqual(run.run().working?.fed?.[run.url], record, "the record the board had is kept while the host cannot be asked");
   run.host.readPullFeedback = read;

@@ -19,12 +19,12 @@ import type { MergedFindings } from "../plugins/contracts/code-host.ts";
  * read and before anything acts on a merge, so the same sweep acts on what the pull request said. A body the code host cannot read (null, or a refusal) records nothing: the run is asked again on the next
  * sweep, and a run whose outcome has `partial` is not acted on until then (`awaitingDeclaration`). A code host that cannot read a merged pull request at all records `none`, so the outcome stands.
  */
-export function readPullDeclarations(ctx: PoolContext): void {
+export async function readPullDeclarations(ctx: PoolContext): Promise<void> {
   const { codeHost, source, store } = ctx;
   const keywords = source.keywords ?? DEFAULT_KEYWORDS;
   for (const entry of declarationsDue(store.get())) {
     const key = entry.ticket.key;
-    const read = codeHost.readMergedFindings === undefined ? [] : readBodies(entry, codeHost.readMergedFindings.bind(codeHost));
+    const read = codeHost.readMergedFindings === undefined ? [] : await readBodies(entry, codeHost.readMergedFindings.bind(codeHost));
     if (read === null) continue;
     const declared = declare(read.map(({ url, body }): ReadDeclaration => ({ url, declaration: declarationOf(body, key, keywords) })), pullsOf(entry).length);
     update(ctx, (queue) => recordDeclared(queue, key, declared, keywords.closing));
@@ -34,11 +34,11 @@ export function readPullDeclarations(ctx: PoolContext): void {
 }
 
 /** The body of each merged pull request of `entry`, or null when any could not be read, which is asked again on the next sweep. */
-function readBodies(entry: Entry, readFindings: (url: string) => MergedFindings | null): { url: string; body: string }[] | null {
+async function readBodies(entry: Entry, readFindings: (url: string) => Promise<MergedFindings | null>): Promise<{ url: string; body: string }[] | null> {
   const read: { url: string; body: string }[] = [];
   for (const url of mergedPullUrls(entry)) {
     try {
-      const found = readFindings(url);
+      const found = await readFindings(url);
       if (found === null) return null;
       read.push({ url, body: found.body });
     } catch (err) {

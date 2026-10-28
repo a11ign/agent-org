@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { diagnose, defaultDoctorDeps } from "../../install/doctor.ts";
 import { log, messageOf } from "../pool-state.ts";
 import { toolPinOf } from "../pool-pin.ts";
-import { fileFollowUps, queueCheckRuns } from "../pool-check-runs.ts";
+import { fileCapabilityRequests, fileFollowUps, queueCheckRuns } from "../pool-check-runs.ts";
 import type { BranchCiRun } from "../../plugins/contracts/code-host.ts";
 import type { PoolContext } from "../pool-context.ts";
 import { planTexts } from "../pool-ticket-text.ts";
@@ -15,7 +15,7 @@ import { reviewOnHead } from "../wait-on/wait-read.ts";
 import { claimPost, closeComment, listedIds, markUnpostable, pruneChecks, releasePost, seedChecks, ticketsToSeed, unpostedChecks, type CheckRecord, type ChecksFile, type PlannedCheck } from "./checks.ts";
 import { handOverdueToAgent, markOverdue, markShownToPerson } from "./dispatch.ts";
 import { isInstalled, mergesIn, type InstalledReads } from "./installed.ts";
-import { closeObserved, filedKeys, observedChecks, watchedSources, watchesSweep, watchWindows, withFiledBaselines, type DoctorLine, type ObserveFacts, type Sighting } from "./observe.ts";
+import { closeObserved, filedKeys, observedChecks, watchedCiHistories, watchedReviewUrls, watchedSources, watchesSweep, watchWindows, withFiledBaselines, type DoctorLine, type ObserveFacts, type Sighting } from "./observe.ts";
 import { plannedChecksLeniently } from "./plan-section.ts";
 import { afterMergeChecksPath, changeChecks, loadChecks, saveChecks } from "./store.ts";
 
@@ -36,6 +36,7 @@ export async function syncAfterMergeChecks(ctx: PoolContext): Promise<void> {
     changeChecks(path, (before) => markOverdue(markShownToPerson(before, now()), now()));
     queueCheckRuns(ctx, installedReader(ctx));
     fileFollowUps(ctx, followUpsSaid);
+    fileCapabilityRequests(ctx, capabilitiesSaid);
     await postCloses(ctx, path, unpostedChecks(loadChecks(path)).map(({ id }) => id));
   } catch (err) {
     log(`the After-merge checks in ${path} could not be swept: ${messageOf(err)}`);
@@ -44,6 +45,8 @@ export async function syncAfterMergeChecks(ctx: PoolContext): Promise<void> {
 
 /** The checks whose follow-up could not be filed, said once. */
 const followUpsSaid = new Set<string>();
+/** The capabilities whose ticket could not be filed, said once. */
+const capabilitiesSaid = new Set<string>();
 
 /** Whether ticket's change is in a release installed on this host, as the sweep reads it from the run log and the tool folder this instance runs from. */
 function installedReader(ctx: PoolContext): (check: CheckRecord) => boolean {
@@ -119,21 +122,21 @@ async function hostDoctor(ctx: PoolContext): Promise<readonly DoctorLine[] | nul
 const BRANCH_RUNS_EVERY_MS = 5 * 60_000;
 
 /** The workflow runs of a branch, kept for {@link BRANCH_RUNS_EVERY_MS}; null when the host could not list them. */
-function branchRuns(ctx: PoolContext, repository: string, branch: string): readonly BranchCiRun[] | null {
+async function branchRuns(ctx: PoolContext, repository: string, branch: string): Promise<readonly BranchCiRun[] | null> {
   const kept = memoryOf(ctx).branches;
   const key = `${repository}@${branch}`;
   const held = kept.get(key);
   if (held !== undefined && ctx.now() - held.at < BRANCH_RUNS_EVERY_MS) return held.runs;
-  const runs = ctx.codeHost.readBranchCi?.(repository, branch, new Set()) ?? null;
+  const runs = (await ctx.codeHost.readBranchCi?.(repository, branch, new Set())) ?? null;
   if (runs !== null) kept.set(key, { at: ctx.now(), runs });
   return runs;
 }
 
 /** The failed runs of the workflow `workflow` of `repository`'s branch, as sightings, through the code host's two optional reads of a run; null when the host reads neither. A completed run is read once. */
-function ciFailures(ctx: PoolContext, repository: string, workflow: string, branch: string | undefined): readonly Sighting[] | null {
+async function ciFailures(ctx: PoolContext, repository: string, workflow: string, branch: string | undefined): Promise<readonly Sighting[] | null> {
   const { codeHost } = ctx;
   if (codeHost.readBranchCi === undefined || codeHost.readCiRun === undefined) return null;
-  const runs = branchRuns(ctx, repository, branch ?? "main");
+  const runs = await branchRuns(ctx, repository, branch ?? "main");
   if (runs === null) return null;
   const known = memoryOf(ctx).runs;
   const sightings: Sighting[] = [];
@@ -151,6 +154,29 @@ function ciFailures(ctx: PoolContext, repository: string, workflow: string, bran
   return sightings;
 }
 
+/** The review standing on the head of the pull request at `url`, or null when there is none or it cannot be read. */
+async function reviewOn(codeHost: PoolContext["codeHost"], url: string): Promise<ReturnType<typeof reviewOnHead>> {
+  try {
+    const state = await codeHost.readReviewState(url);
+    return state === null ? null : reviewOnHead(state);
+  } catch {
+    return null;
+  }
+}
+
+/** The key a `ci-history` watch's failures are held under. */
+const ciKey = (repository: string, workflow: string, branch: string | undefined): string => JSON.stringify([repository, workflow, branch]);
+
+/** {@link ciFailures}, with a read that failed said and read as no sighting the host could give. */
+async function ciFailuresSaid(ctx: PoolContext, repository: string, workflow: string, branch: string | undefined): Promise<readonly Sighting[] | null> {
+  try {
+    return await ciFailures(ctx, repository, workflow, branch);
+  } catch (err) {
+    log(`the code host's runs of ${repository} could not be read for the After-merge checks that watch them: ${messageOf(err)}`);
+    return null;
+  }
+}
+
 /**
  * What the board reads to pass or fail a watched check: the dependency sweep's file, read only while a check watches it (null when none does, or it cannot be read), the queue, a pull request's review through the code host, and, for the
  * windowed specs (A11-302) and only while one watches them, the code host's failed runs, this host's doctor and whether a ticket's change is installed. The releases of a repository have no reader on this host: a `release-assets` window the
@@ -160,25 +186,14 @@ async function observeFacts(ctx: PoolContext, file: ChecksFile): Promise<Observe
   const { codeHost, settings, store } = ctx;
   const sources = watchedSources(file);
   const doctor = sources.has("doctor") ? await hostDoctor(ctx) : null;
+  // The code host answers a promise (contract 2.0) and the readers of the facts are pure, so what the open checks name is read here, once, before they look.
+  const reviews = new Map(await Promise.all(watchedReviewUrls(file).map(async (url) => [url, await reviewOn(codeHost, url)] as const)));
+  const failures = new Map(await Promise.all(watchedCiHistories(file, installedReader(ctx)).map(async ({ repository, workflow, branch }) => [ciKey(repository, workflow, branch), await ciFailuresSaid(ctx, repository, workflow, branch)] as const)));
   return {
     dependencyTickets: watchesSweep(file) ? dependencyTickets(join(dirname(afterMergeChecksPath(settings.stateDir)), DEPENDENCY_TICKETS_FILE)) : null,
     queue: store.get(),
-    reviewOn: (url) => {
-      try {
-        const state = codeHost.readReviewState(url);
-        return state === null ? null : reviewOnHead(state);
-      } catch {
-        return null;
-      }
-    },
-    ciFailures: (repository, workflow, branch) => {
-      try {
-        return ciFailures(ctx, repository, workflow, branch);
-      } catch (err) {
-        log(`the code host's runs of ${repository} could not be read for the After-merge checks that watch them: ${messageOf(err)}`);
-        return null;
-      }
-    },
+    reviewOn: (url) => reviews.get(url) ?? null,
+    ciFailures: (repository, workflow, branch) => failures.get(ciKey(repository, workflow, branch)) ?? null,
     doctor: (host) => (isThisHost(host) ? doctor : null),
     installed: installedReader(ctx),
   };
