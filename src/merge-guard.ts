@@ -10,7 +10,7 @@
 //     #148  lead/gate-ages-what-it-scored -> lead/real-page-outcome-is-stated
 //     CLEAN/MERGEABLE   check-runs: []   182 insertions into check-real-page-findings.ts
 //
-// `ci.yml` is `on: pull_request: branches: [main]`, so a PR into a non-`main` base triggers no workflow
+// `ci.yml` was `on: pull_request: branches: [main]` (A11-370 dropped the filter), so a PR into a non-`main` base triggered no workflow
 // at all and branch protection -- which covers `main` -- applies to nothing. **`CLEAN/MERGEABLE` is the
 // CORRECT answer to the question GitHub was asked**, which is exactly what makes it dangerous: a required
 // context that never ran is not a failing check, it is NO check, and the field cannot express the

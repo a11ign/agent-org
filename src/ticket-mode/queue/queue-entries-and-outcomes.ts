@@ -1,4 +1,4 @@
-import type { Wait, Woke } from "../wait-on/wait-types.ts";
+import type { FedTrouble, Wait, Woke } from "../wait-on/wait-types.ts";
 import type { QueueHead } from "../board-view/queue-head.ts";
 import { openPulls, type AfterMergeLine, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
@@ -114,6 +114,7 @@ export type WorkingNote = Readonly<{
   reason: string; at: number; idleSince?: number; stalled?: boolean; stallReason?: string; noBackgroundSince?: number; resumed?: boolean;
   waitingOn?: string; until?: number; waiting?: true;
   waits?: readonly Wait[]; waitText?: string; woke?: Woke; wakeTries?: number; wakeRefusal?: string; ended?: readonly Wait[]; repeat?: true;
+  fed?: Readonly<Record<string, FedTrouble>>;
 }>;
 
 
@@ -333,6 +334,11 @@ export type Entry = Readonly<{
   outcomeBlocks?: Readonly<Record<string, string>>;
   /** The head of each open pull request, by URL, that the board has already started a round for because its changes-requested review stood past the stale-block limit (A11-352): one round for each head, so a worker that answers without a push is not asked again, and a person is told. Kept across rounds. */
   blockAsked?: Readonly<Record<string, string>>;
+  /**
+   * The pull requests the run opened while it ran, as the hook recorded the addresses its creating commands printed (A11-358): a pull request in another repository that no outcome lists is still the run's, and is watched. Added to the pull requests
+   * the outcome lists ({@link pullsOf}), kept through every round, and only ever added to.
+   */
+  opened?: readonly PullRequest[];
   /** Each open pull request's head now, and whether it is approved at that head, by URL, as the last watch read them (A11-153). Written only when it changes. */
   pullHeads?: Readonly<Record<string, PullHead>>;
   /**
@@ -737,12 +743,12 @@ export function dismiss(queue: Queue, key: string, now?: number): Queue {
 export function retry(queue: Queue, key: string, now: number, why: RequeueWhy = "retry"): Queue {
   const entry = find(queue, key);
   if (entry === undefined || retryRefusal(entry) !== null) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, decisions, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, queueHeads, briefedAgainst, plannedWith, afterRound, standoff, capPlans, freeRounds, opened } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}), ...(decisions ? { decisions } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff, capPlans, freeRounds }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, afterRound, standoff, capPlans, freeRounds, opened }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
@@ -783,11 +789,11 @@ export function talkRound(entry: Entry, now: number): Entry {
 /**
  * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration and what its pull requests declared, merged plan steps, the plan's step count, the After-merge lines listed and posted, the heads its red checks and the merge queue's removals were answered at, when its CI count began and what its next round is told of the ticket's CI spend (A11-261), and the next step a conflict round holds back (A11-286): only those the run has set. PURE.
  */
-const carriedFields = ({ blockAsked, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith, capPlans, freeRounds }: Pick<Entry, "blockAsked" | "capPlans" | "freeRounds" | "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
+const carriedFields = ({ blockAsked, opened, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, declared, partialOverruled, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, queueHeads, briefedAgainst, ciSince, ciTold, afterRound, standoff, plannedWith, capPlans, freeRounds }: Pick<Entry, "blockAsked" | "opened" | "capPlans" | "freeRounds" | "standoff" | "plannedWith" | "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "declared" | "partialOverruled" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "queueHeads" | "briefedAgainst" | "ciSince" | "ciTold" | "afterRound">) => ({
   ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
   ...(partial !== undefined ? { partial } : {}), ...(declared ? { declared } : {}), ...(partialOverruled ? { partialOverruled } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}), ...(queueHeads ? { queueHeads } : {}),
   ...(ciSince !== undefined ? { ciSince } : {}), ...(ciTold ? { ciTold } : {}), ...(afterRound ? { afterRound } : {}), ...(standoff ? { standoff } : {}), ...(plannedWith ? { plannedWith } : {}),
-  ...(capPlans !== undefined ? { capPlans } : {}), ...(freeRounds !== undefined ? { freeRounds } : {}), ...(blockAsked ? { blockAsked } : {}),
+  ...(capPlans !== undefined ? { capPlans } : {}), ...(freeRounds !== undefined ? { freeRounds } : {}), ...(blockAsked ? { blockAsked } : {}), ...(opened ? { opened } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */
