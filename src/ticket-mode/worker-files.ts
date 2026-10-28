@@ -38,6 +38,7 @@ import { connectorsText, MISSING_SKILL, quoted, STALLING_COMMANDS } from "./brie
 import { decisionsChange, decisionsChangedSection } from "./decisions-change.ts";
 import { diffText, type Finding, findingsText, lostText, type OpenedPull, openedText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
 import type { TicketRead } from "./ticket-read.ts";
+import { commentsText, type CommentsRead } from "./ticket-comments.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -227,6 +228,11 @@ export const PLANNING_DENY: readonly DenyRule[] = Object.freeze([
 /** The ticket a worker's ticket is part of, and the paths of its downloaded files. */
 export type ParentTicket = Readonly<{ ticket: Ticket; attachments: readonly string[] }>;
 
+/** The section that carries a ticket's comments (`ticket-comments.ts`), or nothing for a caller that read none. PURE. */
+function ticketCommentsText(comments: CommentsRead | undefined, ticket: Ticket, audience: "plan" | "pull request", heading?: string): string {
+  return comments === undefined ? "" : commentsText(comments, { url: ticket.url, audience, heading });
+}
+
 /** A ticket's downloaded files as a list, with the order to read them first, or "None.". */
 function filesText(attachments: readonly string[]): string {
   if (attachments.length === 0) return "None.";
@@ -391,9 +397,9 @@ export function conflictsIn(text: string): string | null {
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
  */
-export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, uncloned = [], run, notes, connectors = [], read, blockers = [], findings = [], closed = [], claims = [], replan }: {
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, uncloned = [], run, notes, connectors = [], read, comments, blockers = [], findings = [], closed = [], claims = [], replan }: {
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
-  clones: Readonly<Record<string, string>>; uncloned?: readonly string[]; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; claims?: readonly HeldClaim[]; replan?: Replan;
+  clones: Readonly<Record<string, string>>; uncloned?: readonly string[]; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; comments?: CommentsRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; claims?: readonly HeldClaim[]; replan?: Replan;
 }): string {
   const repos = reposText(clones);
   const instruction = plannerInstruction(run, [ticket.key], planDir);
@@ -408,7 +414,7 @@ ${ticket.url}
 ${readLine(read)}${ticket.description.trim() || "(no description)"}
 
 ${projectRepoLine(ticket, clones, uncloned)}
-
+${ticketCommentsText(comments, ticket, "plan")}
 ## Files from the ticket
 
 ${filesText(attachments)}
@@ -457,10 +463,10 @@ Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may
 }
 
 /** One ticket of a batch, as its planning brief names it: the ticket, its downloaded files, and the ticket it is part of. */
-export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[] }>;
+export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; comments?: CommentsRead; blockers?: readonly Blocker[]; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[] }>;
 
 /** One ticket's section of a batch's brief. Its description is quoted, as a parent's is, so its headings cannot read as the brief's. */
-function batchTicketText({ ticket, attachments, parent, read, blockers = [], findings = [], closed = [] }: BatchTicket, clones: Readonly<Record<string, string>>, uncloned: readonly string[]): string {
+function batchTicketText({ ticket, attachments, parent, read, comments, blockers = [], findings = [], closed = [] }: BatchTicket, clones: Readonly<Record<string, string>>, uncloned: readonly string[]): string {
   const parentPart = parent === null ? "" : `
 ### ${ticket.key} is part of ${parent.ticket.key}: ${parent.ticket.title}
 
@@ -480,7 +486,7 @@ ${ticket.url}
 ${readLine(read)}${quoted(ticket.description)}
 
 ${projectRepoLine(ticket, clones, uncloned)}
-
+${ticketCommentsText(comments, ticket, "plan", `### Comments on ${ticket.key}`)}
 ### Files from ${ticket.key}
 
 ${filesText(attachments)}
@@ -637,11 +643,11 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `numberedSteps` is true when the run's plan numbers its steps, which has the worker write the step it is on in its outcome file (A11-219).
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [], closed = [], numberedSteps = false, opened = [], held, lost }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, comments, findings = [], closed = [], numberedSteps = false, opened = [], held, lost }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
-  read?: TicketRead; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
+  read?: TicketRead; comments?: CommentsRead; findings?: readonly Finding[]; closed?: readonly KeptClosedWork[]; numberedSteps?: boolean; opened?: readonly OpenedPull[]; held?: string;
   /** When the board found the run lost in a restart and queued it again (A11-279), for the section that says its worktree holds the earlier run's work. */
   lost?: number;
 }): string {
@@ -662,7 +668,7 @@ ${RELAY_DECISION}
 ${ticket.url}
 
 ${readLine(read)}${ticket.description.trim() || "(no description)"}
-
+${ticketCommentsText(comments, ticket, "pull request")}
 ## Files from the ticket
 
 ${filesText(attachments)}

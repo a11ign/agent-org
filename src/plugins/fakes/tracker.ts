@@ -6,7 +6,7 @@
 // its own object, which is a `TicketSource` too.
 import { writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { DEFAULT_KEYWORDS, type Assignee, type AutomaticCompletionUndo, type Blocker, type People, type PullState, type ScopePage, type StateMove, type Ticket, type TicketSource, type TrackerWriting } from "../contracts/tracker.ts";
+import { DEFAULT_KEYWORDS, type Assignee, type AutomaticCompletionUndo, type Blocker, type People, type PullState, type ScopePage, type StateMove, type Ticket, type TicketComment, type TicketSource, type TrackerWriting } from "../contracts/tracker.ts";
 
 /**
  * What the fake declares a new-ticket run files with (contract 1.1): tools of an `mcp__fake__` server, the numbers the contract names, and refusals worded like a real tracker's.
@@ -32,7 +32,7 @@ export const FAKE_TRACKER_WRITING: TrackerWriting = Object.freeze({
 type Completion = { by: "integration" | "person"; from: string; fromType: string };
 
 /** A ticket as the fake holds it: the board's ticket, with the state type the tracker would name and the relations the fake records. */
-type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; titles: Record<string, string>; files: { name: string; text: string }[]; claimant?: string; completion?: Completion };
+type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; titles: Record<string, string>; files: { name: string; text: string }[]; discussion: TicketComment[]; claimant?: string; completion?: Completion };
 type Tickets = Map<string, Held>;
 
 const ME: Assignee = { id: "fake-me", name: "Fake Person" };
@@ -65,7 +65,7 @@ function completeBy(entry: Held, by: Completion["by"]): void {
   setStatus(entry, "Done", "completed");
 }
 
-/** The project picker's reads (contract 1.8): the projects the open tickets are in, a project's open tickets as one page, and a search of the open tickets by key or by words of the title. */
+/** The project picker's reads (contract 1.9): the projects the open tickets are in, a project's open tickets as one page, and a search of the open tickets by key or by words of the title. */
 function projectReadsOf(held: Tickets): Pick<TicketSource, "projects" | "projectPage" | "search"> {
   const open = (): Ticket[] => [...held.values()].filter(isOpen).map(({ ticket }) => ticket);
   return {
@@ -79,7 +79,7 @@ function projectReadsOf(held: Tickets): Pick<TicketSource, "projects" | "project
 }
 
 /** The reads: what the board lists, looks up and asks of the tracker. */
-function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "texts" | "pullStates" | "blockers" | "projectSummaries" | "claims"> {
+function readsOf(held: Tickets, calls: string[], comments: readonly { key: string; text: string }[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "texts" | "readComments" | "pullStates" | "blockers" | "projectSummaries" | "claims"> {
   return {
     async assigned() {
       calls.push("assigned");
@@ -107,6 +107,12 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
     },
     stateTypes: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).statusType] as const] : []))),
     texts: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, { description: heldOf(held, key).ticket.description, updatedAt: heldOf(held, key).ticket.updatedAt ?? EPOCH }] as const] : []))),
+    // The people's comments, then the ones the board posted, written as the key's person at the fake's epoch, as a tracker lists every comment on the ticket.
+    async readComments(key) {
+      calls.push(`readComments ${key}`);
+      const posted = comments.filter((comment) => comment.key === key).map(({ text }): TicketComment => ({ author: ME.name, createdAt: EPOCH, body: text }));
+      return { comments: [...heldOf(held, key).discussion, ...posted], complete: true };
+    },
     // A copy, as a tracker answers a read: a pull request linked after the read must not change what the board recorded from it.
     pullStates: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, { ...heldOf(held, key).pulls }] as const] : []))),
     async blockers(keys) {
@@ -192,9 +198,9 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
   const comments: { key: string; text: string }[] = [];
   const calls: string[] = [];
   const claimed: { key: string; claimant: string }[] = [];
-  const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, titles: {}, files: [] });
+  const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, titles: {}, files: [], discussion: [] });
   seed.forEach(hold);
-  const source: TicketSource = { ...readsOf(held, calls), ...projectReadsOf(held), ...writesOf(held, comments, claimed), keywords: DEFAULT_KEYWORDS };
+  const source: TicketSource = { ...readsOf(held, calls, comments), ...projectReadsOf(held), ...writesOf(held, comments, claimed), keywords: DEFAULT_KEYWORDS };
   return Object.assign(source, {
     /** Add a ticket, or replace the one with its key. */
     seed: hold,
@@ -208,6 +214,10 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
     /** Name a file as uploaded to a ticket, with its text, for `download` to write and return. */
     attach(key: string, file: string, text = "") {
       heldOf(held, key).files.push({ name: file, text });
+    },
+    /** A comment a person wrote on a ticket (contract 1.8), which `readComments` gives back. Records no write of the board's. */
+    discuss(key: string, comment: TicketComment) {
+      heldOf(held, key).discussion.push(comment);
     },
     /** Complete a ticket as the tracker's own integration or as a person would, remembering the state it left, which `undoAutomaticCompletion` reads (A11-178). */
     completeAs(key: string, by: Completion["by"]) {

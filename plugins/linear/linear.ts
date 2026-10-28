@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { PickScope } from "../../src/ticket-mode/settings.ts";
 import { callLog, describeCounts, type CallLog } from "./call-log.ts";
-import type { Assignee, AutomaticCompletionUndo, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText, TrackerProject } from "../../src/plugins/contracts/tracker.ts";
+import type { Assignee, AutomaticCompletionUndo, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText, TrackerProject, TicketComment, TicketComments } from "../../src/plugins/contracts/tracker.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /**
@@ -570,6 +570,37 @@ async function claimsOf(client: Client, keys: readonly string[]): Promise<Readon
   }));
 }
 
+/** A page of a ticket's comments, each with whoever wrote it: a person of the workspace, a person outside it whose comment an integration synced, or the integration itself. */
+const COMMENT_FIELDS = "nodes { body createdAt user { name } externalUser { name } botActor { name } } pageInfo { hasNextPage endCursor }";
+/** The most pages of comments read for one ticket: a thread past them is answered as incomplete, and the brief says so. */
+const COMMENT_PAGES = 10;
+
+type CommentPage = { nodes: { body: string; createdAt: string; user: { name: string } | null; externalUser: { name: string } | null; botActor: { name: string | null } | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+
+/** Who wrote a comment, as the brief names them. PURE. */
+const authorOf = ({ user, externalUser, botActor }: CommentPage["nodes"][number]): string =>
+  user?.name ?? (externalUser === null ? null : `${externalUser.name} (outside the workspace)`) ?? (botActor?.name ? `${botActor.name} (integration)` : "an unnamed integration");
+
+/** A page's comments the person or an integration wrote: the board's claim records are left out (contract 1.8). PURE. */
+const commentsOfPage = (page: CommentPage): TicketComment[] =>
+  page.nodes.filter(({ body }) => !body.startsWith(CLAIM_PREFIX)).map((node) => ({ author: authorOf(node), createdAt: node.createdAt, body: node.body }));
+
+/** Every comment on the ticket, a page at a time, at most {@link COMMENT_PAGES} pages (contract 1.8). Throws for a ticket Linear has none of. */
+async function commentsOn(client: Client, identifier: string): Promise<TicketComments> {
+  const found = await issue<{ id: string; comments: CommentPage }>(client, identifier, `id comments(first: ${PAGE}) { ${COMMENT_FIELDS} }`);
+  if (found === null) throw new Error(noMatchFor(identifier));
+  const comments = commentsOfPage(found.comments);
+  let { pageInfo } = found.comments;
+  for (let pages = 1; pageInfo.hasNextPage && pages < COMMENT_PAGES; pages += 1) {
+    const { issue: next }: { issue: { comments: CommentPage } | null } = await query(client,
+      `query($id: String!, $after: String) { issue(id: $id) { comments(first: ${PAGE}, after: $after) { ${COMMENT_FIELDS} } } }`, { id: found.id, after: pageInfo.endCursor });
+    if (next === null) throw new Error(`${identifier} was gone from Linear while its comments were read`);
+    comments.push(...commentsOfPage(next.comments));
+    ({ pageInfo } = next.comments);
+  }
+  return { comments, complete: !pageInfo.hasNextPage };
+}
+
 async function downloadTicket(client: Client, ticket: Ticket, dir: string): Promise<string[]> {
   const { key } = client;
   const linked = uploadLinks(ticket.description);
@@ -683,7 +714,7 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned", s
 
     scoped: (scope, after) => scopedPage(client, scope, after),
 
-    // The project picker and the search (contract 1.8, A11-378).
+    // The project picker and the search (contract 1.9, A11-378).
     projects: () => projectsOf(client), projectPage: (project, after) => projectPageOf(client, project, after), search: (text) => searchOf(client, text),
 
     async viewer() {
@@ -703,6 +734,8 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned", s
     },
 
     texts: (keys) => textsOf(client, keys),
+
+    readComments: (identifier) => commentsOn(client, identifier),
 
     async detachPlan(identifier, titles) {
       return detachPlanOf(client, identifier, titles);

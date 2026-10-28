@@ -20,6 +20,7 @@ test("the fake tracker passes the tracker contract suite, and the checks that ra
     "projects lists the open projects by id and name", "projectPage pages a project's tickets", "search of no words finds nothing",
     "stateTypes answers a Map of the keys it knows",
     "texts answers each key's description and updatedAt, as read gives the description, and leaves out a key with no ticket",
+    "readComments answers each comment's author, ISO time and body, and is refused for a key the tracker has none of",
     "detachPlan of a title the ticket has no attachment under changes nothing and is no error", "pullStates answers a Map by key", "blockers answers a Map, leaving out a key with no ticket",
     "projectSummaries answers a Map, leaving out a key with no project", "keywords name the words a pull request body is read by",
     "undoAutomaticCompletion answers who completed the ticket, moves back only the integration's completion, and is refused for a key the tracker has none of",

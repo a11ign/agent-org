@@ -11,7 +11,8 @@ import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { batchDir, herdrName, ticketDir, type QueueStore } from "./pool.ts";
 import { fakeHerdr, poolFixture } from "./pool-fixture.ts";
-import { REROUTE_LIMIT } from "./pool-org-repos.ts";
+import { cloneMissing, ORGANISATION_SWEEP_MS, REROUTE_LIMIT } from "./pool-org-repos.ts";
+import type { PoolContext } from "./pool-context.ts";
 import { enqueue, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { logOf } from "./queue/run-log.ts";
@@ -312,4 +313,17 @@ test("a plan naming a repository outside the organisation, or one the board cann
   assert.ok(failed?.kind === "needs-human" && /`acme\/corpus`, a repository of the organisation that this machine has not cloned, and the board could not clone it \(fatal: repository .* not found\), so it gave it none/.test(failed.reason), JSON.stringify(failed));
   assert.equal(failing.settings.clones.corpus, undefined);
   assert.ok(!existsSync(join(failing.root, "repos", "corpus")));
+});
+
+test("the clone sweep lists the organisation once in ORGANISATION_SWEEP_MS, not with a `gh repo list` every few minutes (A11-377)", async () => {
+  const m = machine();
+  const clock = { now: START };
+  const ctx = { settings: { clones: m.clones }, codeHost: m.codeHost, git: m.git, hostFile: m.hostFile, now: () => clock.now, cloning: new Map(), cloneSweep: { busy: false } } as unknown as PoolContext;
+  const listed = () => m.codeHost.calls.filter((call) => call.startsWith("readRepositories")).length;
+  assert.equal(await cloneMissing(ctx), 2, "corpus and .github are cloned");
+  assert.equal(await cloneMissing(ctx), 0);
+  assert.equal(listed(), 1, "the second sweep uses the list the first read");
+  clock.now += ORGANISATION_SWEEP_MS;
+  await cloneMissing(ctx);
+  assert.equal(listed(), 2, "and the list is read again once it is that old");
 });

@@ -9,9 +9,12 @@
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
 //
-// 1.8 (A11-378) ADDS the optional `projects`, `projectPage` and `search`: the Pick view is narrowed to one project a person picks, and reads only that project's open tickets, a page at a time,
+// 1.8 ADDS the optional `readComments`: every comment on a ticket, with its author and time, so a planner and a worker plan from the ticket's discussion and not its description alone. A comment can
+// correct or supersede the description, and a worker briefed without them re-raised a theory a later comment had ruled out. It is optional, so a 1.7 tracker still passes: the brief then says the board
+// could not give the comments, and points at the ticket.
+// 1.9 (A11-378) ADDS the optional `projects`, `projectPage` and `search`: the Pick view is narrowed to one project a person picks, and reads only that project's open tickets, a page at a time,
 // instead of the whole workspace's for Anyone; and a person finds any open ticket of the workspace by key or by words, whoever holds it and whatever its project. All three are optional, so a
-// 1.7 tracker still passes: its Pick view lists as it did, with no project picker and no search beyond the list.
+// 1.8 tracker still passes: its Pick view lists as it did, with no project picker and no search beyond the list.
 //
 // 1.7 (A11-216) ADDS a documented property of the error `attachPlan` throws: its `status`, the HTTP status the tracker answered with. The board tries a plan attach again, with a wait, when it failed on the network (`fetch`'s own
 // `TypeError("fetch failed")`, a timeout, a reset) or the tracker answered 5xx, and hands a person any other failure at once. Nothing in a type changes and the property is optional, so a 1.6 tracker still passes: its 5xx reads
@@ -36,7 +39,7 @@
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.8";
+export const TRACKER_CONTRACT_VERSION = "1.9";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -106,6 +109,12 @@ export type Assignee = Readonly<{ id: string; name: string }>;
 
 /** A ticket's description and when the tracker last changed the ticket, as `texts` gives them (A11-167). */
 export type TicketText = Readonly<{ description: string; updatedAt: string }>;
+
+/** One comment on a ticket (contract 1.8): the name of whoever wrote it, when, as an ISO time, and its markdown as the tracker stores it. */
+export type TicketComment = Readonly<{ author: string; createdAt: string; body: string }>;
+
+/** A ticket's comments as `readComments` gives them (contract 1.8): `complete` is false when the tracker holds more than the source read, so a reader says some are missing. */
+export type TicketComments = Readonly<{ comments: readonly TicketComment[]; complete: boolean }>;
 
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */
 export type PullState = "open" | "merged" | "closed";
@@ -274,6 +283,13 @@ export interface TicketSource {
    * Throws when the tracker cannot be asked.
    */
   texts?(keys: readonly string[]): Promise<ReadonlyMap<string, TicketText>>;
+  /**
+   * Every comment the tracker lists on the ticket `key`, in any order (contract 1.8): a planner and a worker are briefed with them, oldest first, because a later comment can correct or supersede the
+   * description. The claim records {@link claim} writes are left out, since only the tracker's source knows their form. A comment written by an integration, or by someone outside the tracker's workspace, is kept,
+   * and its `author` says so. A source that stops reading before the last comment answers `complete: false`. A source without it gives no comments, and the brief says so. Throws when the tracker cannot be asked or
+   * has no ticket by that key.
+   */
+  readComments?(key: string): Promise<TicketComments>;
   /**
    * Remove the ticket's attachments titled `titles`, which a re-plan does before the planner is asked to plan the ticket again: the planning skill refuses a ticket that already has a plan
    * (A11-167). A title the ticket does not have is not an error, so an attempt that was cut off can be repeated, and an attachment under any other title is left alone. A source without it
