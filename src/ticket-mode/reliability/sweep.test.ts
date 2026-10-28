@@ -165,3 +165,44 @@ test("a pool given no source of the figures watches nothing and asks the tracker
   await w.sweep();
   assert.deepEqual([w.watch(), w.tracker.calls], [undefined, []]);
 });
+
+/** The tracker's `stateTypes` replaced by `replacement`, which is handed the original. */
+function replaceStateTypes(tracker: ReturnType<typeof createFakeTracker>, replacement: (original: NonNullable<typeof tracker.stateTypes>) => typeof tracker.stateTypes): void {
+  (tracker as { stateTypes: unknown }).stateTypes = replacement(tracker.stateTypes!);
+}
+
+test("a held watch is not asked of the tracker, and is dropped 30 days after its last reading", async () => {
+  const w = world();
+  w.served.figures = figures(1);
+  w.tracker.completeAs("A11-900", "person");
+  await w.sweep();
+  w.clock.at += 7 * 86_400_000;
+  await w.sweep();
+  assert.equal(w.watch().state, "held");
+  w.tracker.calls.length = 0;
+  let asked: readonly string[] = [];
+  replaceStateTypes(w.tracker, (original) => async (keys) => { asked = keys; return original(keys); });
+  w.clock.at += 60_000;
+  await w.sweep();
+  assert.deepEqual(asked, ["A11-282", "A11-345"], "only the backfilled tickets, which are not held");
+  w.clock.at += 30 * 86_400_000;
+  await w.sweep();
+  assert.equal(w.watch().state, "watching", "dropped, and enrolled afresh from the queue, where its ticket is still completed");
+  assert.equal(w.watch().reads, 1);
+});
+
+test("a sweep that hangs on the tracker does not stop the sweeps after it for ever", async () => {
+  const w = world();
+  w.tracker.completeAs("A11-900", "person");
+  const original = w.tracker.stateTypes!;
+  replaceStateTypes(w.tracker, () => () => new Promise(() => undefined));
+  void w.sweep();
+  await Promise.resolve();
+  replaceStateTypes(w.tracker, () => original);
+  w.clock.at += 60_000;
+  await w.sweep();
+  assert.equal(w.watch().state, "open", "within five minutes the hung sweep is still the sweep");
+  w.clock.at += 5 * 60_000;
+  await w.sweep();
+  assert.equal(w.watch().state, "watching");
+});

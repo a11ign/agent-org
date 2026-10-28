@@ -1585,6 +1585,9 @@ test("A11-366: doctor lists each open reliability ticket with its current figure
   assert.deepEqual(rows.map(([name, check]) => [name, check.ok, check.warning]), [["reliability A11-282", true, true]], "the held ticket is not listed");
   assert.match(rows[0]![1].detail, /synchronous holds under 10 an hour, for 1d; synchronous holds 14 an hour now; not closed yet/);
   assert.deepEqual(Object.keys(byName(await diagnose(deps({ reliabilityWatches: () => null })))).filter((name) => name.startsWith("reliability ")), [], "no record, no rows");
+  let asks = 0;
+  await diagnose(deps({ boardFigures: async () => { asks += 1; return FIGURES; }, reliabilityWatches: () => [watch("A11-282", "open")] }));
+  assert.equal(asks, 1, "the board's health rows and the reliability rows share one read of /api/health");
 });
 
 test("A11-363: a watchdog service that is not registered is a warning with the command that registers it, not a failure that exits 1 on every machine the update has not reached", async () => {

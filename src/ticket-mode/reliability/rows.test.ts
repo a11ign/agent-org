@@ -36,3 +36,9 @@ test("a held ticket is not listed, a ticket with no figure is a warning that say
   assert.match(rows[0]!.fix ?? "", /the figures are synchronous holds, loop lag p99, Linear failures, GitHub failures/);
   assert.match(rows[1]!.detail, /no reading now/);
 });
+
+test("a backfilled ticket this board has never seen closed is not listed, so a board without A11-282 shows no row for it", () => {
+  const backfill: Watch = { ...open("A11-282"), origin: "backfill" };
+  assert.deepEqual(reliabilityRows([backfill], null), []);
+  assert.equal(reliabilityRows([advance(backfill, facts(1))], null).length, 1);
+});

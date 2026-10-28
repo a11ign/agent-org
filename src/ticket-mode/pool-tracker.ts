@@ -90,7 +90,7 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   // The heads of the queued runs' stacked blockers come after the tracker's own reads: a git read per branch must not delay them.
   const queued = store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key);
   if (headsToRead(ctx, queued)) await readHeads(ctx, queued);
-  // Last: the After-merge lines listed above become checks of their own, which outlive their runs, and each close is posted on its ticket (A11-277). A close waiting to be posted delays none of the reads above.
+  // Then: the After-merge lines listed above become checks of their own, which outlive their runs, and each close is posted on its ticket (A11-277). A close waiting to be posted delays none of the reads above.
   await syncAfterMergeChecks(ctx);
   // Then the board-reliability tickets: each is watched on the figure it names, and reopened once, with the readings, when the figure does not hold (A11-366).
   await syncReliabilityWatches(ctx);

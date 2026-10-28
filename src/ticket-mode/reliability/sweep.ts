@@ -43,11 +43,14 @@ function withTicketsFigure(watch: Watch | undefined, ticket: Ticket): Watch {
   return { ...rest, title: ticket.title, spec, ...(why === undefined ? {} : { why }) };
 }
 
+/** How long a held watch is kept after its last reading: it is then dropped, and a ticket closed again is enrolled afresh. */
+const HELD_KEPT_MS = 30 * 24 * 60 * 60_000;
+
 /** The file with every ticket on the queue labelled `board-reliability` watched, and the tickets the epic closed before there was a watch held to the figures {@link BACKFILLED} names. */
-function enrolled(file: WatchesFile, queue: Queue): WatchesFile {
-  const watches: Record<string, Watch> = { ...file.watches };
+function enrolled(file: WatchesFile, queue: Queue, now: number): WatchesFile {
+  const watches: Record<string, Watch> = Object.fromEntries(Object.entries(file.watches).filter(([, watch]) => watch.state !== "held" || now - (watch.last?.at ?? now) < HELD_KEPT_MS));
   for (const { ticket } of queue.entries) {
-    if (isReliability(ticket)) watches[ticket.key] = withTicketsFigure(file.watches[ticket.key], ticket);
+    if (isReliability(ticket)) watches[ticket.key] = withTicketsFigure(watches[ticket.key], ticket);
   }
   for (const [key, spec] of Object.entries(BACKFILLED)) {
     const entry = queue.entries.find(({ ticket }) => ticket.key === key)?.ticket;
@@ -63,7 +66,7 @@ async function completedAmong(ctx: PoolContext, keys: readonly string[]): Promis
   try {
     return new Map([...await ctx.source.stateTypes(keys)].map(([key, type]) => [key, type === "completed"]));
   } catch (err) {
-    log(`the reliability watches could not read their tickets' states: ${messageOf(err)}`);
+    sayOnce("states", `the reliability watches could not read their tickets' states: ${messageOf(err)}`);
     return null;
   }
 }
@@ -136,8 +139,11 @@ async function reopenOwed(ctx: PoolContext, path: string): Promise<void> {
   }
 }
 
-/** The pools whose sweep is under way: two refreshes that overlap must not both reopen a ticket. */
-const sweeping = new WeakSet<PoolContext>();
+/** When each pool's sweep began, while it is under way: two refreshes that overlap must not both reopen a ticket. */
+const sweeping = new WeakMap<PoolContext, number>();
+
+/** How long a sweep may be under way before the next refresh takes it for hung on a tracker call that has no timeout, and sweeps anyway. */
+const SWEEP_HUNG_MS = 5 * 60_000;
 
 /**
  * One sweep, run at the end of each tracker refresh: the tickets labelled `board-reliability` on the queue, and A11-282 and A11-345, are watched; each watch is advanced by what the tracker says of its ticket, whether
@@ -145,12 +151,13 @@ const sweeping = new WeakSet<PoolContext>();
  */
 export async function syncReliabilityWatches(ctx: PoolContext): Promise<void> {
   // A pool given no source of the figures reads none, and so watches nothing.
-  if (ctx.deps.healthFigures === undefined || sweeping.has(ctx)) return;
-  sweeping.add(ctx);
+  const began = sweeping.get(ctx);
+  if (ctx.deps.healthFigures === undefined || (began !== undefined && ctx.now() - began < SWEEP_HUNG_MS)) return;
+  sweeping.set(ctx, ctx.now());
   const path = reliabilityWatchesPath(ctx.settings.stateDir);
   try {
-    const enrolment = changeWatches(path, (file) => enrolled(file, ctx.store.get()));
-    const completed = await completedAmong(ctx, Object.keys(enrolment.watches));
+    const enrolment = changeWatches(path, (file) => enrolled(file, ctx.store.get(), ctx.now()));
+    const completed = await completedAmong(ctx, Object.values(enrolment.watches).filter(({ state }) => state !== "held").map(({ key }) => key));
     changeWatches(path, (file) => {
       const watches = Object.fromEntries(Object.entries(file.watches).map(([key, watch]) => [key, advance(watch, factsOf(ctx, watch, completed))]));
       return JSON.stringify(watches) === JSON.stringify(file.watches) ? file : { watches };

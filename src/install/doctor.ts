@@ -561,6 +561,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const herdr = deps.which("herdr");
   const instanceState = deps.serviceState("instance");
   const instance = await serviceChecks("instance", settings?.port ?? 4747, instanceState, deps);
+  // Asked once, of a running instance only: the board's health rows and the reliability rows both read it (A11-363, A11-366).
+  const boardFigures = instanceState === "running" ? await deps.boardFigures(settings?.port ?? 4747) : null;
   const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
   const plugins = pluginsOf(settings, deps);
   const place: HostPlaceReading = noProject ? { kind: "no-project" } : await deps.hostPlace().catch((cause: unknown): HostPlaceReading => ({ kind: "unreadable", reason: String((cause as Error)?.message ?? cause).split("\n")[0] }));
@@ -583,8 +585,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...pluginChecks(settings, plugins),
     ...await preflightChecks(settings, deps),
     ...instance,
-    ...await boardHealthChecks(settings, instanceState, deps),
-    ...await reliabilityChecks(settings, instanceState, deps),
+    ...boardHealthChecks(settings, boardFigures, deps),
+    ...reliabilityChecks(settings, boardFigures, deps),
     ...herdrScopeChecks(settings, instanceState, deps),
     ...readCacheGuardChecks(deps),
     ...ui,
@@ -727,9 +729,8 @@ function watchdogCheck(deps: DoctorDeps): Check {
  * The board's health figures and the watchdog's record (A11-363): one WARN row for each thing `healthFlags` flags, or one `ok` row that says the figures read well. Asked only of a running instance, and nothing is said when it
  * serves no figures (a version from before them): the instance's own rows say it does not answer.
  */
-async function boardHealthChecks(settings: TicketSettings | null, state: ServiceState, deps: DoctorDeps): Promise<Check[]> {
+function boardHealthChecks(settings: TicketSettings | null, figures: HealthFigures | null, deps: DoctorDeps): Check[] {
   const watchdog = settings === null ? null : deps.watchdog(settings.stateDir);
-  const figures = state === "running" ? await deps.boardFigures(settings?.port ?? 4747) : null;
   if (figures === null && watchdog === null) return [];
   const flags = healthFlags(figures, watchdog);
   if (flags.length === 0) return [ok("board health", figures === null ? "the watchdog has restarted nothing" : `loop p99 ${figures.loop.lastMinute.p99Ms} ms over the last minute and ${figures.loop.lastHour.p99Ms} ms over the last hour, and no call failure rate over ${CALL_FAILURES_WARN_PER_100}%`)];
@@ -742,13 +743,12 @@ async function boardHealthChecks(settings: TicketSettings | null, state: Service
 }
 
 /**
- * The open board-reliability tickets with their current figures (A11-366): one row each, a warning for a ticket whose figure is at its threshold now, one the board owes a reopen, or one that names no figure. The figures are asked only of a
- * running instance, and only when a ticket is listed.
+ * The open board-reliability tickets with their current figures (A11-366): one row each, a warning for a ticket whose figure is at its threshold now, one the board owes a reopen, or one that names no figure. The figures are the ones the
+ * board health rows read, asked once of a running instance.
  */
-async function reliabilityChecks(settings: TicketSettings | null, state: ServiceState, deps: DoctorDeps): Promise<Check[]> {
+function reliabilityChecks(settings: TicketSettings | null, figures: HealthFigures | null, deps: DoctorDeps): Check[] {
   const watches = settings === null ? null : deps.reliabilityWatches(settings.stateDir);
-  if (watches === null || watches.every(({ state: each }) => each === "held")) return [];
-  const figures = state === "running" ? await deps.boardFigures(settings?.port ?? 4747) : null;
+  if (watches === null) return [];
   return reliabilityRows(watches, figures).map((row) => (row.warning ? warned(row.name, row.detail, row.fix ?? "") : ok(row.name, row.detail)));
 }
 

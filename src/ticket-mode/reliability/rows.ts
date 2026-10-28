@@ -24,9 +24,12 @@ function standing(watch: Watch): string {
   }
 }
 
+/** Whether a watch is listed: not held, and not a backfilled ticket this board has never seen closed (another board's tickets are not on this one's tracker). */
+const listed = (watch: Watch): boolean => watch.state !== "held" && !(watch.origin === "backfill" && watch.closedAt === undefined && watch.reopens === 0);
+
 /** The rows for the reliability tickets not yet held, and each one's current reading from `figures` (null when the board serves none). PURE. */
 export function reliabilityRows(watches: readonly Watch[], figures: HealthFigures | null): readonly ReliabilityRow[] {
-  return watches.filter(({ state }) => state !== "held").sort((a, b) => a.key.localeCompare(b.key)).map((watch): ReliabilityRow => {
+  return watches.filter(listed).sort((a, b) => a.key.localeCompare(b.key)).map((watch): ReliabilityRow => {
     const name = `reliability ${watch.key}`;
     if (watch.spec === null) {
       return { name, detail: `labelled board-reliability, and ${watch.why ?? "names no figure"}`, warning: true, fix: `add a line such as \`Figure: synchronous holds under 10 an hour, for 7d\` to its ## Done-when; the figures are ${FIGURE_NAMES.join(", ")}` };
