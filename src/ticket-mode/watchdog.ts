@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { uptime } from "node:os";
 import type { HealthFigures } from "./health-figures.ts";
-import { DEFECT_RESTARTS, hourOf, readRecord, restartsInHour, watchdogPath, withRestart, writeRecord, type WatchdogReason, type WatchdogRecord, type WatchdogRestart, emptyRecord } from "./watchdog-record.ts";
+import { DEFECT_RESTARTS, hourOf, readRecord, restartsInHour, setUnreadableAside, watchdogPath, withRestart, writeRecord, type WatchdogReason, type WatchdogRecord, type WatchdogRestart, emptyRecord } from "./watchdog-record.ts";
 
 /** Queued runs could start and nothing has started for this long, in ms. */
 export const NO_START_MS = 10 * 60_000;
@@ -99,12 +99,16 @@ export type WatchdogDeps = Readonly<{
   log: (line: string) => void;
 }>;
 
-/** The record on disk; one that cannot be read is said and read as empty, since the watchdog's job is the restart. */
-function recordOf({ recordPath, log }: Pick<WatchdogDeps, "recordPath" | "log">): WatchdogRecord {
+/**
+ * The record on disk. One that cannot be read is NOT written over: it is set aside beside itself and said as an error, and the watchdog starts a record of its own, since its job is the restart. What it held is kept for
+ * a person, and the board's header and `doctor` say a record could not be read until a new one has a restart in it.
+ */
+function recordOf({ recordPath, now, log }: Pick<WatchdogDeps, "recordPath" | "now" | "log">): WatchdogRecord {
   try {
     return readRecord(recordPath);
   } catch (err) {
-    log(`watchdog: ${String((err as Error)?.message ?? err).split("\n")[0]}, so its restarts are counted from none`);
+    const aside = setUnreadableAside(recordPath, now());
+    log(`ERROR watchdog: ${String((err as Error)?.message ?? err).split("\n")[0]}; ${aside === null ? "it could not be moved aside either" : `it is kept as ${aside}`}, and restarts are counted from none`);
     return emptyRecord();
   }
 }

@@ -2,7 +2,7 @@
 // A11-363: the watchdog restarts the instance for each of its three triggers, keeps the runs that are starting, counts and logs each restart, and leaves a stopped instance alone
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { HealthFigures } from "./health-figures.ts";
@@ -174,12 +174,15 @@ test("a hung /api/health is restarted on the run that waited 30 s for it, and a 
   assert.equal(readRecord(refused.recordPath).unansweredSince, null, "a restart ends the run of failures");
 });
 
-test("a record that cannot be read is said, and read as empty, so the restart still happens", async () => {
+test("a record that cannot be read is set aside, not written over: it is said as an error, kept beside itself, and the restart still happens on a record of its own", async () => {
   const watched = watchdogOver([answered(figures({ sinceFill: 9 * MINUTE }), 0)]);
   mkdirSync(dirname(watched.recordPath), { recursive: true });
   writeFileSync(watched.recordPath, "{ not json");
   assert.equal((await watched.run()).act, "restart");
-  assert.match(watched.log[0]!, /^watchdog: .*so its restarts are counted from none/);
+  assert.match(watched.log[0]!, /^ERROR watchdog: .*; it is kept as .*watchdog\.json\.unreadable-2026-10-27T12-00-00-000Z, and restarts are counted from none$/);
+  const kept = readdirSync(dirname(watched.recordPath)).filter((name) => name.includes(".unreadable-"));
+  assert.equal(kept.length, 1, "what the file held is kept");
+  assert.equal(readFileSync(join(dirname(watched.recordPath), kept[0]!), "utf8"), "{ not json");
   assert.equal(readRecord(watched.recordPath).count, 1);
 });
 

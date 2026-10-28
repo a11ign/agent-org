@@ -41,7 +41,7 @@ import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
 import type { HealthFigures } from "../ticket-mode/health-figures.ts";
 import { CALL_FAILURES_WARN_PER_100, healthFlags, type HealthFlag } from "../ticket-mode/health-flags.ts";
-import { readRecordOrEmpty, watchdogPath, watchdogView, type WatchdogView } from "../ticket-mode/watchdog-record.ts";
+import { viewOfFile, watchdogPath, type WatchdogView } from "../ticket-mode/watchdog-record.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -63,6 +63,7 @@ import { guardsPresent } from "./interim-guards.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { drainPath, readDrain, type Drain } from "./update-drain.ts";
 import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { runningToolVersion, toolDir, versionNameOf } from "./tool-versions.ts";
 import { buildCandidates, findBuild, UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
 import { declaresUiBuild, type UiSource } from "./ui-asset.ts";
@@ -1035,10 +1036,7 @@ function answers(port: number, path = "/", { healthy = false }: { healthy?: bool
 function boardHealthReaders(): Pick<DoctorDeps, "boardFigures" | "watchdog"> {
   return {
     boardFigures: boardFiguresOf,
-    watchdog: (stateDir) => {
-      const record = readRecordOrEmpty(watchdogPath(stateDir));
-      return record.count === 0 ? null : watchdogView(record, Date.now());
-    },
+    watchdog: (stateDir) => viewOfFile(watchdogPath(stateDir), Date.now()),
   };
 }
 

@@ -1615,3 +1615,8 @@ test("A11-363: a watchdog service that is not registered is a warning with the c
   assert.match(off.detail, /not registered, so a stalled board waits for a person to restart it/);
   assert.match(byName(await diagnose(deps()))["watchdog service"].detail, /restarts the instance when it stalls/);
 });
+
+test("A11-363: doctor warns that the watchdog's record cannot be read, rather than showing no restarts", async () => {
+  const rows = await boardRows({ watchdog: () => ({ restartsLastHour: 0, restartsLastDay: 0, restartsTotal: 0, last: null, unreadable: "Unexpected token in JSON" }) });
+  assert.deepEqual(rows.map(([name, check]) => [name, check.warning, check.detail]), [["board watchdog", true, "The watchdog's record cannot be read (Unexpected token in JSON), so its restarts are not counted"]]);
+});

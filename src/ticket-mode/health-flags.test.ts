@@ -40,3 +40,8 @@ test("any watchdog restart in the last day is flagged, with the last one's reaso
 test("an instance that serves no figures flags nothing about them", () => {
   assert.deepEqual([healthFlags(null, null), healthFlags(undefined, undefined)], [[], []]);
 });
+
+test("a watchdog record that cannot be read is flagged, not shown as no restarts", () => {
+  const flags = healthFlags(null, { restartsLastDay: 0, last: null, unreadable: "Unexpected token in JSON" });
+  assert.deepEqual(flags.map(({ figure, text }) => [figure, text]), [["watchdog", "The watchdog's record cannot be read (Unexpected token in JSON), so its restarts are not counted"]]);
+});
