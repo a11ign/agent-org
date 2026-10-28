@@ -1,4 +1,5 @@
 // no-token: gh -- herdr, git, the tracker and the clock are all injected; nothing is spawned
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
-import { createPool, herdrName, type QueueStore } from "./pool.ts";
+import { herdrName, type QueueStore } from "./pool.ts";
 import { fakeHerdr } from "./pool-fixture.ts";
 import { enqueue, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -43,7 +44,7 @@ async function planning() {
   const store: QueueStore = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
-  const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }),
+  const pool = createSettledPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost() });
   await pool.tick();
   store.set(pauseQueue(store.get()));

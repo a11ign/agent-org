@@ -1,5 +1,6 @@
 // no-token: gh -- herdr, git, the tracker, the code host and the clock are all injected; the checkouts are scratch folders each holding a `.git/config`; nothing is spawned
 // A11-355: a repository of the organisation that the host has not cloned is cloned on demand -- for a plan, for a worker's `wrong-repo`, for Retry, and by the board's own sweep
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
@@ -8,7 +9,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
-import { batchDir, createPool, herdrName, ticketDir, type QueueStore } from "./pool.ts";
+import { batchDir, herdrName, ticketDir, type QueueStore } from "./pool.ts";
 import { fakeHerdr, poolFixture } from "./pool-fixture.ts";
 import { REROUTE_LIMIT } from "./pool-org-repos.ts";
 import { enqueue, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
@@ -95,7 +96,7 @@ test("a worker's wrong-repo naming an organisation repository the host has not c
   assert.deepEqual(run.calls, [[join(run.root, "repos"), "clone", "--quiet", "https://github.com/acme/corpus.git", join(run.root, "repos", ".corpus.cloning")]], "git cloned it, once");
   assert.equal(run.recorded().corpus, join(run.root, "repos", "corpus"), "the host file's clones hold it");
   assert.equal(run.settings.clones.corpus, join(run.root, "repos", "corpus"), "and so do the board's own settings, which need no restart");
-  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).plannedRepo], ["queued", "corpus"], "the run is queued again, planned for it");
+  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).plannedRepo], ["running", "corpus"], "the run is queued again, planned for it, and started at once: the move asked for a pass");
   assert.equal(run.closes(), 1, "the first worker's workspace is closed");
   assert.deepEqual(run.log().filter((event) => event.kind === "finished" || event.kind === "requeued").map((event) => (event.kind === "requeued" ? `requeued ${event.why}` : `finished ${event.outcome}`)), ["finished wrong-repo", "requeued rerouted"]);
   assert.equal(needsYou(run), 0, "it is not on a person's card");
@@ -110,7 +111,7 @@ test("a wrong-repo naming an organisation repository the host already has is mov
   const run = await working();
   await run.ends(wrongRepo("acme/web"));
   assert.deepEqual(run.calls, [], "nothing was cloned");
-  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).plannedRepo], ["queued", "main-app"], "acme/web is held as main-app, which is the key the run is planned for");
+  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).plannedRepo], ["running", "main-app"], "acme/web is held as main-app, which is the key the run is planned for");
 });
 
 test("a wrong-repo that names a repository outside the organisation, an archived one, or none in particular still reads Needs you, with the worker's words and its workspace kept", async () => {
@@ -174,7 +175,7 @@ test("a worker sent back to the repository it was in is a person's, and the boar
   await run.pool.retry(KEY);
   await run.starts();
   await run.ends(wrongRepo("acme/tools"));
-  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).plannedRepo], ["queued", "tools"], "the second move");
+  assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).plannedRepo], ["running", "tools"], "the second move");
   await run.starts();
   await run.ends(wrongRepo("acme/corpus"));
   assert.deepEqual([run.entry(KEY).phase, run.entry(KEY).outcome?.kind], ["finished", "wrong-repo"], "a third is a person's");
@@ -250,7 +251,7 @@ async function planning() {
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
   const clock = { now: START };
-  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: m.hostFile, now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
+  const pool = createSettledPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: m.hostFile, now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(m.root, "transcripts"), wait: async () => {}, pluginRecord: join(m.root, "no-plugin-record.json"), codeHost: m.codeHost, git: m.git });
   await pool.tick();
   store.set(pauseQueue(store.get()));

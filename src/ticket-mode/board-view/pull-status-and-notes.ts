@@ -9,6 +9,7 @@ import { isStoppedFor, sequencedBlockers, ticketWaitEnded } from "./waits-on.ts"
 import { clockOf } from "./update-banner.ts";
 import { deadlineOf } from "./wait-deadline.ts";
 import { DEFAULT_PUBLISH_WHEN, type PublishWhen } from "./publish-when.ts";
+import { blockersFailureNote, retryTime } from "../queue/start-reads.ts";
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
@@ -185,8 +186,10 @@ function blockerWait(entry: ViewEntry, blocker: ViewBlocker, entries: readonly V
  * cannot stack on one, such as "Waits for NBF-1 to push its branch"; or for a path another run holds, such as "Waits on NBF-1 #12: both touch pool.ts".
  */
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
-  const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again on every pass`];
-  if (entry.blockersFailure !== undefined) plan.push(`Waits: the tracker could not say which tickets block it (${entry.blockersFailure}); the board asks again on every pass`);
+  const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again ${entry.pathsRetryAt === undefined ? "on every pass" : `at ${retryTime(entry.pathsRetryAt)}`}`];
+  // Blockers the tracker could not give, with when the board asks again (A11-364): only this run waits on them.
+  const unread = blockersFailureNote(entry);
+  if (unread !== null) plan.push(`Waits: ${unread}`);
   if (entry.sessionWait !== undefined) plan.push(entry.sessionWait);
   if (entry.ciHold !== undefined && entry.ciHold.released !== true) plan.push(entry.ciHold.reason);
   const waits = waitsOn(entry, entries);
@@ -432,7 +435,7 @@ const startAnywayOffered = (entry: ViewEntry, entries: readonly ViewEntry[]): bo
 
 /** Whether a queued run waits on no ticket that blocks it, its plan could be read, and no session holds it back, so an overlap alone may hold it. PURE. */
 const unblockedByTicket = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>
-  entry.pathsFailure === undefined && entry.blockersFailure === undefined && entry.sessionWait === undefined && waitsOn(entry, entries).length === 0;
+  entry.pathsFailure === undefined && blockersFailureNote(entry) === null && entry.sessionWait === undefined && waitsOn(entry, entries).length === 0;
 
 /** Whether a queued run is held back: by a ticket that blocks it, by a path another run holds, or by a plan that could not be downloaded. PURE. */
 const queuedHeld = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>

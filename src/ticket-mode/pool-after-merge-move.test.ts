@@ -1,4 +1,5 @@
 // no-token: gh -- herdr, the tracker and the clock are all injected; nothing is spawned
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,7 +8,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { batchDir, createPool, herdrName, type QueueStore } from "./pool.ts";
+import { batchDir, herdrName, type QueueStore } from "./pool.ts";
 import { fakeHerdr } from "./pool-fixture.ts";
 import { ATTACH_WAITS_MS } from "./attach-retry.ts";
 import { MOVED_HEADING } from "./after-merge-move.ts";
@@ -72,7 +73,7 @@ async function planned(plan: string, { batch = false, ...tracking }: Tracking & 
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
   const clock = { now: START };
-  const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
+  const pool = createSettledPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost() });
   await pool.tick();
   store.set(pauseQueue(store.get()));
