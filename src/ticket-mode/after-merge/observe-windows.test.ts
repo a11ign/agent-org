@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { RunEvent } from "../queue/run-log.ts";
 import type { Queue } from "../queue/queue-entries-and-outcomes.ts";
-import { describeObserve, isWindowed, parseObserve, parseWindow, watchedSources, watchStep, watchWindows, windowEnd, WINDOW_MAX_MS, type DoctorLine, type ObserveFacts, type ObserveSpec, type Release, type Sighting } from "./observe.ts";
+import { describeObserve, isWindowed, parseObserve, parseWindow, watchedCiHistories, watchedReviewUrls, watchedSources, watchStep, watchWindows, windowEnd, WINDOW_MAX_MS, type DoctorLine, type ObserveFacts, type ObserveSpec, type Release, type Sighting } from "./observe.ts";
 import type { CheckRecord, ChecksFile } from "./checks.ts";
 
 const MINUTE = 60_000;
@@ -224,4 +224,22 @@ test("A11-302: only an open board check with a windowed spec is watched, and the
   const ci: CheckRecord = { ...watching(spec("ci-history a11ign/lab CI", "absent", "1h")), id: "A11-4#1" };
   assert.deepEqual([...watchedSources(fileOf(closed, agent, legacy, ci))], ["ci-history"]);
   for (const one of [closed, agent, legacy]) assert.equal(watchStep(one, facts(), BEGAN), null);
+});
+
+test("A11-356: the runs the sweep reads for ci-history watches are those of a watch that has begun or whose change is installed, once for each repository, workflow and branch", () => {
+  const lab = { ...watching(spec("ci-history a11ign/lab CI", "absent", "1h"), {}, null), id: "A11-4#1", key: "A11-4" };
+  const labAgain = { ...watching(spec("ci-history a11ign/lab CI", "absent", "2h"), {}, null), id: "A11-5#1", key: "A11-5" };
+  const waiting = { ...watching(spec("ci-history a11ign/agent-org CI", "absent", "1h"), {}, null), id: "A11-6#1", key: "A11-6" };
+  const begun = { ...watching(spec("ci-history a11ign/agent-org CI main", "absent", "1h"), { began: BEGAN }, BEGAN), id: "A11-7#1" };
+  const file = fileOf(lab, labAgain, waiting, begun);
+  const installedKeys = new Set(["A11-4", "A11-5"]);
+  const asked = watchedCiHistories(file, (check) => installedKeys.has(check.key)).map(({ repository, workflow, branch }) => `${repository} ${workflow} ${branch ?? "-"}`);
+  assert.deepEqual(asked, ["a11ign/lab CI -", "a11ign/agent-org CI main"], "the lab's two watches are one read, the one not installed and not begun is none, the begun one is read");
+  assert.equal(watchedCiHistories(file).length, 3, "with no word on what is installed, every watch is read");
+});
+
+test("A11-356: the pull requests the sweep reads for review watches are those of the open review checks, once each", () => {
+  const review = (id: string, url: string, state: CheckRecord["state"] = "open"): CheckRecord => ({ ...watching({ kind: "review", url }), id, state });
+  const file = fileOf(review("A11-1#1", "https://github.com/a11ign/lab/pull/1"), review("A11-2#1", "https://github.com/a11ign/lab/pull/1"), review("A11-3#1", "https://github.com/a11ign/lab/pull/2", "passed"));
+  assert.deepEqual(watchedReviewUrls(file), ["https://github.com/a11ign/lab/pull/1"]);
 });

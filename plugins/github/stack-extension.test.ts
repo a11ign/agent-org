@@ -66,16 +66,16 @@ test("A11-106: the install command to paste names the account's folder when ther
   assert.equal(installCommand({ GH_CONFIG_DIR: "/home/agent/workers/gh" }), `GH_CONFIG_DIR=/home/agent/workers/gh gh extension install ${STACK_EXTENSION}`);
 });
 
-test("A11-106: GitHub's answer for a repository is enabled on a list, refused on its 404, and unknown with the reason otherwise", () => {
-  const answer = (program: Program) => stacksOf(() => program, "a11ign/agent-org");
-  assert.deepEqual(answer(ok("[]")), { kind: "enabled" });
-  assert.deepEqual(answer({ status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" }), { kind: "refused" });
-  assert.deepEqual(answer({ status: 1, stdout: "", stderr: "gh: Bad credentials (HTTP 401)\n" }), { kind: "unknown", reason: "gh: Bad credentials (HTTP 401)" });
+test("A11-106: GitHub's answer for a repository is enabled on a list, refused on its 404, and unknown with the reason otherwise", async () => {
+  const answer = (program: Program) => stacksOf(async () => program, "a11ign/agent-org");
+  assert.deepEqual(await answer(ok("[]")), { kind: "enabled" });
+  assert.deepEqual(await answer({ status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" }), { kind: "refused" });
+  assert.deepEqual(await answer({ status: 1, stdout: "", stderr: "gh: Bad credentials (HTTP 401)\n" }), { kind: "unknown", reason: "gh: Bad credentials (HTTP 401)" });
 });
 
-test("A11-106: the stacks question asks GitHub about the repository named", () => {
+test("A11-106: the stacks question asks GitHub about the repository named", async () => {
   const asked: string[][] = [];
-  stacksOf((args) => { asked.push(args); return ok("[]"); }, "a11ign/agent-org");
+  await stacksOf(async (args) => { asked.push(args); return ok("[]"); }, "a11ign/agent-org");
   assert.deepEqual(asked, [["api", "repos/a11ign/agent-org/stacks"]]);
 });
 

@@ -50,8 +50,8 @@ test("a checkout with no bundled plugin says its plugins folder is missing, and 
 test("a code host that is a fake, or a plugin of a contract major this agent-org does not read, is refused by name", () => {
   assert.throws(() => loadCodeHostSync(hostText({ codeHost: { provider: "fake-codeHost" } }), {}, DEPS), /the code host is fake-codeHost, which has no code to run on a host: name a bundled code host plugin in tickets\.providers\.codeHost/);
   const github = pluginNamed(defaultCatalog(), "github")!;
-  const catalog = { plugins: [{ ...github, contract: "2.0" }], refusals: [] };
-  assert.throws(() => loadCodeHostSync(null, {}, DEPS, catalog), /the code host plugin github was refused: .*2\.0/);
+  const catalog = { plugins: [{ ...github, contract: "1.0" }], refusals: [] };
+  assert.throws(() => loadCodeHostSync(null, {}, DEPS, catalog), /the code host plugin github was refused: .*1\.0/);
   const broken = { plugins: [{ ...github, entry: "package.json" }], refusals: [] };
   assert.throws(() => loadCodeHostSync(null, {}, DEPS, broken), /the code host plugin github was refused/, "an entry that is not a plugin's module is refused too, and by name");
 });

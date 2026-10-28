@@ -2263,7 +2263,7 @@ test("A11-116: two tickets of one project run in order over real repositories: t
   writeFileSync(join(ticketDir(settings, "NBF-2"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: pullTwo }] }));
   await pool.tick();
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["finished", "finished"]);
-  pool.retargetStacked();
+  await pool.retargetStacked();
   assert.deepEqual(github.host.retargets, [], "the first's pull request is still open: the second's base is current, so nothing moves");
   // The first merges: its branch lands on the default branch, the tracker says so, and the second's pull request is moved to the default branch.
   gitIn(clone, ["checkout", "-q", "main"]);
@@ -2272,7 +2272,7 @@ test("A11-116: two tickets of one project run in order over real repositories: t
   github.host.pullAt(pullOne)!.state = "merged";
   blockerPulls[pullOne] = "merged";
   await pool.refreshTracker();
-  pool.retargetStacked();
+  await pool.retargetStacked();
   assert.deepEqual(github.host.retargets, [{ url: pullTwo, base: "main" }], "once the first merged, the second's pull request moves to the default branch, and nothing else moves");
   assert.equal(github.host.pullAt(pullTwo)?.base, "main");
   // The second merges after it, into the default branch that already holds the first's commits: no conflict, no hand edit.
@@ -2457,7 +2457,7 @@ function ghFor(pulls: Record<number, unknown>): World {
     ...host,
     // A pull request that reads conflicting is one GitHub refuses to merge the base into here, so its conflict goes straight to a round, as it did before A11-286 (`pool-base-merge.test.ts` has the host that merges, and the one that finds the conflict real).
     updateBranch: (url, expectedHead) => (described(url)?.mergeable === "CONFLICTING" || described(url)?.mergeStateStatus === "DIRTY" ? { kind: "refused", reason: "this world's host does not merge into a conflicting pull request" } : host.updateBranch!(url, expectedHead)),
-    readPullFeedback: (url, self, ignored = []) => {
+    readPullFeedback: async (url, self, ignored = []) => {
       const pull = described(url);
       if (pull === undefined || !hold(url, feedbackOfDescribed(pull, self, ignored))) {
         host.calls.push(`readPullFeedback ${url}`);
@@ -2465,10 +2465,10 @@ function ghFor(pulls: Record<number, unknown>): World {
       }
       return host.readPullFeedback(url, self, ignored);
     },
-    readReviewState: (url) => (hold(url) ? host.readReviewState(url) : null),
-    readPullState: (url) => (hold(url) ? host.readPullState(url) : null),
+    readReviewState: async (url) => (hold(url) ? host.readReviewState(url) : null),
+    readPullState: async (url) => (hold(url) ? host.readPullState(url) : null),
     // The pull requests are in SWEPT_REPO only: every other repository the sweep asks about has none open.
-    openPullUrlsOf: (repository) => {
+    openPullUrlsOf: async (repository) => {
       host.calls.push(`openPullUrlsOf ${repository}`);
       return repository !== SWEPT_REPO ? [] : Object.keys(pulls).filter((number) => (pulls[Number(number)] as Described).state === "OPEN").map((number) => `https://github.com/${SWEPT_REPO}/pull/${number}`);
     },
@@ -2504,7 +2504,7 @@ const readRatherReady = (queue: Queue): Queue => recordPullHeads(queue, "NBF-1",
 const roundStarted = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 /** Watches for feedback once, then waits for the round it starts. */
 async function watchRound(pool: ReturnType<typeof createPool>) {
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await roundStarted();
 }
 
@@ -2542,7 +2542,7 @@ test("feedback from before the run's last round ended, from the workers' own acc
   ] as const) {
     const gh = ghFor(pulls);
     const { pool, entry } = await readyRun(gh);
-    const logged = await captureStderr(async () => { pool.watchFeedback(); await roundStarted(); });
+    const logged = await captureStderr(async () => { await pool.watchFeedback(); await roundStarted(); });
     assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds], ["finished", undefined], why);
     const said = logged.some((line) => line.includes(`NBF-1: the feedback on ${approvedPr.url} could not be read, so it was not checked`));
     assert.equal(said, why === "could not ask", `${why}: an unread pull request is said in the board's log, and only that`);
@@ -2552,11 +2552,11 @@ test("feedback from before the run's last round ended, from the workers' own acc
 test("a check that is red at the head commit starts a round naming it, and a run the board does not watch is never read", async () => {
   const gh = ghFor({ 1: feedbackPull({ checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }) });
   const { pool, entry } = await readyRun(gh);
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(briefWithoutAdvice(entry("NBF-1").feedback), `typecheck failed on the head commit of ${approvedPr.url}; its log could not be read.`, "a check with no job page has no log to quote, and is named as such, and has no job to rerun: the round starts at once");
   const unwatched = ghFor({});
   const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched });
-  other.watchFeedback();
+  await other.watchFeedback();
   assert.deepEqual(unwatched.host.calls, [], "nothing Ready to merge: GitHub is not asked, not even who the workers are");
 });
 
@@ -2631,8 +2631,8 @@ test("A11-82: a pull request that conflicts with its base resumes its worker onc
   const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) });
   const { pool, entry, dir, h } = await readyRun(gh);
   h.calls.length = 0;
-  pool.watchFeedback();
-  pool.watchFeedback();
+  await pool.watchFeedback();
+  await pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
   assert.equal(entry("NBF-1").feedback, `${approvedPr.url} conflicts with its base branch main.`);
@@ -2648,10 +2648,12 @@ test("A11-82: a pull request that conflicts with its base resumes its worker onc
 test("A11-82: a conflict on a run awaiting review is a round too, and a draft's read records the files it changes without waking the worker", async () => {
   const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", files: ["src/ticket-mode/pool.ts"] }) });
   const ready = await readyPrRun(gh);
-  ready.pool.watchFeedback();
+  // A paused queue starts nothing, so the round the watch queues is still queued when it is read.
+  ready.store.set({ ...ready.store.get(), paused: true });
+  await ready.pool.watchFeedback();
   assert.deepEqual([ready.entry("NBF-1").phase, ready.entry("NBF-1").rounds], ["queued", 1], "a ready-pr run waiting for review is watched");
   const draft = await draftRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", files: ["src/ticket-mode/pool.ts"] }) }));
-  draft.pool.watchFeedback();
+  await draft.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([draft.entry("NBF-1").phase, draft.entry("NBF-1").rounds, draft.entry("NBF-1").pullFiles], ["finished", undefined, { [approvedPr.url]: ["src/ticket-mode/pool.ts"] }],
     "a draft is not woken, and its files are kept for the footprint");
@@ -2659,14 +2661,14 @@ test("A11-82: a conflict on a run awaiting review is a round too, and a draft's 
 
 test("A11-82: a merged pull request that reads conflicting gets no round, and a run at its cap hands a conflict to a person, whose Respond to review starts again", async () => {
   const merged = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) }));
-  merged.pool.watchFeedback();
+  await merged.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([merged.entry("NBF-1").phase, merged.entry("NBF-1").rounds], ["finished", undefined], "merged: nothing to resolve");
 
   const capped = await readyRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }));
   capped.store.set({ ...capped.store.get(), entries: capped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, rounds: 3 } : e)) });
   capped.h.calls.length = 0;
-  capped.pool.watchFeedback();
+  await capped.pool.watchFeedback();
   await roundStarted();
   assert.equal(capped.entry("NBF-1").phase, "finished", "the fourth conflict starts no run");
   assert.equal(capped.h.calls.filter((args) => args.includes("start")).length, 0);
@@ -2687,6 +2689,7 @@ async function parkedOnQuestion(gh: World, tracker?: TicketSource) {
   writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which colour?", escalation: "reserved" }));
   ctx.status.set(herdrName("NBF-1"), "idle");
   await ctx.pool.tick();
+  await settled();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").outcome?.kind, ctx.entry("NBF-1").workspace], ["finished", "needs-human", "w2"], "parked on a question");
   return ctx;
 }
@@ -2694,7 +2697,7 @@ async function parkedOnQuestion(gh: World, tracker?: TicketSource) {
 test("A11-89: a parked run whose pull request conflicts is resumed: its workspace is closed once, the same worker resumes once with the conflict named, and its brief merges the base in", async () => {
   const { pool, entry, dir, h } = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) }));
   h.calls.length = 0;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await watchRound(pool);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
   assert.equal(entry("NBF-1").feedback, `${approvedPr.url} conflicts with its base branch main.`);
@@ -2716,7 +2719,7 @@ test("A11-89: a parked run whose pull request is clear, unknown, or has only new
   for (const pull of pulls) {
     const { pool, entry, h } = await parkedOnQuestion(ghFor({ 1: pull }));
     h.calls.length = 0;
-    pool.watchFeedback();
+    await pool.watchFeedback();
     await roundStarted();
     assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").workspace, entry("NBF-1").outcome?.kind], ["finished", undefined, "w2", "needs-human"],
       "a parked run with no conflict is not woken, and keeps its question");
@@ -2733,7 +2736,7 @@ test("A11-89: a parked run whose conflicting pull request merged, or whose run w
   const stopped = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }));
   stopped.store.set({ ...stopped.store.get(), entries: stopped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, outcome: { kind: "stopped" as const } } : e)) });
   stopped.h.calls.length = 0;
-  stopped.pool.watchFeedback();
+  await stopped.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([stopped.entry("NBF-1").phase, stopped.entry("NBF-1").rounds, stopped.entry("NBF-1").workspace], ["finished", undefined, "w2"], "stopped is a person's act");
   assert.deepEqual(stopped.h.calls, [], "nothing is closed or started");
@@ -2743,11 +2746,11 @@ test("A11-89: a parked run whose workspace herdr will not close stays parked, na
   const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) });
   const { pool, entry, h } = await parkedOnQuestion(gh);
   h.refused.add("close");
-  const logged = await captureStderr(async () => { pool.watchFeedback(); await roundStarted(); });
+  const logged = await captureStderr(async () => { await pool.watchFeedback(); await roundStarted(); });
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").workspace], ["finished", undefined, "w2"], "still parked, no round queued");
   assert.ok(logged.some((line) => line.includes("NBF-1: its workspace could not be closed, so the conflict round was not started")), logged.join("\n"));
   h.refused.clear();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds], ["running", 1], "the next watch asks again, and the round starts");
 });
@@ -2792,7 +2795,7 @@ test("A11-82: a finished run's open pull request holds the files the watch read 
   // NBF-1 ends with its draft open, and the watch reads its files before the next start: NBF-2's own plan names none of them.
   status.delete(herdrName("NBF-1"));
   store.set(finish(store.get(), "NBF-1", { kind: "draft-pr", prs: [approvedPr] }, 150));
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await pool.tick();
   assert.equal(entry("NBF-2").phase, "queued", "NBF-1's pull request changes the file NBF-2 changes, so NBF-2 is held");
   assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch src/ticket-mode/server.ts");
@@ -2813,6 +2816,7 @@ test("A11-125: a run that has just finished with an open pull request holds that
   status.set(herdrName("NBF-1"), "idle");
   writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
   await pool.tick();
+  await settled();
   assert.equal(entry("NBF-1").phase, "finished", "NBF-1 ended");
   assert.deepEqual(entry("NBF-1").pullFiles, { [approvedPr.url]: ["src/ticket-mode/server.ts"] }, "its files are recorded at once");
   assert.equal(entry("NBF-2").phase, "queued", "NBF-2 shares one of them, so it waits from the moment NBF-1 ends");
@@ -2833,7 +2837,7 @@ test("A11-125: when a run's pull request files cannot be read at its end, the ru
   assert.equal(entry("NBF-2").phase, "queued", "NBF-2 shares a repository with the unread pull request, so it waits");
   assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: its changed files are not read yet");
   pulls[1] = feedbackPull({ files: ["README.md"] });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await pool.tick();
   assert.deepEqual(entry("NBF-1").pullFiles, { [approvedPr.url]: ["README.md"] }, "the watch reads and records them");
   assert.equal(entry("NBF-2").phase, "running", "what it changes does not touch docs/guide.md, so NBF-2 starts");
@@ -2887,7 +2891,7 @@ test("A11-117: a pull request whose file list was cut short holds only the files
     await pool.tick();
     status.delete(herdrName("NBF-1"));
     store.set(finish(store.get(), "NBF-1", { kind: "draft-pr", prs: [approvedPr] }, 150));
-    await captureStderr(async () => { pool.watchFeedback(); });
+    await captureStderr(async () => { await pool.watchFeedback(); });
     await pool.tick();
     assert.equal(entry("NBF-2").phase, phase, why);
     if (phase === "queued") assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch docs/unrelated.md");
@@ -3099,7 +3103,7 @@ function fakeReviewer() {
 /** NBF-1 Ready to merge with `port` as its reviewer and its pull requests read from `pulls`, after one feedback watch. */
 async function reviewedRun(port: ReviewerPort, pulls: Record<number, unknown>) {
   const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   return ctx;
 }
@@ -3124,14 +3128,14 @@ test("a restarted pool starts no second reviewer on a head it already reviewed",
   const pulls = { 1: feedbackPull() };
   const gh = ghFor(pulls);
   const ctx = await readyRun(gh, REVIEWING, port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer starts once for h1");
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "a restarted pool does not start a second reviewer on h1");
   pulls[1] = feedbackPull({ head: "h2" });
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1", "h2"], "a head it has not reviewed is still reviewed after the restart");
 });
@@ -3141,9 +3145,9 @@ test("a reviewer is recorded before it starts: an instance stopped while it star
   // The instance stops inside `start`, after the reviewer's workspace is open and before `start` returns.
   const port: ReviewerPort = { start(ref) { starts.push(ref); throw new Error("SIGTERM"); }, live: () => false, ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
-  assert.throws(() => ctx.pool.watchFeedback(), /SIGTERM/);
+  await assert.rejects(() => ctx.pool.watchFeedback(), /SIGTERM/);
   assert.ok(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.has(`${approvedPr.url}@h1`), "on disk before the start");
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started once");
 });
@@ -3153,12 +3157,12 @@ test("a reviewer herdr still lists for the head is adopted, not started, and sta
   let listed = true;
   const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: ({ head }) => listed && head === "h1", ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts, [], "the reviewer already running for h1 is adopted");
   assert.ok(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.has(`${approvedPr.url}@h1`), "and remembered as started");
   listed = false;
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual(starts, [], "a restart after it finished starts none for h1");
 });
@@ -3168,10 +3172,10 @@ test("a reviewer start the port refuses is not remembered, so the next watch tri
   let refuse = true;
   const port: ReviewerPort = { start(ref) { starts.push(ref); return refuse ? { refusal: "herdr did not list the session" } : { label: "reviewer-7" }; }, live: () => false, ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
-  await captureStderr(async () => { ctx.pool.watchFeedback(); await roundStarted(); });
+  await captureStderr(async () => { await ctx.pool.watchFeedback(); await roundStarted(); });
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 0);
   refuse = false;
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.equal(starts.length, 2, "refused once, then started");
 });
@@ -3180,12 +3184,12 @@ test("a restarted pool asks for no second round for a verdict it already answere
   const { port } = fakeReviewer();
   const gh = ghFor({ 1: feedbackPull({ reviews: [{ state: "CHANGES_REQUESTED", submittedAt: at(200), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }] }) });
   const ctx = await readyRun(gh, REVIEWING, port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the reviewer's changes are asked for once");
   await finishRound(ctx);
   assert.equal(ctx.entry("NBF-1").outcome?.kind, "reviewed", "the round ends reviewed again");
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 1], "a restarted pool asks no second round for the verdict it already answered");
 });
@@ -3196,7 +3200,7 @@ test("a machine with tickets.drafts true starts no reviewer, and one with ticket
     const gh = ghFor({ 1: feedbackPull() });
     const ctx = await readyRun(gh, { reviewer: "atomic", drafts }, port);
     gh.host.calls.length = 0;
-    ctx.pool.watchFeedback();
+    await ctx.pool.watchFeedback();
     await roundStarted();
     assert.equal(starts.length, drafts ? 0 : 1, `drafts ${drafts}: the reviewer starts`);
     assert.equal(gh.host.calls.some((call) => call.startsWith("readReviewState")), !drafts, `drafts ${drafts}: the pull request is read for a reviewer only when drafts is off`);
@@ -3210,7 +3214,7 @@ test("the reviewer's own review never moves feedbackAt: its comment after the ro
       comments: [{ createdAt: at(commentAt), author: { login: "alice" } }],
     }) });
     const ctx = await readyRun(gh, REVIEWING, fakeReviewer().port);
-    ctx.pool.watchFeedback();
+    await ctx.pool.watchFeedback();
     await roundStarted();
     assert.equal(ctx.entry("NBF-1").rounds, rounds, why);
   }
@@ -3227,14 +3231,14 @@ test("the reviewer's verdict on the head reaches the worker: changes requested s
 test("a reviewer memory file that cannot be read is said once in the board's log, nothing is remembered from it, and a valid one is written over it", async () => {
   const { port, starts } = fakeReviewer();
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.equal(starts.length, 1, "the reviewer starts once");
   writeFileSync(reviewerMemoryPath(ctx.settings.stateDir), "{ not json");
   const logged = await captureStderr(async () => {
-    ctx.restart().watchFeedback();
+    await ctx.restart().watchFeedback();
     await roundStarted();
-    ctx.restart().watchFeedback();
+    await ctx.restart().watchFeedback();
     await roundStarted();
   });
   assert.equal(starts.length, 2, "nothing is remembered from the unreadable file, so the restarted pool starts once more; the next restart remembers it");
@@ -3746,15 +3750,15 @@ test("a reviewer is closed once its verdict on its head is posted, and is not st
   const { port, starts, closes } = reviewerWith();
   const pulls = { 1: feedbackPull() };
   const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started");
   assert.deepEqual(closes, [], "and not closed before its verdict is posted");
   pulls[1] = feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] });
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual(closes, [{ pr: approvedPr.url, head: "h1" }], "closed once its approval is posted");
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.equal(closes.length, 1, "a closed reviewer is not closed again");
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "and not started again for h1");
@@ -3782,9 +3786,9 @@ test("a not-convinced verdict closes its reviewer in the watch that starts the r
   await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the worker's round is started");
   assert.equal(closes.length, 1, "the close is asked in the watch that started the round, and found it busy");
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.equal(closes.length, 2, "the sweep asks again, and it is closed");
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.equal(closes.length, 2, "no further close once it is closed");
 });
 
@@ -3798,9 +3802,9 @@ async function sweptPool(port: ReviewerPort, pulls: Record<number, unknown>) {
 test("A11-119: an open pull request no run lists gets one reviewer, and the sweep starts none for that head twice", async () => {
   const { port, starts } = fakeReviewer();
   const ctx = await sweptPool(port, { 1: feedbackPull() });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, [{ pr: sweptPr, head: "h1" }], "one reviewer, for its head");
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts.length, 1, "a second sweep starts nothing for h1");
 });
 
@@ -3809,11 +3813,11 @@ test("A11-119: a new head after requested changes gets a reviewer, though its ru
   await loadReviewerGate();
   const pulls = { 1: feedbackPull({ head: "h1", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] }) };
   const ctx = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], REVIEWING, { gh: ghFor(pulls), reviewerPort: port, clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), [], "h1 has its verdict, so nothing is started for it");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1");
   pulls[1] = feedbackPull({ head: "h2", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), ["h2"], "the new head is started");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "reviewing", "and the board shows the reviewer on it");
 });
@@ -3824,7 +3828,8 @@ test("A11-119: a new head after requested changes gets a reviewer, though its ru
  */
 function withPluginReviewState(world: World, pull: Record<string, unknown>): World {
   const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf }));
-  const plugin = createGithubCodeHost(fakePluginDeps({ policy, exec: () => ({ status: 0, stdout: JSON.stringify(pull), stderr: "" }) }));
+  const exec = () => ({ status: 0, stdout: JSON.stringify(pull), stderr: "" });
+  const plugin = createGithubCodeHost(fakePluginDeps({ policy, exec, execAsync: () => Promise.resolve(exec()) }));
   return { ...world, codeHost: { ...world.codeHost, readReviewState: (url) => plugin.readReviewState(url) } };
 }
 
@@ -3839,7 +3844,7 @@ test("A11-340: a head pushed after changes were requested gets its reviewer once
   const pulls = { 1: feedbackPull({ head: "h2", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")], reviewDecision: "changes-requested" }) };
   const world = withPluginReviewState(ghFor(pulls), blocked);
   const ctx = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], REVIEWING, { gh: world, reviewerPort: port, clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), ["h2"], "the new head, whose only review is on the head before, is started");
 });
 
@@ -3847,12 +3852,12 @@ test("A11-119: a head with a posted review, or one ticket:review started, is not
   const { port, starts } = fakeReviewer();
   const pulls = { 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) };
   const ctx = await sweptPool(port, pulls);
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, [], "a head with an approval is not started");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
   pulls[1] = feedbackPull({ head: "h2" });
   writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, [], "a head ticket:review started is not started again");
 });
 
@@ -3860,7 +3865,7 @@ test("A11-119: a start ticket:review recorded is kept by the pool's next write, 
   const { port, starts } = fakeReviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull() };
   const ctx = await sweptPool(port, pulls);
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   const path = reviewerMemoryPath(ctx.settings.stateDir);
   const handStarted = `${SWEPT_REPO_PULL_2}@h9`;
   // ticket:review starts pull request 2 between the pool's sweeps, and records it in the file the pool shares.
@@ -3869,13 +3874,13 @@ test("A11-119: a start ticket:review recorded is kept by the pool's next write, 
   writeReviewerMemory(path, recorded);
   // Pull request 1 merges: the pool forgets it, and writes its copy, which had not read `handStarted` yet.
   pulls[1] = feedbackPull({ state: "MERGED" });
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   const onDisk = readReviewerMemory(path).memory.started;
   assert.ok(onDisk.has(handStarted), "the start ticket:review recorded survives the pool's write");
   assert.equal(onDisk.has(`${sweptPr}@h1`), false, "the forgotten start is not brought back");
   // Pull request 2 opens with the head ticket:review started it for: the next sweep reads that start, and starts nothing.
   pulls[2] = feedbackPull({ head: "h9" });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.pr), [sweptPr], "pull request 2 at h9 is not started again");
 });
 
@@ -3884,14 +3889,14 @@ test("A11-119: a refusal to start is said once for a head, and is asked again on
   const port: ReviewerPort = { ...fakeReviewer().port, start(ref) { starts.push(ref); return { refusal: "no reviewer for it: its author is outside the org" }; } };
   const ctx = await sweptPool(port, { 1: feedbackPull() });
   const logged = await captureStderr(async () => {
-    ctx.pool.reviewNewHeads();
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
   });
   assert.equal(starts.length, 2, "each sweep asks again, since a refusal is not recorded as started");
   assert.equal(logged.filter((line) => line.includes("its author is outside the org")).length, 1, "and said once");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "not reviewed: no reviewer for it: its author is outside the org");
   const unsettled = await sweptPool(fakeReviewer().port, { 1: feedbackPull({ checks: [{ name: "ci", status: "IN_PROGRESS" }] }) });
-  unsettled.pool.reviewNewHeads();
+  await unsettled.pool.reviewNewHeads();
   assert.equal(unsettled.pool.pullReviews()[sweptPr], "waiting for checks at h1", "and it is not started");
 });
 
@@ -3904,15 +3909,15 @@ test("A11-172: a start the claim refused is shown on each pull request's line an
     start(ref) { starts.push(ref); if (!("refusal" in answer)) running.add(`${ref.pr}@${ref.head}`); return answer; } };
   const ctx = await sweptPool(port, { 1: feedbackPull(), 2: feedbackPull() });
   const logged = await captureStderr(async () => {
-    ctx.pool.reviewNewHeads();
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
   });
   assert.equal(starts.length, 4, "both pull requests are asked again on the second sweep: a refused claim is not recorded as started");
   assert.deepEqual(Object.values(ctx.pool.pullReviews()), [`cannot claim for review: ${forbidden}`, `cannot claim for review: ${forbidden}`]);
   assert.equal(ctx.pool.claimWarning(), `Reviews cannot be claimed on GitHub: ${forbidden} (2 pull requests). Run agent-org doctor.`, "one line for both");
   assert.equal(logged.filter((line) => line.includes(`reviews cannot be claimed on GitHub: ${forbidden}`)).length, 1, "and one log line for the cause");
   answer = { label: "fake-reviewer", unclaimed: forbidden };
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(Object.values(ctx.pool.pullReviews()), [`reviewing without a claim: ${forbidden}`, `reviewing without a claim: ${forbidden}`]);
   assert.equal(ctx.pool.claimWarning(), `Reviews start without a claim on GitHub: ${forbidden} (2 pull requests); no other instance is seen. Run agent-org doctor.`);
 });
@@ -3985,11 +3990,11 @@ test("A11-156: a reply to the reviewer's block with no new commit starts one re-
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()] }) };
   const ctx = await sweptWithTicket(port, pulls);
   const path = reviewerMemoryPath(ctx.settings.stateDir);
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts.length, 0, "a block with no reply asks for nothing");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1");
   pulls[1] = feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts.length, 1, "the reply starts a re-review");
   assert.deepEqual(starts[0].ref, { pr: sweptPr, head: "h1" }, "of the same head, which has no new commit");
   assert.deepEqual(starts[0].brief?.rereview?.replies, [{ author: "worker-bot", url: `${sweptPr}#issuecomment-20`, text: "This is not a defect in this diff: the live migration is run after the release." }]);
@@ -3998,17 +4003,17 @@ test("A11-156: a reply to the reviewer's block with no new commit starts one re-
   assert.ok(!doneWhen.includes("## Notes") && !doneWhen.includes("## Acceptance"), "and no other section");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "re-review asked by reply at h1");
   assert.ok(readReviewerMemory(path).memory.rereviewed.has(`${sweptPr}@h1`), "recorded on disk");
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual([starts.length, closes.length], [1, 0], "the block at its head does not close the re-reviewer, and a second sweep starts nothing");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "re-review asked by reply at h1");
   // The re-reviewer approves, naming the block, and ends its turn.
   pulls[1] = feedbackPull({ reviews: [BLOCK(), reviewAt(REVIEWER_LOGIN, "APPROVED", "h1", 30)], comments: [replyAt("worker-bot", 20)] });
   end();
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(closes, [{ pr: sweptPr, head: "h1" }], "the approval closes it");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
   pulls[1] = feedbackPull({ reviews: [BLOCK(), reviewAt(REVIEWER_LOGIN, "APPROVED", "h1", 30)], comments: [replyAt("worker-bot", 20), replyAt("worker-bot", 40, "one more")] });
-  ctx.restart().reviewNewHeads();
+  await ctx.restart().reviewNewHeads();
   assert.equal(starts.length, 1, "a second reply, after a restart, starts nothing more");
 });
 
@@ -4016,19 +4021,19 @@ test("A11-156, A11-235: a head is re-reviewed by reply once, and again only by a
   const { port, starts, end, control } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
   const ctx = await sweptWithTicket(port, pulls);
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts.length, 1);
   // The re-reviewer ends having posted nothing (its not-convinced was refused by the door), and is closed.
   end();
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(control.open, false, "closed once its turn ended");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1", "and the board reads the standing block");
-  ctx.pool.reviewNewHeads();
-  ctx.restart().reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
+  await ctx.restart().reviewNewHeads();
   assert.equal(starts.length, 1, "the reply it was started for is not new again, before or after a restart: the head is not re-reviewed by the same reply twice");
   sweptClock.ms = 55 * 60_000;
   pulls[1] = feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20), replyAt("worker-bot", 50, "I disagree, again")] });
-  ctx.restart().reviewNewHeads();
+  await ctx.restart().reviewNewHeads();
   assert.equal(starts.length, 2, "a reply posted after the last look is something new, and is read after a restart");
   assert.deepEqual(starts[1].brief?.rereview?.replies.map(({ text }) => text), ["I disagree, again"], "and only it is quoted");
   assert.equal(ctx.store.get().entries[0].rounds, 2, "each re-review is one of the run's rounds");
@@ -4041,11 +4046,11 @@ test("A11-156: an unconvinced re-review is not read as a lost verdict: no repost
   // The first reviewer started this head in an earlier sweep, so the pool holds it as started.
   writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
   const logged = await captureStderr(async () => {
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
     end();
     control.file = "/checkout/verdict.md";
-    ctx.pool.reviewNewHeads();
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
   });
   assert.equal(starts.length, 1);
   assert.deepEqual([reposts, prompts], [[], []], "the verdict file the door refused is not posted again, and the reviewer is not prompted");
@@ -4067,7 +4072,7 @@ test("A11-156: a reply that is not from the board's account or a declared person
   for (const [why, pull, starts] of scenarios) {
     const { port, starts: made } = rereviewer();
     const ctx = await sweptWithTicket(port, { 1: pull });
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
     assert.equal(made.length, starts ? 1 : 0, why);
   }
 });
@@ -4076,12 +4081,12 @@ test("A11-156: a head that moved is a first review with no replies in its brief,
   const { port, starts, end } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
   const ctx = await sweptWithTicket(port, pulls);
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts[0].brief?.rereview !== undefined, true, "h1 is re-reviewed by reply");
   end();
   pulls[1] = feedbackPull({ head: "h2", reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
   port.close({ pr: sweptPr, head: "h1" });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map(({ ref }) => ref.head), ["h1", "h2"]);
   assert.equal(starts[1].brief?.rereview, undefined, "the new head is a first review");
   assert.equal(starts[1].brief?.doneWhen?.startsWith("## Done-when"), true, "and still carries the ticket's Done-when");
@@ -4091,11 +4096,11 @@ test("A11-156: a first review of a pull request no run holds says its body is th
   const { port, starts } = rereviewer();
   await loadReviewerGate();
   const ctx = setup(1, [], REVIEWING, { gh: ghFor({ 1: feedbackPull() }), reviewerPort: port });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map(({ brief }) => brief), [{ doneWhen: null }]);
   const other = rereviewer();
   const noSection = await sweptWithTicket(other.port, { 1: feedbackPull() }, "A ticket with no Done-when section.");
-  noSection.pool.reviewNewHeads();
+  await noSection.pool.reviewNewHeads();
   assert.deepEqual(other.starts.map(({ brief }) => brief), [{ doneWhen: null }], "a ticket with no such section has none to quote");
 });
 
@@ -4106,14 +4111,14 @@ test("A11-156: a refused re-review start is not remembered, so the next sweep as
   const path = reviewerMemoryPath(ctx.settings.stateDir);
   control.refuse = "another instance holds the review";
   const logged = await captureStderr(async () => {
-    ctx.pool.reviewNewHeads();
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
   });
   assert.equal(starts.length, 2, "asked again on the next sweep");
   assert.equal(logged.filter((line) => line.includes("another instance holds the review")).length, 1, "and said once");
   assert.equal(readReviewerMemory(path).memory.rereviewed.size, 0, "a refused start leaves no record");
   control.refuse = null;
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts.length, 3, "and starts once the refusal is gone");
   assert.equal(readReviewerMemory(path).memory.rereviewed.has(`${sweptPr}@h1`), true);
 });
@@ -4125,16 +4130,16 @@ test("A11-156: replies that cannot be read start nothing and are said once; the 
   const gh = ghFor(pulls);
   const readable = gh.codeHost.readReplies;
   let readableNow = false;
-  gh.codeHost.readReplies = (url, request) => (readableNow ? readable(url, request) : null);
+  gh.codeHost.readReplies = async (url, request) => (readableNow ? readable(url, request) : null);
   const ctx = setup(1, [], REVIEWING, { gh, reviewerPort: port });
   const logged = await captureStderr(async () => {
-    ctx.pool.reviewNewHeads();
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
   });
   assert.equal(starts.length, 0, "null is not 'no reply' and not 'a reply'");
   assert.equal(logged.filter((line) => line.includes("its replies could not be read")).length, 1, "said once across two sweeps");
   readableNow = true;
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts.length, 1, "and read on the next sweep");
 });
 
@@ -4142,7 +4147,7 @@ test("A11-156: a long thread quotes the newest ten replies; a code host that rea
   const { port, starts } = rereviewer();
   const thread = Array.from({ length: 14 }, (_, i) => replyAt("worker-bot", 20 + i, `reply ${i}`));
   const ctx = await sweptWithTicket(port, { 1: feedbackPull({ reviews: [BLOCK()], comments: thread }) });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts[0].brief?.rereview?.replies.map(({ text }) => text), thread.slice(-10).map(({ body }) => body), "the newest ten, oldest first");
   const old = rereviewer();
   await loadReviewerGate();
@@ -4150,8 +4155,8 @@ test("A11-156: a long thread quotes the newest ten replies; a code host that rea
   (gh.codeHost as { readReplies?: unknown }).readReplies = undefined;
   const legacy = setup(1, [], REVIEWING, { gh, reviewerPort: old.port });
   const logged = await captureStderr(async () => {
-    legacy.pool.reviewNewHeads();
-    legacy.pool.reviewNewHeads();
+    await legacy.pool.reviewNewHeads();
+    await legacy.pool.reviewNewHeads();
   });
   assert.equal(old.starts.length, 0);
   assert.equal(logged.filter((line) => line.includes("the code host does not read replies")).length, 1);
@@ -4178,11 +4183,11 @@ test("A11-156: the pool forgets a merged pull request's re-review record, and a 
   const { port, starts } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
   const ctx = await sweptWithTicket(port, pulls);
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   const path = reviewerMemoryPath(ctx.settings.stateDir);
   assert.equal(readReviewerMemory(path).memory.rereviewed.size, 1);
   pulls[1] = feedbackPull({ state: "MERGED", reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.equal(readReviewerMemory(path).memory.rereviewed.size, 0, "dropped from disk with the pull request");
   assert.equal(starts.length, 1);
 });
@@ -4195,7 +4200,7 @@ test("a merged pull request's reviewer is retired by the sweep, and what the poo
   const memory = () => readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory;
   assert.equal(memory().started.size, 1, "remembered before the merge");
   pulls[1] = feedbackPull({ state: "MERGED" });
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.deepEqual(retired, [approvedPr.url], "retired once");
   assert.deepEqual([...memory().started, ...memory().resumed], [], "forgotten on disk too");
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "nothing is started by the sweep");
@@ -4206,14 +4211,14 @@ test("a closed pull request is retired the same way as a merged one", async () =
   const pulls = { 1: feedbackPull() };
   const ctx = await reviewedRun(port, pulls);
   pulls[1] = feedbackPull({ state: "CLOSED" });
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.deepEqual(retired, [approvedPr.url]);
 });
 
 test("an open pull request's reviewer is left alone by the sweep, and still remembered", async () => {
   const { port, retired } = reviewerWith();
   const ctx = await reviewedRun(port, { 1: feedbackPull() });
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.deepEqual(retired, []);
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 1);
 });
@@ -4223,7 +4228,7 @@ test("a pull request whose state cannot be read is kept and logged, and asked ag
   const pulls: Record<number, unknown> = { 1: feedbackPull() };
   const ctx = await reviewedRun(port, pulls);
   delete pulls[1];
-  const logged = await captureStderr(async () => { ctx.pool.releaseReviewers(); });
+  const logged = await captureStderr(async () => { await ctx.pool.releaseReviewers(); });
   assert.deepEqual(retired, []);
   assert.ok(logged.some((line) => line.includes(`${approvedPr.url}: its state could not be read`)), "the unread state is logged");
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 1, "and remembered");
@@ -4235,11 +4240,11 @@ test("a retire that is refused keeps what the pool remembers, and the next sweep
   const pulls = { 1: feedbackPull() };
   const ctx = await reviewedRun(port, pulls);
   pulls[1] = feedbackPull({ state: "MERGED" });
-  const logged = await captureStderr(async () => { ctx.pool.releaseReviewers(); });
+  const logged = await captureStderr(async () => { await ctx.pool.releaseReviewers(); });
   assert.ok(logged.some((line) => line.includes("still working")), "the refusal is logged");
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 1, "kept on disk");
   refuse = false;
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.equal(retired.length, 2, "retried on the next sweep");
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 0, "and forgotten once it has gone");
 });
@@ -4249,14 +4254,14 @@ test("a restarted pool retires a merged pull request from the memory read off di
   const { port, retired } = reviewerWith();
   const ctx = await reviewedRun(port, pulls);
   pulls[1] = feedbackPull({ state: "MERGED" });
-  ctx.restart().releaseReviewers();
+  await ctx.restart().releaseReviewers();
   assert.deepEqual(retired, [approvedPr.url], "the restarted pool retires it");
 });
 
 test("a reviewer the session lists with no memory of it is retired once its pull request has merged", async () => {
   const { port, retired, starts } = reviewerWith({ listedPulls: () => [approvedPr.url] });
   const ctx = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED" }) }), REVIEWING, port);
-  ctx.pool.releaseReviewers();
+  await ctx.pool.releaseReviewers();
   assert.deepEqual(retired, [approvedPr.url], "a reviewer a ticket:review start left is retired");
   assert.deepEqual(starts, [], "and nothing is started");
 });
@@ -4264,7 +4269,7 @@ test("a reviewer the session lists with no memory of it is retired once its pull
 test("a reviewer is not started for a pull request that has merged, even one the pool has forgotten and the tracker still shows open", async () => {
   const { port, starts } = reviewerWith();
   const ctx = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED" }) }), REVIEWING, port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts, [], "no reviewer is started for a merged pull request");
 });
@@ -4300,15 +4305,15 @@ test("a reviewer that ended with its verdict file written and no review at its h
   const reviews: unknown[] = [];
   const made = unpostedReviewer({ reposts: [{ posted: true }] });
   const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }), REVIEWING, made.port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(made.starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started");
   assert.deepEqual(made.posts, [], "a reviewer started in this watch is not judged before it has begun");
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(made.posts, [{ ref: { pr: approvedPr.url, head: "h1" }, file: "/work/verdict-1.md" }], "the verdict file is posted again");
   reviews.push(reviewOn(REVIEWER_LOGIN, "APPROVED", "h1"));
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.equal(made.posts.length, 1, "a review at the head is on the pull request: nothing is posted again");
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined, "and nothing is said of the run");
@@ -4319,14 +4324,14 @@ test("a repost refused once and posted on the next watch leaves exactly one post
   const made = unpostedReviewer({ reposts: [{ refusal: "the reviewer App token could not be minted: no key", final: false }, { posted: true }] });
   const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }), REVIEWING, made.port);
   for (let watch = 0; watch < 3; watch += 1) {
-    ctx.pool.watchFeedback();
+    await ctx.pool.watchFeedback();
     await roundStarted();
   }
   assert.equal(made.posts.length, 2, "one refused and one posted");
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined, "one refusal is not yet something to say on the run");
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.reposts.get(`${approvedPr.url}@h1`)?.attempts, 2, "the attempts are remembered on disk");
   reviews.push(reviewOn(REVIEWER_LOGIN, "APPROVED", "h1"));
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.reposts.size, 0, "and forgotten once the review is on the pull request");
 });
@@ -4336,12 +4341,12 @@ test("three refusals surface `verdict not posted: <reason>` on the run, and noth
   const made = unpostedReviewer({ reposts: [1, 2, 3].map(() => ({ refusal: reason, final: false })) });
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, made.port);
   for (let watch = 0; watch < 4; watch += 1) {
-    ctx.pool.watchFeedback();
+    await ctx.pool.watchFeedback();
     await roundStarted();
   }
   assert.equal(made.posts.length, 3, "three attempts, and no more");
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: ${reason}`, "the third refusal is said on the run");
-  ctx.restart().watchFeedback();
+  await ctx.restart().watchFeedback();
   await roundStarted();
   assert.equal(made.posts.length, 3, "a restarted pool does not reset the attempts");
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: ${reason}`, "and the run keeps saying it");
@@ -4351,12 +4356,12 @@ test("a verdict the door refuses for good is said at once, and is not posted aga
   const reason = "#7 already has a review at an equal patch: APPROVED at 2026-10-16T10:00:00Z";
   const made = unpostedReviewer({ reposts: [{ refusal: reason, final: true }] });
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, made.port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: ${reason}`);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.equal(made.posts.length, 1, "a refusal the door would repeat is not asked again");
 });
@@ -4364,11 +4369,11 @@ test("a verdict the door refuses for good is said at once, and is not posted aga
 test("a reviewer that ended with no verdict file is prompted once, and the second look with no file says so on the run", async () => {
   const made = unpostedReviewer({ file: null });
   const ctx = await reviewedRun(made.port, { 1: feedbackPull() });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(made.prompts,[{ pr: approvedPr.url, head: "h1" }], "prompted once, as a reviewer that has just started is");
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined, "the first look says nothing yet");
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: the reviewer ended without writing a verdict file`);
   assert.equal(made.prompts.length, 1, "and is not prompted again");
@@ -4379,7 +4384,7 @@ test("a reviewer still working is left alone: no repost, prompt or line on the r
   const working = unpostedReviewer({ settled: "working" });
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, working.port);
   for (let watch = 0; watch < 3; watch += 1) {
-    ctx.pool.watchFeedback();
+    await ctx.pool.watchFeedback();
     await roundStarted();
   }
   assert.deepEqual([working.posts, working.prompts], [[], []], "nothing is posted or prompted while it works");
@@ -4388,7 +4393,7 @@ test("a reviewer still working is left alone: no repost, prompt or line on the r
   const reviewed = unpostedReviewer();
   const approved = await readyRun(ghFor({ 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) }), REVIEWING, reviewed.port);
   for (let watch = 0; watch < 2; watch += 1) {
-    approved.pool.watchFeedback();
+    await approved.pool.watchFeedback();
     await roundStarted();
   }
   assert.deepEqual([reviewed.posts, reviewed.prompts], [[], []], "the negative control: a verdict on the head is on the pull request, so nothing is done");
@@ -4399,10 +4404,10 @@ test("a head that moved is not unposted: nothing is posted for the head the revi
   const made = unpostedReviewer({ reposts: [{ posted: true }] });
   const pulls: Record<number, unknown> = { 1: feedbackPull() };
   const ctx = await readyRun(ghFor(pulls), REVIEWING, made.port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   pulls[1] = feedbackPull({ head: "h2" });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(made.posts, [], "the reviewer for h1 is not asked to post at h2");
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined);
@@ -4412,11 +4417,11 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
   const made = unpostedReviewer({ reposts: [{ posted: true }] });
   const reviews: unknown[] = [];
   const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }), REVIEWING, made.port);
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   await roundStarted();
   reviews.push(reviewOn(REVIEWER_LOGIN, "DISMISSED", "h1"));
   for (let watch = 0; watch < 2; watch += 1) {
-    ctx.pool.watchFeedback();
+    await ctx.pool.watchFeedback();
     await roundStarted();
   }
   assert.deepEqual([made.posts, made.prompts], [[], []], "the reviewer's dismissed review is on the pull request: its verdict is not unposted");
@@ -4747,6 +4752,36 @@ test("A11-199: an auto request's brief leaves every choice to the writer, and a 
   assert.equal(run().failure, "NBF-1 is not in the tracker");
 });
 
+/** A tracker whose read of `NBF-1` throws "fetch failed" for the first `fails` reads, then answers with the ticket; `reads` counts them. */
+function flakyTracker(fails: number): { tracker: TicketSource; reads: () => number } {
+  let reads = 0;
+  const tracker: TicketSource = { ...source, read: async (key) => {
+    reads += 1;
+    if (reads <= fails) throw new Error("fetch failed");
+    return { ...ticketOf(key), url: `https://linear.app/x/${key}` } as Ticket;
+  } };
+  return { tracker, reads: () => reads };
+}
+
+test("A11-361: a ticket the writer filed whose read-back keeps failing is no failure: its card reads Done, naming the key the writer reported", async () => {
+  const { tracker, reads } = flakyTracker(Number.POSITIVE_INFINITY);
+  const fixture = writing({ id: "r1", placement: "auto", form: {} }, WRITER, tracker);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "idle");
+  const { run } = fixture;
+  assert.equal(reads(), 4, "the read-back is tried again with backoff before it gives up: one try and one after each of three waits");
+  assert.deepEqual([run().phase, run().failure, writerStatus(run())], ["finished", undefined, "done"]);
+  assert.deepEqual(run().tickets, [{ key: "NBF-1", url: null, inPick: false }], "the card names the key the writer reported");
+});
+
+test("A11-361: a read-back that fails once and then answers shows the ticket as a link", async () => {
+  const { tracker, reads } = flakyTracker(1);
+  const fixture = writing({ id: "r2", placement: "auto", form: {} }, WRITER, tracker);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "idle");
+  assert.equal(reads(), 2);
+  assert.deepEqual([fixture.run().failure, writerStatus(fixture.run())], [undefined, "done"]);
+  assert.equal(fixture.run().tickets[0].url, "https://linear.app/x/NBF-1");
+});
+
 test("A11-267: a request the board filed carries its team into the brief, and the run that files its ticket ends done: the board shows the card Done with the ticket", async () => {
   const fixture = writing({ id: "d1", placement: "auto", form: {}, team: "OPS" }, WRITER, trackerOf({ "OPS-7": { url: "https://linear.app/x/OPS-7" } }));
   const { dir, run } = fixture;
@@ -4836,16 +4871,16 @@ test("A11-106: the sweep asks the code host about the open pull requests of a ru
   const codeHost: CodeHost = { ...world.codeHost, sweepRetargets: ({ urls, stacked }) => { asked.push({ urls, stacked: [...stacked] }); return { ...notes }; } };
   const ctx = await readyPrRun({ ...world, codeHost });
   withBlockerOn(ctx.store, "NBF-1", "nbf-1-fit");
-  ctx.pool.retargetStacked();
+  await ctx.pool.retargetStacked();
   assert.deepEqual(asked, [{ urls: [approvedPr.url], stacked: ["nbf-1-fit"] }], "the run's open pull request is asked, with the branch of its blocker it was stacked on");
   assert.equal(ctx.entry("NBF-1").retargets, undefined, "the host moved it and said nothing, so nothing is recorded on the run");
   const note = `Needs retarget: ${approvedPr.url} still targets nbf-1-fit, whose pull request merged; retarget failed, and agent-org tries again: gh: Resource not accessible by integration (HTTP 403)`;
   notes[approvedPr.url] = note;
-  ctx.pool.retargetStacked();
+  await ctx.pool.retargetStacked();
   assert.equal(asked.length, 2, "it is asked again on the next sweep");
   assert.deepEqual(ctx.entry("NBF-1").retargets, { [approvedPr.url]: note }, "the note the code host answered is the run's, and the board shows it");
   delete notes[approvedPr.url];
-  ctx.pool.retargetStacked();
+  await ctx.pool.retargetStacked();
   assert.equal(ctx.entry("NBF-1").retargets, undefined, "once the host says nothing, the note is cleared");
 });
 
@@ -4864,7 +4899,7 @@ test("A11-106: a run that has not finished is not swept, so its pull requests ar
   const finished = ctx.store.get();
   ctx.store.set({ ...finished, entries: finished.entries.map((entry) => ({ ...entry, phase: "running" })) });
   const before = ctx.store.get();
-  ctx.pool.retargetStacked();
+  await ctx.pool.retargetStacked();
   assert.deepEqual(asked, [], "no pull request of a run that is not finished is asked about");
   assert.equal(ctx.store.get(), before, "and the queue is not written: the same object comes back");
 });
@@ -5207,11 +5242,11 @@ test("A11-153 done-when: a needs-human run goes from Needs you to Answered to Co
   const { tracker, pull, completed } = movingTracker();
   const { pool, entry } = await parkedOnQuestion(ghFor(pulls), tracker);
   assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" }, "the head the pull request was at when the run ended is recorded by the end of the run");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await pool.refreshTracker();
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "reserved to the person \u2014 which colour?"], "nothing has answered it: a watch of an unchanged pull request changes nothing");
   pulls[1] = feedbackPull({ head: "h2" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual(entry("NBF-1").pullHeads, { [approvedPr.url]: { head: "h2", approved: false, review: "none", red: [], pending: [] } }, "the heads carry what the read said of readiness (A11-179)");
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1"))], ["awaiting-review", { line: "Answered: awaiting review", question: "reserved to the person \u2014 which colour?" }]);
   assert.equal(completed.length, 0, "answered is not merged: the ticket is left open");
@@ -5225,10 +5260,10 @@ test("A11-153: a needs-human run whose pull request a reviewer approved at its h
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
   const { pool, entry } = await parkedOnQuestion(ghFor(pulls));
   pulls[1] = feedbackPull({ head: "h1", reviews: [approvalAt("h1")] });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["awaiting-review", "Approved"]);
   pulls[1] = feedbackPull({ head: "h2", reviews: [approvalAt("h1")] });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["awaiting-review", "Answered: awaiting review"], "an approval of an earlier head is no approval of this one");
 });
 
@@ -5238,13 +5273,13 @@ test("A11-258: a needs-human run records the pull requests it ended with changes
   const { tracker, pull, completed } = movingTracker();
   const { pool, entry } = await parkedOnQuestion(ghFor(pulls), tracker);
   assert.deepEqual([entry("NBF-1").outcomeBlocks, entry("NBF-1").outcomeHeads], [{ [approvedPr.url]: "h1" }, { [approvedPr.url]: "h1" }], "the end of the run read the requested changes, and the head they were at");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "reserved to the person \u2014 which colour?"], "still blocked: nothing is cleared");
   pulls[1] = feedbackPull({ head: "h1", mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(runStatus(entry("NBF-1")), "needs-you", "dismissed, but GitHub still computes whether it merges");
   pulls[1] = feedbackPull({ head: "h1" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual(reasonOf(entry("NBF-1")), { line: `the blocker cleared: the requested changes on ${pullLabel(approvedPr.url)} were lifted`, question: "reserved to the person \u2014 which colour?" });
   assert.equal(runStatus(entry("NBF-1")), "awaiting-review");
   assert.deepEqual([entry("NBF-1").workspace, completed.length], ["w2", 0], "the run stays parked, and lifting a review merges nothing");
@@ -5258,7 +5293,7 @@ test("A11-258: a needs-human run whose open pull request was not blocked at its 
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
   const { pool, entry } = await parkedOnQuestion(ghFor(pulls));
   assert.equal(entry("NBF-1").outcomeBlocks, undefined, "nothing was blocked at its end");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "reserved to the person \u2014 which colour?"]);
   assert.equal(entry("NBF-1").pullHeads?.[approvedPr.url]?.mergeable, undefined, "mergeable is recorded only for a run that was blocked: GitHub recomputes it whenever a base moves, and nothing else reads it");
 });
@@ -5267,10 +5302,10 @@ test("A11-153: a run stored before heads were recorded, or whose end could not r
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
   const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls));
   store.set({ ...store.get(), entries: store.get().entries.map(({ outcomeHeads: _recorded, ...rest }) => rest) });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" });
   pulls[1] = feedbackPull({ head: "h2" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" }, "a later head is not taken for the one it ended at");
   assert.equal(runStatus(entry("NBF-1")), "awaiting-review");
 });
@@ -5281,10 +5316,10 @@ test("A11-153: a conflict a stacked run records with its blocker's branch clears
   const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls));
   store.set(recordStackBase(store.get(), "NBF-1", stackBase));
   assert.equal(rebaseNote(entry("NBF-1")), "Resolving a conflict with NBF-0 in doctor.ts");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(rebaseNote(entry("NBF-1")), "Resolving a conflict with NBF-0 in doctor.ts", "UNKNOWN is not mergeable yet: the note stays");
   pulls[1] = feedbackPull({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(rebaseNote(entry("NBF-1")), null, "the pull request is mergeable: the conflict is gone");
   assert.deepEqual(entry("NBF-1").stackBase, { key: "NBF-0", repo: approvedPr.repo, branch: "nbf-0", sha: "b".repeat(40) }, "branched from the head that conflicted, so it is not merged again");
 });
@@ -5584,36 +5619,36 @@ test("A11-179: a run that ended reviewed reads Awaiting review until a watch rea
   const ctx = await readyRun(ghFor(pulls));
   const status = () => [runStatus(ctx.entry("NBF-1")), reasonOf(ctx.entry("NBF-1")).line, ctx.entry("NBF-1").outcome?.kind];
   assert.deepEqual(status(), ["awaiting-review", "not read yet", "reviewed"], "the round ended, and no watch has read the pull request");
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.deepEqual(status(), ["awaiting-review", "review: none yet at 1a2b3c4d", "reviewed"], "green checks and no review at all: A11-177's pull request");
   assert.deepEqual(ctx.entry("NBF-1").pullHeads, { [approvedPr.url]: { head: HEAD_1, approved: false, review: "none", red: [], pending: [] } });
   pulls[1] = gated("SUCCESS", { reviews: [approvalAt(HEAD_1)], reviewDecision: "review-required" });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.deepEqual(status(), ["awaiting-review", "review: none yet at 1a2b3c4d", "reviewed"], "an approval does not outrank GitHub's own review decision");
   pulls[1] = gated(null, { reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.deepEqual(status(), ["awaiting-review", "checks not passed: gate", "reviewed"], "a required check that has not concluded is not green");
   assert.equal(ctx.entry("NBF-1").rounds, undefined, "and no round was started for any of it");
   pulls[1] = gated("SUCCESS", { reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.deepEqual(status(), ["ready-to-merge", null, "reviewed"], "approved at the head by the required review, with the required checks green there");
   assert.equal(publishable(ctx.entry("NBF-1")), true);
   pulls[1] = gated("SUCCESS", { head: HEAD_2, reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.deepEqual(status(), ["awaiting-review", "review: none yet at 5e6f7a8b", "reviewed"], "a push takes the approval of the earlier head with it: a reviewed run is watched until it merges");
   assert.equal(publishable(ctx.entry("NBF-1")), false);
   pulls[1] = gated("SUCCESS", { head: HEAD_2, reviews: [approvalAt(HEAD_2), { ...approvalAt(HEAD_2), state: "CHANGES_REQUESTED", submittedAt: at(9) }] });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.deepEqual(status(), ["awaiting-review", "changes requested at 5e6f7a8b", "reviewed"], "the newest verdict on the head decides");
 });
 
 test("A11-179: a pull request that merged is not read as 'not read yet' in the minutes before the tracker says so: the watch keeps its head record", async () => {
   const pulls: Record<number, unknown> = { 1: gated("SUCCESS", { reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" }) };
   const ctx = await readyRun(ghFor(pulls));
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge");
   pulls[1] = gated("SUCCESS", { state: "MERGED", reviews: [approvalAt(HEAD_1)], reviewDecision: "approved" });
-  ctx.pool.watchFeedback();
+  await ctx.pool.watchFeedback();
   assert.deepEqual([runStatus(ctx.entry("NBF-1")), reasonOf(ctx.entry("NBF-1")).line], ["ready-to-merge", null], "the tracker has not been asked yet; the run does not flicker to 'not read yet'");
 });
 
@@ -5916,7 +5951,7 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
 
   // 2. The blocker's pull request merges, the sweep moves this pull request to main, and its checks fail there.
   stacked.blocker = "MERGED";
-  ctx.pool.retargetStacked();
+  await ctx.pool.retargetStacked();
   assert.deepEqual(stacked.edits, [[approvedPr.url]], "the sweep moves the one pull request of the run");
   pulls[1] = feedbackPull({ head: HEAD_1, base: "main", checks: [redCheck("test", 11)] });
 
@@ -5931,7 +5966,7 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
   pulls[1] = feedbackPull({ head: HEAD_2, base: "main" });
   await finishRound({ ...ctx, dir });
   assert.equal(ctx.entry("NBF-1").outcome?.kind, "reviewed", "the round ended reviewed");
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), [HEAD_1, HEAD_2], "the reviewer reviews the new head");
   assert.deepEqual(ci.reruns, [[jobPage(11)]], "and nothing was rerun by hand: the board reran the red job once, before the round (A11-300)");
 });
@@ -5952,7 +5987,7 @@ test("A11-161: with the reviewer switched off the sweep starts no reviewer and s
   await loadReviewerGate();
   const world = ghFor({ 1: feedbackPull() });
   const made = setup(1, [], PLUGIN_REVIEWER_OFF, { gh: world, reviewerPort: fake });
-  made.pool.reviewNewHeads();
+  await made.pool.reviewNewHeads();
   assert.deepEqual(fake.started, [], "no reviewer starts");
   assert.deepEqual(made.pool.pullReviews(), { [sweptPr]: "waiting on the reviewer (off)" });
   assert.equal(made.pool.reviewerState(), "off-required");
@@ -5966,12 +6001,12 @@ test("A11-161: switched back on, the reviewer resumes on the next head: one revi
   const made = setup(1, [], REVIEWING, { gh: ghFor(pulls), reviewerPort: fake });
   writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map(), looks: new Map(), refusals: new Map() });
   const restarted = made.restart();
-  restarted.reviewNewHeads();
+  await restarted.reviewNewHeads();
   assert.deepEqual(fake.started.map(({ pr, head }) => `${pr}@${head}`).sort(), [`${sweptPr}@h1`, `${SWEPT_REPO_PULL_2}@h2`], "one for each head, and none for the head the memory says was started");
-  restarted.reviewNewHeads();
+  await restarted.reviewNewHeads();
   assert.equal(fake.started.length, 2, "a second sweep starts nothing for those heads");
   pulls[1] = feedbackPull({ head: "h1b" });
-  restarted.reviewNewHeads();
+  await restarted.reviewNewHeads();
   assert.deepEqual(fake.started.slice(2).map(({ head }) => head), ["h1b"], "a new head is the next to start");
   assert.equal(restarted.reviewerState(), "on");
   assert.equal(made.settings.reviewerRequired, true, "a block that names a reviewer plugin is required");
@@ -5980,11 +6015,11 @@ test("A11-161: switched back on, the reviewer resumes on the next head: one revi
 test("A11-161: with reviews required and no reviewer (the block says none), the same line is shown; with the reviewer's block naming it and `required` false, people review there and nothing extra is said", async () => {
   const required = setup(1, [], { providers: { reviewer: { provider: "none", required: true } }, drafts: false }, { gh: ghFor({ 1: feedbackPull() }) });
   await loadReviewerGate();
-  required.pool.reviewNewHeads();
+  await required.pool.reviewNewHeads();
   assert.equal(required.pool.reviewerState(), "off-required");
   assert.deepEqual(required.pool.pullReviews(), { [sweptPr]: "waiting on the reviewer (off)" });
   const notRequired = setup(1, [], { providers: { reviewer: { provider: "atomic", enabled: false, required: false } }, drafts: false }, { gh: ghFor({ 1: feedbackPull() }) });
-  notRequired.pool.reviewNewHeads();
+  await notRequired.pool.reviewNewHeads();
   assert.equal(notRequired.pool.reviewerState(), "none");
   assert.deepEqual(notRequired.pool.pullReviews(), {}, "no pull request no run lists is shown: nothing extra is shown anywhere");
 });
@@ -5997,7 +6032,7 @@ test("A11-161: a reviewer that refuses to start on this host is off, and require
     const made = setup(1, [], tickets, { gh: ghFor({ 1: feedbackPull() }), reviewerPort: fake });
     const refusing = createPool(made.store, { settings: made.settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: made.h.run, reviewer: fake, hostFile: "/work/.agent-org/host.json", now: () => 100,
       load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(made.root, "transcripts"), wait: async () => {}, pluginRecord: join(made.root, "no-plugin-record.json") });
-    refusing.reviewNewHeads();
+    await refusing.reviewNewHeads();
     assert.deepEqual(fake.started, [], "nothing starts");
     assert.equal(refusing.reviewerState(), state, JSON.stringify(tickets));
   }
@@ -6008,7 +6043,7 @@ test("A11-161: with no reviewer and no requirement, a run's open pull requests r
   const ctx = await readyRun(world, { drafts: false });
   assert.equal(ctx.pool.reviewerState(), "none");
   world.host.calls.length = 0;
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(ctx.pool.pullReviews(), { [approvedPr.url]: "awaiting your review" }, "the run's own pull request, from the queue");
   assert.deepEqual(world.host.calls, [], "nothing is read from GitHub to say it, and no repository's open pull requests are listed");
 });
@@ -6017,7 +6052,7 @@ test("A11-161: with reviews required and the reviewer off, a run's open pull req
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), PLUGIN_REVIEWER_OFF);
   assert.equal(ctx.pool.reviewerState(), "off-required");
   assert.equal(ctx.pool.pullReviews()[approvedPr.url], "waiting on the reviewer (off)", "the run's own pull request, before any sweep");
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(ctx.pool.pullReviews(), { [approvedPr.url]: "waiting on the reviewer (off)", [sweptPr]: "waiting on the reviewer (off)" });
 });
 
@@ -6025,13 +6060,13 @@ test("A11-161: a reviewer that was running when it was switched off is not stopp
   const fake = createFakeReviewer();
   await loadReviewerGate();
   const made = setup(1, [], REVIEWING, { gh: ghFor({ 1: feedbackPull({ head: "h1" }) }), reviewerPort: fake });
-  made.pool.reviewNewHeads();
+  await made.pool.reviewNewHeads();
   assert.equal(fake.started.length, 1);
   const off = setup(1, [], PLUGIN_REVIEWER_OFF, { gh: ghFor({ 1: feedbackPull({ head: "h1", state: "MERGED" }) }), reviewerPort: fake });
-  off.pool.releaseReviewers();
+  await off.pool.releaseReviewers();
   assert.deepEqual([fake.retired, fake.closed], [[], []], "a board with the reviewer off closes and retires nothing: it only stops new starts");
   const on = setup(1, [], REVIEWING, { gh: ghFor({ 1: feedbackPull({ head: "h1", state: "MERGED" }) }), reviewerPort: fake });
-  on.pool.releaseReviewers();
+  await on.pool.releaseReviewers();
   assert.deepEqual(fake.retired, [sweptPr], "the reviewer, active again, retires it through listedPulls");
 });
 
@@ -6769,7 +6804,7 @@ test("what a blocker's pull request found is read once for the dependents that w
   assert.equal(gh.host.calls.filter((call) => call === `readMergedFindings ${ANNOUNCEMENT_PULL}`).length, 1, "one read for both");
   assert.deepEqual([made.entry("NBF-1").learned?.[ANNOUNCEMENT_PULL]?.number, made.entry("NBF-2").learned?.[ANNOUNCEMENT_PULL]?.number], [3, 3]);
   const failing = blockedByMerged(["NBF-1"]);
-  failing.gh.codeHost.readMergedFindings = () => { throw new Error("gh exploded"); };
+  failing.gh.codeHost.readMergedFindings = async () => { throw new Error("gh exploded"); };
   const other = setup(1, ["NBF-1"], PLANNER, { source: failing.world.tracker, planFirst: ["NBF-1"], gh: failing.gh });
   const written = await captureStderr(() => other.pool.refreshTracker());
   assert.ok(written.some((line) => line.includes("what A11-165's pull request found could not be read: gh exploded")));
@@ -6821,13 +6856,13 @@ test("A11-206: a pull request whose declaration is recorded is not read again, a
   await other.pool.refreshTracker();
   assert.deepEqual(other.entry("NBF-1").blockersDeclared, { [EMULATOR_PULL(9)]: { kind: "none" } }, "and the next sweep asks again");
   const refusing = blockedByInProgress(["NBF-1"], { 3: "Closes A11-165" });
-  refusing.host.readMergedFindings = () => { throw new Error("gh exploded"); };
+  refusing.host.readMergedFindings = async () => { throw new Error("gh exploded"); };
   const refused = setup(1, ["NBF-1"], {}, { source: refusing.world.tracker, gh: refusing.gh });
   const written = await captureStderr(() => refused.pool.refreshTracker());
   assert.ok(written.some((line) => line.includes("what A11-165's pull request declared could not be read, and is asked again at the next refresh: gh exploded")));
   assert.equal(refused.entry("NBF-1").blockersDeclared, undefined, "a refusal records nothing");
   let asked = 0;
-  refusing.host.readMergedFindings = () => { asked += 1; throw new Error("gh exploded"); };
+  refusing.host.readMergedFindings = async () => { asked += 1; throw new Error("gh exploded"); };
   await captureStderr(() => refused.pool.refreshTracker());
   assert.equal(asked, 1, "and a refusal is asked about once in a sweep, though a work run both learns from the pull request and records what it declared");
 });
@@ -7350,7 +7385,7 @@ test("A11-175: a pull request whose body says Partial: step 3 of 3 is briefed wi
   const { port, starts } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ body: PARTIAL_BODY }) };
   const ctx = await sweptWithPlan(port, pulls, STEPPED_PLAN);
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(starts.length, 1);
   const step = starts[0].brief?.step;
   assert.deepEqual([step?.step, step?.of], [3, 3]);
@@ -7358,7 +7393,7 @@ test("A11-175: a pull request whose body says Partial: step 3 of 3 is briefed wi
   assert.ok(starts[0].brief?.doneWhen?.startsWith("## Done-when"), "and the ticket's Done-when is still given, for the prompt to head as the last step's");
   const again = rereviewer();
   const blocked = await sweptWithPlan(again.port, { 1: feedbackPull({ body: PARTIAL_BODY, reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) }, STEPPED_PLAN);
-  blocked.pool.reviewNewHeads();
+  await blocked.pool.reviewNewHeads();
   assert.equal(again.starts.length, 1);
   assert.deepEqual([again.starts[0].brief?.rereview?.replies.length, again.starts[0].brief?.step?.step, again.starts[0].brief?.step?.section === step?.section], [1, 3, true], "a re-review is briefed with the step as well");
 });
@@ -7366,20 +7401,20 @@ test("A11-175: a pull request whose body says Partial: step 3 of 3 is briefed wi
 test("A11-175: a step the plan numbers as a table row is quoted with its header, and a step with no section in the plan, no plan file, or no run is briefed with none", async () => {
   const rows = rereviewer();
   const withRows = await sweptWithPlan(rows.port, { 1: feedbackPull({ body: PARTIAL_BODY }) }, PLAN_ROWS);
-  withRows.pool.reviewNewHeads();
+  await withRows.pool.reviewNewHeads();
   assert.equal(rows.starts[0].brief?.step?.section, "| Step | Moves | Leaves true |\n| --- | --- | --- |\n| 3. Reviews, checks and the verdict door | The reviewer's calls | The atomic reviewer still starts |");
   const missing = rereviewer();
   const noStep = await sweptWithPlan(missing.port, { 1: feedbackPull({ body: "Refs NBF-1\n\nPartial: step 2 of 3: identity.\n" }) }, PLAN_ROWS);
-  noStep.pool.reviewNewHeads();
+  await noStep.pool.reviewNewHeads();
   assert.deepEqual(missing.starts[0].brief?.step, { step: 2, of: 3, section: null }, "the plan has no row for step 2");
   const noFile = rereviewer();
   const unplanned = await sweptWithPlan(noFile.port, { 1: feedbackPull({ body: PARTIAL_BODY }) }, null);
-  unplanned.pool.reviewNewHeads();
+  await unplanned.pool.reviewNewHeads();
   assert.deepEqual(noFile.starts[0].brief?.step, { step: 3, of: 3, section: null }, "no plan file is downloaded for the run");
   const orphan = rereviewer();
   await loadReviewerGate();
   const none = setup(1, [], { ...REVIEWING, plan: "-plan-[^/]*\\.md$" }, { gh: ghFor({ 1: feedbackPull({ body: PARTIAL_BODY }) }), reviewerPort: orphan.port });
-  none.pool.reviewNewHeads();
+  await none.pool.reviewNewHeads();
   assert.deepEqual(orphan.starts[0].brief, { doneWhen: null, step: { step: 3, of: 3, section: null } }, "a pull request no run holds still names its step, with no section and no Done-when");
 });
 
@@ -7387,7 +7422,7 @@ test("A11-175: a pull request without a Partial: step in its body is briefed as 
   for (const body of [undefined, "Closes NBF-1\n\nThe whole ticket.", "Refs NBF-1\n\nPartial: the settings page\n"]) {
     const { port, starts } = rereviewer();
     const ctx = await sweptWithPlan(port, { 1: feedbackPull(body === undefined ? {} : { body }) }, STEPPED_PLAN);
-    ctx.pool.reviewNewHeads();
+    await ctx.pool.reviewNewHeads();
     assert.equal(starts.length, 1);
     assert.deepEqual(Object.keys(starts[0].brief ?? {}), ["doneWhen"], String(body));
   }
@@ -7397,8 +7432,8 @@ test("A11-175: the unposted-verdict reprompt carries the step of the pull reques
   const prompts: (ReviewBrief | undefined)[] = [];
   const port: ReviewerPort = { start: () => ({ label: "reviewer-7" }), live: () => false, ...idleTeardown, settled: () => "ended", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: (_ref, brief) => { prompts.push(brief); return { prompted: true }; } };
   const ctx = await sweptWithPlan(port, { 1: feedbackPull({ body: PARTIAL_BODY }) }, STEPPED_PLAN);
-  ctx.pool.reviewNewHeads();
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.equal(prompts.length, 1, "a reviewer that ended without a verdict is prompted once");
   assert.equal(prompts[0]?.step?.step, 3);
   assert.ok(prompts[0]?.step?.section?.includes("Move the reviewer's GitHub calls"));
@@ -7428,7 +7463,7 @@ function checksWorld(settled: boolean, unrequiredRed?: string[]) {
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(SWEPT_REPO, 1, { head: "h1", settled, ...(unrequiredRed === undefined ? {} : { unrequiredRed }) });
   // The pull request is in SWEPT_REPO only: every other repository the sweep asks about has none open.
-  const codeHost: CodeHost = { ...host, openPullUrlsOf: (repository) => (repository === SWEPT_REPO ? [sweptPr] : []) };
+  const codeHost: CodeHost = { ...host, openPullUrlsOf: async (repository) => (repository === SWEPT_REPO ? [sweptPr] : []) };
   return { world: { codeHost, host } as World };
 }
 
@@ -7437,7 +7472,7 @@ test("A11-175: a pull request whose only red check is not required gets its revi
   const { port, starts } = rereviewer();
   const { world } = checksWorld(true, ["checks (cross-repo)"]);
   const ctx = setup(1, [], REVIEWING, { gh: world, reviewerPort: port });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map(({ ref }) => ref), [{ pr: sweptPr, head: "h1" }], "lab#144: every required check is green, so the reviewer starts");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "reviewing");
   assert.ok(world.host.calls.includes(`readReviewState ${sweptPr}`), "the code host is asked whether the head has settled");
@@ -7447,7 +7482,7 @@ test("A11-175: a pull request whose checks have not settled (a required one red 
   await loadReviewerGate();
   const { port, starts } = rereviewer();
   const ctx = setup(1, [], REVIEWING, { gh: checksWorld(false).world, reviewerPort: port });
-  ctx.pool.reviewNewHeads();
+  await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, []);
   assert.equal(ctx.pool.pullReviews()[sweptPr], "waiting for checks at h1");
 });

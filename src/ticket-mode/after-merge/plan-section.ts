@@ -9,7 +9,7 @@ import { afterMergeLines } from "../done-when.ts";
 import { ESCALATION_IDS } from "../escalation.ts";
 import { isBoardMoved, type Move } from "../after-merge-move.ts";
 import { linesOf, sectionEnd, type Line } from "../ticket-decisions.ts";
-import { OBSERVE_FORMS, parseObserve } from "./observe.ts";
+import { OBSERVE_FORMS, parseObserve, parseWindow } from "./observe.ts";
 import { lineKey, namesLine, needsPlannedRunner, type PlannedCheck, type Runner } from "./checks.ts";
 
 /** The plan section the planner names each After-merge check's runner in. */
@@ -33,7 +33,7 @@ export const AFTER_MERGE_CHECKS_FORMAT = [
   "  - Escalation: <id>            (only for a `person` runner)",
   "  - Observe: <spec>             (only for a `board` runner)",
   "  - Pass: absent | present      (only for a windowed `Observe:` spec)",
-  "  - Window: <30m | 6h | 7d>     (only for a windowed `Observe:` spec)",
+  "  - Window: <30m | 6h | 7d>     (for a windowed `Observe:` spec, or for an `agent` check that cannot be run until that long after release)",
   `  - Evidence: <one line, at most ${PLANNED_EVIDENCE_CHARS} characters: what would close it>`,
   "```",
   "",
@@ -66,7 +66,7 @@ export const AFTER_MERGE_CHECKS_RULE = "When the ticket's Done-when has `### Aft
   + `list them in a plan section \`${AFTER_MERGE_CHECKS_HEADING}\`, one bullet per line, as \`\` - \`<the After-merge line, quoted exactly>\` \`\`, with these bullets indented under it: `
   + "`- Runner: board`, `agent` or `person`; `- Escalation: <id>`, for a `person` runner, the id of the escalation list's item the check needs the person for; "
   + `\`- Observe: <spec>\`, for a \`board\` runner only, one of ${OBSERVE_FORMS.map((form) => `\`${form}\``).join(", ")}; `
-  + "`- Pass: absent | present` and `- Window: <30m | 6h | 7d>`, for the windowed specs (`run-log`, `merge-queue`, `ci-history`, `doctor`, `release-assets`) only; "
+  + "`- Pass: absent | present` and `- Window: <30m | 6h | 7d>`, for the windowed specs (`run-log`, `merge-queue`, `ci-history`, `doctor`, `release-assets`); an `agent` check that cannot be run until some time after release (\"7 days after release\") takes `- Window:` alone, and the board does not start its verifier run until the window has ended; "
   + `and \`- Evidence: <one line of at most ${PLANNED_EVIDENCE_CHARS} characters saying what would close it>\`, always. `
   + "The org verifies its own work: `session` is not a runner, and the board sends the plan back if it names it or names the chairman's session in any field. "
   + "`board` is for a check the board sees by itself, and it never needs a person: it names its source in `Observe:`, a pass condition and a window. A week-long check (\"for a week, no X happens\") is a `board` check with `Pass: absent` and `Window: 7d`: it passes when the window closes clean, and fails on the first breach, citing the event. "
@@ -149,7 +149,7 @@ export function plannedFrom(line: string, fields: CheckFields, spilled: Readonly
   if (runner === "person" && escalation === undefined) return `"${line}" is the person's and names no escalation item: a check the person would run that is not on the list is an \`agent\` check`;
   if (runner !== "person" && escalation !== undefined) return `"${line}" is the ${runner}'s and names an escalation item, which only a \`person\` runner does`;
   const observeText = value("observe");
-  const givesObserve = observeText !== undefined || fields.has("pass") || fields.has("window");
+  const givesObserve = observeText !== undefined || fields.has("pass") || (runner !== "agent" && fields.has("window"));
   if (runner !== "board" && givesObserve) return `"${line}" is the ${runner}'s and names what the board observes (Observe, Pass or Window), which only a \`board\` runner does`;
   const observe = observeText === undefined ? undefined : parseObserve(observeText, { pass: value("pass"), window: value("window") });
   const unreadable = observe === undefined || typeof observe === "string";
@@ -157,7 +157,9 @@ export function plannedFrom(line: string, fields: CheckFields, spilled: Readonly
   const evidence = fields.get("evidence") ?? "";
   if (evidence === "" || spilled.has("evidence")) return `"${line}" needs its evidence on one line`;
   if (evidence.length > PLANNED_EVIDENCE_CHARS) return `"${line}" gives evidence of ${evidence.length} characters, more than ${PLANNED_EVIDENCE_CHARS}: shorten it to one line of at most ${PLANNED_EVIDENCE_CHARS}`;
-  return { line, runner: runner as Runner, ...(escalation === undefined ? {} : { escalation }), ...(typeof observe === "object" ? { observe } : {}), evidence };
+  const delay = runner === "agent" && fields.has("window") ? parseWindow(value("window")) : undefined;
+  if (typeof delay === "string") return `"${line}" is the agent's and ${delay}`;
+  return { line, runner: runner as Runner, ...(escalation === undefined ? {} : { escalation }), ...(typeof observe === "object" ? { observe } : {}), evidence, ...(delay === undefined ? {} : { window: delay }) };
 }
 
 /** A written check read as one the board can record, or why it is not. PURE. */

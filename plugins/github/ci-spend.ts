@@ -4,7 +4,7 @@
 // the one place a call to GitHub is made on ticket mode's behalf. `filter=all` is the point of the jobs read: the default, `latest`, leaves out the attempts a re-run replaced, and those ran (and were billed) too.
 // Null is "could not ask", as `readCiRun` has it: a refused `gh`, an answer that does not parse, and a list cut short at the page cap are all null, never "no runs".
 import type { BranchCiRun } from "../../src/plugins/contracts/code-host.ts";
-import type { Gh } from "./gh.ts";
+import type { AsyncGh } from "./gh.ts";
 
 /** The runs or jobs GitHub is asked for in one page: its largest. */
 const PAGE_SIZE = 100;
@@ -16,10 +16,10 @@ export const MAX_PAGES = 5;
 const NOT_STARTED: readonly string[] = ["queued", "requested", "waiting", "pending"];
 
 /** Every item of a paged answer, or null when a page is refused or unreadable or the list goes on past {@link MAX_PAGES} pages. `itemsOf` picks the page's items and the total the host says exist from the parsed answer. */
-function readPages(gh: Gh, path: string, itemsOf: (page: any) => { items: unknown; total: unknown }): any[] | null {
+async function readPages(gh: AsyncGh, path: string, itemsOf: (page: any) => { items: unknown; total: unknown }): Promise<any[] | null> {
   const found: any[] = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const { items, total } = itemsOf(JSON.parse(gh(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=${PAGE_SIZE}&page=${page}`])));
+    const { items, total } = itemsOf(JSON.parse(await gh(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=${PAGE_SIZE}&page=${page}`])));
     if (!Array.isArray(items) || !Number.isInteger(total)) return null;
     found.push(...items);
     if (found.length >= (total as number)) return found;
@@ -43,8 +43,8 @@ function jobOf(job: any): BranchCiRun["jobs"][number] | null {
 }
 
 /** The jobs of run `id`, every attempt included, or null when they could not be read. */
-function jobsOfRun(repository: string, id: number, gh: Gh): BranchCiRun["jobs"] | null {
-  const read = readPages(gh, `repos/${repository}/actions/runs/${id}/jobs?filter=all`, (page) => ({ items: page?.jobs, total: page?.total_count }));
+async function jobsOfRun(repository: string, id: number, gh: AsyncGh): Promise<BranchCiRun["jobs"] | null> {
+  const read = await readPages(gh, `repos/${repository}/actions/runs/${id}/jobs?filter=all`, (page) => ({ items: page?.jobs, total: page?.total_count }));
   const jobs = read?.map(jobOf);
   return jobs === undefined || jobs.some((job) => job === null) ? null : (jobs as BranchCiRun["jobs"]);
 }
@@ -63,15 +63,15 @@ function runOf(run: any): Omit<BranchCiRun, "jobs"> | null {
  * The workflow runs of `repository` (`owner/name`) on `branch`, newest first, each with its jobs, or null for "could not ask". Only runs whose `head_branch` is `branch` are kept: the query's filter also matches a fork's branch of that name.
  * A run in `settled` is answered with no jobs, and its jobs are not asked for.
  */
-export function readBranchCi(repository: string, branch: string, settled: ReadonlySet<number>, gh: Gh): readonly BranchCiRun[] | null {
+export async function readBranchCi(repository: string, branch: string, settled: ReadonlySet<number>, gh: AsyncGh): Promise<readonly BranchCiRun[] | null> {
   try {
-    const listed = readPages(gh, `repos/${repository}/actions/runs?branch=${encodeURIComponent(branch)}`, (page) => ({ items: page?.workflow_runs, total: page?.total_count }));
+    const listed = await readPages(gh, `repos/${repository}/actions/runs?branch=${encodeURIComponent(branch)}`, (page) => ({ items: page?.workflow_runs, total: page?.total_count }));
     if (listed === null) return null;
     const runs: BranchCiRun[] = [];
     for (const each of listed.filter((run) => run?.head_branch === branch)) {
       const run = runOf(each);
       if (run === null) return null;
-      const jobs = settled.has(run.id) ? [] : jobsOfRun(repository, run.id, gh);
+      const jobs = settled.has(run.id) ? [] : await jobsOfRun(repository, run.id, gh);
       if (jobs === null) return null;
       runs.push({ ...run, jobs });
     }

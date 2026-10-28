@@ -31,39 +31,39 @@ function holdingThree(states: Partial<Record<string, "open" | "merged" | "closed
 
 const bodied = (body: string) => ({ view: { body } }) as unknown as ReviewState;
 
-test("A11-274: a run holding three pull requests, two of them open, briefs the third's reviewer Refs, naming the two still open", () => {
+test("A11-274: a run holding three pull requests, two of them open, briefs the third's reviewer Refs, naming the two still open", async () => {
   const { ctx } = holdingThree();
-  assert.deepEqual(briefOf(ctx, THIRD, bodied(LAST_STEP)).closing, { key: "A11-253", word: "refs", open: [FIRST, SECOND], merged: [] });
+  assert.deepEqual((await briefOf(ctx, THIRD, bodied(LAST_STEP))).closing, { key: "A11-253", word: "refs", open: [FIRST, SECOND], merged: [] });
 });
 
-test("A11-274: once the other two have merged, the third's brief is Closes, naming them", () => {
+test("A11-274: once the other two have merged, the third's brief is Closes, naming them", async () => {
   const { ctx } = holdingThree({ [FIRST]: "merged", [SECOND]: "merged" });
-  assert.deepEqual(briefOf(ctx, THIRD, bodied(LAST_STEP)).closing, { key: "A11-253", word: "closes", open: [], merged: [FIRST, SECOND] });
+  assert.deepEqual((await briefOf(ctx, THIRD, bodied(LAST_STEP))).closing, { key: "A11-253", word: "closes", open: [], merged: [FIRST, SECOND] });
 });
 
-test("A11-274: a sibling the run read merged is merged, and the host is not asked for it", () => {
+test("A11-274: a sibling the run read merged is merged, and the host is not asked for it", async () => {
   const { ctx, host } = holdingThree({}, { [FIRST]: "merged", [SECOND]: "merged" });
-  assert.equal(briefOf(ctx, THIRD, bodied(LAST_STEP)).closing?.word, "closes", "the run read both merged, whatever the host's seed says");
+  assert.equal((await briefOf(ctx, THIRD, bodied(LAST_STEP))).closing?.word, "closes", "the run read both merged, whatever the host's seed says");
   assert.deepEqual(host.calls.filter((call) => call.startsWith("readPullState")), [], "a merge is final, so the host is not asked");
 });
 
-test("A11-274: a sibling the run read open or closed is read from the host again, since it may have merged or reopened since", () => {
+test("A11-274: a sibling the run read open or closed is read from the host again, since it may have merged or reopened since", async () => {
   const { ctx } = holdingThree({ [FIRST]: "merged", [SECOND]: "open" }, { [FIRST]: "open", [SECOND]: "closed" });
-  assert.deepEqual(briefOf(ctx, THIRD, bodied(LAST_STEP)).closing, { key: "A11-253", word: "refs", open: [SECOND], merged: [FIRST] });
+  assert.deepEqual((await briefOf(ctx, THIRD, bodied(LAST_STEP))).closing, { key: "A11-253", word: "refs", open: [SECOND], merged: [FIRST] });
 });
 
-test("A11-274: a sibling whose state cannot be read leaves the word out, and the reviewer judges it as before", () => {
+test("A11-274: a sibling whose state cannot be read leaves the word out, and the reviewer judges it as before", async () => {
   const { ctx } = holdingThree();
-  const unread = { ...ctx, codeHost: { ...ctx.codeHost, readPullState: (url: string) => (url === SECOND ? null : "MERGED") } } as PoolContext;
-  assert.equal("closing" in briefOf(unread, THIRD, bodied(LAST_STEP)), false);
+  const unread = { ...ctx, codeHost: { ...ctx.codeHost, readPullState: async (url: string) => (url === SECOND ? null : "MERGED") } } as PoolContext;
+  assert.equal("closing" in await briefOf(unread, THIRD, bodied(LAST_STEP)), false);
 });
 
-test("A11-274: a pull request no run holds has no word, and neither has a run's only pull request whose body names no step", () => {
+test("A11-274: a pull request no run holds has no word, and neither has a run's only pull request whose body names no step", async () => {
   const { ctx } = holdingThree();
-  assert.equal("closing" in briefOf(ctx, "https://github.com/a11ign/four/pull/1", bodied(LAST_STEP)), false, "one a person opened");
+  assert.equal("closing" in await briefOf(ctx, "https://github.com/a11ign/four/pull/1", bodied(LAST_STEP)), false, "one a person opened");
   const alone = { ...ctx, store: { get: () => ({ entries: [{ ticket: { key: "A11-1", description: "" }, review: [{ repo: "a11ign/one", url: FIRST }] }] }) } } as unknown as PoolContext;
-  assert.equal("closing" in briefOf(alone, FIRST, bodied("Closes A11-1\n")), false);
-  assert.equal(briefOf(alone, FIRST, bodied("Refs A11-1\n\nPartial: step 1 of 3\n")).closing?.word, "refs", "a step that is not the last says Refs, with no sibling");
+  assert.equal("closing" in await briefOf(alone, FIRST, bodied("Closes A11-1\n")), false);
+  assert.equal((await briefOf(alone, FIRST, bodied("Refs A11-1\n\nPartial: step 1 of 3\n"))).closing?.word, "refs", "a step that is not the last says Refs, with no sibling");
 });
 
 test("A11-274: the word reaches the reviewer the pool starts on a sweep", async () => {
@@ -75,7 +75,7 @@ test("A11-274: the word reaches the reviewer the pool starts on a sweep", async 
   await reviewer.load();
   const queue = fixture.store.get();
   fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", review: urls.map((url) => ({ repo: "nbl-ui-netbox", url })) }] });
-  fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
+  await fixture.restart({ codeHost: host, reviewer }).reviewNewHeads();
   const told = new Map(reviewer.started.map(({ pr }, at) => [pr, reviewer.briefs[at]?.closing]));
   assert.deepEqual([...told.keys()].sort(), [...urls].sort(), "both heads are started");
   assert.deepEqual(told.get(urls[1]), { key: "NBF-1", word: "refs", open: [urls[0]], merged: [] });

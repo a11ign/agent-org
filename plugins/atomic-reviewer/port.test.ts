@@ -83,9 +83,10 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
   };
   const codeHost: CodeHost = {
     ...host,
-    readPullFeedback: (url, self, alsoIgnore) => { hold(url); return host.readPullFeedback(url, self, alsoIgnore); },
-    readReviewState: (url) => { hold(url); return host.readReviewState(url); },
-    readPullState: (url) => { hold(url); return host.readPullState(url); },
+    readPullFeedback: async (url, self, alsoIgnore) => { hold(url); return host.readPullFeedback(url, self, alsoIgnore); },
+    readReviewState: async (url) => { hold(url); return host.readReviewState(url); },
+    peekReviewState: (url) => { hold(url); return host.peekReviewState!(url); },
+    readPullState: async (url) => { hold(url); return host.readPullState(url); },
     readReviewClaims: () => ({ entries: claimEntriesOf(pr) }),
     writeReviewClaim: ({ description }) => {
       const statuses = pr.statuses ??= [];

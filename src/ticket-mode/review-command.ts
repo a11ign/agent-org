@@ -92,7 +92,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   }
   const port = chosen.reviewer;
   const codeHost = active.codeHost();
-  const { code, out } = reviewOnDemand({ url, head, port, readState: (u) => codeHost.readReviewState(u), started: memory.started, record: (label, key, at, unclaimed, look) => {
+  // Read before `reviewOnDemand`, which judges what it is given: the code host answers a promise (contract 2.0), and only this command waits for it.
+  const read = PULL_URL.test(url) ? await codeHost.readReviewState(url) : null;
+  const { code, out } = reviewOnDemand({ url, head, port, readState: () => read, started: memory.started, record: (label, key, at, unclaimed, look) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
     latest.heads.set(label, at);

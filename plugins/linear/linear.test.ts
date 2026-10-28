@@ -417,7 +417,7 @@ test("restoreState() keeps the ticket where it is when its team has no state it 
 
 test("restoreState() says so, and moves nothing, when Linear has no ticket by that key, so the run it belongs to can leave the board", async () => {
   const { fetch, requests } = linear([{ data: { issues: { nodes: [] } } }]);
-  assert.equal(await linearSource({ key: "k", fetch }).restoreState!("NBF-1", { from: "Planned", to: "In Progress" }), "Linear has no ticket NBF-1, so nothing was put back to Planned");
+  assert.equal(await linearSource({ key: "k", fetch }).restoreState!("NBF-1", { from: "Planned", to: "In Progress" }), "Linear matched no ticket for NBF-1 (filter: team key NBF, number 1, archived tickets included), so nothing was put back to Planned");
   assert.equal(requests.length, 1, "only read");
 });
 
@@ -428,7 +428,7 @@ test("a restore Linear answers with success false is a refusal, not a restore", 
 
 test("moveToWorkingState() says so when Linear has no ticket by that key", async () => {
   const { fetch } = linear([{ data: { issues: { nodes: [] } } }]);
-  await assert.rejects(linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-404", "In Progress"), /Linear has no ticket NBF-404/);
+  await assert.rejects(linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-404", "In Progress"), /Linear matched no ticket for NBF-404 \(filter: team key NBF, number 404, archived tickets included\)/);
 });
 
 test("a state move Linear answers with success false is a refusal, not a move", async () => {
@@ -469,8 +469,8 @@ test("addBlockers() makes nothing when Linear has every relation already, so a c
 test("addBlockers() is refused when Linear answers success false, and when it has no ticket by either key", async () => {
   await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [{ id: "uuid-2" }] } } }, created(false)]).fetch }).addBlockers!("NBF-4", ["NBF-2"]),
     /Linear did not record that NBF-2 blocks NBF-4/);
-  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).addBlockers!("NBF-404", ["NBF-2"]), /Linear has no ticket NBF-404/);
-  await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [] } } }]).fetch }).addBlockers!("NBF-4", ["NBF-404"]), /Linear has no ticket NBF-404/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).addBlockers!("NBF-404", ["NBF-2"]), /Linear matched no ticket for NBF-404 \(filter: team key NBF, number 404, archived tickets included\)/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [] } } }]).fetch }).addBlockers!("NBF-4", ["NBF-404"]), /Linear matched no ticket for NBF-404 \(filter: team key NBF, number 404, archived tickets included\)/);
 });
 
 /**
@@ -575,9 +575,26 @@ test("A11-173: comment() posts the body through commentCreate on the ticket's id
   assert.match(bodies[1].query, /commentCreate/);
 });
 
-test("A11-173: comment() is refused when Linear has no ticket by that key, or answers success false", async () => {
+test("A11-360: a ticket is found by its key whether or not Linear has archived it, by comment() and by a batch read", async () => {
+  // Linear leaves an archived ticket out of `issues` unless the query asks for it, and a ticket that is closed is archived after a while (A11-209 was, on 2026-10-25).
+  const posted = linear([{ data: { issues: { nodes: [{ id: "uuid-209" }] } } }, { data: { commentCreate: { success: true } } }]);
+  await linearSource({ key: "k", fetch: posted.fetch }).comment!("A11-209", "c");
+  assert.match(JSON.parse(String(posted.requests[0].init.body)).query, /issues\(first: 1, includeArchived: true, filter: /, "the lookup by team and number asks for archived tickets");
+  const batch = linear([{ data: { k0: { nodes: [] } } }]);
+  await linearSource({ key: "k", fetch: batch.fetch }).stateTypes!(["A11-209"]);
+  assert.match(JSON.parse(String(batch.requests[0].init.body)).query, /k0: issues\(first: 1, includeArchived: true, filter: /, "the batch read asks for them too");
+});
+
+test("A11-360: a lookup that matches nothing names the filter it asked with, and does not say the ticket does not exist", async () => {
   const none = linear([{ data: { issues: { nodes: [] } } }]);
-  await assert.rejects(linearSource({ key: "k", fetch: none.fetch }).comment!("NBF-9", "c"), /Linear has no ticket NBF-9/);
+  const err = await linearSource({ key: "k", fetch: none.fetch }).comment!("a11-9", "c").catch((e: Error) => e);
+  assert.equal((err as Error).message, "Linear matched no ticket for a11-9 (filter: team key A11, number 9, archived tickets included)");
+  assert.doesNotMatch((err as Error).message, /has no ticket/);
+});
+
+test("A11-173: comment() is refused when Linear matches no ticket by that key, or answers success false", async () => {
+  const none = linear([{ data: { issues: { nodes: [] } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: none.fetch }).comment!("NBF-9", "c"), /Linear matched no ticket for NBF-9 \(filter: team key NBF, number 9, archived tickets included\)/);
   const refused = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, { data: { commentCreate: { success: false } } }]);
   await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).comment!("NBF-1", "c"), /Linear did not post a comment on NBF-1/);
 });
@@ -595,7 +612,7 @@ test("A11-91: updateTicketText() writes only the title and description it is giv
 
 test("A11-91: updateTicketText() is refused when Linear has no ticket by that key, or answers success false", async () => {
   const missing = linear([{ data: { issues: { nodes: [] } } }]);
-  await assert.rejects(linearSource({ key: "k", fetch: missing.fetch }).updateTicketText!("NBF-1", { title: "t" }), /Linear has no ticket NBF-1/);
+  await assert.rejects(linearSource({ key: "k", fetch: missing.fetch }).updateTicketText!("NBF-1", { title: "t" }), /Linear matched no ticket for NBF-1 \(filter: team key NBF, number 1, archived tickets included\)/);
   const refused = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, { data: { issueUpdate: { success: false } } }]);
   await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).updateTicketText!("NBF-1", { title: "t" }), /did not update the text of NBF-1/);
 });
@@ -653,7 +670,7 @@ test("A11-178: undoAutomaticCompletion() says so and moves nothing when the hist
 });
 
 test("A11-178: undoAutomaticCompletion() is refused when Linear has no ticket by that key, or answers success false to the move or the comment", async () => {
-  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).undoAutomaticCompletion!("NBF-404", "c"), /Linear has no ticket NBF-404/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).undoAutomaticCompletion!("NBF-404", "c"), /Linear matched no ticket for NBF-404 \(filter: team key NBF, number 404, archived tickets included\)/);
   const integration = [move("2026-10-23T17:02:01Z", { botActor: GITHUB_BOT })];
   await assert.rejects(linearSource({ key: "k", fetch: linear([completedWith(integration), notDone]).fetch }).undoAutomaticCompletion!("NBF-1", "c"), /Linear did not move NBF-1 to In Progress/);
   await assert.rejects(linearSource({ key: "k", fetch: linear([completedWith(integration), done, { data: { commentCreate: { success: false } } }]).fetch }).undoAutomaticCompletion!("NBF-1", "c"),
@@ -764,7 +781,7 @@ test("A11-168: claim() writes again when the latest claim names someone else, ev
 });
 
 test("A11-168: claim() is refused when Linear has no ticket by that key, or answers success false", async () => {
-  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).claim!("NBF-1", "c.1"), /Linear has no ticket NBF-1/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).claim!("NBF-1", "c.1"), /Linear matched no ticket for NBF-1 \(filter: team key NBF, number 1, archived tickets included\)/);
   await assert.rejects(linearSource({ key: "k", fetch: linear([claimed("uuid-1"), { data: { commentCreate: { success: false } } }]).fetch }).claim!("NBF-1", "c.1"), /Linear did not post a comment on NBF-1/);
 });
 

@@ -2,7 +2,7 @@ Every call the board makes to Linear (a query, a mutation, a plan download, an u
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/fresh-fetch.test.ts plugins/linear/linear.test.ts plugins/linear/call-log.test.ts plugins/linear/index.test.ts src/ticket-mode/pool-reads.test.ts src/ticket-mode/pool-linear-connections.test.ts src/ticket-mode/pool.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/fresh-fetch.test.ts plugins/linear/linear.test.ts plugins/linear/call-log.test.ts plugins/linear/index.test.ts src/ticket-mode/pool-start-reads.test.ts src/ticket-mode/pool-reads.test.ts src/ticket-mode/pool-linear-connections.test.ts src/ticket-mode/pool.test.ts
 ```
 
 Consumer-declaration: none -- no existing host file changes meaning. The Linear plugin and the board's pool are the readers of what changed; a plugin that gives no `freshFetch` is called through its `fetch`, as before.

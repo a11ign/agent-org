@@ -365,7 +365,9 @@ function checkDetail(check: TicketCheck, now: number): string {
   if (check.state === "open") {
     const watching = check.watching === null ? [] : [`Watching ${check.watching}${check.windowEnds === null ? "" : ` until ${stampOf(check.windowEnds)} UTC`}`];
     const handed = check.handedOff === undefined ? [] : [`handed to an agent: ${check.handedOff}`];
-    return [...watching, ...handed, `listed ${ageOf(check.listedAt, now)} ago`].join(" · ");
+    const due = check.dueAt === undefined ? [] : [`due ${stampOf(check.dueAt).slice(0, 10)}`];
+    const needs = check.needs === undefined ? [] : [`cannot run here: needs ${check.needs.capability}${check.needs.routedTo === undefined ? check.needs.request == null ? "" : `, ticket requested (${check.needs.request})` : `, routed to ${check.needs.routedTo}`}`];
+    return [...watching, ...due, ...needs, ...handed, `listed ${ageOf(check.listedAt, now)} ago`].join(" · ");
   }
   const followUp = check.state !== "failed" || check.followUp === undefined ? [] : [check.followUp === null ? "no follow-up" : `follow-up filed (${check.followUp})`];
   return [check.result ?? "", check.closedBy === undefined ? "" : `closed by ${CLOSED_BY[check.closedBy]}`, ...followUp].filter((part) => part !== "").join(" · ");
