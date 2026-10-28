@@ -13,6 +13,7 @@
 // start always has. One that cannot listen (LISTEN_FAILED: the port is taken) ends it at once, as the instance's own listen did.
 import type { createBoard } from "./server.ts";
 import type { HealthView } from "./health-route.ts";
+import { healthFigures, type HealthFigures } from "./health-figures.ts";
 import { applyCopies, type BoardSnapshot, type CallMessage, copiesOf, LISTEN_FAILED, type RequestThreadData, type ToBoard, type ToRequests } from "./thread-messages.ts";
 
 /** How often a snapshot is posted when nothing changed, in ms. */
@@ -34,10 +35,15 @@ export type RequestThread = Readonly<{
 }>;
 
 /** The snapshot of `board` as it is now, with the terminal address last worked out and the board thread's health. */
-export function snapshotOf(board: Pick<ThreadBoard, "store" | "pool" | "update">, terminal: string | null, health: HealthView, at: number): BoardSnapshot {
+export function snapshotOf(board: Pick<ThreadBoard, "store" | "pool" | "update">, terminal: string | null, health: HealthView, at: number, figures: HealthFigures | null = null): BoardSnapshot {
   const { pool } = board;
   return { queue: board.store.get(), held: pool.held?.() ?? null, pullReviews: pool.pullReviews?.() ?? {}, claimWarning: pool.claimWarning?.() ?? null, hostAlerts: pool.hostAlerts?.() ?? [], reviewerState: pool.reviewerState?.() ?? null,
-    terminal, update: board.update(), loop: health.loop.board, blocking: health.blocking, at };
+    terminal, update: board.update(), loop: health.loop.board, blocking: health.blocking, figures, at };
+}
+
+/** The rolling health figures of `board` as they are at `at`, or null when its pool keeps none (A11-363). */
+export function figuresOf(board: Pick<ThreadBoard, "pool">, health: HealthView, at: number, startedAt: number): HealthFigures | null {
+  return board.pool.figures === undefined ? null : healthFigures(health.measured, board.pool.figures(), startedAt, at);
 }
 
 /**
@@ -83,6 +89,8 @@ export type BoardThreadDeps = Readonly<{
   /** Calls `run` every `ms`: `setInterval` unless a test drives it. */
   every?: (run: () => void, ms: number) => unknown;
   now?: () => number;
+  /** When this instance started, in ms since the epoch: the age of the figures that have no pass yet. This process's own start unless a test gives one. */
+  startedAt?: number;
   /** Said once, when the request thread first listens. */
   listening?: (port: number) => void;
   err?: (line: string) => void;
@@ -98,7 +106,15 @@ export function startBoardThread(deps: BoardThreadDeps): Readonly<{ queueChanged
   const mayRestart = restartBudget(now);
   let current: RequestThread | null = null;
   let stopping = false;
-  const snapshot = () => snapshotOf(board, terminal, health(), now());
+  const startedAt = deps.startedAt ?? now() - process.uptime() * 1000;
+  // The figures are worked out at most once a second, though a snapshot follows every queue change: a pass that starts several runs changes the queue a dozen times.
+  let figures: Readonly<{ at: number; value: HealthFigures | null }> | null = null;
+  const snapshot = () => {
+    const at = now();
+    const view = health();
+    if (figures === null || at - figures.at >= SNAPSHOT_MS) figures = { at, value: figuresOf(board, view, at, startedAt) };
+    return snapshotOf(board, terminal, view, at, figures.value);
+  };
 
   /** Starts a request thread, and answers how to tell it something. */
   const run = (): ((message: ToRequests) => void) => {

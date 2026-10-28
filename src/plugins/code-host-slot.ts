@@ -14,6 +14,7 @@ import { loadCodeHostSync } from "./activate-host-sync.ts";
 import type { CodeHost } from "./contracts/code-host.ts";
 import type { RowsHelpers, RowsProjectHelpers, RowsReadHelpers } from "./contracts/code-host-rows.ts";
 import type { CodeHostPolicy, LoadedPlugin, PluginDeps, ReviewerHelpers } from "./manifest.ts";
+import { countedFetch } from "../ticket-mode/call-outcomes.ts";
 import { corePolicy } from "./policy.ts";
 import { publishingHelpers } from "./publishing-helpers.ts";
 import { realExec, realExecAsync, realMode, realPlace, realProbe } from "./real-seams.ts";
@@ -110,7 +111,7 @@ const NO_REVIEWER_HELPERS = new Proxy({}, {
 
 /** Every dep a plugin is given except the reviewer's helpers, which are the gate's and so are `active.ts`'s to give. */
 export function lightPluginDeps({ env, stateDir, pick, clones = {}, review, recordCalls }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"]; recordCalls?: boolean }>): Omit<PluginDeps, "reviewing"> {
-  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), freshFetch, ...(recordCalls === true ? { recordCalls } : {}), exec: realExec, execAsync: realExecAsync, readFile: (path) => readFileSync(path, "utf8"), mode: realMode,
+  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: countedFetch((input, init) => fetch(input, init)), freshFetch, ...(recordCalls === true ? { recordCalls } : {}), exec: realExec, execAsync: realExecAsync, readFile: (path) => readFileSync(path, "utf8"), mode: realMode,
     probe: realProbe, messaging: messagingHelpers(), publishing: publishingHelpers(), rows: coreRowsHelpers, place: realPlace };
 }
 

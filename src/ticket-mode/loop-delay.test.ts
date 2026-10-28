@@ -1,7 +1,8 @@
 // no-token: gh -- the histogram and the clock are injected; the one real monitor measures this worker's own loop; nothing is spawned
 import { test } from "node:test";
+import { createHistogram, type RecordableHistogram } from "node:perf_hooks";
 import assert from "node:assert/strict";
-import { LOOP_WINDOW_MS, startLoopMonitor, type DelayHistogram } from "./loop-delay.ts";
+import { HOUR_WINDOWS, LOOP_WINDOW_MS, startLoopMonitor, type DelayHistogram, type LoopMonitorDeps } from "./loop-delay.ts";
 
 const MS = 1e6;
 
@@ -9,7 +10,8 @@ const MS = 1e6;
 function histogramOf(delaysMs: number[]) {
   const asked = { enabled: 0, disabled: 0, resets: 0 };
   let samples = [...delaysMs];
-  const histogram: DelayHistogram & { add: (ms: number) => void } = {
+  const histogram: DelayHistogram & { add: (ms: number) => void; values: () => number[] } = {
+    values: () => samples,
     get count() { return samples.length; },
     get max() { return Math.max(...samples) * MS; },
     percentile: (p) => [...samples].sort((a, b) => a - b)[Math.max(0, Math.ceil((p / 100) * samples.length) - 1)] * MS,
@@ -21,14 +23,21 @@ function histogramOf(delaysMs: number[]) {
   return { histogram, asked };
 }
 
+/** Adds `from` into `into` as Node does, except that a stand-in histogram (which has `values`, in ms) is recorded sample by sample: Node adds only its own. */
+function mergeInto(into: RecordableHistogram, from: DelayHistogram): void {
+  const values = (from as { values?: () => number[] }).values;
+  if (values === undefined) into.add(from as unknown as RecordableHistogram);
+  else for (const ms of values()) into.record(Math.round(ms * MS));
+}
+
 /** A monitor over `delaysMs` whose clock and window timer the test moves. */
-function monitorOver(delaysMs: number[]) {
+function monitorOver(delaysMs: number[], over: Partial<LoopMonitorDeps> = {}) {
   const { histogram, asked } = histogramOf(delaysMs);
   let clock = 1_000;
   let endWindow = (): void => { throw new Error("no window timer was started"); };
   let windowMs = 0;
   let stopped = false;
-  const monitor = startLoopMonitor({ histogram: () => histogram, now: () => clock, every: (run, ms) => { endWindow = run; windowMs = ms; return () => { stopped = true; }; } });
+  const monitor = startLoopMonitor({ histogram: () => histogram, now: () => clock, every: (run, ms) => { endWindow = run; windowMs = ms; return () => { stopped = true; }; }, merge: mergeInto, keepHour: true, ...over });
   return { monitor, histogram, asked, tick: (ms: number) => { clock += ms; }, endWindow: () => endWindow(), windowMs: () => windowMs, stopped: () => stopped };
 }
 
@@ -82,17 +91,76 @@ test("stop ends the window timer and the sampling", () => {
   assert.equal(asked.disabled, 1);
 });
 
+/** Holds this thread's loop for `ms`, as a synchronous spawn does, between two short turns of it. */
+async function holdLoop(ms: number): Promise<void> {
+  await new Promise((done) => { setTimeout(done, 30); });
+  const until = performance.now() + ms;
+  while (performance.now() < until) { /* hold the loop */ }
+  await new Promise((done) => { setTimeout(done, 30); });
+}
+
 test("the real monitor sees a loop held 300 ms", async () => {
   const monitor = startLoopMonitor();
   try {
-    await new Promise((done) => { setTimeout(done, 50); });
-    const until = performance.now() + 300;
-    while (performance.now() < until) { /* hold the loop, as a synchronous spawn does */ }
-    await new Promise((done) => { setTimeout(done, 50); });
+    await holdLoop(300);
     const reading = monitor.read();
     assert.ok(reading.maxMs >= 250, `max ${reading.maxMs} ms`);
     assert.ok(reading.sinceStartMaxMs >= reading.maxMs);
   } finally {
     monitor.stop();
   }
+});
+
+test("the last hour's p50 and p99 are the percentiles of every sample in the finished windows and the one so far, not an average of the minutes'", () => {
+  // Minute one: 98 quiet samples and two 510 ms holds. Minute two (still running): 100 quiet samples. The hour has 200 samples and two holds, so its p99 is the 198th, a quiet one, where minute one's own p99 reads a hold.
+  const quiet = Array.from({ length: 98 }, () => 10);
+  const { monitor, histogram, tick, endWindow } = monitorOver([...quiet, 510, 510]);
+  tick(LOOP_WINDOW_MS);
+  endWindow();
+  for (let sample = 0; sample < 100; sample++) histogram.add(10);
+  tick(5_000);
+  assert.equal(monitor.read().p99Ms, 500, "the minute that was kept reads its hold at p99");
+  const hour = monitor.readHour();
+  assert.equal(hour.p99Ms, 0, "the hour's p99 is a quiet sample: two holds in 200 samples");
+  assert.ok(Math.abs(hour.maxMs - 500) < 1, `the hour's max keeps the hold, ${hour.maxMs}`);
+  assert.equal(hour.windowMs, LOOP_WINDOW_MS + 5_000, "it covers the finished minute and the part of the next");
+});
+
+test("the hour keeps sixty finished windows, and a stall older than that is out of it", () => {
+  const { monitor, histogram, tick, endWindow } = monitorOver([3_010]);
+  tick(LOOP_WINDOW_MS);
+  endWindow();
+  for (let window = 0; window < HOUR_WINDOWS; window++) {
+    histogram.add(10);
+    tick(LOOP_WINDOW_MS);
+    endWindow();
+  }
+  assert.ok(monitor.readHour().maxMs < 1, "the 3 s stall was in the first window, which the sixty after it have pushed out");
+  assert.equal(monitor.readHour().windowMs, HOUR_WINDOWS * LOOP_WINDOW_MS);
+});
+
+test("the real monitor's hour merges real histograms: a held loop is in the hour", async () => {
+  const monitor = startLoopMonitor();
+  try {
+    await holdLoop(200);
+    assert.ok(monitor.readHour().maxMs >= 150, `hour max ${monitor.readHour().maxMs} ms`);
+  } finally {
+    monitor.stop();
+  }
+});
+
+test("a monitor made without keepHour keeps no finished windows: its hour is the window so far", () => {
+  const made = monitorOver([10, 510], { keepHour: false });
+  made.tick(LOOP_WINDOW_MS);
+  made.endWindow();
+  const { monitor } = made;
+  assert.equal(monitor.readHour().maxMs, 0, "the first minute is not in it: only the samples since the window ended");
+  assert.equal(monitor.read().maxMs, 500, "and the minute's own reading is as it always was");
+});
+
+test("a window that cannot be merged into the hour is left out of it, and the minute still ends: the timer never throws", () => {
+  const { histogram, tick, endWindow } = monitorOver([10, 510], { merge: () => { throw new Error("a value Node does not accept"); } });
+  tick(LOOP_WINDOW_MS);
+  assert.doesNotThrow(() => endWindow());
+  assert.deepEqual(histogram.values(), [], "the samples were reset: the next minute starts clean");
 });

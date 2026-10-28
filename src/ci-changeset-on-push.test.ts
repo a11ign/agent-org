@@ -40,10 +40,10 @@ function fill(text: string, values: Record<string, string>) {
   });
 }
 
-/** Run `gate`'s script on `event` with the given results; `ok` is whether `gate` would be green. */
-function gate(event: any, results: any) {
+/** Run `gate`'s script on `event` with the given results, on a draft pull request when `draft`; `ok` is whether `gate` would be green. */
+function gate(event: any, results: any, draft = false) {
   const step = ci.jobs.gate.steps.find((candidate: any) => candidate.run);
-  const values: Record<string, any> = { "github.event_name": event };
+  const values: Record<string, any> = { "github.event_name": event, "github.event.pull_request.draft": event === "pull_request" ? String(draft) : "" };
   for (const [job, result] of Object.entries(results)) values[`needs.${job}.result`] = result;
   const env = Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [key, fill((value as any), values)]));
   const ran = spawnSync("bash", ["-eo", "pipefail", "-c", fill(step.run, values)], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
@@ -100,4 +100,12 @@ test("on a push, a failed suite still fails gate beside a skipped changeset (the
 
 test("ci.yml still triggers on the three events this test covers", () => {
   assert.deepEqual(Object.keys(ci.on).sort(), [...EVENTS].sort());
+});
+
+test("gate accepts a skipped ui job on a draft pull request, and nowhere else", () => {
+  const uiSkipped = { ...allSuccess, ui: "skipped" };
+  assert.equal(gate("pull_request", uiSkipped, true).ok, true);
+  assert.equal(gate("pull_request", uiSkipped, false).ok, false);
+  for (const event of ["merge_group", "push"]) assert.equal(gate(event, uiSkipped).ok, false, event);
+  assert.equal(gate("pull_request", { ...allSuccess, ui: "failure" }, true).ok, false);
 });

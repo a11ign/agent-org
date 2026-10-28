@@ -37,17 +37,21 @@ function ConnectionPill() {
 }
 
 /**
- * The loop line under the pill (A11-282): how long the instance's loop makes a request wait, as its p99, warning from 100 ms, with every reading in its tooltip. A reading with
- * nothing to click. Not drawn before the first reading, nor for an instance that gives none. The sidebar draws it once the connections are read, so it reads the instance shown.
+ * The loop line under the pill (A11-282): how long the instance's loop makes a request wait, as its p99, warning from 100 ms, with every reading in its tooltip, and under it the rolling health figures and a warning
+ * for each over its limit (A11-363). Readings with nothing to click. Not drawn before the first reading, nor for an instance that gives none. The sidebar draws it once the connections are read, so it reads the instance shown.
  */
 function LoopLine() {
   const { connection, fetch } = useShell();
   const line = loopLine(useLoopHealth(connection, fetch));
   if (line === null) return null;
   return (
-    <p className={`loop-line${line.warn ? " loop-line-warn" : ""}`} title={line.title}>
-      {line.text}
-    </p>
+    <>
+      <p className={`loop-line${line.warn ? " loop-line-warn" : ""}`} title={line.title}>
+        {line.text}
+      </p>
+      {line.details.map((detail) => <p key={detail} className="loop-line">{detail}</p>)}
+      {line.flags.map((flag) => <p key={flag} className="loop-line loop-line-warn">{flag}</p>)}
+    </>
   );
 }
 

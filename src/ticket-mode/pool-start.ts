@@ -38,9 +38,11 @@ import { stepPathsOf } from "./plan-step-sections.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { talk, talkFailed } from "./queue/talk.ts";
 import { markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { toolPinOf } from "./pool-pin.ts";
 import { recordPublishPin, recordToolPin } from "./queue/queue-pins.ts";
 import { isDraining } from "./pool-drain.ts";
+import { noteFillCompleted, noteFillEarly, noteFillHolding, noteRunStarted } from "./pool-figures.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles, writeRunFiles } from "./pool-prepare.ts";
 import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
@@ -431,6 +433,11 @@ async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<v
   update(ctx, (queue) => recordPlannedAgainst(recordPathsFailure(recordPaths(queue, found, stepFound), failed), stamps));
 }
 
+/** Why a pass starts nothing on purpose (`holding` in the health figures): a restart does not mend either. */
+const DRAINING = "an update is draining, so no run starts until it has applied";
+const STOPPING = "the instance is stopping, so no run starts";
+const PREFLIGHT_FAILING = "a command of tickets.preflight fails, so no run starts";
+
 /**
  * Why the host's preflight holds the starts, or null when it passes. It is asked within `ctx.readMs`: a check that throws or does not answer holds the starts as a failed one does (A11-359). The reason is `fill`'s to say, once
  * (`saidWhyIdle`), so a gate that keeps failing is not logged on every pass.
@@ -485,6 +492,13 @@ function heldNote(entry: Entry, entries: readonly Entry[]): string {
  */
 export async function fill(ctx: PoolContext): Promise<void> {
   const { batches, deps, removing, rebasing, store } = ctx;
+  // A stopping instance starts nothing: it is waiting for the runs that are starting to finish (A11-363).
+  if (ctx.fillState.stopping) {
+    noteFillHolding(ctx, STOPPING);
+    noteFillCompleted(ctx);
+    noteFillEarly(ctx, STOPPING);
+    return;
+  }
   // Each read is given `ctx.readMs` and none throws for a failed or late answer, so a read that fails or hangs holds the run it belongs to (`blockersFailure`, `pathsFailure`) and no other, and the pass goes on to start what is known
   // (A11-359). The three are awaited here, not in a function of their own: an extra turn here delays a start that waits on nothing, which a test that does not await its tick sees as a start after its folder is gone.
   const unread = unreadBlockerKeys(store.get());
@@ -512,12 +526,20 @@ export async function fill(ctx: PoolContext): Promise<void> {
   const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
   // A run queued again while this pass read the blockers or the paths, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
   // A breaking update that is draining (A11-169) starts nothing: no run, no round, no talk session, no publish run and no new-ticket run, until the update has applied and the record is gone.
-  if (isDraining(ctx)) return saidWhyIdle(ctx, "an update is draining, so nothing starts until it has applied");
+  if (isDraining(ctx)) {
+    // The pass did what a draining board does, which is start nothing: it is a completed pass that ended early on purpose, so a drain that lasts is not a stalled board (A11-363).
+    noteFillHolding(ctx, DRAINING);
+    noteFillCompleted(ctx);
+    noteFillEarly(ctx, DRAINING);
+    return saidWhyIdle(ctx, "an update is draining, so nothing starts until it has applied");
+  }
+  noteFillHolding(ctx, null);
   const starts = nextStarts(store.get(), load, cores, (entry) => entry.blockers !== undefined && !pathsUnread(entry));
   const begun = new Set<string>();
   // A host's own condition for starting work (`tickets.preflight`): while one fails, no ticket run starts and every queued one stays Queued, with the reason on the board.
   // Publishing and the new-ticket writer need none of it, so they go on.
   const held = starts.length === 0 || ctx.settings.preflight.length === 0 ? null : await preflightHold(ctx);
+  if (held !== null) noteFillHolding(ctx, PREFLIGHT_FAILING);
   saidWhyIdle(ctx, starts.length === 0 ? whyNothingStarts(store.get(), load, cores) : held === null ? null : `${held}, so no ticket run starts`);
   for (const entry of held === null ? starts : []) {
     // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched. A batch's tickets share that session: one pane (A11-171).
@@ -536,6 +558,7 @@ export async function fill(ctx: PoolContext): Promise<void> {
   }
   if (publishStarts(store.get())) await startPublish(ctx);
   if (writerToStart(store.get()) !== undefined) await startWriter(ctx);
+  noteFillCompleted(ctx);
 }
 
 /**
@@ -582,6 +605,7 @@ async function startTalk(ctx: PoolContext, members: readonly Entry[]): Promise<v
   const { key } = entry.ticket;
   const keys = members.map(({ ticket }) => ticket.key);
   updateEach(ctx, members, (queue, member) => markStarting(queue, member, now(), workerOf(ctx)));
+  noteRunStarted(ctx);
   try {
     recordPlan(ctx, keys);
     const place = runPlace(ctx, entry);
@@ -635,6 +659,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
   const { batch: _alone, ...entry } = queued;
   // The copy of agent-org this start writes its hooks and commands for is recorded as the start is, before any file names it (A11-169).
   update(ctx, (queue) => recordToolPin(markStarting(queue, entry.ticket.key, now(), workerOf(ctx)), [entry.ticket.key], toolPinOf(ctx)));
+  noteRunStarted(ctx);
   try {
     if (!isPlanning(ctx, entry)) recordPlan(ctx, [entry.ticket.key]);
     if (isPlanning(ctx, entry) && await planReached(ctx, entry.ticket)) {
@@ -686,6 +711,7 @@ export async function takeTicket(ctx: PoolContext, run: Entry): Promise<void> {
 async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<void> {
   const { now } = ctx;
   updateEach(ctx, batch, (queue, key) => recordToolPin(markStarting(queue, key, now(), workerOf(ctx)), [key], toolPinOf(ctx)));
+  noteRunStarted(ctx);
   try {
     const members: Entry[] = [];
     for (const entry of batch) {

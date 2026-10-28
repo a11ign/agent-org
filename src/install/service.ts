@@ -1,5 +1,5 @@
 // @ts-check
-// module: start, stop and status -- run an agent-org service (`herdr`, `instance`, `ui`, `terminal` or `auto-update`) as a launchd user agent on macOS or a systemd user unit on Linux
+// module: start, stop and status -- run an agent-org service (`herdr`, `instance`, `ui`, `terminal`, `auto-update` or `watchdog`) as a launchd user agent on macOS or a systemd user unit on Linux
 //
 // A SERVICE IS A NAME AND THE PROGRAM IT RUNS. `instance` runs `ticket:serve` (the queue and the workers) and `ui` runs `ticket:ui` (the page), each
 // looked up in `commands.ts`'s table: a service whose command the table does not hold is refused by name, so a checkout older than the split says so
@@ -49,14 +49,17 @@ import { TOOL_HERDR_VERSION } from "./herdr-install.ts";
 export const SERVICE_COMMANDS = Object.freeze({
   instance: Object.freeze({ command: "ticket:serve", args: Object.freeze(["--no-open"]) }),
   ui: Object.freeze({ command: "ticket:ui", args: Object.freeze(["--no-open"]) }),
+  watchdog: Object.freeze({ command: "ticket:watchdog", args: Object.freeze([] as string[])}),
 });
 
-export const SERVICE_NAMES = Object.freeze(["herdr", "instance", "ui", "terminal", "auto-update"] as const);
+export const SERVICE_NAMES = Object.freeze(["herdr", "instance", "ui", "terminal", "auto-update", "watchdog"] as const);
 export type ServiceName = (typeof SERVICE_NAMES)[number];
 /** The services that run the tool's code, which `update` restarts once `current` has moved. herdr is never restarted by an update; the terminal runs the plugin's, and the updater is the one moving it. */
 export const TOOL_SERVICES: readonly ServiceName[] = Object.freeze(["instance", "ui"]);
 /** How often `auto-update` runs `agent-org update`: an update applies within minutes (A11-169), and one with nothing new is a tag fetch that restarts nothing. */
 export const UPDATE_INTERVAL_SECONDS = 600;
+/** How often the `watchdog` service runs `agent-org ticket:watchdog` (A11-363): the longest a stall goes unseen is a minute past its limit. */
+export const WATCHDOG_INTERVAL_SECONDS = 60;
 /** The services the instance's unit and the terminal's `Want=` and start after: starting either starts herdr, and a restart of either leaves it alone. */
 const NEEDS_HERDR: readonly ServiceName[] = ["instance", "terminal"];
 export type UpdateChannel = "release" | "main";
@@ -248,6 +251,12 @@ function programFor(name: ServiceName, deps: ServiceDeps): Program {
       environment: toolEnvironment(), workingDirectory: deps.toolRoot, tool: true, everySeconds: UPDATE_INTERVAL_SECONDS,
     };
   }
+  if (name === "watchdog") {
+    const { command } = SERVICE_COMMANDS.watchdog;
+    if (!Object.hasOwn(deps.commands, command)) throw new ServiceRefusal(`the watchdog service runs \`agent-org ${command}\`, which this version of agent-org does not have. Run \`agent-org update\` for a version that does.`);
+    return { description: "agent-org watchdog: agent-org ticket:watchdog, every minute, restarts the instance when it is stalled", argv: [deps.node, bin, command], environment: toolEnvironment(),
+      workingDirectory: deps.toolRoot, tool: true, everySeconds: WATCHDOG_INTERVAL_SECONDS };
+  }
   const root = pluginRoot(deps.read(join(herdrConfigDir(deps.env, deps.home), "plugins.json")));
   if (root === null) throw new ServiceRefusal(`the terminal service runs herdr web ui, which herdr has not installed. Run \`agent-org onboard\`, which installs it at its newest release tag.`);
   const path = servicePath(deps.env.PATH);
@@ -330,20 +339,21 @@ ${Object.entries(environment).map(([key, value]) => `Environment=${systemdQuoted
   if (everySeconds !== null) {
     // A timer and the oneshot service it starts. `OnCalendar` with `Persistent` runs a missed run once the machine is up again.
     const timer = `agent-org-${name}.timer`;
+    // The watchdog runs every minute, on the minute, and a run that hangs is ended by systemd: a probe waits 30 s at most, so ninety seconds is a run that is stuck. A missed minute is not made up (`Persistent` is off).
+    const watchdog = name === "watchdog";
     const serviceText = `[Unit]
 Description=${description}
 
 [Service]
 Type=oneshot
-${body}
+${watchdog ? "TimeoutStartSec=90\n" : ""}${body}
 `;
+    const schedule = watchdog ? "OnCalendar=minutely\nAccuracySec=1s\nRandomizedDelaySec=0\nPersistent=false" : "OnCalendar=*:0/10\nRandomizedDelaySec=60\nPersistent=true";
     const timerText = `[Unit]
 Description=${description}
 
 [Timer]
-OnCalendar=*:0/10
-RandomizedDelaySec=60
-Persistent=true
+${schedule}
 Unit=${service}
 
 [Install]
@@ -579,6 +589,20 @@ export async function startService(name: ServiceName, deps: ServiceDeps): Promis
     const taken = served.exposure.claim(served.port, served.local, served.name);
     if (taken !== null) throw new ServiceRefusal(taken);
   }
+  installUnit(name, unit, deps);
+  if (served === null || dns === null) return { ...unit, address: null };
+  const result = served.exposure.serve(served.port, served.local);
+  if (result.status !== 0) throw new TailnetRefusal(`the ${name} service started on 127.0.0.1, but the exposure does not reach it: ${result.refusal ?? result.stderr}`);
+  // The address says the port it is served on, as a browser is given it: the origin that names it, else the first one the exposure gives.
+  const origins = served.exposure.origins({ name: dns, port: served.port });
+  return { ...unit, address: `${origins.find((origin) => origin.endsWith(`:${served.port}`)) ?? origins[0]}/` };
+}
+
+/**
+ * Write the unit (and the oneshot service a timer starts), register it to start at login, and start it. herdr is STARTED, never restarted: a start leaves a running server alone, and a restart ends every worker's
+ * pane and agent.
+ */
+function installUnit(name: ServiceName, unit: Unit, deps: ServiceDeps): void {
   const previous = deps.read(unit.path);
   if (unit.companion !== null) deps.write(unit.companion.path, unit.companion.text);
   deps.write(unit.path, unit.text);
@@ -587,19 +611,20 @@ export async function startService(name: ServiceName, deps: ServiceDeps): Promis
     const agent = { name, unit, deps };
     launchctlMust(agent, "enable", ["enable", launchdTarget(unit, deps)]);
     loadLaunchd(agent, previous);
-  } else {
-    must(deps.run("systemctl", ["--user", "daemon-reload"]), "systemctl --user daemon-reload");
-    must(deps.run("systemctl", ["--user", "enable", unit.id]), `systemctl --user enable ${unit.id}`);
-    // herdr is STARTED, never restarted: a start leaves a running server alone, and a restart ends every worker's pane and agent.
-    const verb = name === "herdr" ? "start" : "restart";
-    must(deps.run("systemctl", ["--user", verb, unit.id]), `systemctl --user ${verb} ${unit.id}`);
+    return;
   }
-  if (served === null || dns === null) return { ...unit, address: null };
-  const result = served.exposure.serve(served.port, served.local);
-  if (result.status !== 0) throw new TailnetRefusal(`the ${name} service started on 127.0.0.1, but the exposure does not reach it: ${result.refusal ?? result.stderr}`);
-  // The address says the port it is served on, as a browser is given it: the origin that names it, else the first one the exposure gives.
-  const origins = served.exposure.origins({ name: dns, port: served.port });
-  return { ...unit, address: `${origins.find((origin) => origin.endsWith(`:${served.port}`)) ?? origins[0]}/` };
+  must(deps.run("systemctl", ["--user", "daemon-reload"]), "systemctl --user daemon-reload");
+  must(deps.run("systemctl", ["--user", "enable", unit.id]), `systemctl --user enable ${unit.id}`);
+  const verb = name === "herdr" ? "start" : "restart";
+  must(deps.run("systemctl", ["--user", verb, unit.id]), `systemctl --user ${verb} ${unit.id}`);
+}
+
+/**
+ * Register a service the exposure never serves and start it, synchronously (A11-363): what `update` does for the `watchdog` on a machine that has the instance and not the watchdog.
+ * {@link startService} does the same and is asynchronous only for the exposure.
+ */
+export function registerService(name: Exclude<ServiceName, "ui" | "terminal">, deps: ServiceDeps): void {
+  installUnit(name, unitFor(name, deps), deps);
 }
 
 /** What {@link reapplyServes} found at one served service's port: this board's entry already there, put back, another's (left alone), or a port it could not read or serve. */
@@ -660,6 +685,18 @@ export async function stopService(name: ServiceName, deps: ServiceDeps): Promise
   }
   const served = await servedAt(name, deps);
   if (served !== null) removeServe(served);
+}
+
+/**
+ * How long `name`'s unit has been active, in ms, or null when it is not running (A11-363): the watchdog leaves an instance that is still starting alone, and one a person stopped. `uptimeMs` is how long the machine has been up,
+ * which systemd's monotonic timestamp is measured against. A launchd job is not timed (its job restarts it by itself), so it reads as long active.
+ */
+export function activeForMs(name: ServiceName, deps: ServiceDeps, uptimeMs: number): number | null {
+  if (serviceState(name, deps) !== "running") return null;
+  const unit = unitFor(name, deps);
+  if (unit.manager !== "systemd") return Infinity;
+  const since = Number(deps.run("systemctl", ["--user", "show", "--property=ActiveEnterTimestampMonotonic", "--value", unit.id]).stdout.trim());
+  return Number.isFinite(since) && since > 0 ? Math.max(0, uptimeMs - since / 1000) : Infinity;
 }
 
 /**

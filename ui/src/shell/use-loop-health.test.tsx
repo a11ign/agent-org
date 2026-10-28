@@ -37,6 +37,16 @@ describe("useLoopHealth", () => {
     expect(fetch.paths).toEqual(["/c/here/api/health", "/api/health", "/c/here/api/health", "/api/health"]);
   });
 
+  it("carries the rolling figures and the watchdog's record when the instance serves them (A11-363)", async () => {
+    const figures = { at: 1, uptimeMs: 2, loop: { lastMinute: { p50Ms: 1, p99Ms: 2 }, lastHour: { p50Ms: 1, p99Ms: 3 } }, syncHolds: { lastHour: 0, holdMs: 100 }, calls: { linear: { calls: 0, failures: 0, failuresPer100: 0 }, github: { calls: 0, failures: 0, failuresPer100: 0 } },
+      runs: { sinceLastStartMs: null, startable: 0, freeSlots: 3, starting: 0, oldestStartingMs: null, holding: null }, fill: { sinceLastCompletedMs: 1_000, lastEarlyReturn: null } };
+    const watchdog = { restartsLastHour: 0, restartsLastDay: 1, restartsTotal: 1, last: null };
+    const fetch = healthFetch(async () => json(200, { loop: { board: BOARD }, blocking: [], figures, watchdog }));
+    const { result } = renderHook(() => useLoopHealth(HERE, fetch));
+    await advance(0);
+    expect(result.current).toEqual({ board: BOARD, page: PAGE, figures, watchdog });
+  });
+
   it("gives no instance reading for an instance from before /api/health", async () => {
     const fetch = healthFetch(async () => json(404, { error: "no route GET /api/health" }));
     const { result } = renderHook(() => useLoopHealth(HERE, fetch));

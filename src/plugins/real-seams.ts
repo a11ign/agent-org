@@ -12,6 +12,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { basename } from "node:path";
 import { RUN_ROOT_ENV } from "../private-tmp.ts";
+import { countProgram } from "../ticket-mode/call-outcomes.ts";
 import type { ExecOptions, ExecResult, HostPlaceReading, ProbeRequest } from "./manifest.ts";
 
 /** How long a program may run when its caller names no limit: a Keychain prompt a person is reading, or a marketplace add, takes minutes. */
@@ -50,6 +51,12 @@ const notStarted = (why: string): ExecResult => ({ status: null, stdout: "", std
  * laid over this process's environment for the run.
  */
 export function realExec(file: string, args: readonly string[], options: ExecOptions = {}): ExecResult {
+  const answer = execOnce(file, args, options);
+  countProgram(file, answer);
+  return answer;
+}
+
+function execOnce(file: string, args: readonly string[], options: ExecOptions): ExecResult {
   const timeout = options.timeoutMs ?? DEFAULT_EXEC_MS;
   const env = envOf(options);
   const refused = refuseUnderTests(file, env);
@@ -66,7 +73,13 @@ export function realExec(file: string, args: readonly string[], options: ExecOpt
  * {@link realExec} without holding this process still: the program runs under `execFile`, so the event loop goes on while it does. It answers as `realExec` does and never rejects: a program that cannot start answers no status and
  * the reason in `stderr` and `spawnError`; one cut at its bound answers `spawnError` naming `ETIMEDOUT`, and one that printed more than `maxBuffer` names `ENOBUFS`.
  */
-export function realExecAsync(file: string, args: readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
+export async function realExecAsync(file: string, args: readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
+  const answer = await execAsyncOnce(file, args, options);
+  countProgram(file, answer);
+  return answer;
+}
+
+function execAsyncOnce(file: string, args: readonly string[], options: ExecOptions): Promise<ExecResult> {
   const env = envOf(options);
   const refused = refuseUnderTests(file, env);
   if (refused !== null) return Promise.resolve(notStarted(refused));

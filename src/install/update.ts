@@ -31,7 +31,7 @@ import { pathToFileURL } from "node:url";
 import { runCommand } from "./command-exit.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { chooseReleaseTag, compareReleaseTags, isReleaseTag, isToolVersion, LATEST } from "../lib/release-tag.ts";
-import { defaultServiceDeps, reloadService, restartService, serviceState, TOOL_SERVICES, type ServiceDeps, type ServiceName, type ServiceState } from "./service.ts";
+import { defaultServiceDeps, registerService, reloadService, restartService, serviceState, TOOL_SERVICES, type ServiceDeps, type ServiceName, type ServiceState } from "./service.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
@@ -109,6 +109,8 @@ export type UpdateDeps = Readonly<{
   herdr: () => HerdrUpkeep;
   /** What the release `current` names ships to the agents host, installed from that release (A11-354): the units, the launcher, the workers README, the reviewers' door. Run at every update, the one that finds nothing newer included. Never throws. */
   hostInstall: () => ConventionsUpdate;
+  /** The watchdog service (A11-363): registered on a machine that runs the instance and has none, so every board is watched without a person remembering to start it. Never throws. */
+  watchdog: () => ConventionsUpdate;
   out: Pick<Console, "log" | "error">;
 }>;
 
@@ -121,6 +123,24 @@ export class UpdateRefusal extends Error {}
 export function conventionsWiring(settings: Pick<TicketSettings, "plugins"> | null, home: string, run: Run = runProgram): Pick<UpdateDeps, "conventions"> {
   return {
     conventions: () => (settings === null ? { said: [], failed: [] } : updateConventions(settings.plugins, { run, stateOf: stateOfRecord(home, { record: join(home, ".claude", "plugins", "installed_plugins.json") }) })),
+  };
+}
+
+/**
+ * The production wiring of the watchdog's upkeep (A11-363): a machine whose instance service is registered and whose watchdog service is not, gets the watchdog registered and started. A watchdog that is registered and stopped
+ * is a person's `agent-org stop watchdog`, and is left stopped. Exported so the wiring is tested with stand-in services.
+ */
+export function watchdogWiring(services: ServiceDeps): Pick<UpdateDeps, "watchdog"> {
+  return {
+    watchdog: () => {
+      try {
+        if (serviceState("instance", services) === "not-registered" || serviceState("watchdog", services) !== "not-registered") return { said: [], failed: [] };
+        registerService("watchdog", services);
+        return { said: ["registered the watchdog service, which restarts the instance when it stalls: `agent-org stop watchdog` turns it off"], failed: [] };
+      } catch (err) {
+        return { said: [], failed: [`the watchdog service could not be registered: ${String((err as Error)?.message ?? err).split("\n")[0]}. Run \`agent-org start watchdog\``] };
+      }
+    },
   };
 }
 
@@ -164,6 +184,7 @@ export function update(options: { version: string | undefined; channel: Channel;
     keepConventions(deps);
     keepHost(deps);
     keepHerdr(deps);
+    sayUpkeep(deps, deps.watchdog());
   }
 }
 
@@ -489,6 +510,7 @@ function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"], newestHerdr: HerdrNewes
     upkeep,
     ...conventionsWiring(settings, home),
     ...herdrWiring(newestHerdr, services),
+    ...watchdogWiring(services),
     hostInstall: () => hostInstallUpkeep(tool),
     out: console,
   };
