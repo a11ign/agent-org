@@ -164,7 +164,10 @@ export async function probeHealth(port: number, timeoutMs: number = PROBE_MS, fe
     const figures = body?.figures ?? null;
     // Figures that are there but not figures are not an answer: read as healthy, they would hold back every restart (A11-363 review).
     if (figures !== null && !isHealthFigures(figures)) return { kind: "unanswered", why: "it answered with figures the watchdog cannot read" };
-    return { kind: "answered", health: { boardSnapshotAgeMs: typeof body?.boardSnapshotAgeMs === "number" ? body.boardSnapshotAgeMs : 0, figures } };
+    // The figures are as old as the snapshot: figures with no readable age could be any age, and read as fresh they would hold back a restart. An instance from before the figures sends neither.
+    const age = body?.boardSnapshotAgeMs;
+    if (figures !== null && !isNumber(age)) return { kind: "unanswered", why: "it answered figures without a readable snapshot age" };
+    return { kind: "answered", health: { boardSnapshotAgeMs: isNumber(age) ? age : 0, figures } };
   } catch (err) {
     const cause = (err as { cause?: { code?: string } }).cause?.code;
     return { kind: "unanswered", why: (err as Error)?.name === "TimeoutError" ? `no answer within ${seconds(timeoutMs)}` : `${cause ?? String((err as Error)?.message ?? err)}` };
