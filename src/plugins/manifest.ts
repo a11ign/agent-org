@@ -265,10 +265,6 @@ export type PluginDeps = Readonly<{
   stateDir: string;
   log: (line: string) => void;
   fetch: typeof fetch;
-  /** A `fetch` that opens a connection for each call and closes it after, so no call reuses a socket the far end closed while it sat idle (A11-359). The board's deps give one; a plugin that makes calls the board's loop waits on uses it in place of `fetch` where it is there. */
-  freshFetch?: typeof fetch;
-  /** True in the board's own process only (A11-359): a tracker plugin keeps the rate of its failed calls in the state folder for doctor, which a short-lived process (`pr:open` in a worker's pane) must not overwrite with its own few calls. */
-  recordCalls?: boolean;
   /**
    * Runs `file` with `args`. `inherit` gives it this process's terminal, for a program that prompts (`security add-generic-password -w`). `timeoutMs` bounds the run (ten minutes
    * when absent); a program that cannot start answers no status and the reason in its stderr.

@@ -7,16 +7,10 @@
 // A REMOVAL IS NOT ALWAYS THE CHANGE'S (A11-295). On 2026-10-26 a11ign/agent-org#1939, approved and armed, was removed because the `merge_group` run's install could not find a package version published minutes before (`ETARGET`). The board started a round, the worker found
 // nothing to change and ended without a push, and nothing armed the pull request again: it sat approved and out of the queue for 75 minutes. Two things are the board's now. A removal whose failed jobs all failed before the code ran (an install or registry error, a lost
 // runner, a job that could not be set up) asks the arm bot to arm the pull request again, with no round, up to {@link MAX_REARMS} times for a head. And a round that ends with the head unmoved and the pull request out of the queue asks the arm bot too, or says in the log why it did not.
-//
-// A FLAKY TEST IS NOT A ROUND (A11-371). On 2026-10-28 agent-org#1983, approved and clean, was removed because one `ui` test failed in the `merge_group` run; the same test passed on the pull request's own checks, and the pull request sat out of the queue for six hours. The
-// first removal for a failed job of the code's is now answered by a RERUN of the merge group's failed jobs, with no worker asked: when they pass the test is recorded as a flake (A11-300) and the arm bot is asked to arm the pull request again, once; when they fail again, or the pull request is
-// removed again at the same head, a round starts and quotes the failing test. The card says "ejected from the merge queue: <job>, retrying" while the rerun runs, and "... sent to the run" once the run has it.
 import { isRollUpCheck } from "../newest-check-run.ts";
-import type { CiRun, PullFeedback, PullQueue, QueueFailure, QueueFailureJob, QueueRemoval } from "../plugins/contracts/code-host.ts";
-import type { QueueHead, QueueRetry } from "./board-view/queue-head.ts";
+import type { PullFeedback, PullQueue, QueueFailure, QueueFailureJob, QueueRemoval } from "../plugins/contracts/code-host.ts";
+import type { QueueHead } from "./board-view/queue-head.ts";
 import type { Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { failedTestOf } from "./failure-words.ts";
-import type { Flake } from "./flakes.ts";
 import { infrastructureCause, QUOTED_LINES, readCheck, registryCause, type ReadCheck } from "./pool-checks.ts";
 import type { PoolContext } from "./pool-context.ts";
 import { log, messageOf } from "./pool-state.ts";
@@ -28,12 +22,6 @@ export const HOLD_AFTER = 3;
 
 /** How many times the board asks the arm bot to arm a pull request again at one head, for a removal the change did not cause or a round that pushed nothing: the ticket says "at most two re-arms per head". */
 export const MAX_REARMS = 2;
-
-/** How long after a rerun a run that still reads failed is read as the failure that was rerun and not as the rerun failing again: GitHub's read can lag the rerun by a few seconds (`pool-checks.ts` keeps the same bound for a pull request's own checks). */
-const RETRY_SETTLE_MS = 5 * 60_000;
-
-/** The longest the board waits for the rerun of a merge group's jobs before it asks a worker anyway: the pull request must not sit out of the queue for more than half an hour (A11-371). */
-const RETRY_WAIT_MS = 30 * 60_000;
 
 /** The step of a job that GitHub runs to bring a runner up: a job that failed there never ran the code. */
 const SET_UP_JOB = "Set up job";
@@ -236,7 +224,7 @@ const infrastructureJobLine = ({ job, check }: ReadJob): string =>
   `${job.name} also failed in the merge group for an infrastructure reason (${check.infrastructure}): that is not a fault in your change, so leave it.`;
 
 /** The brief of a round for a removal after a failed `merge_group` run: what happened, which jobs failed and where, and what to do. PURE. */
-function failedBrief(pull: Pull, removal: QueueRemoval, failure: QueueFailure | null, read: Readonly<{ own: readonly ReadJob[]; infrastructure: readonly ReadJob[] }>, then: Readonly<{ rearms: number; willRearm: boolean; earlier?: QueueHead }>): string {
+function failedBrief(pull: Pull, removal: QueueRemoval, failure: QueueFailure | null, read: Readonly<{ own: readonly ReadJob[]; infrastructure: readonly ReadJob[] }>, then: Readonly<{ rearms: number; willRearm: boolean }>): string {
   const { url, read: feedback } = pull;
   const base = feedback.base ?? "its base branch";
   const run = failure === null ? "" : ` (${failure.runUrl})`;
@@ -246,16 +234,7 @@ function failedBrief(pull: Pull, removal: QueueRemoval, failure: QueueFailure | 
     : failure.jobs.length === 0 ? ["The run names no failing job."]
       : read.own.length === 0 ? ownJobLines(read.infrastructure) : [...ownJobLines(read.own), ...read.infrastructure.map(infrastructureJobLine)];
   const closing = beforeTheCodeOnly ? beforeTheCode(base, then.rearms) : `Merge ${base} in, reproduce the failure, fix it, and push.`;
-  return [`${url} was removed from the merge queue at ${timeOf(removal.at)} because its merge_group run failed${run}. ${where}`, ...rerunLines(then.earlier, read.own), ...named, closing, ...(then.willRearm ? [WHEN_NOTHING_TO_FIX] : [])].join("\n");
-}
-
-/** What a round is told of the rerun the board made before it (A11-371), and the test that failed: nothing when the board made none. PURE. */
-function rerunLines(earlier: QueueHead | undefined, own: readonly ReadJob[]): string[] {
-  if (earlier?.retried !== true) return [];
-  const said = earlier.rerunPassed === true ? "The board reran the failed jobs once and they passed, so it asked the arm bot to queue the pull request again; the queue removed it again."
-    : earlier.step === "retrying" ? "The board reran the failed jobs and they did not pass."
-      : "The board reran the failed jobs once before; the queue removed the pull request again.";
-  return [said, ...own.map(({ job, check }) => `The failing test in ${job.name}: ${failedTestOf(check)}`)];
+  return [`${url} was removed from the merge queue at ${timeOf(removal.at)} because its merge_group run failed${run}. ${where}`, ...named, closing, ...(then.willRearm ? [WHEN_NOTHING_TO_FIX] : [])].join("\n");
 }
 
 /** What a round is told when every failed job failed before the code ran and the board is not asking the arm bot to arm the pull request again: how often it did. PURE. */
@@ -285,7 +264,7 @@ function answerFailed(ctx: PoolContext, entry: Entry, pull: Pull, removal: Queue
   const names = jobs.map(({ name }) => name);
   const head = read.head!;
   const rearms = prior?.rearms ?? 0;
-  const carried = { ...(rearms === 0 ? {} : { rearms }), ...(prior?.retried === true ? { retried: true } : {}) };
+  const carried = rearms === 0 ? {} : { rearms };
   if (own.length === 0 && infrastructure.length > 0) {
     const because = `${names.join(", ")} failed for an infrastructure reason (${reasonsOf(infrastructure)})`;
     if (!canAskArmBot(ctx)) {
@@ -295,118 +274,8 @@ function answerFailed(ctx: PoolContext, entry: Entry, pull: Pull, removal: Queue
     }
     if (count < HOLD_AFTER && rearms < MAX_REARMS) return { record: rearm(ctx, entry, pull, { head, step: "rearmed", removals: count, jobs: names, ...carried }, because) };
   }
-  if (own.length > 0 && prior?.retried !== true) {
-    const retrying = retryBeforeRound(ctx, entry, pull, { failure, jobs: readJobs, names, count, carried });
-    if (retrying !== null) return { record: retrying };
-  }
-  // A removal the board already reran the jobs of is on the card as sent to the run, so a pull request that is approved and out of the queue is never shown as idle (A11-371).
-  const sent = prior?.retried === true ? { note: `${ejectedNote(names)}, sent to the run` } : {};
-  const record: QueueHead = { head, step: "round", removals: count, jobs: names, roundStarted: true, ...carried, ...sent };
-  return { feedback: failedBrief(pull, removal, failure, { own, infrastructure }, { rearms, willRearm: canAskArmBot(ctx) && count < HOLD_AFTER, earlier: prior }), record: withHold(ctx, entry, url, record, count) };
-}
-
-// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// The rerun before a round (A11-371)
-// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-/** The start of the card's line for a pull request the queue removed for the jobs `names` (A11-371). PURE. */
-const ejectedNote = (names: readonly string[]): string => `ejected from the merge queue: ${names.join(", ")}`;
-
-/** The id of the run a job's page belongs to (`.../actions/runs/<id>/job/<id>`), or null for an address that names no job, which the code host leaves out of a rerun. PURE. */
-function runIdOf(detailsUrl: string): number | null {
-  const id = /\/actions\/runs\/(\d+)\/job\/\d+/.exec(detailsUrl)?.[1];
-  return id === undefined ? null : Number(id);
-}
-
-/** Whether the run behind a removal was read and names a job that failed: without one there is nothing to rerun. PURE. */
-const hasFailedJobs = (failure: QueueFailure | null): failure is QueueFailure => failure !== null && failure.jobs.length > 0;
-
-/** Whether the code host can read a run's conclusion, which a rerun is judged by. PURE. */
-const canReadRuns = (ctx: PoolContext): boolean => ctx.codeHost.readCiRun !== undefined;
-
-/**
- * THE RERUN OF A MERGE GROUP'S FAILED JOBS, made once for a head before any worker is asked (A11-371). Returns the record that says so (`retrying`, with the tests that failed, for the flake log), or null when the jobs are not rerun and the round starts as it did before: the code host
- * cannot read a run's conclusion, so a rerun could not be judged; the run behind the removal could not be read; the arm bot would not be asked once the jobs pass (the pull request is not approved at its head, conflicts, is held or has used its re-arms); or the host refused the rerun, which is said.
- */
-function retryBeforeRound(ctx: PoolContext, entry: Entry, { url, read }: Pull, { failure, jobs, names, count, carried }: Readonly<{ failure: QueueFailure | null; jobs: readonly ReadJob[]; names: readonly string[]; count: number; carried: Pick<QueueHead, "rearms"> }>): QueueHead | null {
-  if (!hasFailedJobs(failure) || !canReadRuns(ctx) || count >= HOLD_AFTER) return null;
-  const head = read.head!;
-  const blocked = noRearmBecause(ctx, { url, read }, { head, step: "rearmed", removals: count, ...carried });
-  if (blocked !== null) {
-    log(`${entry.ticket.key}: the failed jobs of the merge group behind ${url} are not rerun: ${blocked}`);
-    return null;
-  }
-  const addresses = failure.jobs.map(({ detailsUrl }) => detailsUrl);
-  const runIds = addresses.map(runIdOf).filter((id): id is number => id !== null);
-  if (runIds.length !== addresses.length) return null;
-  const refused = ctx.codeHost.rerunFailedChecks(addresses);
-  if (refused !== null) {
-    log(`${entry.ticket.key}: the failed jobs of the merge group behind ${url} could not be rerun (${refused}): a round is started`);
-    return null;
-  }
-  const candidates = jobs.filter(({ check }) => check.infrastructure === null).map(({ job, check }) => ({ test: failedTestOf(check), check: job.name, run: job.detailsUrl }));
-  const retry: QueueRetry = { at: ctx.now(), runs: [...new Set(runIds)], candidates };
-  const note = `${ejectedNote(names)}, retrying`;
-  log(`${entry.ticket.key}: ${note} (${url}): the failed jobs of its merge group were rerun before a worker is asked`);
-  return { head, step: "retrying", removals: count, jobs: names, retried: true, ...carried, retry, note };
-}
-
-/** One read of a run, or null when the host would not say: a throw is a refusal, never an answer. */
-function readRun(ctx: PoolContext, repo: string, id: number): CiRun | null {
-  try {
-    return ctx.codeHost.readCiRun?.(repo, id) ?? null;
-  } catch (err) {
-    log(`the run ${id} of ${repo} could not be read: ${messageOf(err)}`);
-    return null;
-  }
-}
-
-/**
- * What the rerun of a merge group's jobs came to: `passed` when every run rerun has concluded green (a green read can only be the rerun's, since the runs were red); `failed` when one concluded otherwise, believed only once {@link RETRY_SETTLE_MS} have passed since the rerun, because a read
- * just after it can still show the failure that was rerun; else `waiting`, which is also what a run the host would not say anything of is. PURE apart from the reads.
- */
-function rerunVerdict(ctx: PoolContext, url: string, retry: QueueRetry): "passed" | "failed" | "waiting" {
-  const repo = stackMergeRequestOf(url)?.repo;
-  if (repo === undefined) return "waiting";
-  const runs = retry.runs.map((id) => readRun(ctx, repo, id));
-  if (runs.some((run) => run === null || run.status !== "completed")) return "waiting";
-  if (runs.every((run) => run?.conclusion === "success")) return "passed";
-  return ctx.now() - retry.at >= RETRY_SETTLE_MS ? "failed" : "waiting";
-}
-
-/** The flake log's entries for a rerun that passed: each test or step that failed, with its run and the head. PURE. */
-const flakesOf = (retry: QueueRetry, head: string, url: string, at: number): Flake[] => retry.candidates.map((candidate) => ({ ...candidate, head, pull: url, at }));
-
-/** `answer` with the record saying the rerun was made for this head: a removal for another reason does not give a later one a second rerun. PURE. */
-const spentOn = (answer: PullAnswer): PullAnswer => (answer.record === undefined ? answer : { ...answer, record: { ...answer.record, retried: true } });
-
-/**
- * THE END OF THE RERUN (A11-371), asked at every watch while the record says `retrying`. Passed: each failed test is written to the flake log (a log that cannot be written is said and does not keep the pull request out of the queue), and the arm bot is asked to arm the pull request
- * again ({@link rearm}), once for the head. Failed, or still not concluded {@link RETRY_WAIT_MS} after the rerun: the round starts, with the failing test quoted. Removed again meanwhile (someone armed it by hand): the same round. Still running: the record stays.
- */
-function answerRetry(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead, queue: PullQueue): PullAnswer {
-  const newest = queue.removals.at(-1)!;
-  const count = queue.removals.filter(isFailedChecks).length;
-  const names = known.jobs ?? [];
-  const toTheRun = (): PullAnswer => (isFailedChecks(newest) ? answerFailed(ctx, entry, pull, newest, count, known) : spentOn(answerOther(ctx, entry, pull, newest, count)));
-  if (known.retry === undefined || count > known.removals || !isFailedChecks(newest)) return toTheRun();
-  const verdict = rerunVerdict(ctx, pull.url, known.retry);
-  if (verdict === "failed") {
-    log(`${entry.ticket.key}: ${ejectedNote(names)}: the rerun did not pass (${pull.url})`);
-    return toTheRun();
-  }
-  if (verdict === "waiting") {
-    if (ctx.now() - known.retry.at < RETRY_WAIT_MS) return { record: known };
-    log(`${entry.ticket.key}: ${ejectedNote(names)}: the rerun had not concluded ${RETRY_WAIT_MS / 60_000} minutes after it was made (${pull.url})`);
-    return toTheRun();
-  }
-  const { retry, note: _note, ...rest } = known;
-  try {
-    ctx.flakes.record(flakesOf(retry, known.head, pull.url, ctx.now()));
-  } catch (err) {
-    log(`${entry.ticket.key}: the flakes of ${pull.url} could not be recorded: ${messageOf(err)}`);
-  }
-  return { record: rearm(ctx, entry, pull, { ...rest, step: "rearmed", rerunPassed: true }, `${names.join(", ")} passed on rerun`) };
+  const record: QueueHead = { head, step: "round", removals: count, jobs: names, roundStarted: true, ...carried };
+  return { feedback: failedBrief(pull, removal, failure, { own, infrastructure }, { rearms, willRearm: canAskArmBot(ctx) && count < HOLD_AFTER }), record: withHold(ctx, entry, url, record, count) };
 }
 
 /** `record` as it is below the limit, and held from the arm bot at it. */
@@ -492,10 +361,10 @@ const roundIsOver = (entry: Entry): boolean => entry.handedBack === undefined &&
 /** Whether the record only names a removal for another reason: it has no failed job, so no round was ever owed for it. PURE. */
 const isNamedOnly = (record: QueueHead): boolean => record.step === "named" && record.jobs === undefined;
 
-/** `record` without the line the card shows, and without an ask the arm bot refused: the pull request is in the queue. A rerun still to be judged is given up (A11-371): the pull request is queued, and the rerun was made for this head. PURE. */
+/** `record` without the line the card shows, and without an ask the arm bot refused: the pull request is in the queue. PURE. */
 function withoutNote(record: QueueHead): QueueHead {
-  const { note: _note, refused: _refused, retry: _retry, ...rest } = record;
-  return record.step === "retrying" ? { ...rest, step: "rearmed" } : rest;
+  const { note: _note, refused: _refused, ...rest } = record;
+  return rest;
 }
 
 /** The answer for one open pull request, given the record the entry holds for it. */
@@ -511,15 +380,13 @@ function answerPull(ctx: PoolContext, entry: Entry, pull: Pull, known: QueueHead
   }
   const newest = read.queue.removals.at(-1);
   // A pull request the board put back in the queue is in it: the card stops saying it was asked to be (the re-arms stay counted for the head).
-  if (read.queue.queued && (current?.step === "rearmed" || current?.step === "retrying")) return { record: withoutNote(current) };
+  if (read.queue.queued && current?.step === "rearmed") return { record: withoutNote(current) };
   if (read.queue.queued || newest === undefined) return { record: current };
   // A head that was only named for another reason (no round, no failed job) is still owed the round a removal for failed checks gets.
-  const named = current !== undefined && isNamedOnly(current) && isFailedChecks(newest) ? current : undefined;
-  if (named !== undefined) current = undefined;
-  if (current?.step === "retrying") return answerRetry(ctx, entry, pull, current, read.queue);
+  if (current !== undefined && isNamedOnly(current) && isFailedChecks(newest)) current = undefined;
   if (current !== undefined) return repeated(ctx, entry, pull, current, read.queue);
   const count = read.queue.removals.filter(isFailedChecks).length;
-  return isFailedChecks(newest) ? answerFailed(ctx, entry, pull, newest, count, named?.retried === true ? named : undefined) : answerOther(ctx, entry, pull, newest, count);
+  return isFailedChecks(newest) ? answerFailed(ctx, entry, pull, newest, count) : answerOther(ctx, entry, pull, newest, count);
 }
 
 /**

@@ -32,6 +32,8 @@ import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 import type { BaseMerge } from "./pool-outcome.ts";
 import type { WriteRetry } from "./result-write-retry.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
+import { type FillState, newFillState } from "./pool-fill-report.ts";
+import type { StartReadsState } from "./pool-start-reads.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
 export type AttachRetry = Readonly<{ failures: number; nextAt: number }>;
@@ -104,10 +106,10 @@ export type PoolDeps = Readonly<{
   privateTmpBase?: string;
   /** The shared temporary directory whose legacy entries the sweep clears (A11-303, `legacy-tmp.ts`); the instance passes `/tmp`. Absent: nothing in it is touched, as in every test that does not give one. */
   legacyTmp?: LegacyTmp;
+  /** The longest one read for a start (the tracker's blockers and plans, a remote's branch heads) is waited for (A11-364, `READ_TIMEOUT_MS` when absent). A test gives a short one. */
+  readTimeoutMs?: number;
   /** The longest the files of a conflict are given to be listed before its round starts without them (A11-286); a minute when absent. A test gives a short one. */
   listingMs?: number;
-  /** The longest one read of the tracker, a remote or a plan is waited for in a pass of `fill` (A11-359); a minute when absent. A test gives a short one. */
-  readMs?: number;
 }>;
 
 /** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */
@@ -202,10 +204,6 @@ export type PoolContext = Readonly<{
   settledPulls: Set<string>;
   /** The longest the files of a conflict are given to be listed (A11-286). */
   listingMs: number;
-  /** The longest one read of the tracker, a remote or a plan is waited for in a pass of `fill` (A11-359). */
-  readMs: number;
-  /** The reason `fill` last said it started nothing, and the failure of the tracker's last refresh of the blockers it last said (A11-359), so the same one is said once and not on every pass. Kept in memory: a restart says it again. */
-  idleSaid: { reason: string | null; refresh: string | null };
   /** Whether a sweep of the kept pull requests is under way, and the one last started (A11-286): sweeps never overlap. */
   keptSweep: { busy: boolean; done: Promise<void> };
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
@@ -232,6 +230,12 @@ export type PoolContext = Readonly<{
   runTmpBase: string | undefined;
   /** How far the sweep of the shared `/tmp` has got, and the trees it left half removed (A11-303). */
   legacySweep: LegacySweepState;
+  /** The background reads of the queued runs' blockers, heads and plans, which a start is decided on (A11-364). */
+  startReads: StartReadsState;
+  /** What the last fill of the free slots decided and why, kept for `/api/health` (A11-364). */
+  fillState: FillState;
+  /** Asks for a pass now (A11-364): `createPool` sets it to its tick, and work that queues a run after the pass decided calls it (a plan attached, a run moved to the repository its worker named). Nothing until then, as in a context no pool made. */
+  wake: { run: () => void };
 }>;
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
@@ -308,9 +312,10 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? 60_000, idleSaid: { reason: null, refresh: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
+    startReads: { pending: new Set<Promise<void>>(), reading: new Set<string>() }, fillState: newFillState(), wake: { run: () => {} },
   };
 }
 

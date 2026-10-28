@@ -67,7 +67,7 @@ test("A11-290: a stand-off round that ends reviewed is the end of both routes; t
 
 test("A11-290: the flag does not fire while the stand-off has a route to go, however long the block has stood", async () => {
   const run = await workerRound({ start: false });
-  assert.equal(run.entry().phase, "queued", "the worker's round is queued: no flag for a run with a round");
+  assert.ok(["queued", "starting"].includes(run.entry().phase), "the worker's round is queued (and, nothing holding it, starting): no flag for a run with a round");
   assert.ok(!existsSync(join(run.dir, STANDOFF_ROUND_FILE)), "and it has not started");
   clock.ms += 3 * 60 * MINUTE;
   await run.pool.watchFeedback();

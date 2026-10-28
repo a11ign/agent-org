@@ -1,6 +1,7 @@
 // no-token: gh -- herdr, the tracker and the clock are all injected; nothing is spawned
 // A11-272, step 3: a plan whose step needs another ticket's work writes that ticket in its `## Blocked by` section, and the board records it as a blocker when it attaches the plan, so the queue orders the two before any
 // run starts. The 2026-10-25 shape: A11-231's step 2 needed A11-229's step 3 (here NBF-1 and NBF-2).
+import { createSettledPool } from "./pool-settled-fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -8,7 +9,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
-import { createPool, herdrName, type QueueStore } from "./pool.ts";
+import { herdrName, type QueueStore } from "./pool.ts";
 import { fakeHerdr } from "./pool-fixture.ts";
 import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { enqueue, type Queue } from "./queue/queue-entries-and-outcomes.ts";
@@ -37,7 +38,7 @@ async function planning(text: string, over: (tracker: ReturnType<typeof createFa
   const status = new Map<string, string>();
   const herdr = fakeHerdr(status);
   const clock = { now: START };
-  const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
+  const pool = createSettledPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost() });
   await pool.tick();
   const dir = ticketDir(settings, PLANNED);
@@ -45,7 +46,13 @@ async function planning(text: string, over: (tracker: ReturnType<typeof createFa
   writeFileSync(join(dir, "plan", `${PLANNED}-0001-plan-fit.md`), text);
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
   status.set(herdrName(PLANNED), "idle");
-  const tick = async () => { clock.now += 60_000; await pool.tick(); await settled(); };
+  // A run the pass starts is listed working, as its agent is: the passes a start wakes would otherwise read it as gone from herdr.
+  const tick = async () => {
+    clock.now += 60_000;
+    for (const key of [PLANNED, BLOCKER]) if (!status.has(herdrName(key))) status.set(herdrName(key), "working");
+    await pool.tick();
+    await settled();
+  };
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   const starts = () => herdr.calls.filter((args) => args.includes("agent") && args.includes("start"));
   const blockedBy = async () => (await tracker.blockers!([PLANNED])).get(PLANNED)?.map(({ key }) => key) ?? [];

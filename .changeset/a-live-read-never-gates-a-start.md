@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A live read never gates a start (A11-364). `fill()` awaited the tracker's blockers, the remotes' branch heads and the plan downloads, with no timeout, inside a `catch { return; }`: one failed read started nothing and logged nothing, and one hung read held every later pass (2026-10-27, after the 22:05Z restart: 3 runs started, then none for over 10 minutes with 5 slots free). The pool now makes those reads beside the pass (`pool-start-reads.ts`), each with a 20 s timeout, and `fill` decides from what they last recorded. A ticket whose blockers or plan were never read, or whose blockers are older than 30 minutes and could not be read again, is held alone: the board says "blockers unread: <error>, retrying at <time>" (or the plan's reason), the read is asked again 30 s after it failed, and the ticket takes no slot, so a run that can start is no longer starved by the unread ones ahead of it. A read that ends wakes the pool, as does a plan attach that queues the ticket again. Every pass of `fill` is kept, with its reason, and `/api/health` carries it as `starts`; the log says it whenever the decision changes, and says each failed read.

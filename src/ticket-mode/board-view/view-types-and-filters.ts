@@ -34,8 +34,11 @@ export type ViewEntry = Readonly<{
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Why the plan of a queued run could not be downloaded, which holds it back (A11-125). */
   pathsFailure?: string;
-  /** Why the tracker could not say which tickets block a queued run, which holds it back (A11-359). */
-  blockersFailure?: string;
+  /** When the board asks for the plan again after `pathsFailure` (A11-364). */
+  pathsRetryAt?: number;
+  /** When the blockers were last read, and why the last read of them failed with when the board asks again (A11-364): the age of what a start is decided on, and the reason a run is held for blockers it could not read. */
+  blockersReadAt?: number;
+  blockersFailure?: Readonly<{ error: string; retryAt: number }>;
   /** The version of agent-org the run was started on, and, when a breaking update stopped it and queued it again, when and for which release (A11-169). */
   toolVersion?: string;
   stoppedForUpdate?: Readonly<{ at: number; target: string }>;

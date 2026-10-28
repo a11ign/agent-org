@@ -59,8 +59,14 @@ test("an interval override is a whole number of ms above 0 in AGENT_ORG_<name>, 
 test("the request thread's health is both loops, how old the board thread's snapshot is, the board thread's spawns, and the request thread's own count", () => {
   const requests = { ...READING, p99Ms: 4 };
   const latest = { snapshot: { loop: READING, blocking: SITES.slice(0, 2), githubCalls: CALLS }, receivedAt: 1_000 };
-  assert.deepEqual(requestHealthView(requests, latest, 3_500, 0), { loop: { requests, board: READING }, boardSnapshotAgeMs: 2_500, blocking: SITES.slice(0, 2), requestThreadSyncCalls: 0, githubCalls: CALLS });
+  assert.deepEqual(requestHealthView(requests, latest, 3_500, 0), { loop: { requests, board: READING }, boardSnapshotAgeMs: 2_500, blocking: SITES.slice(0, 2), requestThreadSyncCalls: 0, githubCalls: CALLS, starts: null });
   assert.equal(requestHealthView(requests, latest, 900, 0).boardSnapshotAgeMs, 0, "a clock that steps back never reads a negative age");
+});
+
+test("the health view carries what the last fill of the free slots decided and why, and the runs it held for a read it lacked (A11-364)", () => {
+  const starts = { at: 5, decision: "2 queued, none startable now", queued: 2, started: [], held: [{ key: "NBF-1", reason: "blockers unread: Linear answered 503, retrying at 22:05Z" }] };
+  const latest = { snapshot: { loop: READING, blocking: [], githubCalls: null, starts }, receivedAt: 1_000 };
+  assert.deepEqual(requestHealthView({ ...READING }, latest, 2_000, 0).starts, starts);
 });
 
 test("the request thread counts and says each synchronous spawn after it listens, and none before", () => {

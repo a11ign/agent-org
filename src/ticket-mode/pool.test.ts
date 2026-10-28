@@ -1,4 +1,5 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
+import { createSettledPool, readsSettled } from "./pool-settled-fixture.ts";
 import { type Flake, flakesPath, flakesView, readFlakes, recordFlakes } from "./flakes.ts";
 import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
@@ -25,6 +26,7 @@ import {
 import { approve, completableRuns, finish, markResumed, park, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { talk } from "./queue/talk.ts";
 import { recordPullHeads } from "./queue/queue-pull-heads.ts";
+import { READ_RETRY_MS } from "./queue/start-reads.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, replace, retry, talkRound, writerStatus, type Outcome, type Queue, type WriterForm } from "./queue/queue-entries-and-outcomes.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
@@ -115,10 +117,10 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
     pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? codeHost ?? createFakeCodeHost(), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
     // The publisher plugin, as the fake: what the host file names as its connectors, model and effort (A11-161).
     ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
-  const pool = createPool(store, deps);
+  const pool = createSettledPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
-  const restart = () => createPool(store, deps);
+  const restart = () => createSettledPool(store, deps);
   return { settings, pool, restart, status, h, entry, store, root, screen };
 }
 
@@ -129,7 +131,7 @@ function stopDuringStart(queue: Queue, key: string, deps: Omit<Parameters<typeof
   const h = herdr(new Map());
   let pool: ReturnType<typeof createPool>;
   const herdrAsync = async (args: string[]) => { pool.stop(key); return h.run(args); };
-  pool = createPool(store, { ...deps, herdr: h.run, herdrAsync });
+  pool = createSettledPool(store, { ...deps, herdr: h.run, herdrAsync });
   return { pool, store, h };
 }
 
@@ -478,7 +480,7 @@ test("a session whose herdr server does not answer is started once, and waited f
     return JSON.stringify({ result: { workspaces: [] } });
   };
   let queue = emptyQueue(1);
-  const pool = createPool({ get: () => queue, set: (q) => { queue = q; } }, {
+  const pool = createSettledPool({ get: () => queue, set: (q) => { queue = q; } }, {
     settings, source, codeHost: createFakeCodeHost(), hook: { node: "n", bin: "b" }, herdr: run, wait: async () => { up = true; }, startServer: (s) => started.push(s),
   });
   await pool.ensureSession();
@@ -767,7 +769,7 @@ test("the tracker is asked about finished runs only, its answer is recorded, and
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
   let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [] }, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createSettledPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   await pool.refreshTracker();
   assert.deepEqual(asked, [["NBF-1"]], "the queued NBF-2 is not asked about");
   assert.equal(queue.entries.find((e) => e.ticket.key === "NBF-1")!.trackerState, "completed");
@@ -791,7 +793,7 @@ test("a run whose pull request merged reads as completed while its ticket is sti
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
   let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [{ repo: "r", url }] }, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createSettledPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   await pool.refreshTracker();
   assert.equal(runStatus(queue.entries[0]), "completed");
   await pool.refreshTracker();
@@ -846,7 +848,7 @@ function completing(outcome: Outcome, { state = "started", pull = "merged", refu
   };
   let queue: Queue = finish(enqueue(emptyQueue(2), [{ ...ticket("NBF-1"), description }], { model: "sonnet", effort: "high" }, 0), "NBF-1", outcome, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createSettledPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   return { pool, calls, reads, entry: () => queue.entries[0] };
 }
 
@@ -1029,7 +1031,7 @@ test("a source that cannot read states never marks a run completed", async () =>
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
   let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [] }, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createSettledPool(store, { settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   await pool.refreshTracker();
   assert.equal(queue.entries[0].trackerState, undefined);
 });
@@ -1146,7 +1148,11 @@ async function captureStderr(act: () => Promise<void>): Promise<string[]> {
 }
 
 /** Let the pool's attaching, which a tick starts and does not wait for, finish. */
-const settled = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+const settled = async () => {
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  // A pass that began reads for a start is woken by them: the run they let start has started when this settles (A11-364).
+  await readsSettled();
+};
 
 /** Starts NBF-1 on a machine whose working state is In Progress, on `tracker`, with the board's log captured and the move settled. */
 async function startingOn(tracker: TicketSource) {
@@ -1207,7 +1213,7 @@ test("a plan is attached once, though more ticks see its outcome while it is att
   release();
   await settled();
   assert.deepEqual(calls, ["NBF-1"]);
-  assert.equal(made.entry("NBF-1").phase, "queued");
+  assert.equal(made.entry("NBF-1").phase, "running", "queued again when the plan was attached, and started at once: the attach asked for a pass");
 });
 
 test("a plan the tracker will not take, a planning run that wrote no plan, and a planned outcome from a run that was not planning each end for a person", async () => {
@@ -1692,7 +1698,7 @@ test("the tickets queued together are planned by one run in one slot: each shows
 test("a batch's planned outcome attaches each ticket's plan, hands back the one it asked about and the one it wrote nothing for, and records the order as blockers", async () => {
   const { tracker, attached, relations } = batchTracker();
   const keys = ["NBF-1", "NBF-2", "NBF-3", "NBF-4", "NBF-5"];
-  const { pool, h, status, entry, settings, store } = setup(1, keys, BATCH_PLANNER, { source: tracker, planFirst: keys, batch: true });
+  const { pool, h, status, entry, settings, store } = setup(1, keys, BATCH_PLANNER, { source: tracker, planFirst: keys, batch: true, now: Date.now });
   await pool.tick();
   const plan = join(batchDir(settings, BATCH), "plan");
   put(join(plan, "NBF-1", "NBF-1-0001-plan-libs.md"), "# Libs\n");
@@ -1720,9 +1726,8 @@ test("a batch's planned outcome attaches each ticket's plan, hands back the one 
     assert.match(empty?.kind === "needs-human" ? empty.reason : "", new RegExp(`the planning run wrote nothing for ${key}: no plan and no QUESTION\\.md`), "an empty folder, or none");
   }
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).phase, entry(key).plan, entry(key).planned, entry(key).plannedRepo, entry(key).batch]),
-    [["queued", undefined, true, "nbl-ui-platform-libs", undefined], ["queued", undefined, true, "nbl-ui-netbox", undefined]]);
-  await pool.tick();
-  assert.equal(entry("NBF-1").phase, "running", "the next pass reads the blockers again and starts NBF-1");
+    [["running", undefined, true, "nbl-ui-platform-libs", undefined], ["queued", undefined, true, "nbl-ui-netbox", undefined]]);
+  assert.equal(entry("NBF-1").phase, "running", "the attach asked for a pass, which read the blockers again and started NBF-1 at once");
   assert.deepEqual([entry("NBF-2").blockers?.map((b) => b.key), runStatus(entry("NBF-2"), store.get().entries)], [["NBF-1"], "blocked"], "NBF-2 waits on NBF-1, as Linear now says");
 });
 
@@ -1924,12 +1929,13 @@ test("a batch's ticket queued again while a pass reads blockers waits for the ne
     blockers: async (keys) => {
       if (keys.includes("NBF-3")) {
         await orderRecorded;
-        await settled();
+        // Not `settled()`: that waits for this very read.
+        for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
       }
       return tracker.blockers!(keys);
     },
   };
-  const { pool, status, entry, settings, store } = setup(3, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: racing, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  const { pool, status, entry, settings, store } = setup(3, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: racing, planFirst: ["NBF-1", "NBF-2"], batch: true, now: Date.now });
   await pool.tick();
   writePlans(join(batchDir(settings, BATCH), "plan"), {
     "NBF-1/NBF-1-0001-plan-a.md": "# A\n",
@@ -1939,11 +1945,13 @@ test("a batch's ticket queued again while a pass reads blockers waits for the ne
   writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
   status.set(herdrName(BATCH), "idle");
   store.set(enqueue(store.get(), [ticket("NBF-3")], { model: "sonnet", effort: "high" }, 50));
+  // The runs this tick starts are listed working, so the extra passes it takes to start them do not read them as gone.
+  for (const key of ["NBF-1", "NBF-3"]) status.set(herdrName(key), "working");
   await pool.tick();
   assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]]);
-  assert.deepEqual(["NBF-1", "NBF-2", "NBF-3"].map((key) => entry(key).phase), ["queued", "queued", "running"], "only the ticket whose blockers this pass read starts");
-  await pool.tick();
-  assert.deepEqual([entry("NBF-1").phase, runStatus(entry("NBF-2"), store.get().entries)], ["running", "blocked"]);
+  // The read for NBF-3 was out while the batch's tickets were queued again: their blockers are read afresh, after the order was recorded, so NBF-2 is never started beside NBF-1.
+  assert.deepEqual(["NBF-1", "NBF-2", "NBF-3"].map((key) => entry(key).phase), ["running", "queued", "running"]);
+  assert.equal(runStatus(entry("NBF-2"), store.get().entries), "blocked");
 });
 
 test("A11-77: an order that says a ticket waits on its blocker to merge keeps that mark on the ticket, and only on the ticket that said it", async () => {
@@ -2581,9 +2589,10 @@ test("A11-82: a pull request that conflicts with its base names its base on ever
  */
 /** `max` workers, the tickets of `paths` queued, and one pass of the pool: `down` names the tickets whose plans cannot be downloaded (A11-125). */
 async function queuedWithPlans(max: number, paths: Record<string, string[]>, down: Set<string>) {
-  const ctx = setup(max, Object.keys(paths), { plan: "-plan-[^/]*\\.md$" }, { source: planFilesDown(paths, down) });
+  const clock = { now: 100 };
+  const ctx = setup(max, Object.keys(paths), { plan: "-plan-[^/]*\\.md$" }, { source: planFilesDown(paths, down), now: () => clock.now });
   await ctx.pool.tick();
-  return ctx;
+  return { ...ctx, clock };
 }
 
 /** `planFiles`, whose download refuses the tickets in `down`, as a link that is gone does. */
@@ -2865,6 +2874,7 @@ test("A11-82: tickets queued and planned together whose plans share a path, with
     put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
     put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
     put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-netbox", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: [] } }));
+    for (const key of ["NBF-1", "NBF-2"]) ran.status.set(herdrName(key), "working");
     await endWith(ran, batchDir(ran.settings, BATCH), herdrName(BATCH), { kind: "planned" });
     await settled();
     await ran.pool.tick();
@@ -2911,24 +2921,30 @@ test("A11-117: two queued tickets in one repository whose plans list .acceptance
 // A11-125: a plan the tracker cannot give holds only its own run, which waits and says why, and the rest start. A run whose plan is unread takes no slot.
 test("A11-125: a plan that cannot be downloaded waits and says why, and the rest start, its run taking no slot", async () => {
   const down = new Set(["NBF-1"]);
-  const { pool, entry, store } = await queuedWithPlans(2, { "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/b.ts"], "NBF-3": ["nbl-ui-netbox:src/c.ts"] }, down);
+  const { pool, entry, store, clock, status } = await queuedWithPlans(2, { "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/b.ts"], "NBF-3": ["nbl-ui-netbox:src/c.ts"] }, down);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase, entry("NBF-3").phase], ["queued", "running", "running"], "the two slots go to the two whose plans are read");
   assert.equal(entry("NBF-1").pathsFailure, "the attachment link is gone");
   assert.equal(runStatus(entry("NBF-1"), store.get().entries), "blocked", "the run shows Blocked");
-  assert.equal(waitNote(entry("NBF-1"), store.get().entries), "Waits: its plan could not be downloaded (the attachment link is gone); the board asks again on every pass");
+  assert.equal(waitNote(entry("NBF-1"), store.get().entries), "Waits: its plan could not be downloaded (the attachment link is gone); the board asks again at 00:00Z");
   down.clear();
+  for (const key of ["NBF-2", "NBF-3"]) status.set(herdrName(key), "working");
   await pool.tick();
-  assert.equal(entry("NBF-1").pathsFailure, undefined, "read on the next pass, the failure is cleared");
+  assert.equal(entry("NBF-1").pathsFailure, "the attachment link is gone", "not asked again before the time it named");
+  clock.now += READ_RETRY_MS;
+  await pool.tick();
+  assert.equal(entry("NBF-1").pathsFailure, undefined, "read at the retry, the failure is cleared");
   assert.equal(entry("NBF-1").phase, "queued", "it still waits for a slot: the other two hold both");
 });
 
 // A11-125: while one plan fails, runs that overlap in the same pass still never start together.
 test("A11-125: overlapping runs still never start in one pass while another ticket's plan fails", async () => {
   const down = new Set(["NBF-1"]);
-  const { pool, entry, store } = await queuedWithPlans(3, { "NBF-1": ["nbl-ui-netbox:src/z.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"], "NBF-3": ["nbl-ui-netbox:src/a.ts"] }, down);
+  const { pool, entry, store, clock, status } = await queuedWithPlans(3, { "NBF-1": ["nbl-ui-netbox:src/z.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"], "NBF-3": ["nbl-ui-netbox:src/a.ts"] }, down);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase, entry("NBF-3").phase], ["queued", "running", "queued"], "NBF-3 shares src/a.ts with NBF-2, and waits for it");
   assert.equal(waitNote(entry("NBF-3"), store.get().entries), "Waits on NBF-2: both touch src/a.ts");
   down.clear();
+  for (const key of ["NBF-2", "NBF-3"]) status.set(herdrName(key), "working");
+  clock.now += READ_RETRY_MS;
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "running", "read later, NBF-1 shares no path with NBF-2 and starts beside it");
   assert.equal(entry("NBF-3").phase, "queued", "NBF-3 still waits for NBF-2");
@@ -3534,7 +3550,7 @@ test("A11-70: a batch ticket placed in a repository that is no clone is given no
     put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-netbox", after: [] }, "NBF-2": { repo: "a11y-witness", after: ["NBF-1"] } }));
   });
   assert.deepEqual([attached, [...relations]], [["NBF-1", "NBF-2"], [["NBF-2", ["NBF-1"]]]], "both plans are attached, and the wait is recorded");
-  assert.deepEqual([ran.entry("NBF-1").phase, ran.entry("NBF-1").plannedRepo], ["queued", "nbl-ui-netbox"], "a known repository is kept");
+  assert.deepEqual([ran.entry("NBF-1").phase, ran.entry("NBF-1").plannedRepo], ["running", "nbl-ui-netbox"], "a known repository is kept");
   const refused = ran.entry("NBF-2");
   assert.deepEqual([refused.phase, refused.plannedRepo, refused.planned, refused.plan], ["finished", null, true, undefined], "never stored, and planned");
   const reason = refused.outcome?.kind === "needs-human" ? refused.outcome.reason : "";
@@ -6034,7 +6050,7 @@ test("A11-161: a reviewer that refuses to start on this host is off, and require
     const fake = createFakeReviewer("the gate's modules do not load");
     await fake.load();
     const made = setup(1, [], tickets, { gh: ghFor({ 1: feedbackPull() }), reviewerPort: fake });
-    const refusing = createPool(made.store, { settings: made.settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: made.h.run, reviewer: fake, hostFile: "/work/.agent-org/host.json", now: () => 100,
+    const refusing = createSettledPool(made.store, { settings: made.settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: made.h.run, reviewer: fake, hostFile: "/work/.agent-org/host.json", now: () => 100,
       load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(made.root, "transcripts"), wait: async () => {}, pluginRecord: join(made.root, "no-plugin-record.json") });
     await refusing.reviewNewHeads();
     assert.deepEqual(fake.started, [], "nothing starts");
@@ -6084,7 +6100,7 @@ test("A11-161: a run Ready to merge waits through the publisher being off, and e
     tickets: { providers: { publish: { provider: "slack", run: "post {prs} into {dir}", connectors: ["^mcp__chat__send"] } } } });
   assert.notEqual(enabled.publish, null);
   off.h.calls.length = 0;
-  const board = createPool(off.store, { settings: enabled, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: off.h.run, hostFile: "/work/.agent-org/host.json", now: () => 400,
+  const board = createSettledPool(off.store, { settings: enabled, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: off.h.run, hostFile: "/work/.agent-org/host.json", now: () => 400,
     load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(off.root, "transcripts"), wait: async () => {}, pluginRecord: join(off.root, "no-plugin-record.json"),
     publisher: createFakePublisher(["^mcp__chat__send"]) });
   await board.tick();
@@ -6991,13 +7007,13 @@ test("a batch planner that leaves a QUESTION.md keeps its pane, parked for every
   }
   assert.equal(linkOf(entry("NBF-3")), linkOf(entry("NBF-4")), "the cards of the tickets handed back link to one pane");
   assert.ok(linkOf(entry("NBF-3")) !== null);
-  for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).phase, entry(key).batch, entry(key).workspace, entry(key).planned], ["queued", undefined, undefined, true], `${key} left the batch with its plan`);
+  for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).phase === "queued" || entry(key).phase === "running", entry(key).batch, entry(key).workspace === "w1", entry(key).planned], [true, undefined, false, true], `${key} left the batch with its plan`);
 });
 
 test("a batch planner that hands nothing back still closes its workspace", async () => {
   const { entry, h } = await plannedBatch(batchTracker().tracker, ORDERED);
   assert.ok(closes(h, "w1") > 0, "every ticket has its plan: nobody is left to answer");
-  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).workspace), [undefined, undefined]);
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).workspace === "w1"), [false, false], "neither holds the planner's workspace any more");
 });
 
 /**
@@ -7170,7 +7186,7 @@ test("a folder in the plan folder that is no ticket of the board is not part of 
   put(join(plan, "notes", "scratch.md"), "# scratch\n");
   await answerNbf3(made, { "NBF-3": { repo: "nbl-ui-netbox", after: ["notes"] }, notes: { repo: null, after: [] } });
   assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "the order named a ticket the board does not have, so none of it was recorded");
-  assert.deepEqual([entry("NBF-3").phase, entry("NBF-3").plannedRepo], ["queued", null], "the plan itself still stands");
+  assert.deepEqual([entry("NBF-3").phase, entry("NBF-3").plannedRepo], ["running", null], "the plan itself still stands, and the ticket started with it");
 });
 
 // ---- A11-173: merged work completes its ticket without a person
