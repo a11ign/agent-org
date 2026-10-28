@@ -31,12 +31,15 @@ const ORDER = [
 
 const runsOf = (job: Job): string[] => (job.steps ?? []).map((step) => step.run ?? "");
 
-/** The `ui` job exists, runs on every event (no `if:`), pins the release's pnpm, and runs each step of ORDER in that order. */
+/** The one condition the `ui` job may carry: it skips a draft pull request, which `ready_for_review` re-runs in full. */
+const DRAFT_SKIP = "github.event_name != 'pull_request' || !github.event.pull_request.draft";
+
+/** The `ui` job exists, runs on every event except a draft pull request (its only `if:` is DRAFT_SKIP; A11-363 review), pins the release's pnpm, and runs each step of ORDER in that order. */
 function uiJobProblems(ci: Workflow): string[] {
   const job = ci.jobs.ui;
   if (!job) return ["ci.yml has no `ui` job"];
   const problems: string[] = [];
-  if (job.if !== undefined) problems.push(`the ui job has an \`if:\` (${job.if}), so it does not run on every event`);
+  if (job.if !== undefined && job.if !== DRAFT_SKIP) problems.push(`the ui job has an \`if:\` (${job.if}), so it does not run on every event`);
   if (job.env?.PNPM_VERSION !== PNPM_RELEASE) problems.push(`the ui job's pnpm is not the ${PNPM_RELEASE} that release.yml pins`);
   const runs = runsOf(job);
   let from = 0;
