@@ -27,7 +27,7 @@ function world(keys: readonly string[] = ["A11-900"], over: Parameters<typeof fa
   const served: { figures: HealthFigures | null } = { figures: figures(0) };
   let queue: Queue = enqueue(emptyQueue(3), keys.map((key) => tracker.ticketOf(key)!), { model: "sonnet", effort: "high" }, 0);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const ctx = { settings: { stateDir, workingState: "In Progress" }, store, source: tracker, now: () => clock.at, hook: { bin: "/tool/src/bin.ts" },
+  const ctx = { settings: { stateDir, workingState: "In Progress" }, readMs: 50, store, source: tracker, now: () => clock.at, hook: { bin: "/tool/src/bin.ts" },
     deps: { healthFigures: () => served.figures, runChoice: () => ({ model: "opus", effort: "max" }) } } as never;
   const path = reliabilityWatchesPath(stateDir);
   /** The run of `key` ended, as the fix's run did before its ticket was closed. */
@@ -191,18 +191,15 @@ test("a held watch is not asked of the tracker, and is dropped 30 days after its
   assert.equal(w.watch().reads, 1);
 });
 
-test("a sweep that hangs on the tracker does not stop the sweeps after it for ever", async () => {
+test("a tracker call that never answers ends the sweep as a failure of its step, and the next sweep goes on", async () => {
   const w = world();
   w.tracker.completeAs("A11-900", "person");
   const original = w.tracker.stateTypes!;
   replaceStateTypes(w.tracker, () => () => new Promise(() => undefined));
-  void w.sweep();
-  await Promise.resolve();
+  await w.sweep();
+  assert.equal(w.watch().state, "open", "the states could not be read in time, so nothing moved");
   replaceStateTypes(w.tracker, () => original);
   w.clock.at += 60_000;
-  await w.sweep();
-  assert.equal(w.watch().state, "open", "within five minutes the hung sweep is still the sweep");
-  w.clock.at += 5 * 60_000;
   await w.sweep();
   assert.equal(w.watch().state, "watching");
 });

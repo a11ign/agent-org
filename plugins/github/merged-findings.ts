@@ -4,7 +4,7 @@
 // markdown sections its diff ADDED: a write-up's new section is a heading among the added lines of a `.md` file. No heading is named here, because a write-up's heading is whatever its author chose
 // (announcement-emulator#3 added `### Scripted replay` to its spike write-up). Read through the plugin's `gh` runner, so this file spawns nothing.
 import type { MergedFindings, FindingsSection } from "../../src/plugins/contracts/code-host.ts";
-import type { Gh } from "./gh.ts";
+import type { AsyncGh } from "./gh.ts";
 
 /** The most characters one section's text keeps: a write-up's section is a few paragraphs, and a section past this is cut, with the cut said. */
 export const SECTION_CHARS = 20_000;
@@ -64,11 +64,11 @@ const cut = (text: string): string => (text.length > SECTION_CHARS ? `${text.sli
  * WHAT THE MERGED PULL REQUEST AT `url` FOUND, or `null` for "could not ask": a refused `gh`, an answer that does not parse, and a pull request that has not merged, whose findings are not final.
  * `null` is never "it found nothing": a caller that passes findings on must not read a failed read as an empty one.
  */
-export function readMergedFindings(url: string, gh: Gh): MergedFindings | null {
+export async function readMergedFindings(url: string, gh: AsyncGh): Promise<MergedFindings | null> {
   try {
-    const pull: { number: number; title: string; body: string | null; state: string } = JSON.parse(gh(["pr", "view", url, "--json", "number,title,body,state"]));
+    const pull: { number: number; title: string; body: string | null; state: string } = JSON.parse(await gh(["pr", "view", url, "--json", "number,title,body,state"]));
     if (pull.state !== "MERGED" || typeof pull.title !== "string" || !Number.isInteger(pull.number)) return null;
-    return { title: pull.title, number: pull.number, body: pull.body ?? "", sections: addedSections(gh(["pr", "diff", url])) };
+    return { title: pull.title, number: pull.number, body: pull.body ?? "", sections: addedSections(await gh(["pr", "diff", url])) };
   } catch (error) {
     void error; // no read is "cannot say", which the caller asks again on
     return null;

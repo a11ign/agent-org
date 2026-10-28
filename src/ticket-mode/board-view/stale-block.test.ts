@@ -112,93 +112,94 @@ test("A11-213: a run that already reads Needs you for its own reason keeps its w
 
 // The pool: its watch reads the pull request, stamps the block from its own clock, and sets the run's handedBack once the block is stale.
 /** The blocked pool of a draft, watched at the first read and again at 31 minutes, when the pull request is flagged: the board cannot start a round for a draft. */
-function flaggedPool() {
+async function flaggedPool() {
   const made = blockedPool();
-  made.pool.watchFeedback();
+  await made.pool.watchFeedback();
   made.clock.now = NOW + 31 * MINUTE;
-  made.pool.watchFeedback();
+  await made.pool.watchFeedback();
   return made;
 }
 
-function blockedPool(outcome: Entry["outcome"] = DRAFT) {
+/** A finished run over a blocked pull request. A `paused` queue starts nothing, so a round the watch queues stays queued for the test to read. */
+function blockedPool(outcome: Entry["outcome"] = DRAFT, paused = false) {
   const clock = { now: NOW };
   const host = createFakeCodeHost("worker-bot");
   host.seedPull("a11ign/control", 132, { head: "abcd1234ef56", feedback: { reviewDecision: "changes-requested", verdictAtHead: "changes-requested" } });
   const fixture = poolFixture({ keys: ["A11-203"], now: () => clock.now });
-  fixture.store.set(finish(fixture.store.get(), "A11-203", outcome!, NOW - 5 * MINUTE));
+  fixture.store.set({ ...finish(fixture.store.get(), "A11-203", outcome!, NOW - 5 * MINUTE), paused });
   const pool = fixture.restart({ codeHost: host });
   const entry = () => fixture.entry("A11-203") as Entry & ViewEntry;
   return { clock, host, pool, entry, store: fixture.store };
 }
 
-test("A11-213: the watch flags a pull request blocked for 31 minutes as Needs you, not before, and clears the flag once the head moves", () => {
+test("A11-213: the watch flags a pull request blocked for 31 minutes as Needs you, not before, and clears the flag once the head moves", async () => {
   const { clock, host, pool, entry } = blockedPool();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().pullHeads?.[PR]?.blockedSince, NOW, "the first read that finds it blocked stamps it");
   assert.equal(runStatus(entry()), "awaiting-review", "a draft with a blocked pull request is not asking anyone until the note");
   clock.now = NOW + 29 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined, "29 minutes is not enough");
   assert.equal(entry().pullHeads?.[PR]?.blockedSince, NOW, "and the stamp was kept across the reads");
   clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, NOTE);
   assert.equal(runStatus(entry()), "needs-you");
   assert.equal(reasonOf(entry()).line, NOTE);
   const written = JSON.stringify(entry());
   clock.now = NOW + 45 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(JSON.stringify(entry()), written, "a later watch finds the same state and rewrites nothing");
   // A push moves the head: the block is not the same block, and the flag goes.
   const pull = host.pullAt(PR)!;
   pull.head = "feedc0de0000";
   pull.feedback = {};
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined, "a new head clears the flag");
   assert.equal(runStatus(entry()), "awaiting-review");
   assert.equal(entry().pullHeads?.[PR]?.blockedSince, undefined);
 });
 
-test("A11-340: a head nobody reviewed is not read, logged or flagged as changes requested because GitHub still holds the decision from the head before", () => {
+test("A11-340: a head nobody reviewed is not read, logged or flagged as changes requested because GitHub still holds the decision from the head before", async () => {
   const { clock, host, pool, entry, store } = blockedPool();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   const verdicts = () => logOf(store.get(), "A11-203").filter((event) => event.kind === "verdict");
   assert.deepEqual(verdicts().map((event) => event.kind === "verdict" && [event.head, event.review]), [["abcd1234ef56", "changes-requested"]], "the head the reviewer blocked is logged once");
   // The worker pushes: GitHub's decision stays CHANGES_REQUESTED, and no review sits at the new head.
   const pull = host.pullAt(PR)!;
   pull.head = "8b3d0ba9aaaa";
   pull.feedback = { reviewDecision: "changes-requested", verdictAtHead: null };
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().pullHeads?.[PR]?.head, "8b3d0ba9aaaa");
   assert.equal(entry().pullHeads?.[PR]?.review, "none", "no review at the head is no verdict, whatever the decision says");
   assert.equal(entry().pullHeads?.[PR]?.blockedSince, undefined);
   assert.equal(verdicts().length, 1, "no verdict is logged for the new head");
   clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined, "and no stale-block note blames it");
   assert.equal(staleBlockNote(entry(), clock.now), null);
 });
 
-test("A11-213: the flag goes when the reviewer approves the same head, and a pull request blocked again counts its 30 minutes from when it was blocked again", () => {
-  const { clock, host, pool, entry } = flaggedPool();
+test("A11-213: the flag goes when the reviewer approves the same head, and a pull request blocked again counts its 30 minutes from when it was blocked again", async () => {
+  const { clock, host, pool, entry } = await flaggedPool();
   assert.equal(entry().handedBack, NOTE);
   const pull = host.pullAt(PR)!;
   pull.feedback = { reviewDecision: "approved", verdictAtHead: "approved" };
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined, "an approval clears it");
   clock.now = NOW + 40 * MINUTE;
   pull.feedback = { reviewDecision: "changes-requested", verdictAtHead: "changes-requested" };
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().pullHeads?.[PR]?.blockedSince, NOW + 40 * MINUTE, "blocked again, counted from now");
   assert.equal(entry().handedBack, undefined);
 });
 
-test("A11-213: a flag set on a run whose pull request then merges or whose ticket the tracker settles is cleared, so the card does not quote a block that is gone", () => {
+test("A11-213: a flag set on a run whose pull request then merges or whose ticket the tracker settles is cleared, so the card does not quote a block that is gone", async () => {
   for (const settled of [{ pullStates: { [PR]: "merged" } }, { pullStates: { [PR]: "closed" } }, { trackerState: "completed" }, { trackerState: "canceled" }]) {
-    const { pool, entry, store } = flaggedPool();
+    const { pool, entry, store } = await flaggedPool();
     assert.equal(entry().handedBack, NOTE);
     store.set({ ...store.get(), entries: store.get().entries.map((e) => ({ ...e, ...settled })) } as Queue);
-    pool.watchFeedback();
+    await pool.watchFeedback();
     assert.equal(entry().handedBack, undefined, JSON.stringify(settled));
   }
 });
@@ -207,11 +208,11 @@ test("A11-213: a flag set on a run whose pull request then merges or whose ticke
 const roundStarted = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 
 test("A11-213: a round the same watch starts is not lost to the flag: new feedback on a pull request that goes stale in that watch starts its round, and the round carries no note", async () => {
-  const { clock, host, pool, entry } = blockedPool(REVIEWED);
-  pool.watchFeedback();
+  const { clock, host, pool, entry } = blockedPool(REVIEWED, true);
+  await pool.watchFeedback();
   clock.now = NOW + 31 * MINUTE;
   Object.assign(host.pullAt(PR)!.feedback, { authors: ["alice"], feedbackAt: clock.now - 1000 });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().rounds], ["queued", 1], "the round was queued from the feedback");
   assert.equal(entry().handedBack, undefined);
   await roundStarted();
@@ -247,14 +248,14 @@ test("A11-352: a stand-off whose routes have ended is the one block of a watched
 });
 
 test("A11-352: a finished reviewed run whose pull request has sat changes requested at its head gets a feedback round from the board at 31 minutes, and no Needs-you note", async () => {
-  const { clock, pool, entry, store } = blockedPool(REVIEWED);
-  pool.watchFeedback();
+  const { clock, pool, entry, store } = blockedPool(REVIEWED, true);
+  await pool.watchFeedback();
   assert.equal(entry().phase, "finished", "a head just read blocked has not stood yet, and the reviewer and the stand-off have their window");
   clock.now = NOW + 29 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().phase, "finished", "29 minutes is not enough");
   clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().rounds, entry().handedBack], ["queued", 1, undefined], "the round Respond would start is queued, counted as the board's own, with nobody asked");
   assert.match(entry().feedback ?? "", /a11ign\/control #132 has sat changes requested at `abcd1234`.*answer the review, then push\./s, "and it says what to answer");
   const events = logOf(store.get(), "A11-203");
@@ -266,26 +267,26 @@ test("A11-352: a finished reviewed run whose pull request has sat changes reques
 
 test("A11-352: the round is not asked for again while it is queued, and a parked run is not started a round", async () => {
   const { clock, pool, entry } = blockedPool(REVIEWED);
-  pool.watchFeedback();
+  await pool.watchFeedback();
   clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
-  pool.watchFeedback();
+  await pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().rounds, 1, "a second watch finds the run queued and adds no round");
   await roundStarted();
   const parked = blockedPool(REVIEWED);
-  parked.pool.watchFeedback();
+  await parked.pool.watchFeedback();
   parked.store.set({ ...parked.store.get(), entries: parked.store.get().entries.map((each) => ({ ...each, workspace: "w1" })) } as Queue);
   parked.clock.now = NOW + 31 * MINUTE;
-  parked.pool.watchFeedback();
+  await parked.pool.watchFeedback();
   assert.deepEqual([parked.entry().phase, parked.entry().handedBack], ["finished", undefined], "a parked run is a person's already, and is neither started nor flagged");
 });
 
 test("A11-352: at the cap on the board's rounds the run is handed back saying so, not with the stale-block note", async () => {
   const { clock, pool, entry, store } = blockedPool(REVIEWED);
   store.set({ ...store.get(), entries: store.get().entries.map((each) => ({ ...each, rounds: 3 })) } as Queue);
-  pool.watchFeedback();
+  await pool.watchFeedback();
   clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().phase, "finished");
   assert.match(entry().handedBack ?? "", /^The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped\. Respond to review starts another\./);
   assert.equal(isStaleBlockNote(entry().handedBack), false);
@@ -293,38 +294,38 @@ test("A11-352: at the cap on the board's rounds the run is handed back saying so
 });
 
 test("A11-352: the board asks for each head once: a worker that answers without a push is not asked again, and the note then says so", async () => {
-  const { clock, host, pool, entry, store } = blockedPool(REVIEWED);
-  pool.watchFeedback();
+  const { clock, host, pool, entry, store } = blockedPool(REVIEWED, true);
+  await pool.watchFeedback();
   clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().rounds, entry().blockAsked], ["queued", 1, { [PR]: BLOCKED.head }]);
   await roundStarted();
   // The round ends with a reply and no push: the run finishes again, the pull request still blocked at the same head.
   store.set(finish(store.get(), "A11-203", REVIEWED, clock.now));
-  pool.watchFeedback();
+  await pool.watchFeedback();
   clock.now += 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().rounds], ["finished", 1], "no second round for the head");
   assert.equal(entry().handedBack, "a11ign/control #132 has sat changes requested at `abcd1234` for more than 30 minutes, with no new push and no run: the board already asked the worker to answer it at this head, which has not moved: a person decides");
   // A push is a new head, blocked again: the board asks for that head too, and the note goes.
   host.pullAt(PR)!.head = "feedc0de0000";
-  pool.watchFeedback();
+  await pool.watchFeedback();
   clock.now += 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().rounds, entry().handedBack, entry().blockAsked], ["queued", 2, undefined, { [PR]: "feedc0de0000" }]);
   await roundStarted();
 });
 
 test("A11-352: a note written before the reason was named goes, leaving the run to its round", async () => {
-  const { clock, pool, entry, store } = blockedPool(REVIEWED);
+  const { clock, pool, entry, store } = blockedPool(REVIEWED, true);
   const old = "a11ign/control #132 has sat changes requested at `abcd1234` for more than 30 minutes, with no new push and no run: a person decides";
-  pool.watchFeedback();
+  await pool.watchFeedback();
   store.set({ ...store.get(), entries: store.get().entries.map((each) => ({ ...each, handedBack: old })) } as Queue);
   assert.equal(staleBlockNote(entry(), NOW + 31 * MINUTE), null, "a reviewed run carrying the old note is the run the board answers, so the old reason is not rewritten into a wrong one");
   clock.now = NOW + 31 * MINUTE;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined, "the old note goes");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().rounds], ["queued", 1], "and the next watch starts the round");
   await roundStarted();
 });

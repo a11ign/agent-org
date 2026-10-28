@@ -113,6 +113,8 @@ export type PoolDeps = Readonly<{
   healthFigures?: () => HealthFigures | null;
   /** The model and effort a run is queued on when the person has not chosen (A11-366): the saved choice, which the board's own queueing of a reopened ticket uses. Absent: the board queues no reopened ticket. */
   runChoice?: () => RunChoice;
+  /** The longest one read of the tracker, a remote or a plan is waited for in a pass of `fill` (A11-359); a minute when absent. A test gives a short one. */
+  readMs?: number;
 }>;
 
 /** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */
@@ -209,6 +211,10 @@ export type PoolContext = Readonly<{
   settledPulls: Set<string>;
   /** The longest the files of a conflict are given to be listed (A11-286). */
   listingMs: number;
+  /** The longest one read of the tracker, a remote or a plan is waited for in a pass of `fill` (A11-359). */
+  readMs: number;
+  /** The reason `fill` last said it started nothing, and the failure of the tracker's last refresh of the blockers it last said (A11-359), so the same one is said once and not on every pass. Kept in memory: a restart says it again. */
+  idleSaid: { reason: string | null; refresh: string | null };
   /** Whether a sweep of the kept pull requests is under way, and the one last started (A11-286): sweeps never overlap. */
   keptSweep: { busy: boolean; done: Promise<void> };
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
@@ -311,7 +317,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? 60_000, idleSaid: { reason: null, refresh: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
   };

@@ -104,7 +104,7 @@ async function readTicket(ctx: PoolContext, entry: Entry, readBranchCi: NonNulla
       complete = false;
       continue;
     }
-    const runs = readBranchCi(repository, entry.ticket.branch, settledIds(store.get(), key));
+    const runs = await readBranchCi(repository, entry.ticket.branch, settledIds(store.get(), key));
     if (runs === null) {
       sayOnce(ctx, `${key} ${repository} read`, `${key}: the workflow runs on ${entry.ticket.branch} in ${repository} could not be read, so its CI was not counted; the next sweep asks again`);
       complete = false;

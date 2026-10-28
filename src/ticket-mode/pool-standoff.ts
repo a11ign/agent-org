@@ -93,7 +93,7 @@ const wasRecorded = (ctx: PoolContext, held: Entry | undefined, re: ReReview): b
  * since the re-review began. Its verdict and reasons are logged on the run that holds the pull request, as a `rereview` event ("rereview: still not convinced"), the stand-off is opened for a `not convinced` one, and the result is commented on
  * the pull request. Once for each re-review: the log is what says it was done, or, for a pull request no run holds, the pool's memory of the sweep. `repliesSince` reads the worker's replies after the block, or null when they could not be read.
  */
-export function recordRefusedRereview(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState, repliesSince: (since: number) => readonly Reply[] | null): void {
+export async function recordRefusedRereview(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState, repliesSince: (since: number) => Promise<readonly Reply[] | null>): Promise<void> {
   const { head } = state;
   const key = `${url}@${head}`;
   const look = ctx.reviewerMemory.looks.get(key);
@@ -107,7 +107,7 @@ export function recordRefusedRereview(ctx: PoolContext, reviewer: ReviewerPort, 
   if (wasRecorded(ctx, held, began)) return;
   const refused = refusedVerdictOf(reviewer, ref, look.at);
   if (refused === null) return;
-  const said = repliesSince(block.at);
+  const said = await repliesSince(block.at);
   // Replies that could not be read are not "no reply" (the reviewer's reading of this, `repliesAfter`): whether the worker disputed a decision, which only the planner may settle, is unknown, so nothing is recorded or routed on this sweep. The refused verdict stays on disk, and the next sweep asks again.
   if (said === null) return;
   // The comment is the board's own record, left on the pull request: one already there (a restart, a pull request no run holds) says the re-review was recorded, and is not posted again.

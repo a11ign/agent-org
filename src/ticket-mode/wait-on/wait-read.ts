@@ -116,9 +116,9 @@ export function reviewOnHead(state: ReviewState): PullFacts["review"] {
 }
 
 /** An open pull request waited on until reviewed: finished once a review stands on its head. Unreadable when the code host does not say what reviews it has, or throws (the reviewer's gate does not load). */
-function readReview(wait: PullRequestWait, seams: WaitSeams): Reading {
+async function readReview(wait: PullRequestWait, seams: WaitSeams): Promise<Reading> {
   try {
-    const state = seams.codeHost.readReviewState(wait.url);
+    const state = await seams.codeHost.readReviewState(wait.url);
     if (state === null) return unreadable(wait, "the code host does not say what reviews the pull request has");
     const review = reviewOnHead(state);
     return { wait, status: review === null ? "pending" : "finished", pull: { state: "OPEN", review } };
@@ -127,10 +127,10 @@ function readReview(wait: PullRequestWait, seams: WaitSeams): Reading {
   }
 }
 
-function readPullRequest(wait: PullRequestWait, seams: WaitSeams): Reading {
+async function readPullRequest(wait: PullRequestWait, seams: WaitSeams): Promise<Reading> {
   let state: string | null;
   try {
-    state = seams.codeHost.readPullState(wait.url);
+    state = await seams.codeHost.readPullState(wait.url);
   } catch (error) {
     return unreadable(wait, whyOf(error));
   }
@@ -179,7 +179,7 @@ export async function readWait(wait: Wait, seams: WaitSeams): Promise<Reading> {
     switch (wait.kind) {
       case "fleetJob": return await readFleetJob(wait, seams);
       case "ciRun": return readCiRun(wait, seams);
-      case "pullRequest": return readPullRequest(wait, seams);
+      case "pullRequest": return await readPullRequest(wait, seams);
       case "ticket": return await readTicket(wait, seams);
       case "session": return readSession(wait, seams);
     }

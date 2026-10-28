@@ -8,6 +8,7 @@
 // THE REOPEN IS THE BOARD'S, AND IT IS DONE ONCE. The breach is written to the file first, with the readings. The ticket is then moved out of its completed state (`restoreState`, which moves only a ticket still in the
 // state it names, so a person's move is never undone), commented with the readings, and queued on the saved default model and effort. Each step is recorded when it is done, so one that failed is tried again at the next
 // refresh and none is done twice. A ticket reopened and closed again is watched again from that close.
+import { withinTime } from "../../install/time-limit.ts";
 import { toolPinOf } from "../pool-pin.ts";
 import { log, messageOf, update } from "../pool-state.ts";
 import type { PoolContext } from "../pool-context.ts";
@@ -29,6 +30,9 @@ const sayOnce = (key: string, line: string): void => {
   said.add(`${key} ${line}`);
   log(line);
 };
+
+/** `ask`, given the time the board's other tracker reads are (`ctx.readMs`, A11-359): a call that never answers is a failure of the step, not a sweep that never ends. */
+const within = <T>(ctx: PoolContext, what: string, ask: Promise<T>): Promise<T> => withinTime(ctx.readMs, `the tracker's ${what}`, ask);
 
 const isReliability = (ticket: Pick<Ticket, "labels">): boolean => (ticket.labels ?? []).some(({ name }) => name.toLowerCase() === RELIABILITY_LABEL);
 
@@ -64,7 +68,7 @@ async function completedAmong(ctx: PoolContext, keys: readonly string[]): Promis
   if (keys.length === 0) return new Map();
   if (ctx.source.stateTypes === undefined) return null;
   try {
-    return new Map([...await ctx.source.stateTypes(keys)].map(([key, type]) => [key, type === "completed"]));
+    return new Map([...await within(ctx, "read of the states of the reliability tickets", ctx.source.stateTypes(keys))].map(([key, type]) => [key, type === "completed"]));
   } catch (err) {
     sayOnce("states", `the reliability watches could not read their tickets' states: ${messageOf(err)}`);
     return null;
@@ -85,10 +89,10 @@ async function moveOut(ctx: PoolContext, watch: Watch): Promise<boolean> {
   const { source, settings } = ctx;
   const refuse = (why: string): false => { sayOnce(watch.key, `${watch.key}: its figure breached and the board could not reopen it: ${why}`); return false; };
   if (source.restoreState === undefined) return refuse("this tracker cannot move a ticket out of its completed state");
-  const ticket = await source.read(watch.key);
+  const ticket = await within(ctx, `read of ${watch.key}`, source.read(watch.key));
   if (ticket === null) return refuse("the tracker has no such ticket");
-  const note = await source.restoreState(watch.key, { from: settings.workingState ?? REOPEN_STATE, to: ticket.status });
-  const after = await source.read(watch.key);
+  const note = await within(ctx, `move of ${watch.key}`, source.restoreState(watch.key, { from: settings.workingState ?? REOPEN_STATE, to: ticket.status }));
+  const after = await within(ctx, `read of ${watch.key}`, source.read(watch.key));
   return after !== null && after.status !== ticket.status ? true : refuse(note ?? `it is still ${ticket.status}`);
 }
 
@@ -97,7 +101,7 @@ async function queueReopened(ctx: PoolContext, watch: Watch): Promise<boolean> {
   const refuse = (why: string): false => { sayOnce(watch.key, `${watch.key}: the board could not queue the reopened ticket: ${why}`); return false; };
   const choice = ctx.deps.runChoice?.();
   if (choice === undefined) return refuse("it has no saved model to queue it on");
-  const ticket = await ctx.source.read(watch.key);
+  const ticket = await within(ctx, `read of ${watch.key}`, ctx.source.read(watch.key));
   if (ticket === null) return refuse("the tracker has no such ticket");
   update(ctx, (queue) => enqueue(dismiss(queue, ticket.key, ctx.now()), [ticket], choice, ctx.now()));
   const entry = find(ctx.store.get(), ticket.key);
@@ -105,9 +109,9 @@ async function queueReopened(ctx: PoolContext, watch: Watch): Promise<boolean> {
 }
 
 /** Post the comment with the readings; a tracker that cannot comment keeps it off the ticket, and the log says so once. */
-async function postReadings({ source }: PoolContext, watch: Watch): Promise<boolean> {
-  if (source.comment === undefined) sayOnce(watch.key, `${watch.key}: this tracker cannot post the readings of its reopen as a comment`);
-  else await source.comment(watch.key, reopenComment(watch));
+async function postReadings(ctx: PoolContext, watch: Watch): Promise<boolean> {
+  if (ctx.source.comment === undefined) sayOnce(watch.key, `${watch.key}: this tracker cannot post the readings of its reopen as a comment`);
+  else await within(ctx, `comment on ${watch.key}`, ctx.source.comment(watch.key, reopenComment(watch)));
   return true;
 }
 
@@ -139,11 +143,8 @@ async function reopenOwed(ctx: PoolContext, path: string): Promise<void> {
   }
 }
 
-/** When each pool's sweep began, while it is under way: two refreshes that overlap must not both reopen a ticket. */
-const sweeping = new WeakMap<PoolContext, number>();
-
-/** How long a sweep may be under way before the next refresh takes it for hung on a tracker call that has no timeout, and sweeps anyway. */
-const SWEEP_HUNG_MS = 5 * 60_000;
+/** The pools whose sweep is under way: two refreshes that overlap must not both reopen a ticket. Every tracker call of a sweep is bounded by `readMs`, so a sweep ends. */
+const sweeping = new WeakSet<PoolContext>();
 
 /**
  * One sweep, run at the end of each tracker refresh: the tickets labelled `board-reliability` on the queue, and A11-282 and A11-345, are watched; each watch is advanced by what the tracker says of its ticket, whether
@@ -151,9 +152,8 @@ const SWEEP_HUNG_MS = 5 * 60_000;
  */
 export async function syncReliabilityWatches(ctx: PoolContext): Promise<void> {
   // A pool given no source of the figures reads none, and so watches nothing.
-  const began = sweeping.get(ctx);
-  if (ctx.deps.healthFigures === undefined || (began !== undefined && ctx.now() - began < SWEEP_HUNG_MS)) return;
-  sweeping.set(ctx, ctx.now());
+  if (ctx.deps.healthFigures === undefined || sweeping.has(ctx)) return;
+  sweeping.add(ctx);
   const path = reliabilityWatchesPath(ctx.settings.stateDir);
   try {
     const enrolment = changeWatches(path, (file) => enrolled(file, ctx.store.get(), ctx.now()));

@@ -15,11 +15,11 @@ import type { PullState } from "./source.ts";
 const STATES: Readonly<Record<string, PullState>> = { OPEN: "open", MERGED: "merged", CLOSED: "closed" };
 
 /** The state of each pull request the round names that the host could say, by URL. One it cannot say is left out, and the next watch asks again. */
-function readStates(ctx: PoolContext, entry: Entry): Record<string, PullState> {
+async function readStates(ctx: PoolContext, entry: Entry): Promise<Record<string, PullState>> {
   const states: Record<string, PullState> = {};
   for (const { url } of openPulls(entry)) {
     try {
-      const state = STATES[ctx.codeHost.readPullState(url) ?? ""];
+      const state = STATES[(await ctx.codeHost.readPullState(url)) ?? ""];
       if (state !== undefined) states[url] = state;
     } catch (err) {
       log(`${entry.ticket.key}: the state of ${url} could not be read (${messageOf(err).split("\n")[0]}), so its queued round keeps it; the next watch asks again`);
@@ -32,13 +32,15 @@ function readStates(ctx: PoolContext, entry: Entry): Record<string, PullState> {
  * Read the state of every pull request each queued review round names. A pull request that merged or closed is no longer open for the round and holds nothing; a round left with none is dropped, and its ticket goes back to the board as the
  * finished run it continued, which the tracker sweep completes or queues for its next step. Said in the log, once, when it happens.
  */
-export function settleQueuedRounds(ctx: PoolContext): void {
+export async function settleQueuedRounds(ctx: PoolContext): Promise<void> {
   const { now, store, tickState } = ctx;
   // Not while a pass is filling slots: it chose its starts from the queue as it was, and a round that became a finished run under it would be started as one. The next watch settles it (as `startRound` in `pool-base-merge.ts` waits).
   if (tickState.busy) return;
   for (const entry of queuedRounds(store.get())) {
     const key = entry.ticket.key;
-    const states = readStates(ctx, entry);
+    const states = await readStates(ctx, entry);
+    // The read took time: a pass that began filling slots meanwhile chose its starts from the queue as it was.
+    if (tickState.busy) return;
     const settled = roundSettled(store.get(), key, states);
     if (settled === null) continue;
     update(ctx, (queue) => settleRoundPulls(queue, key, states, now()));

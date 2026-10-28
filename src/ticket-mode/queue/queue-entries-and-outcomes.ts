@@ -296,6 +296,11 @@ export type Entry = Readonly<{
    */
   pathsFailure?: string;
   /**
+   * Why the tracker could not say which tickets block it on the last pass (A11-359): the ticket could not be read, or the read did not finish in time. A queued run whose blockers are unknown is never started, so it is held with this reason
+   * while the others start, and the board asks again on the next pass. Set by `recordBlockersFailure`, and cleared once its blockers are read.
+   */
+  blockersFailure?: string;
+  /**
    * The files each of its open pull requests changes, by URL, as the last watch read them: the footprint of a run with a pull request open. An
    * empty name in a list marks a list cut short: the files past those listed are unknown and hold nothing (`footprintOf`).
    */

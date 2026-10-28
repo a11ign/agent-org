@@ -35,10 +35,10 @@ export function followDecisionsOf(ctx: PoolContext, entry: Entry, read: TicketRe
  * Leave beside a review round's outcome file the lines of the Decisions its brief opens with and the head each pull request has now, for the Stop hook to judge a `reviewed` by (A11-305, `decisions-files.ts`). A round whose brief names no change leaves
  * none (`clearRunDir` removed the last run's), and so does a change that only takes lines out. A pull request the code host cannot read is recorded with no head, and the hook then allows the stop out loud.
  */
-export function writeDecisionsMark(ctx: PoolContext, entry: Entry, dir: string, text: Readonly<{ briefed: TicketRead | undefined; read: TicketRead }>): void {
+export async function writeDecisionsMark(ctx: PoolContext, entry: Entry, dir: string, text: Readonly<{ briefed: TicketRead | undefined; read: TicketRead }>): Promise<void> {
   const { briefed, read } = text;
   const change = briefed === undefined ? null : decisionsChange(briefed.description, read.description);
   if (!asksForWork(change)) return;
-  const heads = Object.fromEntries(openPulls(entry).map(({ url }) => [url, ctx.codeHost.readReviewState(url)?.head ?? null]));
+  const heads = Object.fromEntries(await Promise.all(openPulls(entry).map(async ({ url }) => [url, (await ctx.codeHost.readReviewState(url))?.head ?? null] as const)));
   writeFileSync(join(dir, DECISIONS_ROUND_FILE), `${JSON.stringify({ added: change.added, heads })}\n`);
 }

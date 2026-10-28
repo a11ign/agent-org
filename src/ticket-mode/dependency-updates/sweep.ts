@@ -57,12 +57,12 @@ async function sweepOnce(deps: DependencySweepDeps, memory: SweepContext["memory
     full = deps.store.get().paused || !requestTicket(ctx, request, team);
   };
   askOwnRequests(ctx, ask);
-  const self = deps.codeHost.readOwnLogin() ?? "";
+  const self = (await deps.codeHost.readOwnLogin()) ?? "";
   const repositories = repositoriesOf(ctx);
   for (const repository of repositories) {
-    const pulls = deps.codeHost.openDependencyPulls(repository);
+    const pulls = await deps.codeHost.openDependencyPulls(repository);
     if (pulls === null) sayOnce(ctx, `dependency updates: ${repository}'s pull requests could not be listed, so the next sweep asks again`);
-    else sweepRepository(ctx, ask, { repository, pulls, self });
+    else await sweepRepository(ctx, ask, { repository, pulls, self });
   }
 }
 
@@ -100,13 +100,13 @@ function repositoriesOf(ctx: SweepContext): readonly string[] {
 }
 
 /** One repository's open pull requests: each is skipped, asked for as a major, or watched as a group. */
-function sweepRepository(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pulls, self }: Readonly<{ repository: string; pulls: readonly DependencyPull[]; self: string }>): void {
+async function sweepRepository(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pulls, self }: Readonly<{ repository: string; pulls: readonly DependencyPull[]; self: string }>): Promise<void> {
   forgetClosed(ctx, repository, pulls);
   for (const pull of pulls) {
     const update = classifyDependencyPull(pull);
     if (update.kind === "skip") sayOnce(ctx, `dependency updates: ${pull.url} is left alone: ${update.reason}`);
     else if (update.kind === "major") askMajor(ctx, ask, { repository, pull, update });
-    else watchGroup(ctx, ask, { repository, pull, group: update.group, self });
+    else await watchGroup(ctx, ask, { repository, pull, group: update.group, self });
   }
 }
 

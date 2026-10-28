@@ -83,7 +83,8 @@ test("A11-175: ticket:review starts a reviewer past a red unrequired check, and 
   const sent: string[][] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: (args) => { sent.push(args); return JSON.stringify({ result: { agents: [], workspaces: [] } }); }, mint: () => null, codeHost,
     clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
-  const r = reviewOnDemand({ url: PLUGIN, port, readState: (url) => codeHost.readReviewState(url), started: new Set(), record: () => {} });
+  const read = await codeHost.readReviewState(PLUGIN);
+  const r = reviewOnDemand({ url: PLUGIN, port, readState: () => read, started: new Set(), record: () => {} });
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(spawned, ["reviewer-plugin-7"]);
   const prompt = sent.filter((args) => args.includes("prompt")).map((args) => args[args.length - 1]).at(-1) ?? "";
