@@ -10,6 +10,7 @@
 //
 // THE CONFLICT ROUND RUNS AHEAD OF THE NEXT STEP. A ticket queued for another step is replaced by a review round over the conflicting pull requests, and the step it was queued for waits in `Entry.afterRound` until the round has pushed
 // ({@link keptPullRound}, {@link restoreAfterRound}). A finished run that holds a pull request its outcome does not name is handed the round as it is.
+import { readEach } from "./pool-reads.ts";
 import { askUpdate } from "./pool-checks.ts";
 import { baseMergeLines, type BaseMerge } from "./pool-outcome.ts";
 import { baseMergeWords } from "./board-view/base-merge-words.ts";
@@ -233,8 +234,8 @@ function roundFeedback(ctx: PoolContext, ready: readonly OpenPull[]): string {
 }
 
 /** What a sweep of one ticket's kept pull requests reads: the open ones, and whether any could not be read. A pull request found merged or closed is remembered as settled. */
-function readOpenKept(ctx: PoolContext, entry: Entry, pulls: readonly PullRequest[], self: string): readonly OpenPull[] {
-  const reads = pulls.map(({ url }) => ({ url, read: ctx.codeHost.readPullFeedback(url, self, ctx.feedbackIgnores) }));
+async function readOpenKept(ctx: PoolContext, entry: Entry, pulls: readonly PullRequest[], self: string): Promise<readonly OpenPull[]> {
+  const reads = await readEach(pulls, async ({ url }) => ({ url, read: await ctx.codeHost.readPullFeedback(url, self, ctx.feedbackIgnores) }));
   const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
   if (unread.length > 0) log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
   const readable = reads.filter((pull): pull is OpenPull => pull.read !== null);
@@ -249,6 +250,9 @@ function restoreStep(ctx: PoolContext, key: string): void {
   if (restored !== held) ctx.store.set(restored);
 }
 
+/** Whether `entry` is still a run whose kept pull requests are looked at: it is on the queue, the tracker has not settled its ticket, and it holds a workspace or may take a round. */
+const isStillKept = (entry: Entry | undefined): entry is Entry => entry !== undefined && !SETTLED.has(entry.trackerState ?? "") && looksAtKept(entry);
+
 /** Whether a run's kept pull requests are looked at: a run that holds a workspace has them recorded as waiting, and one that may take a round has them answered. A talk session and a round already queued read nothing. */
 const looksAtKept = (entry: Entry): boolean => holdsWorkspace(entry) || takesRound(entry);
 
@@ -261,15 +265,18 @@ async function sweepTicket(ctx: PoolContext, key: string): Promise<boolean> {
   if (entry === undefined || SETTLED.has(entry.trackerState ?? "")) return false;
   const pulls = unwatchedPullsOf(ctx.store.get(), entry, ctx.settledPulls);
   if (pulls.length === 0 || !looksAtKept(entry)) return false;
-  ctx.ownLogin.value ??= ctx.codeHost.readOwnLogin();
+  ctx.ownLogin.value ??= await ctx.codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   if (self === null) {
     log("the GitHub account the workers use could not be read, so no kept pull request's feedback was read");
     return false;
   }
-  const open = readOpenKept(ctx, entry, pulls, self);
+  const open = await readOpenKept(ctx, entry, pulls, self);
+  // The reads took time: a run that was stopped, dismissed or settled meanwhile is not brought up to date from the copy this sweep began with (A11-356).
+  const latest = find(ctx.store.get(), key);
+  if (!isStillKept(latest)) return false;
   const before = new Map(open.map(({ url }) => [url, ctx.baseMerges.get(url)]));
-  await Promise.all(open.flatMap((pull) => mergeBaseInto(ctx, entry, pull) ?? []));
+  await Promise.all(open.flatMap((pull) => mergeBaseInto(ctx, latest, pull) ?? []));
   const decided = open.filter(({ url, read }) => {
     const now = ctx.baseMerges.get(url);
     return now !== before.get(url) && now?.step === "round" && now.head === read.head;

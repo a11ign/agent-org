@@ -15,6 +15,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { PickScope } from "../../src/ticket-mode/settings.ts";
+import { callLog, describeCounts, type CallLog } from "./call-log.ts";
 import type { Assignee, AutomaticCompletionUndo, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText } from "../../src/plugins/contracts/tracker.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
@@ -190,42 +191,92 @@ export function scopedQuery(scope: string): { text: string; variables: Record<st
   };
 }
 
-/** The seams every call to Linear goes through: the key, which goes only to Linear, and the `fetch` that sends it. */
-type Client = Readonly<{ key: string; request: Fetch }>;
+/**
+ * The seams every call to Linear goes through: the key, which goes only to Linear, the `fetch` that sends it (the board gives one that opens a connection for each call, so none can be stale: A11-359), the
+ * `sleep` between a failed attempt and the next, the time one attempt may take, and where each attempt is counted.
+ */
+type Client = Readonly<{ key: string; request: Fetch; sleep: (ms: number) => Promise<void>; attemptMs: number; calls: CallLog; log: (line: string) => void }>;
 
 /** An error that carries the HTTP `status` the server answered with, as data, so the board tries a 5xx again without reading the message (tracker contract 1.7). */
 const answered = (message: string, status: number): Error => Object.assign(new Error(message), { status });
 
-/**
- * Whether `err` is Node's `fetch` failing to reach Linear (`TypeError("fetch failed")`, the reason in its cause). The board keeps connections to Linear open between calls, and one that Linear or the network closed while it sat idle
- * (undici's `UND_ERR_SOCKET`, `ECONNRESET`) fails the next call that reuses it (A11-345).
- */
-const MUTATION = /^\s*mutation\b/;
+/** The waits before the first, second and third retry of a failed call, in milliseconds: a call is made at most four times. */
+export const RETRY_WAITS_MS: readonly number[] = [200, 800, 2_000];
+/** How long one attempt may take before its connection is dropped and the call is tried on a new one. A fresh process reaches Linear in about 150 ms; the largest read the board makes in a pass answers in a few seconds. */
+export const ATTEMPT_MS = 10_000;
+const MS_PER_SECOND = 1_000;
 
-const isFetchFailure = (err: unknown): boolean => err instanceof TypeError && err.message === "fetch failed";
+/** Linear answers these when it asks to be called again later, or when it fails itself: the call is tried again on a new connection. */
+const retryableStatus = (status: number): boolean => status === 429 || (status >= 500 && status <= 599);
+
+/** The reason an attempt that did not answer failed, such as `ECONNRESET`: the code `fetch failed` carries in its cause, or the error's own name. */
+const reasonOf = (err: unknown): string => {
+  const code = ((err as { cause?: { code?: unknown } } | null)?.cause)?.code;
+  return typeof code === "string" ? code : String((err as Error)?.message ?? err);
+};
 
 /**
- * Send one call to Linear. A query that fails with `fetch failed` is sent once more, asking for the connection to be closed after it (`Connection: close`), so the call after it does not reuse a connection of the pool that has gone stale
- * as well: the failed call closed its own, and the pool opens a new one when no live one is idle. A second failure is the caller's. A mutation is never sent again here: one that failed after Linear applied it would post a comment twice
- * or be refused as already made, so the caller that can tell (the plan attach, the result write, the run-start writes) tries it again.
+ * Whether `err` is a failure to reach Linear or to hear its answer, which a new connection may get past: Node's `fetch` failing (`TypeError("fetch failed")`, the reason in its cause: `ECONNRESET`, undici's
+ * `UND_ERR_SOCKET`) or an attempt that ran past its time ({@link attemptTimedOut}).
  */
-async function send(client: Client, text: string, variables: Record<string, unknown>): Promise<Response> {
-  const { key, request } = client;
-  const post = (headers: Record<string, string>) => request(LINEAR_API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: key, ...headers },
-    body: JSON.stringify({ query: text, variables }),
+const isConnectionFailure = (err: unknown): boolean => (err instanceof TypeError && err.message === "fetch failed") || (err as Error | null)?.name === "TimeoutError";
+
+/** The error an attempt that ran past {@link ATTEMPT_MS} fails with. */
+const attemptTimedOut = (ms: number): Error => Object.assign(new Error(`Linear did not answer within ${ms / MS_PER_SECOND} s`), { name: "TimeoutError" });
+
+/** One attempt, given `ms`: the call is aborted when it runs past, and the attempt fails even where `request` ignores the abort, so a connection that went silent never holds the caller. */
+async function attempt(client: Client, url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(attemptTimedOut(client.attemptMs)); }, client.attemptMs);
   });
   try {
-    return await post({});
-  } catch (err) {
-    if (!isFetchFailure(err) || MUTATION.test(text)) throw err;
-    return post({ Connection: "close" });
+    return await Promise.race([client.request(url, { ...init, signal: controller.signal }), late]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
+/**
+ * Send one call to Linear, on a connection that is made for it. A call that fails to reach Linear, runs past {@link ATTEMPT_MS}, or is answered with a 429 or a 5xx is tried again on a new connection, after a wait that
+ * grows ({@link RETRY_WAITS_MS}), up to three times; the last answer, or the last failure, is the caller's. A refusal (a 4xx, an error in a 200) is never tried again. A mutation is tried again too: the board's
+ * mutations are each made safe to repeat by the caller that makes them (a state set twice is the same state; a comment that was applied before its answer was lost may be posted twice, which is the lesser harm
+ * against a result or an After-merge comment that is never posted). Every attempt is counted in the call log, and a failed one is logged with the rate (A11-359).
+ */
+async function send(client: Client, url: string, init: RequestInit): Promise<Response> {
+  for (let tried = 0; ; tried += 1) {
+    const last = tried >= RETRY_WAITS_MS.length;
+    let failure: unknown;
+    try {
+      const response = await attempt(client, url, init);
+      if (!retryableStatus(response.status) || last) {
+        client.calls.record(retryableStatus(response.status));
+        return response;
+      }
+      // The body of an answer that is not used is let go, so its connection closes now.
+      await response.arrayBuffer().catch(() => undefined);
+      failure = answered(`Linear answered ${response.status}`, response.status);
+    } catch (err) {
+      failure = err;
+      if (!isConnectionFailure(err)) throw err;
+    }
+    const counts = client.calls.record(true);
+    if (last) throw failure;
+    client.log(`Linear: a call failed (${reasonOf(failure)}), trying again on a new connection in ${RETRY_WAITS_MS[tried]} ms; ${describeCounts(counts)}`);
+    await client.sleep(RETRY_WAITS_MS[tried]);
+  }
+}
+
+/** A GraphQL call: `text` and its `variables` posted to Linear with the key. */
+const post = (client: Client, text: string, variables: Record<string, unknown>): Promise<Response> => send(client, LINEAR_API, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: client.key },
+  body: JSON.stringify({ query: text, variables }),
+});
+
 async function query<T>(client: Client, text: string, variables: Record<string, unknown>): Promise<T> {
-  const response = await send(client, text, variables);
+  const response = await post(client, text, variables);
   const body = await response.json().catch(() => null) as { data?: T; errors?: { message: string }[] } | null;
   if (!response.ok || body === null || body.errors?.length) {
     throw answered(`Linear answered ${response.status}: ${body?.errors?.map((e) => e.message).join("; ") ?? "no JSON"}`, response.status);
@@ -234,14 +285,24 @@ async function query<T>(client: Client, text: string, variables: Record<string, 
 }
 
 /**
- * One ticket's `fields`, or `null` for a string that is no key or a key Linear has no ticket for. It reads by team and number, so a missing
+ * What a by-key lookup that found nothing says (A11-360): the filter it asked with, so a lookup that is wrong shows as the lookup and is not told as a ticket that does not exist.
+ * Archived tickets are part of the filter: Linear leaves them out of `issues` unless asked, and a closed ticket is archived after a while.
+ */
+function noMatchFor(identifier: string): string {
+  const parts = TICKET_KEY.exec(identifier);
+  const filter = parts === null ? `${identifier} is not a ticket key` : `team key ${parts[1].toUpperCase()}, number ${Number(parts[2])}, archived tickets included`;
+  return `Linear matched no ticket for ${identifier} (filter: ${filter})`;
+}
+
+/**
+ * One ticket's `fields`, or `null` for a string that is no key or a key that matches no ticket, archived ones included. It reads by team and number, so a missing
  * ticket is an empty list: nothing hangs on the wording of an error.
  */
 async function issue<T>(client: Client, identifier: string, fields: string): Promise<T | null> {
   const parts = TICKET_KEY.exec(identifier);
   if (parts === null) return null;
   const data: { issues: { nodes: T[] } } = await query(client,
-    `query($team: String!, $number: Float!) { issues(first: 1, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${fields} } } }`,
+    `query($team: String!, $number: Float!) { issues(first: 1, includeArchived: true, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${fields} } } }`,
     { team: parts[1].toUpperCase(), number: Number(parts[2]) });
   return data.issues.nodes[0] ?? null;
 }
@@ -253,7 +314,7 @@ async function eachIssue<T>(client: Client, keys: readonly string[], fields: str
   for (let start = 0; start < parsed.length; start += STATE_BATCH) {
     const batch = parsed.slice(start, start + STATE_BATCH);
     const params = batch.map((_, i) => `$t${i}: String!, $n${i}: Float!`).join(", ");
-    const reads = batch.map((_, i) => `k${i}: issues(first: 1, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { ${fields} } }`).join(" ");
+    const reads = batch.map((_, i) => `k${i}: issues(first: 1, includeArchived: true, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { ${fields} } }`).join(" ");
     const variables = Object.fromEntries(batch.flatMap(([, parts], i) => [[`t${i}`, parts[1].toUpperCase()], [`n${i}`, Number(parts[2])]]));
     const data: Record<string, { nodes: T[] }> = await query(client, `query(${params}) { ${reads} }`, variables);
     batch.forEach(([key], i) => {
@@ -294,7 +355,6 @@ async function postComment(client: Client, identifier: string, id: string, body:
 
 /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
 async function attachFile(client: Client, issueId: string, path: string, title: string): Promise<void> {
-  const { request } = client;
   const body = readFileSync(path);
   const { fileUpload }: Upload = await query(client,
     "mutation($contentType: String!, $filename: String!, $size: Int!) { fileUpload(contentType: $contentType, filename: $filename, size: $size) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
@@ -302,7 +362,7 @@ async function attachFile(client: Client, issueId: string, path: string, title: 
   if (!fileUpload.success || fileUpload.uploadFile === null) throw new Error(`Linear would not take the upload of ${title}`);
   const { uploadUrl, assetUrl, headers } = fileUpload.uploadFile;
   // The file goes to the storage address Linear signed, without the key: the signature is the permission.
-  const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
+  const put = await send(client, uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
     ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
   if (!put.ok) throw answered(`the upload of ${title} was refused (${put.status})`, put.status);
   const { attachmentCreate }: { attachmentCreate: { success: boolean } } = await query(client,
@@ -338,14 +398,14 @@ async function assignedTickets(client: Client, pick: PickScope): Promise<Ticket[
 async function addBlockersTo(client: Client, identifier: string, blockerKeys: readonly string[]): Promise<void> {
   type Blocked = { id: string; inverseRelations: { nodes: { type: string; issue: { identifier: string } }[] } };
   const found = await issue<Blocked>(client, identifier, "id inverseRelations { nodes { type issue { identifier } } }");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const already = new Set(found.inverseRelations.nodes.filter(({ type }) => type === "blocks").map(({ issue: blocker }) => blocker.identifier));
   const missing = [...new Set(blockerKeys)].filter((key) => !already.has(key));
   if (missing.length === 0) return;
   const ids = await eachIssue<{ id: string }>(client, missing, "id");
   for (const key of missing) {
     const blocker = ids.get(key);
-    if (blocker === undefined) throw new Error(`Linear has no ticket ${key}`);
+    if (blocker === undefined) throw new Error(noMatchFor(key));
     // "A blocks B" is stored on A, with B as the related issue: the same relation `blockers` reads back from B.
     const { issueRelationCreate }: { issueRelationCreate: { success: boolean } } = await query(client,
       "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
@@ -367,7 +427,7 @@ async function blockersOf(client: Client, keys: readonly string[]): Promise<Read
 
 async function attachPlanTo(client: Client, identifier: string, files: readonly string[], state: string | null): Promise<string | null> {
   const found = await issue<Planning>(client, identifier, `${STATEFUL} ${ATTACHMENTS}`);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const attached = new Set(uploadsIn(found).map(({ title }) => title));
   for (const path of files) {
     const title = basename(path);
@@ -388,7 +448,7 @@ async function textsOf(client: Client, keys: readonly string[]): Promise<Readonl
  */
 async function detachPlanOf(client: Client, identifier: string, titles: readonly string[]): Promise<void> {
   const found = await issue<{ attachments: { nodes: { id: string; url: string; title: string }[] } }>(client, identifier, "attachments(first: 50) { nodes { id url title } }");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const named = new Set(titles);
   for (const { id, url, title } of found.attachments.nodes) {
     if (!url.startsWith(UPLOAD_ORIGIN) || !named.has(title)) continue;
@@ -399,14 +459,14 @@ async function detachPlanOf(client: Client, identifier: string, titles: readonly
 
 async function moveWorking(client: Client, identifier: string, state: string): Promise<Readonly<{ moved: StateMove | null; note: string | null }>> {
   const found = await issue<Stateful>(client, identifier, STATEFUL);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   return moveTo(client, identifier, found, state, BEFORE_WORK);
 }
 
 async function restoreStateOf(client: Client, identifier: string, move: StateMove): Promise<string | null> {
   const found = await issue<Stateful>(client, identifier, STATEFUL);
   // A ticket Linear no longer has has nothing to put back, and must not hold its run on the board for ever.
-  if (found === null) return `Linear has no ticket ${identifier}, so nothing was put back to ${move.from}`;
+  if (found === null) return `${noMatchFor(identifier)}, so nothing was put back to ${move.from}`;
   // Only while the ticket is still where the board put it: a person who has moved it since has moved it on, and that is theirs to keep.
   if (found.state.name !== move.to) return null;
   const target = found.team.states.nodes.find(({ name }) => name === move.from);
@@ -437,7 +497,7 @@ export function completionOf(history: readonly HistoryMove[], stateId: string): 
 
 async function undoAutomaticCompletionOf(client: Client, identifier: string, comment: string): Promise<AutomaticCompletionUndo> {
   const found = await issue<Completed>(client, identifier, COMPLETED);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   if (found.state.type !== "completed") return { reopened: null, by: "none", note: null };
   const { by, from } = completionOf(found.history.nodes, found.state.id);
   if (by === "person") return { reopened: null, by, note: null };
@@ -453,7 +513,7 @@ async function undoAutomaticCompletionOf(client: Client, identifier: string, com
 
 async function updateTicketTextOf(client: Client, identifier: string, text: Readonly<{ title?: string; description?: string }>): Promise<void> {
   const found = await issue<{ id: string }>(client, identifier, "id");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(client,
     "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }", { id: found.id, input: text });
   if (!issueUpdate.success) throw new Error(`Linear did not update the text of ${identifier}`);
@@ -461,7 +521,7 @@ async function updateTicketTextOf(client: Client, identifier: string, text: Read
 
 async function completeTicket(client: Client, identifier: string, comment: string): Promise<string | null> {
   const found = await issue<Stateful>(client, identifier, STATEFUL);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   // A ticket already finished is left as it is, and gets no comment: whoever finished it has said what they meant.
   if (FINISHED_TYPES.has(found.state.type)) return null;
   // The completed state Linear lists first by position, when a team has more than one.
@@ -476,7 +536,7 @@ async function completeTicket(client: Client, identifier: string, comment: strin
 /** Post `body` on the ticket `identifier`, in whatever state it is in (A11-173). */
 async function commentOn(client: Client, identifier: string, body: string): Promise<void> {
   const found = await issue<{ id: string }>(client, identifier, "id");
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   await postComment(client, identifier, found.id, body);
 }
 
@@ -497,7 +557,7 @@ export function latestClaimant({ comments }: Claims): string | undefined {
 /** Record that `claimant` holds the ticket, unless its latest claim already names them, so nine steps of one ticket make one comment. */
 async function claimTicket(client: Client, identifier: string, claimant: string): Promise<void> {
   const found = await issue<{ id: string } & Claims>(client, identifier, `id ${CLAIMS}`);
-  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found === null) throw new Error(noMatchFor(identifier));
   if (latestClaimant(found) === claimant) return;
   await postComment(client, identifier, found.id, `${CLAIM_PREFIX}${claimant}`);
 }
@@ -511,13 +571,13 @@ async function claimsOf(client: Client, keys: readonly string[]): Promise<Readon
 }
 
 async function downloadTicket(client: Client, ticket: Ticket, dir: string): Promise<string[]> {
-  const { key, request } = client;
+  const { key } = client;
   const linked = uploadLinks(ticket.description);
   const attached = (await attachedUploads(client, ticket.key)).filter(({ url }) => !linked.includes(url));
   const files = [...linked.map((url) => ({ url, title: null })), ...attached];
   const paths: string[] = [];
   for (const [index, { url, title }] of files.entries()) {
-    const response = await request(url, { headers: { Authorization: key } });
+    const response = await send(client, url, { headers: { Authorization: key } });
     if (!response.ok) continue;
     const path = join(dir, downloadName(index + 1, url, title, response.headers.get("content-type") ?? ""));
     writeFileSync(path, Buffer.from(await response.arrayBuffer()));
@@ -555,8 +615,13 @@ async function scopedPage(client: Client, scope: string, after: string | null): 
   return { tickets: issues.nodes.map(toTicket), next: issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null };
 }
 
-export function linearSource({ key, fetch: request = fetch, pick = "assigned" }: { key: string; fetch?: Fetch; pick?: PickScope }): TicketSource {
-  const client: Client = { key, request };
+/**
+ * The Linear source. `fetch` is the transport every call goes through: the board gives one that opens a connection for each call (`src/fresh-fetch.ts`). `stateDir` is where the rate of failed calls is written for doctor,
+ * and `log` is where a failed call is said (A11-359). `sleep`, `attemptMs` and `now` are seams for a test.
+ */
+export function linearSource({ key, fetch: request = fetch, pick = "assigned", stateDir = "", log = () => undefined, sleep = (ms) => new Promise((done) => { setTimeout(done, ms); }), attemptMs = ATTEMPT_MS, now = Date.now }:
+  { key: string; fetch?: Fetch; pick?: PickScope; stateDir?: string; log?: (line: string) => void; sleep?: (ms: number) => Promise<void>; attemptMs?: number; now?: () => number }): TicketSource {
+  const client: Client = { key, request, sleep, attemptMs, log, calls: callLog({ stateDir, now }) };
   return {
     keywords: KEYWORDS,
 

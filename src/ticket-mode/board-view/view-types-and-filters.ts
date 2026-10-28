@@ -34,6 +34,8 @@ export type ViewEntry = Readonly<{
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Why the plan of a queued run could not be downloaded, which holds it back (A11-125). */
   pathsFailure?: string;
+  /** Why the tracker could not say which tickets block a queued run, which holds it back (A11-359). */
+  blockersFailure?: string;
   /** The version of agent-org the run was started on, and, when a breaking update stopped it and queued it again, when and for which release (A11-169). */
   toolVersion?: string;
   stoppedForUpdate?: Readonly<{ at: number; target: string }>;
@@ -142,6 +144,8 @@ export type ViewEntry = Readonly<{
   /** The open pull requests a `needs-human` run ended with changes requested at their head, by URL, with that head: what it stopped on, so a review lifted at that head clears it (A11-258). Unset when none was blocked, or the end could not read them. */
   outcomeBlocks?: Readonly<Record<string, string>>;
   blockAsked?: Readonly<Record<string, string>>;
+  /** The pull requests the run opened while it ran, from the hook's record (A11-358). */
+  opened?: readonly Readonly<{ repo: string; url: string }>[];
   /** Each open pull request's head now, and whether the newest verdict on it is an approval, by URL, as the last watch read them (A11-153). */
   pullHeads?: Readonly<Record<string, PullHead>>;
 }>;
@@ -470,14 +474,19 @@ export const CONCLUDED: ReadonlySet<string> = new Set(["checked", "done", "plann
 /** Outcomes that are a run's result, pull requests to show for it: a draft one, or one a review run saw through its review. */
 export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "ready-pr", "reviewed"]);
 
-/** The pull requests a run is about: its result's, or, for a review run that has none yet, the ones the person approved. */
-export function pullsOf<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[] }>): readonly T[] {
+/**
+ * The pull requests a run is about: its result's, or, for a review run that has none yet, the ones the person approved; and the ones the run opened while it ran that those do not name (A11-358), so a pull request it opened in another
+ * repository is the run's even when its outcome leaves it out.
+ */
+export function pullsOf<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[]; opened?: readonly T[] }>): readonly T[] {
   const { outcome } = entry;
-  return outcome !== undefined && RESULT_KINDS.has(outcome.kind) ? (outcome.prs ?? []) : (entry.review ?? []);
+  const named = outcome !== undefined && RESULT_KINDS.has(outcome.kind) ? (outcome.prs ?? []) : (entry.review ?? []);
+  const unnamed = (entry.opened ?? []).filter(({ url }) => !named.some((pull) => pull.url === url));
+  return unnamed.length === 0 ? named : [...named, ...unnamed];
 }
 
 /** The run's pull requests that are still open, as last read: neither merged nor closed. */
-export function openPulls<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[];
+export function openPulls<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[]; opened?: readonly T[];
   pullStates?: Readonly<Record<string, string>> }>): T[] {
   return pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] !== "merged" && entry.pullStates?.[url] !== "closed");
 }

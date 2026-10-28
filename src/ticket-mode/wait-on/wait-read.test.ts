@@ -31,8 +31,8 @@ function seamsOf(world: World) {
     fleetJobStatus: async (id) => { calls.push(`fleet ${id}`); return typeof world.job === "string" ? world.job : JSON.stringify(answer(world.job)); },
     codeHost: {
       ...(world.run === "absent" ? {} : { readCiRun: (repository: string, runId: number) => { calls.push(`ci ${repository}#${runId}`); return answer(ciRun); } }),
-      readPullState: (url) => { calls.push(`pull ${url}`); return answer(world.pull === undefined ? null : world.pull); },
-      readReviewState: (url) => { calls.push(`review ${url}`); return answer(world.reviews === undefined ? null : world.reviews); },
+      readPullState: async (url) => { calls.push(`pull ${url}`); return answer(world.pull === undefined ? null : world.pull); },
+      readReviewState: async (url) => { calls.push(`review ${url}`); return answer(world.reviews === undefined ? null : world.reviews); },
     },
     source: world.ticket === "absent" ? {} : { stateTypes: async (keys) => { calls.push(`ticket ${keys.join()}`); const type = answer(world.ticket === "unknown" ? undefined : world.ticket); return new Map(type === undefined ? [] : keys.map((key) => [key, type])); } },
   };

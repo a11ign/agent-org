@@ -581,8 +581,8 @@ function checklessOrder(pr: any) {
   const remedy = `\`gh pr close ${pr.number}${repoFlag} && gh pr reopen ${pr.number}${repoFlag}\` (\`reopened\` is a trigger \`edited\` is not), or push a commit`;
   const what = `${subjectMention(pr)} at \`${head8}\` has NO CHECKS AT ALL, and has had none for ${CHECKLESS_QUIET_MINUTES} minutes of quiet: no workflow ran for this head, `
     + "so it is neither red nor green and the gate will NEVER offer it to a reviewer, which asks only of a settled green head. THE USUAL CAUSE is a RETARGET: "
-    + "a pull request opened on another branch gets no `pull_request` run for `main`, and when that branch merges GitHub retargets it, "
-    + "an `edited` event that does not start CI. ";
+    + "a workflow filtered to one base gives a pull request opened on another branch no run, and when that branch merges GitHub retargets it, "
+    + "an `edited` event that may not start CI. ";
   return {
     session,
     ...deadOwnerFallback(session, what, remedy),

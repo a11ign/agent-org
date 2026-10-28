@@ -2,6 +2,7 @@
 // module: a run's files, written before its agent starts -- its brief, its refusals and connectors, and its settings file
 
 import { openPulls } from "./board-view/view-types-and-filters.ts";
+import { listedOpenPulls } from "./board-view/listed-pulls.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { closedWorkOf } from "./closed-work-account.ts";
@@ -17,7 +18,7 @@ import { ticketReadOf, type TicketRead } from "./ticket-read.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
-import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, TALK_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
+import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, OPENED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, TALK_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { unclonedNames } from "./pool-org-repos.ts";
 import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
@@ -134,8 +135,8 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: openPulls(entry), notes, reviewNotes: notesFile(settings.review, "tickets.review"),
       connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, decisions: entry.decisions === true, standoff: entry.standoff?.stage === "worker", conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst, held: entry.ciHold?.reason ?? entry.ciTold }));
-    writeDecisionsMark(ctx, entry, dir, { briefed: entry.briefedAgainst, read });
-    writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(openPulls(entry))}\n`);
+    await writeDecisionsMark(ctx, entry, dir, { briefed: entry.briefedAgainst, read });
+    writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(listedOpenPulls(entry))}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
     const planDir = emptyPlanDir(dir);
     const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
@@ -152,10 +153,10 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
-      read, findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
+      read, findings, closed, numberedSteps: startedSteps(store.get().entries, entry), opened: await openedPullsOf(ctx, entry), held: entry.ciHold?.reason ?? entry.ciTold, lost: lostBeforeThisStart(entry) }));
   }
   update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
-  writeRunFiles(ctx, entry, folder, dir);
+  await writeRunFiles(ctx, entry, folder, dir);
   recordPluginCopies(ctx, [entry.ticket.key], folder);
   return { folder, dir, ...(resume ? { resume } : {}) };
 }
@@ -180,7 +181,7 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
   // The pull requests a planning brief listed, and the retry the hook made for them, belong to the brief that listed them: a planning brief writes its own list, and any other brief has none (A11-207). So do the paths it listed
   // other tickets as holding, and the retry made for a folder claim (A11-212). So does the count of After-merge refusals sent back to its planner (A11-288).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, SENT_BACK_FILE, REVIEW_FILE, PUBLISH_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, STANDOFF_DECISION_FILE, CAP_PLANNER_FILE, CAP_DECISION_FILE, DECISIONS_ROUND_FILE]) {
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, FINDINGS_GIVEN_FILE, FINDINGS_RETRIED_FILE, CLAIMS_GIVEN_FILE, CLAIMS_RETRIED_FILE, SENT_BACK_FILE, REVIEW_FILE, PUBLISH_FILE, OPENED_FILE, TALK_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE, STANDOFF_PLANNER_FILE, STANDOFF_ROUND_FILE, STANDOFF_DECISION_FILE, CAP_PLANNER_FILE, CAP_DECISION_FILE, DECISIONS_ROUND_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
 }
@@ -245,17 +246,17 @@ function writeCapMark(entry: Entry, dir: string): void {
  * The marks a stand-off round is given beside its outcome file (A11-290), which no worker writes: the planner's round has `standoff-planner-run`, and the worker's `standoff-round.json`, the head and a hash of the description each of its pull requests has now, by address,
  * which the Stop hook compares with the pull request when the round says `reviewed`. Any other run has neither (`clearRunDir` removed the earlier run's). A pull request the code host cannot read keeps the head the stand-off was about and no description.
  */
-function writeStandoffMarks(ctx: PoolContext, entry: Entry, dir: string): void {
+async function writeStandoffMarks(ctx: PoolContext, entry: Entry, dir: string): Promise<void> {
   rmSync(join(dir, STANDOFF_PLANNER_FILE), { force: true });
   rmSync(join(dir, STANDOFF_ROUND_FILE), { force: true });
   const { standoff } = entry;
   if (standoff === undefined || entry.review === undefined) return;
   if (standoff.stage === "planner") return void writeFileSync(join(dir, STANDOFF_PLANNER_FILE), "\n");
   if (standoff.stage !== "worker") return;
-  const state = entry.review.map(({ url }) => {
-    const read = ctx.codeHost.readReviewState(url);
+  const state = await Promise.all(entry.review.map(async ({ url }) => {
+    const read = await ctx.codeHost.readReviewState(url);
     return [url, { head: read?.head ?? standoff.head, body: typeof read?.view.body === "string" ? bodyHash(read.view.body) : null }] as const;
-  });
+  }));
   writeFileSync(join(dir, STANDOFF_ROUND_FILE), `${JSON.stringify(Object.fromEntries(state))}\n`);
 }
 
@@ -273,11 +274,14 @@ function recordPluginCopies(ctx: PoolContext, keys: readonly string[], folder: s
   update(ctx, (queue) => recordPluginCopy(queue, keys, pluginCopiesOf(settings.plugins, folder, deps.pluginRecord)));
 }
 
+/** Whether a run is one that opens pull requests: a worker's, in a first run or a round, and no planner's of any kind. */
+const opensPullRequests = (ctx: PoolContext, entry: Entry): boolean => !isPlanning(ctx, entry) && !isStandoffPlanner(entry) && !isCapPlanner(entry);
+
 /**
  * Beside a run's brief, its copy of this machine's refusals and its connectors, and in the folder its agent starts in, its settings file. Exported for a talk session whose pinned version folder was
  * pruned while the run was finished: its hooks must name a folder that exists (A11-169).
  */
-export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, dir: string): void {
+export async function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, dir: string): Promise<void> {
   const { hook, settings } = ctx;
   writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(ctx, entry) || isStandoffPlanner(entry) || isCapPlanner(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
   writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
@@ -285,11 +289,14 @@ export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, di
   // A talk session has a person in its terminal, so its stop is not held to the escalation list (A11-257); no other run is.
   if (entry.talk === true) writeFileSync(join(dir, TALK_FILE), "\n");
   else rmSync(join(dir, TALK_FILE), { force: true });
-  writeStandoffMarks(ctx, entry, dir);
+  await writeStandoffMarks(ctx, entry, dir);
   writeCapMark(entry, dir);
-  // A fresh ticket run on a machine with `tickets.drafts: false` may open its pull request ready; no other run, and no machine that keeps drafts, may.
-  if (!settings.drafts && entry.review === undefined && !isPlanning(ctx, entry)) writeFileSync(join(dir, READY_FILE), "\n");
+  // A ticket run on a machine with `tickets.drafts: false` may open its pull request ready, and mark its own ready, in a round that answers feedback too (A11-358): A11-254's worker opened toolchain#60 in one, and the hook made it a draft. No planning run, and no machine that keeps drafts, may.
+  if (!settings.drafts && opensPullRequests(ctx, entry)) writeFileSync(join(dir, READY_FILE), "\n");
   else rmSync(join(dir, READY_FILE), { force: true });
+  // The record of the pull requests the run opened is the run's own: what the entry holds, which a round carries, and not an earlier run's (a plan's next step starts with none) (A11-358).
+  if (entry.opened === undefined || entry.opened.length === 0) rmSync(join(dir, OPENED_FILE), { force: true });
+  else writeFileSync(join(dir, OPENED_FILE), entry.opened.map((pull) => `${JSON.stringify(pull)}\n`).join(""));
   // The pre-PR review skill is the gate's for a worker's pushes and a review run's, which push fixes; a planning run pushes nothing.
   if (settings.prReview !== null && !isPlanning(ctx, entry)) writeFileSync(join(dir, PR_REVIEW_FILE), `${JSON.stringify(settings.prReview)}\n`);
   else rmSync(join(dir, PR_REVIEW_FILE), { force: true });
@@ -324,7 +331,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
   for (const { ticket, read, findings } of tickets) {
     update(ctx, (queue) => recordFindingsGiven(recordBriefed(queue, [ticket.key], read!), ticket.key, (findings ?? []).map(({ url }) => url)));
   }
-  writeRunFiles(ctx, lead, folder, dir);
+  await writeRunFiles(ctx, lead, folder, dir);
   recordPluginCopies(ctx, members.map((member) => member.ticket.key), folder);
   return { folder, dir };
 }

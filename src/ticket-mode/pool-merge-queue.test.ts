@@ -6,7 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakeCodeHost, queueFailureKey } from "../plugins/fakes/code-host.ts";
-import type { PullFeedback, QueueFailure, QueueRemoval } from "../plugins/contracts/code-host.ts";
+import type { CiRun, PullFeedback, QueueFailure, QueueRemoval } from "../plugins/contracts/code-host.ts";
+import { type Flake, flakesView } from "./flakes.ts";
 import { queueNote } from "./board-view/run-reason.ts";
 import type { QueueHead } from "./board-view/queue-head.ts";
 import { poolFixture } from "./pool-fixture.ts";
@@ -47,13 +48,20 @@ const feedback = (queue: PullFeedback["queue"], over: Partial<PullFeedback> = {}
 const removedFrom = (...removals: QueueRemoval[]) => ({ queued: false, removals });
 const entryWith = (queueHeads?: Record<string, QueueHead>): Entry => ({ ticket: { key: "A11-232" }, phase: "finished", outcome: { kind: "reviewed", prs: [{ repo: "announcement-emulator", url: URL }] }, ...(queueHeads === undefined ? {} : { queueHeads }) }) as unknown as Entry;
 
-/** A code host that holds the failing run behind the removals (by merge group) and the logs of its jobs, with the pool context `answerQueue` is asked over. */
-function world(over: { runs?: (QueueFailure | null)[]; logs?: Record<string, string> } = {}) {
+/**
+ * A code host that holds the failing run behind the removals (by merge group) and the logs of its jobs, with the pool context `answerQueue` is asked over. A11-371: the host answers as one that cannot read a run's conclusion unless `readsRuns` says it can, so a first removal is
+ * answered with a round, as before the board reran a merge group's jobs; the tests of that rerun (the end of this file) ask for it. `clock` is the context's time, and `recorded` the flakes written.
+ */
+function world(over: { runs?: (QueueFailure | null)[]; logs?: Record<string, string>; readsRuns?: boolean } = {}) {
   const host = createFakeCodeHost();
+  const clock = { at: 1_000_000 };
+  const recorded: Flake[] = [];
+  const flakes = { record: (found: readonly Flake[]) => void recorded.push(...found), view: () => flakesView(recorded, clock.at) };
   host.seedPull(REPO, 18, { head: HEAD });
   (over.runs ?? [failure(), failure(), failure()]).forEach((run, n) => { if (run !== null) host.queues.failures.set(queueFailureKey(URL, GROUPS[n]), run); });
   for (const [url, text] of Object.entries(over.logs ?? { [MIDDLEWARE]: DRIFT, [GATE]: stamped(["a job reported 'failure', not success"]) })) host.checksAndClaims.logs.set(url, text);
-  return { host, ctx: { codeHost: host } as unknown as PoolContext };
+  const codeHost = over.readsRuns === true ? host : { ...host, readCiRun: undefined };
+  return { host, clock, recorded, ctx: { codeHost, now: () => clock.at, flakes } as unknown as PoolContext };
 }
 const asked = (host: ReturnType<typeof createFakeCodeHost>, operation: string) => host.calls.filter((call) => call.startsWith(operation));
 
@@ -252,8 +260,9 @@ const NOW = 1_000_000;
 const PR = { repo: "announcement-emulator", url: URL };
 
 /** A finished run NBF-1 holding pull request 18, over a pool on the fake code host: `ended` is how its run ended, and `over` what the entry also holds. */
-function finishedRun(outcome: Outcome, over: Partial<Entry> = {}, seed: (host: ReturnType<typeof createFakeCodeHost>) => void = () => undefined) {
-  const fixture = poolFixture({ keys: ["NBF-1"], tickets: { drafts: false }, now: () => NOW });
+function finishedRun(outcome: Outcome, over: Partial<Entry> = {}, seed: (host: ReturnType<typeof createFakeCodeHost>) => void = () => undefined, { readsRuns = false }: { readsRuns?: boolean } = {}) {
+  const clock = { at: NOW };
+  const fixture = poolFixture({ keys: ["NBF-1"], tickets: { drafts: false }, now: () => clock.at });
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(REPO, 18, { head: HEAD, feedback: { approvedAtHead: true } });
   host.checksAndClaims.logs.set(MIDDLEWARE, DRIFT);
@@ -262,12 +271,12 @@ function finishedRun(outcome: Outcome, over: Partial<Entry> = {}, seed: (host: R
   seed(host);
   const queue = fixture.store.get();
   fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], phase: "finished", finishedAt: NOW / 2, outcome, ...over }] });
-  return { fixture, host, pool: fixture.restart({ codeHost: host }), entry: () => fixture.store.get().entries[0] };
+  return { fixture, host, clock, pool: fixture.restart({ codeHost: readsRuns ? host : { ...host, readCiRun: undefined } }), entry: () => fixture.store.get().entries[0] };
 }
 /** Let the tick that a round `watchFeedback` queues wakes, which it does not wait for, finish: left running it writes the run's state folder after the test removed it. */
 const settled = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 /** Watch the run's pull requests once, and wait for the tick that wakes. */
-const watching = async (pool: { watchFeedback: () => void }) => { pool.watchFeedback(); await settled(); };
+const watching = async (pool: { watchFeedback: () => void }) => { await pool.watchFeedback(); await settled(); };
 const seedQueue = (removals: QueueRemoval[], head = HEAD) => (host: ReturnType<typeof createFakeCodeHost>) => { Object.assign(host.pullAt(URL)!, { head, queue: removedFrom(...removals) }); };
 const readyPr = { kind: "ready-pr", prs: [PR] } as Outcome;
 const needsHuman = { kind: "needs-human", reason: "which colour?" } as Outcome;
@@ -352,16 +361,16 @@ test("A11-264: a code host that reads no queue leaves the watch as it was", asyn
 const ARMED = { repo: REPO, number: 18 };
 const lost = (step: string | null = STEP) => failure([{ name: "middleware", step, detailsUrl: MIDDLEWARE }]);
 /** Run `act` and return what the board wrote to its log meanwhile. */
-function logged(act: () => void): string {
+async function logged(act: () => Promise<void>): Promise<string> {
   const lines: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
-  try { act(); } finally { process.stderr.write = write; }
+  try { await act(); } finally { process.stderr.write = write; }
   return lines.join("");
 }
 /** Watch the run's pull requests once and return what the board logged for it. */
 async function watchedWithLog(run: ReturnType<typeof finishedRun>): Promise<string> {
-  const log = logged(() => run.pool.watchFeedback());
+  const log = await logged(async () => { await run.pool.watchFeedback(); });
   await settled();
   return log;
 }
@@ -531,4 +540,175 @@ test("A11-295: a pull request back in the queue drops the card's note, and pnpm'
   assert.deepEqual(queued.heads[URL], { head: HEAD, step: "rearmed", removals: 1, jobs: ["middleware"], rearms: 1 });
   assert.equal(registryCause(" ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @typescript-eslint/types@8.72.1 while fetching it from https://registry.npmjs.org/"), "the package registry did not serve a version the install asked for");
   assert.equal(registryCause(" ERR_PNPM_FETCH_503  GET https://registry.npmjs.org/x: Service Unavailable - 503"), "the package registry did not serve a version the install asked for");
+});
+
+// -- A11-371: a removal for a test that passes on rerun is retried once, and a second removal goes to the run. --
+//
+// The pull request is agent-org#1983 (A11-356) of 2026-10-28: approved and clean, removed from the queue because one `ui` test failed in the `merge_group` run, the same test passing on its own checks. It sat out of the queue for six hours.
+
+const FLAKY_TEST = "src/pages-return.test.tsx > a ticket request's Stop waits for the instance's own answer";
+/** The tail of the `middleware` job's log with the test that failed, as the runner prints it. */
+const UI_TEST = stamped(["##[group]Run pnpm --dir ui test", `FAIL  ${FLAKY_TEST}`, "AssertionError: expected the Stop button to be disabled", "##[error]Process completed with exit code 1."]);
+/** The line a round quotes the failing test on. */
+const FAILING_TEST_LINE = new RegExp(`^The failing test in middleware: ${FLAKY_TEST.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m");
+const RETRYING = "ejected from the merge queue: middleware, retrying";
+const RUN_KEY = `${REPO}#${RUN}`;
+const rerunOf = (status: CiRun["status"], conclusion: string | null): CiRun => ({ status, conclusion, url: RUN_URL, name: "ci", jobs: null });
+const flaky = (over: { runs?: (QueueFailure | null)[] } = {}) => world({ readsRuns: true, logs: { [MIDDLEWARE]: UI_TEST, [GATE]: stamped(["a job reported 'failure', not success"]) }, ...over });
+const MINUTE = 60_000;
+/** A flaky-test world, and the answer to the first removal in it: the record that says the failed jobs were rerun. */
+function afterFirstRemoval() {
+  const world = flaky();
+  const read = feedback(removedFrom(removal(0)));
+  return { ...world, read, first: answerQueue(world.ctx, entryWith(), [{ url: URL, read }]) };
+}
+
+test("A11-371: the first removal for a test the code failed reruns the merge group's failed jobs and asks no worker: the card says it is retrying", () => {
+  const { ctx, host } = flaky();
+  const answer = answerQueue(ctx, entryWith(), [{ url: URL, read: feedback(removedFrom(removal(0))) }]);
+  assert.deepEqual([answer.feedback, answer.conflict], [null, null], "no round");
+  assert.deepEqual(host.checksAndClaims.reruns, [[MIDDLEWARE, GATE]], "the failed jobs of the run behind the removal are rerun, once");
+  assert.deepEqual(answer.heads[URL], { head: HEAD, step: "retrying", removals: 1, jobs: ["middleware"], retried: true, note: RETRYING,
+    retry: { at: 1_000_000, runs: [RUN], candidates: [{ test: FLAKY_TEST, check: "middleware", run: MIDDLEWARE }] } });
+  assert.deepEqual(answer.withoutRound, answer.heads, "kept without a round, so the card names it");
+  assert.deepEqual(host.stackMerges.requests, [], "and the pull request is not armed before the rerun has passed");
+});
+
+test("A11-371: while the rerun runs the record stays; when it passes the test is recorded as a flake and the pull request is armed again, once", () => {
+  const { ctx, host, clock, recorded, read, first } = afterFirstRemoval();
+  host.ciRuns.runs.set(RUN_KEY, rerunOf("in_progress", null));
+  clock.at += 4 * MINUTE;
+  const running = answerQueue(ctx, entryWith(first.heads), [{ url: URL, read }]);
+  assert.deepEqual([running.heads, running.feedback, host.stackMerges.requests, recorded], [first.heads, null, [], []], "nothing is decided while it runs");
+  host.ciRuns.runs.set(RUN_KEY, rerunOf("completed", "success"));
+  const passed = answerQueue(ctx, entryWith(running.heads), [{ url: URL, read }]);
+  assert.equal(passed.feedback, null, "no round");
+  assert.deepEqual(host.stackMerges.requests, [ARMED], "the pull request is armed again");
+  assert.deepEqual(recorded, [{ test: FLAKY_TEST, check: "middleware", run: MIDDLEWARE, head: HEAD, pull: URL, at: 1_000_000 + 4 * MINUTE }], "the failing test is in the flake log, with its run and head");
+  assert.deepEqual(passed.heads[URL], { head: HEAD, step: "rearmed", removals: 1, jobs: ["middleware"], retried: true, rerunPassed: true, rearms: 1,
+    note: "removed from the merge queue: middleware passed on rerun; the arm bot was asked to arm it again (1 of 2)" });
+  const later = answerQueue(ctx, entryWith(passed.heads), [{ url: URL, read }]);
+  assert.deepEqual([later.heads, host.stackMerges.requests.length, recorded.length, host.checksAndClaims.reruns.length], [passed.heads, 1, 1, 1], "the next watch arms nothing, records nothing and reruns nothing again");
+});
+
+test("A11-371: a second removal at the same head goes to the run, quoting the failing test, and reruns nothing", () => {
+  const { ctx, host, clock } = flaky();
+  host.ciRuns.runs.set(RUN_KEY, rerunOf("completed", "success"));
+  const first = answerQueue(ctx, entryWith(), [{ url: URL, read: feedback(removedFrom(removal(0))) }]);
+  clock.at += MINUTE;
+  const passed = answerQueue(ctx, entryWith(first.heads), [{ url: URL, read: feedback(removedFrom(removal(0))) }]);
+  const second = answerQueue(ctx, entryWith(passed.heads), [{ url: URL, read: feedback(removedFrom(removal(0), removal(1))) }]);
+  assert.match(second.feedback ?? "", /^The board reran the failed jobs once and they passed, so it asked the arm bot to queue the pull request again; the queue removed it again\.$/m);
+  assert.match(second.feedback ?? "", FAILING_TEST_LINE, "the failing test is quoted");
+  assert.deepEqual(second.heads[URL], { head: HEAD, step: "round", removals: 2, jobs: ["middleware"], roundStarted: true, retried: true, rearms: 1, note: "ejected from the merge queue: middleware, sent to the run" });
+  assert.deepEqual([host.checksAndClaims.reruns.length, host.stackMerges.requests.length], [1, 1], "one rerun and one arm for the head, however often it is removed");
+});
+
+test("A11-371: a rerun that fails again goes to the run, quoting the failing test, once the failure it reran has had time to be replaced", () => {
+  const { ctx, host, clock, recorded, read, first } = afterFirstRemoval();
+  host.ciRuns.runs.set(RUN_KEY, rerunOf("completed", "failure"));
+  clock.at += MINUTE;
+  const stale = answerQueue(ctx, entryWith(first.heads), [{ url: URL, read }]);
+  assert.deepEqual([stale.heads, stale.feedback], [first.heads, null], "a failure read a minute after the rerun may be the one that was rerun");
+  clock.at += 5 * MINUTE;
+  const again = answerQueue(ctx, entryWith(first.heads), [{ url: URL, read }]);
+  assert.match(again.feedback ?? "", /^The board reran the failed jobs and they did not pass\.$/m);
+  assert.match(again.feedback ?? "", FAILING_TEST_LINE);
+  assert.deepEqual(again.heads[URL], { head: HEAD, step: "round", removals: 1, jobs: ["middleware"], roundStarted: true, retried: true, note: "ejected from the merge queue: middleware, sent to the run" });
+  assert.deepEqual([host.stackMerges.requests, recorded, host.checksAndClaims.reruns.length], [[], [], 1], "nothing is armed, no flake is recorded, and nothing is rerun again");
+});
+
+test("A11-371: a rerun that has not concluded half an hour on goes to the run, and one the host cannot read waits until then", () => {
+  const { ctx, host, clock, read, first } = afterFirstRemoval();
+  clock.at += 29 * MINUTE;
+  assert.equal(answerQueue(ctx, entryWith(first.heads), [{ url: URL, read }]).feedback, null, "the run is unknown to the host: it waits");
+  assert.deepEqual(asked(host, "readCiRun"), [`readCiRun ${RUN_KEY}`]);
+  host.ciRuns.runs.set(RUN_KEY, rerunOf("in_progress", null));
+  clock.at += 2 * MINUTE;
+  const late = answerQueue(ctx, entryWith(first.heads), [{ url: URL, read }]);
+  assert.match(late.feedback ?? "", /^The board reran the failed jobs and they did not pass\.$/m, "it is the run's now");
+  assert.equal(late.heads[URL]?.step, "round");
+});
+
+test("A11-371: a pull request put in the queue by hand while its rerun runs is not rerun or armed again, and its record goes on counting the head", () => {
+  const { ctx, host, first } = afterFirstRemoval();
+  const queued = answerQueue(ctx, entryWith(first.heads), [{ url: URL, read: feedback({ queued: true, removals: [removal(0)] }) }]);
+  assert.deepEqual(queued.heads[URL], { head: HEAD, step: "rearmed", removals: 1, jobs: ["middleware"], retried: true });
+  const again = answerQueue(ctx, entryWith(queued.heads), [{ url: URL, read: feedback(removedFrom(removal(0), removal(1))) }]);
+  assert.match(again.feedback ?? "", /^The board reran the failed jobs once before; the queue removed the pull request again\.$/m, "removed again, it is the run's, and the brief claims no pass nobody judged");
+  assert.doesNotMatch(again.feedback ?? "", /they passed/);
+  assert.deepEqual([host.checksAndClaims.reruns.length, host.stackMerges.requests], [1, []]);
+});
+
+test("A11-371: the jobs are not rerun, and the round starts as before, when no rerun could be judged or the pull request would not be armed after it", () => {
+  const read = (over: Partial<PullFeedback> = {}) => feedback(removedFrom(removal(0)), over);
+  const blind = world({ logs: { [MIDDLEWARE]: UI_TEST } });
+  assert.match(answerQueue(blind.ctx, entryWith(), [{ url: URL, read: read() }]).feedback ?? "", /^middleware failed at step /m, "a code host that cannot read a run's conclusion");
+  assert.deepEqual(blind.host.checksAndClaims.reruns, []);
+  for (const [what, over] of [["not approved at its head", { approvedAtHead: false }], ["conflicting with its base", { conflicting: true }]] as const) {
+    const { ctx, host } = flaky();
+    assert.match(answerQueue(ctx, entryWith(), [{ url: URL, read: read(over) }]).feedback ?? "", /^middleware failed at step /m, what);
+    assert.deepEqual(host.checksAndClaims.reruns, [], what);
+  }
+  const refused = flaky();
+  refused.host.checksAndClaims.rerunRefusal = "Resource not accessible by integration (HTTP 403)";
+  const answer = answerQueue(refused.ctx, entryWith(), [{ url: URL, read: read() }]);
+  assert.deepEqual([answer.heads[URL]?.step, answer.heads[URL]?.retried], ["round", undefined], "a rerun the host refuses starts the round, with the rerun still to make");
+  const held = flaky({ runs: [failure(), failure(), failure()] });
+  const third = answerQueue(held.ctx, entryWith(), [{ url: URL, read: feedback(removedFrom(removal(0), removal(1), removal(2))) }]);
+  assert.deepEqual([third.heads[URL]?.step, held.host.checksAndClaims.reruns], ["held", []], "a pull request removed three times is held, and nothing is rerun for it");
+});
+
+test("A11-371: a failure the infrastructure caused is armed again with no rerun, as before", () => {
+  const { ctx, host } = world({ readsRuns: true, logs: { [MIDDLEWARE]: RUNNER_LOST }, runs: [lost()] });
+  const answer = answerQueue(ctx, entryWith(), [{ url: URL, read: feedback(removedFrom(removal(0))) }]);
+  assert.deepEqual([answer.heads[URL]?.step, host.checksAndClaims.reruns, host.stackMerges.requests], ["rearmed", [], [ARMED]]);
+});
+
+test("A11-371: on the board, an approved pull request the queue removed for a flaky test is retrying on its card, then back in the queue, and a second removal reaches the run", async () => {
+  const run = finishedRun(readyPr, {}, (host) => { seedQueue([removal(0)])(host); host.checksAndClaims.logs.set(MIDDLEWARE, UI_TEST); }, { readsRuns: true });
+  await watching(run.pool);
+  noRound(run);
+  assert.equal(queueNote(run.entry() as never), RETRYING, "never shown as approved and idle");
+  assert.deepEqual(run.host.checksAndClaims.reruns, [[MIDDLEWARE, GATE]]);
+  run.host.ciRuns.runs.set(RUN_KEY, rerunOf("completed", "success"));
+  await watching(run.pool);
+  assert.deepEqual(run.host.stackMerges.requests, [ARMED], "back in the queue once");
+  assert.equal(queueNote(run.entry() as never), "removed from the merge queue: middleware passed on rerun; the arm bot was asked to arm it again (1 of 2)");
+  noRound(run);
+  seedQueue([removal(0), removal(1)])(run.host);
+  await watching(run.pool);
+  assert.equal(run.entry().rounds, 1, "the second removal is a round of the run");
+  assert.match(run.entry().feedback ?? "", FAILING_TEST_LINE);
+  assert.deepEqual([run.host.checksAndClaims.reruns.length, run.host.stackMerges.requests.length], [1, 1]);
+});
+
+test("A11-371: a removal for another reason while the rerun runs does not give a later failed removal a second rerun", () => {
+  const { ctx, host, first } = afterFirstRemoval();
+  const timeout = removal(1, { reason: "timeout", groupCommit: null });
+  const named = answerQueue(ctx, entryWith(first.heads), [{ url: URL, read: feedback(removedFrom(removal(0), timeout)) }]);
+  assert.deepEqual([named.heads[URL]?.step, named.heads[URL]?.retried], ["named", true]);
+  const failedAgain = answerQueue(ctx, entryWith(named.heads), [{ url: URL, read: feedback(removedFrom(removal(0), timeout, removal(2))) }]);
+  assert.match(failedAgain.feedback ?? "", /^middleware failed at step /m, "the run's");
+  assert.equal(host.checksAndClaims.reruns.length, 1, "the head was rerun once");
+});
+
+test("A11-371: the re-arms already spent for a head are counted when the rerun passes", () => {
+  const { ctx, host, clock } = flaky({ runs: [lost(), failure(), failure()] });
+  host.checksAndClaims.logs.set(MIDDLEWARE, ETARGET);
+  const one = answerQueue(ctx, entryWith(), [{ url: URL, read: feedback(removedFrom(removal(0))) }]);
+  assert.equal(one.heads[URL]?.rearms, 1);
+  host.checksAndClaims.logs.set(MIDDLEWARE, UI_TEST);
+  const two = answerQueue(ctx, entryWith(one.heads), [{ url: URL, read: feedback(removedFrom(removal(0), removal(1))) }]);
+  assert.deepEqual([two.heads[URL]?.step, two.heads[URL]?.rearms, two.heads[URL]?.retried], ["retrying", 1, true]);
+  host.ciRuns.runs.set(RUN_KEY, rerunOf("completed", "success"));
+  clock.at += MINUTE;
+  const passed = answerQueue(ctx, entryWith(two.heads), [{ url: URL, read: feedback(removedFrom(removal(0), removal(1))) }]);
+  assert.match(passed.heads[URL]?.note ?? "", /\(2 of 2\)$/);
+});
+
+test("A11-371: a job address that names no job is not rerun, since the code host leaves it out", () => {
+  const { ctx, host } = flaky({ runs: [failure([{ name: "middleware", step: STEP, detailsUrl: RUN_URL }])] });
+  const answer = answerQueue(ctx, entryWith(), [{ url: URL, read: feedback(removedFrom(removal(0))) }]);
+  assert.deepEqual([answer.heads[URL]?.step, host.checksAndClaims.reruns], ["round", []]);
 });

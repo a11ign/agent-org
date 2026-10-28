@@ -18,6 +18,7 @@ test("THE #148 CASE: a base that is not main is named, and WHY it matters is exp
   assert.equal(reasons.length, 1);
   assert.match(reasons[0], /BASE IS NOT main/);
   assert.match(reasons[0], /lead\/real-page-outcome-is-stated/);
-  assert.match(reasons[0], /branches: \[main\]/,
-    "it must say WHY a non-main base runs nothing, not just that the base is wrong");
+  assert.match(reasons[0], /merge queue and the\s+branch protection cover `main` only/,
+    "it must say WHY a non-main base is refused, not just that the base is wrong");
+  assert.doesNotMatch(reasons[0], /NO workflow runs/, "A11-370: ci.yml runs on a pull request with any base, so the refusal does not say it does not");
 });

@@ -1,4 +1,5 @@
-// A11-282: how long the instance's reads take while a sweep holds it, against this checkout's own `ticket:serve`.
+// A11-282: how long the instance's reads take while a sweep holds it, against this checkout's own `ticket:serve`. Since A11-356 the GitHub plugin's reads are asynchronous, so a slow `gh` no longer holds the board thread: what holds it here is the
+// sweeps' synchronous `herdr agent list`, which is held in the same way, and the instance's `/api/health` names no `gh` among the calls that held it.
 //
 //   node scripts/loop-load.ts [--json]
 //
@@ -65,20 +66,24 @@ const sleep = (ms: number): Promise<void> => new Promise((done) => { setTimeout(
 const GATE_POLLS = 6_000;
 
 /**
- * How the stand-in `gh` holds the board thread: `"sleep"` for GH_SECONDS, as the script's timed run does, or `"gate"` until the file `gate` exists, which is how a test holds it
+ * How the stand-ins hold: `gh` (asynchronously, since A11-356) and the sweeps' `herdr agent list` (synchronously, so it holds the board thread): `"sleep"` for GH_SECONDS, as the script's timed run does, or `"gate"` until the file `gate` exists, which is how a test holds it
  * for exactly as long as it reads and so measures nothing with a clock.
  */
 export type GhHold = Readonly<{ kind: "sleep" }> | Readonly<{ kind: "gate"; gate: string; doneLog: string }>;
 
+/** The shell lines that hold a call as `hold` says: a sleep of GH_SECONDS, or a wait on the gate file, after which the call is logged to `hold.doneLog`. */
+function holdLines(hold: GhHold): string {
+  return hold.kind === "gate" ? `i=0\nwhile [ ! -e '${hold.gate}' ] && [ "$i" -lt ${GATE_POLLS} ]; do sleep 0.05; i=$((i + 1)); done\necho "$*" >> '${hold.doneLog}'\n` : `sleep ${GH_SECONDS}\n`;
+}
+
 /** A stand-in that appends its arguments to `log`, and for `gh` holds as `hold` says and answers `[]`. A gated `gh` also appends its arguments to `hold.doneLog` when it returns. */
 function standIn(program: string, log: string, hold: GhHold): string {
-  const waits = hold.kind === "gate" ? `i=0\nwhile [ ! -e '${hold.gate}' ] && [ "$i" -lt ${GATE_POLLS} ]; do sleep 0.05; i=$((i + 1)); done\necho "$*" >> '${hold.doneLog}'\n` : `sleep ${GH_SECONDS}\n`;
-  const answer = program === "gh" ? `${waits}echo '[]'\n` : "";
+  const answer = program === "gh" ? `${holdLines(hold)}echo '[]'\n` : "";
   return `#!/bin/sh\n# loop-load's throwaway ${program}: it logs its arguments and reaches nothing.\necho "$*" >> '${log}'\n${answer}exit 0\n`;
 }
 
 /** The throwaway host file, board key and stand-ins in `dir`, and the environment the instance runs in. */
-function throwaway(dir: string, port: number, uiPort: number, hold: GhHold): Readonly<{ env: NodeJS.ProcessEnv; ghLog: string }> {
+function throwaway(dir: string, port: number, uiPort: number, hold: GhHold): Readonly<{ env: NodeJS.ProcessEnv; ghLog: string; herdrLog: string }> {
   const stateDir = join(dir, "state");
   const stub = join(dir, "stub");
   mkdirSync(join(stateDir, "tickets"), { recursive: true });
@@ -89,11 +94,11 @@ function throwaway(dir: string, port: number, uiPort: number, hold: GhHold): Rea
   writeFileSync(join(dir, "linear-key"), "placeholder\n", { mode: 0o600 });
   writeFileSync(join(stateDir, "tickets", "board.key"), `${BOARD_KEY}\n`, { mode: 0o600 });
   for (const program of ["gh", "tailscale"]) writeFileSync(join(stub, program), standIn(program, join(dir, `${program}.log`), hold));
-  writeFileSync(join(stub, "herdr"), HERDR_STUB.replace("#!/bin/sh\n", `#!/bin/sh\necho "$*" >> '${join(dir, "herdr.log")}'\n`));
+  writeFileSync(join(stub, "herdr"), HERDR_STUB.replace("#!/bin/sh\n", `#!/bin/sh\necho "$*" >> '${join(dir, "herdr.log")}'\ncase "$*" in *"agent list"*)\n${holdLines(hold)}esac\n`));
   for (const program of ["gh", "tailscale", "herdr"]) chmodSync(join(stub, program), 0o755);
   const env = { ...process.env, [HOST_FILE_ENV]: hostPath, XDG_CONFIG_HOME: join(dir, "xdg"), PATH: `${stub}${delimiter}${process.env.PATH ?? ""}`,
     NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${OFFLINE}`].filter(Boolean).join(" "), AGENT_ORG_TICK_MS: String(SWEEP_MS), AGENT_ORG_TRACKER_MS: String(SWEEP_MS), AGENT_ORG_FEEDBACK_MS: String(SWEEP_MS) };
-  return { env, ghLog: join(dir, "gh.log") };
+  return { env, ghLog: join(dir, "gh.log"), herdrLog: join(dir, "herdr.log") };
 }
 
 /** One timed read: how long it took in ms, and its status (0 when no answer came). */
@@ -134,7 +139,7 @@ type Result = Readonly<{ routes: readonly RouteTimes[]; health: Health | null; r
  * A throwaway instance of this checkout, answering on `port` to `key`: its environment (whose `AGENT_ORG_HOST` names its host file), the stand-in `gh`'s log, the log of the calls
  * that have returned (a gated `gh` only; empty file or none while every call is held), how to open the gate (a no-op for a `gh` that sleeps) and how to stop it.
  */
-export type Throwaway = Readonly<{ port: number; key: string; env: NodeJS.ProcessEnv; ghLog: string; ghDoneLog: string; releaseGh: () => void; stop: () => void }>;
+export type Throwaway = Readonly<{ port: number; key: string; env: NodeJS.ProcessEnv; ghLog: string; herdrLog: string; ghDoneLog: string; releaseGh: () => void; stop: () => void }>;
 
 /**
  * Starts this checkout's `ticket:serve` from a throwaway host in `dir`, and resolves once it answers. Throws with its stderr when it exits first. `gated` makes every `gh` call
@@ -144,7 +149,7 @@ export async function startThrowawayInstance(dir: string, { gated = false }: Rea
   const [port, uiPort] = [await freePort(), await freePort()];
   const gate = join(dir, "gh.gate");
   const ghDoneLog = join(dir, "gh.done.log");
-  const { env, ghLog } = throwaway(dir, port, uiPort, gated ? { kind: "gate", gate, doneLog: ghDoneLog } : { kind: "sleep" });
+  const { env, ghLog, herdrLog } = throwaway(dir, port, uiPort, gated ? { kind: "gate", gate, doneLog: ghDoneLog } : { kind: "sleep" });
   const releaseGh = () => { if (gated) writeFileSync(gate, ""); };
   const instance: ChildProcess = spawn(process.execPath, [join(CHECKOUT, "src", "bin.ts"), "ticket:serve"], { env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
@@ -157,7 +162,7 @@ export async function startThrowawayInstance(dir: string, { gated = false }: Rea
     throw err;
   }
   if (instance.exitCode !== null) throw new Error(`the instance exited ${instance.exitCode}: ${stderr.trim()}`);
-  return { port, key: BOARD_KEY, env, ghLog, ghDoneLog, releaseGh, stop };
+  return { port, key: BOARD_KEY, env, ghLog, herdrLog, ghDoneLog, releaseGh, stop };
 }
 
 /** How many rounds `readRounds` makes, and for how long it starts them: ROUNDS and READS_FOR_MS unless a test asks for fewer. */

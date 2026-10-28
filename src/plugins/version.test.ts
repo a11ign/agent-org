@@ -19,8 +19,8 @@ test("a minor only adds and a major breaks: major 1 is read at 1.0 and at 1.7, a
   assert.equal(readsMajor([1, 2], "2.0"), true, "a release that reads two majors reads both");
 });
 
-test("this agent-org reads major 1 of every concern's contract", () => {
-  assert.deepEqual(Object.fromEntries(CONCERNS.map((concern) => [concern, READ_MAJORS[concern]])), { tracker: [1], codeHost: [1], publisher: [1], reviewer: [1], exposure: [1], messaging: [1] });
+test("this agent-org reads major 1 of every concern's contract but the code host's, which is major 2", () => {
+  assert.deepEqual(Object.fromEntries(CONCERNS.map((concern) => [concern, READ_MAJORS[concern]])), { tracker: [1], codeHost: [2], publisher: [1], reviewer: [1], exposure: [1], messaging: [1] });
 });
 
 test("the refusal names the plugin, the concern, the version it declares, what is read and the fix", () => {

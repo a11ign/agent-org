@@ -190,7 +190,7 @@ test("A11-305: the first-merge-flow card is not raised for a pull request whose 
   // The board has read the change and queued the round before its watch reads the pull request: the watch finds a run in a round and writes no note.
   await run.pool.refreshTracker();
   assert.equal(run.entry().phase, "queued");
-  run.pool.watchFeedback();
+  await run.pool.watchFeedback();
   assert.equal(run.entry().mergeNote, undefined, "no person is asked to merge a pull request that is about to change");
   assert.notEqual(runStatus(run.entry()), "needs-you");
 });
@@ -198,7 +198,7 @@ test("A11-305: the first-merge-flow card is not raised for a pull request whose 
 test("A11-305: a note raised before the board read the change goes when the round is queued", async () => {
   const run = firstFlowRun();
   run.text.description = BEFORE;
-  run.pool.watchFeedback();
+  await run.pool.watchFeedback();
   assert.equal(run.entry().mergeNote, FIRST_FLOW_NOTE, "before the change, the card is raised as A11-291 made it");
   assert.equal(runStatus(run.entry()), "needs-you");
   run.text.description = AFTER;

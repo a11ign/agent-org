@@ -1,4 +1,5 @@
 import { CONCLUDED, openPulls, type CheckHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { listedOpenPulls } from "../board-view/listed-pulls.ts";
 import { overlapWait } from "../board-view/overlap-hold.ts";
 import { isParked, isPublishing, isWatched, publishable, resumesOnConflict, runActions, runStatus, workStatus } from "../board-view/pull-status-and-notes.ts";
 import { DEFAULT_PUBLISH_WHEN, type PublishWhen } from "../board-view/publish-when.ts";
@@ -25,7 +26,7 @@ import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, repla
 export function approve(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.outcome?.kind !== "draft-pr" || !reviewable(entry)) return queue;
-  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, openPulls(entry), now)] };
+  const queued = { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, listedOpenPulls(entry), now)] };
   return loggedPersonRound(queued, entry, "approve", now, null);
 }
 
@@ -315,6 +316,7 @@ export function noteWorking(queue: Queue, key: string, reason: string, at: numbe
         reason, at, idleSince: now,
         ...(waitingOn === undefined ? {} : { waitingOn }), ...(waits === undefined ? {} : { waits }), ...(until === undefined ? {} : { until }),
         ...(entry.working?.resumed === true ? { resumed: true } : {}),
+        ...(entry.working?.fed === undefined ? {} : { fed: entry.working.fed }),
         ...repeatOf(entry.working, waits),
       },
     };
@@ -556,11 +558,13 @@ export function recordRetargets(queue: Queue, key: string, notes: Readonly<Recor
   });
 }
 
-/** Record the tickets that block each queued run, for each run the tracker was asked about. A run that has started keeps what it started with. */
+/** Record the tickets that block each queued run, for each run the tracker was asked about, and clear why they could not be read (`blockersFailure`). A run that has started keeps what it started with. */
 export function recordBlockers(queue: Queue, blockers: ReadonlyMap<string, readonly Blocker[]>): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
     const found = blockers.get(entry.ticket.key);
-    return entry.phase === "queued" && found !== undefined ? { ...entry, blockers: found } : entry;
+    if (entry.phase !== "queued" || found === undefined) return entry;
+    const { blockersFailure: _read, ...rest } = entry;
+    return { ...rest, blockers: found };
   }) };
 }
 

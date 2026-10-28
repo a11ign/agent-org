@@ -299,6 +299,24 @@ function seen(watch: Watch, facts: ObserveFacts): string | null {
   }
 }
 
+/** The pull requests the open checks that watch for a review name, once each. PURE. */
+export const watchedReviewUrls = (file: ChecksFile): string[] => [...new Set(Object.values(file.checks).flatMap((check) => {
+  const spec = check.state === "open" ? check.observe?.spec : undefined;
+  return spec?.kind === "review" ? [spec.url] : [];
+}))];
+
+/**
+ * The `ci-history` specs the open board checks with a windowed watch hold, once each by repository, workflow and branch. A watch that has not begun while its change is not installed is not looked at (`watchStep`), so its runs are not read either. PURE.
+ */
+export function watchedCiHistories(file: ChecksFile, installed?: (check: CheckRecord) => boolean): Extract<WindowedSpec, { kind: "ci-history" }>[] {
+  const specs = Object.values(file.checks).flatMap((check) => {
+    const watch = windowedWatchOf(check);
+    if (watch === null || watch.spec.kind !== "ci-history") return [];
+    return watch.began === undefined && installed?.(check) === false ? [] : [watch.spec];
+  });
+  return [...new Map(specs.map((spec) => [JSON.stringify([spec.repository, spec.workflow, spec.branch]), spec] as const)).values()];
+}
+
 /** Whether any open check watches the dependency sweep: only then is its file read. PURE. */
 export const watchesSweep = (file: ChecksFile): boolean => Object.values(file.checks).some((check) => check.state === "open" && check.observe?.spec.kind === "sweep-ticket");
 

@@ -60,10 +60,10 @@ function candidatesOf(entry: Entry, listed: readonly NamingPull[]): Candidate[] 
  * Every pull request `entry`'s ticket has that the brief of a work run should name (A11-240): the host's list (narrowed to the ticket's) and the board's own record, each once, by address. An open one is read for its head and
  * its failing checks, and every one for what its body declares of the ticket. A pull request of a merged plan step is left out: the brief lists the steps already. It reads the host and writes nothing.
  */
-export function openedPullsOf(ctx: PoolContext, entry: Entry): readonly OpenedPull[] {
+export async function openedPullsOf(ctx: PoolContext, entry: Entry): Promise<readonly OpenedPull[]> {
   const key = entry.ticket.key;
   try {
-    return readOpened(ctx, entry);
+    return await readOpened(ctx, entry);
   } catch (err) {
     // The brief of a run must not fail for a read of the host that was only to tell it more.
     log(`${key}: the pull requests its ticket has could not be read: ${messageOf(err).split("\n")[0]}`);
@@ -72,18 +72,18 @@ export function openedPullsOf(ctx: PoolContext, entry: Entry): readonly OpenedPu
 }
 
 /** {@link openedPullsOf}, over the reads of the code host, which may throw. */
-function readOpened(ctx: PoolContext, entry: Entry): readonly OpenedPull[] {
+async function readOpened(ctx: PoolContext, entry: Entry): Promise<readonly OpenedPull[]> {
   const { codeHost, feedbackIgnores } = ctx;
   const key = entry.ticket.key;
   const keywords = keywordsOf(ctx);
   const candidates = candidatesOf(entry, ticketPullsOf(ctx, key));
-  if (candidates.some(({ state }) => state === "open")) ctx.ownLogin.value ??= codeHost.readOwnLogin();
+  if (candidates.some(({ state }) => state === "open")) ctx.ownLogin.value ??= await codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
-  return candidates.map(({ url, repo, state, body }): OpenedPull => {
-    const read = state === "open" && self !== null ? codeHost.readPullFeedback(url, self, feedbackIgnores) : null;
+  return Promise.all(candidates.map(async ({ url, repo, state, body }): Promise<OpenedPull> => {
+    const read = state === "open" && self !== null ? await codeHost.readPullFeedback(url, self, feedbackIgnores) : null;
     const text = read?.body ?? body ?? "";
     return { url, repo, state: read?.state ?? state, head: read?.head ?? null, failing: read?.failing ?? [], declared: declarationOf(text, key, keywords) };
-  });
+  }));
 }
 
 /**

@@ -13,9 +13,10 @@ export const PLACES_KEPT_FOR_PEOPLE = 1;
 export type TicketRequest = Readonly<{ key: string; repository: string; request: (team: string) => string }>;
 
 /** The form of a request: the repository's clone when the host has one, else none and the writer places the ticket. */
-const formOf = (repository: string, clones: Readonly<Record<string, string>>): WriterForm => {
+const formOf = (repository: string, { clones, cloneKeyOf }: Pick<SweepContext["deps"], "clones" | "cloneKeyOf">): WriterForm => {
   const name = repository.split("/")[1] ?? "";
-  return Object.hasOwn(clones, name) ? { repo: name } : {};
+  const key = cloneKeyOf?.(repository) ?? (Object.hasOwn(clones, name) ? name : undefined);
+  return key === undefined ? {} : { repo: key };
 };
 
 /**
@@ -38,7 +39,7 @@ export function requestTicket(ctx: SweepContext, { key, repository, request }: T
   const id = `wdep-${deps.now().toString(36)}-${memory.sequence++}`;
   state.tickets[key] = { state: "requested", writerRun: id, at: deps.now(), attempts: before?.state === "failed" ? before.attempts : 0 };
   commit();
-  const form = formOf(repository, deps.clones);
+  const form = formOf(repository, deps);
   try {
     deps.store.set(queueWriter(deps.store.get(), { id, request: request(team), mode: "quick", placement: placementOf(form), form, team, model: writer.model, effort: writer.effort }, deps.now()));
   } catch (err) {

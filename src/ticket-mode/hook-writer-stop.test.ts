@@ -71,7 +71,7 @@ test("A11-302: a verifier run ends on passed, failed or superseded with one line
   assert.equal(stopVerdict(runWith({ kind: "needs-human", reason: "the host did not answer" }, { writer: true, mode: "verify" })).code, 0, "a run that cannot decide may say so");
   const created = stopVerdict(runWith({ kind: "created", created: ["A11-140"] }, { writer: true, mode: "verify" }));
   assert.equal(created.code, 2);
-  assert.match(created.say.join("\n"), /a verifier run ends on "passed", "failed" or "superseded", not "created"/);
+  assert.match(created.say.join("\n"), /a verifier run ends on "passed", "failed", "superseded" or "cannot-run-here", not "created"/);
   const noEvidence = stopVerdict(runWith({ kind: "passed" }, { writer: true, mode: "verify" }));
   assert.match(noEvidence.say.join("\n"), /its passed outcome gives no evidence/);
   const quick = stopVerdict(runWith({ kind: "passed", evidence: "x" }, { writer: true, mode: "quick" }));
