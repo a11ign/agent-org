@@ -14,13 +14,13 @@ import { type RunPlace } from "./pool-paths.ts";
 import { agentTarget } from "./pool-resume.ts";
 import { plannedStepsOf } from "./pool-plan-steps.ts";
 import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
-import { hostname } from "node:os";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { hostname } from "node:os";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal, herdrServiceOf } from "./pool-herdr.ts";
 import { defaultServiceDeps } from "../install/service.ts";
 import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, slotsHeld } from "./queue/queue-transitions.ts";
-import { READ_RETRY_MS, retryTime, startReadHold } from "./queue/start-reads.ts";
+import { READ_RETRY_MS, retryTime, SAID_ONCE, startReadHold } from "./queue/start-reads.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
@@ -453,7 +453,7 @@ export function whyNothingStarts(queue: Queue, load: number, cores: number, now:
 
 /** What holds a queued run now, as the board says it: its blockers or plan not read (or read too long ago), or the wait its card shows. PURE. */
 function heldNote(entry: Entry, entries: readonly Entry[], now: number): string {
-  return startReadHold(entry, now, false) ?? waitNote(entry, entries) ?? "nothing holds it";
+  return startReadHold(entry, now, SAID_ONCE) ?? waitNote(entry, entries) ?? "nothing holds it";
 }
 
 /**
