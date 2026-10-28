@@ -73,7 +73,7 @@ export const branchCiKey = (repository: string, branch: string): string => `${re
 /** The read of a branch's workflow runs over what a test seeded: a run the caller holds as settled comes back with no jobs, as the contract says. */
 export function branchCiOf(state: FakeBranchCi, calls: string[]): Pick<CodeHost, "readBranchCi"> {
   return {
-    readBranchCi(repository, branch, settled) {
+    async readBranchCi(repository, branch, settled) {
       calls.push(`readBranchCi ${repository} ${branch}`);
       state.asked.push({ repository, branch, settled: [...settled] });
       const runs = state.runs.get(branchCiKey(repository, branch));

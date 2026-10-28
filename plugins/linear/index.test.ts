@@ -4,6 +4,9 @@
 // are the rows doctor had before the code moved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpDir } from "../../src/lib/tmp-fixture.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { loadEnabled } from "../../src/plugins/loader.ts";
 import { defaultCatalog, pluginNamed } from "../../src/plugins/registry.ts";
@@ -73,10 +76,28 @@ test("create reads the key where the block says, sends it only to Linear, and re
   assert.throws(() => create({ key: "file" }, depsWith()), /tickets\.providers\.tracker\.key must be \{ "keychain"/);
 });
 
+test("A11-359: create sends every call through the deps' fresh-connection fetch when it has one, and through `fetch` when it has not", async () => {
+  const seen: string[] = [];
+  const answer = (name: string) => (async () => { seen.push(name); return new Response(JSON.stringify({ data: { viewer: { id: "u-1", name: "Dan Beck", email: null } } }), { status: 200 }); }) as typeof globalThis.fetch;
+  await create({}, { ...depsWith(), fetch: answer("pooled"), freshFetch: answer("fresh") }).viewer!();
+  await create({}, { ...depsWith(), fetch: answer("pooled") }).viewer!();
+  assert.deepEqual(seen, ["fresh", "pooled"]);
+});
+
+test("A11-359: only the board's process keeps the count of calls in the state folder: a short-lived one leaves the board's alone", async () => {
+  const dir = tmpDir("linear-record-");
+  const answer = (async () => new Response(JSON.stringify({ data: { viewer: { id: "u-1", name: "Dan Beck", email: null } } }), { status: 200 })) as typeof globalThis.fetch;
+  const call = async (recordCalls: boolean) => { await create({}, { ...depsWith(), stateDir: dir, fetch: answer, ...(recordCalls ? { recordCalls } : {}) }).viewer!(); };
+  await call(false);
+  assert.equal(existsSync(join(dir, "linear-calls.json")), false, "a process that is not the board writes no count");
+  await call(true);
+  assert.equal(existsSync(join(dir, "linear-calls.json")), true, "the board does");
+});
+
 test("the plugin's rows are the ones doctor had: the key is readable, and Linear's MCP is connected, each with its own fix", () => {
   const rows = (deps: ReturnType<typeof depsWith>, settings = {}) => Object.fromEntries(doctorChecks(settings, deps).map((row) => [row.name, row]));
   const working = rows(depsWith());
-  assert.deepEqual(Object.keys(working), ["tracker key", "linear mcp"]);
+  assert.deepEqual(Object.keys(working), ["tracker key", "linear mcp", "linear calls"]);
   assert.deepEqual([working["tracker key"].ok, working["tracker key"].detail], [true, "readable from Keychain service agent-org-linear"]);
   assert.deepEqual([working["linear mcp"].ok, working["linear mcp"].detail], [true, "linear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected"]);
   assert.equal(JSON.stringify(working).includes(KEY), false, "the key is never in a row");

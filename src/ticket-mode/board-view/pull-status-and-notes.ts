@@ -186,6 +186,7 @@ function blockerWait(entry: ViewEntry, blocker: ViewBlocker, entries: readonly V
  */
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
   const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again on every pass`];
+  if (entry.blockersFailure !== undefined) plan.push(`Waits: the tracker could not say which tickets block it (${entry.blockersFailure}); the board asks again on every pass`);
   if (entry.sessionWait !== undefined) plan.push(entry.sessionWait);
   if (entry.ciHold !== undefined && entry.ciHold.released !== true) plan.push(entry.ciHold.reason);
   const waits = waitsOn(entry, entries);
@@ -431,7 +432,7 @@ const startAnywayOffered = (entry: ViewEntry, entries: readonly ViewEntry[]): bo
 
 /** Whether a queued run waits on no ticket that blocks it, its plan could be read, and no session holds it back, so an overlap alone may hold it. PURE. */
 const unblockedByTicket = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>
-  entry.pathsFailure === undefined && entry.sessionWait === undefined && waitsOn(entry, entries).length === 0;
+  entry.pathsFailure === undefined && entry.blockersFailure === undefined && entry.sessionWait === undefined && waitsOn(entry, entries).length === 0;
 
 /** Whether a queued run is held back: by a ticket that blocks it, by a path another run holds, or by a plan that could not be downloaded. PURE. */
 const queuedHeld = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>

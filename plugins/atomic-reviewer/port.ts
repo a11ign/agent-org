@@ -419,7 +419,7 @@ function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | 
   if ("refusal" in seat) return seat;
   const { trust } = gateOf(context);
   const board = boardOf(context);
-  const state = codeHostOf(context).readReviewState(pr);
+  const state = codeHostOf(context).peekReviewState?.(pr) ?? null;
   if (state === null) return { refusal: `no reviewer for ${pr}: the pull request could not be read` };
   if (state.trust !== trust.INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
   if (state.head !== head) return { refusal: `no reviewer for ${pr}: its head moved to ${state.head}, so ${head} is no longer to be reviewed` };
@@ -529,7 +529,7 @@ function repromptReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief
   const { pr } = ref;
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return seat;
-  const state = codeHostOf(context).readReviewState(pr);
+  const state = codeHostOf(context).peekReviewState?.(pr) ?? null;
   if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
   const sent = sendPrompt(context, seat, state, ref, brief);
   return "refusal" in sent ? { refusal: `no reprompt for ${pr}: ${sent.refusal}` } : { prompted: true };

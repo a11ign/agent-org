@@ -16,7 +16,7 @@ export const majorOf = (version: string): number => Number(version.split(".")[0]
 export const readsMajor = (majors: readonly number[], version: string): boolean => majors.includes(majorOf(version));
 
 /** The majors of each concern's contract this agent-org reads. */
-export const READ_MAJORS: Readonly<Record<Concern, readonly number[]>> = Object.freeze({ tracker: [1], codeHost: [1], publisher: [1], reviewer: [1], exposure: [1], messaging: [1] });
+export const READ_MAJORS: Readonly<Record<Concern, readonly number[]>> = Object.freeze({ tracker: [1], codeHost: [2], publisher: [1], reviewer: [1], exposure: [1], messaging: [1] });
 
 /** Whether this agent-org reads the contract `version` of a plugin of `concern`. */
 export const readsConcernContract = (concern: Concern, version: string): boolean => readsMajor(READ_MAJORS[concern], version);

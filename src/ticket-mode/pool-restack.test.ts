@@ -57,52 +57,52 @@ function world(over: { entries?: (entries: Record<"bottom" | "next", Entry>) => 
   return { host, ctx, run, queue: () => queue, updates, sweep: () => retargetStacked(ctx) };
 }
 
-test("A11-248: a merged bottom member makes the next one up be restacked once, and the card says so", () => {
+test("A11-248: a merged bottom member makes the next one up be restacked once, and the card says so", async () => {
   const { host, sweep, run, updates } = world();
-  sweep();
+  await sweep();
   assert.equal(host.pullAt(NEXT)!.base, "main", "A11-106 moved its base to the default branch first");
   assert.deepEqual(updates(), [`${NEXT} ${NEXT_HEAD}`], "exactly one update, at the head that was read");
   assert.deepEqual(run().retargets, { [NEXT]: "#2 restacked on main after #1 merged" });
   assert.equal(retargetNote(run() as never), "#2 restacked on main after #1 merged", "and the card shows it");
-  sweep();
+  await sweep();
   host.pullAt(NEXT)!.head = MOVED_HEAD;
-  sweep();
+  await sweep();
   assert.equal(updates().length, 1, "a later sweep, and one after main and the branch moved, restack nothing more");
   assert.equal(run().retargets![NEXT], "#2 restacked on main after #1 merged", "and the note stays");
 });
 
-test("A11-248: a pull request is not restacked again after a restart that lost the board's memory, once its note says it was", () => {
+test("A11-248: a pull request is not restacked again after a restart that lost the board's memory, once its note says it was", async () => {
   const { sweep, updates, ctx } = world({ next: { retargets: { [NEXT]: "#2 restacked on main after #1 merged" } } });
-  sweep();
+  await sweep();
   assert.deepEqual(updates(), []);
   assert.deepEqual([...ctx.restacked], [[NEXT, { merged: BOTTOM, ownChangesAt: NEXT_HEAD }]], "no restack was made; the read of its files (it holds one of its own) is all the board remembers");
 });
 
-test("A11-248: a branch that already has the default branch is noted restacked, and is then handed to the arm bot as before", () => {
+test("A11-248: a branch that already has the default branch is noted restacked, and is then handed to the arm bot as before", async () => {
   const { host, sweep, run, updates } = world();
   host.branchUpdates.answers.set(NEXT, { kind: "up-to-date" });
   host.stackMerges.facts.set(NEXT, { stacked: true });
   (host as unknown as { calls: string[] }).calls.length = 0;
-  sweep();
+  await sweep();
   assert.equal(updates().length, 1);
   assert.equal(run().retargets![NEXT], "#2 restacked on main after #1 merged");
 });
 
-test("A11-248: a branch the restack moved is not handed to the arm bot in the same pass, and the head the run ended at moves with it", () => {
+test("A11-248: a branch the restack moved is not handed to the arm bot in the same pass, and the head the run ended at moves with it", async () => {
   const { host, sweep, run } = world({
     next: { pullHeads: { [NEXT]: { head: NEXT_HEAD, approved: true, review: "approved", red: [], pending: [] } }, outcomeHeads: { [NEXT]: NEXT_HEAD } },
     codeHost: (fake) => ({ ...fake, updateBranch: (url, head) => { fake.pullAt(url)!.head = MOVED_HEAD; return fake.updateBranch!(url, head); } }),
   });
   host.stackMerges.facts.set(NEXT, { stacked: true });
-  sweep();
+  await sweep();
   assert.deepEqual(host.stackMerges.requests, [], "its approval is of the old head");
   assert.deepEqual(run().outcomeHeads, { [NEXT]: MOVED_HEAD }, "agent-org's own push is not read as a person's answer");
 });
 
-test("A11-248: a conflict starts the run's conflict round, whose feedback names the stack and the merged member, and the card says so", () => {
+test("A11-248: a conflict starts the run's conflict round, whose feedback names the stack and the merged member, and the card says so", async () => {
   const { host, sweep, run, queue } = world();
   conflicting(host, NEXT);
-  sweep();
+  await sweep();
   assert.deepEqual(host.branchUpdates.asked.length, 1);
   assert.equal(run().phase, "queued", "the run left finished for a round");
   assert.equal(run().rounds, 1);
@@ -114,153 +114,153 @@ test("A11-248: a conflict starts the run's conflict round, whose feedback names 
   assert.equal(queue().entries.filter((e) => e.ticket.key === "A11-2").length, 1);
 });
 
-test("A11-248: a conflict at the round cap starts no round, and the note says Respond to review starts another", () => {
+test("A11-248: a conflict at the round cap starts no round, and the note says Respond to review starts another", async () => {
   const { host, sweep, run } = world({ next: { rounds: 3 } });
   conflicting(host, NEXT);
-  sweep();
+  await sweep();
   assert.equal(run().phase, "finished");
   assert.equal(run().retargets![NEXT], "#2 conflicts with main after #1 merged, and the conflict rounds are used up: Respond to review starts another");
-  sweep();
+  await sweep();
   assert.equal(host.branchUpdates.asked.length, 1, "and the conflict is not asked about again");
 });
 
-test("A11-248: a conflict note is dropped once a round has moved the head", () => {
+test("A11-248: a conflict note is dropped once a round has moved the head", async () => {
   const { host, sweep, run } = world({ next: { rounds: 3 } });
   conflicting(host, NEXT);
-  sweep();
+  await sweep();
   host.pullAt(NEXT)!.head = MOVED_HEAD;
-  sweep();
+  await sweep();
   assert.equal(run().retargets, undefined);
 });
 
-test("A11-248: a pull request queued to merge, or already merged, is not updated", () => {
+test("A11-248: a pull request queued to merge, or already merged, is not updated", async () => {
   const { host, sweep } = world();
   host.stackMerges.facts.set(NEXT, { settled: "queued" });
-  sweep();
+  await sweep();
   assert.deepEqual(host.branchUpdates.asked, []);
 });
 
-test("A11-248: two conflicting members of one run share one round that names both, and neither is told the rounds are used up", () => {
+test("A11-248: two conflicting members of one run share one round that names both, and neither is told the rounds are used up", async () => {
   const second = fakePullUrl(REPOSITORY, 4);
   const { host, sweep, run } = world({ next: { outcome: { kind: "reviewed", prs: [{ repo: "agent-org", url: NEXT }, { repo: "agent-org", url: second }] }, pullStates: { [NEXT]: "open", [second]: "open" } } });
   host.seedPull(REPOSITORY, 4, { head: "e".repeat(40), base: BOTTOM_BRANCH });
   conflicting(host, NEXT, second);
-  sweep();
+  await sweep();
   assert.equal(host.branchUpdates.asked.length, 2);
   assert.equal(run().rounds, 1, "one round, not one for each");
   assert.match(run().feedback!, new RegExp(`${NEXT} conflicts with its base branch main[\\s\\S]*${second} conflicts with its base branch main`));
 });
 
-test("A11-248: after a restart a conflict note does not stand in for the restack: the branch is updated again, and a conflict a person resolved reads as restacked", () => {
+test("A11-248: after a restart a conflict note does not stand in for the restack: the branch is updated again, and a conflict a person resolved reads as restacked", async () => {
   const note = "#2 conflicts with main after #1 merged, and the conflict rounds are used up: Respond to review starts another";
   const { host, sweep, run } = world({ next: { rounds: 3, retargets: { [NEXT]: note } } });
   host.branchUpdates.answers.set(NEXT, { kind: "up-to-date" });
-  sweep();
+  await sweep();
   assert.equal(host.branchUpdates.asked.length, 1);
   assert.equal(run().retargets![NEXT], "#2 restacked on main after #1 merged");
 });
 
-test("A11-248: a conflict note is dropped when the blocker leaves the queue, and a restacked note stays", () => {
+test("A11-248: a conflict note is dropped when the blocker leaves the queue, and a restacked note stays", async () => {
   const conflict = "#2 conflicts with main after #1 merged: a conflict round resolves it";
   const gone = world({ entries: ({ next }) => [next], next: { retargets: { [NEXT]: conflict } } });
-  gone.sweep();
+  await gone.sweep();
   assert.equal(gone.run().retargets, undefined);
   const restacked = "#2 restacked on main after #1 merged";
   const stays = world({ entries: ({ next }) => [next], next: { retargets: { [NEXT]: restacked } } });
-  stays.sweep();
+  await stays.sweep();
   assert.deepEqual(stays.run().retargets, { [NEXT]: restacked });
 });
 
-test("A11-248: a refusal is the card's note with GitHub's reason, and the next sweep tries again", () => {
+test("A11-248: a refusal is the card's note with GitHub's reason, and the next sweep tries again", async () => {
   const { host, sweep, run, updates } = world();
   host.branchUpdates.answers.set(NEXT, { kind: "refused", reason: "expected head sha didn't match current head ref" });
-  sweep();
+  await sweep();
   assert.equal(run().retargets![NEXT], "#2 could not be restacked on main after #1 merged: expected head sha didn't match current head ref; agent-org tries again");
   host.branchUpdates.answers.delete(NEXT);
-  sweep();
+  await sweep();
   assert.equal(updates().length, 2, "a refusal does not count as done");
   assert.equal(run().retargets![NEXT], "#2 restacked on main after #1 merged");
 });
 
-test("A11-248: with two members above, only the one directly above the merged member is restacked; the one above it follows its branch", () => {
+test("A11-248: with two members above, only the one directly above the merged member is restacked; the one above it follows its branch", async () => {
   const top = stackedRun("A11-3", TOP, { key: "A11-2", branch: NEXT_BRANCH });
   const { host, sweep, run } = world({ entries: ({ bottom, next }) => [bottom, next, top] });
-  sweep();
+  await sweep();
   assert.deepEqual(host.branchUpdates.asked.map(({ url }) => url), [NEXT], "#3 has an open member below it, so it is not asked about");
   assert.equal(run("A11-3").retargets, undefined);
   assert.ok(!host.calls.includes(`stackMergeFactsOf ${TOP}`), "and its stack is not even read");
 });
 
-test("A11-248: a run whose blocker is not on the queue, or whose blocker's pull request is open, is left alone", () => {
+test("A11-248: a run whose blocker is not on the queue, or whose blocker's pull request is open, is left alone", async () => {
   const absent = world({ entries: ({ next }) => [next] });
-  absent.sweep();
+  await absent.sweep();
   assert.deepEqual(absent.updates(), []);
   const open = world();
   open.host.pullAt(BOTTOM)!.state = "open";
-  open.sweep();
+  await open.sweep();
   assert.deepEqual(open.updates(), []);
   assert.equal(open.run().retargets, undefined);
 });
 
 /** What the board logs about its blocker while `act` runs, one entry per write to stderr. */
-function logged(act: () => void): string[] {
+async function logged(act: () => Promise<void>): Promise<string[]> {
   const lines: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
   try {
-    act();
+    await act();
   } finally {
     process.stderr.write = write;
   }
   return lines.filter((line) => line.includes(" its blocker "));
 }
 
-test("A11-248: a blocker that is not on the queue, or has no pull request in the stack's repository, is said once in the log and the run is left alone", () => {
+test("A11-248: a blocker that is not on the queue, or has no pull request in the stack's repository, is said once in the log and the run is left alone", async () => {
   const absent = world({ entries: ({ next }) => [next] });
-  const absentLog = logged(() => { absent.sweep(); absent.sweep(); });
+  const absentLog = await logged(async () => { await absent.sweep(); await absent.sweep(); });
   assert.deepEqual(absentLog, ["ticket:serve: A11-2: its blocker A11-1 is not on the queue, so its pull request is left as it is when the member below merges\n"], "said once, over two sweeps");
   const bare = world({ entries: ({ next }) => [{ ...bottomRun(), outcome: { kind: "reviewed", prs: [] } } as unknown as Entry, next] });
-  const bareLog = logged(() => { bare.sweep(); bare.sweep(); });
+  const bareLog = await logged(async () => { await bare.sweep(); await bare.sweep(); });
   assert.deepEqual(bareLog, ["ticket:serve: A11-2: its blocker A11-1 has no pull request in agent-org, so its pull request is left as it is when the member below merges\n"]);
   assert.deepEqual([...absent.updates(), ...bare.updates()], []);
 });
 
-test("A11-248: a run that is not finished, one with a workspace open, and one a merge of its blocker's branch is under way in are left alone", () => {
+test("A11-248: a run that is not finished, one with a workspace open, and one a merge of its blocker's branch is under way in are left alone", async () => {
   const running = world({ next: { phase: "running" } });
-  running.sweep();
+  await running.sweep();
   assert.deepEqual(running.updates(), []);
   const open = world({ next: { workspace: "w1" } });
-  open.sweep();
+  await open.sweep();
   assert.deepEqual(open.updates(), [], "the worker's next push would be refused");
   const merging = world();
   merging.ctx.rebasing.add("A11-2");
-  merging.sweep();
+  await merging.sweep();
   assert.deepEqual(merging.updates(), []);
   merging.ctx.rebasing.delete("A11-2");
-  merging.sweep();
+  await merging.sweep();
   assert.equal(merging.updates().length, 1, "and the restack is made once they are over");
 });
 
-test("A11-248: a code host that cannot update a branch restacks nothing, and the sweep still records the notes of the bases", () => {
+test("A11-248: a code host that cannot update a branch restacks nothing, and the sweep still records the notes of the bases", async () => {
   const { host, sweep, run } = world({ codeHost: (fake) => ({ ...fake, updateBranch: undefined }) });
-  sweep();
+  await sweep();
   assert.deepEqual(host.branchUpdates.asked, []);
   assert.equal(host.pullAt(NEXT)!.base, "main", "the base was still moved");
   assert.equal(run().retargets, undefined);
 });
 
-test("A11-248: a pull request the code host cannot read keeps the restack note it had", () => {
+test("A11-248: a pull request the code host cannot read keeps the restack note it had", async () => {
   const note = "#2 conflicts with main after #1 merged: a conflict round resolves it";
   const { host, sweep, run } = world({ next: { retargets: { [NEXT]: note } }, codeHost: (fake) => ({ ...fake, stackMergeFactsOf: (url) => (url === NEXT ? null : fake.stackMergeFactsOf!(url)) }) });
-  sweep();
+  await sweep();
   assert.deepEqual(host.branchUpdates.asked, []);
   assert.deepEqual(run().retargets, { [NEXT]: note });
 });
 
-test("A11-248: a note about a pull request's base comes first, and the pull request is not restacked", () => {
+test("A11-248: a note about a pull request's base comes first, and the pull request is not restacked", async () => {
   const stale = `Needs retarget: ${NEXT} still targets ${BOTTOM_BRANCH}, whose branch is gone: retarget it by hand`;
   const { host, sweep, run } = world({ codeHost: (fake) => ({ ...fake, sweepRetargets: () => ({ [NEXT]: stale }) }) });
-  sweep();
+  await sweep();
   assert.deepEqual(host.branchUpdates.asked, []);
   assert.deepEqual(run().retargets, { [NEXT]: stale });
 });
@@ -296,7 +296,7 @@ test("A11-248: the member above the restacked one follows its branch: agent-org'
   const { host, ctx, run, sweep } = world({ entries: ({ bottom, next }) => [bottom, next, { ...top, stackBase: { ...top.stackBase!, sha } }] });
   Object.assign(ctx, { git: defaultGit, settings: { clones: { "agent-org": clone }, worktreeRoot: join(root, "worktrees"), stateDir: join(root, "state") } });
 
-  sweep();
+  await sweep();
   assert.deepEqual(host.branchUpdates.asked.map(({ url }) => url), [NEXT], "agent-org restacked the member above the merged one");
   // What GitHub's update-branch did to that member's branch: main was merged into it.
   commit(seed, "main.txt", "main moved\n", "main merged into the next member");

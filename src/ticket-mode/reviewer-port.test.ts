@@ -144,7 +144,7 @@ test("a drafts-off run opens no draft and reaches the reviewer with no Approve",
   assert.ok(existsSync(join(dir, "ready-run")), "the hook lets the worker open one ready");
   assert.equal(runStatus(made.entry("NBF-1")), "awaiting-review", "the run waits for review");
   assert.deepEqual(runActions(made.entry("NBF-1")), ["respond", "talk", "dismiss"], "there is no Approve; Respond answers its feedback (A11-154)");
-  made.pool.watchFeedback();
+  await made.pool.watchFeedback();
   assert.deepEqual(reviewer.starts, [{ pr: PR_URL, head: "h1" }], "the reviewer is started for the ready head");
   assert.deepEqual(runActions(made.entry("NBF-1")), ["respond", "talk", "dismiss"], "still no Approve once the reviewer is started");
 });
@@ -153,11 +153,11 @@ test("the reviewer is started once per ready head: a second watch on the same he
   const reviewer = fakePort();
   const gh = ghFor({ head: "h1" });
   const made = await readyPrRun(gh, reviewer.port);
-  made.pool.watchFeedback();
-  made.pool.watchFeedback();
+  await made.pool.watchFeedback();
+  await made.pool.watchFeedback();
   assert.deepEqual(reviewer.starts.map((ref) => ref.head), ["h1"], "the same head is not started again");
   gh.pr.head = "h2";
-  made.pool.watchFeedback();
+  await made.pool.watchFeedback();
   assert.deepEqual(reviewer.starts.map((ref) => ref.head), ["h1", "h2"], "a new head is started");
 });
 
@@ -172,7 +172,7 @@ test("a not-convinced verdict resumes the same worker for a round with the revie
     const gh = ghFor({ head: "h1", reviews });
     const made = await readyPrRun(gh, reviewer.port);
     made.h.calls.length = 0;
-    made.pool.watchFeedback();
+    await made.pool.watchFeedback();
     await roundStarted();
     const run = made.entry("NBF-1");
     if (!resumes) {

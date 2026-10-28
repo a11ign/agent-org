@@ -50,28 +50,28 @@ type Run = Pick<Awaited<ReturnType<typeof refusedRun>>, "reviewer" | "pool">;
 
 let workspaces = 0;
 /** One sweep over which herdr refuses the start for `reason`, and closes a workspace of its own, as it does each time. */
-function sweepRefused({ reviewer, pool }: Run, reason: string = HERDR_SAYS): void {
+async function sweepRefused({ reviewer, pool }: Run, reason: string = HERDR_SAYS): Promise<void> {
   workspaces += 1;
   reviewer.refuseWith(refusedWith(reason, `w${workspaces}`));
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
 }
 
 /** Two sweeps in a row over which herdr refuses for the same reason: the run reads Needs you. */
-function refusedTwice(run: Run & Pick<Awaited<ReturnType<typeof refusedRun>>, "view">): void {
-  sweepRefused(run);
-  sweepRefused(run);
+async function refusedTwice(run: Run & Pick<Awaited<ReturnType<typeof refusedRun>>, "view">): Promise<void> {
+  await sweepRefused(run);
+  await sweepRefused(run);
   assert.equal(runStatus(run.view()), "needs-you");
 }
 
 /** One sweep over which the start is refused for a reason that is not herdr's. */
-function sweepHeld({ reviewer, pool }: Run): void {
+async function sweepHeld({ reviewer, pool }: Run): Promise<void> {
   reviewer.refuseWith(NOT_HERDRS);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
 }
 
 test("A11-241: the first refusal is said on the pull request's line with herdr's reason, and the run does not ask anyone yet", async () => {
   const run = await refusedRun();
-  sweepRefused(run);
+  await sweepRefused(run);
   assert.match(run.pool.pullReviews()[run.url], /^not reviewed: herdr refused to start "reviewer-nbl-ui-netbox-11" \(invalid_agent_name: agent name must start/);
   assert.equal(runStatus(run.view()), "awaiting-review");
   assert.equal(run.entry().reviewerRefused, undefined);
@@ -79,7 +79,7 @@ test("A11-241: the first refusal is said on the pull request's line with herdr's
 
 test("A11-241: the second identical refusal is Needs you, and the card says herdr's reason; the closed workspace's id, which differs each time, does not make two refusals different", async () => {
   const run = await refusedRun();
-  refusedTwice(run);
+  await refusedTwice(run);
   const { line } = reasonOf(run.view());
   assert.match(line ?? "", /^a11ign\/nbl-ui-netbox #11: herdr refused to start "reviewer-nbl-ui-netbox-11" \(invalid_agent_name: agent name must start with a lowercase letter/);
   assert.doesNotMatch(line ?? "", /workspace it opened/, "the changing note about the closed workspace is not what the card says");
@@ -88,59 +88,59 @@ test("A11-241: the second identical refusal is Needs you, and the card says herd
 
 test("A11-241: a third refusal does not log Needs you again, and the retry on every sweep goes on", async () => {
   const run = await refusedRun();
-  for (let sweep = 0; sweep < 4; sweep += 1) sweepRefused(run);
+  for (let sweep = 0; sweep < 4; sweep += 1) await sweepRefused(run);
   assert.equal(run.needsYouEvents(), 1, "Needs you is logged for the run once");
   assert.equal(run.reviewer.started.length, 0);
   run.reviewer.refuseWith(null);
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   assert.equal(run.reviewer.started.length, 1, "the board did not stop asking herdr: a fix made elsewhere is picked up with nobody pressing anything");
 });
 
 test("A11-241: a different reason starts the count again at 1, so the run stops asking until the new reason repeats", async () => {
   const run = await refusedRun();
-  refusedTwice(run);
-  sweepRefused(run, OTHER_REASON);
+  await refusedTwice(run);
+  await sweepRefused(run, OTHER_REASON);
   assert.equal(runStatus(run.view()), "awaiting-review", "a reason herdr has not given twice is not yet a Needs you");
   assert.deepEqual([...run.memory().refusals], [[`${run.url}@h1`, { reason: `herdr refused to start "${NAME}" (${OTHER_REASON})`, count: 1 }]]);
-  sweepRefused(run, OTHER_REASON);
+  await sweepRefused(run, OTHER_REASON);
   assert.equal(runStatus(run.view()), "needs-you");
 });
 
 test("A11-241: a start that works clears the refusal from the card and from the memory", async () => {
   const run = await refusedRun();
-  refusedTwice(run);
+  await refusedTwice(run);
   run.reviewer.refuseWith(null);
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   assert.deepEqual([runStatus(run.view()), run.entry().reviewerRefused, run.memory().refusals.size], ["awaiting-review", undefined, 0]);
 });
 
 test("A11-241: the count survives a restart of the pool, so the second refusal after it is the one that asks", async () => {
   const run = await refusedRun();
-  sweepRefused(run);
+  await sweepRefused(run);
   assert.equal(run.memory().refusals.get(`${run.url}@h1`)?.count, 1, "on disk after the first refusal");
   // The fake reviewer reports what it refuses when a pool is made, as a reviewer whose gate does not load does; herdr's refusal comes at a start, so it is set after.
   run.reviewer.refuseWith(null);
   const restarted = run.fixture.restart({ codeHost: run.host, reviewer: run.reviewer });
-  sweepRefused({ reviewer: run.reviewer, pool: restarted });
+  await sweepRefused({ reviewer: run.reviewer, pool: restarted });
   assert.equal(runStatus(run.view()), "needs-you");
   assert.equal(run.memory().refusals.get(`${run.url}@h1`)?.count, 2);
 });
 
 test("A11-241: a refusal that is not herdr's (another instance holds the review) is never counted, and ends a run of herdr's", async () => {
   const run = await refusedRun();
-  for (let sweep = 0; sweep < 3; sweep += 1) sweepHeld(run);
+  for (let sweep = 0; sweep < 3; sweep += 1) await sweepHeld(run);
   assert.deepEqual([runStatus(run.view()), run.memory().refusals.size], ["awaiting-review", 0]);
-  sweepRefused(run);
-  sweepHeld(run);
-  sweepRefused(run);
+  await sweepRefused(run);
+  await sweepHeld(run);
+  await sweepRefused(run);
   assert.equal(runStatus(run.view()), "awaiting-review", "herdr's two refusals were not in a row");
 });
 
 test("A11-241: a new head is a new review, so the old head's refusals are forgotten", async () => {
   const run = await refusedRun();
-  sweepRefused(run);
+  await sweepRefused(run);
   run.pull.head = "h2";
-  sweepRefused(run);
+  await sweepRefused(run);
   assert.deepEqual([...run.memory().refusals].map(([key, { count }]) => [key, count]), [[`${run.url}@h2`, 1]]);
   assert.equal(runStatus(run.view()), "awaiting-review");
 });
@@ -149,11 +149,11 @@ test("A11-241: a pull request that is no longer open takes its refusal, and the 
   const run = await refusedRun();
   // Every repository the sweep lists has to be listable, or the sweep does not know which pull requests are gone.
   for (const repository of reviewedRepositoriesOf(run.fixture.settings.clones)) run.host.seedRepository(repository);
-  sweepRefused(run);
-  sweepRefused(run);
+  await sweepRefused(run);
+  await sweepRefused(run);
   assert.equal(run.entry().reviewerRefused !== undefined, true);
   run.pull.state = "closed";
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   assert.deepEqual([run.entry().reviewerRefused, run.memory().refusals.size, runStatus(run.view())], [undefined, 0, "awaiting-review"]);
 });
 
@@ -197,15 +197,15 @@ test("A11-241: the note is written only over a run that waits on a review, and a
 test("A11-241: a refused RE-review of a head the reviewer blocked counts too, and the second refusal asks, although the block's review is posted on the head", async () => {
   const run = await refusedRun();
   const ref = { pr: run.url, head: "h1" };
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   run.reviewer.wrote(ref, null);
   run.pull.reviews = [{ author: REVIEWER_LOGIN, state: "CHANGES_REQUESTED", commit: "h1", at: 10 }];
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   assert.equal(run.reviewer.closed.length, 1, "the first reviewer posted its block and closed");
   run.pull.body = "Closes NBF-1\n\nOutside-Region: src/a.ts — moved\n";
-  sweepRefused(run);
+  await sweepRefused(run);
   assert.equal(runStatus(run.view()), "awaiting-review", "once is said on the pull request's line");
-  sweepRefused(run);
+  await sweepRefused(run);
   assert.equal(runStatus(run.view()), "needs-you");
   assert.equal(run.memory().refusals.get(`${run.url}@h1`)?.count, 2);
 });
@@ -213,7 +213,7 @@ test("A11-241: a refused RE-review of a head the reviewer blocked counts too, an
 test("A11-241: the Needs you is a note on the run, not a change of its work: the board still watches its pull requests and offers what it offered", async () => {
   const run = await refusedRun();
   const before = { watched: isWatched(run.view()), actions: runActions(run.view()), publishable: publishable(run.view()) };
-  refusedTwice(run);
+  await refusedTwice(run);
   assert.equal(workStatus(run.view()), "awaiting-review");
   assert.deepEqual({ watched: isWatched(run.view()), actions: runActions(run.view()), publishable: publishable(run.view()) }, before);
   assert.equal(before.watched, true, "a ready pull request waiting for its review is watched for feedback");
@@ -221,13 +221,13 @@ test("A11-241: the Needs you is a note on the run, not a change of its work: the
 
 test("A11-241: a reviewer that runs for the head, however it was started (ticket:review), ends its refusals", async () => {
   const run = await refusedRun();
-  refusedTwice(run);
+  await refusedTwice(run);
   run.reviewer.refuseWith(null);
   run.reviewer.start({ pr: run.url, head: "h1" });
   // `ticket:review` records its start in the memory file too.
   const path = reviewerMemoryPath(run.fixture.settings.stateDir);
   const { memory } = readReviewerMemory(path);
   writeReviewerMemory(path, { ...memory, started: new Set([...memory.started, `${run.url}@h1`]) });
-  run.pool.reviewNewHeads();
+  await run.pool.reviewNewHeads();
   assert.deepEqual([runStatus(run.view()), run.entry().reviewerRefused, run.memory().refusals.size], ["awaiting-review", undefined, 0]);
 });

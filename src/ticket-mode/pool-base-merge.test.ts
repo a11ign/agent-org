@@ -73,7 +73,7 @@ function world({ queue = nextStepQueue(), pull = { conflicting: true }, listable
   fixture.store.set(typeof queue === "function" ? queue(repository.head) : queue);
   const pool = fixture.restart({ codeHost: host, ...(listing === undefined ? {} : { git: listing }), ...(listingMs === undefined ? {} : { listingMs }) });
   const sweep = async () => {
-    pool.watchFeedback();
+    await pool.watchFeedback();
     await pool.keptWatchDone();
   };
   const entry = (): Entry => find(fixture.store.get(), KEY)!;
@@ -163,7 +163,7 @@ test("A11-286: a pull request that is neither behind nor conflicting is left alo
   assert.deepEqual([clean.asked(), clean.events()], [0, []]);
   const noUpdate = world({ pull: { conflicting: true } });
   const pool = noUpdate.fixture.restart({ codeHost: { ...noUpdate.host, updateBranch: undefined } });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await pool.keptWatchDone();
   assert.deepEqual([noUpdate.asked(), noUpdate.events(), noUpdate.entry().review], [0, [], undefined]);
 });
@@ -243,7 +243,7 @@ test("A11-286: a run that ended asking a person, whose outcome names no pull req
 test("A11-286: a finished run's own conflicting pull request is merged up to date first, and its round names the files once they are listed", async () => {
   const { host, pool, entry, events, asked } = world({ queue: finishedOnPull() });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(asked(), 1, "the base merge is asked for before any round");
   assert.equal(entry().phase, "finished", "and the round waits for the files of the conflict");
   await until(() => entry().phase === "queued", "the round starts once the files are listed");
@@ -255,11 +255,11 @@ test("A11-286: a finished run's conflicting pull request that merges up to date 
   const queue = replace(finishedOnPull(), KEY, (entry) => ({ ...entry, outcomeHeads: { [URL]: "the-head-it-ended-on" } }));
   const { host, pool, entry, events, asked } = world({ queue });
   host.pullAt(URL)!.head = "the-head-it-ended-on";
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([asked(), entry().phase, entry().rounds, events()], [1, "finished", undefined, ["merging"]], "merged up to date, and no round");
   host.pullAt(URL)!.head = "the-merge-commit";
   host.pullAt(URL)!.feedback = {};
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().outcomeHeads?.[URL], "the-merge-commit", "the run's outcome head follows the board's own push");
 });
 
@@ -301,9 +301,9 @@ test("A11-286: a failure of the watch that runs again once the files are listed 
   const { host, fixture, entry, head } = world({ queue });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
   let reads = 0;
-  const failing = fixture.restart({ codeHost: { ...host, readPullFeedback: (...args: Parameters<typeof host.readPullFeedback>) => { reads += 1; if (reads > 1) throw new Error("gh exploded\nsecond line"); return host.readPullFeedback(...args); } } });
+  const failing = fixture.restart({ codeHost: { ...host, readPullFeedback: async (...args: Parameters<typeof host.readPullFeedback>) => { reads += 1; if (reads > 1) throw new Error("gh exploded\nsecond line"); return await host.readPullFeedback(...args); } } });
   const said = await logged(async () => {
-    failing.watchFeedback();
+    await failing.watchFeedback();
     await until(() => reads > 1, "the second watch ran");
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
@@ -314,7 +314,7 @@ test("A11-286: a failure of the watch that runs again once the files are listed 
 test("A11-286: a finished run that starts a round for new review feedback is not pushed to first, and its worker is told of the conflict", async () => {
   const { host, pool, entry, asked } = world({ queue: finishedOnPull(), pull: { conflicting: true, feedbackAt: NOW, authors: ["carol"] } });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(asked(), 0, "the board did not merge the base under the round it starts");
   assert.equal(entry().feedback, [`${URL} conflicts with its base branch main.`, `New review feedback on ${URL}, the newest from carol.`].join("\n"));
 });
@@ -349,14 +349,14 @@ const reviewedHandedToAPerson = (more: Partial<Entry> = {}): Queue =>
 test("A11-293: a run handed to a person has the base merged into its conflicting pull request, with no round", async () => {
   const { pool, entry, events, asked } = world({ queue: reviewedHandedToAPerson() });
   assert.equal(runStatus(entry()), "needs-you", "the case: a reviewed outcome, handed to a person");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([asked(), entry().phase, entry().rounds, events()], [1, "finished", undefined, ["merging"]], "update-branch was asked, and no worker was woken");
 });
 
 test("A11-293: a run handed to a person has a behind pull request brought up to date, once for the head", async () => {
   const { pool, asked, events } = world({ queue: reviewedHandedToAPerson(), pull: { behind: true } });
-  pool.watchFeedback();
-  pool.watchFeedback();
+  await pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([asked(), events()], [1, ["behind"]]);
 });
 
@@ -364,7 +364,7 @@ test("A11-293: a run handed to a person has a behind pull request brought up to 
 async function heldConflict() {
   const held = world({ queue: reviewedHandedToAPerson() });
   held.host.branchUpdates.answers.set(URL, { kind: "conflict" });
-  held.pool.watchFeedback();
+  await held.pool.watchFeedback();
   await until(() => held.events().includes("held"), "the conflict is decided once its files are listed");
   return held;
 }
@@ -384,7 +384,7 @@ test("A11-293: a conflict on a run that asked a person, at the board's cap, is n
   const asking = replace(finishedWith(KEY, { kind: "needs-human", reason: "which side wins?", escalation: "reserved" }, NOW - 10), KEY, (entry) => ({ ...entry, rounds: 3, review: [{ repo: "agent-org", url: URL }] }));
   const { host, pool, fixture, entry, events } = world({ queue: asking });
   host.branchUpdates.answers.set(URL, { kind: "conflict" });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await until(() => events().includes("capped"), "the conflict is decided");
   assert.equal(entry().phase, "finished", "no round is left to queue");
   assert.equal(conflictNote(entry()), "a11ign/agent-org #7 conflicts with main");
@@ -393,42 +393,42 @@ test("A11-293: a conflict on a run that asked a person, at the board's cap, is n
 
 test("A11-293: a run the tracker completed or a person stopped is left alone, and so is one whose pull request needs nothing", async () => {
   const settled = world({ queue: reviewedHandedToAPerson({ trackerState: "completed" }) });
-  settled.pool.watchFeedback();
+  await settled.pool.watchFeedback();
   const stopped = world({ queue: replace(finishedWith(KEY, { kind: "stopped" } as never, NOW - 10), KEY, (entry) => ({ ...entry, review: [{ repo: "agent-org", url: URL }] })) });
-  stopped.pool.watchFeedback();
+  await stopped.pool.watchFeedback();
   const clear = world({ queue: reviewedHandedToAPerson(), pull: {} });
-  clear.pool.watchFeedback();
+  await clear.pool.watchFeedback();
   // A run that concluded with nothing to do, as `resumesOnConflict` leaves it, and a ticket the tracker completed while a later step is open (Needs you, not Completed).
   const concluded = world({ queue: replace(finishedWith(KEY, { kind: "checked", reason: "nothing to change" }, NOW - 10), KEY, (entry) => ({ ...entry, review: [{ repo: "agent-org", url: URL }] })) });
-  concluded.pool.watchFeedback();
+  await concluded.pool.watchFeedback();
   const doneEarly = world({ queue: reviewedHandedToAPerson({ trackerState: "completed", steps: [{ step: 1, of: 2, prs: [] }] as never }) });
   assert.equal(runStatus(doneEarly.entry()), "needs-you", "the case: the tracker completed it, yet it reads Needs you");
-  doneEarly.pool.watchFeedback();
+  await doneEarly.pool.watchFeedback();
   assert.deepEqual([settled.asked(), stopped.asked(), clear.asked(), concluded.asked(), doneEarly.asked()], [0, 0, 0, 0, 0]);
   assert.equal(conflictNote(clear.entry()), null, "a pull request that does not conflict says nothing");
 });
 
 /** The world of a run handed to a person, watched once. */
-function handedAndWatched() {
+async function handedAndWatched() {
   const watched = world({ queue: reviewedHandedToAPerson() });
-  watched.pool.watchFeedback();
+  await watched.pool.watchFeedback();
   return watched;
 }
 
 test("A11-293: the conflict leaves the card once the pull request reads clear", async () => {
-  const { host, pool, entry } = handedAndWatched();
+  const { host, pool, entry } = await handedAndWatched();
   assert.equal(conflictNote(entry()), "a11ign/agent-org #7 conflicts with main");
   host.pullAt(URL)!.feedback = {};
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(conflictNote(entry()), null);
 });
 
 test("A11-293: a conflict held for a person is decided again, with its files, once the run is one the board answers", async () => {
   const { pool, fixture, entry, events, asked } = await heldConflict();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(asked(), 1, "held for the same head, nothing is asked again");
   fixture.store.set(replace(fixture.store.get(), KEY, (e) => ({ ...e, handedBack: undefined })));
-  pool.watchFeedback();
+  await pool.watchFeedback();
   await until(() => entry().phase === "queued", "a watched run gets its round");
   assert.deepEqual([asked(), events()], [2, ["held", "round"]]);
   assert.match(entry().feedback ?? "", /Merging main into it conflicted in a\.txt\./, "the round names the files");
@@ -437,6 +437,6 @@ test("A11-293: a conflict held for a person is decided again, with its files, on
 test("A11-293: a pull request closed unmerged that the host still reads conflicting is not recorded as a conflict", async () => {
   const { host, pool, entry } = world({ queue: reviewedHandedToAPerson() });
   host.pullAt(URL)!.state = "closed";
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().pullHeads?.[URL]?.conflict, undefined);
 });
