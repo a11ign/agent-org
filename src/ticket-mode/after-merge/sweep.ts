@@ -2,7 +2,7 @@
 // module: the After-merge checks' sweep (A11-277, A11-302) -- copy the runs' listed lines into records with what their plans say, prune the old closed ones, let the board pass or fail the ones it watches, give the rest to verifier runs, and post each close on its ticket once
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { diagnose, defaultDoctorDeps } from "../../install/doctor.ts";
+import { realExecAsync } from "../../plugins/active.ts";
 import { log, messageOf } from "../pool-state.ts";
 import { toolPinOf } from "../pool-pin.ts";
 import { fileCapabilityRequests, fileFollowUps, queueCheckRuns } from "../pool-check-runs.ts";
@@ -13,6 +13,7 @@ import { DEPENDENCY_TICKETS_FILE } from "../dependency-updates/board.ts";
 import { loadState } from "../dependency-updates/filed.ts";
 import { reviewOnHead } from "../wait-on/wait-read.ts";
 import { claimPost, closeComment, listedIds, markUnpostable, pruneChecks, releasePost, seedChecks, ticketsToSeed, unpostedChecks, type CheckRecord, type ChecksFile, type PlannedCheck } from "./checks.ts";
+import { hostDoctorLines } from "./host-doctor.ts";
 import { handOverdueToAgent, markOverdue, markShownToPerson } from "./dispatch.ts";
 import { isInstalled, mergesIn, type InstalledReads } from "./installed.ts";
 import { closeObserved, filedKeys, observedChecks, watchedCiHistories, watchedReviewUrls, watchedSources, watchesSweep, watchWindows, withFiledBaselines, type DoctorLine, type ObserveFacts, type Sighting } from "./observe.ts";
@@ -104,16 +105,13 @@ const memoryOf = (ctx: PoolContext): SweepMemory => {
 /** Whether `host` names the machine the board runs on, which is the one doctor it can read. */
 const isThisHost = (host: string): boolean => ["here", "this", "localhost", hostname().toLowerCase()].includes(host.toLowerCase());
 
-/** This host's doctor, read now and kept for {@link DOCTOR_EVERY_MS}: the board's own `diagnose`, as `agent-org doctor` prints it. Null when it could not run. */
+/** This host's doctor, read now and kept for {@link DOCTOR_EVERY_MS}: `diagnose`, as `agent-org doctor` prints it, run in a child so its spawns never hold the board's loop (A11-377). Null when it could not run. */
 async function hostDoctor(ctx: PoolContext): Promise<readonly DoctorLine[] | null> {
   const held = memoryOf(ctx);
   if (held.doctor !== null && ctx.now() - held.doctor.at < DOCTOR_EVERY_MS) return held.doctor.lines;
-  let lines: readonly DoctorLine[] | null = null;
-  try {
-    lines = (await diagnose(defaultDoctorDeps())).map(({ name, ok, detail }) => ({ name, ok, detail }));
-  } catch (err) {
-    log(`the host's doctor could not be read for the After-merge checks that watch it: ${messageOf(err)}`);
-  }
+  const read = await hostDoctorLines(realExecAsync);
+  const lines = "lines" in read ? read.lines : null;
+  if ("failure" in read) log(`the host's doctor could not be read for the After-merge checks that watch it: ${read.failure}`);
   held.doctor = { at: ctx.now(), lines };
   return lines;
 }
