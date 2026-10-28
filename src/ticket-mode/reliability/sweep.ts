@@ -108,10 +108,13 @@ async function queueReopened(ctx: PoolContext, watch: Watch): Promise<boolean> {
   return entry !== undefined && entry.phase !== "finished" ? true : refuse("a finished run of it is still on the queue");
 }
 
-/** Post the comment with the readings; a tracker that cannot comment keeps it off the ticket, and the log says so once. */
+/** Post the comment with the readings. A tracker that cannot comment has not posted them, so the step stays owed (the watch never reads "readings posted"), and the log says so once. */
 async function postReadings(ctx: PoolContext, watch: Watch): Promise<boolean> {
-  if (ctx.source.comment === undefined) sayOnce(watch.key, `${watch.key}: this tracker cannot post the readings of its reopen as a comment`);
-  else await within(ctx, `comment on ${watch.key}`, ctx.source.comment(watch.key, reopenComment(watch)));
+  if (ctx.source.comment === undefined) {
+    sayOnce(watch.key, `${watch.key}: this tracker cannot post the readings of its reopen as a comment, so the reopen stays owed its readings`);
+    return false;
+  }
+  await within(ctx, `comment on ${watch.key}`, ctx.source.comment(watch.key, reopenComment(watch)));
   return true;
 }
 

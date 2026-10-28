@@ -35,14 +35,28 @@ function world(keys: readonly string[] = ["A11-900"], over: Parameters<typeof fa
   return { tracker, clock, served, ctx, path, finishRun, sweep: () => syncReliabilityWatches(ctx), queue: () => queue, watch: (key = keys[0]) => loadWatches(path).watches[key] };
 }
 
-test("a ticket whose figure breaches after release is reopened once, with the readings, and queued on the default model", async () => {
-  const w = world();
-  await w.sweep();
-  assert.equal(w.watch().state, "open", "enrolled from the queue, not closed yet");
+/** Finish A11-900's run, close it as a person would, and sweep a minute later: the first reading of its window. */
+async function closeAndRead(w: ReturnType<typeof world>): Promise<void> {
   w.finishRun("A11-900");
   w.tracker.completeAs("A11-900", "person");
   w.clock.at += 60_000;
   await w.sweep();
+}
+
+/** Enrol A11-900, finish its run and close it, read once under the figure, then serve a breach and sweep. */
+async function breachAfterClose(w: ReturnType<typeof world>): Promise<void> {
+  await w.sweep();
+  await closeAndRead(w);
+  w.served.figures = figures(23);
+  w.clock.at += 60_000;
+  await w.sweep();
+}
+
+test("a ticket whose figure breaches after release is reopened once, with the readings, and queued on the default model", async () => {
+  const w = world();
+  await w.sweep();
+  assert.equal(w.watch().state, "open", "enrolled from the queue, not closed yet");
+  await closeAndRead(w);
   assert.deepEqual([w.watch().state, w.watch().began, w.watch().reads], ["watching", 1_060_000, 1], "the first reading of the window is under 10");
   w.served.figures = figures(23);
   w.clock.at += 60_000;
@@ -64,6 +78,17 @@ test("a ticket whose figure breaches after release is reopened once, with the re
   await w.sweep();
   await w.sweep();
   assert.deepEqual([w.tracker.comments.length, w.watch().reopens, w.queue().entries.filter(({ ticket }) => ticket.key === "A11-900").length], [1, 1, 1], "not reopened, commented or queued a second time");
+});
+
+test("a tracker that cannot comment leaves the readings owed: the ticket is reopened and queued, but never recorded as commented", async () => {
+  const w = world();
+  (w.ctx as { source: unknown }).source = { ...w.tracker, comment: undefined };
+  await breachAfterClose(w);
+  await w.sweep();
+
+  assert.deepEqual([w.watch().state, w.watch().reopens, w.watch().commented, w.watch().queued], ["reopened", 1, false, true]);
+  assert.equal(w.tracker.comments.length, 0);
+  assert.equal(find(w.queue(), "A11-900")?.phase, "queued");
 });
 
 test("a figure that holds is never reopened, and the window closes held", async () => {
