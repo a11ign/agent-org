@@ -31,7 +31,7 @@ export async function makeWorktree(repo: string, { settings, key, branch, from, 
   const clone = settings.clones[repo];
   if (clone === undefined) {
     throw new Error(`${repo} is not one of this machine's repositories (${Object.keys(settings.clones).join(", ")}). `
-      + "If the fix belongs in another repository, write a wrong-repo outcome naming it.");
+      + "If the fix belongs in another repository, write a wrong-repo outcome naming it as owner/repo: the board clones a repository of the organisation and starts you again in it.");
   }
   const where = { repo, clone, path: worktreePath(settings.worktreeRoot, key, repo), branch };
   return existsSync(where.path) ? reuseWorktree(where, git) : addWorktree({ ...where, ...(from ? { from } : {}) }, git);

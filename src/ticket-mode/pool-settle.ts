@@ -36,13 +36,16 @@ import { ticketDir } from "./ticket-paths.ts";
 import { missingBehaviour } from "./open-decisions.ts";
 import { ticketDecisionsDefect } from "./plan-ticket-decisions.ts";
 import { closedNote } from "../herdr-agents.ts";
-import { mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
+import { cloneRefusal, mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./board-view/view-types-and-filters.ts";
 import { countTokens, findTranscript } from "./pool-transcripts.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 import { stepNamed } from "./board-view/plan-steps.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
+import { reroute } from "./queue/queue-reroute.ts";
+import { cloneOnDemand, cloneOrNull, organisationOf, wrongRepoTarget } from "./pool-org-repos.ts";
+import { namedIn } from "./org-repos.ts";
 import { checkoutsOf, checkPush, claimsLostPush, isWorkersOwnRun, reasonWithGitError, wakeWorker } from "./pool-push-check.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { type PoolContext } from "./pool-context.ts";
@@ -105,11 +108,44 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
   const checkouts = claimsLostPush(outcome) && isWorkersOwnRun(ctx, entry) ? checkoutsOf(ctx, entry) : [];
   if (claimsLostPush(outcome) && checkouts.length > 0) return void settleLostPush(ctx, entry, outcome, checkouts).catch(settleFailed(entry));
   if (outcome.kind === "done") return void completeDone(ctx, entry, outcome).catch(settleFailed(entry));
+  if (outcome.kind === "wrong-repo") return settleWrongRepo(ctx, entry, outcome);
   if (outcome.kind !== "planned") return end(ctx, entry, outcome);
   if (!isPlanning(ctx, entry)) return end(ctx, entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
   // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
   const attach = entry.batch === undefined ? attachPlan(ctx, entry) : attachBatch(ctx, entry);
   attach.catch((err) => log(`${entry.batch ?? entry.ticket.key}'s plan: ${messageOf(err)}`));
+}
+
+/**
+ * A run ended `wrong-repo` (A11-355). When it names a repository of the organisation, the board clones it if this machine has no clone, moves the run there and queues it again, with no person asked; any other `wrong-repo` ends as it
+ * always did, handed to a person, in the same pass. Whatever goes wrong while the repository is cloned, the worker's own outcome is what the run ends on: it is never lost to a failure here. The run is held in `attaching` meanwhile, so a
+ * tick that sees the same outcome file does not decide twice.
+ */
+function settleWrongRepo(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "wrong-repo" }>): void {
+  // A clone under way holds the run: a tick that sees the same outcome file meanwhile asks nothing of the code host again.
+  if (ctx.attaching.has(runPlace(ctx, entry).name)) return;
+  const target = wrongRepoTarget(ctx, entry, outcome.where);
+  if (target === null) return end(ctx, entry, outcome);
+  void whileHolding(ctx, entry, async () => {
+    const repo = await cloneOrNull(ctx, target);
+    // Stopped, or stopped and started again, while the clone ran: the person's last word stands, and a newer run is not touched.
+    if (!sameRun(ctx, entry)) return;
+    if (repo === null) end(ctx, entry, outcome);
+    else finishRun(ctx, entry, { outcome, movedTo: repo });
+  }).catch(settleFailed(entry));
+}
+
+/** Runs `work` while the run holds its place in `attaching`, so a tick that sees the same outcome file meanwhile does not start it twice. Does nothing when the run is held already. */
+async function whileHolding(ctx: PoolContext, entry: Entry, work: () => Promise<void>): Promise<void> {
+  const { attaching } = ctx;
+  const { name } = runPlace(ctx, entry);
+  if (attaching.has(name)) return;
+  attaching.add(name);
+  try {
+    await work();
+  } finally {
+    attaching.delete(name);
+  }
 }
 
 /**
@@ -119,19 +155,13 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
 async function settlePlannerOf<Decided>(ctx: PoolContext, entry: Entry, { what, decide, record }: Readonly<{
   what: string; decide: () => Promise<Readonly<{ decided: Decided } | { refused: string }>>; record: (key: string, decided: Decided) => void;
 }>): Promise<void> {
-  const { attaching } = ctx;
-  const { name } = runPlace(ctx, entry);
-  if (attaching.has(name)) return;
-  attaching.add(name);
-  try {
+  return whileHolding(ctx, entry, async () => {
     const settled = await decide();
     if (!sameRun(ctx, entry)) return;
     if ("refused" in settled) return end(ctx, entry, { kind: "needs-human", reason: `${what}: ${settled.refused}` });
     end(ctx, entry, { kind: "reviewed", prs: entry.review ?? [] });
     record(entry.ticket.key, settled.decided);
-  } finally {
-    attaching.delete(name);
-  }
+  });
 }
 
 /** The planner's round for a stand-off ended `reviewed` (A11-290): its decision is read, an amended plan is attached to the ticket first, and the decision is recorded on the run. */
@@ -625,7 +655,7 @@ async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<
  * starts before its blockers are there to be read. A person's answer settles the tickets still in the batch the same way, when the run writes `planned` again.
  */
 async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
-  const { attaching, herdr, now, session, settings } = ctx;
+  const { attaching, herdr, now, session } = ctx;
   const { name, dir } = runPlace(ctx, entry);
   if (attaching.has(name) || waitingToRetry(ctx, name)) return;
   attaching.add(name);
@@ -641,8 +671,8 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
       if (outcome !== null) handedBack.set(key, outcome);
     }
     const order = await recordOrder(ctx, planDir, members.map(({ ticket }) => ticket.key));
-    // A repository that is no clone of this machine is never stored: the ticket is planned with none and handed to a person, saying why.
-    const misplaced = unknownRepos(order, Object.keys(settings.clones));
+    // A repository of the organisation that this machine has not cloned is cloned now (A11-355). One that is no clone of this machine and not the organisation's is never stored: the ticket is planned with none and handed to a person, saying why.
+    const { refused: misplaced, placed } = await placeUncloned(ctx, order);
     // Stopped, or stopped and started again, while its plans were attached: the person's last word stands, and a newer run is not touched.
     const still = members.filter((member) => sameRun(ctx, member));
     if (still.length === 0) return;
@@ -657,7 +687,7 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
       if (outcome !== undefined) return (parks ? park : finish)(queue, key, outcome, now(), id === undefined ? {} : { session: id });
       if (refused !== undefined) return finish(batchPlanDone(queue, key, null, [], now()), key, { kind: "needs-human", reason: refused }, now());
       const place = order.get(key);
-      return batchPlanDone(queue, key, place?.repo ?? null, mergeWaits(place), now());
+      return batchPlanDone(queue, key, placed.get(key) ?? place?.repo ?? null, mergeWaits(place), now());
     });
   } catch (err) {
     const [still] = members.filter((member) => sameRun(ctx, member));
@@ -665,6 +695,32 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   } finally {
     attaching.delete(name);
   }
+}
+
+/** What the board did with the repositories a batch's planner named that this machine holds no clone of (A11-355): the tickets it gave none, with why, and the key the host file holds the clone of each other under. */
+type Placing = Readonly<{ refused: ReadonlyMap<string, string>; placed: ReadonlyMap<string, string> }>;
+
+/**
+ * The repositories of `order` that are no clone of this machine, cloned when they are the organisation's (`cloneOnDemand`) and so no longer unknown: the plan keeps the repository, under the key the host file holds the clone by (a repository
+ * the host holds under another name, such as `main-app` for `web`, is stored under that). A repository that is not the organisation's, or that could not be cloned, is refused by `unknownRepos` and `cloneRefusal`.
+ */
+async function placeUncloned(ctx: PoolContext, order: Order): Promise<Placing> {
+  const unknown = unknownRepos(order, Object.keys(ctx.settings.clones));
+  const organisation = unknown.size === 0 ? null : organisationOf(ctx);
+  if (organisation === null || "unreadable" in organisation) return { refused: unknown, placed: new Map() };
+  const refused = new Map(unknown);
+  const placed = new Map<string, string>();
+  for (const key of unknown.keys()) {
+    const named = namedIn(order.get(key)?.repo ?? "", organisation.repositories, ctx.settings.clones, ctx.codeHost);
+    if (named === null) continue;
+    refused.delete(key);
+    try {
+      placed.set(key, await cloneOnDemand(ctx, named));
+    } catch (err) {
+      refused.set(key, cloneRefusal(key, named.fullName, messageOf(err).split("\n")[0]));
+    }
+  }
+  return { refused, placed };
 }
 
 /** Whether a refused plan can go back to its planner: the run is still running. A finished run whose unreadable outcome was corrected to `planned` (`rereadUnreadable`) has no planner to prompt, so its refusal ends it as before. */
@@ -745,17 +801,26 @@ async function recordOrder(ctx: PoolContext, planDir: string, keys: readonly str
  * Record how a run ended, for every ticket in it. One that hands its tickets back keeps its workspace (parked); any other has its workspace
  * closed, a `checked` or `done` one included ({@link CONCLUDED}): nobody answers a run that found nothing to do, so its finished agent is not left open.
  */
-export function end(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
+export const end = (ctx: PoolContext, entry: Entry, outcome: Outcome): void => finishRun(ctx, entry, { outcome });
+
+/** How a run ended, and, for a `wrong-repo` the board acts on, the repository it moves the run to (A11-355). */
+type Ending = Readonly<{ outcome: Outcome; movedTo?: string }>;
+
+/** {@link end}, or the end of a run the board moves to the repository its worker named, which is queued again at once and so parks nowhere. */
+function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending): void {
   const { claudeSessions, herdr, now, session, transcripts } = ctx;
   // A concluded run never parks, whatever else a later change hands back: nobody would answer its agent.
-  const parks = entry.workspace !== undefined && HANDED_BACK.has(outcome.kind) && !CONCLUDED.has(outcome.kind);
+  const parks = movedTo === undefined && entry.workspace !== undefined && HANDED_BACK.has(outcome.kind) && !CONCLUDED.has(outcome.kind);
   if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
   const { name } = runPlace(ctx, entry);
   const record = id === undefined ? {} : { session: id };
   // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
-  updateEach(ctx, runMembers(ctx, entry), (queue, key) => (parks ? park : finish)(queue, key, outcome, now(), key === entry.ticket.key ? { ...record, tokens } : record));
+  updateEach(ctx, runMembers(ctx, entry), (queue, key) => {
+    const recorded = key === entry.ticket.key ? { ...record, tokens } : record;
+    return movedTo === undefined ? (parks ? park : finish)(queue, key, outcome, now(), recorded) : reroute(queue, key, { outcome, repo: movedTo }, now(), recorded);
+  });
   // Not waited for (A11-356): the code host answers a promise. Until it has, the run is finished with its files unrecorded, which is the state a read that failed leaves, and `overlapWait` holds its repository in it.
   void recordPullsAtEnd(ctx, entry, outcome).catch((err: unknown) => log(`${entry.ticket.key}: the files and heads of its pull requests could not be read (${messageOf(err)}), so its repository is held until the next watch reads them`));
   // A run that is not handed back gives its ticket back now. A parked one keeps it In Progress while a person may answer it.

@@ -20,10 +20,20 @@ test("A11-302: a verifier run's outcome is passed, failed or superseded with one
   assert.deepEqual(verifyOutcomeOf({ kind: "passed", evidence: "  the doctor shows 0.5.0  " }), { kind: "passed", evidence: "the doctor shows 0.5.0" });
   assert.deepEqual(verifyOutcomeOf({ kind: "failed", evidence: "still 0.4.1" }), { kind: "failed", evidence: "still 0.4.1" });
   assert.deepEqual(verifyOutcomeOf({ kind: "superseded", evidence: "that machine is retired" }), { kind: "superseded", evidence: "that machine is retired" });
-  assert.match(String(verifyOutcomeOf({ kind: "created" })), /ends on "passed", "failed" or "superseded", not "created"/);
+  assert.match(String(verifyOutcomeOf({ kind: "created" })), /ends on "passed", "failed", "superseded" or "cannot-run-here", not "created"/);
   assert.match(String(verifyOutcomeOf({ kind: "passed" })), /gives no evidence/);
   assert.match(String(verifyOutcomeOf({ kind: "passed", evidence: "one\ntwo" })), /evidence must be one line/);
   assert.match(String(verifyOutcomeOf({ kind: "passed", evidence: "x".repeat(301) })), /at most 300 characters/);
+});
+
+test("A11-361: a verifier run may end cannot-run-here, naming the one thing this host lacks, and that is no pass, fail or supersede", () => {
+  assert.deepEqual(verifyOutcomeOf({ kind: "cannot-run-here", needs: " Chairman Mac ", evidence: "needs the chairman's Mac" }), { kind: "cannot-run-here", needs: "chairman-mac", evidence: "needs the chairman's Mac" });
+  assert.match(String(verifyOutcomeOf({ kind: "cannot-run-here", evidence: "needs a Mac" })), /names no `needs`/);
+  assert.match(String(verifyOutcomeOf({ kind: "cannot-run-here", needs: "the Mac, and the board key!", evidence: "two things" })), /names no `needs`/);
+  assert.match(String(verifyOutcomeOf({ kind: "cannot-run-here", needs: "board-key" })), /gives no evidence/);
+  const brief = verifierBriefSections(check("A11-314#1", { runner: "agent" }), "/d");
+  assert.ok(brief.includes("`cannot-run-here`") && brief.includes('"needs": "chairman-mac"'), "the brief offers the outcome with its shape");
+  assert.ok(!/needs something you cannot do from here, that is a/.test(brief), "and no longer tells a run to fail a check it could not run");
 });
 
 test("A11-302: the verifier's brief carries the check's ticket, its line quoted, the plan's evidence spec, the outcome file and the three results, and says to change nothing", () => {

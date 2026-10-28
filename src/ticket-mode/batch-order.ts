@@ -93,5 +93,11 @@ export function unknownRepos(order: Order, clones: readonly string[]): ReadonlyM
   const known = new Set(clones);
   const names = clones.map((name) => `\`${name}\``).join(", ");
   return new Map([...order].flatMap(([key, { repo }]) => (repo === null || known.has(repo) ? []
-    : [[key, `the planner placed ${key} in the repository \`${repo}\`, which is not one of this machine's clones (${names}), so the board gave it none. Its plan is attached: Retry works it with no planned repository, so it starts in its project's repository, or, where its project names none, the worker chooses one`] as const])));
+    : [[key, `the planner placed ${key} in the repository \`${repo}\`, which is not one of this machine's clones (${names}), so the board gave it none. ${PLAN_KEPT}`] as const])));
 }
+
+const PLAN_KEPT = "Its plan is attached: Retry works it with no planned repository, so it starts in its project's repository, or, where its project names none, the worker chooses one";
+
+/** Why the board gave a ticket no repository when the planner placed it in one of the organisation's that it could not clone (A11-355). PURE. */
+export const cloneRefusal = (key: string, fullName: string, why: string): string =>
+  `the planner placed ${key} in \`${fullName}\`, a repository of the organisation that this machine has not cloned, and the board could not clone it (${why}), so it gave it none. ${PLAN_KEPT}`;

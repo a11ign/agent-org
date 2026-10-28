@@ -101,7 +101,8 @@
 // remembers of it. A pull request whose state cannot be read is asked again, and nothing is forgotten until its checkout is gone.
 
 import { ensureSession, talkTo } from "./pool-start.ts";
-import { applyEdit, discardEdit, dismiss, remove, respond, stop, stopWriterRun } from "./pool-actions.ts";
+import { applyEdit, discardEdit, dismiss, remove, respond, retryRun, stop, stopWriterRun } from "./pool-actions.ts";
+import { cloneMissing } from "./pool-org-repos.ts";
 import { answer, type Answer } from "./pool-answer.ts";
 import { close } from "./pool-settle.ts";
 import { tick, watchFeedback } from "./pool-watch.ts";
@@ -149,6 +150,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     dismiss: (key: string) => dismiss(ctx, key),
     talk: (key: string) => talkTo(ctx, key),
     respond: (key: string) => respond(ctx, key),
+    /** A person's Retry (A11-355): queues a finished run again, in the repository its `wrong-repo` named when that is the organisation's. Rejects, naming why, for a run that cannot be retried. */
+    retry: (key: string) => retryRun(ctx, key),
+    /** Clones every live repository of the organisation this machine has no clone of (A11-355); resolves with how many. Never rejects. */
+    cloneMissing: () => cloneMissing(ctx),
     /** A person's answer to the run waiting on them: written into the ticket's Decisions, then sent to the run (A11-250). */
     answer: (key: string, given: Answer) => answer(ctx, key, given),
     remove: (key: string) => remove(ctx, key),

@@ -147,3 +147,10 @@ test("A11-356: the states kept for peeking are let go once they expire, whether 
   clock.now = 0;
   assert.equal(reads.peek(urlOf(1)), null, "the first was dropped when the second was read, after it had expired");
 });
+
+test("A11-356: an answer that is not an object of fields is no reading: a view that prints null, and a list that holds a bare value", async () => {
+  const gh: AsyncGh = async (args) => (args[1] === "list" ? JSON.stringify([null, 7, "x", pull(1)]) : "null");
+  const reads = readsOver(gh);
+  assert.equal((await reads.state(urlOf(1), policy))?.head, head(1), "the one pull request in the list is read, the others are skipped");
+  assert.equal(await reads.state(urlOf(2), policy), null, "a view that printed null is read as no reading");
+});

@@ -10,6 +10,8 @@ import { afterMergeRoute } from "./after-merge/route.ts";
 import { closeCheck, decideFollowUp, followUpText, isUnmigrated, type CheckRecord, type ChecksFile } from "./after-merge/checks.ts";
 import { applyMigration, giveToAgent, isCheckRun, MAX_BOARD_CHECK_RUNS, MAX_RUN_TRIES, migrationBriefSections, migrationRequest, MIGRATION_BATCH, unmigratedChecks, verifierBriefSections, verifierRequest, VERIFIER_EFFORT, VERIFIER_MODEL, type MigrationEntry, type VerifyOutcome } from "./after-merge/verify.ts";
 import { afterMergeChecksPath, changeChecks, loadChecks } from "./after-merge/store.ts";
+import { capabilityRequest, missingCapabilities, parkCheck, recordCapabilityRequest, routeParked } from "./after-merge/capability.ts";
+import { awaitsWindow, reopenClosedTooSoon, scheduleWindows } from "./after-merge/window.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { forgetRun, log, messageOf, update, writerAgentRunning, writerPlace } from "./pool-state.ts";
@@ -34,8 +36,12 @@ export function checkRunBrief(ctx: PoolContext, run: WriterRun, dir: string): st
   return migrationBriefSections(waiting, dir, ctx.now());
 }
 
-/** Close a check a verifier run decided, through the route a person's close uses. A refusal (the check was closed meanwhile) is logged and changes nothing. */
+/** Close a check a verifier run decided, through the route a person's close uses. A refusal (the check was closed meanwhile) is logged and changes nothing. A `cannot-run-here` closes nothing: the check is parked on what it needs (A11-361). */
 function closeVerified(ctx: PoolContext, id: string, verdict: VerifyOutcome): void {
+  if (verdict.kind === "cannot-run-here") {
+    changeChecks(afterMergeChecksPath(ctx.settings.stateDir), (file) => parkCheck(file, id, verdict.needs, verdict.evidence));
+    return;
+  }
   const [status, body] = afterMergeRoute({ stateDir: ctx.settings.stateDir, now: ctx.now }, "POST", `/api/after-merge/${id.replace("#", "/")}`, { result: verdict.kind, evidence: verdict.evidence, by: "agent" }) ?? [500, "no route"];
   if (status !== 200) log(`the verifier run for ${id} could not close it: ${JSON.stringify(body)}`);
 }
@@ -49,7 +55,7 @@ function closeCheckRun(ctx: PoolContext, run: WriterRun): void {
 }
 
 /**
- * A check run's outcome, read once its agent is idle (A11-302). A verifier run's `passed`, `failed` or `superseded` closes its check; a migration pass's answers rewrite the checks it was given (`applyMigration`). An outcome the contract
+ * A check run's outcome, read once its agent is idle (A11-302). A verifier run's `passed`, `failed` or `superseded` closes its check, and its `cannot-run-here` parks it (A11-361); a migration pass's answers rewrite the checks it was given (`applyMigration`). An outcome the contract
  * refuses, or a run that could not decide (`needs-human`), ends the run failed with that reason: the sweep then tries the check again, or settles it without the run.
  */
 export async function finishCheckRun(ctx: PoolContext, run: WriterRun, text: string): Promise<void> {
@@ -147,9 +153,13 @@ function queueMigration(ctx: PoolContext, path: string): void {
   }
 }
 
-/** The agent checks whose change is installed and that no run holds are given to a verifier run each. */
+/** Whether a check is parked on a capability and stays so: no runner has it, or one has it and the check has used all its tries (a run there that cannot run it either must not be queued for ever). */
+const waitsOnCapability = (check: CheckRecord): boolean => check.needs !== undefined && (check.needs.routedTo === undefined || (check.verifier?.tries ?? 0) >= MAX_RUN_TRIES);
+
+/** The agent checks whose change is installed, whose window (if it has one) has ended, that wait on no capability no runner has and that no run holds are given to a verifier run each. */
 function queueVerifiers(ctx: PoolContext, path: string, installed: (check: CheckRecord) => boolean): void {
-  const ready = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && !isUnmigrated(check) && (check.verifier?.run ?? null) === null && installed(check));
+  const ready = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && !isUnmigrated(check) && !waitsOnCapability(check) && !awaitsWindow(check, ctx.now())
+    && (check.verifier?.run ?? null) === null && installed(check));
   for (const check of ready) {
     if (unfinishedCheckRuns(ctx).length >= MAX_BOARD_CHECK_RUNS) return;
     const id = freshId(ctx, "c");
@@ -157,13 +167,20 @@ function queueVerifiers(ctx: PoolContext, path: string, installed: (check: Check
   }
 }
 
+/** The file with the checks closed failed before their window could end opened again, the checks parked on a capability routed to a runner that has it, and each check with a delay due that long after its change is installed. PURE. */
+const scheduled = (file: ChecksFile, installed: (check: CheckRecord) => boolean, now: number): ChecksFile => scheduleWindows(routeParked(reopenClosedTooSoon(file)), installed, now);
+
 /**
  * One pass over the checks the board runs by agents (A11-302). `installed` says whether a check's change is in a release installed on this host: an `agent` check is given to a verifier run only then. A check whose run ended with no result is
  * given to another, and after {@link MAX_RUN_TRIES} runs is closed failed, saying how the last ended, which files a follow-up like any failure. The checks still on the retired session runner are given to a migration pass, and after
  * {@link MAX_RUN_TRIES} passes to an agent. At most {@link MAX_BOARD_CHECK_RUNS} check runs are unfinished at once.
+ *
+ * A check about a delay after release is scheduled first (A11-361): it is due that long after its change is installed, and is given to no run before (`window.ts`); a check closed failed before its window could end is opened again and
+ * scheduled; a check parked on what this host lacks is routed to a runner that has it.
  */
 export function queueCheckRuns(ctx: PoolContext, installed: (check: CheckRecord) => boolean): void {
   const path = afterMergeChecksPath(ctx.settings.stateDir);
+  changeChecks(path, (file) => scheduled(file, installed, ctx.now()));
   settleEndedVerifiers(ctx, path);
   queueMigration(ctx, path);
   queueVerifiers(ctx, path, installed);
@@ -216,5 +233,31 @@ export function fileFollowUps(ctx: PoolContext, said: Set<string>): void {
       const decided = decideFollowUp(file, check.id, id);
       return decided.ok ? decided.file : file;
     });
+  }
+}
+
+/**
+ * File the one ticket of each capability a check could not run for (A11-361): a verifier run ended `cannot-run-here` naming what this host lacks, and no runner has it. The ticket is a quick ticket-writer request, filed once for the capability
+ * however many checks need it; every check parked on it records the request, so the next sweep files nothing more. A machine with no `tickets.writer` files none, and says so once; the checks stay parked.
+ */
+export function fileCapabilityRequests(ctx: PoolContext, said: Set<string>): void {
+  const path = afterMergeChecksPath(ctx.settings.stateDir);
+  const { settings, now } = ctx;
+  for (const [capability, checks] of missingCapabilities(loadChecks(path))) {
+    if (unfinishedTicketRequests(ctx) >= MAX_WRITER_RUNS - PLACES_KEPT_FOR_PEOPLE) return;
+    if (settings.writer === null) {
+      if (!said.has(capability)) log(`${checks.map(({ id }) => id).join(", ")}: cannot run on this host for want of ${capability}, and this machine names no tickets.writer to file the ticket for it`);
+      said.add(capability);
+      continue;
+    }
+    const id = freshId(ctx, "f");
+    try {
+      update(ctx, (queue) => queueWriter(queue, { id, request: capabilityRequest(capability, checks), mode: "quick", placement: "auto", form: {}, model: settings.writer!.model, effort: settings.writer!.effort }, now()));
+    } catch (err) {
+      if (!said.has(`${capability}:queue`)) log(`the ticket for the missing ${capability} could not be queued, and is tried again at the next refresh: ${messageOf(err)}`);
+      said.add(`${capability}:queue`);
+      continue;
+    }
+    changeChecks(path, (file) => recordCapabilityRequest(file, capability, id));
   }
 }

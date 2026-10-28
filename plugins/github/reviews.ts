@@ -15,15 +15,21 @@ export const BATCH_LIMIT = 100;
 
 type Pull = { repository: string; number: number };
 
+/** A pull request's named `--json` fields, as the reviewer's policy reads them (its own contract types them loosely, since the fields it names are its own). */
+type PullFields = Readonly<Record<string, any>>;
+
+/** Whether `value` is an object of fields: what `gh --json` prints for a pull request, and not `null`, a list or a bare value. */
+const isFields = (value: unknown): value is PullFields => typeof value === "object" && value !== null && !Array.isArray(value);
+
 /**
  * THE OPEN PULL REQUESTS OF `repository` WITH THE NAMED `fields`, by number, in one `gh pr list` (the same fields `gh pr view --json` answers for each), or null when they could not be had: a refused `gh`, or an answer that does not
  * parse. Absence is not proof: a pull request this map lacks may be merged, closed, or past {@link BATCH_LIMIT}, so a caller reads it on its own.
  */
-async function openPullsOf(repository: string, fields: string, gh: AsyncGh): Promise<Map<number, Record<string, any>> | null> {
+async function openPullsOf(repository: string, fields: string, gh: AsyncGh): Promise<Map<number, PullFields> | null> {
   try {
     const listed: unknown = JSON.parse(await gh(["pr", "list", "--repo", repository, "--state", "open", "--limit", String(BATCH_LIMIT), "--json", [...new Set(["number", ...fields.split(",")])].join(",")]));
     if (!Array.isArray(listed)) return null;
-    return new Map(listed.flatMap((pr): [number, Record<string, any>][] => (typeof pr?.number === "number" ? [[pr.number, pr]] : [])));
+    return new Map(listed.flatMap((pr): [number, PullFields][] => (isFields(pr) && typeof pr.number === "number" ? [[pr.number, pr]] : [])));
   } catch {
     return null;
   }
@@ -33,9 +39,10 @@ async function openPullsOf(repository: string, fields: string, gh: AsyncGh): Pro
  * The named `fields` (a `--json` list) of one pull request, or null when they could not be had: a refused `gh`, or an answer that does not parse. Absence is not proof, so a caller reads null as no reading. Private: row mode's own read of
  * the same fields stays in core (`src/ticket-port/pull-request-fields.ts`) until its callers move into this plugin, and a plugin imports core's types only (ADR 0001), so the two cannot be one file.
  */
-async function viewOf({ repository, number }: Pull, fields: string, gh: AsyncGh): Promise<Record<string, any> | null> {
+async function viewOf({ repository, number }: Pull, fields: string, gh: AsyncGh): Promise<PullFields | null> {
   try {
-    return JSON.parse(await gh(["pr", "view", String(number), "--repo", repository, "--json", fields]));
+    const viewed: unknown = JSON.parse(await gh(["pr", "view", String(number), "--repo", repository, "--json", fields]));
+    return isFields(viewed) ? viewed : null;
   } catch {
     return null;
   }
@@ -99,7 +106,7 @@ export function createReviewReads({ gh, shared, now = Date.now }: Readonly<{ gh:
   const read = new Map<string, { state: ReviewState; at: number }>();
 
   /** The named `fields` of `pull`: from its repository's one list when the list holds it, else on their own. */
-  async function fieldsOf(pull: Pull, fields: string): Promise<Record<string, any> | null> {
+  async function fieldsOf(pull: Pull, fields: string): Promise<PullFields | null> {
     const listed = (await shared(`list ${pull.repository} ${fields}`, () => openPullsOf(pull.repository, fields, gh)))?.get(pull.number);
     return listed ?? shared(`view ${pull.repository}#${pull.number} ${fields}`, () => viewOf(pull, fields, gh));
   }
