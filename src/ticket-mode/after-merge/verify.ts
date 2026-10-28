@@ -79,7 +79,7 @@ You are a verifier run, started by the board. A ticket's change is in a release 
 
 > ${check.line.split("\n").join("\n> ")}
 
-- **What would close it (the plan's \`Evidence:\`):** ${spec}
+- **What would close it (the plan's \`Evidence:\`):** ${spec}${check.needs?.routedTo === undefined ? "" : `\n- **Routed to you:** an earlier run found this host lacks \`${check.needs.capability}\`; the board sent the check to ${check.needs.routedTo}, which has it.`}
 
 ## What to do
 

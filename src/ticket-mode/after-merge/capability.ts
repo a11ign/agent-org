@@ -10,9 +10,9 @@ export type CheckRunner = Readonly<{ name: string; has: readonly string[] }>;
 
 /**
  * The runners other than this host's verifier runs. None exists yet: a capability no runner has is a missing capability, and is filed as a ticket. A runner that is added here (the machine with the chairman's Mac, say) takes the checks
- * parked on what it has from the next sweep.
+ * parked on what it has from the next sweep: they are marked routed and given to a verifier run (`queueVerifiers`), once for each try the check has left. A test registers one and removes it.
  */
-export const CHECK_RUNNERS: readonly CheckRunner[] = [];
+export const CHECK_RUNNERS: CheckRunner[] = [];
 
 /** The longest a capability's name may be. */
 export const CAPABILITY_CHARS = 40;

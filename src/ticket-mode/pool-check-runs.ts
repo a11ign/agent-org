@@ -153,9 +153,12 @@ function queueMigration(ctx: PoolContext, path: string): void {
   }
 }
 
-/** The agent checks whose change is installed, whose window (if it has one) has ended, that wait on no missing capability and that no run holds are given to a verifier run each. */
+/** Whether a check is parked on a capability and stays so: no runner has it, or one has it and the check has used all its tries (a run there that cannot run it either must not be queued for ever). */
+const waitsOnCapability = (check: CheckRecord): boolean => check.needs !== undefined && (check.needs.routedTo === undefined || (check.verifier?.tries ?? 0) >= MAX_RUN_TRIES);
+
+/** The agent checks whose change is installed, whose window (if it has one) has ended, that wait on no capability no runner has and that no run holds are given to a verifier run each. */
 function queueVerifiers(ctx: PoolContext, path: string, installed: (check: CheckRecord) => boolean): void {
-  const ready = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && !isUnmigrated(check) && check.needs === undefined && !awaitsWindow(check, ctx.now())
+  const ready = Object.values(loadChecks(path).checks).filter((check) => check.state === "open" && check.runner === "agent" && !isUnmigrated(check) && !waitsOnCapability(check) && !awaitsWindow(check, ctx.now())
     && (check.verifier?.run ?? null) === null && installed(check));
   for (const check of ready) {
     if (unfinishedCheckRuns(ctx).length >= MAX_BOARD_CHECK_RUNS) return;

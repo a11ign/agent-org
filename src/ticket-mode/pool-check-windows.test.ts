@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterMergeChecksPath, loadChecks, saveChecks } from "./after-merge/store.ts";
 import type { CheckRecord } from "./after-merge/checks.ts";
-import { parkCheck } from "./after-merge/capability.ts";
+import { CHECK_RUNNERS, parkCheck } from "./after-merge/capability.ts";
 import { MAX_BOARD_CHECK_RUNS, MAX_RUN_TRIES, MIGRATION_BATCH } from "./after-merge/verify.ts";
 import { herdrName } from "./pool.ts";
 import { poolFixture } from "./pool-fixture.ts";
@@ -152,4 +152,34 @@ test("A11-361: six checks that need two missing capabilities file two tickets, n
   await board.sweep();
   assert.equal(quickRequests(board).length, 2, "a later check for the same capability files none");
   assert.ok(Object.values(board.checks()).every((one) => one.state === "open" && one.needs?.request !== undefined));
+});
+
+/** Run `body` with a runner that has `chairman-mac` registered, and take it away again. */
+async function withMacRunner(body: () => Promise<void>): Promise<void> {
+  CHECK_RUNNERS.push({ name: "mac-runner", has: ["chairman-mac"] });
+  try {
+    await body();
+  } finally {
+    CHECK_RUNNERS.length = 0;
+  }
+}
+
+test("A11-361: a parked check whose capability a runner now has is routed to it and given to a verifier run, and files no ticket", async () => {
+  await withMacRunner(async () => {
+    const board = world([check("A11-314#1", { verifier: { run: null, tries: 1 }, needs: { capability: "chairman-mac", why: "opens the app" } })], { merged: mergedOther("A11-314") });
+    await board.sweep();
+    assert.equal(board.checks()["A11-314#1"].needs?.routedTo, "mac-runner");
+    assert.deepEqual(board.writers().map(({ mode, checks }) => [mode, checks]), [["verify", ["A11-314#1"]]], "the routed check is queued, not left parked");
+    assert.equal(board.checks()["A11-314#1"].verifier?.tries, 2);
+    await board.tick();
+    assert.match(readFileSync(join(board.dirOf(board.writers()[0].id), "brief.md"), "utf8"), /Routed to you:.*chairman-mac.*mac-runner/);
+  });
+});
+
+test("A11-361: a routed check whose run cannot run it either is not queued again once its tries are spent", async () => {
+  await withMacRunner(async () => {
+    const board = world([check("A11-314#1", { verifier: { run: null, tries: 2 }, needs: { capability: "chairman-mac", why: "opens the app" } })], { merged: mergedOther("A11-314") });
+    await board.sweep();
+    assert.deepEqual([board.writers(), board.checks()["A11-314#1"].state], [[], "open"]);
+  });
 });
