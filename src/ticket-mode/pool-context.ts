@@ -32,6 +32,8 @@ import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 import type { BaseMerge } from "./pool-outcome.ts";
 import type { WriteRetry } from "./result-write-retry.ts";
 import { type FillState, newFillState } from "./health-figures.ts";
+import type { HealthFigures } from "./health-figures.ts";
+import type { RunChoice } from "./queue/queue-entries-and-outcomes.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 import type { StartReadsState } from "./pool-start-reads.ts";
 import { READ_TIMEOUT_MS } from "./queue/start-reads.ts";
@@ -109,6 +111,10 @@ export type PoolDeps = Readonly<{
   legacyTmp?: LegacyTmp;
   /** The longest the files of a conflict are given to be listed before its round starts without them (A11-286); a minute when absent. A test gives a short one. */
   listingMs?: number;
+  /** The rolling health figures `/api/health` serves, as the board thread works them out now (A11-366): the reliability watches read their tickets' figures here. Absent: no figure is read, and no watch breaches. */
+  healthFigures?: () => HealthFigures | null;
+  /** The model and effort a run is queued on when the person has not chosen (A11-366): the saved choice, which the board's own queueing of a reopened ticket uses. Absent: the board queues no reopened ticket. */
+  runChoice?: () => RunChoice;
   /** The longest one read of the tracker, a remote or a plan, or the host's preflight, is waited for (A11-359, A11-364); `READ_TIMEOUT_MS` (20 s) when absent. A test gives a short one. */
   readMs?: number;
 }>;

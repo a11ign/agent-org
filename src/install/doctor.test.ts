@@ -105,7 +105,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     platform: "linux", arch: "x64", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     herdrIntegrations: integrationsSaying(INTEGRATIONS), herdrVersion: () => "herdr 0.9.3", herdrPlugins: () => null, herdrStatus: () => ({ kind: "absent" }),
     uiBuild: () => ({ found: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", declared: true, looked: "/home/me/.agent-org/tool/versions/v0.280.0/ui-build", version: "v0.280.0" }),
-    runs: () => [], longWaits: () => [], boardFigures: async () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
+    runs: () => [], longWaits: () => [], boardFigures: async () => null, reliabilityWatches: () => null, watchdog: () => null, instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     declaredRepositories: async () => [], reviewerRefusals: () => [], flakes: () => ({ limit: 3, days: 7, tests: [] }), chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     shellCommand: () => ({ kind: "file", said: SHIM, launcher: SHIM, copyRoot: "/home/me/.agent-org/tool/current", defined: { file: SHIM, line: null }, comparison: { kind: "installed" }, noInstall: false }),
@@ -1617,6 +1617,19 @@ test("A11-363: a watchdog restart is flagged even when the instance is not runni
   const watchdog = { restartsLastHour: 1, restartsLastDay: 1, restartsTotal: 1, last: { at: 1, reason: "no-fill" as const, detail: "no fill() pass has completed for 5.2 min" } };
   assert.deepEqual((await boardRows({ serviceState: (name) => (name === "instance" ? "stopped" : "running"), boardFigures: async () => { throw new Error("must not be asked"); }, watchdog: () => watchdog })).map(([name]) => name), ["board watchdog"]);
   assert.deepEqual(await boardRows({ boardFigures: async () => null, watchdog: () => null }), []);
+});
+
+// A11-366: the open board-reliability tickets, with their figures as the board serves them now.
+test("A11-366: doctor lists each open reliability ticket with its current figure, and warns for one at its threshold", async () => {
+  const spec = { figure: "sync-holds", threshold: 10, windowMs: 86_400_000 } as const;
+  const watch = (key: string, state: "open" | "held") => ({ key, title: `Title ${key}`, url: null, spec, origin: "ticket" as const, state, reads: 0, reopens: 0 });
+  const rows = Object.entries(byName(await diagnose(deps({ boardFigures: async () => ({ ...FIGURES, syncHolds: { lastHour: 14, holdMs: 100 } }), reliabilityWatches: () => [watch("A11-282", "open"), watch("A11-300", "held")] })))).filter(([name]) => name.startsWith("reliability "));
+  assert.deepEqual(rows.map(([name, check]) => [name, check.ok, check.warning]), [["reliability A11-282", true, true]], "the held ticket is not listed");
+  assert.match(rows[0]![1].detail, /synchronous holds under 10 an hour, for 1d; synchronous holds 14 an hour now; not closed yet/);
+  assert.deepEqual(Object.keys(byName(await diagnose(deps({ reliabilityWatches: () => null })))).filter((name) => name.startsWith("reliability ")), [], "no record, no rows");
+  let asks = 0;
+  await diagnose(deps({ boardFigures: async () => { asks += 1; return FIGURES; }, reliabilityWatches: () => [watch("A11-282", "open")] }));
+  assert.equal(asks, 1, "the board's health rows and the reliability rows share one read of /api/health");
 });
 
 test("A11-363: a watchdog service that is not registered is a warning with the command that registers it, not a failure that exits 1 on every machine the update has not reached", async () => {
