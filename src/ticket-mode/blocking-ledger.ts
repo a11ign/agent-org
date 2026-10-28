@@ -8,7 +8,7 @@
 // A WRAPPER CHANGES NOTHING. It calls the original with the same arguments and answers, or throws, what the original did. It only measures.
 //
 // THE CALL SITE IS THE CODE THAT ASKED, as `path:line` from the checkout's root: the first frame of the stack outside Node, this file and the SEAMS, the modules whose one job
-// is to hand a spawn on (`realExec`, and the `gh` runner made of it), which would otherwise stand for every plugin call at once. A call that holds the loop
+// is to hand a spawn on (`realExec`, the `gh` runner made of it, and the counter every code-host `gh` passes through), which would otherwise stand for every plugin call at once. A call that holds the loop
 // SLOW_MS or more is written to stderr as one line when it returns.
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
@@ -20,7 +20,7 @@ const CHECKOUT = join(dirname(HERE), "..", "..");
 /** A call that holds the loop this long, in ms, is logged as it returns. */
 export const SLOW_MS = 250;
 /** The modules that only pass a spawn on: a frame in one of them is not the call site. Paths from the checkout's root. */
-const SEAMS: readonly string[] = ["src/plugins/real-seams.ts", "plugins/github/gh.ts"];
+const SEAMS: readonly string[] = ["src/plugins/real-seams.ts", "plugins/github/gh.ts", "plugins/github/call-counter.ts"];
 const SYNC_SPAWNS = ["spawnSync", "execFileSync", "execSync"] as const;
 type SyncSpawn = (typeof SYNC_SPAWNS)[number];
 
