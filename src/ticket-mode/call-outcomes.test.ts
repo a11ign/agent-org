@@ -58,7 +58,7 @@ test("a gh that could not start, was cut, or printed that the network or GitHub 
 test("a program is counted only when it is gh", () => {
   const ledger = createCallLedger(() => 1_000);
   countProgram("/home/agent/.local/bin/gh", { status: 1, stderr: "HTTP 500" }, ledger);
-  countProgram("git", { status: 1, stderr: "HTTP 500" }, ledger);
+  countProgram("ssh", { status: 1, stderr: "HTTP 500" }, ledger);
   countProgram("claude", { status: null, stderr: "timeout" }, ledger);
   assert.deepEqual(ledger.figures().github, { calls: 1, failures: 1, failuresPer100: 100 });
 });
