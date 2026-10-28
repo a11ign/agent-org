@@ -28,19 +28,20 @@ test("a pass that runs to its end is a completed pass, a run it starts is the la
   assert.deepEqual([figures.runs.sinceLastStartMs, figures.runs.startable, figures.runs.freeSlots, figures.runs.starting], [30_000, 0, 1, 0], "both runs started at 1000; one slot of three is free");
 });
 
-test("a pass whose reads of the tracker fail returns early: it is not completed, nothing starts, and the reason is the first line of the failure; the next pass that reads clears it", async () => {
+test("a pass whose reads of the tracker fail holds those runs and completes: nothing starts, nothing is startable, and the next pass that reads starts them (A11-359)", async () => {
   const down = { on: true };
   let clock = 5_000;
   const made = poolFixture({ keys: ["NBF-1", "NBF-2"], source: trackerWithBlockers(down), now: () => clock });
   await made.pool.tick();
   clock = 9_000;
-  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: null, lastEarlyReturn: { reason: "a read of the tracker or the code host failed: fetch failed", agoMs: 4_000 } });
+  // Since A11-359 a failed read holds only the runs it was for, so the pass is a completed one: a tracker that is down is not a stalled board, and a restart would not mend it.
+  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: 4_000, lastEarlyReturn: null });
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => made.entry(key).phase), ["queued", "queued"], "one failed read stopped every start");
   assert.deepEqual([made.pool.figures().runs.startable, made.pool.figures().runs.sinceLastStartMs], [0, null], "entries whose blockers are unread are not startable");
   down.on = false;
   clock = 12_000;
   await made.pool.tick();
-  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: 0, lastEarlyReturn: null }, "completed, and the early return is cleared");
+  assert.deepEqual(made.pool.figures().fill, { sinceLastCompletedMs: 0, lastEarlyReturn: null }, "completed again");
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => made.entry(key).phase), ["running", "running"]);
 });
 

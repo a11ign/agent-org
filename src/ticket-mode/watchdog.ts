@@ -141,13 +141,30 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<Verdict> {
   return verdict;
 }
 
+const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isNumberOrNull = (value: unknown): boolean => value === null || isNumber(value);
+const isObject = <T extends object>(value: T | null | undefined): value is T => typeof value === "object" && value !== null;
+
+/** Whether `value` has every figure `judgeFigures` reads, each a finite number (or null where the figure may be absent). PURE. */
+export function isHealthFigures(value: unknown): value is HealthFigures {
+  const figures = value as { uptimeMs?: unknown; fill?: { sinceLastCompletedMs?: unknown; lastEarlyReturn?: unknown } | null; runs?: Record<string, unknown> | null } | null;
+  if (typeof figures !== "object" || figures === null || !isNumber(figures.uptimeMs)) return false;
+  const { fill, runs } = figures;
+  if (!isObject(fill) || !isObject(runs)) return false;
+  if (!isNumberOrNull(fill.sinceLastCompletedMs) || fill.lastEarlyReturn === undefined) return false;
+  return isNumberOrNull(runs.sinceLastStartMs) && isNumber(runs.startable) && isNumber(runs.freeSlots) && isNumber(runs.starting) && isNumberOrNull(runs.oldestStartingMs);
+}
+
 /** `/api/health` of the instance on `port`, waiting at most `timeoutMs`. Never throws. */
 export async function probeHealth(port: number, timeoutMs: number = PROBE_MS, fetchImpl: typeof fetch = fetch): Promise<Probe> {
   try {
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return { kind: "unanswered", why: `it answered ${response.status}` };
-    const body = await response.json() as Partial<HealthAnswer> | null;
-    return { kind: "answered", health: { boardSnapshotAgeMs: typeof body?.boardSnapshotAgeMs === "number" ? body.boardSnapshotAgeMs : 0, figures: body?.figures ?? null } };
+    const body = await response.json() as { boardSnapshotAgeMs?: unknown; figures?: unknown } | null;
+    const figures = body?.figures ?? null;
+    // Figures that are there but not figures are not an answer: read as healthy, they would hold back every restart (A11-363 review).
+    if (figures !== null && !isHealthFigures(figures)) return { kind: "unanswered", why: "it answered with figures the watchdog cannot read" };
+    return { kind: "answered", health: { boardSnapshotAgeMs: typeof body?.boardSnapshotAgeMs === "number" ? body.boardSnapshotAgeMs : 0, figures } };
   } catch (err) {
     const cause = (err as { cause?: { code?: string } }).cause?.code;
     return { kind: "unanswered", why: (err as Error)?.name === "TimeoutError" ? `no answer within ${seconds(timeoutMs)}` : `${cause ?? String((err as Error)?.message ?? err)}` };

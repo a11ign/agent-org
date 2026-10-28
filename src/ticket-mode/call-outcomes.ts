@@ -1,8 +1,9 @@
 // @ts-check
 // module: how many calls the board made to Linear and to GitHub in the last hour, and how many failed (A11-363) -- the figure `/api/health` calls failures per 100 calls
 //
-// THE CALLS ARE COUNTED WHERE THEY LEAVE THE PROCESS, not where they are written: `realExec` and `realExecAsync` count each `gh` program, and the `fetch` core hands every plugin counts each request to `api.linear.app`
-// (and to `api.github.com`, which the GitHub plugin never calls today). Nothing at a call site changes, and a call that no seam sees is not counted.
+// THE CALLS ARE COUNTED WHERE THEY LEAVE THE PROCESS, not where they are written: `realExec` and `realExecAsync` count each `gh` program, the `fetch` core hands every plugin counts each request to `api.github.com`
+// (which the GitHub plugin never calls today), and the loader hands the TRACKER plugin a `fetch` and `freshFetch` that count every request it makes as the `linear` figure (`trackerDeps` in `src/plugins/loader.ts`).
+// Core names no tracker's address (`src/plugins/boundary.test.ts`): the figure is the tracker's, whichever plugin that is. Nothing at a call site changes, and a call that no seam sees is not counted.
 //
 // A FAILURE IS A CALL THAT DID NOT REACH THE SERVICE, OR THE SERVICE FAILED IT: a `fetch` that threw (a reset socket, a timeout), a 429 or a 5xx; a `gh` that could not start, was cut at its limit, or exited non-zero
 // with stderr that names the network or the service failing (`HTTP 502`, `connection reset`, `timeout`). A `gh` exits non-zero for plenty the service answered (`gh pr checks` while checks are pending, a 404), and
@@ -47,7 +48,7 @@ export function createCallLedger(now: () => number = Date.now): CallLedger {
 /** This thread's ledger, which the seams count into and `/api/health` reads. */
 export const callOutcomes: CallLedger = createCallLedger();
 
-/** The service a request's address names, or null when it is neither. PURE. */
+/** The service a request's address names: GitHub's API, or null. The tracker's calls are counted by the fetch the loader gives it, not by address. PURE. */
 export function serviceOfUrl(input: string | URL | Request): CallService | null {
   let host: string;
   try {
@@ -55,17 +56,19 @@ export function serviceOfUrl(input: string | URL | Request): CallService | null 
   } catch {
     return null;
   }
-  if (host === "api.linear.app") return "linear";
   return host === "api.github.com" ? "github" : null;
 }
 
 /** Whether an HTTP status is the service failing the call: too many requests, or its own error. PURE. */
 export const statusFailed = (status: number): boolean => status === 429 || status >= 500;
 
-/** `fetchImpl` counting each request to Linear or GitHub into `ledger`: a throw and a failing status are failures, and the answer, or the throw, is passed on unchanged. */
-export function countedFetch<F extends typeof fetch>(fetchImpl: F, ledger: CallLedger = callOutcomes): F {
+/**
+ * `fetchImpl` counting requests into `ledger`: every request as `as` when it is given, else each request to GitHub's API. A throw and a failing status are failures, and the answer, or the throw, is passed on
+ * unchanged.
+ */
+export function countedFetch<F extends typeof fetch>(fetchImpl: F, ledger: CallLedger = callOutcomes, as?: CallService): F {
   return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-    const service = serviceOfUrl(input);
+    const service = as ?? serviceOfUrl(input);
     if (service === null) return fetchImpl(input, init);
     try {
       const response = await fetchImpl(input, init);

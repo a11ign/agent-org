@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { resolveProviders } from "../ticket-mode/providers.ts";
-import { importEnabled, loadEnabled, settingsOfBlock } from "./loader.ts";
+import { depsFor, importEnabled, loadEnabled, settingsOfBlock } from "./loader.ts";
+import { createCallLedger } from "../ticket-mode/call-outcomes.ts";
 import type { PluginDeps, PluginModule } from "./manifest.ts";
 import { fakePluginDeps } from "./fakes/deps.ts";
 import { buildCatalog, type PackageFiles } from "./registry.ts";
@@ -40,7 +41,9 @@ test("the loader imports only the bundled plugins a host enables, by file URL, a
   const { urls, importModule } = recorder({ [urlOf("my-tracker")]: moduleOf((settings, deps) => { created.push([settings, deps]); return "the tracker"; }) });
   const result = await loadEnabled(providers, catalog, DEPS, importModule);
   assert.deepEqual(urls, [urlOf("my-tracker")], "my-publisher is not enabled, so its code is not read");
-  assert.deepEqual(created, [[{}, DEPS]]);
+  const [[settings, given]] = created as [[unknown, PluginDeps]];
+  assert.deepEqual(settings, {});
+  assert.deepEqual({ ...given, fetch: DEPS.fetch }, DEPS, "the deps, with the tracker's fetch counted (depsFor)");
   assert.deepEqual(result.loaded.map(({ plugin, implementation }) => [plugin.name, implementation]), [["my-tracker", "the tracker"]]);
   assert.deepEqual(result.refusals, []);
 });
@@ -114,4 +117,15 @@ test("A11-160: importing an unsupported contract major is refused by name, and i
   const { urls, importModule } = recorder({ [urlOf("my-tracker")]: moduleOf() });
   const result = await importEnabled(providers, catalogOf({ "my-tracker": "tracker" }, "2.0"), importModule);
   assert.deepEqual([urls, result.modules, result.refusals.map(({ plugin }) => plugin)], [[], [], ["my-tracker"]]);
+});
+
+test("A11-363: the tracker plugin is given a fetch and a freshFetch that count every request as the board's tracker figure, and every other plugin is given its deps as they are", async () => {
+  const ledger = createCallLedger(() => 1_000);
+  const answer = (async () => new Response("", { status: 503 })) as typeof fetch;
+  const deps = { fetch: answer, freshFetch: answer } as unknown as PluginDeps;
+  assert.equal(depsFor("codeHost", deps, ledger), deps);
+  const tracker = depsFor("tracker", deps, ledger);
+  await tracker.fetch("https://tracker.example/graphql");
+  await tracker.freshFetch!("https://tracker.example/graphql");
+  assert.deepEqual(ledger.figures().linear, { calls: 2, failures: 2, failuresPer100: 100 });
 });

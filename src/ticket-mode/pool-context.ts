@@ -225,6 +225,12 @@ export type PoolContext = Readonly<{
   repliesRead: Set<string>;
   /** What the board last read of each run's declared wait, by herdr name (A11-245). Kept in memory: a restart reads afresh, and the note's own `woke` says the worker was already told. */
   waitPolls: WaitPolls;
+  /** When the pull requests an idle run waits on or opened were last read, by herdr name (A11-358). Kept in memory: a restart reads them at once, and the note's `fed` says what the worker was told. */
+  pullReadAt: Map<string, number>;
+  /** The problems with a run's record of the pull requests it opened that the log has said, as `KEY: problem` (A11-358): each is said once while it lasts. In memory, so a restart says it again. */
+  recordSaid: Set<string>;
+  /** The runs whose waited-on pull requests are being read now (A11-358): a read the host has not answered is not started again. */
+  waitReading: Set<string>;
   /** Whether this instance's first watch pass has read the restart record (A11-279): that first pass is itself a restart, and only it. */
   restart: { read: boolean };
   /** The panes that lack the run's environment and are to be started again, by herdr name (A11-279). Filled by the watch, emptied by `reseatRuns` in the same pass. */
@@ -317,7 +323,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? 60_000, idleSaid: { reason: null, refresh: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, readMs: deps.readMs ?? 60_000, idleSaid: { reason: null, refresh: null }, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), pullReadAt: new Map<string, number>(), recordSaid: new Set<string>(), waitReading: new Set<string>(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),
   };
