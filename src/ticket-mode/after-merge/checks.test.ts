@@ -164,3 +164,12 @@ test("A11-302: the pool bar counts the open org checks older than three days, no
   assert.equal(ORG_STALE_MS, 3 * DAY);
   assert.deepEqual(staleOrgChecks(file, now + 6 * DAY).map(({ id }) => id), ["A11-1#1", "A11-1#2", "A11-1#3", "A11-1#4", "A11-1#7"], "a window that has closed counts again");
 });
+
+test("A11-361: the pool bar does not count an agent check scheduled for a due time that has not come, nor one parked on a capability whose ticket is filed", () => {
+  const now = 10 * DAY;
+  const file = fileOf(
+    record("A11-1#1", { listedAt: 0, dueAt: now + DAY }), record("A11-1#2", { listedAt: 0, needs: { capability: "board-key", why: "x", request: "f1" } }),
+    record("A11-1#3", { listedAt: 0, needs: { capability: "board-key", why: "x" } }), record("A11-1#4", { listedAt: 0, dueAt: now - 1 }),
+  );
+  assert.deepEqual(staleOrgChecks(file, now).map(({ id }) => id), ["A11-1#3", "A11-1#4"], "scheduled and parked-with-a-ticket are waiting; unfiled and past due are stale");
+});

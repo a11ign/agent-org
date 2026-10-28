@@ -148,6 +148,10 @@ export type PoolContext = Readonly<{
   answered: Map<string, number>;
   startedHere: Set<string>;
   attaching: Set<string>;
+  /** The repositories of the organisation being cloned now, by `owner/name` (A11-355), so a plan and a worker that name one together wait on the same clone. */
+  cloning: Map<string, Promise<string>>;
+  /** Whether a sweep that clones the organisation's missing repositories is under way: sweeps never overlap (A11-355). */
+  cloneSweep: { busy: boolean };
   /** The planning runs whose plan attach failed in a way worth trying again (A11-216), by herdr name: how many tries failed and the time the next one may start. Kept in memory: a restart tries again from the first. */
   attachRetries: Map<string, AttachRetry>;
   /** The runs whose result write to the tracker failed in a way worth trying again (A11-304), by herdr name: how many tries failed, when the first did, and the time the next may start. Kept in memory: a restart tries again from the first. */
@@ -306,7 +310,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const finishing = new Set<string>();
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
-    startedHere, attaching, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
+    startedHere, attaching, cloning: new Map<string, Promise<string>>(), cloneSweep: { busy: false }, attachRetries, writeRetries, telling: new Set<string>(), answering: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, greenSeen, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, fillState: newFillState(), ownLogin: { value: null }, flakes: flakeLog(settings.stateDir, now), repliesRead: new Set<string>(), baseMerges: new Map<string, BaseMerge>(), mergeFlows: new Map(), settledPulls: new Set<string>(), listingMs: deps.listingMs ?? 60_000, keptSweep: { busy: false, done: Promise.resolve() }, stackMergeAsked: new Map<string, StackMergeAsk>(), restacked: new Map<string, RestackDone>(), restackSaid: new Set<string>(), waitPolls: new Map(), restart: { read: false },
     reseating: new Map<string, Reseat>(), envLost: new Map<string, readonly string[]>(), paneEnv: deps.paneEnv ?? livePaneEnv(herdr, settings.herdrSession),
     exposure: { at: null, checks: [], said: new Map<string, string>() }, hostAlerts: newHostAlertState(), runTmpBase: deps.privateTmpBase === undefined ? undefined : resolve(deps.privateTmpBase), legacySweep: newLegacySweepState(),

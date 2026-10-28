@@ -119,7 +119,8 @@ test("the page's thread reads the watchdog's record from its file at most every 
   assert.deepEqual(view(), { restartsLastHour: 1, restartsLastDay: 1, restartsTotal: 1, last: { at: 940_000, reason: "no-start", detail: "2 queued runs could start" } });
   writeFileSync(path, "{ torn");
   clock += VIEW_CACHE_MS;
-  assert.equal(view(), null, "a file that cannot be read shows no restarts rather than failing the route");
+  const unreadable = view();
+  assert.deepEqual([unreadable?.restartsLastDay, unreadable?.restartsTotal, typeof unreadable?.unreadable], [0, 0, "string"], "a file that cannot be read says so rather than showing no restarts, and does not fail the route");
 });
 
 test("the last hour's reading is kept for a few seconds, because the snapshot that carries it follows every queue change", () => {

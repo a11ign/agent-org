@@ -1478,6 +1478,29 @@ test("A11-285: a development checkout host.json names as devTool passes when it 
   assert.equal((await commandRow(dev)).ok, false);
 });
 
+// A11-355: every live repository of the organisation with no clone is listed, as a warning the board answers by cloning it
+test("A11-355: doctor lists every live organisation repository with no clone, as a warning that says the board clones them", async () => {
+  const asked: string[][] = [];
+  const checks = byName(await diagnose(deps({ unclonedRepositories: (clones) => { asked.push(Object.keys(clones)); return { uncloned: ["acme/corpus", "acme/.github"] }; } })));
+  const row = checks["organisation clones"];
+  assert.deepEqual([row.ok, row.warning], [true, true], "a warning: the board clones each one, so an install is not stopped");
+  assert.equal(row.detail, "2 live repositories of the organisation have no clone: acme/corpus, acme/.github");
+  assert.match(row.fix ?? "", /the board clones each one on its next sweep \(every few minutes\), and the moment a plan or a worker names it/);
+  assert.equal(asked.length, 1, "it is asked of the host file's own clones");
+});
+
+test("A11-355: doctor says one repository in the singular, passes when none lacks a clone, and says when the organisation cannot be listed", async () => {
+  const row = async (reading: ReturnType<NonNullable<DoctorDeps["unclonedRepositories"]>> | Error) => byName(await diagnose(deps({ unclonedRepositories: () => { if (reading instanceof Error) throw reading; return reading; } })))["organisation clones"];
+  assert.equal((await row({ uncloned: ["acme/corpus"] })).detail, "1 live repository of the organisation has no clone: acme/corpus");
+  const none = await row({ uncloned: [] });
+  assert.deepEqual([none.ok, none.warning, none.detail], [true, undefined, "every live repository of the organisation has a clone"]);
+  const unreadable = await row({ unreadable: "the repositories of acme could not be listed" });
+  assert.deepEqual([unreadable.ok, unreadable.warning], [true, true]);
+  assert.match(unreadable.detail, /could not be listed \(the repositories of acme could not be listed\), so doctor cannot say which have no clone/);
+  assert.match((await row(new Error("gh is not signed in\nsecond line"))).detail, /could not be listed \(gh is not signed in\)/, "a throw is said by its first line");
+  assert.equal(byName(await diagnose(deps()))["organisation clones"], undefined, "a doctor given no reading asks nothing of the organisation");
+});
+
 // A11-292: every repository the project declares must have a clone that a reviewer's label resolves to. A key the label cannot carry, or a clone the host lists under neither the key nor the name, is a repository nobody reviews.
 const withClones = (clones: Record<string, string>) => JSON.stringify({ ...JSON.parse(HOST_WITH_PROJECT), clones });
 const DECLARED: DoctorDeps["declaredRepositories"] = async () => [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }, { key: "github", repo: "a11ign/.github" }];
@@ -1487,6 +1510,15 @@ test("A11-292: doctor passes a declared repository whose clone the host lists un
   const rows = cloneRows(await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org", ".github": "/c/github" }), declaredRepositories: DECLARED })));
   assert.deepEqual(rows.map((row) => [row.name, row.ok]), [["clone of a11ign/agent-org", true], ["clone of a11ign/.github", true]], "one row per keyed repository, and none for the primary");
   assert.equal(rows[1].detail, "/c/github, found from the reviewer label `reviewer-github-1`");
+});
+
+test("A11-360: doctor fails a `clones` entry that is no repository (not a declared key or name, and its origin names none), and passes one a remote or the declaration names", async () => {
+  const remotes: Record<string, string> = { "/c/stopgap": "https://github.com/a11ign/.github.git" };
+  const rows = (await diagnose(deps({ readFile: () => withClones({ "agent-org": "/c/agent-org", ".github": "/c/github", stopgap: "/c/stopgap", bogus: "/c/bogus" }), declaredRepositories: DECLARED, cloneRemote: (path) => remotes[path] }))).filter((check) => check.name.startsWith("clone ") && !check.name.startsWith("clone of "));
+  assert.deepEqual(rows.map((row) => row.name), ["clone bogus"], "only the entry that names no repository");
+  assert.match(rows[0].detail, /`bogus` in `clones` is no repository/);
+  const unasked = (await diagnose(deps({ readFile: () => withClones({ bogus: "/c/bogus" }), declaredRepositories: DECLARED }))).filter((check) => check.name === "clone bogus");
+  assert.deepEqual(unasked, [], "a doctor given no remote reader asks nothing");
 });
 
 test("A11-292: doctor fails a declared repository with no clone under its key or its name, and names both and the entry that fixes it", async () => {
@@ -1595,4 +1627,9 @@ test("A11-363: a watchdog service that is not registered is a warning with the c
   assert.deepEqual([off.ok, off.warning, off.fix], [true, true, "run `agent-org start watchdog`"]);
   assert.match(off.detail, /not registered, so a stalled board waits for a person to restart it/);
   assert.match(byName(await diagnose(deps()))["watchdog service"].detail, /restarts the instance when it stalls/);
+});
+
+test("A11-363: doctor warns that the watchdog's record cannot be read, rather than showing no restarts", async () => {
+  const rows = await boardRows({ watchdog: () => ({ restartsLastHour: 0, restartsLastDay: 0, restartsTotal: 0, last: null, unreadable: "Unexpected token in JSON" }) });
+  assert.deepEqual(rows.map(([name, check]) => [name, check.warning, check.detail]), [["board watchdog", true, "The watchdog's record cannot be read (Unexpected token in JSON), so its restarts are not counted"]]);
 });

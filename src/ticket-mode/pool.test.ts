@@ -4747,6 +4747,36 @@ test("A11-199: an auto request's brief leaves every choice to the writer, and a 
   assert.equal(run().failure, "NBF-1 is not in the tracker");
 });
 
+/** A tracker whose read of `NBF-1` throws "fetch failed" for the first `fails` reads, then answers with the ticket; `reads` counts them. */
+function flakyTracker(fails: number): { tracker: TicketSource; reads: () => number } {
+  let reads = 0;
+  const tracker: TicketSource = { ...source, read: async (key) => {
+    reads += 1;
+    if (reads <= fails) throw new Error("fetch failed");
+    return { ...ticketOf(key), url: `https://linear.app/x/${key}` } as Ticket;
+  } };
+  return { tracker, reads: () => reads };
+}
+
+test("A11-361: a ticket the writer filed whose read-back keeps failing is no failure: its card reads Done, naming the key the writer reported", async () => {
+  const { tracker, reads } = flakyTracker(Number.POSITIVE_INFINITY);
+  const fixture = writing({ id: "r1", placement: "auto", form: {} }, WRITER, tracker);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "idle");
+  const { run } = fixture;
+  assert.equal(reads(), 4, "the read-back is tried again with backoff before it gives up: one try and one after each of three waits");
+  assert.deepEqual([run().phase, run().failure, writerStatus(run())], ["finished", undefined, "done"]);
+  assert.deepEqual(run().tickets, [{ key: "NBF-1", url: null, inPick: false }], "the card names the key the writer reported");
+});
+
+test("A11-361: a read-back that fails once and then answers shows the ticket as a link", async () => {
+  const { tracker, reads } = flakyTracker(1);
+  const fixture = writing({ id: "r2", placement: "auto", form: {} }, WRITER, tracker);
+  await filesThenEnds(fixture, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "idle");
+  assert.equal(reads(), 2);
+  assert.deepEqual([fixture.run().failure, writerStatus(fixture.run())], [undefined, "done"]);
+  assert.equal(fixture.run().tickets[0].url, "https://linear.app/x/NBF-1");
+});
+
 test("A11-267: a request the board filed carries its team into the brief, and the run that files its ticket ends done: the board shows the card Done with the ticket", async () => {
   const fixture = writing({ id: "d1", placement: "auto", form: {}, team: "OPS" }, WRITER, trackerOf({ "OPS-7": { url: "https://linear.app/x/OPS-7" } }));
   const { dir, run } = fixture;

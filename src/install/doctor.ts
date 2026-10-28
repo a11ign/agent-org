@@ -35,7 +35,7 @@ import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
-import { readReviewerMemory, reviewerMemoryPath, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
+import { readReviewerMemory, reviewerMemoryPath, originOf, splitHeadKey } from "../ticket-mode/reviewer-port.ts";
 import { type FlakesView, flakesPath, flakesViewOf } from "../ticket-mode/flakes.ts";
 import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
@@ -44,7 +44,7 @@ import { CALL_FAILURES_WARN_PER_100, healthFlags, type HealthFlag } from "../tic
 import { reliabilityRows } from "../ticket-mode/reliability/rows.ts";
 import { loadWatches, reliabilityWatchesPath } from "../ticket-mode/reliability/store.ts";
 import type { Watch } from "../ticket-mode/reliability/watch.ts";
-import { readRecordOrEmpty, watchdogPath, watchdogView, type WatchdogView } from "../ticket-mode/watchdog-record.ts";
+import { viewOfFile, watchdogPath, type WatchdogView } from "../ticket-mode/watchdog-record.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -66,6 +66,7 @@ import { guardsPresent } from "./interim-guards.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { drainPath, readDrain, type Drain } from "./update-drain.ts";
 import { judgeShellCommand, readShellCommand, realShellDeps, shellContext, type ShellReading } from "./shell-command.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { runningToolVersion, toolDir, versionNameOf } from "./tool-versions.ts";
 import { buildCandidates, findBuild, UI_BUILD_DIR } from "../ticket-mode/ui-build.ts";
 import { declaresUiBuild, type UiSource } from "./ui-asset.ts";
@@ -77,7 +78,9 @@ import { DEFAULT_TERMINAL_PORT, herdrConfigDir, loopbackPort, PAIRING_STEPS } fr
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { coreRowsHelpers, realExec, realPlace, realProbe } from "../plugins/active.ts";
 import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
-import { cloneOfDeclared, type DeclaredRepository } from "../declared-clone.ts";
+import { loadedCodeHost } from "../plugins/code-host-slot.ts";
+import { readOrganisation, unclonedOf } from "../ticket-mode/org-repos.ts";
+import { cloneOfDeclared, repositoryOfClone, type DeclaredRepository } from "../declared-clone.ts";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -165,6 +168,13 @@ export type DoctorDeps = Readonly<{
   reviewing: ReviewerHelpers;
   /** The code repositories the project declares (`code` in `project.json`). REJECTS with the reader's refusal when the declaration cannot be read, which a machine with no project does as it is imported (A11-292). */
   declaredRepositories: () => Promise<readonly DeclaredRepository[]>;
+  /**
+   * The live repositories of the organisation the host file holds no clone of, by `owner/name`, or why the organisation could not be listed (A11-355). Absent: doctor asks nothing of the organisation. A test injects one, so no `gh` runs.
+   * The default asks the code host, as the account doctor runs as.
+   */
+  unclonedRepositories?: (clones: Readonly<Record<string, string>>) => Readonly<{ uncloned: readonly string[] }> | Readonly<{ unreadable: string }>;
+  /** The `origin` URL of the clone at a path, or undefined (A11-360). When it is given, a `clones` entry that names no real repository is a failing row; a test that does not give it is not asked. */
+  cloneRemote?: (path: string) => string | undefined;
   /** The starts of a reviewer herdr has refused, as the pool's reviewer memory in `stateDir` holds them (A11-241). A test injects them, so no file is read. */
   reviewerRefusals: (stateDir: string) => readonly RefusedStart[];
   /** The tests the flake log in `stateDir` lists as needing a fix (A11-300): flaked three times in seven days. A test injects them, so no file is read. */
@@ -529,6 +539,19 @@ async function repositoryCloneChecks(settings: TicketSettings | null, deps: Doct
   return code.filter(({ key }) => key !== "").map((declared) => cloneCheckOf(declared, code, settings.clones));
 }
 
+/**
+ * One FAIL row for each `clones` entry whose key is no repository (A11-360): not a declared repository's key or name, and its git remote names none. Such an alias is read as a repository name by whatever lists the clone's
+ * pull requests, and a name that is no repository is a listing that always fails. A host whose declaration cannot be read is told by {@link repositoryCloneChecks}, so it has none here.
+ */
+async function cloneKeyChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
+  const { cloneRemote } = deps;
+  if (settings === null || cloneRemote === undefined) return [];
+  const code = await deps.declaredRepositories().catch(() => null);
+  if (code === null) return [];
+  return Object.entries(settings.clones).filter(([key, path]) => repositoryOfClone(key, path, { code, remote: cloneRemote }) === undefined).map(([key, path]) =>
+    failed(`clone ${key}`, `\`${key}\` in \`clones\` is no repository: it is no declared key or name, and the origin of ${path} names none`, `remove \`${key}\` from \`clones\` in the host file, or list the clone under its repository's name`));
+}
+
 /** The row for one declared repository: its key must read back from the reviewer's label, and a clone must be listed under the key or the repository's name. */
 function cloneCheckOf({ key, repo }: DeclaredRepository, code: readonly DeclaredRepository[], clones: TicketSettings["clones"]): Check {
   const name = `clone of ${repo}`;
@@ -542,6 +565,25 @@ function cloneCheckOf({ key, repo }: DeclaredRepository, code: readonly Declared
   if ("tried" in found) return failed(name, `host.json \`clones\` has no clone for ${repo} under ${found.tried.map((tried) => `\`${tried}\``).join(" or ")}, so a reviewer of it has no checkout`, `add \`"${found.tried[found.tried.length - 1]}": "<absolute path of the clone>"\` to \`clones\` in the host file`);
   if (!isAbsolute(found.clone)) return failed(name, `${found.clone} is not an absolute path`, "name the clone by its absolute path in `clones` of the host file");
   return ok(name, `${found.clone}, found from the reviewer label \`${label}\``);
+}
+
+/**
+ * One row listing every live repository of the organisation this machine has no clone of (A11-355). It is a warning, not a failure: the board clones each one itself, on its own sweep and the moment a plan or a worker names it, so the
+ * row says what is still to come and does not stop an install. A list the code host would not give is said too, and a row that finds none missing is green.
+ */
+function organisationCloneCheck(settings: TicketSettings | null, deps: DoctorDeps): Check[] {
+  if (settings === null || deps.unclonedRepositories === undefined) return [];
+  const name = "organisation clones";
+  let reading: ReturnType<NonNullable<DoctorDeps["unclonedRepositories"]>>;
+  try {
+    reading = deps.unclonedRepositories(settings.clones);
+  } catch (err) {
+    reading = { unreadable: String((err as Error)?.message ?? err).split("\n")[0] };
+  }
+  if ("unreadable" in reading) return [warned(name, `the organisation's repositories could not be listed (${reading.unreadable}), so doctor cannot say which have no clone`, "run `gh auth status`, and check the code host plugin in the host file")];
+  if (reading.uncloned.length === 0) return [ok(name, "every live repository of the organisation has a clone")];
+  return [warned(name, `${reading.uncloned.length} live ${reading.uncloned.length === 1 ? "repository" : "repositories"} of the organisation ${reading.uncloned.length === 1 ? "has" : "have"} no clone: ${reading.uncloned.join(", ")}`,
+    "the board clones each one on its next sweep (every few minutes), and the moment a plan or a worker names it")];
 }
 
 /**
@@ -579,6 +621,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     host,
     ...aliasChecks(settings),
     ...(noProject ? [] : await repositoryCloneChecks(settings, deps)),
+    ...organisationCloneCheck(settings, deps),
+    ...(noProject ? [] : await cloneKeyChecks(settings, deps)),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", `run \`agent-org onboard\`, which installs herdr ${TOOL_HERDR_VERSION}, or by hand: \`${handInstallCommand(deps.platform, deps.arch, deps.env)}\``) : ok("herdr", herdr),
     ...(herdr === null ? [] : herdrUpkeepChecks(deps)),
     writerCheck(settings, plugins),
@@ -1015,6 +1059,14 @@ function reliabilityWatchesOf(stateDir: string): readonly Watch[] | null {
   }
 }
 
+/** What doctor reads of the board's health (A11-363): the figures the instance serves, and the watchdog's record in the state directory. */
+function boardHealthReaders(): Pick<DoctorDeps, "boardFigures" | "watchdog"> {
+  return {
+    boardFigures: boardFiguresOf,
+    watchdog: (stateDir) => viewOfFile(watchdogPath(stateDir), Date.now()),
+  };
+}
+
 /** The figures the instance on `port` serves at `/api/health`, or null when it does not answer in time or serves none. */
 async function boardFiguresOf(port: number): Promise<HealthFigures | null> {
   try {
@@ -1098,21 +1150,21 @@ export function defaultDoctorDeps(): DoctorDeps {
       const queue = readQueue();
       return queue === null ? null : longWaits(queue.entries, Date.now());
     },
-    boardFigures: boardFiguresOf, reliabilityWatches: reliabilityWatchesOf,
-    watchdog: (stateDir) => {
-      const record = readRecordOrEmpty(watchdogPath(stateDir));
-      return record.count === 0 ? null : watchdogView(record, Date.now());
-    },
     uiBuild: () => ({ found: findBuild(buildCandidates()), declared: declaresUiBuild(TOOL_ROOT), looked: join(TOOL_ROOT, UI_BUILD_DIR), version: versionNameOf(TOOL_ROOT) }),
     instanceVersion: () => runningToolVersion(),
     pluginCopies: (wanted) => pluginCopiesOf(wanted, homedir()),
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewing: gateHelpers(),
-    declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code,
+    unclonedRepositories: (clones) => {
+      const codeHost = loadedCodeHost();
+      const organisation = readOrganisation(clones, codeHost);
+      return "unreadable" in organisation ? organisation : { uncloned: unclonedOf(organisation.repositories, clones, codeHost).map(({ fullName }) => fullName) };
+    },
+    declaredRepositories: async () => (await import("../project-config.ts")).homeProjectDeclaration().code, cloneRemote: originOf,
     reviewerRefusals: (stateDir) => [...readReviewerMemory(reviewerMemoryPath(stateDir)).memory.refusals].map(([key, { count, reason }]) => ({ ...splitHeadKey(key), count, reason })),
     flakes: (stateDir) => flakesViewOf(flakesPath(stateDir), Date.now()),
-    chromium: () => chromiumReport(),
+    chromium: () => chromiumReport(), ...boardHealthReaders(), reliabilityWatches: reliabilityWatchesOf,
     agentOrgPlugins: {
       catalog: defaultCatalog,
       load: (providers, catalog, pluginDeps, blocks) => loadEnabled(providers, catalog, pluginDeps, undefined, blocks),

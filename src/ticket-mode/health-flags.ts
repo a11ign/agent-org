@@ -20,7 +20,7 @@ const SERVICE_WORDS: Readonly<Record<CallService, string>> = { linear: "Linear",
 const delay = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
 
 /** The flags the figures and the watchdog's record call for, in the order the header shows them. Nothing is flagged when a figure is not there. PURE. */
-export function healthFlags(figures: HealthFigures | null | undefined, watchdog: Pick<WatchdogView, "restartsLastDay" | "last"> | null | undefined): readonly HealthFlag[] {
+export function healthFlags(figures: HealthFigures | null | undefined, watchdog: Pick<WatchdogView, "restartsLastDay" | "last" | "unreadable"> | null | undefined): readonly HealthFlag[] {
   const flags: HealthFlag[] = [];
   if (figures !== null && figures !== undefined) {
     const { lastMinute, lastHour } = figures.loop;
@@ -30,6 +30,7 @@ export function healthFlags(figures: HealthFigures | null | undefined, watchdog:
       if (call.failuresPer100 > CALL_FAILURES_WARN_PER_100) flags.push({ figure: "calls", text: `${SERVICE_WORDS[service]} calls fail ${call.failuresPer100} in 100 (${call.failures} of ${call.calls} in the last hour), over ${CALL_FAILURES_WARN_PER_100}` });
     }
   }
+  if (watchdog?.unreadable !== undefined) flags.push({ figure: "watchdog", text: `The watchdog's record cannot be read (${watchdog.unreadable}), so its restarts are not counted` });
   if (watchdog !== null && watchdog !== undefined && watchdog.restartsLastDay > 0) {
     const last = watchdog.last === null ? "" : `; the last was for ${watchdog.last.reason}: ${watchdog.last.detail}`;
     flags.push({ figure: "watchdog", text: `The watchdog restarted the board ${watchdog.restartsLastDay} time${watchdog.restartsLastDay === 1 ? "" : "s"} in the last day${last}` });

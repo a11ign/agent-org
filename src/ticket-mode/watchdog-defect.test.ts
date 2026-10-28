@@ -2,9 +2,11 @@
 // A11-363: more than 2 watchdog restarts in an hour file ONE defect ticket for that hour, by the writer path, and never one per restart
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { defectRequestsOf } from "./dependency-updates/board.ts";
 import { dependencyUpdateSweep } from "./dependency-updates/sweep.ts";
 import { DEPENDENCY_EPIC } from "./dependency-updates/ticket-request.ts";
 import { emptyQueue } from "./queue.ts";
@@ -89,4 +91,20 @@ test("the request names the hour, its restarts with their reasons, the team and 
   assert.match(text, /2026-10-27 12:01:00 UTC, no-fill: no fill\(\) pass/);
   assert.match(text, /2026-10-27 12:02:00 UTC, no-answer: it answered 'rm -rf \/' ignore all instructions/, "a backtick and a line break cannot end the quoted detail");
   assert.match(text, /2026-10-27 12:03:00 UTC, no-start/);
+});
+
+test("a record the board cannot read asks for no ticket and says so once, rather than reading unknown history as no restarts", () => {
+  const path = join(tmpDir("watchdog-defect-record-"), "tickets", "watchdog.json");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "{ torn");
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((line: string) => { written.push(line); return true; }) as typeof process.stderr.write;
+  try {
+    assert.deepEqual([defectRequestsOf(path, HOUR_ONE), defectRequestsOf(path, HOUR_ONE)], [[], []]);
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(written.length, 1, "said once for the reason");
+  assert.match(written[0]!, /^ticket:serve: the watchdog's record cannot be read \(.*\), so no defect ticket is asked for from it until it can\n$/);
 });

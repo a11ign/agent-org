@@ -58,12 +58,27 @@ export function readRecord(path: string): WatchdogRecord {
   return { count: parsed.count, restarts: parsed.restarts, unansweredSince: typeof parsed.unansweredSince === "number" ? parsed.unansweredSince : null };
 }
 
-/** The record, or an empty one with nothing said when it cannot be read: the readers of the record (the page, `doctor`) show no restarts rather than fail. */
-export function readRecordOrEmpty(path: string): WatchdogRecord {
+/** Why the record at `path` cannot be read (the first line of the reader's refusal), or null when it can be, or is not there yet. */
+export function recordProblem(path: string): string | null {
   try {
-    return readRecord(path);
+    readRecord(path);
+    return null;
+  } catch (err) {
+    return String((err as Error)?.message ?? err).split("\n")[0] ?? "it cannot be read";
+  }
+}
+
+/**
+ * Sets an unreadable record aside, beside itself as `<path>.unreadable-<stamp>`, so the watchdog starts a record of its own without writing over the one it could not read (a person can look at it, and what it held is kept).
+ * Answers where it went, or null when it could not be moved.
+ */
+export function setUnreadableAside(path: string, at: number): string | null {
+  const aside = `${path}.unreadable-${new Date(at).toISOString().replace(/[:.]/g, "-")}`;
+  try {
+    renameSync(path, aside);
+    return aside;
   } catch {
-    return emptyRecord();
+    return null;
   }
 }
 
@@ -87,12 +102,22 @@ export const restartsInHour = (record: WatchdogRecord, hourStart: number): reado
 export const hourOf = (at: number): number => Math.floor(at / HOUR_MS) * HOUR_MS;
 
 /** What `/api/health` serves of the record, and the header and `doctor` flag: any restart in the last day. */
-export type WatchdogView = Readonly<{ restartsLastHour: number; restartsLastDay: number; restartsTotal: number; last: WatchdogRestart | null }>;
+export type WatchdogView = Readonly<{ restartsLastHour: number; restartsLastDay: number; restartsTotal: number; last: WatchdogRestart | null;
+  /** Why the record cannot be read, when it cannot: its restarts are then not counted, and the header and `doctor` say so instead of showing none. */
+  unreadable?: string }>;
 
 /** The view of a record at `now`. PURE. */
 export function watchdogView(record: WatchdogRecord, now: number): WatchdogView {
   const within = (ms: number) => record.restarts.filter(({ at }) => at > now - ms).length;
   return { restartsLastHour: within(HOUR_MS), restartsLastDay: within(DAY_MS), restartsTotal: record.count, last: record.restarts[record.restarts.length - 1] ?? null };
+}
+
+/** The view of the record at `path` at `now`: none when the watchdog has restarted nothing, and a view that says it cannot be read when the file is there and is not a record. */
+export function viewOfFile(path: string, now: number): WatchdogView | null {
+  const unreadable = recordProblem(path);
+  if (unreadable !== null) return { restartsLastHour: 0, restartsLastDay: 0, restartsTotal: 0, last: null, unreadable };
+  const record = readRecord(path);
+  return record.count === 0 ? null : watchdogView(record, now);
 }
 
 /** How long the page's thread keeps the view it read, in ms: the record changes a few times a day, and `/api/health` is read every few seconds. */
@@ -104,8 +129,7 @@ export function cachedWatchdogView(path: string, now: () => number = Date.now): 
   return () => {
     const at = now();
     if (kept === null || at - kept.at >= VIEW_CACHE_MS) {
-      const record = readRecordOrEmpty(path);
-      kept = { at, view: record.count === 0 ? null : watchdogView(record, at) };
+      kept = { at, view: viewOfFile(path, at) };
     }
     return kept.view;
   };
