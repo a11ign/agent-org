@@ -109,6 +109,10 @@ test("the probe reads the figures and the snapshot's age from /api/health, and s
     const answer = await probeHealth(4747, 1_000, (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: 0, figures: bad }), { status: 200 })) as typeof fetch);
     assert.deepEqual(answer, { kind: "unanswered", why: "it answered with figures the watchdog cannot read" }, `figures that are not figures are no answer: ${JSON.stringify(bad)}`);
   }
+  for (const age of [undefined, "2500", null, -Infinity]) {
+    const answer = await probeHealth(4747, 1_000, (async () => new Response(JSON.stringify({ boardSnapshotAgeMs: age, figures: figs }), { status: 200 })) as typeof fetch);
+    assert.deepEqual(answer, { kind: "unanswered", why: "it answered figures without a readable snapshot age" }, `figures of no readable age are no answer: ${String(age)}`);
+  }
   const refused = (async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); }) as typeof fetch;
   assert.deepEqual(await probeHealth(4747, 1_000, refused), { kind: "unanswered", why: "ECONNREFUSED" });
   const slow = ((_url: unknown, init?: RequestInit) => new Promise((_done, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)); })) as typeof fetch;
