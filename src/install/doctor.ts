@@ -41,6 +41,9 @@ import { pullLabel } from "../ticket-mode/board-view/pull-label.ts";
 import { longWaits, longWaitSentence, type LongWait } from "../ticket-mode/board-view/long-waits.ts";
 import type { HealthFigures } from "../ticket-mode/health-figures.ts";
 import { CALL_FAILURES_WARN_PER_100, healthFlags, type HealthFlag } from "../ticket-mode/health-flags.ts";
+import { reliabilityRows } from "../ticket-mode/reliability/rows.ts";
+import { loadWatches, reliabilityWatchesPath } from "../ticket-mode/reliability/store.ts";
+import type { Watch } from "../ticket-mode/reliability/watch.ts";
 import { readRecordOrEmpty, watchdogPath, watchdogView, type WatchdogView } from "../ticket-mode/watchdog-record.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
@@ -143,6 +146,8 @@ export type DoctorDeps = Readonly<{
   longWaits: () => readonly LongWait[] | null;
   /** The rolling health figures the instance on `port` serves at `/api/health` (A11-363), or null when it does not answer or is a version from before them. */
   boardFigures: (port: number) => Promise<HealthFigures | null>;
+  /** The reliability watches in `stateDir` (A11-366): the board-reliability tickets and the figures they name, or null when the board has none on record or the record cannot be read. */
+  reliabilityWatches: (stateDir: string) => readonly Watch[] | null;
   /** The watchdog's record in `stateDir`, as `/api/health` serves it (A11-363): null when it has restarted nothing. */
   watchdog: (stateDir: string) => WatchdogView | null;
   /** The board UI's build, read now (A11-191). */
@@ -579,6 +584,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...await preflightChecks(settings, deps),
     ...instance,
     ...await boardHealthChecks(settings, instanceState, deps),
+    ...await reliabilityChecks(settings, instanceState, deps),
     ...herdrScopeChecks(settings, instanceState, deps),
     ...readCacheGuardChecks(deps),
     ...ui,
@@ -733,6 +739,17 @@ async function boardHealthChecks(settings: TicketSettings | null, state: Service
     watchdog: "the watchdog's record is `tickets/watchdog.json` in the state directory; each restart is a line of the watchdog's log (`journalctl --user -u agent-org-watchdog` on Linux, `~/.agent-org/logs/watchdog.log` on macOS) with the figure that tripped it",
   };
   return flags.map((flag) => warned(`board ${flag.figure}`, flag.text, fixes[flag.figure]));
+}
+
+/**
+ * The open board-reliability tickets with their current figures (A11-366): one row each, a warning for a ticket whose figure is at its threshold now, one the board owes a reopen, or one that names no figure. The figures are asked only of a
+ * running instance, and only when a ticket is listed.
+ */
+async function reliabilityChecks(settings: TicketSettings | null, state: ServiceState, deps: DoctorDeps): Promise<Check[]> {
+  const watches = settings === null ? null : deps.reliabilityWatches(settings.stateDir);
+  if (watches === null || watches.every(({ state: each }) => each === "held")) return [];
+  const figures = state === "running" ? await deps.boardFigures(settings?.port ?? 4747) : null;
+  return reliabilityRows(watches, figures).map((row) => (row.warning ? warned(row.name, row.detail, row.fix ?? "") : ok(row.name, row.detail)));
 }
 
 /** The versions of agent-org the live and parked runs started on, beside the instance's (A11-169): one row each, or one line when they all agree. Nothing when no run holds a workspace. */
@@ -988,6 +1005,16 @@ function answers(port: number, path = "/", { healthy = false }: { healthy?: bool
   });
 }
 
+/** The reliability watches the board keeps in `stateDir` (A11-366), or null when it keeps none or the file cannot be read: the instance's own rows say what is wrong with its state. */
+function reliabilityWatchesOf(stateDir: string): readonly Watch[] | null {
+  try {
+    const { watches } = loadWatches(reliabilityWatchesPath(stateDir));
+    return Object.keys(watches).length === 0 ? null : Object.values(watches);
+  } catch {
+    return null;
+  }
+}
+
 /** The figures the instance on `port` serves at `/api/health`, or null when it does not answer in time or serves none. */
 async function boardFiguresOf(port: number): Promise<HealthFigures | null> {
   try {
@@ -1071,7 +1098,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       const queue = readQueue();
       return queue === null ? null : longWaits(queue.entries, Date.now());
     },
-    boardFigures: boardFiguresOf,
+    boardFigures: boardFiguresOf, reliabilityWatches: reliabilityWatchesOf,
     watchdog: (stateDir) => {
       const record = readRecordOrEmpty(watchdogPath(stateDir));
       return record.count === 0 ? null : watchdogView(record, Date.now());

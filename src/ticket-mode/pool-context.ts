@@ -32,6 +32,8 @@ import type { ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
 import type { BaseMerge } from "./pool-outcome.ts";
 import type { WriteRetry } from "./result-write-retry.ts";
 import { type FillState, newFillState } from "./health-figures.ts";
+import type { HealthFigures } from "./health-figures.ts";
+import type { RunChoice } from "./queue/queue-entries-and-outcomes.ts";
 import { type FlakeLog, flakesPath, flakesViewOf, recordFlakes } from "./flakes.ts";
 
 /** Where a planning run's plan attach stands after a failure worth trying again: the tries that failed, and the time (the pool's clock) the next may start. */
@@ -107,6 +109,10 @@ export type PoolDeps = Readonly<{
   legacyTmp?: LegacyTmp;
   /** The longest the files of a conflict are given to be listed before its round starts without them (A11-286); a minute when absent. A test gives a short one. */
   listingMs?: number;
+  /** The rolling health figures `/api/health` serves, as the board thread works them out now (A11-366): the reliability watches read their tickets' figures here. Absent: no figure is read, and no watch breaches. */
+  healthFigures?: () => HealthFigures | null;
+  /** The model and effort a run is queued on when the person has not chosen (A11-366): the saved choice, which the board's own queueing of a reopened ticket uses. Absent: the board queues no reopened ticket. */
+  runChoice?: () => RunChoice;
 }>;
 
 /** A run the board will start again where it is, because its pane lacks the environment the board set at start (A11-279): by ticket key, with the resume note its card will carry. */

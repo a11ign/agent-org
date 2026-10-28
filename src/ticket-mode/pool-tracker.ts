@@ -33,6 +33,7 @@ import { closeEmptyMember, followHead } from "./pool-restack-close.ts";
 import { isClosedMemberNote, isEmptyMemberNote, isRestackedNote, type ConflictRound, isRestackNote, isRestackProblemNote, restackedAfter, restackFeedback, restackNote, restackStep, type RestackBelow, type RestackOutcome } from "./stack-restack.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { syncAfterMergeChecks } from "./after-merge/sweep.ts";
+import { syncReliabilityWatches } from "./reliability/sweep.ts";
 
 /**
  * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed, except a partial run whose ticket the tracker's integration completed, which is put back (A11-178) once the merged bodies are read, since a merged `Closes` or `Partial:` decides over the outcome's `partial`
@@ -91,6 +92,8 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   if (headsToRead(ctx, queued)) await readHeads(ctx, queued);
   // Last: the After-merge lines listed above become checks of their own, which outlive their runs, and each close is posted on its ticket (A11-277). A close waiting to be posted delays none of the reads above.
   await syncAfterMergeChecks(ctx);
+  // Then the board-reliability tickets: each is watched on the figure it names, and reopened once, with the readings, when the figure does not hold (A11-366).
+  await syncReliabilityWatches(ctx);
 }
 
 /**

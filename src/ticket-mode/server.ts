@@ -70,6 +70,7 @@ import { startBoardThread } from "./board-thread.ts";
 import { REQUEST_THREAD } from "./thread-messages.ts";
 import { toolVersionOf } from "../plugins/health-read.ts";
 import { agentOrgVersionDefault } from "./plugin-contract.ts";
+import { servedFigures } from "./reliability/served.ts";
 
 // The reads moved to `read-routes.ts` (A11-282); the UI's client and the tests name them here.
 export type { QueueEntryView, QueueListEntry, QueueView, RunDetailEntry } from "./queue-view.ts";
@@ -759,9 +760,14 @@ async function serve(): Promise<void> {
   const paths = { queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") };
   // The request thread is told of every queue change once it runs; a change before it starts is in its first snapshot.
   let thread: ReturnType<typeof startBoardThread> | null = null;
+  // The reliability watches read the figures `/api/health` serves (A11-366), which are worked out from the board once it is made: the pool is made inside it, so it is given a reader that is pointed at them below.
+  const served = servedFigures();
+  const savedChoice = (): RunChoice => { const { model, effort } = readChoice(paths.choicePath); return { model, effort }; };
   const boardDeps: BoardDeps = { settings, source, codeHost, key, ...paths, exposure: active.exposure(), queueChanged: () => thread?.queueChanged(),
-    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, hostAlertReads: liveHostAlertReads(), privateTmpBase: privateBase(), legacyTmp: { root: LEGACY_TMP_ROOT } } };
+    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen, serveCheck: liveServeCheck, hostAlertReads: liveHostAlertReads(), privateTmpBase: privateBase(), legacyTmp: { root: LEGACY_TMP_ROOT },
+      healthFigures: served.read, runChoice: savedChoice } };
   const board = createBoard(boardDeps);
+  served.pointAt(board, health, Date.now() - process.uptime() * 1000);
   // The request thread kills the checks it started before the instance ends: its own exit handlers do not run when this thread exits.
   // The runs that are still starting are waited for first (A11-363): an instance that ends while a run's agent is not open yet leaves herdr nothing to list, and the next one queues the run again. No run starts
   // meanwhile. A second signal is a person who will not wait, and stops at once.
