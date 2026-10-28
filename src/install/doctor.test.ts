@@ -92,7 +92,16 @@ const integrationsSaying = (stdout: string): DoctorDeps["herdrIntegrations"] => 
 const CODEX_HOME = tmpDirForFile("doctor-codex-");
 writeFileSync(join(CODEX_HOME, "config.toml"), '[projects."/src/netbox"]\ntrust_level = "trusted"\n');
 
-function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
+/**
+ * The deps of a doctor run over fakes. A file read answers as `over`'s `readFile` does, except the board's count of calls to Linear (A11-359), which is not there unless `calls` gives it: a read that answers one text for every
+ * path would otherwise be taken for a count, and a count that is not one fails its row.
+ */
+function deps(over: Partial<DoctorDeps> = {}, calls?: string): DoctorDeps {
+  const made = fakeDeps(over);
+  return { ...made, readFile: (path) => { if (!path.endsWith("linear-calls.json")) return made.readFile(path); if (calls === undefined) throw new Error(`ENOENT: ${path}`); return calls; } };
+}
+
+function fakeDeps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json", HOME: "/home/me", CODEX_HOME }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
@@ -1115,6 +1124,15 @@ test("A11-163: a disabled plugin's section says what the board does without it, 
   assert.equal(lines[at + 1], "  ok    publisher (slack, disabled): disabled: publishes nothing");
   assert.ok(lines.includes("reviewer: none"));
   assert.ok(lines.includes("  ok    reviewer (none): no block: the default, none, which starts no reviewer, applies"));
+});
+
+test("A11-359: doctor's linear calls row reads the board's count from the state folder: a bad hour fails it, and a file that is not a count fails it too", async () => {
+  const at = Date.now();
+  const row = async (calls?: string) => byName(await diagnose(deps({}, calls)))["linear calls"];
+  assert.equal((await row())?.ok, true, "no count yet: nothing to flag");
+  assert.equal((await row(JSON.stringify({ at, windowMs: 3_600_000, calls: 100, failures: 5 })))?.ok, false, "5 failures in 100 calls over the hour");
+  assert.equal((await row(JSON.stringify({ at, windowMs: 3_600_000, calls: 400, failures: 1 })))?.ok, true);
+  assert.equal((await row("not a count"))?.ok, false, "an unknown rate is not a good one");
 });
 
 test("A11-163: a plugin that failed to load is a FAIL row in its own section with the reason and the fix, the other sections are as they were, and the exit status is the same as it was", async () => {

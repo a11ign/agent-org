@@ -64,20 +64,24 @@ export function mcpCheck(deps: PluginDeps): PluginCheck {
     : failed("linear mcp", line.trim(), "`claude mcp get linear` says why; a key that changed is fixed by `claude mcp remove linear --scope user`, then `agent-org onboard`");
 }
 
+/** Whether `err` is a file that is not there, as `readFileSync` and the deps' fakes say it. */
+const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException | null)?.code === "ENOENT" || /ENOENT/.test(String((err as Error | null)?.message ?? ""));
+
 /**
  * The board's calls to Linear over the last hour (A11-359): the count the board writes beside its state (`call-log.ts`), flagged when more than one call in a hundred failed. A board that has made no call in the hour, or has
- * never written the count, has nothing to flag.
+ * never written the count, has nothing to flag. A count that is there and cannot be read, or is not a count, is not a healthy board: the row fails, so an unknown rate is never read as a good one.
  */
 export function callsCheck(deps: Pick<PluginDeps, "readFile" | "stateDir">, now: number = Date.now()): PluginCheck {
   const name = "linear calls";
   let text: string;
   try {
     text = deps.readFile(join(deps.stateDir, CALLS_FILE));
-  } catch {
-    return ok(name, "the board has recorded no call to Linear yet");
+  } catch (err) {
+    if (isMissing(err)) return ok(name, "the board has recorded no call to Linear yet");
+    return failed(name, `${CALLS_FILE} cannot be read (${(err as Error).message})`, `check the permissions of ${join(deps.stateDir, CALLS_FILE)}; the board writes it with its next call to Linear`);
   }
   const counts = readCounts(text);
-  if (counts === null) return ok(name, `${CALLS_FILE} is not a count of calls, so the board rewrites it with its next call`);
+  if (counts === null) return failed(name, `${CALLS_FILE} is not a count of calls, so the rate of failed calls is not known`, `remove ${join(deps.stateDir, CALLS_FILE)}; the board writes it again with its next call to Linear`);
   if (now - counts.at >= counts.windowMs) return ok(name, "the board has made no call to Linear in the last hour");
   const said = describeCounts(counts);
   return isFlagged(counts)

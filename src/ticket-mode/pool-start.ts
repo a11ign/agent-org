@@ -24,7 +24,7 @@ import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
 import { isParked, repoOf, waitNote } from "./board-view/pull-status-and-notes.ts";
-import { withinMs } from "./host-alerts.ts";
+import { withinTime } from "../install/time-limit.ts";
 import { worktreePath } from "./worktree.ts";
 import { claimantOf, type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
@@ -225,7 +225,7 @@ async function askBlockers(ctx: PoolContext, keys: readonly string[]): Promise<B
   if (source.blockers === undefined) return [{ keys, found: new Map() }];
   const ask = source.blockers.bind(source);
   try {
-    return [{ keys, found: await withinMs(() => ask(keys), ctx.readMs, `the tracker's read of the blockers of ${keys.join(", ")}`) }];
+    return [{ keys, found: await withinTime(ctx.readMs, `the tracker's read of the blockers of ${keys.join(", ")}`, ask(keys)) }];
   } catch (err) {
     return [{ keys, failure: messageOf(err) }];
   }
@@ -266,7 +266,7 @@ async function summariesOf(ctx: PoolContext, keys: readonly string[]): Promise<R
   if (source.projectSummaries === undefined) return undefined;
   const ask = source.projectSummaries.bind(source);
   try {
-    return await withinMs(() => ask(keys), ctx.readMs, "the tracker's read of the projects");
+    return await withinTime(ctx.readMs, "the tracker's read of the projects", ask(keys));
   } catch (err) {
     log(`the tracker could not say which projects the queued tickets are in: ${messageOf(err)}`);
     return undefined;
@@ -316,7 +316,7 @@ export async function readHeads(ctx: PoolContext, keys: readonly string[]): Prom
     if (!isReadable(entry, keys) || clone === undefined) return [];
     return [{ entry, reads: (entry.blockers ?? []).filter(branchToRead).map(async (blocker) => {
       try {
-        return [blocker.key, await withinMs(() => remoteHead(git, clone, blocker.branch), ctx.readMs, `the remote's read of ${blocker.branch}`)] as const;
+        return [blocker.key, await withinTime(ctx.readMs, `the remote's read of ${blocker.branch}`, remoteHead(git, clone, blocker.branch))] as const;
       } catch (err) {
         if (!logged) log(`${entry.ticket.key}: the remote could not say where ${blocker.branch} is: ${messageOf(err)}`);
         logged = true;
@@ -409,7 +409,7 @@ async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<v
   const failed = new Map<string, string>();
   const reads = await Promise.all(entries.map(async ({ ticket }): Promise<PlanRead> => {
     try {
-      const files = await withinMs(() => planFiles(ctx, ticket), ctx.readMs, `the download of ${ticket.key}'s plan`);
+      const files = await withinTime(ctx.readMs, `the download of ${ticket.key}'s plan`, planFiles(ctx, ticket));
       return { key: ticket.key, files, declared: pathsIn(files, ctx.settings.plan) };
     } catch (err) {
       return { key: ticket.key, failure: messageOf(err).split("\n")[0] };
@@ -437,35 +437,15 @@ async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<v
  */
 async function preflightHold(ctx: PoolContext): Promise<string | null> {
   try {
-    const result = await withinMs(() => ctx.gate.check(), ctx.readMs, "the host's preflight");
+    const result = await withinTime(ctx.readMs, "the host's preflight", ctx.gate.check());
     return result.ok ? null : `the host's preflight ${result.name} does not pass (${result.reason})`;
   } catch (err) {
     return `the host's preflight could not be asked (${messageOf(err)})`;
   }
 }
 
-/**
- * Read what the queued runs that have not been read wait on: their blockers, the heads of their stacked blockers, and their plans' paths. Each read is given `ctx.readMs` and none throws, so a read that fails or hangs holds
- * the run it belongs to (`blockersFailure`, `pathsFailure`) and no other, and the pass goes on to start what is known (A11-359). A stage that throws all the same is logged, and the next is read.
- */
-async function readUnread(ctx: PoolContext): Promise<void> {
-  const { store } = ctx;
-  const unread = unreadBlockerKeys(store.get());
-  const stages: readonly (readonly [string, () => Promise<void>])[] = [
-    ["the blockers", () => readBlockers(ctx, unread)],
-    // Only when a head is to be read: a start decides on its stacked blockers' heads, so a run read now has them before it starts.
-    ["the heads of the stacked blockers", async () => { if (headsToRead(ctx, unread)) await readHeads(ctx, unread); }],
-    // A paused queue starts nothing, so it reads no plan either: the plans are read when it is unpaused.
-    ["the plans' paths", async () => { if (!store.get().paused) await readPaths(ctx, unreadPaths(store.get())); }],
-  ];
-  for (const [what, read] of stages) {
-    try {
-      await read();
-    } catch (err) {
-      log(`fill: reading ${what} failed (${messageOf(err)}); the pass goes on with what is known`);
-    }
-  }
-}
+/** Say that reading `what` threw in a way nothing expected, which none of the reads does for a failed or late answer (they hold their own run): the pass goes on with what is known (A11-359). */
+const readFailed = (what: string, err: unknown): void => log(`fill: reading ${what} failed (${messageOf(err)}); the pass goes on with what is known`);
 
 /** Say why `fill` starts nothing, when it is not what it said last (`ctx.idleSaid`). `null` is a pass that has no reason to give, and makes the next reason new. */
 function saidWhyIdle(ctx: PoolContext, reason: string | null): void {
@@ -505,7 +485,26 @@ function heldNote(entry: Entry, entries: readonly Entry[]): string {
  */
 export async function fill(ctx: PoolContext): Promise<void> {
   const { batches, deps, removing, rebasing, store } = ctx;
-  await readUnread(ctx);
+  // Each read is given `ctx.readMs` and none throws for a failed or late answer, so a read that fails or hangs holds the run it belongs to (`blockersFailure`, `pathsFailure`) and no other, and the pass goes on to start what is known
+  // (A11-359). The three are awaited here, not in a function of their own: an extra turn here delays a start that waits on nothing, which a test that does not await its tick sees as a start after its folder is gone.
+  const unread = unreadBlockerKeys(store.get());
+  try {
+    await readBlockers(ctx, unread);
+  } catch (err) {
+    readFailed("the blockers", err);
+  }
+  try {
+    // Only when a head is to be read: a start decides on its stacked blockers' heads, so a run read now has them before it starts.
+    if (headsToRead(ctx, unread)) await readHeads(ctx, unread);
+  } catch (err) {
+    readFailed("the heads of the stacked blockers", err);
+  }
+  try {
+    // A paused queue starts nothing, so it reads no plan either: the plans are read when it is unpaused.
+    if (!store.get().paused) await readPaths(ctx, unreadPaths(store.get()));
+  } catch (err) {
+    readFailed("the plans' paths", err);
+  }
   // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
   settleSessions(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.

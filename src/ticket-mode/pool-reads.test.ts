@@ -12,6 +12,7 @@ import { whyNothingStarts } from "./pool-start.ts";
 import { nextStarts } from "./queue.ts";
 import { waitNote } from "./board-view/pull-status-and-notes.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
+import type { Queue } from "./queue/queue-entries-and-outcomes.ts";
 import type { Blocker, TicketSource } from "./source.ts";
 
 const fake = createFakeTracker();
@@ -68,7 +69,7 @@ test("A11-359: a read that never answers holds only its ticket, for no longer th
   await pool.tick();
   assert.equal(Date.now() - started < 2_000, true, "the pass was not held by the hung read");
   assert.deepEqual(["NBF-1", "NBF-2", "NBF-3"].map((key) => entry(key).phase), ["running", "queued", "running"]);
-  assert.match(entry("NBF-2").blockersFailure ?? "", /the tracker's read of the blockers of NBF-2 did not answer in 40 ms/);
+  assert.match(entry("NBF-2").blockersFailure ?? "", /`the tracker's read of the blockers of NBF-2` did not finish within 0\.04s/);
 });
 
 test("A11-359: a pass whose tracker is wholly down starts nothing that is unread, says why, and says it once, not on every pass", async () => {
@@ -108,8 +109,8 @@ test("A11-359: a plan that never downloads holds only its run, within the read's
   const { pool, entry } = world(["NBF-1", "NBF-2"], source, { plan: "-plan-[^/]*\\.md$" });
   const said = await logged(() => pool.tick());
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["queued", "running"]);
-  assert.match(entry("NBF-1").pathsFailure ?? "", /the download of NBF-1's plan did not answer in 40 ms/);
-  assert.match(said, /NBF-1: its plan could not be read \(the download of NBF-1's plan did not answer in 40 ms\); it is held and asked again on the next pass, and the other runs go on/);
+  assert.match(entry("NBF-1").pathsFailure ?? "", /`the download of NBF-1's plan` did not finish within 0\.04s/);
+  assert.match(said, /NBF-1: its plan could not be read \(`the download of NBF-1's plan` did not finish within 0\.04s\); it is held and asked again on the next pass, and the other runs go on/);
 });
 
 test("A11-359: a read that throws in a way nothing expected is logged and the pass goes on, where it used to return without a word", async () => {
@@ -158,13 +159,24 @@ test("A11-359: a refresh that keeps failing is said once for its reason, not on 
   assert.equal((await logged(() => pool.refreshTracker())).includes("could not refresh"), false, "the same failure is not said again");
 });
 
-test("A11-359: a queued run whose blockers are not read takes no slot from a run behind it that is ready", async () => {
-  const source: TicketSource = { ...base, blockers: async (keys) => none(keys) };
-  const fixture = poolFixture({ keys: ["NBF-1", "NBF-2"], max: 1, source });
-  const pool = fixture.restart({ readMs: 40 });
-  // NBF-1 is queued with its blockers unread and nothing recorded of why (queued again while a pass read); NBF-2 is read and ready.
-  fixture.store.set({ ...fixture.store.get(), entries: fixture.store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? { ...e, blockers: [] } : e)) });
-  const starts = nextStarts(fixture.store.get(), 1, 4, (entry) => entry.blockers !== undefined);
-  assert.deepEqual(starts.map((e) => e.ticket.key), ["NBF-2"], "the one slot goes to the run that can start");
-  void pool;
+test("A11-359: fill starts only runs whose blockers and plan are read: a run queued again while the pass read takes no slot from the ready run behind it", async () => {
+  const holder: { store?: { get: () => Queue; set: (queue: Queue) => void } } = {};
+  const source: TicketSource = { ...base, blockers: async (keys) => none(keys), download: async (ticket, dir) => {
+    const file = join(dir, `${ticket.key}-plan-x.md`);
+    writeFileSync(file, `## Paths\n- \`nbl-ui-netbox:src/${ticket.key}.ts\`\n`);
+    // NBF-1 is queued again while this pass reads (a batch's ticket whose order was just recorded): its blockers are unread again, and nothing says why.
+    if (ticket.key === "NBF-1") holder.store!.set({ ...holder.store!.get(), entries: holder.store!.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, blockers: undefined } : e)) });
+    return [file];
+  } };
+  const fixture = poolFixture({ keys: ["NBF-1", "NBF-2"], max: 1, source, tickets: { plan: "-plan-[^/]*\\.md$" } });
+  holder.store = fixture.store;
+  await fixture.restart({ readMs: 40 }).tick();
+  assert.deepEqual([fixture.entry("NBF-1").phase, fixture.entry("NBF-2").phase], ["queued", "running"], "the one slot goes to the run that can start, not to the one at the head of the queue that cannot");
+});
+
+test("A11-359: nextStarts leaves out the runs `ready` refuses, so they take no slot", () => {
+  const { store } = poolFixture({ keys: ["NBF-1", "NBF-2"], max: 1 });
+  const queue = { ...store.get(), entries: store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? { ...e, blockers: [] } : e)) };
+  assert.deepEqual(nextStarts(queue, 1, 4, (entry) => entry.blockers !== undefined).map((e) => e.ticket.key), ["NBF-2"]);
+  assert.deepEqual(nextStarts(queue, 1, 4).map((e) => e.ticket.key), ["NBF-1"], "without it the head of the queue takes the slot");
 });
