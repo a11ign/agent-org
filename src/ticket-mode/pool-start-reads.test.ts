@@ -1,6 +1,6 @@
 // no-token: gh -- herdr, the tracker and the clock are all injected; nothing is spawned
 // A11-364: a live read never gates a start. The board starts what it knows, reads in the background with a timeout, and holds only the ticket it cannot read.
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -18,6 +18,23 @@ import { parseTicketSettings } from "./settings.ts";
 import type { Blocker, TicketSource } from "./source.ts";
 
 const START = Date.UTC(2026, 9, 27, 22, 5);
+
+/** The pools the case being run made. */
+const made: ReturnType<typeof createPool>[] = [];
+
+/**
+ * A case that waits, when it ends, for the reads its pools still have out and the passes those wake: a read cut off after the case ended would write into the state folder the runner has just removed (the runner reports it as
+ * a file that left something in its TMPDIR).
+ */
+function test(name: string, run: () => Promise<void>): void {
+  nodeTest(name, async () => {
+    try {
+      await run();
+    } finally {
+      await Promise.all(made.splice(0).map((pool) => pool.startReadsSettled()));
+    }
+  });
+}
 const HANGS = new Promise<never>(() => {});
 
 /** A pool over a tracker whose `blockers` is `read`, with `keys` queued and `max` slots, a clock the test moves, and a read timeout of 30 ms. `known` keys start with their blockers and plan read at the start. */
@@ -34,6 +51,7 @@ function world(keys: readonly string[], read: (asked: readonly string[]) => Prom
   const herdr = fakeHerdr(new Map());
   const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdr.run, hostFile: "/work/.agent-org/host.json", now: () => clock.now, load: () => ({ load: 1, cores: 14 }),
     transcriptsRoot: join(root, "transcripts"), wait: async () => {}, pluginRecord: join(root, "no-plugin-record.json"), codeHost: createFakeCodeHost(), readTimeoutMs: 30 });
+  made.push(pool);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   const started = () => queue.entries.filter((e) => e.phase !== "queued").map((e) => e.ticket.key);
   return { pool, entry, started, store, clock, asked, settings, setQueue: (next: Queue) => { queue = next; } };
