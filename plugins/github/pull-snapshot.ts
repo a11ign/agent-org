@@ -173,8 +173,9 @@ function readsOf(gh: Gh, now: () => number): Readonly<{ repository(repository: s
     const repository = answer?.data?.repository;
     const list = repository?.pullRequests;
     if (typeof repository?.isPrivate !== "boolean" || !Array.isArray(list?.nodes)) throw new Error("the open pull requests were not in the answer");
-    const next = list.pageInfo?.hasNextPage === true && typeof list.pageInfo.endCursor === "string" ? list.pageInfo.endCursor : null;
-    return { flow: { private: repository.isPrivate, mergeBot: holds(repository.bot) }, nodes: list.nodes.filter(isPullNode).map(markRequired), next };
+    // A page that cannot be read whole is no page: a node dropped or a missing cursor would make the list look complete while pull requests are missing from it.
+    if (!list.nodes.every(isPullNode)) throw new Error("a pull request of the open list could not be read");
+    return { flow: { private: repository.isPrivate, mergeBot: holds(repository.bot) }, nodes: list.nodes.map(markRequired), next: nextCursorOf(list.pageInfo) };
   }
 
   return {
@@ -220,6 +221,15 @@ function readsOf(gh: Gh, now: () => number): Readonly<{ repository(repository: s
       return answer?.data?.repository?.pullRequest?.files;
     },
   };
+}
+
+/** The cursor of the page after this one, or null when `pageInfo` says none follows. THROWS for a `pageInfo` that does not say, or says another page follows and names no cursor to read it by. */
+function nextCursorOf(pageInfo: unknown): string | null {
+  const { hasNextPage, endCursor } = (pageInfo ?? {}) as { hasNextPage?: unknown; endCursor?: unknown };
+  if (typeof hasNextPage !== "boolean") throw new Error("the open list does not say whether another page follows");
+  if (!hasNextPage) return null;
+  if (typeof endCursor !== "string") throw new Error("the open list has another page and names no cursor for it");
+  return endCursor;
 }
 
 /** The snapshots of a plugin's repositories, read through `gh`. */

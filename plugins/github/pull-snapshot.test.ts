@@ -312,3 +312,19 @@ test("A11-365: a hiccup of GitHub serves the snapshot the repository had for a w
   time.advance(SNAPSHOT_TTL_MS);
   assert.equal(snapshots.pull("a/b", 1), null, "a snapshot dropped by a write is not served in its place");
 });
+
+test("A11-365: a list that cannot be read whole is no snapshot: a page with no pageInfo, a cursor that is missing, a pull request that cannot be read, never a list read as complete", () => {
+  const listed = (pageInfo: unknown, nodes: unknown[] = [pull("o/r", 1)]) => JSON.stringify({ data: { repository: { isPrivate: false, bot: null, pullRequests: { ...(pageInfo === undefined ? {} : { pageInfo }), nodes } } } });
+  const read = (answer: string) => createPullSnapshots({ gh: () => answer }).snapshot("o/r");
+  assert.equal(read(listed({ hasNextPage: false, endCursor: null }))?.complete, true, "POSITIVE CONTROL: a whole page says it is the last");
+  assert.equal(read(listed(undefined)), null, "no pageInfo does not say the page is the last");
+  assert.equal(read(listed({})), null, "a pageInfo that does not say if another page follows");
+  assert.equal(read(listed({ hasNextPage: "no" })), null);
+  assert.equal(read(listed({ hasNextPage: true })), null, "another page with no cursor to read it by");
+  assert.equal(read(listed({ hasNextPage: true, endCursor: 7 })), null);
+  assert.equal(read(listed({ hasNextPage: false }, [pull("o/r", 1), { number: 2 }])), null, "a pull request that has no state is not left out of the list");
+  assert.equal(read(listed({ hasNextPage: false }, [pull("o/r", 1), null])), null);
+  const second = (page: string) => { let page1 = true; return createPullSnapshots({ gh: () => { const now = page1 ? listed({ hasNextPage: true, endCursor: "c1" }) : page; page1 = false; return now; } }).snapshot("o/r"); };
+  assert.equal(second(listed({ hasNextPage: false }))?.pulls.size, 1, "POSITIVE CONTROL: two whole pages are one list");
+  assert.equal(second(listed(undefined)), null, "a later page that cannot be read makes the whole list unknown, not the part read");
+});
