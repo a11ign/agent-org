@@ -110,10 +110,10 @@ function twoPoolsOf(root: string) {
 test("A11-149: two pools against one fake pull request start one reviewer, and the second says which instance holds the head", async () => {
   await loadReviewerGate();
   const { github, spawns, a, b } = twoPoolsOf(tmpDir("review-claim-pools-"));
-  reviewNewHeads(a);
-  reviewNewHeads(b);
-  reviewNewHeads(b);
-  reviewNewHeads(a);
+  await reviewNewHeads(a);
+  await reviewNewHeads(b);
+  await reviewNewHeads(b);
+  await reviewNewHeads(a);
   assert.deepEqual(spawns, ["reviewer-7"], "one reviewer is started across both pools, however often each sweeps");
   assert.equal(github.statuses.length, 1, "one claim is on the head");
   assert.match(pullReviewText(b.pullReads.get(PR_URL)!), /^not reviewed: another instance \(`pool-a`\) holds the review of .* at h1 since /, "the second pool says who holds it");
@@ -123,16 +123,16 @@ test("A11-149: two pools against one fake pull request start one reviewer, and t
 test("A11-149: a claim its instance never finished is held until the lease ends, then taken over, and the board says so", async () => {
   await loadReviewerGate();
   const { clock, status, spawns, a, b } = twoPoolsOf(tmpDir("review-claim-takeover-"));
-  reviewNewHeads(a);
+  await reviewNewHeads(a);
   status.delete("reviewer-7");   // pool-a's reviewer is gone, and it never posted a verdict
   clock.now += LEASE - 60_000;
-  reviewNewHeads(b);
+  await reviewNewHeads(b);
   assert.deepEqual(spawns, ["reviewer-7"], "a live claim holds the head a minute before its lease ends");
   clock.now += 60_000;
-  reviewNewHeads(b);
+  await reviewNewHeads(b);
   assert.deepEqual(spawns, ["reviewer-7", "reviewer-7"], "at the lease the claim is taken over, and pool-b starts its reviewer");
   assert.equal(pullReviewText(b.pullReads.get(PR_URL)!), "reviewing (took over the claim of pool-a, 60 min old with no verdict)");
-  reviewNewHeads(b);
+  await reviewNewHeads(b);
   assert.equal(pullReviewText(b.pullReads.get(PR_URL)!), "reviewing (took over the claim of pool-a, 60 min old with no verdict)", "the board keeps saying so while the head is the same");
   assert.equal(spawns.length, 2, "and nothing else is started");
 });
@@ -141,10 +141,10 @@ test("A11-149: a reviewer that cannot start gives its claim up, so another insta
   await loadReviewerGate();
   const { clock, github, spawns, b } = twoPoolsOf(tmpDir("review-claim-release-"));
   const refusing = poolOf({ instance: "pool-a", github, status: new Map(), spawns, clock, root: tmpDir("review-claim-refusing-"), refuseSpawn: "herdr refused to start the reviewer" });
-  reviewNewHeads(refusing);
+  await reviewNewHeads(refusing);
   assert.match(pullReviewText(refusing.pullReads.get(PR_URL)!), /herdr refused to start the reviewer/, "the refusal is said on the board");
   assert.equal(github.statuses.at(-1)?.description.startsWith("released by pool-a at "), true, "its claim is released on GitHub");
-  reviewNewHeads(b);
+  await reviewNewHeads(b);
   assert.deepEqual(spawns, ["reviewer-7"], "the other instance starts its reviewer without waiting for the lease");
   assert.equal(pullReviewText(b.pullReads.get(PR_URL)!), "reviewing");
 });
@@ -166,15 +166,15 @@ const claimAttempts = (github: ReturnType<typeof githubOf>) => github.state.writ
 test("A11-172: a claim GitHub refuses is not recorded as started: the head is tried again on the next sweep", async () => {
   const { github, spawns, pool, root } = await refusedPoolOf({ rival: true });
   const key = `${PR_URL}@${HEAD}`;
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.deepEqual(spawns, [], "a second instance is in sight, so no reviewer starts without a claim");
   assert.equal(pool.reviewerStarted.has(key), false, "the head is not in the pool's started set");
   assert.equal(readReviewerMemory(reviewerMemoryPath(join(root, "pool-a"))).memory.started.has(key), false, "and not on disk, where a restart or `ticket:review` reads it");
   assert.equal(claimAttempts(github), 1);
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.equal(claimAttempts(github), 2, "the next sweep writes the claim again");
   github.state.refuse = null;
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.deepEqual(spawns, ["reviewer-7"], "and once GitHub takes the claim the reviewer starts");
   assert.equal(pool.reviewerStarted.has(key), true);
   assert.equal(pullReviewText(pool.pullReads.get(PR_URL)!), "reviewing");
@@ -183,15 +183,18 @@ test("A11-172: a claim GitHub refuses is not recorded as started: the head is tr
 
 test("A11-172: ticket:review starts a head the pool could not claim, once the claim succeeds, and does not call it already started", async () => {
   const { github, spawns, pool, root } = await refusedPoolOf({ rival: true });
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   const path = reviewerMemoryPath(join(root, "pool-a"));
-  const command = () => reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: (url) => github.host.readReviewState(url), started: readReviewerMemory(path).memory.started, record: () => {} });
-  const refused = command();
+  const command = async () => {
+    const read = await github.host.readReviewState(PR_URL);
+    return reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: () => read, started: readReviewerMemory(path).memory.started, record: () => {} });
+  };
+  const refused = await command();
   assert.equal(refused.code, 1);
   assert.match(refused.out, /its claim at h1 could not be made \(gh: Resource not accessible by integration \(HTTP 403\)\), so none is started/, "it says why, in GitHub's words");
   assert.doesNotMatch(refused.out, /already started/);
   github.state.refuse = null;
-  const started = command();
+  const started = await command();
   assert.equal(started.code, 0, started.out);
   assert.match(started.out, /started reviewer-7 for /);
   assert.deepEqual(spawns, ["reviewer-7"]);
@@ -199,7 +202,8 @@ test("A11-172: ticket:review starts a head the pool could not claim, once the cl
 
 test("A11-172: ticket:review says so when it starts a lone instance's reviewer without a claim", async () => {
   const { github, spawns, pool } = await refusedPoolOf({ rival: false });
-  const started = reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: (url) => github.host.readReviewState(url), started: new Set(), record: () => {} });
+  const read = await github.host.readReviewState(PR_URL);
+  const started = reviewOnDemand({ url: PR_URL, port: pool.reviewer!, readState: () => read, started: new Set(), record: () => {} });
   assert.equal(started.code, 0, started.out);
   assert.match(started.out, /started reviewer-7 for .* at h1; started without a claim on GitHub, because no other instance is seen: gh: Resource not accessible by integration \(HTTP 403\); its verdict posts/);
   assert.deepEqual(spawns, ["reviewer-7"]);
@@ -207,19 +211,19 @@ test("A11-172: ticket:review says so when it starts a lone instance's reviewer w
 
 test("A11-172: a head that cannot be claimed shows on its pull request's line, and once as a board warning for every such pull request", async () => {
   const { pool } = await refusedPoolOf({ rival: true });
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.equal(pullReviewText(pool.pullReads.get(PR_URL)!), "cannot claim for review: gh: Resource not accessible by integration (HTTP 403)");
   assert.equal(claimWarningOf(pool), "Reviews cannot be claimed on GitHub: gh: Resource not accessible by integration (HTTP 403) (1 pull request). Run agent-org doctor.");
   assert.match(pullReviewText(pool.pullReads.get(`https://github.com/${REPO}/pull/8`)!), /^not reviewed: another instance \(`pool-rival`\) holds the review/, "a head another instance holds is not a claim problem");
 });
 
 /** Runs `act` with the board's log (stderr) captured, and returns the lines it wrote. */
-function logged(act: () => void): string[] {
+async function logged(act: () => Promise<void>): Promise<string[]> {
   const written: string[] = [];
   const write = process.stderr.write;
   process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
   try {
-    act();
+    await act();
   } finally {
     process.stderr.write = write;
   }
@@ -231,19 +235,19 @@ test("A11-172: the claim problem is said once in the log for all its pull reques
   const problem = `ticket:serve: reviews cannot be claimed on GitHub: gh: ${FORBIDDEN} (HTTP 403)\n`;
   // A third pull request that cannot be claimed either: the cause is said once for both.
   github.host.seedPull(REPO, 9, { head: "h9", settled: true, trust: "inside" });
-  const first = logged(() => { reviewNewHeads(pool); reviewNewHeads(pool); });
+  const first = await logged(async () => { await reviewNewHeads(pool); await reviewNewHeads(pool); });
   assert.equal(first.filter((line) => line === problem).length, 1, "once, for two pull requests and two sweeps");
   github.state.refuse = null;
-  logged(() => reviewNewHeads(pool));
+  await logged(() => reviewNewHeads(pool));
   github.state.refuse = FORBIDDEN;
   github.host.seedPull(REPO, 7, { head: "h1b", settled: true, trust: "inside" });
-  assert.equal(logged(() => reviewNewHeads(pool)).filter((line) => line === problem).length, 1, "mended, then broken again on a new head: said again");
+  assert.equal((await logged(() => reviewNewHeads(pool))).filter((line) => line === problem).length, 1, "mended, then broken again on a new head: said again");
 });
 
 test("A11-172: a lone instance whose claim cannot be written starts the reviewer anyway, and the board says so", async () => {
   const { github, spawns, pool, root } = await refusedPoolOf({ rival: false });
   const key = `${PR_URL}@${HEAD}`;
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.deepEqual(spawns, ["reviewer-7"], "no other instance is seen, so nobody else can review the head twice");
   assert.equal(pool.reviewerStarted.has(key), true, "it is recorded as started, as any started reviewer is");
   assert.equal(readReviewerMemory(reviewerMemoryPath(join(root, "pool-a"))).memory.started.has(key), true);
@@ -251,27 +255,27 @@ test("A11-172: a lone instance whose claim cannot be written starts the reviewer
   assert.equal(claimWarningOf(pool), "Reviews start without a claim on GitHub: gh: Resource not accessible by integration (HTTP 403) (1 pull request); no other instance is seen. Run agent-org doctor.");
   assert.equal(github.statuses.length, 0, "nothing was written, so nothing is released");
   assert.equal(github.state.writes.every((write) => !write.includes("released by")), true);
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.equal(pullReviewText(pool.pullReads.get(PR_URL)!), "reviewing without a claim: gh: Resource not accessible by integration (HTTP 403)", "later sweeps find it running and keep saying so");
   assert.deepEqual(spawns, ["reviewer-7"], "and start nothing more");
 });
 
 test("A11-172: with a second instance present the reviewer does not start without a claim; one that goes quiet for the lease no longer counts", async () => {
   const { clock, spawns, pool } = await refusedPoolOf({ rival: true });
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.deepEqual(spawns, [], "the rival's claim on the other head was seen within the lease");
   clock.now += LEASE - 60_000;
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.deepEqual(spawns, [], "a minute short of the lease it still counts");
   // The rival's claim is on its head still, and is read again each sweep: its time is the one it was written at, which is the lease old by now, so its head is expired too.
   clock.now += 60_000;
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.deepEqual(spawns, ["reviewer-8", "reviewer-7"], "at the lease the rival is past: this instance is the only one seen, and starts both heads (the rival's own expired claim included)");
 });
 
 test("A11-172: an instance seen before a restart is still seen after it: the record is on disk", async () => {
   const first = await refusedPoolOf({ rival: true });
-  reviewNewHeads(first.pool);
+  await reviewNewHeads(first.pool);
   const path = reviewerMemoryPath(join(first.root, "pool-a"));
   assert.deepEqual([...readReviewerMemory(path).memory.seen], [[RIVAL, first.clock.now]], "the second instance is written down");
   // A restarted pool: the same state directory, a new context, and a GitHub where the rival's head is not read again in the sweep.
@@ -280,21 +284,21 @@ test("A11-172: an instance seen before a restart is still seen after it: the rec
   github.state.refuse = FORBIDDEN;
   const spawns: string[] = [];
   const restarted = poolOf({ instance: "pool-a", github, status: new Map(), spawns, clock, root: first.root });
-  reviewNewHeads(restarted);
+  await reviewNewHeads(restarted);
   assert.deepEqual(spawns, [], "the restarted instance remembers a second instance and starts no reviewer without a claim");
   assert.equal(pullReviewText(restarted.pullReads.get(PR_URL)!), "cannot claim for review: gh: Resource not accessible by integration (HTTP 403)");
 });
 
 test("A11-172: a reviewer started without a claim is still said to be, after a restart, because why it has none is kept on disk", async () => {
   const first = await refusedPoolOf({ rival: false });
-  reviewNewHeads(first.pool);
+  await reviewNewHeads(first.pool);
   const path = reviewerMemoryPath(join(first.root, "pool-a"));
   assert.deepEqual([...readReviewerMemory(path).memory.unclaimed], [[`${PR_URL}@${HEAD}`, `gh: ${FORBIDDEN} (HTTP 403)`]]);
   // The instance restarts: a new pool over the same state directory and the same herdr, whose reviewer is still running.
   const github = githubOf(first.clock);
   github.state.refuse = FORBIDDEN;
   const restarted = poolOf({ instance: "pool-a", github, status: first.status, spawns: first.spawns, clock: first.clock, root: first.root });
-  reviewNewHeads(restarted);
+  await reviewNewHeads(restarted);
   assert.deepEqual(first.spawns, ["reviewer-7"], "nothing new is started");
   assert.equal(pullReviewText(restarted.pullReads.get(PR_URL)!), `reviewing without a claim: gh: ${FORBIDDEN} (HTTP 403)`);
   assert.match(claimWarningOf(restarted) ?? "", /^Reviews start without a claim on GitHub: /);
@@ -305,7 +309,8 @@ test("A11-172: a head ticket:review started without a claim is said so on the bo
   const path = reviewerMemoryPath(join(root, "pool-a"));
   // `ticket:review` runs in its own process with its own port over the same state directory, and records its start in the file as the command does.
   const other = poolOf({ instance: "pool-a", github, status, spawns, clock, root: tmpDir("review-claim-hand-") });
-  const started = reviewOnDemand({ url: PR_URL, port: other.reviewer!, readState: (url) => github.host.readReviewState(url), started: new Set(), record: (label, key, at, unclaimed) => {
+  const read = await github.host.readReviewState(PR_URL);
+  const started = reviewOnDemand({ url: PR_URL, port: other.reviewer!, readState: () => read, started: new Set(), record: (label, key, at, unclaimed) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
     latest.heads.set(label, at);
@@ -313,7 +318,7 @@ test("A11-172: a head ticket:review started without a claim is said so on the bo
     writeReviewerMemory(path, latest);
   } });
   assert.equal(started.code, 0, started.out);
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   assert.deepEqual(spawns, ["reviewer-7"], "the pool adopts the start and starts no second reviewer");
   assert.equal(pullReviewText(pool.pullReads.get(PR_URL)!), `reviewing without a claim: gh: ${FORBIDDEN} (HTTP 403)`);
   assert.match(claimWarningOf(pool) ?? "", /^Reviews start without a claim on GitHub: /);
@@ -321,11 +326,11 @@ test("A11-172: a head ticket:review started without a claim is said so on the bo
 
 test("A11-172: a sighting of another instance older than the lease is neither adopted from the file nor written back", async () => {
   const { clock, pool, root } = await refusedPoolOf({ rival: true });
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   const path = reviewerMemoryPath(join(root, "pool-a"));
   assert.deepEqual([...readReviewerMemory(path).memory.seen.keys()], [RIVAL]);
   clock.now += LEASE;
-  reviewNewHeads(pool);
+  await reviewNewHeads(pool);
   // The rival's status is on its head still, and read again: but its time is the lease old, so the record is gone from the file and from the pool.
   assert.deepEqual([...readReviewerMemory(path).memory.seen], [], "the old sighting is not kept");
   assert.equal(pool.reviewerMemory.seen.size, 0);

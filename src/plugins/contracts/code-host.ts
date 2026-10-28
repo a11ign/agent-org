@@ -1,7 +1,7 @@
 // @ts-check
-// module: the code host contract, version 1.28 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 2.0 -- what ticket mode asks of the place pull requests live (A11-158)
 //
-// A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
+// A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because the readers of it are, EXCEPT THE READS THE INSTANCE'S LOOP MAKES ON A SWEEP (contract 2.0), which answer a promise: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
 // operations, which stay declared in `port.ts` (its source test holds that file to no import at all, a re-export included) and are named here by a type-only import. It
 // imports nothing else of core: `ReviewState` is declared here, and `ticket-mode/reviewer-port.ts` re-exports it.
@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 2.0 (A11-356): `readOwnLogin`, `readPullFeedback`, `readReviewState`, `readReplies`, `readPullState`, `openPullUrlsOf`, `readBranchCi`, `openDependencyPulls` and `readMergedFindings` ANSWER A PROMISE, where they answered the value, which is a MAJOR change: the board's loop made them on every sweep, and a synchronous `gh` held it for a second each (755 holds in 10 minutes). A promise resolves to what the read answered before, `null` for "could not ask" included, and REJECTS where the read threw (`readReviewState` where the reviewer's gate does not load). A host reads them without holding the process still, and reads the open pull requests of a repository once for every pull request and every caller of it. A plugin of major 1 is refused (`READ_MAJORS`), since its reads answer the value.
 // 1.28 (A11-342): `PullFeedback.blocked` and `PullFeedback.cancelledRequired`, both OPTIONAL: whether the host says the pull request is BLOCKED from merging (GitHub's `mergeStateStatus: BLOCKED`), and the cancelled runs of its required checks on the head when every non-green run of a required check there is a cancelled one; and `rerunRuns`, OPTIONAL: rerun whole runs, which is how the board answers an approved, armed pull request that sits BLOCKED behind a cancelled duplicate run of its required check (a concurrency group cancelled one of two runs of one head, and the cancelled `gate` blocks the merge though the other run's `gate` is green). A plugin of 1.27 is read as one that says none of the three, and the board then reruns nothing.
 // 1.27 (A11-291): `MergeFlow.private` and `MergeFlow.mergeBot`, both required of a host that implements `readMergeFlow` (1.25): whether the repository is private, and whether its default branch holds the merge bot, `.github/workflows/merge-bot.yml`, which merges a pull request approved at its head with a green `gate` where the plan offers a private repository no ruleset or merge queue. A repository has a merge flow when it allows auto-merge and holds the arm workflow, or is private and holds the merge bot. A plugin of 1.26 or earlier says neither, and the board and doctor then read every repository by the first rule.
 // 1.26 (A11-290): `commentOnPull`, OPTIONAL: post a comment on a pull request as the workers' account, which is how the board records the result of a re-review that the verdict door refused (an equal patch) on the pull request itself. A plugin of 1.24 is read as one that cannot, and the board then keeps the result in the run's log alone and says so once.
@@ -60,7 +61,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.28";
+export const CODE_HOST_CONTRACT_VERSION = "2.0";
 
 /** The account the host's dependency bot opens its pull requests as (contract 1.19): the only author {@link CodeHost.openDependencyPulls} returns. */
 export const DEPENDENCY_PULL_AUTHOR = "dependabot[bot]";
@@ -349,12 +350,12 @@ export interface CodeHost extends CodeHostPort {
   /** The arguments that clone `remote` to `path` (contract 1.7; see {@link CodeHost.repoViewArgs}). */
   repoCloneArgs(remote: string, path: string): string[];
   /** The login of the account this host acts as, which is the board's workers' own, or null when it cannot be read. */
-  readOwnLogin(): string | null;
+  readOwnLogin(): Promise<string | null>;
   /**
    * The feedback on the pull request at `url`, leaving out what `self` wrote and what `alsoIgnore` wrote (the reviewer's, which a worker does not answer and which must never
    * move `feedbackAt`), or null for "could not ask".
    */
-  readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[]): PullFeedback | null;
+  readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[]): Promise<PullFeedback | null>;
   /**
    * The checks failing on the head of `repository`'s default branch (contract 1.13), or null for "could not ask": a repository the host cannot read, a branch with no head, and an answer of another shape are all
    * null. Null is never "nothing is red". A host without it is read as one that names none, and no red check is called main's.
@@ -398,7 +399,7 @@ export interface CodeHost extends CodeHostPort {
    * The workflow runs of `repository` (`owner/name`) on `branch`, newest first, each with its jobs (contract 1.22), or null for "could not ask": a repository the host cannot read, an answer it cannot read and a list cut short at the host's page limit are all
    * null. Null is never "no runs". A run whose id is in `settled` (the caller holds its jobs and it has completed) is answered with no jobs, so the host reads each completed run's jobs once. A host without it is read as one that cannot be asked.
    */
-  readBranchCi?(repository: string, branch: string, settled: ReadonlySet<number>): readonly BranchCiRun[] | null;
+  readBranchCi?(repository: string, branch: string, settled: ReadonlySet<number>): Promise<readonly BranchCiRun[] | null>;
   /**
    * Every pull request of `repositories` (`owner/name`) whose title or body names `key`, in any state, or null for "could not ask": a repository the host cannot read, an answer it cannot read, and a list cut short at the host's limit are all null.
    * Null is never "none names it". The host answers what it finds and judges nothing: a pull request that only mentions the key in passing is listed too, and the caller decides which of them are the ticket's. A host without it is read as one that
@@ -409,7 +410,7 @@ export interface CodeHost extends CodeHostPort {
    * The open pull requests of `repository` (`owner/name`) that the dependency bot ({@link DEPENDENCY_PULL_AUTHOR}) opened, or null for "could not ask": a repository the host cannot read, an answer it cannot read and a list cut short at the host's limit are
    * all null. Null is never "there are none". The host filters by AUTHOR, never by title (and without a search-backed flag such as `gh pr list --author`, whose allowance is small): this is the trust boundary of the board's dependency tickets. A host without it is read as one that cannot be asked (contract 1.19).
    */
-  openDependencyPulls?(repository: string): readonly DependencyPull[] | null;
+  openDependencyPulls?(repository: string): Promise<readonly DependencyPull[] | null>;
   /**
    * The failing `merge_group` run behind the removal from the merge group at commit `groupCommit` of the pull request at `url` (contract 1.21), or null for "could not ask": an address that is no pull request of the host, no run for that commit and a refused read are all null. Null is never "no job failed".
    * A host without it is read as one that cannot be asked, and the board then names the removal without the run's errors.
@@ -420,17 +421,25 @@ export interface CodeHost extends CodeHostPort {
    * from the arm bot, and the board then names the removals alone.
    */
   holdFromQueue?(url: string, on: boolean): boolean;
-  /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
-  readReviewState(url: string): ReviewState | null;
+  /**
+   * The pull request's state as the reviewer sees it, or null when the host does not say. REJECTS with the reviewer's refusal when its gate does not load. A host may answer from a read of the repository made a few seconds ago (the GitHub plugin's ten); `fresh: true`
+   * asks for a read made now, as a caller does that is about to act on there being no review at a head (a reviewer that ended without a verdict is not asked to post it again over a review the host had not read yet).
+   */
+  readReviewState(url: string, options?: Readonly<{ fresh?: boolean }>): Promise<ReviewState | null>;
   /**
    * The replies on the pull request at `url` that `request` names, oldest first, or null for "could not ask". A reply with no text is left out, and so is one by an account `request`
    * does not name: its text goes into a reviewer's prompt, so the host never returns a stranger's. Null is never "no replies".
    */
-  readReplies(url: string, request: RepliesRequest): readonly Reply[] | null;
+  readReplies(url: string, request: RepliesRequest): Promise<readonly Reply[] | null>;
+  /**
+   * OPTIONAL (contract 2.0). The state {@link CodeHost.readReviewState} last answered for the pull request, if that was within a minute, or null: no read is made, so it answers at once. The reviewer plugin starts a reviewer for a head the
+   * sweep has just read, and its start cannot wait for a promise. A host without it is read as one that has nothing to peek at, and the reviewer then refuses the start as for a pull request that could not be read.
+   */
+  peekReviewState?(url: string): ReviewState | null;
   /** The pull request's state, `OPEN`, `MERGED` or `CLOSED`, or null when the host does not say. */
-  readPullState(url: string): string | null;
+  readPullState(url: string): Promise<string | null>;
   /** The URLs of a repository's open pull requests, or null for "could not ask" (a list at its limit is also null). */
-  openPullUrlsOf(repository: string): string[] | null;
+  openPullUrlsOf(repository: string): Promise<string[] | null>;
   /**
    * The note each open pull request of the sweep needs, by URL, after the retargets that are due are made: a merged base is moved to the default branch, and a
    * base whose branch is gone is said. A pull request that cannot be read keeps the note it had, and its head is never touched.
@@ -440,7 +449,7 @@ export interface CodeHost extends CodeHostPort {
    * What the merged pull request at `url` found (contract 1.4), or null for "could not ask": a pull request that has not merged is null too, since its findings are not final. Null is never "it
    * found nothing". A host without it passes no findings on.
    */
-  readMergedFindings?(url: string): MergedFindings | null;
+  readMergedFindings?(url: string): Promise<MergedFindings | null>;
   /**
    * What the pull request at `url` still held when it closed (contract 1.20), or null for "could not ask": a pull request that is open or merged, an address that is no pull request of the host, a refused read, an answer it cannot read and a compare cut short
    * of its commits are all null. Null is never "it held nothing": a pull request whose commits are all on its base answers a {@link ClosedWork} with no commits. A host without it is read as one that cannot be asked.

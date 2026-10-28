@@ -38,97 +38,97 @@ function world({ feedback = incident(), rerunnable = true }: { feedback?: FakePu
 }
 
 /** What the board said to its own log while `run` ran. */
-function logged(run: () => void): string {
+async function logged(run: () => Promise<void>): Promise<string> {
   const said: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
   try {
-    run();
+    await run();
   } finally {
     process.stderr.write = write;
   }
   return said.join("");
 }
 
-test("A11-342: an approved, armed pull request that reads BLOCKED, with its required check green in one run and cancelled in the other, has the cancelled run rerun exactly once, and the run's log says so", () => {
+test("A11-342: an approved, armed pull request that reads BLOCKED, with its required check green in one run and cancelled in the other, has the cancelled run rerun exactly once, and the run's log says so", async () => {
   const { pool, reruns, events } = world();
-  const said = logged(() => pool.watchFeedback());
+  const said = await logged(async () => { await pool.watchFeedback(); });
   assert.deepEqual(reruns(), [[CANCELLED_RUN]], "the cancelled run, and only it, is rerun, whole");
   assert.deepEqual(events(), [{ kind: "cancelled-rerun", url: URL, head: HEAD, checks: ["gate"], at: NOW }], "the run's log records the rerun for the pull request and the head");
   assert.ok(said.includes(cancelledRerunWords({ url: URL, head: HEAD, checks: ["gate"] })), "and the board's own log says the same line");
-  pool.watchFeedback();
-  pool.watchFeedback();
+  await pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(reruns().length, 1, "a later watch that reads it blocked again at the same head reruns nothing more");
   assert.equal(events().length, 1, "and logs nothing more");
 });
 
-test("A11-342: the once bound is the run's log, so a restart of the board does not rerun the cancelled run a second time", () => {
+test("A11-342: the once bound is the run's log, so a restart of the board does not rerun the cancelled run a second time", async () => {
   const { fixture, host, pool, reruns } = world();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   const restarted = fixture.restart({ codeHost: host });
-  restarted.watchFeedback();
+  await restarted.watchFeedback();
   assert.equal(reruns().length, 1, "the restarted board read the log and did not ask again");
 });
 
-test("A11-342: a new head is a new case: the run that is cancelled at it is rerun once as well", () => {
+test("A11-342: a new head is a new case: the run that is cancelled at it is rerun once as well", async () => {
   const { host, pool, reruns, events } = world();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   const next = "c0ffee00d1b24e3b5828da68e14db3d2540d87f3";
   host.pullAt(URL)!.head = next;
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(reruns().length, 2, "one rerun for each head");
   assert.deepEqual(events().map((event) => (event.kind === "cancelled-rerun" ? event.head : "")), [HEAD, next]);
 });
 
-test("A11-342: a pull request that is not approved at its head has nothing rerun", () => {
+test("A11-342: a pull request that is not approved at its head has nothing rerun", async () => {
   for (const [what, over] of [["no verdict", { verdictAtHead: null }], ["changes requested", { verdictAtHead: "changes-requested" as const }], ["a review decision that still asks for a review", { reviewDecision: "review-required" as const }]] as const) {
     const { pool, reruns, events } = world({ feedback: incident(over) });
-    pool.watchFeedback();
+    await pool.watchFeedback();
     assert.deepEqual([what, reruns(), events()], [what, [], []]);
   }
 });
 
-test("A11-342: a pull request that is not armed, not blocked, or blocked on something other than cancelled runs has nothing rerun", () => {
+test("A11-342: a pull request that is not armed, not blocked, or blocked on something other than cancelled runs has nothing rerun", async () => {
   for (const [what, over] of [["not armed", { armed: false }], ["armed is not said", { armed: undefined }], ["not blocked", { blocked: false }], ["blocked on something else", { cancelledRequired: [] }]] as const) {
     const { pool, reruns, events } = world({ feedback: incident(over) });
-    pool.watchFeedback();
+    await pool.watchFeedback();
     assert.deepEqual([what, reruns(), events()], [what, [], []]);
   }
 });
 
-test("A11-342: a refused rerun is logged with its reason, is not taken as done, and is asked again at the next watch", () => {
+test("A11-342: a refused rerun is logged with its reason, is not taken as done, and is asked again at the next watch", async () => {
   const { host, pool, reruns, events } = world();
   host.checksAndClaims.rerunRefusal = "run 40438392613 cannot be rerun";
-  const said = logged(() => pool.watchFeedback());
+  const said = await logged(async () => { await pool.watchFeedback(); });
   assert.deepEqual([reruns(), events().map((event) => (event.kind === "cancelled-rerun" ? event.refused : ""))], [[], ["run 40438392613 cannot be rerun"]]);
   assert.ok(said.includes(cancelledRerunWords({ url: URL, head: HEAD, checks: ["gate"], refused: "run 40438392613 cannot be rerun" })));
   host.checksAndClaims.rerunRefusal = null;
-  pool.watchFeedback();
-  pool.watchFeedback();
+  await pool.watchFeedback();
+  await pool.watchFeedback();
   assert.deepEqual([reruns(), events().length], [[[CANCELLED_RUN]], 2], "taken at the second try, and not asked a third time");
 });
 
-test("A11-342: a rerun that is refused every time is asked three times for a head and then left, so the board does not call the host at every watch for ever", () => {
+test("A11-342: a rerun that is refused every time is asked three times for a head and then left, so the board does not call the host at every watch for ever", async () => {
   const { host, pool, events } = world();
   host.checksAndClaims.rerunRefusal = "Resource not accessible (HTTP 403)";
-  for (let watch = 0; watch < 6; watch += 1) pool.watchFeedback();
+  for (let watch = 0; watch < 6; watch += 1) await pool.watchFeedback();
   assert.equal(host.calls.filter((call) => call === "rerunRuns").length, MAX_REFUSALS);
   assert.equal(events().length, MAX_REFUSALS);
 });
 
-test("A11-342: a run a person stopped, and one the tracker settled, have nothing rerun, as they have no base merged", () => {
+test("A11-342: a run a person stopped, and one the tracker settled, have nothing rerun, as they have no base merged", async () => {
   for (const [what, outcome, tracker] of [["stopped", { kind: "stopped" }, undefined], ["settled by the tracker", { kind: "ready-pr", prs: [{ repo: "announcement-emulator", url: URL }] }, "completed"]] as const) {
     const { fixture, pool, reruns, events } = world();
     fixture.store.set(finishedWith(KEY, { ...outcome, prs: [{ repo: "announcement-emulator", url: URL }] } as Parameters<typeof finishedWith>[1], NOW - 10));
     if (tracker !== undefined) fixture.store.set(replace(fixture.store.get(), KEY, (entry) => ({ ...entry, trackerState: tracker })));
-    pool.watchFeedback();
+    await pool.watchFeedback();
     assert.deepEqual([what, reruns(), events()], [what, [], []]);
   }
 });
 
-test("A11-342: a code host that cannot rerun a whole run is left alone: nothing is recorded, and nothing throws", () => {
+test("A11-342: a code host that cannot rerun a whole run is left alone: nothing is recorded, and nothing throws", async () => {
   const { pool, events } = world({ rerunnable: false });
-  assert.doesNotThrow(() => pool.watchFeedback());
+  await assert.doesNotReject(async () => { await pool.watchFeedback(); });
   assert.deepEqual(events(), []);
 });
 

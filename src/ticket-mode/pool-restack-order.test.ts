@@ -47,21 +47,21 @@ function conflictingStack(over: { codeHost?: (host: ReturnType<typeof createFake
 }
 
 /** Run `act` with the board's log captured, and return the lines it wrote. */
-function captureStderr(act: () => void): string[] {
+async function captureStderr(act: () => Promise<void>): Promise<string[]> {
   const written: string[] = [];
   const write = process.stderr.write;
   process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
   try {
-    act();
+    await act();
   } finally {
     process.stderr.write = write;
   }
   return written;
 }
 
-test("A11-248: the watch restacks first, so the conflict round it starts is the restack's, naming the stack and the merged member", () => {
+test("A11-248: the watch restacks first, so the conflict round it starts is the restack's, naming the stack and the merged member", async () => {
   const { host, pool, next } = conflictingStack();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(host.branchUpdates.asked.length, 1, "the member was restacked by the watch's own pass");
   assert.equal(next().phase, "queued", "the run left finished for a round");
   assert.equal(next().rounds, 1, "exactly one round");
@@ -71,33 +71,33 @@ test("A11-248: the watch restacks first, so the conflict round it starts is the 
   assert.equal(feedback.split("\n").filter((line) => line.includes("conflicts with its base branch")).length, 1, "and the conflict is named once, by no second plain round");
 });
 
-test("A11-248: nothing is restacked or started twice by a second watch, or by the restack's own sweep after it", () => {
+test("A11-248: nothing is restacked or started twice by a second watch, or by the restack's own sweep after it", async () => {
   const { host, pool, next } = conflictingStack();
-  pool.watchFeedback();
+  await pool.watchFeedback();
   const feedback = next().feedback;
-  pool.watchFeedback();
-  pool.retargetStacked();
+  await pool.watchFeedback();
+  await pool.retargetStacked();
   assert.equal(host.branchUpdates.asked.length, 1, "one update call in all");
   assert.equal(next().rounds, 1, "one round in all");
   assert.equal(next().feedback, feedback);
 });
 
-test("A11-248: a restack that throws is said in the log, and the watch still reads the run's feedback", () => {
+test("A11-248: a restack that throws is said in the log, and the watch still reads the run's feedback", async () => {
   const { pool, next } = conflictingStack({ codeHost: (host) => ({ ...host, sweepRetargets: () => { throw new Error("gh exploded\nwith a second line"); } }) });
-  const logged = captureStderr(() => { pool.watchFeedback(); });
+  const logged = await captureStderr(async () => { await pool.watchFeedback(); });
   assert.ok(logged.includes("ticket:serve: the stacked pull requests could not be restacked before the feedback watch: gh exploded\n"), "said in one line");
   assert.equal(next().rounds, 1, "the watch still started the plain conflict round");
   assert.equal(next().feedback, `${NEXT} conflicts with its base branch ${BOTTOM_BRANCH}.`, "the plain round, which names neither the stack nor the merged member");
 });
 
-test("A11-82: a run that is not in a stack and conflicts still gets the conflict round from the watch, after the board's merge of the base found the conflict real (A11-286)", () => {
+test("A11-82: a run that is not in a stack and conflicts still gets the conflict round from the watch, after the board's merge of the base found the conflict real (A11-286)", async () => {
   const host = createFakeCodeHost("worker-bot");
   host.seedPull(REPOSITORY, 2, { head: NEXT_BRANCH, feedback: { conflicting: true }, merge: { armed: false, mergeable: false } });
   host.branchUpdates.answers.set(NEXT, { kind: "conflict" });
   const fixture = poolFixture({ keys: ["A11-2"], now: () => NOW });
   fixture.store.set({ ...fixture.store.get(), entries: [finishedRun("A11-2", NEXT)] });
   const pool = fixture.restart({ codeHost: host });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   const run = fixture.store.get().entries[0];
   assert.deepEqual([run.rounds, run.feedback?.split("\n")[0]], [1, `${NEXT} conflicts with its base branch main.`]);
   assert.deepEqual(host.branchUpdates.asked, [{ url: NEXT, expectedHead: NEXT_BRANCH }], "the board's one merge of the base into it, and no restack");

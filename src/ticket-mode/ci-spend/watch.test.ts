@@ -60,7 +60,7 @@ async function board({ budget = 10, runs = [] as BranchCiRun[], readsBranches = 
     fake.seedPull(REPOSITORY, 1);
     made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => ({ ...entry, phase: "finished" as const, finishedAt: clock, workspace: undefined, pane: undefined, outcome: { kind: "ready-pr" as const, prs: [{ repo: "nbl-ui-netbox", url }] } })) });
   }
-  const sweep = async () => { pool.watchFeedback(); await flush(); await flush(); };
+  const sweep = async () => { await pool.watchFeedback(); await flush(); await flush(); };
   const tick = async () => { clock += MINUTE; await pool.tick(); await flush(); };
   const prompts = () => made.herdr.calls.filter((args) => args.includes("agent") && args.includes("prompt"));
   const closes = () => made.herdr.calls.filter((args) => args.includes("workspace") && args.includes("close"));

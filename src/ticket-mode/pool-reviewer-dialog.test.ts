@@ -37,50 +37,50 @@ async function reviewedRun() {
   const reviewer = createFakeReviewer();
   await reviewer.load();
   const { fixture, host, url, pool } = finishedRun(reviewer);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1, "the first sweep starts the reviewer");
   return { fixture, host, reviewer, pool, ref: { pr: url, head: HEAD }, url, entry: () => fixture.store.get().entries[0] };
 }
 
 /** The reviewer shows the dialog the port cannot answer, the pool looks at it and watches the run, and the run carries the note. */
-function stopAndWatch(made: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref" | "entry">): void {
-  lookAt(made, { stuck: STUCK });
+async function stopAndWatch(made: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref" | "entry">): Promise<void> {
+  await lookAt(made, { stuck: STUCK });
   assert.equal(made.entry().handedBack, NOTE);
 }
 
 /** The reviewer shows `dialog`, and the pool looks at the pull request and watches the run. */
-function lookAt({ reviewer, pool, ref }: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref">, dialog: ReviewerDialog): void {
+async function lookAt({ reviewer, pool, ref }: Pick<Awaited<ReturnType<typeof reviewedRun>>, "reviewer" | "pool" | "ref">, dialog: ReviewerDialog): Promise<void> {
   reviewer.showing(ref, dialog);
-  pool.reviewNewHeads();
-  pool.watchFeedback();
+  await pool.reviewNewHeads();
+  await pool.watchFeedback();
 }
 
 test("A11-221: a reviewer stuck on a dialog the port cannot answer makes the run read Needs you with the dialog's first line, and the pull request's review line says it", async () => {
   const { reviewer, pool, ref, url, entry } = await reviewedRun();
   assert.equal(pool.pullReviews()[url], "reviewing");
   reviewer.showing(ref, { stuck: STUCK });
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(pool.pullReviews()[url], `the reviewer stopped on a dialog it cannot answer: "${STUCK}"`);
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, NOTE);
   assert.equal(runStatus(entry() as never), "needs-you");
   assert.equal(reasonOf(entry() as never).line, NOTE);
   const written = JSON.stringify(entry());
-  pool.reviewNewHeads();
-  pool.watchFeedback();
+  await pool.reviewNewHeads();
+  await pool.watchFeedback();
   assert.equal(JSON.stringify(entry()), written, "a later look at the same dialog rewrites nothing");
 });
 
 test("A11-221: a look that cannot be made keeps the line and the note, and the next look that reads the pane and finds no dialog clears them", async () => {
   const made = await reviewedRun();
   const { reviewer, pool, ref, url, entry } = made;
-  stopAndWatch(made);
-  lookAt(made, { unread: "reviewer-7's pane could not be read (pane_not_found)" });
+  await stopAndWatch(made);
+  await lookAt(made, { unread: "reviewer-7's pane could not be read (pane_not_found)" });
   assert.equal(pool.pullReviews()[url], `the reviewer stopped on a dialog it cannot answer: "${STUCK}"`, "the last finding stands");
   assert.equal(entry().handedBack, NOTE);
   reviewer.showing(ref, null);
-  pool.reviewNewHeads();
-  pool.watchFeedback();
+  await pool.reviewNewHeads();
+  await pool.watchFeedback();
   assert.equal(pool.pullReviews()[url], "reviewing");
   assert.equal(entry().handedBack, undefined);
 });
@@ -89,33 +89,33 @@ test("A11-221: an unblock that throws is an unread look too, and a first look th
   const made = await reviewedRun();
   const { reviewer, pool, ref, url } = made;
   reviewer.showing(ref, { unread: "herdr did not list the tickets session" });
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(pool.pullReviews()[url], "reviewing", "nothing was found before, so nothing is claimed");
-  stopAndWatch(made);
+  await stopAndWatch(made);
   Object.assign(reviewer, { unblock: () => { throw new Error("herdr crashed"); } });
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(pool.pullReviews()[url], `the reviewer stopped on a dialog it cannot answer: "${STUCK}"`);
 });
 
 test("A11-221: the note logs Needs you once on the run, as the stale-block note does (A11-219), and the repeated look logs nothing more", async () => {
   const made = await reviewedRun();
-  stopAndWatch(made);
+  await stopAndWatch(made);
   const needsYou = () => logOf(made.fixture.store.get(), "NBF-1").filter((event) => event.kind === "needs-you");
   assert.equal(needsYou().length, 1);
   assert.match(needsYou()[0].kind === "needs-you" ? needsYou()[0].reason : "", /stopped on a dialog it cannot answer/);
-  made.pool.reviewNewHeads();
-  made.pool.watchFeedback();
+  await made.pool.reviewNewHeads();
+  await made.pool.watchFeedback();
   assert.equal(needsYou().length, 1);
 });
 
 test("A11-221: the next look that finds no dialog clears the line and the note, and leaves the reviewer open", async () => {
   const made = await reviewedRun();
   const { reviewer, pool, ref, url, entry } = made;
-  stopAndWatch(made);
+  await stopAndWatch(made);
   reviewer.showing(ref, null);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(pool.pullReviews()[url], "reviewing");
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined);
   assert.equal(runStatus(entry() as never), "awaiting-review");
   assert.deepEqual([reviewer.closed, reviewer.retired], [[], []], "nothing was closed: a person answers the dialog in herdr");
@@ -124,23 +124,23 @@ test("A11-221: the next look that finds no dialog clears the line and the note, 
 test("A11-221: a pull request the pool cannot read leaves the note where it was, and the next look that reads it finds the dialog gone", async () => {
   const made = await reviewedRun();
   const { fixture, host, reviewer, pool, ref, entry } = made;
-  stopAndWatch(made);
-  const unreadable = fixture.restart({ codeHost: { ...host, readReviewState: () => null }, reviewer });
-  unreadable.watchFeedback();
+  await stopAndWatch(made);
+  const unreadable = fixture.restart({ codeHost: { ...host, readReviewState: async () => null }, reviewer });
+  await unreadable.watchFeedback();
   assert.equal(entry().handedBack, NOTE, "a pool that has read nothing does not clear it");
   reviewer.showing(ref, null);
   const readable = fixture.restart({ codeHost: host, reviewer });
-  readable.reviewNewHeads();
-  readable.watchFeedback();
+  await readable.reviewNewHeads();
+  await readable.watchFeedback();
   assert.equal(entry().handedBack, undefined);
 });
 
 test("A11-221: the note goes when the pull request is merged, since no reviewer waits on it any more", async () => {
   const made = await reviewedRun();
   const { fixture, pool, reviewer, ref, url, entry } = made;
-  stopAndWatch(made);
+  await stopAndWatch(made);
   fixture.store.set({ ...fixture.store.get(), entries: [{ ...entry(), pullStates: { [url]: "merged" } }] });
-  pool.watchFeedback();
+  await pool.watchFeedback();
   assert.equal(entry().handedBack, undefined);
 });
 
@@ -149,10 +149,10 @@ test("A11-221: a re-reviewing reviewer, whose head already has the reviewer's bl
   host.pullAt(url)!.reviews = [{ author: REVIEWER_LOGIN, state: "CHANGES_REQUESTED", commit: HEAD, at: 400_000 }];
   host.pullAt(url)!.body = "Closes NBF-1\n";
   reviewer.wrote(ref, null);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   host.pullAt(url)!.body = "Closes NBF-1\n\nOutside-Region: none\n";
   reviewer.showing(ref, { stuck: STUCK });
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 2, "the edit started a re-review");
   assert.equal(pool.pullReviews()[url], `the reviewer stopped on a dialog it cannot answer: "${STUCK}"`);
 });
@@ -160,15 +160,15 @@ test("A11-221: a re-reviewing reviewer, whose head already has the reviewer's bl
 test("A11-221: with no reviewer on the machine the note goes, since no look is coming to clear it", async () => {
   const made = await reviewedRun();
   const { fixture, host, pool, reviewer, ref, entry } = made;
-  stopAndWatch(made);
-  fixture.restart({ codeHost: host }).watchFeedback();
+  await stopAndWatch(made);
+  await fixture.restart({ codeHost: host }).watchFeedback();
   assert.equal(entry().handedBack, undefined);
 });
 
 test("A11-221: a dialog the port answered is not Needs you: nothing is kept on the pull request or the run", async () => {
   const made = await reviewedRun();
   const { pool, url, entry } = made;
-  lookAt(made, { answered: "Trust this folder?" });
+  await lookAt(made, { answered: "Trust this folder?" });
   assert.equal(pool.pullReviews()[url], "reviewing");
   assert.equal(entry().handedBack, undefined);
 });
@@ -178,8 +178,8 @@ test("A11-221: a reviewer of contract 1.5, which has no unblock, never reports a
   const fake = createFakeReviewer();
   const { unblock: _unblock, ...without } = fake;
   const { pool, url } = finishedRun(reviewerOver(without));
-  pool.reviewNewHeads();
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(pool.pullReviews()[url], "reviewing");
   assert.equal(fake.unblocked.length, 0);
 });
@@ -189,6 +189,6 @@ test("A11-221: a head with a review posted on it has its reviewer's pane left un
   host.pullAt(url)!.reviews = [{ author: REVIEWER_LOGIN, state: "APPROVED", commit: HEAD, at: 600_000 }];
   reviewer.showing(ref, { stuck: STUCK });
   const before = reviewer.unblocked.length;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.unblocked.length, before, "no look once the verdict is on the pull request");
 });

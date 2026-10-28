@@ -22,9 +22,9 @@ function failingJobsOf({ deps }: SweepContext, failures: readonly Readonly<{ nam
  * A group pull request: green clears its record, red for the first time at a head is rerun once, and red again at that head is asked for (`ask`). A read that fails, or a head with a required check still pending, changes
  * nothing: "red" is a failing check with nothing required pending, so a rerun in progress is not a second red.
  */
-export function watchGroup(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pull, group, self }: GroupPull): void {
+export async function watchGroup(ctx: SweepContext, ask: (request: TicketRequest) => void, { repository, pull, group, self }: GroupPull): Promise<void> {
   const { deps, state, commit } = ctx;
-  const read = deps.codeHost.readPullFeedback(pull.url, self);
+  const read = await deps.codeHost.readPullFeedback(pull.url, self);
   if (read === null) {
     sayOnce(ctx, `dependency updates: ${pull.url}'s checks could not be read, so the next sweep asks again`);
     return;

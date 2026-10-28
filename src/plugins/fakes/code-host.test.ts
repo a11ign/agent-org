@@ -148,15 +148,15 @@ test("the fake's wrapper is stale when the installed text is not its own, and sa
   assert.equal(wrapper!.divergence(INPUTS, { target, installed: null }), "there is no gh wrapper at /opt/host/bin/gh");
 });
 
-test("the fake leaves out what the caller's own login wrote, as the contract says", () => {
+test("the fake leaves out what the caller's own login wrote, as the contract says", async () => {
   const { host, probe } = seeded();
-  assert.deepEqual(host.readPullFeedback(probe.pull, "fake-worker")?.authors, ["a-person"]);
-  assert.deepEqual(host.readPullFeedback(probe.pull, "someone-else")?.authors, ["a-person", "fake-worker"]);
+  assert.deepEqual((await host.readPullFeedback(probe.pull, "fake-worker"))?.authors, ["a-person"]);
+  assert.deepEqual((await host.readPullFeedback(probe.pull, "someone-else"))?.authors, ["a-person", "fake-worker"]);
 });
 
 test("a code host that answers an empty reading for a pull request it cannot read fails by name", async () => {
   const { host, probe } = seeded();
-  const lying: CodeHost = { ...host, readPullFeedback: (url, self) => host.readPullFeedback(url, self) ?? { state: "open", feedbackAt: null, authors: [], failing: [], failures: [], failedAt: null, conflicting: false, mergeable: false, head: null, approvedAtHead: false, base: null, files: [], filesComplete: true } };
+  const lying: CodeHost = { ...host, readPullFeedback: async (url, self) => (await host.readPullFeedback(url, self)) ?? { state: "open", feedbackAt: null, authors: [], failing: [], failures: [], failedAt: null, conflicting: false, mergeable: false, head: null, approvedAtHead: false, base: null, files: [], filesComplete: true } };
   await assert.rejects(runCodeHostConformance(lying, probe), (error: unknown) => error instanceof ContractError && error.concern === "codeHost"
     && error.failures.map(({ check }) => check).join() === "readPullFeedback answers null for a pull request it cannot read");
 });
@@ -193,14 +193,14 @@ test("a subscription is called for the events it names and no longer once cancel
   assert.deepEqual(seen, ["head-moved"]);
 });
 
-test("the fake says a pull request is approved at its head only for an approval by someone else on the head it holds", () => {
+test("the fake says a pull request is approved at its head only for an approval by someone else on the head it holds", async () => {
   const host = createFakeCodeHost();
   const review = (author: string, commit: string) => ({ author, state: "APPROVED", commit, at: 1 });
   const { url } = host.seedPull("owner/repo", 5, { head: "h5", reviews: [review("a-person", "h5"), review("fake-worker", "h5"), review("a-person", "older")] });
-  assert.equal(host.readPullFeedback(url, "someone-else")?.approvedAtHead, true);
+  assert.equal((await host.readPullFeedback(url, "someone-else"))?.approvedAtHead, true);
   const own = host.seedPull("owner/repo", 6, { head: "h6", reviews: [review("fake-worker", "h6"), review("a-person", "older")] });
-  assert.equal(host.readPullFeedback(own.url, "fake-worker")?.approvedAtHead, false, "the caller's own approval, and one on an earlier head, are not approval of this head");
-  assert.deepEqual([host.readPullFeedback(url, "x")?.head, host.readPullFeedback(url, "x")?.mergeable], ["h5", true]);
+  assert.equal((await host.readPullFeedback(own.url, "fake-worker"))?.approvedAtHead, false, "the caller's own approval, and one on an earlier head, are not approval of this head");
+  assert.deepEqual([(await host.readPullFeedback(url, "x"))?.head, (await host.readPullFeedback(url, "x"))?.mergeable], ["h5", true]);
 });
 
 test("without a check or a head to claim in the probe, their checks are skipped with the reason, not passed", async () => {
@@ -255,11 +255,11 @@ test("the fake reruns what it is asked to and refuses when told to, and reads on
 
 test("A11-175: the fake reports the unrequired red checks it is told of, and the contract suite takes a host that reports them as a list of names, and refuses one that does not", async () => {
   const { host, probe } = seeded();
-  assert.equal(host.readReviewState(probe.pull)?.unrequiredRed, undefined, "a pull request with none names none");
+  assert.equal((await host.readReviewState(probe.pull))?.unrequiredRed, undefined, "a pull request with none names none");
   const named = createFakeCodeHost("fake-worker");
   const { url } = named.seedPull("owner/repo", 8, { unrequiredRed: ["checks (cross-repo)"] });
-  assert.deepEqual(named.readReviewState(url)?.unrequiredRed, ["checks (cross-repo)"]);
-  const liar = { ...host, readReviewState: (pull: string) => ({ ...host.readReviewState(pull)!, unrequiredRed: "checks (cross-repo)" as unknown as readonly string[] }) };
+  assert.deepEqual((await named.readReviewState(url))?.unrequiredRed, ["checks (cross-repo)"]);
+  const liar = { ...host, readReviewState: async (pull: string) => ({ ...(await host.readReviewState(pull))!, unrequiredRed: "checks (cross-repo)" as unknown as readonly string[] }) };
   await assert.rejects(runCodeHostConformance(liar, probe), (error: unknown) => error instanceof ContractError
     && error.failures.some(({ check }) => check === "readReviewState reads the head, the reviews and whether the checks settled"));
 });
@@ -276,11 +276,11 @@ test("A11-215: the fake answers an update of a branch as the test says, records 
   assert.ok(host.calls.includes(`updateBranch ${held} h7`), "and it is in the calls");
 });
 
-test("A11-248: the fake closes a pull request with its comment, reads it as closed, refuses as the test says, and throws for one it does not hold", () => {
+test("A11-248: the fake closes a pull request with its comment, reads it as closed, refuses as the test says, and throws for one it does not hold", async () => {
   const { host } = seeded();
   const held = fakePullUrl("owner/repo", 7);
   host.closePull!(held, "empty");
-  assert.equal(host.readPullState(held), "CLOSED", "the close reads back");
+  assert.equal(await host.readPullState(held), "CLOSED", "the close reads back");
   assert.deepEqual(host.closes.closed, [{ url: held, comment: "empty" }]);
   host.closePull!(held, "again");
   assert.equal(host.closes.closed.length, 1, "a pull request closed already is no error, and gets no second comment");
@@ -288,7 +288,7 @@ test("A11-248: the fake closes a pull request with its comment, reads it as clos
   const other = host.seedPull("owner/repo", 20).url;
   host.closes.refusals.set(other, "Resource not accessible by integration");
   assert.throws(() => host.closePull!(other, "empty"), { message: "Resource not accessible by integration" });
-  assert.equal(host.readPullState(other), "OPEN", "a refusal closes nothing");
+  assert.equal(await host.readPullState(other), "OPEN", "a refusal closes nothing");
   assert.throws(() => host.closePull!(fakePullUrl("owner/repo", 999), "empty"), { message: /no pull request/ });
 });
 
@@ -409,16 +409,16 @@ test("a code host that reads a repository it cannot read as one the bot opened n
   const { host, probe } = seeded();
   const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
   const reads = host.openDependencyPulls!;
-  assert.deepEqual(await failures({ ...host, openDependencyPulls: (repository) => reads(repository) ?? [] }), [DEPENDENCY_CHECKS[0]], "none for could not ask");
-  assert.deepEqual(await failures({ ...host, openDependencyPulls: (repository) => reads(repository)?.concat({ url: probe.dependency.foreign, number: 13, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", headSha: "head-13", author: "someone" as never, body: "" }) ?? null }),
+  assert.deepEqual(await failures({ ...host, openDependencyPulls: async (repository) => (await reads(repository)) ?? [] }), [DEPENDENCY_CHECKS[0]], "none for could not ask");
+  assert.deepEqual(await failures({ ...host, openDependencyPulls: async (repository) => (await reads(repository))?.concat({ url: probe.dependency.foreign, number: 13, title: "deps: bump @x/y from 1.4.0 to 2.0.0", headRefName: "someone/bump", headSha: "head-13", author: "someone" as never, body: "" }) ?? null }),
     [DEPENDENCY_CHECKS[1]], "a pull request someone else opened");
 });
 
-test("the fake lists a bot's open pull request only: not a merged one, not another author's, and not a repository it was never given", () => {
+test("the fake lists a bot's open pull request only: not a merged one, not another author's, and not a repository it was never given", async () => {
   const { host } = seeded();
   host.seedPull("owner/repo", 14, { state: "merged", dependency: { title: "deps: bump a from 1.0.0 to 2.0.0", headRefName: "dependabot/npm_and_yarn/a-2.0.0", author: DEPENDENCY_PULL_AUTHOR } });
-  assert.deepEqual(host.openDependencyPulls!("owner/repo")?.map(({ number }) => number), [12]);
-  assert.equal(host.openDependencyPulls!("owner/never-given"), null);
+  assert.deepEqual((await host.openDependencyPulls!("owner/repo"))?.map(({ number }) => number), [12]);
+  assert.equal(await host.openDependencyPulls!("owner/never-given"), null);
 });
 
 test("the fake reads a closed pull request's work, with no commits for one that holds nothing, and reads no pull request that is open, merged or never given (contract 1.20)", () => {
@@ -467,22 +467,22 @@ test("a code host that reads a branch it cannot read as one that ran nothing, or
   const { host, probe } = seeded();
   const failures = async (candidate: CodeHost) => runCodeHostConformance(candidate, probe).then(() => [], (error: unknown) => (error instanceof ContractError ? error.failures.map(({ check }) => check) : [String(error)]));
   const reads = host.readBranchCi!;
-  const readsOr = (change: (runs: NonNullable<ReturnType<typeof reads>>) => unknown): CodeHost["readBranchCi"] =>
-    (repository, branch, settled) => { const runs = reads(repository, branch, settled); return runs === null ? null : (change(runs) as ReturnType<typeof reads>); };
+  const readsOr = (change: (runs: NonNullable<Awaited<ReturnType<typeof reads>>>) => unknown): CodeHost["readBranchCi"] =>
+    async (repository, branch, settled) => { const runs = await reads(repository, branch, settled); return runs === null ? null : (change(runs) as Awaited<ReturnType<typeof reads>>); };
   const failing = (change: Parameters<typeof readsOr>[0]) => failures({ ...host, readBranchCi: readsOr(change) });
-  assert.deepEqual(await failures({ ...host, readBranchCi: (repository, branch, settled) => reads(repository, branch, settled) ?? [] }), [BRANCH_CI_CHECKS[0]], "a repository it cannot read answered as no runs");
+  assert.deepEqual(await failures({ ...host, readBranchCi: async (repository, branch, settled) => (await reads(repository, branch, settled)) ?? [] }), [BRANCH_CI_CHECKS[0]], "a repository it cannot read answered as no runs");
   assert.deepEqual(await failing(() => []), [BRANCH_CI_CHECKS[1]], "a branch that ran something answered with no runs");
   assert.deepEqual(await failing((runs) => runs.map((run) => ({ ...run, status: "stalled" }))), [BRANCH_CI_CHECKS[1]], "a status the board does not know");
   assert.deepEqual(await failing((runs) => runs.map((run) => ({ ...run, jobs: run.jobs.map((job) => ({ ...job, labels: "ubuntu-latest" })) }))), [BRANCH_CI_CHECKS[1]], "labels that are no list");
   assert.deepEqual(await failing((runs) => runs.map((run) => ({ ...run, jobs: run.jobs.map((job) => ({ ...job, startedAt: "last Tuesday" })) }))), [BRANCH_CI_CHECKS[1]], "a time that is no time");
-  assert.deepEqual(await failures({ ...host, readBranchCi: (repository, branch) => reads(repository, branch, new Set()) }), [BRANCH_CI_CHECKS[1]], "a settled run answered with its jobs again");
+  assert.deepEqual(await failures({ ...host, readBranchCi: async (repository, branch) => reads(repository, branch, new Set()) }), [BRANCH_CI_CHECKS[1]], "a settled run answered with its jobs again");
 });
 
-test("the fake says which branches it was asked about and which runs it was told were settled, and answers null for one it was given none for", () => {
+test("the fake says which branches it was asked about and which runs it was told were settled, and answers null for one it was given none for", async () => {
   const { host } = seeded();
-  const jobsOf = (settled: number[], id: number) => host.readBranchCi!("owner/repo", "admin/a11-1-x", new Set(settled))?.find((run) => run.id === id)?.jobs.length;
-  assert.deepEqual([jobsOf([40], 40), jobsOf([], 40)], [0, 2], "a settled run has no jobs");
-  assert.equal(host.readBranchCi!("owner/repo", "elsewhere", new Set()), null);
+  const jobsOf = async (settled: number[], id: number) => (await host.readBranchCi!("owner/repo", "admin/a11-1-x", new Set(settled)))?.find((run) => run.id === id)?.jobs.length;
+  assert.deepEqual([await jobsOf([40], 40), await jobsOf([], 40)], [0, 2], "a settled run has no jobs");
+  assert.equal(await host.readBranchCi!("owner/repo", "elsewhere", new Set()), null);
   assert.deepEqual(host.branchCi.asked.map(({ branch, settled }) => [branch, settled]), [["admin/a11-1-x", [40]], ["admin/a11-1-x", []], ["elsewhere", []]]);
 });
 

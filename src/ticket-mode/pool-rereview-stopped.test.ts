@@ -35,12 +35,12 @@ async function blockedWhile(state: Partial<Entry>) {
   fixture.store.set({ ...queue, entries: [{ ...queue.entries[0], review: [{ repo: "nbl-ui-netbox", url }], finishedAt: 15 * MINUTE, rounds: 0, ...state }] });
   const pool = fixture.restart({ codeHost: host, reviewer });
   const pull = host.pullAt(url)!;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1, "the first review of the head starts");
   reviewer.wrote({ pr: url, head: HEAD }, null);
   clock.ms = 20 * MINUTE;
   pull.reviews = [{ author: REVIEWER_LOGIN, state: "CHANGES_REQUESTED", commit: HEAD, at: clock.ms }];
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   clock.ms = 30 * MINUTE;
   const entry = () => fixture.store.get().entries[0];
   const set = (more: Partial<Entry>) => fixture.store.set({ ...fixture.store.get(), entries: [{ ...entry(), ...more }] });
@@ -52,10 +52,10 @@ const RUNNING: Partial<Entry> = { phase: "running", workspace: "w1", pane: "w1:p
 
 test("A11-274: a parked run that stopped without an outcome before the block has its body fix re-reviewed on the same head within one sweep, and the look counts as one of its rounds", async () => {
   const { reviewer, pool, pull, url, entry } = await blockedWhile(PARKED);
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1, "a block nobody answered starts nothing");
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual(reviewer.started, [{ pr: url, head: HEAD }, { pr: url, head: HEAD }], "the same head, with no commit");
   assert.deepEqual(reviewer.briefs[1]?.rereview?.body, CHANGED, "told which lines changed");
   assert.equal(entry().rounds, 1, "counted as A11-235 counts a re-review");
@@ -65,7 +65,7 @@ test("A11-274: a running run waiting in its terminal, and one idle on a working 
   for (const [why, state] of [["on a dialog", { waiting: true }], ["idle on a working note", { working: { reason: "step 2", at: 12 * MINUTE, idleSince: 12 * MINUTE } }]] as const) {
     const { reviewer, pool, pull, entry } = await blockedWhile({ ...RUNNING, ...state });
     pull.body = FIXED;
-    pool.reviewNewHeads();
+    await pool.reviewNewHeads();
     assert.equal(reviewer.started.length, 2, why);
     assert.deepEqual(reviewer.briefs[1]?.rereview?.body, CHANGED, why);
     assert.equal(entry().rounds, 1, why);
@@ -75,19 +75,19 @@ test("A11-274: a running run waiting in its terminal, and one idle on a working 
 test("A11-274: a running run whose agent is working gets no re-review, and once it is seen idle it gets one", async () => {
   const { reviewer, pool, pull, set, entry } = await blockedWhile(RUNNING);
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds], [1, 0], "the worker may still be editing the description");
   set({ working: { reason: "step 2", at: 31 * MINUTE, idleSince: 31 * MINUTE } });
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds], [2, 1]);
 });
 
 test("A11-274: a stopped run with no round left is handed back once and starts no reviewer", async () => {
   const { reviewer, pool, pull, entry } = await blockedWhile({ ...PARKED, rounds: MAX_FEEDBACK_ROUNDS });
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   const handedBack = entry().handedBack;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1, "no reviewer");
   assert.equal(entry().rounds, MAX_FEEDBACK_ROUNDS, "and no round counted");
   assert.match(handedBack ?? "", /^The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped\. .*was answered by editing the description/);
@@ -98,20 +98,20 @@ test("A11-274: a review round the block queued keeps A11-235's rule while it run
   const { reviewer, pool, pull, set, entry } = await blockedWhile(PARKED);
   set({ ...RUNNING, queuedAt: 21 * MINUTE, waiting: true });
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds], [1, 0], "the block's own round is under way: its end is the answer");
   set({ phase: "finished", outcome: { kind: "no-outcome" }, finishedAt: 35 * MINUTE, waiting: false });
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().rounds], [2, 1]);
 });
 
 test("A11-274: a running run with no round left starts no reviewer and is not handed back while it runs, and is handed back once it has stopped", async () => {
   const { reviewer, pool, pull, set, entry } = await blockedWhile({ ...RUNNING, waiting: true, rounds: MAX_FEEDBACK_ROUNDS });
   pull.body = FIXED;
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.deepEqual([reviewer.started.length, entry().handedBack], [1, undefined]);
   set({ phase: "finished", outcome: { kind: "no-outcome" }, finishedAt: 35 * MINUTE, waiting: false });
-  pool.reviewNewHeads();
+  await pool.reviewNewHeads();
   assert.equal(reviewer.started.length, 1);
   assert.match(entry().handedBack ?? "", /^The pull requests keep getting feedback/);
 });
