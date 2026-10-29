@@ -6,7 +6,7 @@ import { close, end, restoreWorkingState } from "./pool-settle.ts";
 import { stopWriter, writerOf } from "./queue.ts";
 import { filedOf } from "./pool-board-runs.ts";
 import { forgetRun, messageOf, update, writerPlace } from "./pool-state.ts";
-import { closedNote } from "../herdr-agents.ts";
+import { closeWorkspaceLater } from "./pool-close.ts";
 import { isBeingPublished, isParked } from "./board-view/pull-status-and-notes.ts";
 import { respond as respondQueued, unpark } from "./queue/queue-transitions.ts";
 import { retryRefusal } from "./queue/queue-retry-refusal.ts";
@@ -81,11 +81,11 @@ const placedIn = (queue: Queue, key: string, repo: string): Queue => replace(que
  * tickets has no workspace left to close, since its agent ended when its outcome was read.
  */
 export function stopWriterRun(ctx: PoolContext, id: string): void {
-  const { herdr, now, session, store } = ctx;
+  const { now, store } = ctx;
   const run = writerOf(store.get(), id);
   if (run === undefined || run.phase === "finished") return;
   const { name } = writerPlace(ctx, run);
-  if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
+  if (run.workspace) closeWorkspaceLater(ctx, run.workspace);
   forgetRun(ctx, name);
   const filed = filedOf(ctx, run);
   update(ctx, (queue) => stopWriter(queue, id, now(), { tickets: filed.tickets, problem: filed.problem }));

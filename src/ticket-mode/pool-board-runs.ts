@@ -11,7 +11,7 @@ import { joined } from "./queue.ts";
 import { forgetRun, log, messageOf, publishPlace, update, writerPlace, writerAgentRunning } from "./pool-state.ts";
 import { writerEnded, writerWaiting } from "./queue.ts";
 import { QUESTION_CHARS } from "./pool-outcome.ts";
-import { closedNote } from "../herdr-agents.ts";
+import { closeWorkspaceLater } from "./pool-close.ts";
 import { publishDone, publishFailed } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { hasPlan } from "./board-view/view-types-and-filters.ts";
@@ -162,9 +162,8 @@ function stopHookRunning(dir: string, now: number): boolean {
 
 /** Close a new-ticket run's workspace, and forget its run. */
 function closeWriter(ctx: PoolContext, run: WriterRun): void {
-  const { herdr, session } = ctx;
   const { name } = writerPlace(ctx, run);
-  if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
+  if (run.workspace) closeWorkspaceLater(ctx, run.workspace);
   forgetRun(ctx, name);
 }
 
@@ -190,9 +189,9 @@ export function endWriter(ctx: PoolContext, run: WriterRun, failure: string): vo
 
 /** Close the publish run's workspace and record how it ended: each of its runs Published, or why it failed. */
 export function endPublish(ctx: PoolContext, publish: PublishRun, result: Readonly<{ links: readonly string[] } | { failure: string }>): void {
-  const { herdr, now, session } = ctx;
+  const { now } = ctx;
   const { name } = publishPlace(ctx, publish);
-  if (publish.workspace) closedNote((args) => herdr(args), publish.workspace, session);
+  if (publish.workspace) closeWorkspaceLater(ctx, publish.workspace);
   forgetRun(ctx, name);
   update(ctx, (queue) => ("links" in result ? publishDone(queue, result.links, now()) : publishFailed(queue, result.failure, now())));
 }

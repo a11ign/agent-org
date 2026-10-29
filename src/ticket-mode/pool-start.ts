@@ -12,16 +12,18 @@ import { isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace,
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentTarget } from "./pool-resume.ts";
+import { closesSettled, closeWorkspaceLater } from "./pool-close.ts";
 import { plannedStepsOf } from "./pool-plan-steps.ts";
 import { recordPlannedSteps, type RunWorker } from "./queue/queue-run-detail.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostname } from "node:os";
-import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
+import { agentStartArgs, closedNoteAsync, openPaneAsync, readAgents, readAgentsAsync } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal, herdrServiceOf } from "./pool-herdr.ts";
 import { defaultServiceDeps } from "../install/service.ts";
 import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, slotsHeld } from "./queue/queue-transitions.ts";
 import { READ_RETRY_MS, retryTime, SAID_ONCE, startReadHold } from "./queue/start-reads.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { repoOfProject } from "./project-repo.ts";
 import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
 import { isParked, repoOf, waitNote } from "./board-view/pull-status-and-notes.ts";
@@ -59,6 +61,12 @@ import { ATTACH_WAITS_MS, isTransient, MS_PER_SECOND } from "./attach-retry.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
+
+/** How long a start waits for one of herdr's other calls (the pane, the listing, a close), in ms: the cut a synchronous call had, which holds no loop now (A11-282). */
+const START_READ_MS = 30_000;
+
+/** herdr's async runner for the calls a start and its settling make besides `agent start`. */
+const readRunner = (ctx: PoolContext) => (args: string[]): Promise<string> => ctx.herdrCall(args, START_READ_MS);
 
 // A new pane's shell is not at its prompt for a moment, longer on a loaded host, and herdr refuses an agent start until it is (`agent_pane_busy`).
 const SHELL_TRY_MS = 500;
@@ -122,17 +130,19 @@ async function startOnceShellReady(ctx: PoolContext, args: string[]): Promise<vo
  * the workspace and its pane, or throws with herdr's reason, naming `what`, after closing anything it opened.
  */
 async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string, string>, tail: readonly string[], what: string): Promise<{ workspace: string; pane: string }> {
-  const { herdr, herdrAsync, session, startedHere } = ctx;
-  const run = (args: string[]) => herdr(args);
-  const opened = openPane(run, place.name, env, place.folder, { ...session, tmpBase: ctx.runTmpBase });
+  const { session, startedHere } = ctx;
+  // A run queued again at once opens its workspace after the close of the one it replaces, as when that close held the loop (A11-282).
+  await closesSettled(ctx);
+  const run = readRunner(ctx);
+  const opened = await openPaneAsync(run, place.name, env, place.folder, { ...session, tmpBase: ctx.runTmpBase });
   if ("refusal" in opened) throw new Error(opened.refusal);
   try {
     await startOnceShellReady(ctx, agentStartArgs(place.name, "claude", opened.pane, [...tail], session));
   } catch (err) {
     // A start can outlast its timeout and still succeed: ask the listing before calling it a failure.
-    const listed = readAgents(run, session)?.find((agent) => agent.label === place.name);
+    const listed = (await readAgentsAsync(run, session))?.find((agent) => agent.label === place.name);
     if (listed === undefined || listed.status === "unknown") {
-      throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${closedNote(run, opened.workspace, session)}`);
+      throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${await closedNoteAsync(run, opened.workspace, session)}`);
     }
   }
   startedHere.add(place.name);
@@ -166,11 +176,11 @@ export function answerStartDialog(ctx: PoolContext, place: RunPlace): boolean {
  * the entry held before this start is not it.
  */
 export async function settleStart(ctx: PoolContext, started: RunPlace): Promise<void> {
-  const { herdr, session, startedHere, wait } = ctx;
+  const { session, startedHere, wait } = ctx;
   const { pane: _before, ...place } = started;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     await wait(1500);
-    const status = readAgents((args) => herdr(args), session)?.find((agent) => agent.label === place.name)?.status;
+    const status = (await readAgentsAsync(readRunner(ctx), session))?.find((agent) => agent.label === place.name)?.status;
     if (status === "working" || status === "idle" || status === "done") {
       startedHere.delete(place.name);
       return;
@@ -472,6 +482,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
   }
   // One turn first: a pass asked for by code that is still running (a watch that queued a round and asked for a tick) decides after that code has finished, as it did when this awaited the reads.
   await Promise.resolve();
+  // The workspaces the watch just asked herdr to close are closed first, so the listing below never reads one that is closing as a leftover or an agent that holds a name (A11-282).
+  await closesSettled(ctx);
   // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
   settleSessions(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
@@ -520,9 +532,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
  * and the run stays stopped.
  */
 function stoppedWhileStarting(ctx: PoolContext, key: string, workspace: string): boolean {
-  const { herdr, session } = ctx;
   if (phaseOf(ctx, key) === "starting") return false;
-  closedNote((args) => herdr(args), workspace, session);
+  closeWorkspaceLater(ctx, workspace);
   return true;
 }
 
@@ -782,7 +793,7 @@ async function planReached(ctx: PoolContext, queued: Ticket): Promise<boolean> {
  * while it starts is closed, as a ticket run stopped while it starts is. A start that fails ends the run failed, saying why.
  */
 async function startWriter(ctx: PoolContext): Promise<void> {
-  const { herdr, now, session, settings, source, store } = ctx;
+  const { now, settings, source, store } = ctx;
   const queued = writerToStart(store.get());
   const writer = settings.writer;
   if (queued === undefined) return;
@@ -806,7 +817,7 @@ async function startWriter(ctx: PoolContext): Promise<void> {
     const tail = [writerPrompt(place.dir, queued.mode), ...workerFlags({ name: `${checkRun ? queued.mode : "writer"}-${queued.id}`, model, effort, addDirs: [place.dir] })];
     const { workspace, pane } = await startAgent(ctx, place, {}, tail, checkRun ? "the After-merge check run" : "the new-ticket run");
     if (writerOf(store.get(), queued.id)?.phase !== "starting") {
-      closedNote((args) => herdr(args), workspace, session);
+      closeWorkspaceLater(ctx, workspace);
       return;
     }
     update(ctx, (queue) => markWriterRunning(queue, queued.id, workspace, pane));

@@ -8,6 +8,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 /** The longest a stopping instance waits for its runs to finish starting, in ms: inside the service manager's stop timeouts, systemd's 90 s and launchd's 20 s. */
 export const STARTS_WAIT_MS = 15_000;
+
+/** How long an ending instance waits for the workspace closes it asked of herdr, in ms (A11-282). */
+export const CLOSES_WAIT_MS = 5_000;
 /** How often the count of starting runs is looked at while waiting, in ms. */
 export const STARTS_POLL_MS = 250;
 

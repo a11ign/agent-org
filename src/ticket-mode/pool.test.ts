@@ -130,7 +130,7 @@ function stopDuringStart(queue: Queue, key: string, deps: Omit<Parameters<typeof
   const store = { get: () => current, set: (next: Queue) => { current = next; } };
   const h = herdr(new Map());
   let pool: ReturnType<typeof createPool>;
-  const herdrAsync = async (args: string[]) => { pool.stop(key); return h.run(args); };
+  const herdrAsync = async (args: string[]) => { if (args[2] === "agent" && args[3] === "start") pool.stop(key); return h.run(args); };
   pool = createSettledPool(store, { ...deps, herdr: h.run, herdrAsync });
   return { pool, store, h };
 }

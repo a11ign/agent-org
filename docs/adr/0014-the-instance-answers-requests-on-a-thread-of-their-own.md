@@ -25,3 +25,12 @@ The request thread made reads independent of the board thread; it did not make t
 - the sweep of the stacked pull requests' bases: `sweepRetargetsAsync`.
 
 What still holds the board thread, by the live ledger of 2026-10-28 (calls of 250 ms or more): the reviewer's start (its checkout with `git` and `pnpm`, its token mint, its claim on the head with `gh`, its `herdr` workspace), the stack merge's reads, the merge flow's reads and the check-run reads. The reviewer's start is the largest family and is A11-379's: its first step (the asynchronous forms of the steps that spawn a program) has merged, and its second wires the reviewer port to them. The rest is listed in the pull request that made this change, with the ledger's times, for whoever takes the next family.
+
+## The pool's herdr calls at the start and end of a run (A11-282, step 4)
+
+The ticket was reopened on 2026-10-29 with the figure at 14 an hour. After step 3 the held-loop lines were mostly the reviewer's start (A11-379), the GitHub plugin's event operations (A11-395) and the pool's own `herdr` calls at the two ends of a run. Those are taken off the loop here: the close of an ended run's workspace (`closeWorkspaceLater`, `pool-close.ts`; its note was dropped at every call site, so nothing waited on it) and a start's pane, agent listing and close on failure (`startAgent`, `settleStart`).
+
+- They go through `ctx.herdrCall`, over `herdrRunAsync`, which carries herdr's own stderr on the error as `herdrRun` did. `defaultHerdrAsync` is left bare, because `agent start`'s busy-pane retry reads its error as it is.
+- The close is no longer finished when the code after it runs, so the pass's `fill` and every start wait for the closes that are out (`closesSettled`): a run queued again never opens a workspace beside the one it replaces, and `settleSessions` never reads a workspace that is closing. The pass waits, the event loop does not.
+- An instance that ends waits for the closes it asked, at most `CLOSES_WAIT_MS`, before it exits.
+- Still synchronous, by the same ledger: `sweepRunTmp`'s `workspace list`, the pane read of a run the tick finds not working, the start dialog's `agent read` and `send-keys`, and the workspace close of an unparked run (which reports its failure). Each is rare and each is listed in the pull request.

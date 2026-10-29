@@ -4,7 +4,8 @@
 // WHY A RESTART AND NOT AN `export`. herdr restores a pane's directory and Claude session and not the `--env` of `workspace create` (its `session.json` holds `cwd` and `agent_session`), and the gh wrapper reads the Claude
 // process's own environment. Variables typed into the pane's shell never reach a Claude that is already running, so the run is started again the way a review run resumes a worker: close its workspace, open one with
 // {@link runEnvOf}'s environment, and start `claude --resume <session>` in the same folder, its first prompt the resume prompt. The conversation, the worktree and the plan are all where they were.
-import { closedNote, readAgents } from "../herdr-agents.ts";
+import { readAgents } from "../herdr-agents.ts";
+import { closeWorkspaceLater } from "./pool-close.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { talkSession } from "./pool-prepare.ts";
@@ -59,7 +60,7 @@ async function reseatRun(ctx: PoolContext, entry: Entry, note: ResumeNote): Prom
     return end(ctx, entry, crashed(err));
   }
   // A person who stopped the run while it started has the last word: the workspace just opened is closed and the run stays stopped.
-  if (ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "running") return void closedNote((args) => ctx.herdr(args), started.workspace, ctx.session);
+  if (ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "running") return void closeWorkspaceLater(ctx, started.workspace);
   updateEach(ctx, runMembers(ctx, entry), recordRestored(started.workspace, started.pane, { ...note, environment: "restored" }));
   log(`${who} was started again in ${started.workspace} with its environment, resuming session ${session}, at ${new Date(ctx.now()).toISOString().slice(11, 16)}Z`);
   ctx.answered.delete(place.name);

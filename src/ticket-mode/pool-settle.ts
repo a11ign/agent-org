@@ -35,7 +35,7 @@ import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { missingBehaviour } from "./open-decisions.ts";
 import { ticketDecisionsDefect } from "./plan-ticket-decisions.ts";
-import { closedNote } from "../herdr-agents.ts";
+import { closeWorkspaceLater } from "./pool-close.ts";
 import { cloneRefusal, mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./board-view/view-types-and-filters.ts";
 import { countTokens, findTranscript } from "./pool-transcripts.ts";
@@ -595,7 +595,7 @@ function recordedOf(moving: Moving, stamped: TicketRead | undefined, stamp: Plan
  * the run for a person, with its files kept in the ticket's `plan` folder, unless the failure was the network's or the tracker's own (a 5xx): then the board tries again later ({@link attachFailed}).
  */
 async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
-  const { attaching, herdr, session, settings, source } = ctx;
+  const { attaching, settings, source } = ctx;
   const key = entry.ticket.key;
   const { name } = runPlace(ctx, entry);
   if (attaching.has(name) || waitingToRetry(ctx, name)) return;
@@ -618,7 +618,7 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
     const named = blockersOfPlan(found.files, key);
     const blockers = named.length === 0 ? named : await writePlanBlockers(ctx, key, named);
     if (!sameRun(ctx, entry)) return;
-    if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
+    if (entry.workspace) closeWorkspaceLater(ctx, entry.workspace);
     forgetRun(ctx, name);
     update(ctx, (queue) => recordPlanBlockers(planDone(recordedOf(moving, stamped, stamp)?.(queue) ?? queue, key, { now: ctx.now() }), key, blockers));
     // The ticket is queued again after the pass that saw the outcome decided, so a pass is asked for: the run starts at once, not at the next interval (A11-364).
@@ -657,7 +657,7 @@ async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<
  * starts before its blockers are there to be read. A person's answer settles the tickets still in the batch the same way, when the run writes `planned` again.
  */
 async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
-  const { attaching, herdr, now, session } = ctx;
+  const { attaching, now } = ctx;
   const { name, dir } = runPlace(ctx, entry);
   if (attaching.has(name) || waitingToRetry(ctx, name)) return;
   attaching.add(name);
@@ -680,7 +680,7 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
     if (still.length === 0) return;
     // A run that asked a person something stays open for the answer: its agent was told a person may answer it there.
     const parks = entry.workspace !== undefined && still.some(({ ticket: { key } }) => handedBack.has(key));
-    if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
+    if (entry.workspace && !parks) closeWorkspaceLater(ctx, entry.workspace);
     forgetRun(ctx, name);
     const id = entry.workspace === undefined ? undefined : ctx.claudeSessions.get(entry.workspace);
     updateEach(ctx, still, (queue, key) => {
@@ -812,10 +812,10 @@ type Ending = Readonly<{ outcome: Outcome; movedTo?: string }>;
 
 /** {@link end}, or the end of a run the board moves to the repository its worker named, which is queued again at once and so parks nowhere. */
 function finishRun(ctx: PoolContext, entry: Entry, { outcome, movedTo }: Ending): void {
-  const { claudeSessions, herdr, now, session, transcripts } = ctx;
+  const { claudeSessions, now, transcripts } = ctx;
   // A concluded run never parks, whatever else a later change hands back: nobody would answer its agent.
   const parks = movedTo === undefined && entry.workspace !== undefined && HANDED_BACK.has(outcome.kind) && !CONCLUDED.has(outcome.kind);
-  if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
+  if (entry.workspace && !parks) closeWorkspaceLater(ctx, entry.workspace);
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
   const { name } = runPlace(ctx, entry);
