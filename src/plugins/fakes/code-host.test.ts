@@ -216,31 +216,31 @@ test("a code host that reads no log, or that loses the claim it wrote, fails by 
   noLog.host.checksAndClaims.logs.clear();
   await assert.rejects(runCodeHostConformance(noLog.host, noLog.probe), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "readCheckLog reads the log behind a failing check");
   const lost = seeded();
-  lost.host.writeReviewClaim = () => null;
+  lost.host.writeReviewClaim = async () => null;
   await assert.rejects(runCodeHostConformance(lost.host, lost.probe), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "a claim written on a head is read back from it");
 });
 
 test("a code host that answers neither the entries nor a reason fails by name", async () => {
   const { host, probe } = seeded();
-  host.readReviewClaims = () => ({ unreadable: "" });
+  host.readReviewClaims = async () => ({ unreadable: "" });
   await assert.rejects(runCodeHostConformance(host, probe), (error: unknown) => error instanceof ContractError && error.failures.some(({ check }) => check === "readReviewClaims answers the entries of a head, or why it could not"));
 });
 
-test("the fake keeps the claims it is told to write, in order, for the head they were written on, and refuses as it is told to", () => {
+test("the fake keeps the claims it is told to write, in order, for the head they were written on, and refuses as it is told to", async () => {
   const { host } = seeded();
   const state = host.checksAndClaims;
   state.now = () => 1_000;
   const write = (head: string, description: string) => host.writeReviewClaim({ repository: "owner/repo", head, description, environment: { GH_CONFIG_DIR: "/r" } });
-  assert.equal(write("h1", "claimed by a"), null);
-  assert.equal(write("h1", "released by a"), null);
-  assert.equal(write("h2", "claimed by b"), null);
-  assert.deepEqual(host.readReviewClaims("owner/repo", "h1"), { entries: [{ id: 1, description: "claimed by a", created: 1_000 }, { id: 2, description: "released by a", created: 1_000 }] });
-  assert.deepEqual(host.readReviewClaims("owner/repo", "h3"), { entries: [] }, "a head nobody claimed has no entries, which is not a failure to read");
+  assert.equal(await write("h1", "claimed by a"), null);
+  assert.equal(await write("h1", "released by a"), null);
+  assert.equal(await write("h2", "claimed by b"), null);
+  assert.deepEqual(await host.readReviewClaims("owner/repo", "h1"), { entries: [{ id: 1, description: "claimed by a", created: 1_000 }, { id: 2, description: "released by a", created: 1_000 }] });
+  assert.deepEqual(await host.readReviewClaims("owner/repo", "h3"), { entries: [] }, "a head nobody claimed has no entries, which is not a failure to read");
   state.claimWriteRefusal = "HTTP 403";
-  assert.equal(write("h2", "claimed by c"), "HTTP 403");
+  assert.equal(await write("h2", "claimed by c"), "HTTP 403");
   assert.equal(state.claimWrites.length, 3, "a refused write is not kept");
   state.claimReadRefusal = "HTTP 502";
-  assert.deepEqual(host.readReviewClaims("owner/repo", "h1"), { unreadable: "HTTP 502" });
+  assert.deepEqual(await host.readReviewClaims("owner/repo", "h1"), { unreadable: "HTTP 502" });
 });
 
 test("the fake reruns what it is asked to and refuses when told to, and reads only the logs it holds", () => {

@@ -4,7 +4,7 @@
 // A PLUGIN IMPORTS CORE'S TYPES ONLY (ADR 0001), so the gate the reviewer drives reaches it through `deps.reviewing`: THE GATE STAYS CORE'S, shared with the org's own reviewer (`wake/*`, `review-trust.ts`,
 // `work-gate/pr-orders.ts`, `project-config.ts`, the door path and `host-config.ts`), and `reviewing-gate.ts` hands its loader over. A board adds its collaborators and the functions the atomic reviewer called directly
 // before it moved (the seat names, the herdr listing, the claim protocol, the verdict reader), as the modules' own. They are held to `ReviewerBoard`'s signatures where they are assigned below.
-import { readAgents, ORG_SESSION, firstLine, herdrAgentName } from "../herdr-agents.ts";
+import { readAgents, readAgentsAsync, herdrRunAsync, ORG_SESSION, firstLine, herdrAgentName } from "../herdr-agents.ts";
 import { readDialogLines } from "../pane-dialog-read.ts";
 import { cloneKeys } from "../derived-name.ts";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
@@ -15,7 +15,7 @@ import type { ReviewerBoard, ReviewerHelpers } from "./manifest.ts";
 import { gateHelpers } from "./reviewing-gate.ts";
 
 /** What a board names of itself: the rest of a {@link ReviewerBoard} is core's own functions. */
-export type BoardCollaborators = Pick<ReviewerBoard, "session" | "run" | "codeHost" | "clones" | "instance" | "heads"> & Partial<Pick<ReviewerBoard, "seen" | "tmpBase">>;
+export type BoardCollaborators = Pick<ReviewerBoard, "session" | "run" | "codeHost" | "clones" | "instance" | "heads"> & Partial<Pick<ReviewerBoard, "seen" | "tmpBase" | "runAsync">>;
 
 /** The helpers a reviewer plugin is given on a board: the gate's, and the board's collaborators with the functions the reviewer calls. */
 export const reviewingHelpers = (collaborators: BoardCollaborators): ReviewerHelpers => {
@@ -25,9 +25,11 @@ export const reviewingHelpers = (collaborators: BoardCollaborators): ReviewerHel
     ...gateHelpers(),
     board: () => ({
       ...collaborators,
+      // `runAsync` is core's own `herdr` unless a board gives one (a test does): `server.ts` and `review-command.ts` name `run` alone.
+      runAsync: collaborators.runAsync ?? ((args) => herdrRunAsync(args)),
       seen,
       attribution: { reviewerInstance, reviewerSeat, cloneKeys },
-      herdr: { ORG_SESSION, firstLine, agentName: herdrAgentName, readAgents, readDialogLines },
+      herdr: { ORG_SESSION, firstLine, agentName: herdrAgentName, readAgents, readAgentsAsync, readDialogLines },
       claims: { REVIEW_LEASE_MS, claimHead, othersSeenIn, releasedDescriptionOf },
       verdict: { headMatches, reviewVerdict },
     }),

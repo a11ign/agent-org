@@ -25,10 +25,10 @@ export function codexConfigFile(env: TrustSeams["env"]): string {
 
 /**
  * The root of the clone a checkout belongs to, or null when git cannot say: the parent of `git rev-parse --git-common-dir`, which for a linked worktree is the main clone's `.git`. This is the root
- * Codex trusts for a worktree. A common dir that is not a `.git` (a bare repository) has no clone root.
+ * Codex trusts for a worktree. A common dir that is not a `.git` (a bare repository) has no clone root. Asked through `execAsync` (A11-379), so a reviewer's start does not hold the loop for it.
  */
-export function cloneRootOf(tree: string, exec: PluginDeps["exec"]): string | null {
-  const found = exec("git", ["-C", tree, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+export async function cloneRootOf(tree: string, execAsync: PluginDeps["execAsync"]): Promise<string | null> {
+  const found = await execAsync("git", ["-C", tree, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
   const commonDir = found.status === 0 ? found.stdout.trim() : "";
   return basename(commonDir) === ".git" ? dirname(commonDir) : null;
 }
@@ -172,6 +172,6 @@ export function untrustedHostRepositories(seams: TrustSeams): { file: string; un
 }
 
 /** What the port is given to trust a review's repository before its reviewer starts (`Seams.codexTrust`): where the clone root is, what trusts it, and where the news goes. */
-export function codexTrustSeam(deps: Pick<PluginDeps, "env" | "clones" | "exec" | "log">) {
-  return { rootOf: (tree: string) => cloneRootOf(tree, deps.exec), ensure: (root: string) => ensureTrusted(root, deps), log: deps.log };
+export function codexTrustSeam(deps: Pick<PluginDeps, "env" | "clones" | "execAsync" | "log">) {
+  return { rootOf: (tree: string) => cloneRootOf(tree, deps.execAsync), ensure: (root: string) => ensureTrusted(root, deps), log: deps.log };
 }

@@ -13,7 +13,7 @@ function fakePanes(isLive: (ref: ReviewerRef) => boolean) {
   const unblocked: ReviewerRef[] = [];
   return {
     unblocked,
-    unblock: (ref: ReviewerRef): ReviewerDialog | null => {
+    unblock: async (ref: ReviewerRef): Promise<ReviewerDialog | null> => {
       unblocked.push(ref);
       return isLive(ref) ? (dialogs.get(key(ref)) ?? null) : null;
     },
@@ -61,15 +61,15 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       if (!loaded) throw new Error("the reviewer is not loaded: load() runs before a pool with reviewers is made");
       return refusal;
     },
-    start(ref, brief) {
+    async start(ref, brief) {
       if (refusal !== null) return { refusal };
       started.push(ref);
       briefs.push(brief);
       live.set(key(ref), { label: `fake-reviewer-${started.length}`, turn: "working" });
       return { label: entryOf(ref)!.label };
     },
-    live: (ref) => live.has(key(ref)),
-    close(ref) {
+    live: async (ref) => live.has(key(ref)),
+    async close(ref) {
       const entry = entryOf(ref);
       if (entry === undefined) return { state: "gone" };
       if (entry.turn === "working") return { state: "busy" };
@@ -77,19 +77,19 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       closed.push(ref);
       return { state: "closed" };
     },
-    retire(pr) {
+    async retire(pr) {
       checkout.forget(pr, live);
       retired.push(pr);
       return { retired: true, report: null };
     },
-    listedPulls: () => [...new Set([...live.keys()].map((held) => held.slice(0, held.lastIndexOf("@"))))],
-    settled: (ref) => entryOf(ref)?.turn ?? "gone",
+    listedPulls: async () => [...new Set([...live.keys()].map((held) => held.slice(0, held.lastIndexOf("@"))))],
+    settled: async (ref) => entryOf(ref)?.turn ?? "gone",
     verdictFileOf: (ref) => checkout.fileOf(ref),
-    repostVerdict(ref, file) {
+    async repostVerdict(ref, file) {
       reposted.push({ ref, file });
       return entryOf(ref) === undefined ? { refusal: `no reviewer for ${ref.pr}`, final: false } : { posted: true };
     },
-    reprompt(ref, brief) {
+    async reprompt(ref, brief) {
       reprompted.push(ref);
       briefs.push(brief);
       return entryOf(ref) === undefined ? { refusal: `no reviewer for ${ref.pr}` } : { prompted: true };

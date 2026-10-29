@@ -20,13 +20,13 @@ function pluginPull() {
 }
 
 /** A port that records what it was asked, and answers as told. */
-const port = (answer: ReturnType<ReviewerPort["start"]>, live = false) => {
+const port = (answer: Awaited<ReturnType<ReviewerPort["start"]>>, live = false) => {
   const calls: string[] = [];
   const p: ReviewerPort = {
-    live: ({ pr, head }) => { calls.push(`live ${pr}@${head}`); return live; },
-    start: ({ pr, head }) => { calls.push(`start ${pr}@${head}`); return answer; },
-    close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [],
-    settled: () => "working", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: () => ({ prompted: true }),
+    live: async ({ pr, head }) => { calls.push(`live ${pr}@${head}`); return live; },
+    start: async ({ pr, head }) => { calls.push(`start ${pr}@${head}`); return answer; },
+    close: async () => ({ state: "gone" }), retire: async () => ({ retired: true, report: null }), listedPulls: async () => [],
+    settled: async () => "working", verdictFileOf: () => null, repostVerdict: async () => ({ posted: true }), reprompt: async () => ({ prompted: true }),
   };
   return { p, calls };
 };
@@ -41,84 +41,84 @@ const reviewOn = (state: string, commit: string) => ({ author: "a11ign-reviewer"
 const asked = (state: ReviewState | null, extra: Partial<Parameters<typeof reviewOnDemand>[0]> = {}) => ({ url: URL, port: port({ label: "reviewer-control-119" }).p,
   readState: () => state, started: new Set<string>(), record: () => {}, ...extra });
 
-test("starts the reviewer at the pull request's current head, names the seat it started, and records it for the pool", () => {
+test("starts the reviewer at the pull request's current head, names the seat it started, and records it for the pool", async () => {
   const { p, calls } = port({ label: "reviewer-control-119" });
   const recorded: string[][] = [];
-  const r = reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), record: (label, key, head) => { recorded.push([label, key, head]); } });
+  const r = await reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), record: (label, key, head) => { recorded.push([label, key, head]); } });
   assert.equal(r.code, 0);
   assert.match(r.out, /started reviewer-control-119 for .*pull\/119 at 3aeaba9b/);
   assert.deepEqual(calls, [`live ${URL}@${HEAD}`, `start ${URL}@${HEAD}`]);
   assert.deepEqual(recorded, [["reviewer-control-119", `${URL}@${HEAD}`, HEAD]], "the start is recorded for the pool, with its seat and head");
 });
 
-test("A11-235: a start is recorded with its look: the time of the start and the pull request body it saw, so the pool can tell when the body changes", () => {
+test("A11-235: a start is recorded with its look: the time of the start and the pull request body it saw, so the pool can tell when the body changes", async () => {
   const { p } = port({ label: "reviewer-control-119" });
   const looks: unknown[] = [];
   const withBody = { ...stateAt(HEAD), view: { body: "Closes A11-1\n" } } as unknown as ReviewState;
-  reviewOnDemand({ url: URL, port: p, readState: () => withBody, started: new Set(), now: () => 1234, record: (_label, _key, _head, _unclaimed, look) => { looks.push(look); } });
+  await reviewOnDemand({ url: URL, port: p, readState: () => withBody, started: new Set(), now: () => 1234, record: (_label, _key, _head, _unclaimed, look) => { looks.push(look); } });
   assert.deepEqual(looks, [{ at: 1234, body: "Closes A11-1\n" }]);
   const bare: unknown[] = [];
-  reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), now: () => 5, record: (_label, _key, _head, _unclaimed, look) => { bare.push(look); } });
+  await reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), now: () => 5, record: (_label, _key, _head, _unclaimed, look) => { bare.push(look); } });
   assert.deepEqual(bare, [{ at: 5, body: "" }], "a host that gives no body has an empty one; a start with no brief has no decisions on its look, so none are compared (A11-250)");
 });
 
-test("a --head given is the head reviewed, and its posted review is what is checked at that head", () => {
+test("a --head given is the head reviewed, and its posted review is what is checked at that head", async () => {
   const { p, calls } = port({ label: "reviewer-control-119" });
-  const r = reviewOnDemand({ url: URL, head: "abc1234", port: p, readState: () => stateAt(HEAD, [reviewOn("APPROVED", "abc1234")]), started: new Set(), record: () => {} });
+  const r = await reviewOnDemand({ url: URL, head: "abc1234", port: p, readState: () => stateAt(HEAD, [reviewOn("APPROVED", "abc1234")]), started: new Set(), record: () => {} });
   assert.equal(r.code, 0);
   assert.match(r.out, /already reviewed at abc1234/);
   assert.deepEqual(calls, [], "a head with a posted review starts nothing");
 });
 
-test("a head given that has no review is started at that head", () => {
+test("a head given that has no review is started at that head", async () => {
   const { p, calls } = port({ label: "reviewer-control-119" });
-  reviewOnDemand(asked(stateAt(HEAD), { port: p, head: "abc1234" }));
+  await reviewOnDemand(asked(stateAt(HEAD), { port: p, head: "abc1234" }));
   assert.deepEqual(calls, [`live ${URL}@abc1234`, `start ${URL}@abc1234`]);
 });
 
-test("a reviewer already live for that head is not started twice", () => {
+test("a reviewer already live for that head is not started twice", async () => {
   const { p, calls } = port({ label: "never" }, true);
-  const r = reviewOnDemand(asked(stateAt(HEAD), { port: p }));
+  const r = await reviewOnDemand(asked(stateAt(HEAD), { port: p }));
   assert.equal(r.code, 0);
   assert.match(r.out, /already working/);
   assert.deepEqual(calls, [`live ${URL}@${HEAD}`]);
 });
 
-test("a head the pool already started a reviewer for is not started again, even when no reviewer is listed now", () => {
+test("a head the pool already started a reviewer for is not started again, even when no reviewer is listed now", async () => {
   const { p, calls } = port({ label: "never" });
-  const r = reviewOnDemand(asked(stateAt(HEAD), { port: p, started: new Set([`${URL}@${HEAD}`]) }));
+  const r = await reviewOnDemand(asked(stateAt(HEAD), { port: p, started: new Set([`${URL}@${HEAD}`]) }));
   assert.equal(r.code, 0);
   assert.match(r.out, /already started for .* at 3aeaba9b, so none is started again/);
   assert.deepEqual(calls, [`live ${URL}@${HEAD}`], "the start is not asked for");
 });
 
-test("a head with a posted approval or requested changes says which, and starts nothing", () => {
+test("a head with a posted approval or requested changes says which, and starts nothing", async () => {
   for (const [state, word] of [["APPROVED", "approved"], ["CHANGES_REQUESTED", "changes requested"]]) {
     const { p, calls } = port({ label: "never" });
-    const r = reviewOnDemand(asked(stateAt(HEAD, [reviewOn(state, HEAD)]), { port: p }));
+    const r = await reviewOnDemand(asked(stateAt(HEAD, [reviewOn(state, HEAD)]), { port: p }));
     assert.equal(r.code, 0);
     assert.match(r.out, new RegExp(`already reviewed at 3aeaba9b: ${word}`));
     assert.deepEqual(calls, []);
   }
 });
 
-test("a head that changed after requested changes is not reviewed yet, so it is started", () => {
+test("a head that changed after requested changes is not reviewed yet, so it is started", async () => {
   const { p, calls } = port({ label: "reviewer-control-119" });
-  reviewOnDemand(asked(stateAt(HEAD, [reviewOn("CHANGES_REQUESTED", "68bd2e8d00000000000000000000000000000000")]), { port: p }));
+  await reviewOnDemand(asked(stateAt(HEAD, [reviewOn("CHANGES_REQUESTED", "68bd2e8d00000000000000000000000000000000")]), { port: p }));
   assert.deepEqual(calls, [`live ${URL}@${HEAD}`, `start ${URL}@${HEAD}`], "the new head is started");
 });
 
-test("the port's refusal is passed on with a non-zero code, and nothing is recorded: an outside author, checks not settled, a moved head", () => {
+test("the port's refusal is passed on with a non-zero code, and nothing is recorded: an outside author, checks not settled, a moved head", async () => {
   const { p } = port({ refusal: "no reviewer for x: its checks at y have not settled green" });
-  const r = reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), record: () => { throw new Error("nothing is recorded"); } });
+  const r = await reviewOnDemand({ url: URL, port: p, readState: () => stateAt(HEAD), started: new Set(), record: () => { throw new Error("nothing is recorded"); } });
   assert.equal(r.code, 1);
   assert.match(r.out, /have not settled green/);
 });
 
-test("an address that is not a pull request is refused before anything is asked, and an unreadable one has no head", () => {
+test("an address that is not a pull request is refused before anything is asked, and an unreadable one has no head", async () => {
   const { p, calls } = port({ label: "never" });
-  assert.equal(reviewOnDemand(asked(stateAt(HEAD), { port: p, url: "a11ign/control#119" })).code, 2);
-  assert.equal(reviewOnDemand(asked(null, { port: p })).code, 1);
+  assert.equal((await reviewOnDemand(asked(stateAt(HEAD), { port: p, url: "a11ign/control#119" }))).code, 2);
+  assert.equal((await reviewOnDemand(asked(null, { port: p }))).code, 1);
   assert.deepEqual(calls, []);
 });
 
@@ -143,10 +143,10 @@ test("A11-161: ticket:review loads the enabled reviewer and starts it, and a rev
   assert.deepEqual(refusing.started, [], "nothing is started");
 });
 
-test("A11-175: ticket:review starts a reviewer past a red unrequired check: the state names it, and nothing is refused for it", () => {
+test("A11-175: ticket:review starts a reviewer past a red unrequired check: the state names it, and nothing is refused for it", async () => {
   const { p, calls } = port({ label: "reviewer-control-119" });
   const state = { ...stateAt(HEAD), unrequiredRed: ["checks (cross-repo)"] } as ReviewState;
-  const r = reviewOnDemand(asked(state, { port: p }));
+  const r = await reviewOnDemand(asked(state, { port: p }));
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /started reviewer-control-119 for .*pull\/119 at 3aeaba9b/);
   assert.deepEqual(calls, [`live ${URL}@${HEAD}`, `start ${URL}@${HEAD}`]);

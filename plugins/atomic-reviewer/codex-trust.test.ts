@@ -196,33 +196,33 @@ test("untrustedHostRepositories names the config when it cannot be parsed, and w
   assert.equal(readFileSync(m.file, "utf8"), "[[[");
 });
 
-/** Runs `git` in `cwd` as the plugin's `exec` does: a status and the output. */
-const gitExec = (file: string, args: readonly string[]) => {
+/** Runs `git` as the plugin's `execAsync` does: a status and the output, as a promise. */
+const gitExec = async (file: string, args: readonly string[]) => {
   const run = spawnSync(file, [...args], { encoding: "utf8" });
   return { status: run.status, stdout: run.stdout, stderr: run.stderr };
 };
 
-test("a linked worktree's clone root is its main clone, not the worktree, and that is the root the seam trusts", () => {
+test("a linked worktree's clone root is its main clone, not the worktree, and that is the root the seam trusts", async () => {
   const m = machine();
   const git = (cwd: string, ...args: string[]) => { const run = spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); };
   git(m.clones.alpha, "init", "-q", "-b", "main");
   git(m.clones.alpha, "commit", "-q", "--allow-empty", "-m", "first");
   const worktree = join(m.root, "reviews", "reviewer-7");
   git(m.clones.alpha, "worktree", "add", "-q", "--detach", worktree);
-  assert.equal(cloneRootOf(worktree, gitExec), canonicalPath(m.clones.alpha));
-  const seam = codexTrustSeam({ ...m.seams, exec: gitExec, log: () => undefined });
-  assert.equal(seam.rootOf(worktree), canonicalPath(m.clones.alpha));
-  assert.equal(seam.ensure(seam.rootOf(worktree)!).kind, "added");
+  assert.equal(await cloneRootOf(worktree, gitExec), canonicalPath(m.clones.alpha));
+  const seam = codexTrustSeam({ ...m.seams, execAsync: gitExec, log: () => undefined });
+  assert.equal(await seam.rootOf(worktree), canonicalPath(m.clones.alpha));
+  assert.equal(seam.ensure((await seam.rootOf(worktree))!).kind, "added");
   const config = readTrustConfig(m.file);
   assert.ok(!("refusal" in config));
   assert.equal(trustLevelOf(config.projects, canonicalPath(m.clones.alpha)), "trusted");
 });
 
-test("a folder that is no git checkout, and a bare repository, have no clone root", () => {
+test("a folder that is no git checkout, and a bare repository, have no clone root", async () => {
   const m = machine();
-  assert.equal(cloneRootOf(m.root, gitExec), null);
+  assert.equal(await cloneRootOf(m.root, gitExec), null);
   const bare = join(m.root, "bare.git");
   assert.equal(spawnSync("git", ["init", "-q", "--bare", bare]).status, 0);
-  assert.equal(cloneRootOf(bare, gitExec), null);
-  assert.equal(cloneRootOf(m.root, () => ({ status: null, stdout: "", stderr: "git cannot start" })), null);
+  assert.equal(await cloneRootOf(bare, gitExec), null);
+  assert.equal(await cloneRootOf(m.root, async () => ({ status: null, stdout: "", stderr: "git cannot start" })), null);
 });

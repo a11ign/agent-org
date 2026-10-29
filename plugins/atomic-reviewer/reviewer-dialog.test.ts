@@ -79,8 +79,8 @@ async function blockedPort(m: ReturnType<typeof machine>, { status = "blocked", 
     if (args.includes("list")) return JSON.stringify({ result: { workspaces: [{ label: "reviewer-7", workspace_id: "w7", agent_status: state.status }] } });
     return JSON.stringify({ type: "ok" });
   };
-  const deps = { env: m.env, clones: m.clones, exec: () => ({ status: 1, stdout: "", stderr: "" }), log: (line: string) => logged.push(line) } as unknown as PluginDeps;
-  const helpers = reviewingHelpers({ session: "tickets", run, codeHost: () => createFakeCodeHost(), clones: m.clones, instance: "work", heads: new Map([["reviewer-7", "h1"]]) });
+  const deps = { env: m.env, clones: m.clones, execAsync: async () => ({ status: 1, stdout: "", stderr: "" }), log: (line: string) => logged.push(line) } as unknown as PluginDeps;
+  const helpers = reviewingHelpers({ session: "tickets", run, runAsync: async (args) => run(args), codeHost: () => createFakeCodeHost(), clones: m.clones, instance: "work", heads: new Map([["reviewer-7", "h1"]]) });
   const port = atomicReviewerPort(helpers, { codexTrust: codexTrustSeam(deps) });
   return { port, sent, tried, read, logged, state };
 }
@@ -94,7 +94,7 @@ const READ = ["--session", "tickets", "agent", "read", "reviewer-7", "--source",
 test("A11-221: a blocked reviewer on the trust dialog of a host repository is answered with enter, and the repository's entry is in Codex's config", async () => {
   const m = machine();
   const { port, sent } = await blockedPort(m);
-  const answer = port.unblock!(REF);
+  const answer = await port.unblock!(REF);
   assert.ok(answer !== null && "answered" in answer && answer.answered.startsWith("Trust this folder? Codex can read, edit, and run files here."), JSON.stringify(answer));
   assert.deepEqual(sent, [ENTER], "enter, which answers the selected `1. Trust and continue`, and no digit");
   assert.equal(readFileSync(m.file, "utf8"), `[projects."${m.clones.alpha}"]\ntrust_level = "trusted"\n`);
@@ -105,7 +105,7 @@ test("A11-221: a trust dialog for a root the host file does not name sends no ke
   m.write("");
   for (const root of [m.stranger, join(m.clones.alpha, "src"), "/etc"]) {
     const { port, sent } = await blockedPort(m, { pane: trustPane(root) });
-    const answer = port.unblock!(REF);
+    const answer = await port.unblock!(REF);
     assert.ok(answer !== null && "stuck" in answer && answer.stuck.startsWith("Trust this folder?"), root);
     assert.deepEqual(sent, [], root);
   }
@@ -115,23 +115,24 @@ test("A11-221: a trust dialog for a root the host file does not name sends no ke
 test("A11-221: a trust dialog whose root cannot be read, or whose first option is not the selected one, is left alone", async () => {
   const m = machine();
   const rootless = await blockedPort(m, { pane: trustPane(m.clones.alpha).replace(/Trusting will apply to the repository root: \S+/, "Trusting will apply to this folder") });
-  assert.ok("stuck" in rootless.port.unblock!(REF)!);
+  assert.ok("stuck" in (await rootless.port.unblock!(REF))!);
   const declining = await blockedPort(m, { pane: trustPane(m.clones.alpha, "2") });
-  assert.ok("stuck" in declining.port.unblock!(REF)!);
+  assert.ok("stuck" in (await declining.port.unblock!(REF))!);
   assert.deepEqual([rootless.sent, declining.sent], [[], []]);
 });
 
 test("A11-221: any other dialog is stuck on its first line and no key is sent", async () => {
   const m = machine();
   const { port, sent } = await blockedPort(m, { pane: UPDATE_PANE });
-  assert.deepEqual(port.unblock!(REF), { stuck: "Update available! 0.41.0 -> 0.42.0" });
+  assert.deepEqual(await port.unblock!(REF), { stuck: "Update available! 0.41.0 -> 0.42.0" });
   assert.deepEqual(sent, []);
 });
 
 test("A11-221: a trust dialog is answered at most twice for a head, and then it is stuck", async () => {
   const m = machine();
   const { port, sent } = await blockedPort(m);
-  const answers = Array.from({ length: MAX_TRUST_ANSWERS + 1 }, () => port.unblock!(REF));
+  const answers: Awaited<ReturnType<NonNullable<typeof port.unblock>>>[] = [];
+  for (let look = 0; look <= MAX_TRUST_ANSWERS; look += 1) answers.push(await port.unblock!(REF));
   assert.deepEqual(answers.map((answer) => (answer !== null && "answered" in answer ? "answered" : "stuck")), ["answered", "answered", "stuck"]);
   assert.equal(sent.length, MAX_TRUST_ANSWERS);
 });
@@ -140,20 +141,20 @@ test("A11-221: a reviewer that is not blocked has its pane left unread, and so h
   const m = machine();
   for (const status of ["working", "idle", "done"]) {
     const { port, read } = await blockedPort(m, { status });
-    assert.equal(port.unblock!(REF), null, status);
+    assert.equal(await port.unblock!(REF), null, status);
     assert.deepEqual(read, [], status);
   }
   const { port, read } = await blockedPort(m);
-  assert.equal(port.unblock!({ pr: PR_URL, head: "h2" }), null);
+  assert.equal(await port.unblock!({ pr: PR_URL, head: "h2" }), null);
   assert.deepEqual(read, []);
 });
 
 test("A11-221: a look that cannot be made is unread, not a look that found no dialog: herdr not listing the session, and a pane that cannot be read", async () => {
   const m = machine();
   const down = await blockedPort(m, { herdrDown: true });
-  assert.deepEqual(down.port.unblock!(REF), { unread: "herdr did not list the tickets session" });
+  assert.deepEqual(await down.port.unblock!(REF), { unread: "herdr did not list the tickets session" });
   const unreadable = await blockedPort(m, { pane: UNREADABLE });
-  const answer = unreadable.port.unblock!(REF);
+  const answer = await unreadable.port.unblock!(REF);
   assert.ok(answer !== null && "unread" in answer && answer.unread.startsWith("reviewer-7's pane could not be read"), JSON.stringify(answer));
   assert.deepEqual([down.sent, unreadable.sent], [[], []]);
 });
@@ -161,7 +162,7 @@ test("A11-221: a look that cannot be made is unread, not a look that found no di
 test("A11-221: a blocked reviewer whose pane shows no dialog, or cannot be read, reports none", async () => {
   const m = machine();
   const idle = await blockedPort(m, { pane: "  › Ask Codex to do anything\n\n  ? for shortcuts\n" });
-  assert.equal(idle.port.unblock!(REF), null);
+  assert.equal(await idle.port.unblock!(REF), null);
   assert.deepEqual(idle.read, [READ]);
 });
 
@@ -170,11 +171,11 @@ test("A11-221: a trust dialog whose entry is a person's `untrusted`, or whose ke
   declined.write(`[projects."${declined.clones.alpha}"]\ntrust_level = "untrusted"\n`);
   const before = readFileSync(declined.file, "utf8");
   const made = await blockedPort(declined);
-  assert.ok("stuck" in made.port.unblock!(REF)!);
+  assert.ok("stuck" in (await made.port.unblock!(REF))!);
   assert.deepEqual(made.sent, []);
   assert.equal(readFileSync(declined.file, "utf8"), before);
   const refused = await blockedPort(machine(), { pressRefused: true });
-  for (let look = 0; look < MAX_TRUST_ANSWERS + 3; look += 1) assert.ok("stuck" in refused.port.unblock!(REF)!);
+  for (let look = 0; look < MAX_TRUST_ANSWERS + 3; look += 1) assert.ok("stuck" in (await refused.port.unblock!(REF))!);
   assert.equal(refused.tried.length, MAX_TRUST_ANSWERS, "a press herdr keeps refusing is tried no more than an answer is");
 });
 
@@ -182,7 +183,7 @@ test("A11-221: an option line left higher on the screen does not make the curren
   const m = machine();
   const old = "› 1. Trust and continue\n  2. Don't trust\n";
   const { port, sent } = await blockedPort(m, { pane: `${old}\n${trustPane(m.clones.alpha, "2")}` });
-  assert.ok("stuck" in port.unblock!(REF)!);
+  assert.ok("stuck" in (await port.unblock!(REF))!);
   assert.deepEqual(sent, []);
 });
 
@@ -193,14 +194,14 @@ test("A11-221: readPaneDialog reads the trust dialog's root and selection, and a
   assert.equal(readPaneDialog("nothing here", readDialogLines), null);
 });
 
-test("A11-221: answerDialog asks Codex's trust only for a trust dialog, and presses only when the root is trusted", () => {
+test("A11-221: answerDialog asks Codex's trust only for a trust dialog, and presses only when the root is trusted", async () => {
   const seen = readPaneDialog(trustPane("/repos/a"), readDialogLines)!;
   const pressed: string[] = [];
-  const press = () => { pressed.push("enter"); return true; };
-  const added = answerDialog({ seen, answers: 0, press, ensure: (root) => ({ kind: "added", root, file: "/c" }) });
+  const press = async () => { pressed.push("enter"); return true; };
+  const added = await answerDialog({ seen, answers: 0, press, ensure: (root) => ({ kind: "added", root, file: "/c" }) });
   assert.ok("answered" in added);
   for (const ensured of [{ kind: "not-host", root: "/repos/a", reason: "" }, { kind: "refused", file: "/c", reason: "" }, { kind: "present", root: "/repos/a", file: "/c", level: "untrusted" }] as const) {
-    assert.ok("stuck" in answerDialog({ seen, answers: 0, press, ensure: () => ensured }), ensured.kind);
+    assert.ok("stuck" in await answerDialog({ seen, answers: 0, press, ensure: () => ensured }), ensured.kind);
   }
   assert.deepEqual(pressed, ["enter"]);
 });

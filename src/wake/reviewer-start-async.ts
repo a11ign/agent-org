@@ -37,10 +37,10 @@ export type TreeInstallAsync = (run: { cwd: string; args: string[]; }) => Promis
 /** The checkout's dependencies as the async forms take them: a `git` that answers a promise, and a dependency step that may. The rest are the synchronous forms'. */
 export type CheckoutDepsAsync = Omit<CheckoutDeps, "git" | "link"> & { git?: GitAsync; link?: (args: { path: string; repoRoot: string; }) => LinkResult | Promise<LinkResult>; };
 
-/** The environment options that give a program exactly `env` and nothing of this process's: what `spawnSync` with an `env` does, which `realExecAsync` (it lays `env` over this process's) does not. */
+/** The environment options that give a program exactly `env` and nothing of this process's: what a synchronous spawn given an `env` does, which `realExecAsync` (it lays `env` over this process's) does not. */
 const exactly = (env: Record<string, string>): Pick<ExecOptions, "env" | "withoutEnv"> => ({ env, withoutEnv: Object.keys(process.env).filter((name) => !(name in env)) });
 
-/** Runs `file` and resolves its stdout, or rejects with {@link programFailure}'s error: the async form of `execFileSync`. */
+/** Runs `file` and resolves its stdout, or rejects with {@link programFailure}'s error: the async form of a synchronous file exec. */
 async function runProgram(file: string, args: string[], options: ExecOptions): Promise<string> {
   const answer = await realExecAsync(file, args, options);
   if (answer.status === 0) return answer.stdout;

@@ -150,10 +150,10 @@ export function createCodeHost(rawDeps: PluginDeps, settle: ArmMergeSeams = {}, 
     updateBranch: (url, expectedHead) => writing(repositoriesOf(url), () => updateBranch(url, expectedHead, gh)),
     closePull: (url, comment) => writing(repositoriesOf(url), () => closePull(url, comment, gh)),
     commentOnPull: (url, comment) => writing(repositoriesOf(url), () => commentOnPull(url, comment, gh)),
-    readReviewClaims: (repository, head) => readReviewClaims(repository, head, gh),
+    readReviewClaims: (repository, head) => readReviewClaims(repository, head, ghAsync),
     // The claim is written as the reviewer role: the environment it is given (the account folder and token the reviewer acts with) is laid over this process's for the one call.
     // The claim is a commit status the rollup lists, green and not required: it changes no check a reader judges, so the snapshot is kept.
-    writeReviewClaim: (write) => writeReviewClaim(write, ghRunner(deps, write.environment)),
+    writeReviewClaim: (write) => writeReviewClaim(write, asyncGhRunner(deps, write.environment)),
     verdictDoor: VERDICT_DOOR,
     readChange: () => null,
     requestReview: (ref) => notYet("request a review", ref),

@@ -45,8 +45,6 @@ const STILL_SYNCHRONOUS: Readonly<Record<string, string>> = {
   updateBranch: "a write: the merge of the base into one pull request",
   closePull: "a write: the close of one pull request",
   commentOnPull: "a write: one comment on a pull request",
-  readReviewClaims: "read by the reviewer's start, which is synchronous (reviewer contract)",
-  writeReviewClaim: "a write: the reviewer's claim on a head, by the reviewer's start",
   armMerge: "a write: the arm of one pull request's merge",
 };
 
@@ -62,6 +60,9 @@ const ASYNCHRONOUS_READS: Readonly<Record<string, (host: ReturnType<typeof creat
   readBranchCi: (host) => host.readBranchCi!("owner/repo", "main", new Set()),
   openDependencyPulls: (host) => host.openDependencyPulls!("owner/repo"),
   readMergedFindings: (host) => host.readMergedFindings!(PULL),
+  // The reviewer's start claims a head with these two (A11-379, code host 3.0): the port awaits them, so the start holds the loop for neither.
+  readReviewClaims: (host) => host.readReviewClaims("owner/repo", "abc"),
+  writeReviewClaim: (host) => host.writeReviewClaim({ repository: "owner/repo", head: "abc", description: "claimed", environment: {} }),
   sweepRetargetsAsync: (host) => host.sweepRetargetsAsync!({ urls: [PULL], previous: {}, stacked: new Set(["feature/base"]), defaults: new Map(), log: () => undefined }),
 };
 

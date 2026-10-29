@@ -4,7 +4,7 @@
 // the two are here. A claim is a status under the context `agent-org/review`, which the verdict door writes the verdict over once the review posts: ONE SPELLING WITH `reviewer/pr-review-verdict.sh`
 // (`CLAIM_CONTEXT`), which `review-claims.test.ts` holds to this file.
 import type { ReviewClaimRead, ReviewClaimWrite } from "../../src/plugins/contracts/code-host.ts";
-import type { Gh } from "./gh.ts";
+import type { AsyncGh } from "./gh.ts";
 import { GhFailure } from "./gh.ts";
 
 /** The commit status context a claim is written under, and the one the door writes the verdict to. */
@@ -28,10 +28,10 @@ export function reasonOf(err: unknown): string {
  * store per account, which a write by another account does not drop: a cached read straight after the write lists the head as it was before the claim. `-H` makes the wrapper class the call `neutral`,
  * which it neither serves from its store nor stores, and GitHub takes `Cache-Control: no-cache` as an ordinary request header.
  */
-export function readReviewClaims(repository: string, head: string, gh: Gh): ReviewClaimRead {
+export async function readReviewClaims(repository: string, head: string, gh: AsyncGh): Promise<ReviewClaimRead> {
   try {
     // Read as one tab-separated line per status, so a page of statuses reads as lines and no page is joined to the next.
-    const lines = gh(["api", "--paginate", "-H", "Cache-Control: no-cache", `repos/${repository}/commits/${head}/statuses?per_page=100`, "--jq", `.[] | select(.context == "${REVIEW_CLAIM_CONTEXT}") | [.id, .created_at, .description] | @tsv`])
+    const lines = (await gh(["api", "--paginate", "-H", "Cache-Control: no-cache", `repos/${repository}/commits/${head}/statuses?per_page=100`, "--jq", `.[] | select(.context == "${REVIEW_CLAIM_CONTEXT}") | [.id, .created_at, .description] | @tsv`]))
       .split("\n").filter((line) => line !== "");
     return {
       entries: lines.map((line) => {
@@ -45,9 +45,9 @@ export function readReviewClaims(repository: string, head: string, gh: Gh): Revi
 }
 
 /** Writes a status under the claim's context on `head`, state `success`: the state says nothing, the description says whose and when. Answers why GitHub refused, or null once it is written. */
-export function writeReviewClaim({ repository, head, description }: ReviewClaimWrite, gh: Gh): string | null {
+export async function writeReviewClaim({ repository, head, description }: ReviewClaimWrite, gh: AsyncGh): Promise<string | null> {
   try {
-    gh(["api", "--method", "POST", `repos/${repository}/statuses/${head}`, "--silent", "-f", "state=success", "-f", `context=${REVIEW_CLAIM_CONTEXT}`, "-f", `description=${description}`]);
+    await gh(["api", "--method", "POST", `repos/${repository}/statuses/${head}`, "--silent", "-f", "state=success", "-f", `context=${REVIEW_CLAIM_CONTEXT}`, "-f", `description=${description}`]);
     return null;
   } catch (err) {
     return reasonOf(err);

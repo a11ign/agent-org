@@ -47,16 +47,16 @@ const mayAnswer = (trust: PaneDialog["trust"], answers: number): trust is { root
 
 /**
  * What the port does about a dialog (`seen`): answers the trust dialog of a host repository and reports `answered`, and reports every other as `stuck` without pressing anything. `answers` is how many trust answers this
- * seat's head has had. `ensure` trusts a root when the host file names it; `press` sends `enter` and says whether herdr took it.
+ * seat's head has had. `ensure` trusts a root when the host file names it; `press` sends `enter` and answers a promise of whether herdr took it (A11-379).
  *
  * A trust dialog is left alone when: its root cannot be read; `1. Trust and continue` is not the selected option; the root is not the host file's; the config cannot be written; the root already has an entry that is not
  * `trusted` (a person's choice, which Codex's own Trust would override); or it has been answered {@link MAX_TRUST_ANSWERS} times.
  */
-export function answerDialog({ seen, answers, ensure, press }: Readonly<{ seen: PaneDialog; answers: number; ensure: (root: string) => Ensured; press: () => boolean }>): ReviewerDialog {
+export async function answerDialog({ seen, answers, ensure, press }: Readonly<{ seen: PaneDialog; answers: number; ensure: (root: string) => Ensured; press: () => Promise<boolean> }>): Promise<ReviewerDialog> {
   const stuck = { stuck: seen.first };
   const { trust } = seen;
   if (!mayAnswer(trust, answers)) return stuck;
   const ensured = ensure(trust.root);
   const trusted = ensured.kind === "added" || (ensured.kind === "present" && ensured.level === "trusted");
-  return trusted && press() ? { answered: seen.first } : stuck;
+  return trusted && await press() ? { answered: seen.first } : stuck;
 }

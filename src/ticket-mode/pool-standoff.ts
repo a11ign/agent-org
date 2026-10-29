@@ -99,7 +99,7 @@ export async function recordRefusedRereview(ctx: PoolContext, reviewer: Reviewer
   const look = ctx.reviewerMemory.looks.get(key);
   const block = standingBlock(state.reviews, head);
   const ref = { pr: url, head };
-  const rereviewEnded = ctx.reviewerRereviewed.has(key) && reviewer.settled(ref) !== "working";
+  const rereviewEnded = ctx.reviewerRereviewed.has(key) && await reviewer.settled(ref) !== "working";
   if (look === undefined || block === null || !rereviewEnded) return;
   const held = heldBy(ctx, url);
   const began = { url, head, since: look.at };

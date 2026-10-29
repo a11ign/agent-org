@@ -26,8 +26,8 @@ function hostWithPulls(names: string[]): CodeHost {
   const entries: { id: number; description: string; created: number }[] = [];
   return {
     ...host,
-    readReviewClaims: () => ({ entries }),
-    writeReviewClaim: ({ description }) => { entries.push({ id: entries.length + 1, description, created: Date.now() }); return null; },
+    readReviewClaims: async () => ({ entries }),
+    writeReviewClaim: async ({ description }) => { entries.push({ id: entries.length + 1, description, created: Date.now() }); return null; },
   };
 }
 
@@ -50,13 +50,13 @@ function portOver(clones: Record<string, string>, { listed = [], heads = [] }: {
   const removed: object[] = [];
   const spawned: Record<string, string>[] = [];
   const codeHost = hostWithPulls(Object.keys(clones));
-  const helpers = reviewingHelpers({ session: "tickets", run: herd.run, codeHost: () => codeHost, clones, instance: "work", heads: new Map(heads.map((label) => [label, "h1"])) });
+  const helpers = reviewingHelpers({ session: "tickets", run: herd.run, runAsync: async (args) => herd.run(args), codeHost: () => codeHost, clones, instance: "work", heads: new Map(heads.map((label) => [label, "h1"])) });
   const port = atomicReviewerPort(helpers, {
-    mint: () => null,
+    mint: async () => null,
     exists: () => false,
-    checkout: (args) => { checkouts.push(args); return { path: "/work/pr-3", head: "h1" }; },
-    removeCheckout: (args) => { removed.push(args); return null; },
-    spawn: (order, _agents, options) => { spawned.push(options.env as Record<string, string>); return { label: order.session, workspace: "w1", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async (args) => { checkouts.push(args); return { path: "/work/pr-3", head: "h1" }; },
+    removeCheckout: async (args) => { removed.push(args); return null; },
+    spawn: async (order, _agents, options) => { spawned.push(options.env as Record<string, string>); return { label: order.session, workspace: "w1", profile: { kind: "codex", model: "m", effort: "e" } }; },
   });
   return { port, herd, checkouts, removed, spawned };
 }
@@ -64,7 +64,7 @@ function portOver(clones: Record<string, string>, { listed = [], heads = [] }: {
 test("A11-259: a pull request of a11ign.github.io is reviewed: its seat is reviewer-a11ign-github-io-3, in its clone, posting to the repository by its real name", async () => {
   await loadReviewerGate();
   const made = portOver({ [PAGES]: `/repos/${PAGES}` });
-  assert.deepEqual(made.port.start({ pr: PAGES_URL, head: "h1" }), { label: PAGES_LABEL });
+  assert.deepEqual(await made.port.start({ pr: PAGES_URL, head: "h1" }), { label: PAGES_LABEL });
   assert.deepEqual(made.checkouts, [{ pr: 3, session: PAGES_LABEL, trust: INSIDE, repoRoot: `/repos/${PAGES}` }], "the checkout is made in the clone, by its real path");
   assert.equal(made.spawned[0].GH_REPO, `${OWNER}/${PAGES}`, "the reviewer's door posts to the repository by its real name");
 });
@@ -73,9 +73,9 @@ test("A11-259: the seat of a11ign.github.io is read back to the real repository:
   await loadReviewerGate();
   assert.deepEqual(reviewerInstance(PAGES_LABEL), { key: "a11ign-github-io", number: 3 });
   const made = portOver({ [PAGES]: `/repos/${PAGES}` }, { listed: [PAGES_LABEL], heads: [PAGES_LABEL] });
-  assert.equal(made.port.live({ pr: PAGES_URL, head: "h1" }), true);
-  assert.deepEqual(made.port.listedPulls(), [PAGES_URL], "the sweep names the real repository, not its key");
-  assert.deepEqual(made.port.retire(PAGES_URL), { retired: true, report: null });
+  assert.equal(await made.port.live({ pr: PAGES_URL, head: "h1" }), true);
+  assert.deepEqual(await made.port.listedPulls(), [PAGES_URL], "the sweep names the real repository, not its key");
+  assert.deepEqual(await made.port.retire(PAGES_URL), { retired: true, report: null });
   assert.deepEqual(made.removed, [{ pr: 3, session: PAGES_LABEL, key: "a11ign-github-io", repoRoot: `/repos/${PAGES}` }]);
 });
 
@@ -83,9 +83,9 @@ test("A11-259: two clones that make the same key stay two seats, each read back 
   await loadReviewerGate();
   const hyphened = "a11ign-github-io";
   const made = portOver({ [PAGES]: `/repos/${PAGES}`, [hyphened]: `/repos/${hyphened}` });
-  assert.deepEqual(made.port.start({ pr: `https://github.com/${OWNER}/${hyphened}/pull/3`, head: "h1" }), { label: `reviewer-${hyphened}-3` }, "the clone already named as a key keeps its seat");
-  const started = made.port.start({ pr: PAGES_URL, head: "h1" });
+  assert.deepEqual(await made.port.start({ pr: `https://github.com/${OWNER}/${hyphened}/pull/3`, head: "h1" }), { label: `reviewer-${hyphened}-3` }, "the clone already named as a key keeps its seat");
+  const started = await made.port.start({ pr: PAGES_URL, head: "h1" });
   assert.ok("label" in started && /^reviewer-a11ign-github-io-h[0-9a-f]{7}-3$/.test(started.label), JSON.stringify(started));
   const both = portOver({ [PAGES]: `/repos/${PAGES}`, [hyphened]: `/repos/${hyphened}` }, { listed: [`reviewer-${hyphened}-3`, started.label] });
-  assert.deepEqual([...both.port.listedPulls()].sort(), [`https://github.com/${OWNER}/${hyphened}/pull/3`, PAGES_URL].sort());
+  assert.deepEqual([...(await both.port.listedPulls())].sort(), [`https://github.com/${OWNER}/${hyphened}/pull/3`, PAGES_URL].sort());
 });

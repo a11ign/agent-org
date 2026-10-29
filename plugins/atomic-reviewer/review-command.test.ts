@@ -29,14 +29,14 @@ type PortOptions = Seams & Readonly<{ session: string; run: (args: string[]) => 
 
 /** The port the board makes: over the real helpers of core, with the board's collaborators these options name. */
 function atomicReviewerPort({ session, run, codeHost, heads = new Map<string, string>(), clones = {}, instance, ...seams }: PortOptions): ReviewerPort {
-  return portOver(reviewingHelpers({ session, run, codeHost: () => codeHost, clones, instance, heads }), seams);
+  return portOver(reviewingHelpers({ session, run, runAsync: async (args) => run(args), codeHost: () => codeHost, clones, instance, heads }), seams);
 }
 
 test("ticket:review starts the reviewer for a repository the host clones and the project does not declare, with no entry in project.json", async () => {
   await loadReviewerGate();
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), mint: () => null, codeHost: pluginPull(),
-    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }) });
-  const r = reviewOnDemand({ url: "https://github.com/a11ign/plugin/pull/7", port, readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), mint: async () => null, codeHost: pluginPull(),
+    clones: { plugin: "/repos/plugin" }, checkout: async () => ({ path: "/work/pr-7", head: HEAD }), spawn: async (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }) });
+  const r = await reviewOnDemand({ url: "https://github.com/a11ign/plugin/pull/7", port, readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /started reviewer-plugin-7 for .*a11ign\/plugin\/pull\/7 at 3aeaba9b/);
 });
@@ -48,8 +48,8 @@ test("ticket:review starts the reviewer for a repository the host clones and the
 function portHolding(claims: ReviewClaimEntry[], spawned: string[]) {
   const codeHost = pluginPull();
   codeHost.checksAndClaims.claims.set(`a11ign/plugin@${HEAD}`, claims);
-  return atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), mint: () => null, codeHost,
-    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
+  return atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), mint: async () => null, codeHost,
+    clones: { plugin: "/repos/plugin" }, checkout: async () => ({ path: "/work/pr-7", head: HEAD }), spawn: async (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
 }
 
 /** `ticket:review` for the plugin's pull request, with a claim by `instance` written `minutesOld` minutes ago on its head: what it answers, and what it started. */
@@ -57,7 +57,7 @@ async function reviewWithClaimBy(instance: string, minutesOld: number) {
   await loadReviewerGate();
   const spawned: string[] = [];
   const since = new Date(Date.now() - minutesOld * 60_000).toISOString();
-  const r = reviewOnDemand({ url: PLUGIN, port: portHolding([{ id: 1, created: Date.parse(since), description: `claimed by ${instance} at ${since}, lease 60 min` }], spawned), readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
+  const r = await reviewOnDemand({ url: PLUGIN, port: portHolding([{ id: 1, created: Date.parse(since), description: `claimed by ${instance} at ${since}, lease 60 min` }], spawned), readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
   return { r, spawned, since };
 }
 
@@ -81,10 +81,10 @@ test("A11-175: ticket:review starts a reviewer past a red unrequired check, and 
   codeHost.seedPull("a11ign/plugin", 7, { head: HEAD, trust: "inside", settled: true, unrequiredRed: ["checks (cross-repo)"] });
   const spawned: string[] = [];
   const sent: string[][] = [];
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: (args) => { sent.push(args); return JSON.stringify({ result: { agents: [], workspaces: [] } }); }, mint: () => null, codeHost,
-    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: (args) => { sent.push(args); return JSON.stringify({ result: { agents: [], workspaces: [] } }); }, mint: async () => null, codeHost,
+    clones: { plugin: "/repos/plugin" }, checkout: async () => ({ path: "/work/pr-7", head: HEAD }), spawn: async (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
   const read = await codeHost.readReviewState(PLUGIN);
-  const r = reviewOnDemand({ url: PLUGIN, port, readState: () => read, started: new Set(), record: () => {} });
+  const r = await reviewOnDemand({ url: PLUGIN, port, readState: () => read, started: new Set(), record: () => {} });
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(spawned, ["reviewer-plugin-7"]);
   const prompt = sent.filter((args) => args.includes("prompt")).map((args) => args[args.length - 1]).at(-1) ?? "";

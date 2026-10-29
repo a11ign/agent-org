@@ -1,6 +1,9 @@
 // @ts-check
 // module: the atomic reviewer's port -- starts the gate's codex reviewer on a ready pull request, once per head, behind the reviewer contract (A11-161)
 //
+// EVERY CALL THAT SPAWNS A PROGRAM ANSWERS A PROMISE (A11-379, reviewer contract 2.0). A start held the board's loop about nine times, about 10 s, because its herdr, git, install, token mint and claim calls were synchronous spawns on the board's thread. They run
+// through the async runners now (`board.runAsync`, the gate's `*Async` steps, the code host's claim calls), and the port stays in the board's process, so what it keeps (the heads it started, the instances it saw, the trust answers) is kept. A start in flight
+// holds its seat: a second start of it is refused, and a close or retire of it waits, since the loop runs between the steps of a start.
 // MOVED OUT OF `ticket-mode/reviewer-port.ts`, with nothing changed in what it does. THE PORT IS THE POOL'S ONLY SEAM: `start` a reviewer for one pull request at one head, and `live`, whether
 // one is running for that head. It also `close`s a reviewer once its verdict is posted, `retire`s a pull request's reviewer and checkout once the pull request has merged or closed, and lists
 // (`listedPulls`) the reviewer workspaces the session holds, for one a `ticket:review` start left that the pool does not remember. The adapter starts the gate's own reviewer, `spawnReviewer` in
@@ -9,10 +12,9 @@
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ListedAgent } from "../../src/herdr-agents.ts";
-import type { DoorRun } from "../../src/review-trust.ts";
 import type { CodeHost, ReviewState } from "../../src/plugins/contracts/code-host.ts";
 import type { CloseAnswer, PromptAnswer, RepostAnswer, RetireAnswer, ReviewBrief, ReviewerDialog, ReviewerPort, ReviewerRef, ReviewerSettled } from "../../src/plugins/contracts/reviewer.ts";
-import type { ReviewerBoard, ReviewerGate, ReviewerHelpers } from "../../src/plugins/manifest.ts";
+import type { DoorRunAsync, ReviewerBoard, ReviewerGate, ReviewerHelpers } from "../../src/plugins/manifest.ts";
 import type { Ensured } from "./codex-trust.ts";
 import { reviewWords, rereviewWords } from "./prompt.ts";
 import { answerDialog, readPaneDialog } from "./reviewer-dialog.ts";
@@ -25,6 +27,7 @@ const ENDED_STATUSES: readonly string[] = ["idle", "done", "unknown"];
 
 /** The status herdr shows for a reviewer waiting on a dialog (A11-221). */
 const BLOCKED_STATUS = "blocked";
+
 
 /** The door's exits a repost cannot cure: 2 (a malformed call), 3 (a second review at an equal patch) and 5 (the head moved). */
 const FINAL_DOOR_EXITS: readonly number[] = [2, 3, 5];
@@ -126,8 +129,35 @@ export function clonedSeatOf(repository: string, { owner, clones, codes, keys }:
  */
 type Seat = { label: string; number: number; key: string; repository?: string; clone?: string };
 
-/** What the port reads of the board and the gate, as one record: `board` is the board's collaborators, and `gate` the gate's modules, each asked when it is used. `trustAnswers` counts the trust dialogs answered for each seat's head (`unblock`). */
-type Context = Readonly<{ helpers: ReviewerHelpers; seams: Seams; trustAnswers: Map<string, number> }>;
+/** What the port reads of the board and the gate, as one record: `board` is the board's collaborators, and `gate` the gate's modules, each asked when it is used. `trustAnswers` counts the trust dialogs answered for each seat's head (`unblock`). `holding` is what each seat is busy with, by label, until the call that holds it settles (a start, a close or a retire). `checkouts` is the last git call made against each clone (by its path, "" for the primary's), which the next waits for. */
+type Context = Readonly<{ helpers: ReviewerHelpers; seams: Seams; trustAnswers: Map<string, number>; holding: Map<string, SeatWork>; checkouts: Map<string, Promise<unknown>> }>;
+
+/** What holds a seat: a call of the port that has not settled. */
+type SeatWork = "starting" | "closing" | "retiring";
+
+/**
+ * Runs `work` with the seat held for `doing`, and lets it go however `work` ends. The loop runs between the steps of a start, a close or a retire, so a second call for the seat could begin in the middle of the first: callers ask
+ * `holding` before they hold (A11-379).
+ */
+async function holdingSeat<T>(context: Context, label: string, doing: SeatWork, work: () => Promise<T>): Promise<T> {
+  context.holding.set(label, doing);
+  try {
+    return await work();
+  } finally {
+    context.holding.delete(label);
+  }
+}
+
+/**
+ * Runs `git` work against a clone after the work begun against it before. A synchronous start was one uninterrupted block, so two pull requests of one repository never ran `git fetch` and `git worktree add` or `remove` against its clone at the same
+ * time; the steps of two starts now interleave, and git's own locks on the clone would refuse one of them (A11-379).
+ */
+function onClone<T>(context: Context, seat: Seat, work: () => Promise<T>): Promise<T> {
+  const clone = seat.clone ?? "";
+  const run = (context.checkouts.get(clone) ?? Promise.resolve()).then(work, work);
+  context.checkouts.set(clone, run.catch(() => undefined));
+  return run;
+}
 
 const boardOf = ({ helpers }: Context) => helpers.board();
 const gateOf = ({ helpers }: Context): ReviewerGate => helpers.gate();
@@ -193,33 +223,33 @@ function reviewerEnvOf(context: Context, seat: Seat): Record<string, string> {
  * reviewer's `load()` has read the gate, and a gate that does not load on this host must refuse a start, not the construction.
  */
 export type Seams = Readonly<{
-  spawn?: ReviewerGate["wake"]["spawnReviewer"];
-  checkout?: ReviewerGate["wake"]["prepareReviewCheckout"];
-  removeCheckout?: ReviewerGate["wake"]["removeReviewCheckout"];
-  uncommittedPaths?: (path: string) => string[];
+  spawn?: ReviewerGate["wake"]["spawnReviewerAsync"];
+  checkout?: ReviewerGate["wake"]["prepareReviewCheckoutAsync"];
+  removeCheckout?: ReviewerGate["wake"]["removeReviewCheckoutAsync"];
+  uncommittedPaths?: (path: string) => Promise<string[]>;
   exists?: (path: string) => boolean;
   /** Where a seat's reviewer keeps its checkout, which holds the verdict file it wrote. */
   checkoutOf?: (label: string) => string;
   /** Mints the reviewer's token in a checkout: the reason it could not, or null when it has one. */
-  mint?: (tree: string) => string | null;
-  /** Runs the verdict door with the reviewer's environment: throws on a non-zero exit, with the door's stderr. */
-  door?: DoorRun;
+  mint?: (tree: string) => Promise<string | null>;
+  /** Runs the verdict door with the reviewer's environment: rejects on a non-zero exit, with the door's stderr. */
+  door?: DoorRunAsync;
   now?: () => number;
   /**
    * Makes Codex trust the repository a review checkout belongs to, before the reviewer starts (A11-221): `rootOf` finds the checkout's clone root (the one Codex resolves a worktree's trust to),
    * `ensure` trusts it when the host file names it, and `log` says what was added. Absent, the port trusts nothing.
    */
-  codexTrust?: Readonly<{ rootOf: (tree: string) => string | null; ensure: (root: string) => Ensured; log: (line: string) => void }>;
+  codexTrust?: Readonly<{ rootOf: (tree: string) => Promise<string | null>; ensure: (root: string) => Ensured; log: (line: string) => void }>;
 }>;
 
-const spawnOf = (context: Context) => context.seams.spawn ?? gateOf(context).wake.spawnReviewer;
-const checkoutSeam = (context: Context) => context.seams.checkout ?? gateOf(context).wake.prepareReviewCheckout;
-const removeCheckoutOf = (context: Context) => context.seams.removeCheckout ?? gateOf(context).wake.removeReviewCheckout;
-const uncommittedPathsOf = (context: Context) => context.seams.uncommittedPaths ?? gateOf(context).wake.uncommittedPathsOf;
+const spawnOf = (context: Context) => context.seams.spawn ?? gateOf(context).wake.spawnReviewerAsync;
+const checkoutSeam = (context: Context) => context.seams.checkout ?? gateOf(context).wake.prepareReviewCheckoutAsync;
+const removeCheckoutOf = (context: Context) => context.seams.removeCheckout ?? gateOf(context).wake.removeReviewCheckoutAsync;
+const uncommittedPathsOf = (context: Context) => context.seams.uncommittedPaths ?? gateOf(context).wake.uncommittedPathsOfAsync;
 const existsOf = (context: Context) => context.seams.exists ?? existsSync;
 const checkoutPathOf = (context: Context, label: string): string => (context.seams.checkoutOf ?? gateOf(context).wake.reviewCheckoutPath)(label);
-const mintOf = (context: Context, tree: string): string | null => (context.seams.mint ?? reviewerTokenMintOf(context))(tree);
-const doorOf = (context: Context): DoorRun => context.seams.door ?? gateOf(context).trust.runDoor;
+const mintOf = (context: Context, tree: string): Promise<string | null> => (context.seams.mint ?? reviewerTokenMintOf(context))(tree);
+const doorOf = (context: Context): DoorRunAsync => context.seams.door ?? gateOf(context).trust.runDoorAsync;
 const nowOf = (context: Context): number => (context.seams.now ?? Date.now)();
 
 /**
@@ -229,10 +259,10 @@ const nowOf = (context: Context): number => (context.seams.now ?? Date.now)();
  * starts a reviewer again only for a head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
 export function atomicReviewerPort(helpers: ReviewerHelpers, seams: Seams = {}): ReviewerPort {
-  const context: Context = { helpers, seams, trustAnswers: new Map() };
+  const context: Context = { helpers, seams, trustAnswers: new Map(), holding: new Map(), checkouts: new Map() };
   return {
     live: (ref) => liveReviewer(context, ref),
-    start: (ref, brief) => startReviewer(context, ref, brief),
+    start: (ref, brief) => startReviewerOnce(context, ref, brief),
     settled: (ref) => settledReviewer(context, ref),
     verdictFileOf: ({ pr, head }) => {
       const seat = seatOf(context, pr);
@@ -248,15 +278,15 @@ export function atomicReviewerPort(helpers: ReviewerHelpers, seams: Seams = {}):
 }
 
 /** The herdr call the gate's functions make: the org's session is retargeted to the tickets' session here, and nothing else about the call changes. */
-function herdrOf(context: Context): (args: string[]) => string {
-  const { session, run } = boardOf(context);
-  return (args) => run(args[0] === "--session" && args[1] === boardOf(context).herdr.ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
+function herdrOf(context: Context): (args: string[]) => Promise<string> {
+  const { session, runAsync } = boardOf(context);
+  return (args) => runAsync(args[0] === "--session" && args[1] === boardOf(context).herdr.ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
 }
 
 /** The agents herdr lists in the tickets' session, or null when it lists none it can read. */
-function listedOf(context: Context): ListedAgent[] | null {
-  const { session, run } = boardOf(context);
-  return boardOf(context).herdr.readAgents(run, { session });
+function listedOf(context: Context): Promise<ListedAgent[] | null> {
+  const { session, runAsync } = boardOf(context);
+  return boardOf(context).herdr.readAgentsAsync(runAsync, { session });
 }
 
 /**
@@ -273,12 +303,12 @@ function promptWords(context: Context, seat: { label: string; key: string }, sta
 }
 
 /** Sends the seat's agent its prompt (`promptWords`). */
-function sendPrompt(context: Context, seat: { label: string; key: string }, state: ReviewState, ref: ReviewerRef, brief: ReviewBrief | undefined): { sent: true } | { refusal: string } {
+async function sendPrompt(context: Context, seat: { label: string; key: string }, state: ReviewState, ref: ReviewerRef, brief: ReviewBrief | undefined): Promise<{ sent: true } | { refusal: string }> {
   const words = promptWords(context, seat, state, ref, brief);
   const board = boardOf(context);
-  const { session, run } = board;
+  const { session, runAsync } = board;
   try {
-    run(["--session", session, "agent", "prompt", board.herdr.agentName(seat.label), words]);
+    await runAsync(["--session", session, "agent", "prompt", board.herdr.agentName(seat.label), words]);
     return { sent: true };
   } catch (err) {
     return { refusal: err instanceof Error ? err.message.split("\n")[0] : String(err) };
@@ -286,35 +316,35 @@ function sendPrompt(context: Context, seat: { label: string; key: string }, stat
 }
 
 /** Closes every workspace under a seat's label, as the gate's teardown does; a refusal names what would not close. */
-function closeAll(context: Context, pr: string, label: string): Readonly<{ state: "closed" }> | Readonly<{ refusal: string }> {
+async function closeAll(context: Context, pr: string, label: string): Promise<Readonly<{ state: "closed" }> | Readonly<{ refusal: string }>> {
   const problems: string[] = [];
-  const closed = gateOf(context).wake.closeReviewer(label, { run: herdrOf(context), warn: (line) => problems.push(line) });
+  const closed = await gateOf(context).wake.closeReviewerAsync(label, { run: herdrOf(context), warn: (line) => problems.push(line) });
   return closed ? { state: "closed" } : { refusal: `no close for ${pr}: ${problems.join(" ") || `${label} would not close`}` };
 }
 
 /** The uncommitted paths in a checkout, none when it is gone. A `status` that fails is a refusal: a tree that could not be read is kept, never removed. */
-function uncommittedOf(context: Context, path: string): { paths: string[] } | { refusal: string } {
+async function uncommittedOf(context: Context, path: string): Promise<{ paths: string[] } | { refusal: string }> {
   if (!existsOf(context)(path)) return { paths: [] };
   try {
-    return { paths: uncommittedPathsOf(context)(path) };
+    return { paths: await uncommittedPathsOf(context)(path) };
   } catch (err) {
     return { refusal: `the changes in ${path} could not be read, so it is kept (${boardOf(context).herdr.firstLine(err)})` };
   }
 }
 
-function liveReviewer(context: Context, { pr, head }: ReviewerRef): boolean {
+async function liveReviewer(context: Context, { pr, head }: ReviewerRef): Promise<boolean> {
   const seat = seatOf(context, pr);
-  return !("refusal" in seat) && boardOf(context).heads.get(seat.label) === head && (listedOf(context)?.some((agent) => agent.label === seat.label) ?? false);
+  return !("refusal" in seat) && boardOf(context).heads.get(seat.label) === head && ((await listedOf(context))?.some((agent) => agent.label === seat.label) ?? false);
 }
 
 /**
  * Writes a status under the claim's context on `sha` in `repo`, as the reviewer role: the identity the door posts as, whose token is minted in the checkout first. The one writer of a claim and of
  * its release (A11-149).
  */
-function claimWriterOf(context: Context, seat: Seat, { repo, sha, tree }: { repo: string; sha: string; tree: string }): (description: string) => void {
+function claimWriterOf(context: Context, seat: Seat, { repo, sha, tree }: { repo: string; sha: string; tree: string }): (description: string) => Promise<void> {
   const environment = gateOf(context).wake.reviewerEnvironment(seat.label, repositoryEnvOf(context, seat), tree);
-  return (description) => {
-    const refusal = codeHostOf(context).writeReviewClaim({ repository: repo, head: sha, description, environment });
+  return async (description) => {
+    const refusal = await codeHostOf(context).writeReviewClaim({ repository: repo, head: sha, description, environment });
     if (refusal !== null) throw new Error(refusal);
   };
 }
@@ -334,8 +364,8 @@ function noteOthersSeen(context: Context, entries: readonly Readonly<{ id: numbe
 }
 
 /** The claim entries of a head, read through the code host, with the other instances they show noted. THROWS the code host's reason when they could not be read. */
-function claimEntriesOf(context: Context, { repo, sha }: { repo: string; sha: string }): readonly Readonly<{ id: number; description: string; created: number }>[] {
-  const read = codeHostOf(context).readReviewClaims(repo, sha);
+async function claimEntriesOf(context: Context, { repo, sha }: { repo: string; sha: string }): Promise<readonly Readonly<{ id: number; description: string; created: number }>[]> {
+  const read = await codeHostOf(context).readReviewClaims(repo, sha);
   if ("unreadable" in read) throw new Error(read.unreadable);
   noteOthersSeen(context, read.entries);
   return read.entries;
@@ -354,15 +384,15 @@ const otherSeenOf = (context: Context): number | null => {
  * A WRITE GITHUB REFUSED (A11-172), when no other instance holds the head and none has been seen within the lease, is no refusal: this instance is the only one there is, so nobody can review the head
  * twice, and the reviewer starts without a claim (`unclaimed` says why, for the board). Nothing was written, so nothing is released. With a second instance in sight it is a refusal, as it was.
  */
-function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { pr: string; head: string; tree: string; rereview: boolean }): Claimed {
+async function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { pr: string; head: string; tree: string; rereview: boolean }): Promise<Claimed> {
   const pull = pullOf(pr);
   if (pull === null) return { refusal: `no reviewer for ${pr}: it is not a pull request url` };
-  const minted = mintOf(context, tree);
+  const minted = await mintOf(context, tree);
   if (minted !== null) return { refusal: `no reviewer for ${pr}: ${minted}` };
   const { repository } = pull;
   const board = boardOf(context);
   const { claims } = board;
-  const answer = claims.claimHead({
+  const answer = await claims.claimHead({
     instance: board.instance, now: nowOf(context),
     read: () => claimEntriesOf(context, { repo: repository, sha: head }),
     write: claimWriterOf(context, seat, { repo: repository, sha: head, tree }),
@@ -376,7 +406,7 @@ function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { p
     case "finished": return { refusal: `no reviewer for ${pr}: its review at ${head.slice(0, 8)} is already posted (${answer.description})` };
     case "unclaimed":
       // A claim whose read-back failed may be on GitHub already: released, so it does not hold the head for its whole lease.
-      releaseClaim(context, seat, { pr, head, tree });
+      await releaseClaim(context, seat, { pr, head, tree });
       return { refusal: `no reviewer for ${pr}: its claim at ${head.slice(0, 8)} could not be made (${answer.reason}), so none is started`, unclaimed: answer.reason };
   }
 }
@@ -385,11 +415,11 @@ function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { p
  * Gives up this instance's claim on a head whose reviewer did not start (A11-149), so another instance may take the head now rather than when the lease ends. Best effort: a release that cannot be
  * written leaves the claim to expire with its lease, which is the state a release is for avoiding and no worse.
  */
-function releaseClaim(context: Context, seat: Seat, { pr, head, tree }: { pr: string; head: string; tree: string }): void {
+async function releaseClaim(context: Context, seat: Seat, { pr, head, tree }: { pr: string; head: string; tree: string }): Promise<void> {
   const pull = pullOf(pr);
   if (pull === null) return;
   try {
-    claimWriterOf(context, seat, { repo: pull.repository, sha: head, tree })(boardOf(context).claims.releasedDescriptionOf({ instance: boardOf(context).instance, now: nowOf(context) }));
+    await claimWriterOf(context, seat, { repo: pull.repository, sha: head, tree })(boardOf(context).claims.releasedDescriptionOf({ instance: boardOf(context).instance, now: nowOf(context) }));
   } catch {
     // Left to expire with its lease, as the comment above says.
   }
@@ -402,10 +432,10 @@ const codeHostOf = (context: Context): CodeHost => boardOf(context).codeHost();
  * Trusts the clone a review checkout belongs to in Codex's config, so Codex does not stop on its "Trust this folder?" dialog (A11-221). The reason no reviewer starts when the config cannot be used
  * (Codex could not start on it either), or null: an entry added, one already there, a root the host file does not name, or a checkout with no clone root all go ahead.
  */
-function trustCodexFor(context: Context, { pr, tree }: { pr: string; tree: string }): string | null {
+async function trustCodexFor(context: Context, { pr, tree }: { pr: string; tree: string }): Promise<string | null> {
   const codex = context.seams.codexTrust;
   if (codex === undefined) return null;
-  const root = codex.rootOf(tree);
+  const root = await codex.rootOf(tree);
   if (root === null) return null;
   const answer = codex.ensure(root);
   if (answer.kind === "refused") return `no reviewer for ${pr}: ${answer.reason}`;
@@ -413,10 +443,20 @@ function trustCodexFor(context: Context, { pr, tree }: { pr: string; tree: strin
   return null;
 }
 
-function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): ReturnType<ReviewerPort["start"]> {
-  const { pr, head } = ref;
-  const seat = seatOf(context, pr);
+/**
+ * A START IN FLIGHT HOLDS ITS SEAT (A11-379). The loop runs between the steps of a start, so two sweeps, or a sweep and `ticket:review`, could start the same seat at once: a second start of a seat whose start has not settled is refused, which the pool
+ * reads as "try on a later sweep". The seat leaves the set when its start ends, whatever it came to.
+ */
+async function startReviewerOnce(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): ReturnType<ReviewerPort["start"]> {
+  const seat = seatOf(context, ref.pr);
   if ("refusal" in seat) return seat;
+  const doing = context.holding.get(seat.label);
+  if (doing !== undefined) return { refusal: `no reviewer for ${ref.pr}: a reviewer for it is still ${doing}` };
+  return holdingSeat(context, seat.label, "starting", () => startReviewer(context, ref, brief, seat));
+}
+
+async function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined, seat: Seat): ReturnType<ReviewerPort["start"]> {
+  const { pr, head } = ref;
   const { trust } = gateOf(context);
   const board = boardOf(context);
   const state = codeHostOf(context).peekReviewState?.(pr) ?? null;
@@ -424,40 +464,40 @@ function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | 
   if (state.trust !== trust.INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
   if (state.head !== head) return { refusal: `no reviewer for ${pr}: its head moved to ${state.head}, so ${head} is no longer to be reviewed` };
   if (!state.settled) return { refusal: `no reviewer for ${pr}: its checks at ${head} have not settled green` };
-  const agents = listedOf(context);
+  const agents = await listedOf(context);
   if (agents === null) return { refusal: `no reviewer for ${pr}: herdr did not list the ${board.session} session` };
   // A reviewer still holding the label is one for an earlier head: its workspace is closed before the next one starts under the same label.
   const stale = agents.some((agent) => agent.label === seat.label);
-  if (stale) closeWorkspace(board.run, board.session, seat.label);
-  const tree = checkoutSeam(context)({ pr: seat.number, session: seat.label, trust: trust.INSIDE, ...rootOf(seat) });
+  if (stale) await closeWorkspace(board.runAsync, board.session, seat.label);
+  const tree = await onClone(context, seat, () => checkoutSeam(context)({ pr: seat.number, session: seat.label, trust: trust.INSIDE, ...rootOf(seat) }));
   if ("refusal" in tree) return tree;
   // Codex's trust comes before the claim and the spawn: a repository it has not been told to trust stops the reviewer on a dialog nobody answers (A11-221).
-  const untrusted = trustCodexFor(context, { pr, tree: tree.path });
+  const untrusted = await trustCodexFor(context, { pr, tree: tree.path });
   if (untrusted !== null) return { refusal: untrusted };
   // The claim comes before the spawn: an instance that holds the head starts nothing, and a claim that cannot be made starts nothing either (A11-149).
-  const claimed = claimOf(context, seat, { pr, head, tree: tree.path, rereview: brief?.rereview !== undefined });
+  const claimed = await claimOf(context, seat, { pr, head, tree: tree.path, rereview: brief?.rereview !== undefined });
   if ("refusal" in claimed) return claimed;
   // A reviewer started without a claim wrote none, so it has none to give up.
-  const giveUpClaim = () => { if (claimed.unclaimed === undefined) releaseClaim(context, seat, { pr, head, tree: tree.path }); };
-  const started = spawnOf(context)({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
+  const giveUpClaim = async () => { if (claimed.unclaimed === undefined) await releaseClaim(context, seat, { pr, head, tree: tree.path }); };
+  const started = await spawnOf(context)({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
     agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(context), cwd: tree.path, env: reviewerEnvOf(context, seat), ...(boardOf(context).tmpBase === undefined ? {} : { tmpBase: boardOf(context).tmpBase }) });
   if ("refusal" in started) {
-    giveUpClaim();
+    await giveUpClaim();
     return started;
   }
-  const prompted = sendPrompt(context, seat, state, ref, brief);
+  const prompted = await sendPrompt(context, seat, state, ref, brief);
   if ("refusal" in prompted) {
-    giveUpClaim();
+    await giveUpClaim();
     return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
   }
   board.heads.set(seat.label, head);
   return { label: seat.label, ...(claimed.tookOver === null ? {} : { tookOver: claimed.tookOver }), ...(claimed.unclaimed === undefined ? {} : { unclaimed: claimed.unclaimed }) };
 }
 
-function settledReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerSettled {
+async function settledReviewer(context: Context, { pr, head }: ReviewerRef): Promise<ReviewerSettled> {
   const seat = seatOf(context, pr);
   if ("refusal" in seat || boardOf(context).heads.get(seat.label) !== head) return "gone";
-  const agents = listedOf(context);
+  const agents = await listedOf(context);
   // herdr did not say what is running, so the reviewer is working as far as anyone can tell: nothing is said of it on a guess.
   if (agents === null) return "working";
   const holders = agents.filter((agent) => agent.label === seat.label);
@@ -469,16 +509,16 @@ function settledReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerS
  * Looks at the pane of a seat's reviewer when herdr lists it `blocked` (A11-221, contract 1.6), and answers Codex's trust dialog for a repository the host file names (`answerDialog`). Any other dialog is `stuck`, with its
  * first line, and nothing is pressed. Null when the reviewer is not blocked (its pane is left unread) or its pane shows no dialog; `unread` when herdr cannot be asked or the pane cannot be read, which says nothing of a dialog.
  */
-function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerDialog | null {
+async function unblockReviewer(context: Context, { pr, head }: ReviewerRef): Promise<ReviewerDialog | null> {
   const seat = seatOf(context, pr);
   const board = boardOf(context);
   if ("refusal" in seat || board.heads.get(seat.label) !== head) return null;
-  const agents = listedOf(context);
+  const agents = await listedOf(context);
   if (agents === null) return { unread: `herdr did not list the ${board.session} session` };
   if (!agents.some((agent) => agent.label === seat.label && agent.status === BLOCKED_STATUS)) return null;
   let pane: string;
   try {
-    pane = board.run(["--session", board.session, "agent", "read", board.herdr.agentName(seat.label), "--source", "visible"]);
+    pane = await board.runAsync(["--session", board.session, "agent", "read", board.herdr.agentName(seat.label), "--source", "visible"]);
   } catch (err) {
     return { unread: `${seat.label}'s pane could not be read (${board.herdr.firstLine(err)})` };
   }
@@ -488,7 +528,7 @@ function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerD
   const answers = context.trustAnswers.get(key) ?? 0;
   const codex = context.seams.codexTrust;
   let pressed = false;
-  const answer = answerDialog({ seen, answers,
+  const answer = await answerDialog({ seen, answers,
     ensure: codex?.ensure ?? (() => ({ kind: "refused", file: "", reason: "the port is given no Codex trust to ask" })),
     press: () => { pressed = true; return pressEnter(board, seat.label); } });
   // An answer is counted when a key was tried, so a press herdr keeps refusing does not go on for ever.
@@ -497,27 +537,27 @@ function unblockReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerD
 }
 
 /** Sends `enter` to the seat's agent, which answers the dialog's selected option: whether herdr took it. */
-function pressEnter(board: ReviewerBoard, label: string): boolean {
+async function pressEnter(board: ReviewerBoard, label: string): Promise<boolean> {
   try {
-    board.run(["--session", board.session, "agent", "send-keys", board.herdr.agentName(label), "enter"]);
+    await board.runAsync(["--session", board.session, "agent", "send-keys", board.herdr.agentName(label), "enter"]);
     return true;
   } catch {
     return false;
   }
 }
 
-function repostReviewerVerdict(context: Context, { pr, head }: ReviewerRef, file: string): RepostAnswer {
+async function repostReviewerVerdict(context: Context, { pr, head }: ReviewerRef, file: string): Promise<RepostAnswer> {
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return { refusal: seat.refusal, final: true };
   const word = verdictWordOf(context, file, head);
   if (word === null) return { refusal: `the verdict file ${file} does not open with a verdict for ${head.slice(0, 8)}`, final: true };
   const tree = checkoutPathOf(context, seat.label);
   // The token first: the door posts as the reviewer App, and a token that is stale or missing is the failure this repost is for.
-  const minted = mintOf(context, tree);
+  const minted = await mintOf(context, tree);
   if (minted !== null) return { refusal: minted, final: false };
   const { wake, doorPath } = gateOf(context);
   try {
-    doorOf(context)(doorPath.reviewerDoorPath(), [String(seat.number), word, file], wake.reviewerEnvironment(seat.label, reviewerEnvOf(context, seat), tree));
+    await doorOf(context)(doorPath.reviewerDoorPath(), [String(seat.number), word, file], wake.reviewerEnvironment(seat.label, reviewerEnvOf(context, seat), tree));
     return { posted: true };
   } catch (err) {
     const status = (err as { status?: number | null }).status ?? null;
@@ -525,22 +565,28 @@ function repostReviewerVerdict(context: Context, { pr, head }: ReviewerRef, file
   }
 }
 
-function repromptReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): PromptAnswer {
+async function repromptReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): Promise<PromptAnswer> {
   const { pr } = ref;
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return seat;
   const state = codeHostOf(context).peekReviewState?.(pr) ?? null;
   if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
-  const sent = sendPrompt(context, seat, state, ref, brief);
+  const sent = await sendPrompt(context, seat, state, ref, brief);
   return "refusal" in sent ? { refusal: `no reprompt for ${pr}: ${sent.refusal}` } : { prompted: true };
 }
 
-function closeReviewer(context: Context, { pr, head }: ReviewerRef): CloseAnswer {
+async function closeReviewer(context: Context, { pr, head }: ReviewerRef): Promise<CloseAnswer> {
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return seat;
+  // A start, a close or a retire in flight is asked again: its checkout and its workspace are still being made, or closed.
+  if (context.holding.has(seat.label)) return { state: "busy" };
+  return holdingSeat(context, seat.label, "closing", () => closeHeld(context, seat, { pr, head }));
+}
+
+async function closeHeld(context: Context, seat: Seat, { pr, head }: ReviewerRef): Promise<CloseAnswer> {
   const board = boardOf(context);
   if (board.heads.get(seat.label) !== head) return { refusal: `no close for ${pr}: ${seat.label} was not started for ${head}` };
-  const agents = listedOf(context);
+  const agents = await listedOf(context);
   if (agents === null) return { refusal: `no close for ${pr}: herdr did not list the ${board.session} session` };
   const holders = agents.filter((agent) => agent.label === seat.label);
   if (holders.length === 0) return { state: "gone" };
@@ -550,32 +596,38 @@ function closeReviewer(context: Context, { pr, head }: ReviewerRef): CloseAnswer
   return closeAll(context, pr, seat.label);
 }
 
-function retireReviewer(context: Context, pr: string): RetireAnswer {
+async function retireReviewer(context: Context, pr: string): Promise<RetireAnswer> {
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return seat;
+  const doing = context.holding.get(seat.label);
+  if (doing !== undefined) return { refusal: `no retire for ${pr}: a reviewer for it is still ${doing}, and is retired once it is not` };
+  return holdingSeat(context, seat.label, "retiring", () => retireHeld(context, seat, pr));
+}
+
+async function retireHeld(context: Context, seat: Seat, pr: string): Promise<RetireAnswer> {
   const board = boardOf(context);
-  const agents = listedOf(context);
+  const agents = await listedOf(context);
   if (agents === null) return { refusal: `no retire for ${pr}: herdr did not list the ${board.session} session` };
   const holders = agents.filter((agent) => agent.label === seat.label);
   if (holders.some((agent) => agent.status === "working")) return { refusal: `no retire for ${pr}: ${seat.label} is still working, and is retired once it is not` };
   // The workspaces first, since nothing may be reading the tree when it goes; the checkout only once every workspace under the label has closed.
   if (holders.length > 0) {
-    const closed = closeAll(context, pr, seat.label);
+    const closed = await closeAll(context, pr, seat.label);
     if ("refusal" in closed) return closed;
   }
   const path = gateOf(context).wake.reviewCheckoutPath(seat.label);
-  const uncommitted = uncommittedOf(context, path);
+  const uncommitted = await uncommittedOf(context, path);
   if ("refusal" in uncommitted) return { refusal: `no retire for ${pr}: ${uncommitted.refusal}` };
   const head = board.heads.get(seat.label) ?? "an unrecorded head";
-  const left = removeCheckoutOf(context)({ pr: seat.number, session: seat.label, key: seat.key, ...rootOf(seat) });
+  const left = await onClone(context, seat, () => removeCheckoutOf(context)({ pr: seat.number, session: seat.label, key: seat.key, ...rootOf(seat) }));
   if (left !== null) return { refusal: `no retire for ${pr}: ${left}` };
   board.heads.delete(seat.label);
   // The discard is reported only once it has happened: a removal that fails keeps the tree and says nothing was discarded.
   return { retired: true, report: discardReport({ label: seat.label, pr, head, path, paths: uncommitted.paths }) };
 }
 
-function listedPullUrls(context: Context): string[] {
-  return (listedOf(context) ?? []).flatMap((agent) => {
+async function listedPullUrls(context: Context): Promise<string[]> {
+  return ((await listedOf(context)) ?? []).flatMap((agent) => {
     const instance = boardOf(context).attribution.reviewerInstance(agent.label);
     const repository = instance === null ? null : repositoryOfKey(context, instance.key);
     return instance === null || repository === null ? [] : [`https://github.com/${repository}/pull/${instance.number}`];
@@ -583,10 +635,10 @@ function listedPullUrls(context: Context): string[] {
 }
 
 /** The reviewer's token mint in a checkout, as the gate's own refresh makes it (A11-83): the reason it cannot, or null when the reviewer has a token. */
-function reviewerTokenMintOf(context: Context): (tree: string) => string | null {
+function reviewerTokenMintOf(context: Context): (tree: string) => Promise<string | null> {
   return (tree) => {
     const { wake } = gateOf(context);
-    return wake.reviewerTokenMinter(wake.reviewerAppOf())(tree);
+    return wake.reviewerTokenMinterAsync(wake.reviewerAppOf())(tree);
   };
 }
 
@@ -608,10 +660,10 @@ function doorReason(err: unknown, status: number | null): string {
 }
 
 /** Closes the workspace a label holds in the session, if herdr lists it. */
-function closeWorkspace(run: (args: string[]) => string, session: string, label: string): void {
-  const workspaces = JSON.parse(run(["--session", session, "workspace", "list"]))?.result?.workspaces ?? [];
+async function closeWorkspace(run: (args: string[]) => Promise<string>, session: string, label: string): Promise<void> {
+  const workspaces = JSON.parse(await run(["--session", session, "workspace", "list"]))?.result?.workspaces ?? [];
   const id = workspaces.find((w: { label?: unknown }) => w?.label === label)?.workspace_id;
-  if (typeof id === "string") run(["--session", session, "workspace", "close", id]);
+  if (typeof id === "string") await run(["--session", session, "workspace", "close", id]);
 }
 
 /**
@@ -622,15 +674,15 @@ export function portWhereGateLoads(port: ReviewerPort, refusal: () => string | n
   const refused = (pr: string): string => `no reviewer for ${pr}: the reviewer's gate does not load on this host: ${refusal()}`;
   const loads = (): boolean => refusal() === null;
   return {
-    start: (ref, brief) => (loads() ? port.start(ref, brief) : { refusal: refused(ref.pr) }),
-    live: (ref) => loads() && port.live(ref),
-    close: (ref) => (loads() ? port.close(ref) : { refusal: refused(ref.pr) }),
-    retire: (pr) => (loads() ? port.retire(pr) : { refusal: refused(pr) }),
-    listedPulls: () => (loads() ? port.listedPulls() : []),
-    settled: (ref) => (loads() ? port.settled(ref) : "gone"),
+    start: async (ref, brief) => (loads() ? port.start(ref, brief) : { refusal: refused(ref.pr) }),
+    live: async (ref) => loads() && port.live(ref),
+    close: async (ref) => (loads() ? port.close(ref) : { refusal: refused(ref.pr) }),
+    retire: async (pr) => (loads() ? port.retire(pr) : { refusal: refused(pr) }),
+    listedPulls: async () => (loads() ? port.listedPulls() : []),
+    settled: async (ref) => (loads() ? port.settled(ref) : "gone"),
     verdictFileOf: (ref) => (loads() ? port.verdictFileOf(ref) : null),
-    repostVerdict: (ref, file) => (loads() ? port.repostVerdict(ref, file) : { refusal: refused(ref.pr), final: true }),
-    reprompt: (ref, brief) => (loads() ? port.reprompt(ref, brief) : { refusal: refused(ref.pr) }),
-    unblock: (ref) => (loads() ? port.unblock?.(ref) ?? null : null),
+    repostVerdict: async (ref, file) => (loads() ? port.repostVerdict(ref, file) : { refusal: refused(ref.pr), final: true }),
+    reprompt: async (ref, brief) => (loads() ? port.reprompt(ref, brief) : { refusal: refused(ref.pr) }),
+    unblock: async (ref) => (loads() ? (await port.unblock?.(ref)) ?? null : null),
   };
 }

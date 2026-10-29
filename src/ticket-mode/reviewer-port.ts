@@ -25,7 +25,8 @@ export type { ReviewState, ReviewerRef, ReviewerPort, ReviewerSettled, RepostAns
  * (`plugins/manifest.ts`), the part of each it calls, with a signature of its own; `reviewing-helpers.ts` is where the two are held to each other.
  */
 type ReviewerGate = {
-  wake: typeof import("../wake/reviewer-tokens-and-checkouts.ts") & typeof import("../wake/ci-class-and-spares.ts") & typeof import("../wake/pull-request-spawn-orders.ts") & typeof import("../wake/seat-reset.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
+  wake: typeof import("../wake/reviewer-tokens-and-checkouts.ts") & typeof import("../wake/ci-class-and-spares.ts") & typeof import("../wake/pull-request-spawn-orders.ts") & typeof import("../wake/seat-reset.ts") & typeof import("../wake/reviewer-start-async.ts");
+  trust: typeof import("../review-trust.ts") & Pick<typeof import("../wake/reviewer-start-async.ts"), "runDoorAsync">; config: typeof import("../project-config.ts");
   identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts"); doorPath: typeof import("../reviewer-door-path.ts"); host: typeof import("../host-config.ts");
 };
 
@@ -41,8 +42,8 @@ export async function loadReviewerGate(): Promise<void> {
   if (gate !== null) return;
   // The host file's module is read only once the gate's own modules have loaded: it is one of them (`pull-request-spawn-orders` imports it), so
   // it is already loaded then, and a host with no `primary` keeps the refusal the declaration names, not this one.
-  gate = await Promise.all([import("../wake/reviewer-tokens-and-checkouts.ts"), import("../wake/ci-class-and-spares.ts"), import("../wake/pull-request-spawn-orders.ts"), import("../wake/seat-reset.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
-    async ([tokens, withCiFailure, spawnOrder, reset, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake: { ...tokens, ...withCiFailure, ...spawnOrder, ...reset }, trust, config, identity, orders, doorPath, host: await import("../host-config.ts") } }),
+  gate = await Promise.all([import("../wake/reviewer-tokens-and-checkouts.ts"), import("../wake/ci-class-and-spares.ts"), import("../wake/pull-request-spawn-orders.ts"), import("../wake/seat-reset.ts"), import("../wake/reviewer-start-async.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
+    async ([tokens, withCiFailure, spawnOrder, reset, startAsync, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake: { ...tokens, ...withCiFailure, ...spawnOrder, ...reset, ...startAsync }, trust: { ...trust, runDoorAsync: startAsync.runDoorAsync }, config, identity, orders, doorPath, host: await import("../host-config.ts") } }),
     (refusal: unknown) => ({ ok: false as const, refusal }),
   );
 }

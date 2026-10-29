@@ -3102,17 +3102,17 @@ test("with no tickets.publish, Publish starts no run and posts nothing: the requ
 const REVIEWING = { reviewer: "atomic", drafts: false };
 
 /** The teardown a fake reviewer port does not exercise: nothing is closed, retired or listed. */
-const idleTeardown: Pick<ReviewerPort, "close" | "retire" | "listedPulls"> = { close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [] };
+const idleTeardown: Pick<ReviewerPort, "close" | "retire" | "listedPulls"> = { close: async () => ({ state: "gone" }), retire: async () => ({ retired: true, report: null }), listedPulls: async () => [] };
 
 /** The verdict a fake reviewer port does not exercise (A11-83): its reviewer is still working, so nothing is posted, prompted or said. */
 const idleVerdict: Pick<ReviewerPort, "settled" | "verdictFileOf" | "repostVerdict" | "reprompt"> = {
-  settled: () => "working", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: () => ({ prompted: true }),
+  settled: async () => "working", verdictFileOf: () => null, repostVerdict: async () => ({ posted: true }), reprompt: async () => ({ prompted: true }),
 };
 
 /** A reviewer port that records each start and reports none live, so only the pool's own once-per-head memory stops a second start. */
 function fakeReviewer() {
   const starts: ReviewerRef[] = [];
-  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: () => false, ...idleTeardown, ...idleVerdict };
+  const port: ReviewerPort = { async start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: async () => false, ...idleTeardown, ...idleVerdict };
   return { port, starts };
 }
 
@@ -3159,7 +3159,7 @@ test("a restarted pool starts no second reviewer on a head it already reviewed",
 test("a reviewer is recorded before it starts: an instance stopped while it started one starts no second one after the restart", async () => {
   const starts: ReviewerRef[] = [];
   // The instance stops inside `start`, after the reviewer's workspace is open and before `start` returns.
-  const port: ReviewerPort = { start(ref) { starts.push(ref); throw new Error("SIGTERM"); }, live: () => false, ...idleTeardown, ...idleVerdict };
+  const port: ReviewerPort = { async start(ref) { starts.push(ref); throw new Error("SIGTERM"); }, live: async () => false, ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
   await assert.rejects(() => ctx.pool.watchFeedback(), /SIGTERM/);
   assert.ok(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.has(`${approvedPr.url}@h1`), "on disk before the start");
@@ -3171,7 +3171,7 @@ test("a reviewer is recorded before it starts: an instance stopped while it star
 test("a reviewer herdr still lists for the head is adopted, not started, and stays adopted across a restart", async () => {
   const starts: ReviewerRef[] = [];
   let listed = true;
-  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: ({ head }) => listed && head === "h1", ...idleTeardown, ...idleVerdict };
+  const port: ReviewerPort = { async start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: async ({ head }) => listed && head === "h1", ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
   await ctx.pool.watchFeedback();
   await roundStarted();
@@ -3186,7 +3186,7 @@ test("a reviewer herdr still lists for the head is adopted, not started, and sta
 test("a reviewer start the port refuses is not remembered, so the next watch tries again", async () => {
   const starts: ReviewerRef[] = [];
   let refuse = true;
-  const port: ReviewerPort = { start(ref) { starts.push(ref); return refuse ? { refusal: "herdr did not list the session" } : { label: "reviewer-7" }; }, live: () => false, ...idleTeardown, ...idleVerdict };
+  const port: ReviewerPort = { async start(ref) { starts.push(ref); return refuse ? { refusal: "herdr did not list the session" } : { label: "reviewer-7" }; }, live: async () => false, ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
   await captureStderr(async () => { await ctx.pool.watchFeedback(); await roundStarted(); });
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 0);
@@ -3747,16 +3747,16 @@ function reviewerWith({ closeAnswers = ["closed"], retire = () => ({ retired: tr
   const answers = [...closeAnswers];
   let open = false;
   const port: ReviewerPort = {
-    start(ref) { starts.push(ref); open = true; return { label: "reviewer-7" }; },
-    live: () => open,
-    close(ref) {
+    async start(ref) { starts.push(ref); open = true; return { label: "reviewer-7" }; },
+    live: async () => open,
+    async close(ref) {
       closes.push(ref);
       const state = answers.shift() ?? "closed";
       if (state === "closed") open = false;
       return { state };
     },
-    retire(pr) { retired.push(pr); return retire(pr); },
-    listedPulls,
+    async retire(pr) { retired.push(pr); return retire(pr); },
+    listedPulls: async () => listedPulls(),
     ...idleVerdict,
   };
   return { port, starts, closes, retired };
@@ -3906,7 +3906,7 @@ test("A11-119: a start ticket:review recorded is kept by the pool's next write, 
 
 test("A11-119: a refusal to start is said once for a head, and is asked again on the next sweep; a head not settled green starts nothing", async () => {
   const starts: ReviewerRef[] = [];
-  const port: ReviewerPort = { ...fakeReviewer().port, start(ref) { starts.push(ref); return { refusal: "no reviewer for it: its author is outside the org" }; } };
+  const port: ReviewerPort = { ...fakeReviewer().port, async start(ref) { starts.push(ref); return { refusal: "no reviewer for it: its author is outside the org" }; } };
   const ctx = await sweptPool(port, { 1: feedbackPull() });
   const logged = await captureStderr(async () => {
     await ctx.pool.reviewNewHeads();
@@ -3923,10 +3923,10 @@ test("A11-119: a refusal to start is said once for a head, and is asked again on
 test("A11-172: a start the claim refused is shown on each pull request's line and once as the board's warning, and is asked again; a start without a claim says so", async () => {
   const forbidden = "gh: Resource not accessible by integration (HTTP 403)";
   const starts: ReviewerRef[] = [];
-  let answer: ReturnType<ReviewerPort["start"]> = { refusal: `no reviewer: its claim could not be made (${forbidden}), so none is started`, unclaimed: forbidden };
+  let answer: Awaited<ReturnType<ReviewerPort["start"]>> = { refusal: `no reviewer: its claim could not be made (${forbidden}), so none is started`, unclaimed: forbidden };
   const running = new Set<string>();
-  const port: ReviewerPort = { ...fakeReviewer().port, live: (ref) => running.has(`${ref.pr}@${ref.head}`),
-    start(ref) { starts.push(ref); if (!("refusal" in answer)) running.add(`${ref.pr}@${ref.head}`); return answer; } };
+  const port: ReviewerPort = { ...fakeReviewer().port, live: async (ref) => running.has(`${ref.pr}@${ref.head}`),
+    async start(ref) { starts.push(ref); if (!("refusal" in answer)) running.add(`${ref.pr}@${ref.head}`); return answer; } };
   const ctx = await sweptPool(port, { 1: feedbackPull(), 2: feedbackPull() });
   const logged = await captureStderr(async () => {
     await ctx.pool.reviewNewHeads();
@@ -3968,26 +3968,26 @@ function rereviewer() {
   const prompts: ReviewerRef[] = [];
   const control = { open: false, turn: "working" as ReviewerSettled, refuse: null as string | null, file: null as string | null };
   const port: ReviewerPort = {
-    start(ref, brief) {
+    async start(ref, brief) {
       starts.push({ ref, brief });
       if (control.refuse !== null) return { refusal: control.refuse };
       control.open = true;
       control.turn = "working";
       return { label: "reviewer-7" };
     },
-    live: () => control.open,
-    close(ref) {
+    live: async () => control.open,
+    async close(ref) {
       closes.push(ref);
       if (control.turn === "working") return { state: "busy" };
       control.open = false;
       return { state: "closed" };
     },
-    retire: () => ({ retired: true, report: null }),
-    listedPulls: () => [],
-    settled: () => (control.open ? control.turn : "gone"),
+    retire: async () => ({ retired: true, report: null }),
+    listedPulls: async () => [],
+    settled: async () => (control.open ? control.turn : "gone"),
     verdictFileOf: () => control.file,
-    repostVerdict(ref, file) { reposts.push(file); return { posted: true }; },
-    reprompt(ref) { prompts.push(ref); return { prompted: true }; },
+    async repostVerdict(ref, file) { reposts.push(file); return { posted: true }; },
+    async reprompt(ref) { prompts.push(ref); return { prompted: true }; },
   };
   return { port, starts, closes, reposts, prompts, control, end: () => { control.turn = "ended"; } };
 }
@@ -4105,7 +4105,7 @@ test("A11-156: a head that moved is a first review with no replies in its brief,
   assert.equal(starts[0].brief?.rereview !== undefined, true, "h1 is re-reviewed by reply");
   end();
   pulls[1] = feedbackPull({ head: "h2", reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
-  port.close({ pr: sweptPr, head: "h1" });
+  await port.close({ pr: sweptPr, head: "h1" });
   await ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map(({ ref }) => ref.head), ["h1", "h2"]);
   assert.equal(starts[1].brief?.rereview, undefined, "the new head is a first review");
@@ -4307,13 +4307,13 @@ function unpostedReviewer({ file = "/work/verdict-1.md" as string | null, repost
   const prompts: ReviewerRef[] = [];
   const answers = [...reposts];
   const port: ReviewerPort = {
-    start(ref) { starts.push(ref); return { label: "reviewer-7" }; },
-    live: () => false,
+    async start(ref) { starts.push(ref); return { label: "reviewer-7" }; },
+    live: async () => false,
     ...idleTeardown,
-    settled: () => settled,
+    settled: async () => settled,
     verdictFileOf: () => file,
-    repostVerdict(ref, path) { posts.push({ ref, file: path }); return answers.shift() ?? { refusal: "no answer was set", final: false }; },
-    reprompt(ref) { prompts.push(ref); return { prompted: true }; },
+    async repostVerdict(ref, path) { posts.push({ ref, file: path }); return answers.shift() ?? { refusal: "no answer was set", final: false }; },
+    async reprompt(ref) { prompts.push(ref); return { prompted: true }; },
   };
   return { port, starts, posts, prompts };
 }
@@ -7450,7 +7450,7 @@ test("A11-175: a pull request without a Partial: step in its body is briefed as 
 
 test("A11-175: the unposted-verdict reprompt carries the step of the pull request too", async () => {
   const prompts: (ReviewBrief | undefined)[] = [];
-  const port: ReviewerPort = { start: () => ({ label: "reviewer-7" }), live: () => false, ...idleTeardown, settled: () => "ended", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: (_ref, brief) => { prompts.push(brief); return { prompted: true }; } };
+  const port: ReviewerPort = { start: async () => ({ label: "reviewer-7" }), live: async () => false, ...idleTeardown, settled: async () => "ended", verdictFileOf: () => null, repostVerdict: async () => ({ posted: true }), reprompt: async (_ref, brief) => { prompts.push(brief); return { prompted: true }; } };
   const ctx = await sweptWithPlan(port, { 1: feedbackPull({ body: PARTIAL_BODY }) }, STEPPED_PLAN);
   await ctx.pool.reviewNewHeads();
   await ctx.pool.reviewNewHeads();

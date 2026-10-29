@@ -38,9 +38,15 @@ function fakeGate(listed: Map<string, string>): ReviewerGate {
       closeReviewer: (label: string) => { listed.delete(label); return true; },
       reviewerEnvironment: () => ({}),
       reviewerTokenMinter: () => () => null,
+      spawnReviewerAsync: async (order: { session: string }) => { listed.set(order.session, "idle"); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+      prepareReviewCheckoutAsync: async () => ({ path: "/nowhere/pr-7", head: HEAD }),
+      removeReviewCheckoutAsync: async () => null,
+      uncommittedPathsOfAsync: async () => [],
+      closeReviewerAsync: async (label: string) => { listed.delete(label); return true; },
+      reviewerTokenMinterAsync: () => async () => null,
       reviewerAppOf: () => ({}),
     },
-    trust: { INSIDE: "inside", runDoor: () => undefined },
+    trust: { INSIDE: "inside", runDoor: () => undefined, runDoorAsync: async () => undefined },
     config: { homeProjectDeclaration: () => ({ code: [] }) },
     identity: { REPO },
     orders: { awaitingVerdictPrompt: () => "the verdict prompt", reviewHeadsOf: () => [], reviewerRoleFile: () => ".agent-org/roles/reviewer.md" },
@@ -54,7 +60,8 @@ function helpersOver({ refusal = null }: { refusal?: string | null } = {}): { re
   const listed = new Map<string, string>();
   const host = createFakeCodeHost();
   host.seedPull(REPO, 7, { head: HEAD, settled: true, trust: "inside" });
-  const real = reviewingHelpers({ session: "tickets", run: herdr(listed), codeHost: () => host, clones: {}, instance: "work", heads: new Map<string, string>() });
+  const run = herdr(listed);
+  const real = reviewingHelpers({ session: "tickets", run, runAsync: async (args) => run(args), codeHost: () => host, clones: {}, instance: "work", heads: new Map<string, string>() });
   const loaded = { current: false };
   return { listed, reviewing: { loadGate: async () => { loaded.current = true; }, gateRefusal: () => { if (!loaded.current) throw new Error("the gate is not loaded"); return refusal; }, gate: () => fakeGate(listed),
     board: () => real.board() } };
@@ -66,8 +73,8 @@ test("the atomic reviewer passes the reviewer contract suite, as create builds i
   const { reviewing, listed } = helpersOver();
   const { passed, skipped } = await runReviewerConformance(create({}, depsOver(reviewing)), { ref: { pr: PR, head: HEAD } });
   assert.deepEqual(skipped, []);
-  assert.equal(passed.length, 9);
-  for (const check of ["load resolves and refusal says why it cannot start, or null", "start answers a label, or a refusal naming why", "retire answers retired, or a refusal, and lists the pull request no more"]) assert.ok(passed.includes(check), check);
+  assert.equal(passed.length, 10, "the nine checks of contract 1.x and the one that holds every call that spawns a program to a promise (contract 2.0)");
+  for (const check of ["the calls that spawn a program answer a promise", "load resolves and refusal says why it cannot start, or null", "start answers a label, or a refusal naming why", "retire answers retired, or a refusal, and lists the pull request no more"]) assert.ok(passed.includes(check), check);
   assert.equal(listed.size, 0, "the suite retired what it started");
 });
 
@@ -78,16 +85,16 @@ test("a reviewer whose gate does not load says why in refusal() and refuses star
   assert.ok(passed.includes("start answers a label, or a refusal naming why"));
   await reviewer.load();
   assert.equal(reviewer.refusal(), "/.agent-org/project.json: the declaration cannot be read");
-  const started = reviewer.start({ pr: PR, head: HEAD });
+  const started = await reviewer.start({ pr: PR, head: HEAD });
   assert.ok("refusal" in started && /the reviewer's gate does not load on this host: .*declaration cannot be read/.test(started.refusal));
-  assert.deepEqual([reviewer.live({ pr: PR, head: HEAD }), reviewer.listedPulls(), reviewer.settled({ pr: PR, head: HEAD }), reviewer.verdictFileOf({ pr: PR, head: HEAD })], [false, [], "gone", null]);
-  assert.deepEqual(reviewer.repostVerdict({ pr: PR, head: HEAD }, "/v.md"), { refusal: `no reviewer for ${PR}: the reviewer's gate does not load on this host: /.agent-org/project.json: the declaration cannot be read`, final: true });
+  assert.deepEqual([await reviewer.live({ pr: PR, head: HEAD }), await reviewer.listedPulls(), await reviewer.settled({ pr: PR, head: HEAD }), reviewer.verdictFileOf({ pr: PR, head: HEAD })], [false, [], "gone", null]);
+  assert.deepEqual(await reviewer.repostVerdict({ pr: PR, head: HEAD }, "/v.md"), { refusal: `no reviewer for ${PR}: the reviewer's gate does not load on this host: /.agent-org/project.json: the declaration cannot be read`, final: true });
 });
 
 test("a reviewer that ignores its refusal and starts anyway fails the suite by name", async () => {
   const { reviewing } = helpersOver({ refusal: "no primary" });
   const reviewer = create({}, depsOver(reviewing));
-  const starting = { ...reviewer, start: () => ({ label: "reviewer-7" }) };
+  const starting = { ...reviewer, start: async () => ({ label: "reviewer-7" }) };
   await assert.rejects(runReviewerConformance(starting, { ref: { pr: PR, head: HEAD } }), (error: unknown) => error instanceof ContractError && error.concern === "reviewer"
     && error.failures.map(({ check }) => check).includes("start answers a label, or a refusal naming why"));
 });

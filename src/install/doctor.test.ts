@@ -1117,7 +1117,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.9, plugins/linear)",
-    "code host: github (enabled, contract 2.2, plugins/github)",
+    "code host: github (enabled, contract 3.0, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -1153,7 +1153,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 2.2, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 3.0, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });
@@ -1189,7 +1189,7 @@ test("A11-163: a messaging key that names a plugin the registry does not hold is
 });
 
 test("A11-163: a concern no plugin runs keeps its row when another plugin of it failed to load", async () => {
-  const unread = fakeOf("fake-reviewer", { contract: "2.0", where: "bundled", dir: "/checkout/plugins/far-future" });
+  const unread = fakeOf("fake-reviewer", { contract: "9.0", where: "bundled", dir: "/checkout/plugins/far-future" });
   const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
   assertRow(checks, "plugin fake-reviewer", { ok: false });
   assertRow(checks, "reviewer (none)", { ok: true });

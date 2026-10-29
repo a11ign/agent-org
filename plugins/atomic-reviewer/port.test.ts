@@ -11,7 +11,8 @@ import { createFakeCodeHost } from "../../src/plugins/fakes/code-host.ts";
 import type { CodeHost } from "../../src/plugins/contracts/code-host.ts";
 import type { ReviewerPort, ReviewerRef } from "../../src/plugins/contracts/reviewer.ts";
 import { reviewingHelpers } from "../../src/plugins/reviewing-helpers.ts";
-import { INSIDE, type DoorRun } from "../../src/review-trust.ts";
+import { INSIDE } from "../../src/review-trust.ts";
+import type { DoorRunAsync } from "../../src/plugins/manifest.ts";
 import { cloneKeys } from "../../src/derived-name.ts";
 import { REPO } from "../../src/project-identity.ts";
 import { loadReviewerGate } from "../../src/ticket-mode/reviewer-port.ts";
@@ -23,18 +24,19 @@ import { REVIEW_CAUSE, atomicReviewerPort as portOver, clonedSeatOf, type Seams,
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
 const at = (ms: number) => new Date(ms).toISOString();
+const refusalOf = (answer: object | null): string => answer !== null && "refusal" in answer && typeof answer.refusal === "string" ? answer.refusal : "";
 
 /** What a test names of the board and the port's seams, as `atomicReviewerPort` took them before the plugin: `heads`, `clones` and `instance` are the board's. */
 type PortOptions = Seams & Readonly<{ session: string; run: (args: string[]) => string; codeHost: CodeHost; heads?: Map<string, string>; clones?: Record<string, string>; instance: string }>;
 
 /** The port the board makes: over the real helpers of core, with the board's collaborators these options name. */
 function atomicReviewerPort({ session, run, codeHost, heads = new Map<string, string>(), clones = {}, instance, ...seams }: PortOptions): ReviewerPort {
-  return portOver(reviewingHelpers({ session, run, codeHost: () => codeHost, clones, instance, heads }), seams);
+  return portOver(reviewingHelpers({ session, run, runAsync: async (args) => run(args), codeHost: () => codeHost, clones, instance, heads }), seams);
 }
 
 /** The verdict file of a checkout, found as the port finds it: with the verdict reader the board hands it. */
 const verdictFileIn = (tree: string, number: number, head: string): string | null => verdictFileOver(tree, number, head,
-  reviewingHelpers({ session: "tickets", run: () => "", codeHost: () => createFakeCodeHost(), clones: {}, instance: "work", heads: new Map() }).board().verdict);
+  reviewingHelpers({ session: "tickets", run: () => "", runAsync: async () => "", codeHost: () => createFakeCodeHost(), clones: {}, instance: "work", heads: new Map() }).board().verdict);
 
 const review = (login: string, state: string, commit: string, ms: number) => ({ author: { login }, state, commit: { oid: commit }, submittedAt: at(ms) });
 
@@ -87,8 +89,8 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
     readReviewState: async (url) => { hold(url); return host.readReviewState(url); },
     peekReviewState: (url) => { hold(url); return host.peekReviewState!(url); },
     readPullState: async (url) => { hold(url); return host.readPullState(url); },
-    readReviewClaims: () => ({ entries: claimEntriesOf(pr) }),
-    writeReviewClaim: ({ description }) => {
+    readReviewClaims: async () => ({ entries: claimEntriesOf(pr) }),
+    writeReviewClaim: async ({ description }) => {
       const statuses = pr.statuses ??= [];
       statuses.push({ id: statuses.length + 1, context: "agent-org/review", created_at: new Date().toISOString(), description });
       return null;
@@ -98,16 +100,16 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
 }
 
 /** The code host a port is given, which also keeps its claims, so a claim written through one port is read back through another, and no test reaches GitHub. */
-const claiming = (fake: ReturnType<typeof ghFor>) => ({ codeHost: fake.codeHost, mint: () => null });
+const claiming = (fake: ReturnType<typeof ghFor>) => ({ codeHost: fake.codeHost, mint: async () => null });
 
 test("the atomic reviewer refuses a pull request whose author is outside the org, and starts nothing", async () => {
   await loadReviewerGate();
   const herd = herdr(new Map());
   const spawned: unknown[] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1", outside: true })),
-    spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
-    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
-  const started = port.start({ pr: PR_URL, head: "h1" });
+    spawn: async (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async () => ({ path: "/work/pr-7", head: "h1" }) });
+  const started = await port.start({ pr: PR_URL, head: "h1" });
   assert.match("refusal" in started ? started.refusal : "", /outside the org/);
   assert.deepEqual(spawned, []);
   assert.equal(herd.calls.some((args) => args.includes("prompt")), false, "no prompt is sent");
@@ -119,25 +121,25 @@ test("the atomic reviewer starts the gate's reviewer in the tickets' session for
   const herd = herdr(listed);
   const spawned: { order: unknown; cwd: unknown }[] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })),
-    spawn: (order, _agents, options) => { spawned.push({ order, cwd: options.cwd }); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
-    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+    spawn: async (order, _agents, options) => { spawned.push({ order, cwd: options.cwd }); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async () => ({ path: "/work/pr-7", head: "h1" }) });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   assert.deepEqual(spawned, [{ order: { session: "reviewer-7", cause: REVIEW_CAUSE, causeKey: `${PR_URL}@h1`, trust: INSIDE }, cwd: "/work/pr-7" }]);
   const prompt = herd.calls.find((args) => args.includes("prompt"))!;
   assert.deepEqual(prompt.slice(0, 5), ["--session", "tickets", "agent", "prompt", "reviewer-7"]);
-  assert.equal(port.live({ pr: PR_URL, head: "h1" }), false, "not live until herdr lists its workspace");
+  assert.equal(await port.live({ pr: PR_URL, head: "h1" }), false, "not live until herdr lists its workspace");
   listed.set("reviewer-7", "working");
-  assert.equal(port.live({ pr: PR_URL, head: "h1" }), true, "live for the head it was started for");
-  assert.equal(port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
+  assert.equal(await port.live({ pr: PR_URL, head: "h1" }), true, "live for the head it was started for");
+  assert.equal(await port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
 });
 
 test("the reviewer is asked the gate's own verdict prompt for the pull request and its head, which names the reviewer role file", async () => {
   await loadReviewerGate();
   const herd = herdr(new Map());
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })),
-    spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }),
-    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+    spawn: async (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }),
+    checkout: async () => ({ path: "/work/pr-7", head: "h1" }) });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   const prompt = herd.calls.find((args) => args.includes("prompt"))!;
   const GATE_WORDS = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
   assert.equal(prompt[prompt.length - 1], `${GATE_WORDS}\n\n${NO_TICKET_LINE}\n\n${CI_COST_RULE}\n\n${IMPOSSIBLE_BEFORE_MERGE_RULE}\n\n${POST_MERGE_RULE}`, "the gate's own words, then (A11-156) what a start with no brief tells the reviewer");
@@ -149,8 +151,8 @@ function startingPort({ reviews = [] as unknown[], statuses = [] as Status[], un
   const fake = ghFor({ head: "h1", reviews, statuses, ...(unrequiredRed === undefined ? {} : { unrequiredRed }) });
   const spawned: unknown[] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(fake),
-    spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
-    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
+    spawn: async (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async () => ({ path: "/work/pr-7", head: "h1" }) });
   const prompted = (): string => herd.calls.filter((args) => args.includes("prompt")).map((args) => args[args.length - 1]).at(-1) ?? "";
   return { port, spawned, statuses: fake.pr.statuses ?? [], prompted };
 }
@@ -162,13 +164,13 @@ const REPLY = { author: "worker-bot", url: `${PR_URL}#issuecomment-9`, text: "No
 test("A11-156: a first review's prompt carries the ticket's Done-when and the post-merge rule after the gate's own words, and the reprompt does too", async () => {
   await loadReviewerGate();
   const { port, prompted } = startingPort();
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { label: "reviewer-7" });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { label: "reviewer-7" });
   const first = prompted();
   assert.ok(first.startsWith("Ready (not a draft) #7 at `h1`"), "the gate's words come first");
   assert.ok(first.includes(`The ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}`) && first.endsWith(POST_MERGE_RULE));
-  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { prompted: true });
+  assert.deepEqual(await port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { prompted: true });
   assert.equal(prompted(), first, "the reprompt says what the first prompt did");
-  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }), { prompted: true });
+  assert.deepEqual(await port.reprompt({ pr: PR_URL, head: "h1" }), { prompted: true });
   assert.ok(prompted().includes(NO_TICKET_LINE) && prompted().endsWith(POST_MERGE_RULE), "and with no brief it still carries the rule");
 });
 
@@ -176,10 +178,10 @@ test("A11-156: a head whose review is posted is refused a start, but not a re-re
   await loadReviewerGate();
   const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
   const { port, spawned, statuses, prompted } = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
-  const refused = port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN });
+  const refused = await port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN });
   assert.match("refusal" in refused ? refused.refusal : "", /its review at h1 is already posted/, "the first review's claim ended in the verdict");
   assert.deepEqual(spawned, []);
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
   assert.equal(spawned.length, 1);
   assert.match(statuses.at(-1)?.description ?? "", /^claimed by work at /, "a claim is written after the verdict");
   const words = prompted();
@@ -193,13 +195,103 @@ test("A11-156: a re-review another instance already holds is refused, and an app
   await loadReviewerGate();
   const otherClaim: Status = { id: 3, context: "agent-org/review", created_at: at(Date.now() - 5 * 60_000), description: `claimed by laptop at ${at(Date.now() - 5 * 60_000)}, lease 60 min` };
   const held = startingPort({ statuses: [FIRST_CLAIM(), BLOCK_STATUS(), otherClaim] });
-  const heldAnswer = held.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: null, rereview: { replies: [REPLY] } });
+  const heldAnswer = await held.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: null, rereview: { replies: [REPLY] } });
   assert.match("refusal" in heldAnswer ? heldAnswer.refusal : "", /another instance \(`laptop`\) holds the review/);
   const approved: Status = { id: 4, context: "agent-org/review", created_at: at(Date.now() - 60_000), description: `convinced by work at ${at(Date.now() - 60_000)}` };
   const done = startingPort({ statuses: [FIRST_CLAIM(), BLOCK_STATUS(), approved] });
-  const doneAnswer = done.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: null, rereview: { replies: [REPLY] } });
+  const doneAnswer = await done.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: null, rereview: { replies: [REPLY] } });
   assert.match("refusal" in doneAnswer ? doneAnswer.refusal : "", /its review at h1 is already posted \(convinced by work/);
   assert.deepEqual([held.spawned, done.spawned], [[], []]);
+});
+
+/** Lets the event loop run until `done` holds, so a test waits for a start to reach the step it is held at without a timer. */
+async function until(done: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 1_000 && !done(); turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.ok(done(), "the start reached the step it is held at");
+}
+
+test("A11-379: a start in flight holds its seat: a second start is refused and runs no seam, close answers busy and retire a refusal; once the first settles the seat is free again", async () => {
+  await loadReviewerGate();
+  const herd = herdr(new Map());
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const spawned: unknown[] = [];
+  const checkedOut: unknown[] = [];
+  const removed: unknown[] = [];
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), exists: () => false,
+    spawn: async (order) => { spawned.push(order); await held; return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async (args) => { checkedOut.push(args); return { path: "/work/pr-7", head: "h1" }; },
+    removeCheckout: async (args) => { removed.push(args); return null; } });
+  const first = port.start({ pr: PR_URL, head: "h1" });
+  await until(() => spawned.length === 1);
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }), { refusal: `no reviewer for ${PR_URL}: a reviewer for it is still starting` }, "the seat is held");
+  assert.deepEqual([checkedOut.length, spawned.length], [1, 1], "the second start made no checkout and no spawn");
+  assert.deepEqual(await port.close({ pr: PR_URL, head: "h1" }), { state: "busy" }, "a close waits for the start");
+  assert.match(refusalOf(await port.retire(PR_URL)), /still starting/, "a retire names that the reviewer is still starting");
+  assert.deepEqual(removed, [], "and removes nothing");
+  release();
+  assert.deepEqual(await first, { label: "reviewer-7" });
+  assert.deepEqual(await port.close({ pr: PR_URL, head: "h1" }), { state: "gone" }, "the seat answers a close once its start has settled");
+  const again = await port.start({ pr: PR_URL, head: "h1" });
+  assert.doesNotMatch(refusalOf(again), /still starting/, "a start after the first settled is not refused for it");
+  assert.deepEqual(again, { label: "reviewer-7" });
+  assert.deepEqual(await port.retire(PR_URL), { retired: true, report: null });
+});
+
+test("A11-379: the checkouts of two starts in one repository do not overlap: the second waits for the git work of the first, as it did when a start was one block", async () => {
+  await loadReviewerGate();
+  const other = `https://github.com/${REPO}/pull/8`;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const events: string[] = [];
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herdr(new Map()).run, ...claiming(ghFor({ head: "h1" })), exists: () => false,
+    spawn: async (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }),
+    checkout: async ({ pr }) => { events.push(`begin ${pr}`); if (pr === 7) await held; events.push(`end ${pr}`); return { path: `/work/pr-${pr}`, head: "h1" }; } });
+  const first = port.start({ pr: PR_URL, head: "h1" });
+  await until(() => events.length === 1);
+  const second = port.start({ pr: other, head: "h1" });
+  for (let turn = 0; turn < 50; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["begin 7"], "the second checkout has not begun while the first is under way");
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, ["begin 7", "end 7", "begin 8", "end 8"]);
+});
+
+test("A11-379: a close or a retire under way holds the seat: a second close answers busy and a retire is refused, and each runs its steps once", async () => {
+  await loadReviewerGate();
+  const listed = new Map([["reviewer-7", "idle"]]);
+  const herd = herdr(listed);
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const heads = new Map([["reviewer-7", "h1"]]);
+  let reached = 0;
+  const port = portOver(reviewingHelpers({ session: "tickets", run: herd.run, codeHost: () => ghFor({ head: "h1" }).codeHost, clones: {}, instance: "work", heads,
+    runAsync: async (args) => { if (args.includes("close")) { reached += 1; await held; } return herd.run(args); } }), { exists: () => false, removeCheckout: async () => null });
+  const first = port.close({ pr: PR_URL, head: "h1" });
+  await until(() => reached === 1);
+  assert.deepEqual(await port.close({ pr: PR_URL, head: "h1" }), { state: "busy" }, "the second close waits");
+  assert.match(refusalOf(await port.retire(PR_URL)), /still closing/, "a retire names what holds the seat");
+  assert.match(refusalOf(await port.start({ pr: PR_URL, head: "h1" })), /still closing/, "and so does a start");
+  release();
+  assert.deepEqual(await first, { state: "closed" });
+  assert.equal(herd.calls.filter((args) => args.includes("close")).length, 1, "the workspace was closed once");
+  assert.deepEqual(await port.retire(PR_URL), { retired: true, report: null }, "the seat is free again once the close settled");
+});
+
+test("A11-379: a start that is refused, or that throws, frees its seat", async () => {
+  await loadReviewerGate();
+  const outside = ghFor({ head: "h1", outside: true });
+  const refusedPort = atomicReviewerPort({ session: "tickets", instance: "work", run: herdr(new Map()).run, ...claiming(outside), spawn: async () => { throw new Error("not reached"); }, checkout: async () => ({ path: "/work/pr-7", head: "h1" }) });
+  for (const attempt of [1, 2]) assert.match(refusalOf(await refusedPort.start({ pr: PR_URL, head: "h1" })), /outside the org/, `attempt ${attempt} is refused for the author, not for a start in flight`);
+  assert.deepEqual(await refusedPort.close({ pr: PR_URL, head: "h1" }), { refusal: `no close for ${PR_URL}: reviewer-7 was not started for h1` }, "the refused start left the seat free");
+  let spawns = 0;
+  const throwing = atomicReviewerPort({ session: "tickets", instance: "work", run: herdr(new Map()).run, ...claiming(ghFor({ head: "h1" })),
+    spawn: async (order) => { spawns += 1; if (spawns === 1) throw new Error("herdr fell over"); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async () => ({ path: "/work/pr-7", head: "h1" }) });
+  await assert.rejects(throwing.start({ pr: PR_URL, head: "h1" }), /herdr fell over/);
+  const next = await throwing.start({ pr: PR_URL, head: "h1" });
+  assert.doesNotMatch(refusalOf(next), /still starting/, "a start that threw does not hold the seat");
+  assert.deepEqual(next, { label: "reviewer-7" });
 });
 
 test("the atomic reviewer starts nothing for a head whose checks have not settled green", async () => {
@@ -208,9 +300,9 @@ test("the atomic reviewer starts nothing for a head whose checks have not settle
   const spawned: unknown[] = [];
   const checks = [{ name: "gate", status: "IN_PROGRESS", conclusion: null }];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1", checks })),
-    spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
-    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
-  const started = port.start({ pr: PR_URL, head: "h1" });
+    spawn: async (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async () => ({ path: "/work/pr-7", head: "h1" }) });
+  const started = await port.start({ pr: PR_URL, head: "h1" });
   assert.match("refusal" in started ? started.refusal : "", /have not settled green/);
   assert.deepEqual(spawned, []);
 });
@@ -220,8 +312,8 @@ test("a port given the heads a pool remembers is live for the head its reviewer 
   const herd = herdr(new Map([["reviewer-7", "working"]]));
   const heads = new Map([["reviewer-7", "h1"]]);
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), heads });
-  assert.equal(port.live({ pr: PR_URL, head: "h1" }), true, "live for the remembered head");
-  assert.equal(port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
+  assert.equal(await port.live({ pr: PR_URL, head: "h1" }), true, "live for the remembered head");
+  assert.equal(await port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
 });
 
 /**
@@ -235,8 +327,8 @@ function teardownPort(status: Map<string, string>, { paths = [] as string[], pat
   const heads = new Map([["reviewer-7", "h1"]]);
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: (args) => { if (args.includes("close")) events.push("close"); return herd.run(args); },
     ...claiming(ghFor({ head: "h1" })), heads, exists: () => true,
-    uncommittedPaths: () => { events.push("read"); if (pathsFail) throw new Error("fatal: not a git repository"); return paths; },
-    removeCheckout: ({ pr, session, key }) => { events.push("removed"); removed.push({ pr, session: String(session), key: String(key) }); return removal; } });
+    uncommittedPaths: async () => { events.push("read"); if (pathsFail) throw new Error("fatal: not a git repository"); return paths; },
+    removeCheckout: async ({ pr, session, key }) => { events.push("removed"); removed.push({ pr, session: String(session), key: String(key) }); return removal; } });
   return { port, herd, events, removed, heads };
 }
 
@@ -244,7 +336,7 @@ function teardownPort(status: Map<string, string>, { paths = [] as string[], pat
 test("a reviewer is closed once its verdict is posted: its workspace closes, and its checkout is kept", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"]]));
-  assert.deepEqual(made.port.close({ pr: PR_URL, head: "h1" }), { state: "closed" });
+  assert.deepEqual(await made.port.close({ pr: PR_URL, head: "h1" }), { state: "closed" });
   assert.deepEqual(made.herd.calls.filter((args) => args.includes("close")), [["--session", "tickets", "workspace", "close", "w7"]]);
   assert.deepEqual(made.removed, [], "the checkout is kept for the next reviewer of the seat");
   assert.equal(made.heads.get("reviewer-7"), "h1", "the head it was started for is still remembered");
@@ -253,21 +345,21 @@ test("a reviewer is closed once its verdict is posted: its workspace closes, and
 test("close waits for a reviewer still working: nothing closes, and it answers busy", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "working"]]));
-  assert.deepEqual(made.port.close({ pr: PR_URL, head: "h1" }), { state: "busy" });
+  assert.deepEqual(await made.port.close({ pr: PR_URL, head: "h1" }), { state: "busy" });
   assert.equal(made.herd.calls.some((args) => args.includes("close")), false, "no workspace is closed");
 });
 
 test("close answers gone for a reviewer herdr no longer lists, and closes nothing", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map());
-  assert.deepEqual(made.port.close({ pr: PR_URL, head: "h1" }), { state: "gone" });
+  assert.deepEqual(await made.port.close({ pr: PR_URL, head: "h1" }), { state: "gone" });
   assert.equal(made.herd.calls.some((args) => args.includes("close")), false);
 });
 
 test("close closes nothing for a head the seat's reviewer was not started for", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"]]));
-  const answer = made.port.close({ pr: PR_URL, head: "h2" });
+  const answer = await made.port.close({ pr: PR_URL, head: "h2" });
   assert.match("refusal" in answer ? answer.refusal : "", /was not started for h2/);
   assert.equal(made.herd.calls.some((args) => args.includes("close")), false, "no workspace is closed");
 });
@@ -275,7 +367,7 @@ test("close closes nothing for a head the seat's reviewer was not started for", 
 test("retire closes every workspace under the seat's label, then removes its checkout, and forgets the head", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"]]));
-  assert.deepEqual(made.port.retire(PR_URL), { retired: true, report: null });
+  assert.deepEqual(await made.port.retire(PR_URL), { retired: true, report: null });
   assert.deepEqual(made.events, ["close", "read", "removed"], "the workspace first, then the checkout");
   assert.deepEqual(made.removed, [{ pr: 7, session: "reviewer-7", key: "" }]);
   assert.equal(made.heads.has("reviewer-7"), false, "the head is forgotten once the checkout is gone");
@@ -284,7 +376,7 @@ test("retire closes every workspace under the seat's label, then removes its che
 test("retire on a pull request whose seat has no workspace removes only its checkout", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map());
-  assert.deepEqual(made.port.retire(PR_URL), { retired: true, report: null });
+  assert.deepEqual(await made.port.retire(PR_URL), { retired: true, report: null });
   assert.equal(made.herd.calls.some((args) => args.includes("close")), false);
   assert.deepEqual(made.removed, [{ pr: 7, session: "reviewer-7", key: "" }]);
 });
@@ -292,7 +384,7 @@ test("retire on a pull request whose seat has no workspace removes only its chec
 test("retire on a reviewer still working refuses, and removes nothing", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "working"]]));
-  const answer = made.port.retire(PR_URL);
+  const answer = await made.port.retire(PR_URL);
   assert.match("refusal" in answer ? answer.refusal : "", /still working/);
   assert.deepEqual(made.removed, []);
   assert.equal(made.heads.get("reviewer-7"), "h1");
@@ -301,7 +393,7 @@ test("retire on a reviewer still working refuses, and removes nothing", async ()
 test("a checkout with uncommitted changes is reported, naming the seat, the head and the paths, and is removed", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths: ["src/a.ts", "node_modules/x"] });
-  const answer = made.port.retire(PR_URL);
+  const answer = await made.port.retire(PR_URL);
   assert.ok("retired" in answer, "the pull request is retired");
   assert.match(answer.report ?? "", /^reviewer teardown: reviewer-7 for https:\/\/github\.com\/[^ ]+\/pull\/7 at h1 had 2 uncommitted change\(s\) in .+\/reviewer-7, discarded with the checkout: src\/a\.ts, node_modules\/x$/);
   assert.equal(made.removed.length, 1, "and the checkout is removed with them");
@@ -311,7 +403,7 @@ test("a report of uncommitted changes names the first 20 paths and how many more
   await loadReviewerGate();
   const paths = Array.from({ length: 23 }, (_, i) => `f${i}.ts`);
   const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths });
-  const answer = made.port.retire(PR_URL);
+  const answer = await made.port.retire(PR_URL);
   const report = "retired" in answer ? answer.report ?? "" : "";
   assert.match(report, /had 23 uncommitted change\(s\)/);
   assert.match(report, /: f0\.ts, .*, f19\.ts and 3 more$/);
@@ -321,14 +413,14 @@ test("a report of uncommitted changes names the first 20 paths and how many more
 test("a clean checkout is removed with no report", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths: [] });
-  assert.deepEqual(made.port.retire(PR_URL), { retired: true, report: null });
+  assert.deepEqual(await made.port.retire(PR_URL), { retired: true, report: null });
   assert.equal(made.removed.length, 1);
 });
 
 test("a checkout whose changes cannot be read is kept, and the head is remembered for the next sweep", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"]]), { pathsFail: true });
-  const answer = made.port.retire(PR_URL);
+  const answer = await made.port.retire(PR_URL);
   assert.match("refusal" in answer ? answer.refusal : "", /could not be read, so it is kept/);
   assert.deepEqual(made.removed, [], "nothing is removed that could not be inspected");
   assert.equal(made.heads.get("reviewer-7"), "h1");
@@ -337,7 +429,7 @@ test("a checkout whose changes cannot be read is kept, and the head is remembere
 test("a removal that fails is a refusal, keeps the head, and reports no discard", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths: ["a.ts"], removal: "could not remove /home/x/reviews/reviewer-7 (busy)" });
-  const answer = made.port.retire(PR_URL);
+  const answer = await made.port.retire(PR_URL);
   assert.match("refusal" in answer ? answer.refusal : "", /could not remove .* \(busy\)/);
   assert.equal(made.heads.get("reviewer-7"), "h1", "the head is kept, so the next sweep retries");
 });
@@ -345,7 +437,7 @@ test("a removal that fails is a refusal, keeps the head, and reports no discard"
 test("listedPulls names the pull request of each reviewer workspace the session lists, and of no other workspace", async () => {
   await loadReviewerGate();
   const made = teardownPort(new Map([["reviewer-7", "idle"], ["NBF-1", "idle"], ["reviewer-2", "idle"]]));
-  assert.deepEqual(made.port.listedPulls(), [PR_URL]);
+  assert.deepEqual(await made.port.listedPulls(), [PR_URL]);
 });
 
 // A11-83: a reviewer that ended without its verdict on the pull request. The verdict file is found by what it says, posted again through the
@@ -360,13 +452,13 @@ const H2 = "c3".repeat(20);
 const verdictLine = (head: string, word: string) => `**Review of #7 at \`${head.slice(0, 8)}\`, by reviewer-7: ${word} (CI run 41)**`;
 
 /** An atomic port over a checkout `tree`, whose reviewer is listed as `status`, recording each mint and door run in order. */
-function verdictPort(tree: string, { status = new Map([["reviewer-7", "idle"]]), mint = (() => null) as (path: string) => string | null, door = (() => {}) as DoorRun } = {}) {
+function verdictPort(tree: string, { status = new Map([["reviewer-7", "idle"]]), mint = (async () => null) as (path: string) => Promise<string | null>, door = (async () => {}) as DoorRunAsync } = {}) {
   const order: string[] = [];
   const herd = herdr(status);
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), heads: new Map([["reviewer-7", "h1"]]),
     checkoutOf: () => tree,
-    mint: (path) => { order.push(`mint ${path}`); return mint(path); },
-    door: (file, args, env) => { order.push("door"); door(file, args, env); } });
+    mint: async (path) => { order.push(`mint ${path}`); return mint(path); },
+    door: async (file, args, env) => { order.push("door"); await door(file, args, env); } });
   return { port, herd, order };
 }
 
@@ -408,8 +500,8 @@ test("a verdict file is posted again through the door: the token is minted first
   await loadReviewerGate();
   const { tree, file } = verdictTree("reviewer-repost-", `${verdictLine(H1, "not convinced")}\n\nfindings\n`);
   const doorCalls: { file: string; args: string[]; env: Record<string, string> }[] = [];
-  const made = verdictPort(tree, { door: (path, args, env) => { doorCalls.push({ file: path, args, env }); } });
-  assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { posted: true });
+  const made = verdictPort(tree, { door: async (path, args, env) => { doorCalls.push({ file: path, args, env }); } });
+  assert.deepEqual(await made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { posted: true });
   assert.deepEqual(made.order, [`mint ${tree}`, "door"], "the token is minted before the door posts");
   assert.deepEqual(doorCalls.map((call) => call.args), [["7", "not-convinced", file]]);
   assert.equal(doorCalls[0].env.A11Y_REVIEWER_SESSION, "reviewer-7", "the door posts with the reviewer's own identity");
@@ -420,8 +512,8 @@ test("a token that will not mint stops the repost before the door runs, and its 
   await loadReviewerGate();
   const { tree, file } = verdictTree("reviewer-mint-", `${verdictLine(H1, "convinced")}\n\nbody\n`);
   const doorCalls: string[][] = [];
-  const made = verdictPort(tree, { mint: () => "the reviewer's app token could not be minted: no key", door: (_path, args) => { doorCalls.push(args); } });
-  assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: "the reviewer's app token could not be minted: no key", final: false });
+  const made = verdictPort(tree, { mint: async () => "the reviewer's app token could not be minted: no key", door: async (_path, args) => { doorCalls.push(args); } });
+  assert.deepEqual(await made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: "the reviewer's app token could not be minted: no key", final: false });
   assert.deepEqual(doorCalls, [], "the door is not run without a token");
 });
 
@@ -433,8 +525,8 @@ test("a door refusal is said with the door's own last line: a refusal a repost w
     [3, "#7 already has a review at an equal patch: APPROVED", true],
     [6, "the reviewer App token could not be minted: no key", false],
   ] as const) {
-    const made = verdictPort(tree, { door: () => { throw Object.assign(new Error("door"), { status, stderr: `pr-review-verdict: NOT POSTED. ${reason}\n` }); } });
-    assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: reason, final }, `door exit ${status}`);
+    const made = verdictPort(tree, { door: async () => { throw Object.assign(new Error("door"), { status, stderr: `pr-review-verdict: NOT POSTED. ${reason}\n` }); } });
+    assert.deepEqual(await made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: reason, final }, `door exit ${status}`);
   }
 });
 
@@ -442,7 +534,7 @@ test("a verdict file that names another head, or no verdict, is not posted", asy
   await loadReviewerGate();
   const { tree, file } = verdictTree("reviewer-wrong-", `${verdictLine(H2, "convinced")}\n\nbody\n`);
   const made = verdictPort(tree);
-  assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: `the verdict file ${file} does not open with a verdict for ${H1.slice(0, 8)}`, final: true });
+  assert.deepEqual(await made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: `the verdict file ${file} does not open with a verdict for ${H1.slice(0, 8)}`, final: true });
   assert.deepEqual(made.order, [], "nothing is minted or posted");
 });
 
@@ -451,20 +543,20 @@ test("settled reads the reviewer for its head: working while its agent works, en
   const status = new Map([["reviewer-7", "working"]]);
   const made = verdictPort(tmpDir("reviewer-settled-"), { status });
   const ref = { pr: PR_URL, head: "h1" };
-  assert.equal(made.port.settled(ref), "working");
+  assert.equal(await made.port.settled(ref), "working");
   status.set("reviewer-7", "idle");
-  assert.equal(made.port.settled(ref), "ended");
+  assert.equal(await made.port.settled(ref), "ended");
   status.set("reviewer-7", "unknown");
-  assert.equal(made.port.settled(ref), "ended", "no agent in the pane: its process exited");
+  assert.equal(await made.port.settled(ref), "ended", "no agent in the pane: its process exited");
   status.delete("reviewer-7");
-  assert.equal(made.port.settled(ref), "gone");
-  assert.equal(made.port.settled({ pr: PR_URL, head: H2 }), "gone", "and for a head it was not started for");
+  assert.equal(await made.port.settled(ref), "gone");
+  assert.equal(await made.port.settled({ pr: PR_URL, head: H2 }), "gone", "and for a head it was not started for");
 });
 
 test("reprompt sends the gate's verdict prompt to the seat's agent again, naming the head", async () => {
   await loadReviewerGate();
   const made = verdictPort(tmpDir("reviewer-prompt-"));
-  assert.deepEqual(made.port.reprompt({ pr: PR_URL, head: "h1" }), { prompted: true });
+  assert.deepEqual(await made.port.reprompt({ pr: PR_URL, head: "h1" }), { prompted: true });
   const prompt = made.herd.calls.find((args) => args.includes("prompt"))!;
   assert.deepEqual(prompt.slice(0, 5), ["--session", "tickets", "agent", "prompt", "reviewer-7"]);
   assert.ok(prompt[5].includes("`h1`"), "the prompt names the head it is for");
@@ -474,7 +566,6 @@ test("reprompt sends the gate's verdict prompt to the seat's agent again, naming
 /** A repository this host clones and the project does not declare, under the primary's owner: the atomic reviewer takes its pull requests. */
 const OWNER = REPO.split("/")[0];
 const PLUGIN_URL = `https://github.com/${OWNER}/plugin/pull/7`;
-const refusalOf = (answer: object | null): string => answer !== null && "refusal" in answer && typeof answer.refusal === "string" ? answer.refusal : "";
 
 /** An atomic port whose only clone is `plugin`, recording each checkout and each spawn; herdr lists `listed`. */
 function clonedPort(listed: Map<string, string>, clones: Record<string, string> = { plugin: "/repos/plugin" }) {
@@ -482,8 +573,8 @@ function clonedPort(listed: Map<string, string>, clones: Record<string, string> 
   const checkouts: object[] = [];
   const spawned: { options: object; env: unknown; cwd: unknown }[] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), clones,
-    checkout: (args) => { checkouts.push(args); return { path: "/work/pr-7", head: "h1" }; },
-    spawn: (order, _agents, options) => { spawned.push({ options, env: options.env, cwd: options.cwd }); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
+    checkout: async (args) => { checkouts.push(args); return { path: "/work/pr-7", head: "h1" }; },
+    spawn: async (order, _agents, options) => { spawned.push({ options, env: options.env, cwd: options.cwd }); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
   return { port, herd, checkouts, spawned };
 }
 
@@ -491,7 +582,7 @@ function clonedPort(listed: Map<string, string>, clones: Record<string, string> 
 test("the atomic reviewer starts a reviewer for a repository the host clones and the project does not declare, in its clone, naming its repository", async () => {
   await loadReviewerGate();
   const made = clonedPort(new Map());
-  assert.deepEqual(made.port.start({ pr: PLUGIN_URL, head: "h1" }), { label: "reviewer-plugin-7" });
+  assert.deepEqual(await made.port.start({ pr: PLUGIN_URL, head: "h1" }), { label: "reviewer-plugin-7" });
   assert.deepEqual(made.checkouts, [{ pr: 7, session: "reviewer-plugin-7", trust: INSIDE, repoRoot: "/repos/plugin" }], "the checkout is made in the clone");
   assert.deepEqual(made.spawned[0].env, { GH_REPO: `${OWNER}/plugin`, [HOST_CONFIG_ENV]: hostConfigPath(), AGENT_ORG_INSTANCE: "work" }, "the reviewer's door posts to the clone's repository");
   const prompt = made.herd.calls.find((args) => args.includes("prompt"))!;
@@ -504,10 +595,10 @@ test("a cloned-only reviewer is live for its head, is listed by its pull request
   const herd = herdr(new Map([["reviewer-plugin-7", "idle"], ["reviewer-foo-3", "idle"]]));
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), clones: { plugin: "/repos/plugin" },
     heads: new Map([["reviewer-plugin-7", "h1"]]), exists: () => false,
-    removeCheckout: (args) => { removed.push(args); return null; } });
-  assert.equal(port.live({ pr: PLUGIN_URL, head: "h1" }), true, "live for the head it was started for");
-  assert.deepEqual(port.listedPulls(), [PLUGIN_URL], "the sweep finds the clone's pull request, and no reviewer of a repository neither declared nor cloned");
-  assert.deepEqual(port.retire(PLUGIN_URL), { retired: true, report: null });
+    removeCheckout: async (args) => { removed.push(args); return null; } });
+  assert.equal(await port.live({ pr: PLUGIN_URL, head: "h1" }), true, "live for the head it was started for");
+  assert.deepEqual(await port.listedPulls(), [PLUGIN_URL], "the sweep finds the clone's pull request, and no reviewer of a repository neither declared nor cloned");
+  assert.deepEqual(await port.retire(PLUGIN_URL), { retired: true, report: null });
   assert.deepEqual(removed, [{ pr: 7, session: "reviewer-plugin-7", key: "plugin", repoRoot: "/repos/plugin" }], "the checkout is removed from the clone under its own ref");
 });
 
@@ -516,8 +607,8 @@ test("a verdict of a cloned-only reviewer is posted through the door with its re
   const { tree, file } = verdictTree("reviewer-clone-repost-", `${verdictLine(H1, "convinced")}\n\nbody\n`);
   const doorCalls: { args: string[]; env: Record<string, string> }[] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herdr(new Map()).run, ...claiming(ghFor({ head: "h1" })), clones: { plugin: "/repos/plugin" },
-    checkoutOf: () => tree, mint: () => null, door: (_path, args, env) => { doorCalls.push({ args, env }); } });
-  assert.deepEqual(port.repostVerdict({ pr: PLUGIN_URL, head: H1 }, file), { posted: true });
+    checkoutOf: () => tree, mint: async () => null, door: async (_path, args, env) => { doorCalls.push({ args, env }); } });
+  assert.deepEqual(await port.repostVerdict({ pr: PLUGIN_URL, head: H1 }, file), { posted: true });
   assert.deepEqual(doorCalls.map((call) => call.args), [["7", "convinced", file]]);
   assert.equal(doorCalls[0].env.GH_REPO, `${OWNER}/plugin`, "the door posts to the clone's pull request, not the primary's pull request of the same number");
 });
@@ -526,7 +617,7 @@ test("a repository neither declared nor cloned, or cloned under another owner, i
   await loadReviewerGate();
   const made = clonedPort(new Map());
   for (const pr of [`https://github.com/someone-else/plugin/pull/7`, `https://github.com/${OWNER}/not-cloned/pull/7`]) {
-    const refusal = refusalOf(made.port.start({ pr, head: "h1" }));
+    const refusal = refusalOf(await made.port.start({ pr, head: "h1" }));
     assert.match(refusal, /project\.json/, `${pr} names the project's declaration`);
     assert.match(refusal, /host\.json/, `${pr} names the host's clones`);
   }
@@ -536,7 +627,7 @@ test("a repository neither declared nor cloned, or cloned under another owner, i
 test("A11-259: a clone whose name is not a reviewer key as it stands gets one made from it, and its checkout is made in the clone", async () => {
   await loadReviewerGate();
   const made = clonedPort(new Map(), { Foo: "/repos/Foo" });
-  assert.deepEqual(made.port.start({ pr: `https://github.com/${OWNER}/Foo/pull/7`, head: "h1" }), { label: "reviewer-foo-7" });
+  assert.deepEqual(await made.port.start({ pr: `https://github.com/${OWNER}/Foo/pull/7`, head: "h1" }), { label: "reviewer-foo-7" });
   assert.deepEqual(made.checkouts, [{ pr: 7, session: "reviewer-foo-7", trust: INSIDE, repoRoot: "/repos/Foo" }]);
   assert.equal((made.spawned[0].env as Record<string, string>).GH_REPO, `${OWNER}/Foo`, "the door posts to the repository by its real name");
 });
@@ -545,7 +636,7 @@ test("a declared repository whose name is also a clone keeps its declared key, w
   await loadReviewerGate();
   const declared = homeProjectDeclaration().code.find((code) => code.key !== "")!;
   const made = clonedPort(new Map(), { [declared.key]: "/repos/elsewhere" });
-  assert.deepEqual(made.port.start({ pr: `https://github.com/${declared.repo}/pull/7`, head: "h1" }), { label: `reviewer-${declared.key}-7` });
+  assert.deepEqual(await made.port.start({ pr: `https://github.com/${declared.repo}/pull/7`, head: "h1" }), { label: `reviewer-${declared.key}-7` });
   assert.equal("repoRoot" in made.checkouts[0], false, "the gate takes the declared clone, as it does now");
   assert.deepEqual(made.spawned[0].env, { AGENT_ORG_INSTANCE: "work" }, "the spawn names this instance for the door's claim, and no repository, as it did not before");
 });
@@ -566,16 +657,16 @@ test("A11-175: the started prompt names the unrequired red checks the code host 
   await loadReviewerGate();
   const red = ["checks (cross-repo)"];
   const { port, prompted } = startingPort({ unrequiredRed: red });
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { label: "reviewer-7" }, "its required checks are settled green, so it starts");
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { label: "reviewer-7" }, "its required checks are settled green, so it starts");
   assert.ok(prompted().includes(unrequiredRedWords(red)) && prompted().endsWith(POST_MERGE_RULE), "the first review is told which checks were left red");
-  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { prompted: true });
+  assert.deepEqual(await port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { prompted: true });
   assert.ok(prompted().includes(unrequiredRedWords(red)), "and so is the reprompt");
   const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
   const again = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()], unrequiredRed: red });
-  assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.deepEqual(await again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
   assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(unrequiredRedWords(red)), "a re-review is told too");
   const plain = startingPort();
-  plain.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN });
+  await plain.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN });
   assert.ok(!plain.prompted().includes("not required"), "a head with no red check that is left out says nothing of them");
 });
 
@@ -583,11 +674,11 @@ test("A11-175: a brief that names the plan step a pull request finishes reaches 
   await loadReviewerGate();
   const { port, prompted } = startingPort();
   const brief = { doneWhen: DONE_WHEN, step: { step: 3, of: 9, section: "### Step 3 of 9: Reviews\n\nMove the calls." } };
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, brief), { label: "reviewer-7" });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }, brief), { label: "reviewer-7" });
   const first = prompted();
   assert.ok(first.includes("This pull request is step 3 of 9 of its ticket's plan") && first.includes("Move the calls.") && first.includes(RATCHET_RULE));
   assert.ok(first.includes(`The ticket's Done-when, for the last step (step 9 of 9), as the ticket states it:\n\n${DONE_WHEN}`) && first.endsWith(POST_MERGE_RULE));
-  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, brief), { prompted: true });
+  assert.deepEqual(await port.reprompt({ pr: PR_URL, head: "h1" }, brief), { prompted: true });
   assert.equal(prompted(), first, "the reprompt says what the first prompt did");
 });
 
@@ -595,14 +686,14 @@ test("A11-213: the ticket's decisions in the brief reach the prompt a reviewer i
   await loadReviewerGate();
   const decisions = "This step widens the policy's permissions by the chairman's decision on 2026-10-24.";
   const { port, prompted } = startingPort();
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions }), { label: "reviewer-7" });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions }), { label: "reviewer-7" });
   const first = prompted();
   assert.ok(first.includes(`The ticket's explicit decisions, as the ticket states them:\n\n${decisions}`) && first.includes(DECISION_RULE), first);
-  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions }), { prompted: true });
+  assert.deepEqual(await port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions }), { prompted: true });
   assert.equal(prompted(), first, "the reprompt says what the first prompt did");
   const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
   const again = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
-  assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.deepEqual(await again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, decisions, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
   assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(decisions) && again.prompted().includes(DECISION_RULE), "the re-review carries them too");
 });
 
@@ -610,11 +701,11 @@ test("A11-274: the word that names the ticket reaches the prompt a reviewer is s
   await loadReviewerGate();
   const closing = { key: "A11-253", word: "refs", open: ["https://github.com/a11ign/one/pull/4"], merged: [] } as const;
   const { port, prompted } = startingPort();
-  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, closing }), { label: "reviewer-7" });
+  assert.deepEqual(await port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, closing }), { label: "reviewer-7" });
   assert.ok(prompted().includes(closingWords(closing)), "the first review");
   const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
   const again = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
-  assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, closing, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.deepEqual(await again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, closing, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
   assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(closingWords(closing)), "the re-review carries it too");
 });
 
@@ -623,12 +714,12 @@ test("A11-235: a re-review brief whose description changed reaches the prompt wi
   const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
   const body = [{ kind: "removed", text: "Outside-Region: none" }, { kind: "added", text: "Outside-Region: src/a.ts — the reason" }] as const;
   const only = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
-  assert.deepEqual(only.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [], body } }), { label: "reviewer-7" });
+  assert.deepEqual(await only.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [], body } }), { label: "reviewer-7" });
   const words = only.prompted();
   assert.ok(words.startsWith("This is a re-review of #7") && words.includes("- Outside-Region: none\n+ Outside-Region: src/a.ts — the reason"), words);
   assert.ok(!words.includes("The replies posted since that review"), "and no replies are listed when there are none");
   const both = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
-  both.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY], body } });
+  await both.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY], body } });
   assert.ok(both.prompted().includes("+ Outside-Region: src/a.ts — the reason") && both.prompted().includes(`- worker-bot (${PR_URL}#issuecomment-9):`), "a description edit and a reply are both quoted");
 });
 
@@ -640,16 +731,16 @@ function trustingPort({ root = "/repos/alpha" as string | null, answer }: { root
   const logged: string[] = [];
   const asked: string[] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(fake),
-    spawn: (order) => { events.push(`spawn (${fake.pr.statuses?.length ?? 0} claim statuses)`); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
-    checkout: () => ({ path: "/work/pr-7", head: "h1" }),
-    codexTrust: { rootOf: (tree) => { asked.push(tree); return root; }, ensure: (found) => { events.push(`trust ${found} (${fake.pr.statuses?.length ?? 0} claim statuses)`); return answer(found); }, log: (line) => logged.push(line) } });
+    spawn: async (order) => { events.push(`spawn (${fake.pr.statuses?.length ?? 0} claim statuses)`); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: async () => ({ path: "/work/pr-7", head: "h1" }),
+    codexTrust: { rootOf: async (tree) => { asked.push(tree); return root; }, ensure: (found) => { events.push(`trust ${found} (${fake.pr.statuses?.length ?? 0} claim statuses)`); return answer(found); }, log: (line) => logged.push(line) } });
   return { port, events, logged, asked, herd, statuses: () => fake.pr.statuses ?? [] };
 }
 
 test("A11-221: an untrusted host repository is trusted before the reviewer launches: the checkout's clone root is trusted before the claim is written and before the spawn", async () => {
   await loadReviewerGate();
   const made = trustingPort({ answer: (root) => ({ kind: "added", root, file: "/home/me/.codex/config.toml" }) });
-  assert.deepEqual(made.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  assert.deepEqual(await made.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   assert.deepEqual(made.asked, ["/work/pr-7"], "the clone root is found from the checkout");
   assert.deepEqual(made.events, ["trust /repos/alpha (0 claim statuses)", "spawn (1 claim statuses)"]);
   assert.deepEqual(made.logged, [`codex now trusts /repos/alpha: the reviewer of ${PR_URL} starts in it`]);
@@ -658,18 +749,18 @@ test("A11-221: an untrusted host repository is trusted before the reviewer launc
 test("A11-221: a repository Codex already has an entry for starts silently, as does a root the host file does not name and a checkout with no clone root", async () => {
   await loadReviewerGate();
   const present = trustingPort({ answer: (root) => ({ kind: "present", root, file: "/c", level: "untrusted" }) });
-  assert.deepEqual(present.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  assert.deepEqual(await present.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   const outside = trustingPort({ answer: (root) => ({ kind: "not-host", root, reason: "not named" }) });
-  assert.deepEqual(outside.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  assert.deepEqual(await outside.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   const rootless = trustingPort({ root: null, answer: () => { throw new Error("nothing to trust"); } });
-  assert.deepEqual(rootless.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  assert.deepEqual(await rootless.port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   assert.deepEqual([present.logged, outside.logged, rootless.logged], [[], [], []]);
 });
 
 test("A11-221: a Codex config that cannot be used refuses the start, naming the file, and no claim is written, no reviewer spawned, no prompt sent", async () => {
   await loadReviewerGate();
   const made = trustingPort({ answer: () => ({ kind: "refused", file: "/home/me/.codex/config.toml", reason: "/home/me/.codex/config.toml does not parse as TOML" }) });
-  const started = made.port.start({ pr: PR_URL, head: "h1" });
+  const started = await made.port.start({ pr: PR_URL, head: "h1" });
   assert.equal("refusal" in started ? started.refusal : "", `no reviewer for ${PR_URL}: /home/me/.codex/config.toml does not parse as TOML`);
   assert.deepEqual(made.events, ["trust /repos/alpha (0 claim statuses)"]);
   assert.deepEqual(made.statuses(), [], "no claim is written");

@@ -183,11 +183,11 @@ function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<Co
     },
     rerunFailedChecks: rerunning("rerunFailedChecks", state.reruns),
     rerunRuns: rerunning("rerunRuns", state.runReruns),
-    readReviewClaims(repository, head) {
+    async readReviewClaims(repository, head) {
       calls.push(`readReviewClaims ${repository} ${head}`);
       return state.claimReadRefusal === null ? { entries: [...(state.claims.get(keyOf(repository, head)) ?? [])] } : { unreadable: state.claimReadRefusal };
     },
-    writeReviewClaim({ repository, head, description, environment }) {
+    async writeReviewClaim({ repository, head, description, environment }) {
       calls.push(`writeReviewClaim ${repository} ${head}`);
       if (state.claimWriteRefusal !== null) return state.claimWriteRefusal;
       state.claimWrites.push({ repository, head, description, environment });
