@@ -91,8 +91,12 @@ function standIn(program: string, log: string, hold: GhHold): string {
   return `#!/bin/sh\n# loop-load's throwaway ${program}: it logs its arguments and reaches nothing.\necho "$*" >> '${log}'\n${answer}exit 0\n`;
 }
 
+/** The variables the preload that holds the board thread reads (`loop-load-hold.ts`): the file that starts the hold, the gate that ends it and the log it writes. */
+type BoardHold = Readonly<{ env: Readonly<Record<string, string>> }>;
+const boardHoldIn = (dir: string): BoardHold => ({ env: { LOOP_LOAD_HOLD_START: join(dir, "board-thread.start"), LOOP_LOAD_HOLD_GATE: join(dir, "gh.gate"), LOOP_LOAD_HOLD_LOG: join(dir, HOLD_LOG) } });
+
 /** The throwaway host file, board key and stand-ins in `dir`, and the environment the instance runs in. */
-function throwaway(dir: string, port: number, uiPort: number, hold: GhHold, holdsBoardThread: boolean): Readonly<{ env: NodeJS.ProcessEnv; ghLog: string; herdrLog: string }> {
+function throwaway(dir: string, port: number, uiPort: number, hold: GhHold, boardHold: BoardHold | null): Readonly<{ env: NodeJS.ProcessEnv; ghLog: string; herdrLog: string }> {
   const stateDir = join(dir, "state");
   const stub = join(dir, "stub");
   mkdirSync(join(stateDir, "tickets"), { recursive: true });
@@ -109,8 +113,8 @@ function throwaway(dir: string, port: number, uiPort: number, hold: GhHold, hold
   writeFileSync(join(stub, "systemctl"), `#!/bin/sh\n# loop-load's throwaway systemctl: it logs its arguments and reaches no service manager.\necho "$*" >> '${join(dir, "systemctl.log")}'\nexit 0\n`);
   for (const program of ["gh", "tailscale", "herdr", "systemctl"]) chmodSync(join(stub, program), 0o755);
   const env = { ...process.env, [HOST_FILE_ENV]: hostPath, XDG_CONFIG_HOME: join(dir, "xdg"), PATH: `${stub}${delimiter}${process.env.PATH ?? ""}`,
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${OFFLINE}`, ...(holdsBoardThread ? [`--import=${HOLD_PRELOAD}`] : [])].filter(Boolean).join(" "),
-    ...(holdsBoardThread ? { LOOP_LOAD_HOLD_START: join(dir, "board-thread.start"), LOOP_LOAD_HOLD_GATE: join(dir, "gh.gate"), LOOP_LOAD_HOLD_LOG: join(dir, HOLD_LOG) } : {}), AGENT_ORG_TICK_MS: String(SWEEP_MS), AGENT_ORG_TRACKER_MS: String(SWEEP_MS), AGENT_ORG_FEEDBACK_MS: String(SWEEP_MS) };
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${OFFLINE}`, ...(boardHold === null ? [] : [`--import=${HOLD_PRELOAD}`])].filter(Boolean).join(" "),
+    ...boardHold?.env, AGENT_ORG_TICK_MS: String(SWEEP_MS), AGENT_ORG_TRACKER_MS: String(SWEEP_MS), AGENT_ORG_FEEDBACK_MS: String(SWEEP_MS) };
   return { env, ghLog: join(dir, "gh.log"), herdrLog: join(dir, "herdr.log") };
 }
 
@@ -165,7 +169,7 @@ export async function startThrowawayInstance(dir: string, { gated = false, holds
   const [port, uiPort] = [await freePort(), await freePort()];
   const gate = join(dir, "gh.gate");
   const ghDoneLog = join(dir, "gh.done.log");
-  const { env, ghLog, herdrLog } = throwaway(dir, port, uiPort, gated ? { kind: "gate", gate, doneLog: ghDoneLog } : { kind: "sleep" }, holdsBoardThread);
+  const { env, ghLog, herdrLog } = throwaway(dir, port, uiPort, gated ? { kind: "gate", gate, doneLog: ghDoneLog } : { kind: "sleep" }, holdsBoardThread ? boardHoldIn(dir) : null);
   const releaseGh = () => { if (gated || holdsBoardThread) writeFileSync(gate, ""); };
   const holdBoardThread = () => { writeFileSync(join(dir, "board-thread.start"), ""); };
   const instance: ChildProcess = spawn(process.execPath, [join(CHECKOUT, "src", "bin.ts"), "ticket:serve"], { env, stdio: ["ignore", "ignore", "pipe"] });

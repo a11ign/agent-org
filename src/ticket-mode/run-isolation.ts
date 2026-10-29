@@ -28,6 +28,7 @@ import { sweepLegacyTmp } from "./legacy-tmp.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { isLive } from "./queue/queue-entries-and-outcomes.ts";
 import { log } from "./pool-state.ts";
+import { HERDR_CALL_MS } from "./pool-herdr.ts";
 
 export { makeRunTmp, RUN_TMP_PREFIX, runTmpDir, runTmpName } from "../session-tmp.ts";
 
@@ -58,16 +59,13 @@ function heldNames(ctx: PoolContext): Set<string> {
 /** The names of the run directories of every run in the queue, held or not: a directory with one of these names is a run's, and is known to be over when the run holds nothing. PURE. */
 const queuedNames = (ctx: PoolContext): Set<string> => new Set(ctx.store.get().entries.map((entry) => runTmpName(entry.batch ?? entry.ticket.key)));
 
-/** How long the sweep waits for herdr's listing, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
-const LISTING_MS = 30_000;
-
 /**
  * The names of the directories of the sessions herdr lists in the board's session (A11-303): a reviewer, a new-ticket run or a publish run is no queue entry, and its workspace is what says it is still there. Null when herdr
  * could not be listed, which says nothing of what is there, so no directory is taken for it.
  */
 async function liveSessionNames(ctx: PoolContext): Promise<Set<string> | null> {
   // Asked without holding the loop (A11-282): the sweep runs every pass, and a synchronous listing held the board thread for as long as herdr took.
-  const agents = await readAgentsAsync((args) => ctx.herdrCall(args, LISTING_MS), { session: ctx.settings.herdrSession, say: () => {} });
+  const agents = await readAgentsAsync((args) => ctx.herdrCall(args, HERDR_CALL_MS), { session: ctx.settings.herdrSession, say: () => {} });
   return agents === null ? null : new Set(agents.map((agent) => runTmpName(agent.label)));
 }
 

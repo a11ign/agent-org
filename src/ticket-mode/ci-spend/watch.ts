@@ -158,6 +158,8 @@ async function hold(ctx: PoolContext, entry: Entry, weighted: number, multiple: 
     return log(`${key}: ${reason}; its next round carries the reason`);
   }
   if (!actable(entry) || !await closedOrGone(ctx, entry, "for its CI spend")) return;
+  // The close was asked without holding the loop: a run that ended or was stopped meanwhile is not queued again.
+  if (!actable(find(ctx.store.get(), key) ?? entry)) return;
   const session = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   forgetRun(ctx, runPlace(ctx, entry).name);
   update(ctx, (queue) => recordBudgetStep(requeueForCiHold(queue, key, reason, now(), session), key, recorded));

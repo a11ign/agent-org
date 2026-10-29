@@ -57,6 +57,9 @@ function machine() {
 }
 
 /** A pool over the machine, with NBF-1 queued and started, and `write(outcome)` to have its worker end on `outcome`. */
+/** How many times the test waits for the reads and passes a move woke: each wait is several turns of the event loop. */
+const SETTLE_TURNS = 20;
+
 async function working(max = 1) {
   const m = machine();
   const made = poolFixture({ keys: [KEY], max, clones: m.clones });
@@ -74,7 +77,8 @@ async function working(max = 1) {
     utimesSync(file, new Date(written), new Date(written));
     made.status.set(herdrName(KEY), "idle");
     await pool.tick();
-    await settled();
+    // The move lists the organisation and clones beside the pass (A11-282 made the listing asynchronous too), and a clone is real file work: give it turns of the event loop, not one wait.
+    for (let turn = 0; turn < SETTLE_TURNS; turn += 1) await settled();
   };
   /** The queued run starts again, and its worker is up. */
   const starts = async () => {

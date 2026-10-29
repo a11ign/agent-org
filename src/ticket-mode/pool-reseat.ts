@@ -15,6 +15,7 @@ import { crashed, log, messageOf, runMembers, runPlace, updateEach } from "./poo
 import { settleStart, start } from "./pool-start.ts";
 import { markRunning } from "./queue/queue-transitions.ts";
 import { replace, type Entry, type Queue, type ResumeNote } from "./queue/queue-entries-and-outcomes.ts";
+import { HERDR_CALL_MS } from "./pool-herdr.ts";
 
 /** The Claude session to resume: the one herdr last reported for the run's workspace (a restored session has a new id), else the run's recorded one, else the newest of its folder. Undefined when there is none. */
 function sessionOf(ctx: PoolContext, entry: Entry): string | undefined {
@@ -24,11 +25,8 @@ function sessionOf(ctx: PoolContext, entry: Entry): string | undefined {
 
 /** The workspace to close: the one the run's record holds, else the one herdr lists under its label. */
 async function workspaceOf(ctx: PoolContext, entry: Entry, place: RunPlace): Promise<string | undefined> {
-  return entry.workspace ?? (await readAgentsAsync((args) => ctx.herdrCall(args, HERDR_MS), ctx.session))?.find((agent) => agent.label === place.name)?.workspace;
+  return entry.workspace ?? (await readAgentsAsync((args) => ctx.herdrCall(args, HERDR_CALL_MS), ctx.session))?.find((agent) => agent.label === place.name)?.workspace;
 }
-
-/** How long the board waits for herdr to list or close, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
-const HERDR_MS = 30_000;
 
 /** Record the board's resume of a run, from the pane it is now in. PURE. */
 const recordRestored = (workspace: string, pane: string, note: ResumeNote) => (queue: Queue, key: string): Queue =>
@@ -44,6 +42,8 @@ async function reseatRun(ctx: PoolContext, entry: Entry, note: ResumeNote): Prom
   const place = runPlace(ctx, entry);
   const session = sessionOf(ctx, entry);
   const workspace = await workspaceOf(ctx, entry, place);
+  // The listing was asked without holding the loop: a run stopped meanwhile is not started again.
+  if (ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "running") return;
   const missing = (why: string): Promise<void> => {
     log(`${who} keeps the pane that lost its environment: ${why}`);
     return resumeRun(ctx, entry, place, { ...note, environment: "missing" });
@@ -51,7 +51,7 @@ async function reseatRun(ctx: PoolContext, entry: Entry, note: ResumeNote): Prom
   if (session === undefined) return missing("it has no Claude session to resume");
   if (workspace === undefined) return missing("herdr lists no workspace for it");
   try {
-    await ctx.herdrCall(["--session", ctx.settings.herdrSession, "workspace", "close", workspace], HERDR_MS);
+    await ctx.herdrCall(["--session", ctx.settings.herdrSession, "workspace", "close", workspace], HERDR_CALL_MS);
   } catch (err) {
     return missing(`herdr would not close its workspace ${workspace} (${messageOf(err).split("\n")[0]})`);
   }

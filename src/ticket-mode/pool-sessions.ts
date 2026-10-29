@@ -1,7 +1,7 @@
 // @ts-check
 // module: a round and a Talk never share a session -- before a queued review round or talk session starts, whatever else in herdr holds its Claude session or its name is waited for or closed (A11-154); a parked run's pane is waited for, never closed (A11-171)
 
-import { herdrRefusal } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { forgetRun, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { talkSession, sessionToResume } from "./pool-prepare.ts";
 import { holdForSession, runOf } from "./queue/queue-transitions.ts";
@@ -11,9 +11,6 @@ import { type PoolContext } from "./pool-context.ts";
 
 /** An agent's statuses that mean it is not doing anything: its workspace is a leftover, and is closed. Any other status (working, blocked on a person) holds the start back. */
 const LEFTOVER: ReadonlySet<string> = new Set(["idle", "done", "unknown"]);
-
-/** How long the board waits for herdr to list or close, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
-const HERDR_MS = 30_000;
 
 /** One herdr workspace and the agent in it: its id, its label, its agent's name and Claude session, and what its agent is doing. */
 type Occupant = Readonly<{ workspace: string; label: string; name: string | null; session: string | null; status: string }>;
@@ -25,8 +22,8 @@ const resumes = (entry: Entry): boolean => entry.phase === "queued" && (entry.re
 async function readOccupants(ctx: PoolContext): Promise<Occupant[] | null> {
   const { herdrCall, settings } = ctx;
   try {
-    const workspaces = JSON.parse(await herdrCall(["--session", settings.herdrSession, "workspace", "list"], HERDR_MS))?.result?.workspaces;
-    const agents = JSON.parse(await herdrCall(["--session", settings.herdrSession, "agent", "list"], HERDR_MS))?.result?.agents;
+    const workspaces = JSON.parse(await herdrCall(["--session", settings.herdrSession, "workspace", "list"], HERDR_CALL_MS))?.result?.workspaces;
+    const agents = JSON.parse(await herdrCall(["--session", settings.herdrSession, "agent", "list"], HERDR_CALL_MS))?.result?.agents;
     if (!Array.isArray(workspaces) || !Array.isArray(agents)) return null;
     const known = new Map<string, Occupant>(workspaces.filter((w) => typeof w?.workspace_id === "string").map((w) => [String(w.workspace_id),
       { workspace: String(w.workspace_id), label: String(w.label ?? ""), name: null, session: null, status: String(w.agent_status ?? "unknown") }]));
@@ -52,7 +49,7 @@ function holdersOf(ctx: PoolContext, entry: Entry, occupants: readonly Occupant[
 async function closeLeftover(ctx: PoolContext, entry: Entry, occupant: Occupant): Promise<string | null> {
   const { herdrCall, settings } = ctx;
   try {
-    await herdrCall(["--session", settings.herdrSession, "workspace", "close", occupant.workspace], HERDR_MS);
+    await herdrCall(["--session", settings.herdrSession, "workspace", "close", occupant.workspace], HERDR_CALL_MS);
     forgetRun(ctx, runPlace(ctx, entry).name);
     return null;
   } catch (err) {
@@ -91,6 +88,10 @@ async function settleSession(ctx: PoolContext, members: readonly Entry[], holder
   }
 }
 
+/** The workspaces of the runs parked on a person's answer now. */
+const parkedWorkspaces = (ctx: PoolContext): ReadonlySet<string> =>
+  new Set(ctx.store.get().entries.filter(isParked).flatMap(({ workspace }) => (workspace === undefined ? [] : [workspace])));
+
 /** The queued entries grouped by the run they start: a batch's tickets are one, every other entry is its own. */
 function byRun(entries: readonly Entry[]): Entry[][] {
   const runs = new Map<string, Entry[]>();
@@ -109,10 +110,10 @@ export async function settleSessions(ctx: PoolContext): Promise<void> {
   if (waiting.length === 0 || queue.paused) return;
   const occupants = await readOccupants(ctx);
   if (occupants === null) return;
-  const parked = new Set(queue.entries.filter(isParked).flatMap(({ workspace }) => (workspace === undefined ? [] : [workspace])));
   for (const members of byRun(waiting)) {
     try {
-      await settleSession(ctx, members, holdersOf(ctx, members[0], occupants), parked);
+      // The queue is read again for each run: herdr was asked without holding the loop, and a run parked meanwhile is a person's pane, never a leftover (A11-171).
+      await settleSession(ctx, members, holdersOf(ctx, members[0], occupants), parkedWorkspaces(ctx));
     } catch (err) {
       log(`${members[0].ticket.key}: what holds its session could not be settled: ${messageOf(err)}`);
     }

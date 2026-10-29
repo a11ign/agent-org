@@ -172,6 +172,8 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
     // A dialog that is not a start dialog (A11-174): a Claude Code safety prompt is answered No and the agent told why, any other is left for a person, with its first line.
     const prompt = sitting ? await readPrompt(ctx, runPlace(ctx, entry)) : null;
     if (prompt !== null && await declineSafetyPrompt(ctx, entry, runPlace(ctx, entry), prompt)) continue;
+    // The pane was read without holding the loop: a run stopped or ended meanwhile is not observed, nor ended for having no outcome.
+    if (!stillRunning(ctx, key)) continue;
     updateEach(ctx, runMembers(ctx, entry), (queue, member) => observe(queue, member, seen, prompt?.firstLine, ctx.now()));
     const latest = () => store.get().entries.find((e) => e.ticket.key === key) ?? entry;
     const current = latest();
@@ -195,6 +197,7 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
     }
     // The message a refused one waits for, before an idle run with no outcome is called over: the status read before it is not the agent's answer to it (A11-174).
     const justTold = await retellDeclined(ctx, current, runPlace(ctx, entry), seen);
+    if (!stillRunning(ctx, key)) continue;
     if (seen === "working") await watchStall(ctx, latest(), seen);
     else if (!justTold && !resumed.has(name) && stoppedWithNoOutcome(ctx, latest(), seen)) end(ctx, latest(), { kind: "no-outcome" });
     await watchIdle(ctx, latest(), seen);
@@ -203,6 +206,9 @@ async function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string
   for (const name of ctx.waitPolls.keys()) if (!watched.has(name)) ctx.waitPolls.delete(name);
   for (const name of ctx.pullReadAt.keys()) if (!watched.has(name)) ctx.pullReadAt.delete(name);
 }
+
+/** Whether the run of `key` is still running in the queue as it is now: its pane was read, or its worker prompted, without holding the loop (A11-282). */
+const stillRunning = (ctx: PoolContext, key: string): boolean => ctx.store.get().entries.find((e) => e.ticket.key === key)?.phase === "running";
 
 /**
  * Whether a running agent with no outcome file has stopped: it is done, or it went idle after it was seen working. An idle agent whose decline of a safety prompt it has not
@@ -976,6 +982,8 @@ async function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonl
   }
   try {
     await close(ctx, key);
+    // The run is read again once herdr has closed the workspace: it may have been dismissed or retried meanwhile, and then there is no round to start.
+    if (ctx.store.get().entries.find((e) => e.ticket.key === key)?.phase !== "finished") return false;
   } catch (err) {
     log(`${key}: its workspace could not be closed, so the ${red.length === 0 ? "conflict" : "red checks"} round was not started (${err instanceof Error ? err.message : String(err)})`);
     recordWithoutRound(ctx, entry, checks, removals);

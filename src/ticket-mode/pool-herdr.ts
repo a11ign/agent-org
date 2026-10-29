@@ -9,6 +9,9 @@ export type Herdr =(args: string[], timeoutMs?: number) => string;
 
 export const defaultHerdr: Herdr = (args, timeoutMs = 30_000) => herdrRun(args, timeoutMs);
 
+/** How long the board thread waits for one asynchronous herdr call, in ms: the cut the synchronous call has always had. The wait holds no loop (A11-282). */
+export const HERDR_CALL_MS = 30_000;
+
 /** herdr without holding the loop: the one slow call, `agent start`, so a start does not stop the board answering, and (A11-282) the listings every pass of the tick makes. */
 export type HerdrAsync = (args: string[], timeoutMs: number) => Promise<string>;
 

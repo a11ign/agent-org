@@ -21,6 +21,7 @@ import { isLive, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { markPublishRunning, publishFailed, unpark } from "./queue/queue-transitions.ts";
 import { adoptCrashed, adoptStarting, loseInRestart, requeueStarting, agentNotOpened } from "./queue/queue-readopt.ts";
 import { joined, markWriterRunning, writerEnded } from "./queue.ts";
+import { HERDR_CALL_MS } from "./pool-herdr.ts";
 
 /** Why a publish run or a new-ticket run herdr no longer has is failed. */
 const RESTARTED = "the pool restarted while it was running";
@@ -37,9 +38,6 @@ function seatOrLog(agent: ListedAgent, what: string): Readonly<{ workspace: stri
   return seat;
 }
 
-/** How long the start's listing waits for herdr, in ms: the cut the synchronous call had. The wait holds no loop. */
-const LISTING_MS = 30_000;
-
 /**
  * After a restart: every run the file holds as `starting` or `running` is looked up in herdr's listing by its name. One that herdr lists with a pane is adopted ({@link adoptRun}); one it does not list, or lists with
  * its pane gone, ended lost in a restart and is queued again once if the board has no pull request on record for it ({@link loseInRestart}); its worktree is kept either way. A parked run herdr no longer lists is unparked, keeping its
@@ -49,7 +47,7 @@ const LISTING_MS = 30_000;
 export async function reconcile(ctx: PoolContext): Promise<void> {
   const { herdrCall, session, store } = ctx;
   // Listed without holding the loop (A11-282): an instance reconciles with herdr at every start, and each unknown agent it lists is a pane read besides.
-  const agents = await readAgentsAsync((args) => herdrCall(args, LISTING_MS), session);
+  const agents = await readAgentsAsync((args) => herdrCall(args, HERDR_CALL_MS), session);
   if (agents === null) return;
   const listed = new Map(agents.map((agent) => [agent.label, agent]));
   const withPane = (name: string): ListedAgent | undefined => {

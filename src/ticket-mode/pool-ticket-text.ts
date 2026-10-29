@@ -17,7 +17,7 @@ import { type Learned, markTicketChanged, type PlannedAgainst, recordBlockerDecl
 import { declaredByBlockerPull } from "./queue/queue-declarations.ts";
 import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { agentTargetAsync } from "./pool-resume.ts";
-import { herdrRefusal } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parseStamp, urlsNamedIn } from "./plan-stamp.ts";
 import { planDecisionsOf } from "./plan-decisions.ts";
@@ -376,9 +376,6 @@ ${to.description.trim() || "(no description)"}
 `;
 }
 
-/** How long the board waits for herdr to take a change of a ticket's text to a live run, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
-const TELL_MS = 30_000;
-
 /**
  * Send a change in a live run's ticket to its worker (A11-167): the new text and the lines that differ are written to a file beside its brief, and the agent is prompted through herdr to read it. The change is
  * recorded once the prompt has gone, and the run is then briefed against the new text; a prompt herdr refuses is said, and tried again on the next refresh.
@@ -392,7 +389,7 @@ async function tellLiveRun(ctx: PoolContext, entry: Entry, read: TicketRead): Pr
     const place = runPlace(ctx, entry);
     const path = join(place.dir, `ticket-changed-${(entry.ticketChanges?.length ?? 0) + 1}.md`);
     writeFileSync(path, changeFile(before, read));
-    await herdrCall(["--session", settings.herdrSession, "agent", "prompt", await agentTargetAsync(ctx, place), changeMessage(path)], TELL_MS);
+    await herdrCall(["--session", settings.herdrSession, "agent", "prompt", await agentTargetAsync(ctx, place), changeMessage(path)], HERDR_CALL_MS);
     update(ctx, (queue) => recordTicketChange(queue, entry.ticket.key, changeOf(ctx, before.description, read.description), read));
   } catch (err) {
     log(`${entry.ticket.key} could not be told its ticket changed: ${herdrRefusal(err)}`);

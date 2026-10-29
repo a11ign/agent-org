@@ -78,25 +78,45 @@ test("A11-282: closing a workspace to stop a run (closedOrGone) waits for herdr 
   assert.equal(await closedOrGone(ctx, entry, "for the update"), false, "any other refusal leaves the run running");
 });
 
-test("A11-282: a pane is read for a start dialog, a safety prompt and its screen without holding the loop", async () => {
+/** A run just started whose pane shows the trust dialog of its folder. */
+function dialogOnScreen() {
   const made = poolFixture({ keys: [KEY], max: 1 });
   const ctx = contextOver(made);
   const place = { name: herdrName(KEY), pane: "w1:p1", folder: "/work/x", dir: "/work/x", repos: [] } as never;
   made.herdr.screens.set("w1:p1", "Is this a project you created or one you trust?\n/work/x\n❯ 1. Yes, I trust this folder\n");
+  ctx.startedHere.add(herdrName(KEY));
+  return { made, ctx, place };
+}
+
+test("A11-282: a pane is read for a start dialog, a safety prompt and its screen without holding the loop", async () => {
+  const { made, ctx, place } = dialogOnScreen();
   assert.equal(await readScreen(ctx, place), made.herdr.screens.get("w1:p1"), "the screen read comes through herdrCall");
   assert.equal(await readPrompt(ctx, place), null, "a screen with no safety prompt reads as none");
-  ctx.startedHere.add(herdrName(KEY));
-  assert.equal(await answerStartDialog(ctx, { ...(place as object), folder: "/work/x" } as never), true, "the start dialog is answered");
+  assert.equal(await answerStartDialog(ctx, place), true, "the start dialog is answered");
   assert.deepEqual(made.herdr.calls.at(-1)?.slice(-3), ["w1:p1", "down", "enter"], "with its keys, through the same seam");
 });
 
 test("A11-282: a start dialog both the settling after a start and the watch have read is answered once", async () => {
-  const made = poolFixture({ keys: [KEY], max: 1 });
-  const ctx = contextOver(made);
-  const place = { name: herdrName(KEY), pane: "w1:p1", folder: "/work/x", dir: "/work/x", repos: [] } as never;
-  made.herdr.screens.set("w1:p1", "Is this a project you created or one you trust?\n/work/x\n❯ 1. Yes, I trust this folder\n");
-  ctx.startedHere.add(herdrName(KEY));
+  const { made, ctx, place } = dialogOnScreen();
   const answered = await Promise.all([answerStartDialog(ctx, place), answerStartDialog(ctx, place)]);
   assert.deepEqual(answered.toSorted(), [false, true]);
   assert.equal(made.herdr.calls.filter((args) => args.includes("send-keys")).length, 1, "the keys went once");
+});
+
+test("A11-282: two closes of one parked run asked together close it once, and the second, refused because the workspace is gone, is no error", async () => {
+  const made = poolFixture({ keys: [KEY], max: 1 });
+  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((entry) => ({ ...entry, phase: "finished" as const, workspace: "w9", outcome: { kind: "needs-human" as const, reason: "r" } })) });
+  // herdr takes the first close and finds no workspace for the second, as it does when the first has closed it.
+  let closes = 0;
+  const pool = made.restart({ herdr: synchronous, herdrAsync: async (args) => {
+    if (!args.includes("close")) return made.herdr.run(args);
+    closes += 1;
+    if (closes > 1) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: "workspace_not_found" } }) });
+    return made.herdr.run(args);
+  } });
+  await Promise.all([pool.close(KEY), pool.close(KEY)]);
+  assert.equal(closes, 2, "both were asked");
+  assert.equal(made.entry(KEY).workspace, undefined, "and the run is unparked");
+  await pool.close(KEY);
+  assert.equal(closes, 2, "a close of a run that is no longer parked asks herdr nothing and says nothing");
 });

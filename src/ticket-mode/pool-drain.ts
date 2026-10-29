@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { drainPath, readDrain, writeDrain, type Drain, type DrainRecord } from "../install/update-drain.ts";
 import { defaultServiceDeps, runAutoUpdateNow } from "../install/service.ts";
 import { herdrReason } from "../herdr-agents.ts";
-import { herdrRefusal } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { isLive, liveRunCount, LIVE, writerLive, type Entry, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { requeueForUpdate } from "./queue/queue-pins.ts";
 import { writerFailed } from "./queue.ts";
@@ -35,9 +35,6 @@ export const defaultStartUpdate = (): void => {
   }
 };
 
-/** How long a workspace close may take, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
-const CLOSE_MS = 30_000;
-
 const storeOf = (ctx: PoolContext): DrainStore => ctx.deps.drain ?? defaultDrainStore();
 
 /**
@@ -55,7 +52,7 @@ export async function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: stri
   if (entry.workspace === undefined) return true;
   try {
     // Asked without holding the loop (A11-282): a close takes 250 ms to 1 s, and the board thread answers every write meanwhile.
-    await ctx.herdrCall(["--session", ctx.session.session, "workspace", "close", entry.workspace], CLOSE_MS);
+    await ctx.herdrCall(["--session", ctx.session.session, "workspace", "close", entry.workspace], HERDR_CALL_MS);
     return true;
   } catch (err) {
     const why = `${herdrRefusal(err)} ${herdrReason(err)}`;
@@ -69,6 +66,8 @@ export async function closedOrGone(ctx: PoolContext, entry: Entry, forWhat: stri
 async function stopEntry(ctx: PoolContext, entry: Entry, target: string): Promise<boolean> {
   const { claudeSessions, now } = ctx;
   if (!await closedOrGone(ctx, entry, "for the update")) return false;
+  // The close was asked without holding the loop: a run that ended or was stopped meanwhile was not stopped for the update.
+  if (!ctx.store.get().entries.some((e) => e.ticket.key === entry.ticket.key && isLive(e))) return false;
   const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
   forgetRun(ctx, runPlace(ctx, entry).name);
   update(ctx, (queue) => requeueForUpdate(queue, entry.ticket.key, target, now(), id));

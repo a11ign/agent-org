@@ -236,7 +236,10 @@ export async function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<s
   const restart = await readRestart(ctx);
   const prompted = new Set<string>();
   if (restart === null) return prompted;
-  for (const entry of ctx.store.get().entries.filter(resumable)) {
+  for (const listed of ctx.store.get().entries.filter(resumable)) {
+    // Each pane is read without holding the loop, so the queue moves between two runs: each is taken as the queue holds it now.
+    if (!stillResumable(ctx, listed)) continue;
+    const entry = ctx.store.get().entries.find((e) => e.ticket.key === listed.ticket.key)!;
     const place = runPlace(ctx, entry);
     if (prompted.has(place.name) || !awaitsOutcome(entry, place.dir) || untoldDecline(ctx, entry)) continue;
     const seen = status.get(place.name);
@@ -248,6 +251,7 @@ export async function resumeAfterRestart(ctx: PoolContext, status: ReadonlyMap<s
     const interrupted = screen?.includes(INTERRUPTED) === true;
     if (!sitting && !interrupted) continue;
     if (restart === "instance" && !interrupted && keptWaiting(ctx, entry, screen)) continue;
+    if (!stillResumable(ctx, entry)) continue;
     prompted.add(place.name);
     await resumeOrReseat(ctx, entry, place, { at: ctx.now(), after: "restart" });
   }
@@ -306,6 +310,8 @@ async function noteLostEnvironment(ctx: PoolContext, entry: Entry, place: RunPla
  */
 async function resumeOrReseat(ctx: PoolContext, entry: Entry, place: RunPlace, note: ResumeNote): Promise<void> {
   const lost = await lostEnvironment(ctx, entry, place);
+  // The environment was read without holding the loop: a run stopped meanwhile is neither prompted nor started again.
+  if (!stillResumable(ctx, entry)) return;
   if (lost.length === 0) return resumeRun(ctx, entry, place, note);
   ctx.envLost.delete(place.name);
   ctx.reseating.set(place.name, { key: entry.ticket.key, note });

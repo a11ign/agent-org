@@ -153,6 +153,23 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
 
 /** Answer a start dialog on this run's pane, if one is showing and the run has answers left. True when it answered. The agent is reached by its pane, never its name (A11-279). */
 export async function answerStartDialog(ctx: PoolContext, place: RunPlace): Promise<boolean> {
+  const { name } = place;
+  const answering = dialogsBeingAnswered.get(ctx) ?? new Set<string>();
+  dialogsBeingAnswered.set(ctx, answering);
+  // One answer at a time for a run: the settling after a start and the watch can both reach its dialog, and the pane is read and the keys sent without holding the loop (A11-282).
+  if (answering.has(name)) return false;
+  answering.add(name);
+  try {
+    return await answerOnce(ctx, place);
+  } finally {
+    answering.delete(name);
+  }
+}
+
+/** The runs whose start dialog is being answered, by pool. */
+const dialogsBeingAnswered = new WeakMap<PoolContext, Set<string>>();
+
+async function answerOnce(ctx: PoolContext, place: RunPlace): Promise<boolean> {
   const { answered, herdrCall, settings, startedHere } = ctx;
   const { name, folder } = place;
   if (!startedHere.has(name)) return false;

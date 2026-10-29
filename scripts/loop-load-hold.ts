@@ -12,13 +12,15 @@ const HOLD_LIMIT_S = 5;
 const POLL_MS = 50;
 const { LOOP_LOAD_HOLD_START: start, LOOP_LOAD_HOLD_GATE: gate, LOOP_LOAD_HOLD_LOG: log } = process.env;
 
-// Only the instance itself (`bin.ts` starts `ticket-mode/server.ts` as a child): the programs it starts inherit this preload through NODE_OPTIONS, and would each hold themselves too.
-if (isMainThread && (process.argv[1] ?? "").endsWith("ticket-mode/server.ts") && start !== undefined && gate !== undefined && log !== undefined) {
+/** Whether this is the instance's board thread: the main thread of `ticket-mode/server.ts` (`bin.ts` starts it as a child), and the test asked to hold it. The programs the instance starts inherit this preload through NODE_OPTIONS, and would each hold themselves too. */
+const holdsThisThread = (): boolean => isMainThread && (process.argv[1] ?? "").endsWith("ticket-mode/server.ts") && [start, gate, log].every((variable) => variable !== undefined);
+
+if (holdsThisThread()) {
   const timer = setInterval(() => {
-    if (!existsSync(start)) return;
+    if (!existsSync(start!)) return;
     clearInterval(timer);
     const polls = Math.round((HOLD_LIMIT_S * 1000) / POLL_MS);
-    execFileSync("sh", ["-c", `echo held >> "$1"\ni=0\nwhile [ ! -e "$2" ] && [ "$i" -lt ${polls} ]; do sleep 0.05; i=$((i + 1)); done\necho released >> "$1"`, "sh", log, gate], { stdio: "ignore" });
+    execFileSync("sh", ["-c", `echo held >> "$1"\ni=0\nwhile [ ! -e "$2" ] && [ "$i" -lt ${polls} ]; do sleep 0.05; i=$((i + 1)); done\necho released >> "$1"`, "sh", log!, gate!], { stdio: "ignore" });
   }, POLL_MS);
   timer.unref();
 }

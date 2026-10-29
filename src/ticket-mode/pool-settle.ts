@@ -43,7 +43,7 @@ import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { settledByPulls } from "./board-view/pull-settled.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { stepNamed } from "./board-view/plan-steps.ts";
-import { herdrRefusal } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { reroute } from "./queue/queue-reroute.ts";
 import { cloneOnDemand, cloneOrNull, movable, organisationOf, wrongRepoTarget } from "./pool-org-repos.ts";
 import { namedIn } from "./org-repos.ts";
@@ -960,8 +960,10 @@ export async function close(ctx: PoolContext, key: string): Promise<void> {
   if (entry?.workspace === undefined) return;
   try {
     // Asked without holding the loop (A11-282): a close takes 250 ms to 1 s, and the board thread answers every write meanwhile.
-    await herdrCall(["--session", settings.herdrSession, "workspace", "close", entry.workspace], CLOSE_MS);
+    await herdrCall(["--session", settings.herdrSession, "workspace", "close", entry.workspace], HERDR_CALL_MS);
   } catch (err) {
+    // A close asked beside this one (a double click, the watch unparking a run whose agent is gone) may have closed the workspace and unparked the run while herdr answered: there is nothing left to refuse.
+    if (!store.get().entries.some((e) => e.ticket.key === key && isParked(e))) return;
     throw new Error(`herdr could not close ${key}'s workspace (${herdrRefusal(err)})`);
   }
   // The run is read again once herdr has closed the workspace: a person may have dismissed or retried it meanwhile.
@@ -971,5 +973,3 @@ export async function close(ctx: PoolContext, key: string): Promise<void> {
   updateEach(ctx, runMembers(ctx, parked), unpark);
 }
 
-/** How long a workspace close may take, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
-const CLOSE_MS = 30_000;

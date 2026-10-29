@@ -12,7 +12,7 @@ import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { WHO_CHARS, withAnswer } from "./answer-decision.ts";
 import { SETTLED, find, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { logAnswered, moveBriefing, recordAnswer } from "./queue/queue-answer.ts";
-import { herdrRefusal } from "./pool-herdr.ts";
+import { HERDR_CALL_MS, herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { runPlace, update } from "./pool-state.ts";
 import { agentTargetAsync } from "./pool-resume.ts";
@@ -39,9 +39,6 @@ export function dateOf(at: number): string {
 }
 
 /** Whether a name is not one non-empty line of at most {@link WHO_CHARS} characters. PURE. */
-/** How long the board waits for herdr to take a person's answer to a run, in ms: the cut the synchronous call had. The wait holds no loop (A11-282). */
-const DELIVER_MS = 30_000;
-
 const badName = (who: string): boolean => who.trim() === "" || /[\r\n]/.test(who) || who.trim().length > WHO_CHARS;
 
 /** Why the request itself is refused, or null: the answer is text of at most {@link ANSWER_CHARS}, and a name is one line of at most {@link WHO_CHARS}. PURE. */
@@ -120,7 +117,7 @@ async function deliver(ctx: PoolContext, key: string, told: Told): Promise<Answe
     return { written: true, delivered: false, why: `${key}'s run has no workspace open or is no longer waiting, so nothing is waiting for the answer: it is in the ticket, and the run that works the ticket next reads it first` };
   }
   try {
-    await herdrCall(["--session", settings.herdrSession, "agent", "prompt", await agentTargetAsync(ctx, runPlace(ctx, current)), messageOf(current, told)], DELIVER_MS);
+    await herdrCall(["--session", settings.herdrSession, "agent", "prompt", await agentTargetAsync(ctx, runPlace(ctx, current)), messageOf(current, told)], HERDR_CALL_MS);
   } catch (err) {
     throw new AnswerNotDelivered(`${key}'s answer is in the ticket, but herdr would not take it to the run (${herdrRefusal(err)}): answer again to send it, and nothing is written twice`);
   }
